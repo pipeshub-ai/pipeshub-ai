@@ -3,7 +3,11 @@
  * for the org of the unit it joins, so a row of another org is not found. Paths compare as bytes (the column is COLLATE "C"), which
  * makes "path and everything beneath it" a range: `>= path/` and `< path0`.
  */
-import { BadRequestError, InternalServerError } from '../../errors/http.errors';
+import {
+  BadRequestError,
+  ConflictError,
+  InternalServerError,
+} from '../../errors/http.errors';
 import { stripNul } from '../nul';
 import {
   Params,
@@ -17,6 +21,7 @@ import {
 import type { Tx as PgKernelTx } from '../../db';
 import type { StorageVendor } from '../../../modules/storage/types/storage.service.types';
 import type {
+  ArtifactFence,
   ConnectorScope,
   DocumentPatch,
   DocumentRepository,
@@ -781,24 +786,144 @@ export class PgDocumentRepository implements DocumentRepository {
     });
   }
 
-  async createArtifactSetOnce(input: NewDocument): Promise<DocumentRow> {
+  async createArtifactSetOnce(
+    input: NewDocument,
+    fence: ArtifactFence,
+  ): Promise<DocumentRow> {
     return inUnit(undefined, { write: true }, async (k) => {
+      const touched = await this.touchRevision(k, input, fence);
+      if (touched) return touched;
       const made = await insert(k, input, true);
       if (made) return made;
       // lost to the attempt that made this revision first
-      const { rows } = await k.query<Row>(
-        fill(
-          `/* pipeshub:content.document_artifact_set */ SELECT @{COLS} FROM content.documents
-          WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3`,
-          { COLS },
-        ),
-        [k.orgId, input.artifactSet?.virtualRecordId, input.artifactSet?.rev],
-      );
-      if (!rows[0])
+      const winner = await this.touchRevision(k, input, fence);
+      if (!winner)
         throw new InternalServerError(
           'the artifact set that holds this revision cannot be read',
         );
-      return docOf(rows[0]);
+      return winner;
+    });
+  }
+
+  /**
+   * Moves the revision's write stamp and returns it, or null when there is no such revision. A claimed revision is refused; a claim
+   * past the stale bound is from a delete that died and is dropped here.
+   */
+  private async touchRevision(
+    k: PgKernelTx,
+    input: NewDocument,
+    { now, staleMs }: ArtifactFence,
+  ): Promise<DocumentRow | null> {
+    assertOrg(k, String(input.orgId));
+    const key = [
+      k.orgId,
+      input.artifactSet?.virtualRecordId,
+      input.artifactSet?.rev,
+    ];
+    const { rows } = await k.query<Row>(
+      fill(
+        `/* pipeshub:content.document_artifact_touch */ UPDATE content.documents
+        SET updated_at = $4, artifact_set = artifact_set - 'retiringAt'
+        WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
+          AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
+        RETURNING @{COLS}`,
+        { COLS },
+      ),
+      [...key, new Date(now), now - staleMs],
+    );
+    if (rows[0]) return docOf(rows[0]);
+    const { rowCount } = await k.query(
+      `/* pipeshub:content.document_artifact_present */ SELECT 1 FROM content.documents
+      WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3`,
+      key,
+    );
+    if ((rowCount ?? 0) > 0)
+      throw new ConflictError(
+        'This revision is being deleted; write it again once the delete has finished',
+      );
+    return null;
+  }
+
+  async claimArtifactSetForDelete(
+    orgId: string,
+    id: string,
+    {
+      now,
+      staleMs,
+      ifUnchangedSince,
+    }: { now: number; staleMs: number; ifUnchangedSince?: number },
+  ): Promise<DocumentRow | 'changed' | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      // updated_at is left alone: the claim is not a write of the revision, and a delete retried after a crash must still match the
+      // listed stamp. Without a stamp the delete is unfenced: it claims whatever is there.
+      const { rows } = await (ifUnchangedSince === undefined
+        ? k.query<Row>(
+            fill(
+              `/* pipeshub:content.document_artifact_claim */ UPDATE content.documents
+              SET artifact_set = jsonb_set(artifact_set, '{retiringAt}', to_jsonb($3::bigint))
+              WHERE org_id = $1 AND id = $2 AND artifact_set IS NOT NULL
+              RETURNING @{COLS}`,
+              { COLS },
+            ),
+            [k.orgId, oid, now],
+          )
+        : k.query<Row>(
+            fill(
+              `/* pipeshub:content.document_artifact_claim_fenced */ UPDATE content.documents
+              SET artifact_set = jsonb_set(artifact_set, '{retiringAt}', to_jsonb($3::bigint))
+              WHERE org_id = $1 AND id = $2 AND artifact_set IS NOT NULL AND updated_at <= $4
+                AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
+              RETURNING @{COLS}`,
+              { COLS },
+            ),
+            [k.orgId, oid, now, new Date(ifUnchangedSince), now - staleMs],
+          ));
+      if (rows[0]) return docOf(rows[0]);
+      if (ifUnchangedSince === undefined) return null;
+      const present = await k.query(
+        '/* pipeshub:content.document_artifact_claim_present */ SELECT 1 FROM content.documents WHERE org_id = $1 AND id = $2 AND artifact_set IS NOT NULL',
+        [k.orgId, oid],
+      );
+      return (present.rowCount ?? 0) > 0 ? 'changed' : null;
+    });
+  }
+
+  async renewArtifactSetClaim(
+    orgId: string,
+    id: string,
+    known: number[],
+    next: number,
+  ): Promise<void> {
+    const oid = oidOf(id);
+    if (!oid) return;
+    await inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      await k.query(
+        `/* pipeshub:content.document_artifact_renew */ UPDATE content.documents
+        SET artifact_set = jsonb_set(artifact_set, '{retiringAt}', to_jsonb($3::bigint))
+        WHERE org_id = $1 AND id = $2 AND (artifact_set->>'retiringAt')::bigint = ANY($4::bigint[])`,
+        [k.orgId, oid, next, known],
+      );
+    });
+  }
+
+  async removeClaimedArtifactSet(
+    id: string,
+    orgId: string,
+    claims: number[],
+  ): Promise<void> {
+    const oid = oidOf(id);
+    if (!oid) return;
+    await inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      await k.query(
+        `/* pipeshub:content.document_artifact_remove_claimed */ DELETE FROM content.documents
+        WHERE org_id = $1 AND id = $2 AND (artifact_set->>'retiringAt')::bigint = ANY($3::bigint[])`,
+        [k.orgId, oid, claims],
+      );
     });
   }
 

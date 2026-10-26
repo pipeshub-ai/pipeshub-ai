@@ -13,6 +13,8 @@ import {
   MAX_SIGNED_URL_TTL_SECONDS,
   CONNECTOR_VRID_PAGE_DEFAULT,
   ARTIFACT_URL_TTL_SECONDS,
+  ARTIFACT_RETIRING_STALE_MS,
+  ARTIFACT_RETIRING_HEARTBEAT_MS,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -720,6 +722,7 @@ export class StorageController {
     documents: Document[],
     orgId: string,
     req: AuthenticatedServiceRequest,
+    claims?: number[],
   ): Promise<void> {
     if (documents.length === 0) {
       return;
@@ -759,7 +762,15 @@ export class StorageController {
           );
         }
       }
-      await getDocumentRepository().remove(document._id, orgId);
+      if (claims === undefined) {
+        await getDocumentRepository().remove(document._id, orgId);
+      } else {
+        await getDocumentRepository().removeClaimedArtifactSet(
+          document._id,
+          orgId,
+          claims,
+        );
+      }
     }
   }
 
@@ -964,7 +975,18 @@ export class StorageController {
     stream.pipe(res);
   }
 
-  /** Removes a revision's whole tree, then its document. Safe to repeat. */
+  /**
+   * Removes a revision's whole tree, then its document. Safe to repeat.
+   *
+   * The document is claimed (`artifactSet.retiringAt`) before any file goes,
+   * so a presign of the same revision from then on is refused rather than
+   * handed URLs into a tree being deleted. With `ifUnchangedSince` the claim
+   * also requires the write stamp to be no newer than it, so a revision
+   * presigned again after the caller listed it is kept (409, reason
+   * `changed`). A delete that dies after its claim leaves the revision
+   * unwritable until the stale bound passes; then a later delete may claim it
+   * again, or a presign may take it back.
+   */
   async purgeArtifactSet(
     req: AuthenticatedServiceRequest,
     res: Response,
@@ -972,18 +994,73 @@ export class StorageController {
   ): Promise<void> {
     try {
       const orgId = extractOrgId(req);
+      const { ifUnchangedSince } = req.query as { ifUnchangedSince?: number };
       // Under the lock, as every purge: a local move running now must not
       // interleave with the tree delete.
-      const purged = await this.withLocalStorageLock(req, orgId, async () => {
-        const found = await getDocumentRepository().get(
-          orgId,
-          String(req.params.documentId),
-        );
-        const documents = found?.artifactSet ? [found] : [];
-        await this.purgeDocuments(documents, orgId, req);
-        return documents.length;
-      });
-      res.status(HTTP_STATUS.OK).json({ purged });
+      const outcome = await this.withLocalStorageLock(
+        req,
+        orgId,
+        async (): Promise<number | 'changed' | 'lost'> => {
+          const documentId = String(req.params.documentId);
+          const repo = getDocumentRepository();
+          const now = Date.now();
+          const document = await repo.claimArtifactSetForDelete(
+            orgId,
+            documentId,
+            { now, staleMs: ARTIFACT_RETIRING_STALE_MS, ifUnchangedSince },
+          );
+          if (document === 'changed') return 'changed';
+          if (document === null) return 0;
+          // The claim is renewed while the files go, so "stale" means a delete
+          // that died and not one that is slow. Every value this delete has
+          // written is its own, and the final document delete is fenced on
+          // them: a writer that took the claim back (it unsets the field)
+          // keeps its document.
+          const claims = [now];
+          let renewing: Promise<void> = Promise.resolve();
+          const heartbeat = setInterval(() => {
+            const next = Date.now();
+            const known = [...claims];
+            claims.push(next);
+            renewing = renewing.then(async () => {
+              try {
+                await repo.renewArtifactSetClaim(
+                  orgId,
+                  documentId,
+                  known,
+                  next,
+                );
+              } catch (error) {
+                this.logger.warn('Could not renew an artifact delete claim', {
+                  documentId,
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            });
+          }, ARTIFACT_RETIRING_HEARTBEAT_MS);
+          try {
+            await this.purgeDocuments([document], orgId, req, claims);
+          } finally {
+            clearInterval(heartbeat);
+            await renewing;
+          }
+          if ((await repo.get(orgId, documentId)) === null) {
+            return 1;
+          }
+          // The claim was taken back while the files were going: they may be
+          // gone although the document stays. Not "nothing was removed".
+          return 'lost';
+        },
+      );
+      if (outcome === 'lost') {
+        res.status(HTTP_STATUS.CONFLICT).json({ purged: 0, reason: 'lost' });
+        return;
+      }
+      if (outcome === 'changed') {
+        res.status(HTTP_STATUS.CONFLICT).json({ purged: 0, reason: 'changed' });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json({ purged: outcome });
     } catch (error) {
       next(error);
     }
@@ -1012,6 +1089,12 @@ export class StorageController {
           storageVendor: d.storageVendor,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
+          // Tells a client this server fences `ifUnchangedSince`; one that
+          // does not send it must not delete with a stamp.
+          deleteFence: true,
+          ...(d.artifactSet?.retiringAt !== undefined && {
+            retiringAt: d.artifactSet.retiringAt,
+          }),
         })),
       });
     } catch (error) {
@@ -1078,20 +1161,26 @@ export class StorageController {
     storageVendor: StorageVendor,
   ): Promise<Document> {
     const userId = extractUserId(req);
-    return getDocumentRepository().createArtifactSetOnce({
-      documentName: `revision_${rev}`,
-      documentPath: getArtifactSetFolder(orgId, virtualRecordId),
-      orgId: requireId(orgId, 'organization'),
-      isVersionedFile: false,
-      initiatorUserId: userId !== null ? requireId(userId, 'user') : null,
-      storageVendor,
-      extension: '',
-      artifactSet: {
-        virtualRecordId,
-        rev,
-        root: getArtifactSetRoot(orgId, virtualRecordId, rev),
+    // A rev is a hash of the source bytes, so a record whose source went back to earlier bytes
+    // writes an old revision again; the write stamp the repository moves is how a delete that
+    // listed the revision earlier sees that write.
+    return getDocumentRepository().createArtifactSetOnce(
+      {
+        documentName: `revision_${rev}`,
+        documentPath: getArtifactSetFolder(orgId, virtualRecordId),
+        orgId: requireId(orgId, 'organization'),
+        isVersionedFile: false,
+        initiatorUserId: userId !== null ? requireId(userId, 'user') : null,
+        storageVendor,
+        extension: '',
+        artifactSet: {
+          virtualRecordId,
+          rev,
+          root: getArtifactSetRoot(orgId, virtualRecordId, rev),
+        },
       },
-    });
+      { now: Date.now(), staleMs: ARTIFACT_RETIRING_STALE_MS },
+    );
   }
 
   private async remoteArtifactAdapter(
@@ -1960,7 +2049,7 @@ export class StorageController {
         throw new BadRequestError("This version doesn't exist");
       }
 
-      if (document.isVersionedFile === false && resolvedVersion !== undefined) {
+      if (!document.isVersionedFile && resolvedVersion !== undefined) {
         throw new BadRequestError('This is a non-versioned document');
       }
 

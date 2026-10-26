@@ -11881,6 +11881,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.DEAL_OF.value,
                 CollectionNames.SOLD_IN.value,
                 CollectionNames.MEMBER_OF.value,
+                CollectionNames.AGENT_KNOWLEDGE.value,
             ]
 
             # Blocks are the bulk of a code connector. Deleted inside the
@@ -12019,6 +12020,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     deleted_blocks = await self.delete_blocks_by_connector_id(
                         connector_id, transaction
                     )
+
+                # An agent names its sources by connectorId, not by an edge, so the
+                # sweep above never reaches them; left behind they show as a raw id.
+                agent_knowledge_keys = await self.http_client.execute_aql(
+                    f"""
+                    FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                        FILTER k.connectorId == @connector_id
+                        RETURN k._key
+                    """,
+                    bind_vars={"connector_id": connector_id},
+                    txn_id=transaction,
+                )
+                await self.delete_nodes_and_edges(
+                    agent_knowledge_keys or [],
+                    CollectionNames.AGENT_KNOWLEDGE.value,
+                    transaction=transaction,
+                )
 
                 # Step 13: Delete the app itself (CRITICAL - must succeed completely)
                 deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
