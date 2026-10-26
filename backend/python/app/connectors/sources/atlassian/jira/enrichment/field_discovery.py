@@ -66,7 +66,8 @@ async def discover_custom_field_ids(
             connector_id,
             response.status,
         )
-        return {}
+        # Keep the stale mapping (timestamp untouched, so the next call retries).
+        return cached[1] if cached is not None else {}
 
     fields_list = _parse_fields_response(response.json())
     discovered: dict[str, str] = {}

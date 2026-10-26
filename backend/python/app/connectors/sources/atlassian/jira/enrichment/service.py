@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -38,6 +39,7 @@ _auth_types: dict[str, str] = {}
 _unavailable_until: dict[str, float] = {}
 _RETRY_UNAVAILABLE_AFTER_S = 600.0
 
+_PARENT_ID_LINE = re.compile(r"^External Parent ID: .*$", re.MULTILINE)
 _CONNECTOR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
 
 
@@ -154,9 +156,14 @@ async def enrich_ticket_llm_context(
     by the viewer: ``readable_issue_ids(connector_id, issue_ids)`` says which
     are. Without it, or if it fails, no other issue is named.
     """
-    if not ticket.connector_id or not ticket.external_record_id:
-        return base_context
     if not is_jira_connector(ticket.connector_name):
+        return base_context
+    # The base context names the parent by id; show it only if the viewer can read it.
+    parent_id = str(ticket.parent_external_record_id or "")
+    full_base = base_context
+    if parent_id:
+        base_context = _PARENT_ID_LINE.sub("External Parent ID: N/A", base_context)
+    if not ticket.connector_id or not ticket.external_record_id:
         return base_context
 
     connector_id = str(ticket.connector_id)
@@ -180,12 +187,14 @@ async def enrich_ticket_llm_context(
 
     try:
         readable: set[str] = set()
-        refs = referenced_issue_ids(issue)
+        refs = referenced_issue_ids(issue) | ({parent_id} if parent_id else set())
         if refs and readable_issue_ids is not None:
             try:
                 readable = set(await readable_issue_ids(connector_id, refs))
             except Exception as exc:
                 logger.warning("Jira issue access check failed; naming no other issues: %s", exc)
+        if parent_id in readable:
+            base_context = full_base
         issue = restrict_cross_issue_refs(issue, readable, custom_ids)
         return enrich_from_issue(base_context, issue, custom_ids)
     except Exception as exc:

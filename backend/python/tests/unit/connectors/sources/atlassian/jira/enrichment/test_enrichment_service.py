@@ -132,6 +132,47 @@ class TestCrossIssueReferences:
         assert "Epic Link" not in merged
 
 
+class TestBaseContextParentId:
+    """The base context's ``External Parent ID`` line follows the same access rule."""
+
+    async def _run(self, readable, issue: dict | None = None) -> str:
+        ticket = _ticket_record(parent_external_record_id="777")
+        base = ticket.to_llm_context()
+        assert "External Parent ID: 777" in base
+        found = {"10324": {"id": "10324", "fields": {}}} if issue is None else {"10324": issue}
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
+            new=AsyncMock(return_value=MagicMock()),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service._discover_custom_fields",
+            new=AsyncMock(return_value={}),
+        ), patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
+            new=AsyncMock(return_value=found),
+        ):
+            return await enrich_ticket_llm_context(base, ticket, AsyncMock(), readable)
+
+    @pytest.mark.asyncio
+    async def test_readable_parent_id_stays(self) -> None:
+        check = AsyncMock(return_value={"777"})
+        assert "External Parent ID: 777" in await self._run(check)
+        check.assert_awaited_once_with("conn-jira-1", {"777"})
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mode", ["unreadable", "raises", "absent", "no_issue"])
+    async def test_unreadable_or_unchecked_parent_id_is_dropped(self, mode: str) -> None:
+        check = {
+            "unreadable": AsyncMock(return_value=set()),
+            "raises": AsyncMock(side_effect=RuntimeError("down")),
+            "absent": None,
+            "no_issue": AsyncMock(return_value={"777"}),
+        }[mode]
+        issue = {} if mode == "no_issue" else None  # empty issue: nothing fetched
+        merged = await self._run(check, issue)
+        assert "777" not in merged
+        assert "External Parent ID: N/A" in merged
+
+
 class TestEnrichTicketLlmContext:
     @pytest.mark.asyncio
     async def test_fetches_issue_and_merges(self):

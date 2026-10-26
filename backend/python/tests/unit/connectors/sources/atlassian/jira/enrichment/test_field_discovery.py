@@ -161,6 +161,20 @@ class TestDiscoverCustomFieldIds:
         data_source.get_fields.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_failed_refresh_keeps_stale_ids_and_retries_next_call(self) -> None:
+        stored_at = time.monotonic() - field_discovery.DISCOVERY_TTL_S - 1
+        field_discovery._discovery_cache["conn-stale"] = (stored_at, {"sprint": "customfield_old"})
+        data_source = MagicMock()
+        data_source.get_fields = AsyncMock(return_value=_fields_response([], status=500))
+
+        for _ in range(2):
+            result = await discover_custom_field_ids(data_source, is_cloud=True, connector_id="conn-stale")
+            assert result == {"sprint": "customfield_old"}
+
+        assert data_source.get_fields.await_count == 2  # timestamp untouched, so it retried
+        assert field_discovery._discovery_cache["conn-stale"][0] == stored_at
+
+    @pytest.mark.asyncio
     async def test_non_ok_response_returns_empty(self):
         data_source = MagicMock()
         data_source.get_fields = AsyncMock(
