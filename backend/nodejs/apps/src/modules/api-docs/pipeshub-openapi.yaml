@@ -20667,6 +20667,11 @@ paths:
         Returns metadata about the protected resource including the resource
         identifier, authorization servers, supported scopes, and bearer token methods.
         <br><br>
+        `scopes_supported` lists the scopes the MCP tools use, limited to the
+        instance's `MCP_SCOPES`. MCP clients that request every listed scope
+        therefore ask only for what the tools need. `MCP_SCOPES` remains the
+        limit on the scopes any personal access token or OAuth token can hold.
+        <br><br>
         <b>Use Cases:</b><br>
         - Discovering which authorization server to use for this resource<br>
         - Determining supported scopes and bearer token methods<br>
@@ -20688,7 +20693,7 @@ paths:
               example:
                 resource: "https://api.pipeshub.com/mcp"
                 authorization_servers: ["https://api.pipeshub.com"]
-                scopes_supported: ["read:records", "write:records", "admin:connectors"]
+                scopes_supported: ["offline_access", "semantic:write", "conversation:chat", "kb:read", "connector:read"]
                 bearer_methods_supported: ["header"]
                 resource_documentation: "https://api.pipeshub.com/api/v1/docs"
 
