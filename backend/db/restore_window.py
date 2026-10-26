@@ -151,6 +151,8 @@ def export_org(migrate: psycopg.Connection, backup: psycopg.Connection, org: str
         ordered += ready
         for t in ready:
             del deps[t]
+    if not any(backup.execute(sql.SQL("SELECT 1 FROM {} WHERE org_id = %s LIMIT 1").format(sql.SQL(t)), (org,)).fetchone() for t in ordered):
+        raise Refused(f"{org} has no rows in any table; nothing to export")
     directory.mkdir(parents=True, exist_ok=True)
     for t in ordered:
         with (directory / f"{t}.csv").open("wb") as f, backup.cursor().copy(
@@ -171,6 +173,11 @@ def sole_org(migrate: psycopg.Connection, backup: psycopg.Connection) -> str:
     if not found:
         raise Refused("no org has rows; pass --org")
     return next(iter(found))
+
+
+def _check_org(migrate: psycopg.Connection, org: str) -> None:
+    if not re.match(_settings(migrate)["org_id_pattern"], org):
+        raise Refused(f"{org!r} is not an org id")
 
 
 def org_in_files(directory: Path) -> str:
@@ -226,50 +233,69 @@ def load_org(restore: psycopg.Connection, org: str, directory: Path, registered:
 
 
 def _options(args: list[str], allowed: set[str]) -> dict[str, str] | None:
-    """``--name value`` pairs only, each at most once; None when anything else is given."""
+    """``--name value`` pairs only, each at most once, with a real value (not empty, not another option); None otherwise."""
     out: dict[str, str] = {}
     if len(args) % 2:
         return None
     for name, value in zip(args[::2], args[1::2], strict=True):
-        if name not in allowed or name in out:
+        if name not in allowed or name in out or not value or value.startswith("--"):
             return None
         out[name] = value
     return out
 
 
+def _usage() -> int:
+    print(__doc__, file=sys.stderr)
+    return 2
+
+
 def main(argv: list[str]) -> int:
     cmd, args = (argv[0] if argv else ""), argv[1:]
+    # the shape of the command line is settled before any connection is opened
+    opts = _options(args, {"--org", "--dir"} if cmd in ("export", "load") else {"--org", "--hours"} if cmd == "open" else set())
+    if cmd in ("export", "load") and not (opts and "--dir" in opts):
+        return _usage()
+    if cmd == "open":
+        try:
+            hours = float((opts or {}).get("--hours", 4))
+        except ValueError:
+            return _usage()
+        if not (opts and "--org" in opts):
+            return _usage()
+    elif cmd not in ("export", "load", "sequences") and not (cmd == "close" and args in ([], ["--abandon"])):
+        return _usage()
     try:
-        if cmd in ("export", "load") and (opts := _options(args, {"--org", "--dir"})) and "--dir" in opts:
+        if cmd in ("export", "load"):
+            assert opts is not None
             directory = Path(opts["--dir"])
             if cmd == "export":
                 with _connect("PG_MIGRATE_URL") as migrate, _connect("PG_BACKUP_URL") as backup:
                     org = opts.get("--org") or sole_org(migrate, backup)
+                    _check_org(migrate, org)
                     print(f"exported {len(export_org(migrate, backup, org, directory))} table(s) of {org}")
             else:
                 org = opts.get("--org") or org_in_files(directory)
                 with _connect("PG_MIGRATE_URL") as migrate:
+                    _check_org(migrate, org)
                     registered = {r[0] for r in migrate.execute("SELECT rel::text FROM kernel.rls_registry WHERE class NOT IN ('global', 'internal')")}
                 with _connect("PG_RESTORE_URL") as restore:
                     counts = load_org(restore, org, directory, registered)
                 print("loaded " + ", ".join(f"{t}={n}" for t, n in counts.items()))
             return 0
         with _connect("PG_ADMIN_URL") as admin, _connect("PG_MIGRATE_URL") as migrate:
-            if cmd == "open" and (opts := _options(args, {"--org", "--hours"})) and "--org" in opts:
+            if cmd == "open":
+                assert opts is not None
                 if not os.environ.get("PG_RESTORE_PASSWORD"):
                     raise Refused("PG_RESTORE_PASSWORD is not set")
                 with _connect("PG_BACKUP_URL") as backup:
-                    open_window(admin, migrate, backup, opts["--org"], os.environ["PG_RESTORE_PASSWORD"], float(opts.get("--hours", 4)))
+                    open_window(admin, migrate, backup, opts["--org"], os.environ["PG_RESTORE_PASSWORD"], hours)
                 print(f"restore window open for {opts['--org']}; application logins are off")
             elif cmd == "sequences":
                 with _connect("PG_BACKUP_URL") as backup:
                     print("sequences set: " + (", ".join(restore_sequences(migrate, backup)) or "none"))
-            elif cmd == "close" and args in ([], ["--abandon"]):
+            else:
                 close_window(admin, migrate, abandon=bool(args))
                 print("restore window closed; application logins are on")
-            else:
-                print(__doc__, file=sys.stderr)
-                return 2
     except Refused as exc:
         print(f"restore_window: refused: {exc}", file=sys.stderr)
         return EXIT_REFUSED
