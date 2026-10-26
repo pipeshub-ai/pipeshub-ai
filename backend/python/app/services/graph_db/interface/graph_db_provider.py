@@ -9,18 +9,38 @@ All methods support optional transaction parameter for atomic operations.
 
 import asyncio
 from abc import ABC, abstractmethod
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Optional, Protocol, TypeVar
 
 from app.config.constants.arangodb import (
     CollectionNames,
     DeleteSource,
     ProgressStatus,
+    RecordRelations,
 )
+from app.core.org_context import instrument_org_methods
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
-from app.services.graph_db.common.record_visibility import RecordVisibility
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    is_searchable_record,
+)
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
+from app.utils.kh_breadcrumbs import browse_scope
+from app.utils.kh_chain_tops import place_chain_tops
+from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+_T = TypeVar("_T")
+
+# Set once `stamp_kh_listing_state` has covered every node written before.
+KH_LISTING_STATE_FLAG = "/migrations/kh_listing_state_v1"
+
+# Hierarchy hops the access check walks. Whatever lists what the check may admit
+# has to follow inheritance at least this far, or deeper records drop out unseen.
+ACCESS_WALK_MAX_DEPTH = 50
 
 FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
     "Records were moved into this folder while it was being deleted, so nothing was deleted. "
@@ -30,6 +50,32 @@ FOLDER_CHANGED_DURING_DELETE_MESSAGE = (
 
 class FolderChangedDuringDelete(RuntimeError):
     """Records were moved into a folder while it was being deleted; nothing was deleted."""
+
+
+class MoveDestinationMissing(RuntimeError):
+    """The parent a record was being moved under is not in the graph, or is in the trash; nothing was written."""
+
+    def __init__(self, record_id: str, parent_record_id: str) -> None:
+        super().__init__(
+            f"Record {record_id} was not moved: its new parent {parent_record_id} "
+            "is not in the graph or is in the trash"
+        )
+
+
+@dataclass(frozen=True)
+class AccessCheck:
+    """What ``IGraphDBProvider.check_access`` found accessible."""
+
+    #: The asked node ids the user may access.
+    node_ids: frozenset[str] = frozenset()
+    #: Each accessible virtual record id, with the record to cite for it.
+    records_by_vrid: dict[str, str] = field(default_factory=dict)
+    #: The accessible asked nodes that every given scope admits (all of
+    #: ``node_ids`` when no scope was given).
+    node_ids_in_scope: frozenset[str] = frozenset()
+    #: Asked nodes that are placeholder stubs. They are in ``node_ids`` so a
+    #: browse can open them, and never in ``records_by_vrid``.
+    placeholder_ids: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -45,7 +91,7 @@ class AccessibleContainers:
              OR virtualRecordId IN direct_records)
 
     Every field *widens* — the filter admits records the user cannot read, and
-    ``filter_accessible_virtual_record_ids`` is what makes the answer exact.
+    the search verifier (``check_access``) is what makes the answer exact.
     That asymmetry is the whole design: a container the user cannot reach costs
     precision, a container wrongly omitted costs recall with no error to notice.
     So bounds below fail over to ``fallback_reason`` rather than truncating.
@@ -115,6 +161,41 @@ CONTAINER_SCOPE_FILTER_KEYS = ("apps", "kb")
 #: `ChatQuery.strictScope` (see `api/routes/chatbot.py`).
 STRICT_SCOPE_FILTER_KEY = "strictScope"
 
+#: Filter keys that select below app level: a record group with its nested
+#: groups, a folder or record with everything under it, and one record alone.
+SELECTION_FILTER_KEYS = ("recordGroups", "records", "recordsExact")
+
+#: Set by the server, never taken from a client: the apps a selection touches,
+#: and the bounds a cited record must lie in, each in the shape of a selection:
+#: a saved agent's sources, a project's, and what the user let a connected app
+#: (an OAuth app or a personal access token) see.
+SELECTION_APPS_FILTER_KEY = "selectionApps"
+AGENT_BOUND_FILTER_KEYS = {
+    "allowedApps": "apps",
+    "allowedRecordGroups": "recordGroups",
+    "allowedRecords": "records",
+}
+PROJECT_BOUND_FILTER_KEYS = {
+    "projectApps": "apps",
+    "projectRecordGroups": "recordGroups",
+    "projectRecords": "records",
+}
+CONNECTION_APPS_FILTER_KEY = "connectionApps"
+CONNECTION_BOUND_FILTER_KEYS = {
+    CONNECTION_APPS_FILTER_KEY: "apps",
+    "connectionRecordGroups": "recordGroups",
+    "connectionRecords": "records",
+}
+ALLOWED_FILTER_KEYS = {
+    **AGENT_BOUND_FILTER_KEYS, **PROJECT_BOUND_FILTER_KEYS, **CONNECTION_BOUND_FILTER_KEYS,
+}
+
+
+class RowScope(Protocol):
+    """Decides whether a ``check_access`` row lies inside a selection."""
+
+    def admits(self, row: Mapping[str, Any]) -> bool: ...
+
 #: Set on a record by ``update_queued_duplicates_status`` in the same write
 #: that promotes its queued duplicates, and cleared by the indexing handler once
 #: their taxonomy has been copied. Declared in the strict records schema.
@@ -129,23 +210,31 @@ DUPLICATE_RECONCILE_ATTEMPTS_FIELD = "duplicateReconcileAttempts"
 DUPLICATE_RECONCILE_GRACE_MS = 10 * 60 * 1000
 
 
+_EXTRACTION_PENDING = frozenset({
+    ProgressStatus.QUEUED.value,
+    ProgressStatus.IN_PROGRESS.value,
+    ProgressStatus.PAUSED.value,
+})
+
+
 def promoted_duplicate_extraction_status(
     new_indexing_status: str, primary: Mapping[str, Any]
 ) -> str | None:
     """``extractionStatus`` for a QUEUED duplicate promoted when ``primary`` finished,
-    or None while the primary's enrichment is still IN_PROGRESS, so the duplicates
-    stay QUEUED until the handler or stale recovery resumes and finishes it.
+    or None while the primary's classification is still pending, so the duplicates
+    stay QUEUED until the classify stage writes the primary's final status and
+    releases them.
 
     The duplicate shares the primary's enrichment, so an indexed primary lends
-    its own outcome: COMPLETED, FAILED, or NOT_STARTED when enrichment was
-    deliberately deferred (an inline enrichment is IN_PROGRESS from the same
-    write that marks the primary indexed). A primary with no status comes from
-    before that write existed; nothing would ever resume it, so it is promoted
-    as the old mapping did, COMPLETED.
+    its own outcome once it has one: COMPLETED, SKIPPED or FAILED. The indexed
+    write sets QUEUED, and older inline enrichment wrote IN_PROGRESS, so both
+    mean "not decided yet". A primary with no status comes from before that write
+    existed; nothing would ever resume it, so it is promoted as the old mapping
+    did, COMPLETED.
     """
     if new_indexing_status == ProgressStatus.COMPLETED.value:
         primary_status = primary.get("extractionStatus")
-        if primary_status == ProgressStatus.IN_PROGRESS.value:
+        if primary_status in _EXTRACTION_PENDING:
             return None
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
@@ -334,6 +423,23 @@ def _distinct_connector_types(apps: "list[dict] | None") -> list[str]:
     return types
 
 
+@dataclass(frozen=True)
+class CodeFileInfo:
+    """Code file metadata returned by get_code_file_info_for_records.
+
+    file_path: repo-relative path (from codeFiles.filePath or records.recordName)
+    referenced_names: symbol names the file references (calls, imports, type refs)
+    changed_names: names whose definitions the file added, removed or changed
+        in recent projections, so a build re-resolves the files referencing them
+    has_code_file: False for a source file with no codeFiles node (a .py
+        uploaded to a KB), which records neither list
+    """
+    file_path: str
+    referenced_names: tuple[str, ...] = ()
+    changed_names: tuple[str, ...] = ()
+    has_code_file: bool = True
+
+
 class IGraphDBProvider(ABC):
     """
     Comprehensive interface for graph database operations.
@@ -390,6 +496,11 @@ class IGraphDBProvider(ABC):
        and new generic format to ensure smooth migration.
     """
 
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
+
+
     # ==================== Connection Management ====================
 
     @abstractmethod
@@ -424,16 +535,31 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def ensure_pipeline_schema(self) -> None:
+        """Ensure what the indexing pipeline writes against: the stage-state store with its
+        unique key and indexes, and the current record schema where the engine enforces one.
+
+        Idempotent, and safe beside the connector service's ``ensure_schema``: the indexing
+        service runs it before consuming because that bootstrap may not have run yet (a first
+        start, or an older connector image). Raises when the schema cannot be ensured.
+        """
+
     # ==================== Transaction Management ====================
 
     @abstractmethod
-    def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         """
         Begin a database transaction.
 
         Args:
             read (List[str]): Collections/tables to read from
             write (List[str]): Collections/tables to write to
+            explicit (bool | None): True asks for a real, all-or-nothing
+                transaction where the backend can run statements outside one
+                (Neo4j with NEO4J_EXPLICIT_TRANSACTIONS false). None leaves it to
+                the backend's own setting. Backends that are always
+                transactional ignore it.
 
         Returns:
             str: Transaction ID
@@ -450,10 +576,17 @@ class IGraphDBProvider(ABC):
         """Roll back a database transaction."""
         pass
 
-    def is_transient_error(self, error: BaseException) -> bool:
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:  # noqa: FBT001
+        """Whether ``begin_transaction(explicit=...)`` yields a real,
+        all-or-nothing transaction. True unless the caller asked for False;
+        Neo4j also consults its own setting."""
+        return explicit is not False
+
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
         """Whether *error* means a rolled-back transaction block can simply
         be re-run (a deadlock, a lock timeout). Backends whose transactions
-        cannot guarantee nothing landed answer False."""
+        cannot guarantee nothing landed answer False. *explicit* is what the
+        failed block passed to ``begin_transaction``."""
         return False
 
     def is_write_conflict(self, error: BaseException) -> bool:
@@ -473,7 +606,7 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """
         Get a document by its key from a collection.
 
@@ -519,9 +652,11 @@ class IGraphDBProvider(ABC):
     ) -> list[str]:
         """Ids of ``org_id``'s non-deleted records whose ``recordType`` is in
         ``record_types``, in key order, after ``after_key``, at most ``limit``.
-        For operator backfills that page through one org's records.
+        For operator backfills that page through one org's records. A zero
+        ``limit`` returns no ids.
 
         Raises:
+            ValueError: if ``limit`` is negative.
             Exception: on query failure.
         """
         pass
@@ -530,12 +665,15 @@ class IGraphDBProvider(ABC):
     async def get_typed_records_batch(
         self,
         record_ids: list[str],
+        *,
+        raise_on_error: bool = False,
     ) -> dict[str, "Record"]:
         """Batch-fetch typed Record instances for the given record IDs.
 
         Returns a dict mapping record ID to typed Record (FileRecord,
         TicketRecord, etc.). IDs not found or failing typed construction
-        are silently omitted from the result.
+        are silently omitted from the result. A query that fails returns an
+        empty dict, or raises with ``raise_on_error``.
         """
         pass
 
@@ -549,14 +687,14 @@ class IGraphDBProvider(ABC):
     ) -> dict[str, int]:
         """Compute traversal depth for each node relative to a parent.
 
-        For record/folder parents: traverses recordRelations
+        For record/folder parents: traverses nodeRelations
         (PARENT_CHILD / ATTACHMENT) edges.
 
         For recordGroup parents: records belonging to the group are
-        level 1; their children via recordRelations are level 2+.
+        level 1; their children via nodeRelations are level 2+.
 
         For app parents: records directly under the connector's record
-        groups are level 1; their children via recordRelations are level 2+.
+        groups are level 1; their children via nodeRelations are level 2+.
 
         Returns ``{node_id: depth}`` for every reachable node_id.
         Unreachable IDs are omitted.
@@ -592,11 +730,17 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> list[dict]:
+        after_key: str | None = None,
+        return_fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
         """
         Fetch a single page of documents from a collection using database-level
         pagination, so memory usage stays proportional to `limit` regardless of
         total collection size.
+
+        ``after_key`` is a keyset cursor: only documents whose key sorts
+        strictly after it are returned. It needs ``sort_field="_key"``. Prefer
+        it over ``skip`` for a result set that changes while it is walked.
 
         Args:
             collection:   Collection / label name.
@@ -610,6 +754,15 @@ class IGraphDBProvider(ABC):
             transaction:  Optional transaction ID.
             raise_on_error: Propagate database errors instead of returning an
                             empty page.
+            after_key:    Keyset cursor: only documents whose `_key` sorts
+                          after this value are returned. Pass the last `_key`
+                          of the previous page together with
+                          `sort_field="_key"` and `skip=0` to sweep a large
+                          collection without the O(n^2) cost of a growing
+                          offset.
+            return_fields: Optional list of fields to project (None = whole
+                           document). `_key` is always spelled `_key` in the
+                           result, whichever backend serves it.
 
         Returns:
             List of document dicts for the requested page (may be shorter than
@@ -643,6 +796,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def ensure_nodes(
+        self,
+        nodes: list[dict[str, Any]],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """
+        Create each node whose ``id`` does not exist yet; never modify an existing one.
+
+        For shared nodes with derived keys (taxonomy terms, entities): concurrent
+        writers of one key neither conflict nor overwrite each other.
+
+        Args:
+            nodes (List[Dict]): Documents with an 'id' field, as for batch_upsert_nodes
+            collection (str): Collection/table name
+            transaction (Optional[Any]): Optional transaction context
+
+        Raises:
+            Exception: when a node could not be created for a reason other than
+                already existing.
+        """
+        pass
+
+    @abstractmethod
     async def delete_nodes(
         self,
         keys: list[str],
@@ -667,7 +844,7 @@ class IGraphDBProvider(ABC):
         self,
         key: str,
         collection: str,
-        node_updates: dict,
+        node_updates: dict[str, Any],
         transaction: str | None = None
     ) -> bool:
         """
@@ -770,6 +947,48 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def create_edges_if_absent(
+        self,
+        edges: list[dict],
+        collection: str,
+        transaction: str | None = None,
+    ) -> None:
+        """Create the edges that are not there and leave the ones that are untouched.
+
+        The create-only counterpart of :meth:`batch_create_edges`, which replaces an
+        existing edge's properties. For a repair or a re-run that must not reset what
+        a live edge already carries (a sync state, a role). Raises on failure.
+        *edges* take the same generic format.
+        """
+        pass
+
+    @abstractmethod
+    async def batch_upsert_node_relations(
+        self,
+        edges: list[dict],
+        transaction: str | None = None,
+    ) -> bool:
+        """
+        Batch upsert record relation edges.
+
+        Upserts rather than inserts, matching on _from, _to, relationshipType
+        and constraintName, so the same edge written twice is one edge while
+        two relation types (or two constraints) between the same pair coexist.
+
+        Args:
+            edges: Edge documents with _from, _to, relationshipType and
+                optionally constraintName
+            transaction: Optional transaction ID
+
+        Returns:
+            bool: True if successful
+
+        Raises:
+            Exception: propagated from the database on failure
+        """
+        pass
+
+    @abstractmethod
     async def get_edge(
         self,
         from_id: str,
@@ -777,7 +996,9 @@ class IGraphDBProvider(ABC):
         to_id: str,
         to_collection: str,
         collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> dict | None:
         """
         Get an edge/relationship between two nodes.
@@ -789,6 +1010,8 @@ class IGraphDBProvider(ABC):
             to_collection (str): Target node collection name
             collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error: raise when the read fails, instead of answering None,
+                which a caller deciding whether the edge exists would read as "absent"
 
         Returns:
             Optional[Dict]: Edge data in generic format if found, None otherwise
@@ -978,42 +1201,94 @@ class IGraphDBProvider(ABC):
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
+        browse_root: bool | None = None,
         transaction: str | None = None,
-    ) -> None:
+    ) -> int:
         """Take the record out of *leaving_group_id*, then put it in *record_group_id*.
 
-        Leaving removes its BELONGS_TO and INHERIT_PERMISSIONS edges to that group.
-        Joining writes BELONGS_TO, and INHERIT_PERMISSIONS when *inherit* is true;
-        false removes that edge and None leaves it alone. Either group may be None.
+        Leaving removes its BELONGS_TO and INHERIT_PERMISSIONS edges to that group,
+        and the group's hierarchy edge to it. Joining writes BELONGS_TO, and
+        INHERIT_PERMISSIONS when *inherit* is true; false removes that edge and None
+        leaves it alone. *browse_root* true hangs the record off the group in the
+        hierarchy and false removes that edge: a record under a parent record must
+        not also hang off its group. None leaves it alone. Either group may be None.
         Neo4j overrides it with one statement: a record that left its group but
         kept the inherit edge stayed readable to the old group's members.
+
+        Returns the number of INHERIT_PERMISSIONS edges removed, counted by the
+        deletes themselves, so a caller learns the record lost inherited access
+        without reading the edge first.
         """
+        removed = 0
         if leaving_group_id:
             await self._delete_record_group_edge(
                 record_id, leaving_group_id, CollectionNames.BELONGS_TO.value, transaction
             )
-            await self._set_record_group_inheritance(record_id, leaving_group_id, transaction, inherit=False)
+            removed += await self._set_record_group_inheritance(
+                record_id, leaving_group_id, transaction, inherit=False
+            )
+            await self._delete_hierarchy_edge(
+                leaving_group_id, CollectionNames.RECORD_GROUPS.value, record_id, transaction
+            )
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id, transaction)
             if inherit is not None:
-                await self._set_record_group_inheritance(record_id, record_group_id, transaction, inherit=inherit)
+                removed += await self._set_record_group_inheritance(
+                    record_id, record_group_id, transaction, inherit=inherit
+                )
+            if browse_root:
+                now = get_epoch_timestamp_in_ms()
+                await self.batch_create_edges(
+                    [{
+                        "from_id": record_group_id,
+                        "from_collection": CollectionNames.RECORD_GROUPS.value,
+                        "to_id": record_id,
+                        "to_collection": CollectionNames.RECORDS.value,
+                        "relationshipType": RecordRelations.PARENT_CHILD.value,
+                        "createdAtTimestamp": now,
+                        "updatedAtTimestamp": now,
+                    }],
+                    CollectionNames.NODE_RELATIONS.value,
+                    transaction,
+                )
+            elif browse_root is False:
+                await self._delete_hierarchy_edge(
+                    record_group_id, CollectionNames.RECORD_GROUPS.value, record_id, transaction
+                )
+        return removed
 
     async def _set_record_group_inheritance(
         self, record_id: str, record_group_id: str, transaction: str | None, *, inherit: bool
-    ) -> None:
+    ) -> int:
         if inherit:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id, transaction)
-        else:
-            await self._delete_record_group_edge(
-                record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
-            )
+            return 0
+        return await self._delete_record_group_edge(
+            record_id, record_group_id, CollectionNames.INHERIT_PERMISSIONS.value, transaction
+        )
+
+    async def _delete_hierarchy_edge(
+        self, parent_id: str, parent_collection: str, record_id: str, transaction: str | None
+    ) -> None:
+        """Remove the hierarchy edge from *parent_id* to the record. Raises when the
+        delete fails, where ArangoDB's delete_edge would answer False."""
+        await self.batch_delete_edges(
+            [{
+                "from_id": parent_id,
+                "from_collection": parent_collection,
+                "to_id": record_id,
+                "to_collection": CollectionNames.RECORDS.value,
+            }],
+            CollectionNames.NODE_RELATIONS.value,
+            transaction,
+        )
 
     async def _delete_record_group_edge(
         self, record_id: str, record_group_id: str, collection: str, transaction: str | None
-    ) -> None:
+    ) -> int:
         # Not delete_edge: ArangoDB's answers False when the delete fails, so the
         # transaction went on to commit the rest beside an edge that should have gone.
-        await self.batch_delete_edges(
+        return await self.batch_delete_edges(
             [{
                 "from_id": record_id,
                 "from_collection": CollectionNames.RECORDS.value,
@@ -1146,7 +1421,9 @@ class IGraphDBProvider(ABC):
         self,
         node_id: str,
         edge_collection: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all edges pointing to a specific node.
@@ -1157,6 +1434,9 @@ class IGraphDBProvider(ABC):
             node_id (str): Full node ID (e.g., "records/123")
             edge_collection (str): Edge collection name
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed read instead of logging it and
+                returning ``[]``, for callers that must tell "no edges" from
+                "could not look".
 
         Returns:
             List[Dict]: List of edge documents
@@ -1211,28 +1491,70 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_related_nodes(
+    async def get_neighbors_by_relationship_types(
         self,
-        node_id: str,
-        edge_collection: str,
-        target_collection: str,
-        direction: str = "inbound",
+        node_key: str,
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 25,
         transaction: str | None = None
-    ) -> list[dict]:
+    ) -> list[dict[str, Any]]:
         """
-        Get related nodes through an edge collection.
+        Walk one hop from a node along edges of the given relationship types.
 
-        Generic traversal method for any edge/node combination.
+        Endpoints may live in a different collection than the anchor -- a code
+        symbol can call a whole file -- so each result names its own collection
+        rather than assuming the anchor's.
 
         Args:
-            node_id (str): Full node ID to start from
-            edge_collection (str): Edge collection to traverse
-            target_collection (str): Target node collection
-            direction (str): "inbound" or "outbound"
-            transaction (Optional[Any]): Optional transaction context
+            node_key (str): Anchor node key
+            node_collection (str): Anchor node collection name
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound" (anchor is _from) or "inbound" (anchor is _to)
+            limit (int): Maximum neighbours to return
+            transaction (Optional[str]): Optional transaction context
 
         Returns:
-            List[Dict]: List of related node documents
+            List[Dict]: One dict per neighbour with keys ``collection``, ``key``,
+                ``relationshipType``, ``sourceLineNumber``, ``sourceColumnNumber``
+                and ``provenance``.
+        """
+        pass
+
+    @abstractmethod
+    async def get_neighbors_for_nodes_by_relationship_types(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        relationship_types: list[str],
+        direction: str,
+        limit: int = 5000,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Walk one hop from many nodes at once along the given relationship types.
+
+        The batched sibling of ``get_neighbors_by_relationship_types``, for
+        breadth-first search: one query per frontier level instead of one per
+        node. Each row names the anchor it came from and the direction it was
+        traversed, which a caller reconstructing a path needs.
+
+        Args:
+            node_keys (List[str]): Anchor node keys (one frontier)
+            node_collection (str): Collection the anchors live in
+            relationship_types (List[str]): Relationship type values to follow
+            direction (str): "outbound", "inbound", or "any"
+            limit (int): Maximum rows to return across the whole frontier
+            transaction (Optional[str]): Optional transaction context
+
+        Returns:
+            List[Dict]: One dict per edge with keys ``anchorKey``, ``collection``,
+                ``key``, ``direction`` ("outbound" / "inbound", relative to the
+                anchor), ``relationshipType``, ``sourceLineNumber``,
+                ``sourceColumnNumber`` and ``provenance``.
         """
         pass
 
@@ -1347,13 +1669,152 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    async def get_nodes_by_field_prefix(
+        self,
+        collection: str,
+        field_name: str,
+        prefix: str,
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose field starts with a prefix."""
+        pass
+
+    @abstractmethod
+    async def search_nodes_by_field_terms(
+        self,
+        collection: str,
+        field_name: str,
+        terms: list[str],
+        filters: dict[str, Any] | None = None,
+        limit: int = 400,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose field contains any search term."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_touching_nodes(
+        self,
+        node_keys: list[str],
+        node_collection: str,
+        edge_collection: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete edges whose source or target is one of the given nodes."""
+        pass
+
+    @abstractmethod
+    async def get_edge_rollup_by_file_prefix(
+        self,
+        org_id: str,
+        file_path_prefix: str,
+        relationship_types: list[str],
+        direction: str,
+        connector_id: str,
+        limit: int = 100000,
+        transaction: str | None = None,
+    ) -> list[dict]:
+        """Aggregate code-graph edges between files under a path prefix.
+
+        ``connector_id`` is required: file paths are repo-relative, so an
+        unscoped rollup would merge ``backend/`` from two repos into one bucket.
+        """
+        pass
+
+    @abstractmethod
+    async def get_file_paths_for_records(
+        self,
+        org_id: str,
+        record_ids: list[str],
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> dict[str, CodeFileInfo]:
+        """Return code-file info (path + referencedNames) for each requested record."""
+        pass
+
+    @abstractmethod
+    async def get_edges_by_target_keys(
+        self,
+        target_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        return_field: str = "_from",
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[str]:
+        """Return distinct edge fields for edges targeting the given nodes."""
+        pass
+
+    @abstractmethod
+    async def delete_edges_by_source_keys(
+        self,
+        source_keys: list[str],
+        edge_collection: str,
+        filters: dict[str, Any] | None = None,
+        transaction: str | None = None,
+        exclude: dict[str, Any] | None = None,
+    ) -> int:
+        """Delete filtered edges originating from any requested node.
+
+        ``exclude`` keeps the edges whose field holds that value; an edge
+        without the field is not kept.
+        """
+        pass
+
+    @abstractmethod
+    async def count_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> int:
+        """Count nodes matching equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def has_nodes_by_filters(
+        self,
+        collection: str,
+        filters: dict[str, Any] | None = None,
+        in_filters: dict[str, list[Any]] | None = None,
+        transaction: str | None = None,
+    ) -> bool:
+        """Return whether any node matches equality and membership filters."""
+        pass
+
+    @abstractmethod
+    async def get_nodes_updated_since(
+        self,
+        collection: str,
+        timestamp_field: str,
+        since: int,
+        filters: dict[str, Any] | None = None,
+        return_fields: list[str] | None = None,
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
+    ) -> list[dict]:
+        """Get nodes whose timestamp field is greater than the given value."""
+        pass
+
 
     @abstractmethod
     async def get_child_record_ids_by_relation_type(
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that have an edge pointing TO this record
@@ -1363,6 +1824,7 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (childTable, sourceColumn, targetColumn).
@@ -1374,7 +1836,8 @@ class IGraphDBProvider(ABC):
         self,
         record_id: str,
         relation_type: str,
-        transaction: Optional[str] = None
+        transaction: Optional[str] = None,
+        limit: int | None = None,
     ) -> list[dict[str, Any]]:
         """
         Get record _keys of all records that this record has an edge pointing TO
@@ -1384,19 +1847,25 @@ class IGraphDBProvider(ABC):
             record_id (str): Record _key (vertex id)
             relation_type (str): Edge relation type (e.g. RecordRelations.FOREIGN_KEY.value)
             transaction (Optional[str]): Optional transaction context
+            limit (int | None): At most this many edges (all when None)
 
         Returns:
             List[Dict[str, Any]]: List of dicts with record_id and FK metadata (parentTable, sourceColumn, targetColumn).
         """
         pass
 
-    async def get_record_relations_batch(
+    async def get_node_relations_batch(
         self,
         record_ids: list[str],
         relation_types: list[str],
         transaction: Optional[str] = None,
+        limit_per_direction: int | None = None,
     ) -> dict[str, dict[str, list[dict[str, Any]]]]:
         """Edges for many records and relation types at once.
+
+        ``limit_per_direction`` caps the parents and the children kept per record,
+        so a hit with thousands of attachments costs a bounded read. Which edges
+        survive the cap is unspecified.
 
         Returns {record_id: {"parents": [...], "children": [...]}} where the two
         lists hold what `get_parent_record_ids_by_relation_type` and
@@ -1411,7 +1880,8 @@ class IGraphDBProvider(ABC):
         Those queries are issued concurrently. Awaiting them in place would make
         an unspecialised provider slower than the per-record code this replaced,
         which gathered the same calls; a caller must not lose latency by moving
-        to the batch API.
+        to the batch API. At most ``GRAPH_FANOUT_CONCURRENCY`` run at once, so a
+        page of hits does not open a burst of new database connections.
         """
         jobs = [
             (record_id, relation_type, outgoing)
@@ -1426,9 +1896,10 @@ class IGraphDBProvider(ABC):
                 if outgoing
                 else self.get_child_record_ids_by_relation_type
             )
-            return await call(record_id, relation_type, transaction)
+            return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
-        results = await asyncio.gather(
+        results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
             return_exceptions=True,
         )
@@ -1444,6 +1915,8 @@ class IGraphDBProvider(ABC):
             for edge in edges or []:
                 if not isinstance(edge, Mapping):
                     continue
+                if limit_per_direction is not None and len(bucket) >= limit_per_direction:
+                    break
                 bucket.append({**edge, "relationType": relation_type})
         return out
 
@@ -1488,6 +1961,26 @@ class IGraphDBProvider(ABC):
 
         Raises:
             GraphQueryError: The lookup could not be read, so None would be a guess.
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_file_path(
+        self,
+        connector_id: str,
+        path: str,
+        transaction: str | None = None,
+    ) -> list['Record']:
+        """
+        Get the records of a connector whose file node stores exactly ``path``, trashed or not.
+
+        For sources that report a delete by path only (Dropbox gives no id for a
+        deleted entry); a record already in the trash goes too when its item does.
+        Several records can share a path when the source has more than one
+        namespace, so every match is returned and the caller decides.
+
+        Raises:
+            GraphQueryError: The lookup could not be read, so an empty list would be a guess.
         """
         pass
 
@@ -1606,6 +2099,7 @@ class IGraphDBProvider(ABC):
         after_key: str | None = None,
         exclude_statuses: list[str] | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        status_field: str = "indexingStatus",
     ) -> list['Record']:
         """
         Get records by their indexing status.
@@ -1628,6 +2122,10 @@ class IGraphDBProvider(ABC):
                         on top of status_filters.
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
+            status_field (str): The status field ``status_filters`` applies to:
+                ``indexingStatus`` (default) or ``extractionStatus`` (a stage
+                retry selects on the latter). ``exclude_statuses`` always
+                applies to ``indexingStatus``.
 
         Returns:
             list[Record]: Typed records matching the filters, sorted by key.
@@ -1671,6 +2169,27 @@ class IGraphDBProvider(ABC):
             Exception: on query failure.
         """
         pass
+
+    async def update_nodes_fields_if_match(
+        self,
+        collection: str,
+        rows: list[tuple[str, dict[str, Any], dict[str, Any]]],
+        transaction: str | None = None,
+    ) -> list[str]:
+        """``update_node_fields_if_match`` for many nodes: each row is
+        ``(key, updates, expected)``. Returns the keys whose write applied.
+
+        The default issues one call per row; Neo4j and ArangoDB override it with
+        a single statement. A row whose expectation no longer holds is left
+        unchanged, which is a normal outcome, not an error.
+        """
+        applied: list[str] = []
+        for key, updates, expected in rows:
+            if await self.update_node_fields_if_match(
+                key, collection, updates, expected, transaction
+            ):
+                applied.append(key)
+        return applied
 
     @abstractmethod
     async def update_node_fields_if_match(
@@ -1752,57 +2271,9 @@ class IGraphDBProvider(ABC):
     ) -> list[dict]:
         """Page records for a connector by stable key for membership backfill.
 
-        Returns ``{_key, virtualRecordId}`` only, ordered by key, with keys
-        strictly greater than ``after_key`` when it is set.
-        """
-        pass
-
-    @abstractmethod
-    async def get_records(
-        self,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        permissions: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        source: str,
-    ) -> tuple[list[dict], int, dict]:
-        """
-        List all records the user can access.
-
-        Args:
-            user_id: The user's graph key (the users node's ``_key`` / ``id``), not
-                the external ``userId``: ``/api/v1/records`` resolves the caller
-                and passes the key (``records_user_id_arg``).
-            org_id: Organization ID
-            skip: Number of records to skip (pagination)
-            limit: Maximum records to return
-            search: Optional search string
-            record_types: Optional list of record types to filter
-            origins: Optional list of origins to filter
-            connectors: Optional list of connector IDs to filter
-            indexing_status: Optional list of indexing statuses to filter
-            permissions: Optional list of permission roles to filter
-            date_from: Optional start timestamp
-            date_to: Optional end timestamp
-            sort_by: Field to sort by
-            sort_order: Sort order (ASC/DESC)
-            source: Data source filter ('all', 'local', 'connector')
-
-        Returns:
-            Tuple of (records list, total count, available_filters dict)
-
-        Raises:
-            Exception: The listing could not be read. Never reported as an empty list.
+        Returns ``PAGE_RECORD_FIELDS`` only, ordered by key, with keys
+        strictly greater than ``after_key`` when it is set. Soft-deleted
+        records are included.
         """
         pass
 
@@ -1880,10 +2351,19 @@ class IGraphDBProvider(ABC):
         status: str,
         exclude_statuses: list[str] | None = None,
         transaction: str | None = None,
+        *,
+        only_statuses: list[str] | None = None,
+        reason: str | None = None,
+        visibility: RecordVisibility = RecordVisibility.ALL,
     ) -> None:
         """Set indexingStatus for every record on a connector in one query.
 
         ``exclude_statuses`` records are left unchanged (typically IN_PROGRESS).
+        ``only_statuses``, when given, limits the write to records holding one
+        of them. ``reason``, when given, is written alongside the status.
+        ``visibility`` defaults to ``ALL`` (trashed records included, which is
+        what the vector-store rebuild has always done); ``LIVE`` leaves the
+        trash alone.
         """
         pass
 
@@ -1921,6 +2401,130 @@ class IGraphDBProvider(ABC):
                        other status and were left alone - a normal outcome, not an error.
         """
         pass
+
+    # ==================== Pipeline stage states ====================
+
+    @abstractmethod
+    async def stage_state_get(self, key: str) -> dict[str, Any] | None:
+        """One stage-state document by key (``id`` holds the key), or None."""
+
+    @abstractmethod
+    async def stage_states_for_revision(self, virtual_record_id: str, rev: str) -> list[dict[str, Any]]:
+        """Every stage-state document of one content revision."""
+
+    @abstractmethod
+    async def stage_state_create(self, document: dict[str, Any]) -> bool:
+        """Insert a stage state on its unique key (``document["id"]``); False when the key exists.
+
+        Raises on infrastructure errors, so an outage is never mistaken for a lost race.
+        """
+
+    @abstractmethod
+    async def stage_state_compare_and_set(
+        self,
+        key: str,
+        expected: str,
+        new: str,
+        fields: dict[str, Any],
+        *,
+        expected_attempt: int | None = None,
+    ) -> bool:
+        """Set ``status`` to ``new`` and write ``fields`` in one statement, only while ``status == expected``
+        (and, with ``expected_attempt``, while ``attempt`` is still that run's).
+
+        False when the status was something else or a concurrent writer won; raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_stale(
+        self, statuses: list[str], updated_before_ms: int, limit: int
+    ) -> list[dict[str, Any]]:
+        """Stage states in ``statuses`` with ``updatedAtMs < updated_before_ms``, oldest first."""
+
+    @abstractmethod
+    async def stage_states_delete_for_virtual_records(self, virtual_record_ids: list[str]) -> int:
+        """Delete the stage states of every revision of these virtual records; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_stage_states_with_records(
+        self,
+        org_id: str,
+        connector_id: str,
+        stage: str,
+        status: str,
+        *,
+        limit: int,
+        after_key: str | None = None,
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> list[tuple[str, list[str]]]:
+        """A page of the connector's ``stage`` states in ``status``: up to ``limit`` of them,
+        by state key after ``after_key``, each with the keys of the connector's live,
+        non-placeholder records on that state's revision whose ``indexingStatus`` is not in
+        ``exclude_indexing_statuses``. A state none of whose records qualifies has an empty
+        list and still advances the page.
+
+        For stages with no status field on the record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        """``(virtualRecordId, rev)`` of these virtual records' revisions that have stage states,
+        that no record holding the virtual record is on (``contentRev``; records in the trash
+        count), and whose newest state was updated before ``updated_before_ms``.
+
+        Sorted by virtual record id, then rev. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        """Delete the stage states of each ``(virtualRecordId, rev)`` that still meets the rule of
+        :meth:`stage_states_unheld_revisions`, re-checked in the delete itself; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows, up to ``limit`` by key after ``after_key``.
+
+        Each is ``{"virtualRecordId", "orgId", "currentRev", "previousRev"}``; the revs are None
+        on a row whose virtual record has no artifact set, and such rows are returned too, so
+        one walk covers every virtual record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_record_content_revs(
+        self,
+        record_ids: list[str],
+        *,
+        status_field: str,
+        statuses: list[str],
+        exclude_indexing_statuses: list[str] | None = None,
+    ) -> dict[str, str | None]:
+        """Record id -> its ``contentRev`` (None when it has none), for the given live records whose
+        ``status_field`` is still in ``statuses`` and whose ``indexingStatus`` is not in
+        ``exclude_indexing_statuses``.
+
+        Re-checks a selection and reads the revision in one statement, so a revision returned
+        is one the record holds while still selected. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def compare_and_set_record_fields(
+        self, record_ids: list[str], content_rev: str, fields: dict[str, Any]
+    ) -> list[str]:
+        """Write ``fields`` on each record whose ``contentRev`` equals ``content_rev``, in one statement.
+
+        Returns the ids updated; a record that moved to another revision is left alone.
+        Raises on infrastructure errors.
+        """
 
     @abstractmethod
     async def get_existing_record_keys(
@@ -2023,6 +2627,136 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Record]: Record if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_by_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        per_address: int = 2,
+        transaction: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """The live records of the org stored under any of ``weburls`` (exact
+        match), in any connector. Link records and placeholders are left out:
+        they hold an address, they do not live at it.
+
+        Used to join a record to the records whose addresses it pastes.
+
+        Args:
+            weburls: Exact ``webUrl`` values. Empty returns ``[]`` without querying.
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            per_address: Most rows per address, records that are not dependent
+                nodes first; each address is looked up on its own.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Rows ``{"id", "recordType", "connectorName", "webUrl",
+            "isDependentNode"}``, records that are not dependent nodes first at each address, so
+            a ticket is never dropped for its attachments, and one address
+            never crowds out another.
+
+        Raises:
+            Exception: on a query failure. Callers must not read a failure as
+            "nothing lives at this address".
+        """
+        pass
+
+    @abstractmethod
+    async def get_address_links_batch(
+        self,
+        record_ids: list[str],
+        org_id: str,
+        limit_per_record: int | None = None,
+        transaction: str | None = None,
+    ) -> dict[str, dict[str, list[str]]]:
+        """For each record, the live records joined to it because one names the
+        other by web address or issue key (``recordLinks`` edges carrying
+        ``matchedBy``). Links the source system made itself are not included.
+
+        **No permission check**: the caller filters the ids before showing them.
+
+        Args:
+            record_ids: Records to read. Empty returns ``{}`` without querying.
+            org_id: Organization scope. Empty returns ``{}`` without querying.
+            limit_per_record: Most ids per direction per record, smallest ids
+                first; None returns every one, so a caller that filters by
+                access before it caps sees them all.
+            transaction: Optional transaction ID.
+
+        Returns:
+            ``{record_id: {"mentioned_in": [...], "links_to": [...]}}`` for
+            every record asked about: ``mentioned_in`` holds the records that
+            name it, ``links_to`` the records it names.
+
+        Raises:
+            Exception: on a query failure, like the other reads behind these
+                joins; the chat enrichment catches it and adds nothing.
+        """
+        pass
+
+    @abstractmethod
+    async def get_issue_sites(
+        self,
+        org_id: str,
+        connector_names: list[str],
+        limit: int | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """The Jira sites the org syncs, read from its live tickets' addresses.
+
+        A ticket stored at ``https://acme.atlassian.net/browse/PA-1`` gives
+        ``https://acme.atlassian.net``: what comes before ``/browse/``. Used to
+        turn an issue key found in text into the addresses the issue may be
+        stored under.
+
+        Args:
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            connector_names: Only tickets of these connectors are read.
+            limit: Most sites returned; None returns every one.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Distinct site prefixes, sorted.
+
+        Raises:
+            Exception: on a query failure, so it is never cached as "no site".
+        """
+        pass
+
+    @abstractmethod
+    async def get_records_linking_to_weburls(
+        self,
+        weburls: list[str],
+        org_id: str,
+        connector_names: list[str],
+        limit: int = 100,
+        after: str | None = None,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Ids of the live records that hold a link to any of ``weburls``.
+
+        A connector that keeps each pasted address as a ``LINK`` record under
+        the record that pasted it (a Slack message) is read here: the link
+        record is matched by its ``webUrl`` (exact), then its parent through
+        the ``PARENT_CHILD`` relation is returned.
+
+        Args:
+            weburls: Exact ``webUrl`` values of the link records. Empty returns
+                ``[]`` without querying.
+            org_id: Organization scope. Empty returns ``[]`` without querying.
+            connector_names: Only link records of these connectors are read.
+            limit: Most ids returned: one page.
+            after: Return only ids after this one; pass the last id of a page
+                to read the next.
+            transaction: Optional transaction ID.
+
+        Returns:
+            Distinct record ids in ascending order.
+
+        Raises:
+            Exception: on a query failure.
         """
         pass
 
@@ -2257,6 +2991,21 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the distinct virtualRecordIds of every record in *record_group_id*
+        or in a record group nested beneath it -- the content stored under the
+        group's storage prefix.
+
+        Raises on a query failure: an empty list means "holds no content", which
+        a storage move acts on.
+        """
+        pass
+
+    @abstractmethod
     async def get_record_group_path(
         self,
         record_group_id: str,
@@ -2328,7 +3077,9 @@ class IGraphDBProvider(ABC):
         self,
         source_user_id: str,
         connector_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['User']:
         """
         Get a user by their source system ID.
@@ -2337,6 +3088,8 @@ class IGraphDBProvider(ABC):
             source_user_id (str): User ID in source system
             connector_id (str): Connector ID
             transaction (Optional[Any]): Optional transaction context
+            raise_on_error (bool): Raise a failed query instead of returning
+                None, so a caller can tell "not found" from "could not read".
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
@@ -2360,6 +3113,24 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Optional[Dict]: User data if found, None otherwise
+        """
+        pass
+
+    @abstractmethod
+    async def apply_verified_user_email(
+        self,
+        user_id: str,
+        org_id: str,
+        email: str,
+    ) -> dict | None:
+        """
+        Set the login graph user's email after Mongo accepted a verified change.
+
+        Connector stub users that already hold this email are merged into the
+        login user. Another real login userId with this email is a conflict.
+
+        Returns:
+            Dict with email and mergedStubKeys, or None if the login user is missing.
         """
         pass
 
@@ -2468,7 +3239,9 @@ class IGraphDBProvider(ABC):
     async def get_app_users(
         self,
         org_id: str,
-        connector_id: str
+        connector_id: str,
+        *,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all users for a specific connector in an organization.
@@ -2476,6 +3249,8 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             connector_id (str): Connector ID
+            raise_on_error (bool): Raise a failed query instead of returning
+                ``[]``, so a caller can tell "no users" from "could not read".
 
         Returns:
             List[Dict]: List of app users
@@ -2651,23 +3426,20 @@ class IGraphDBProvider(ABC):
 
 
     @abstractmethod
-    async def get_folder_contents(
-        self,
-        kb_id: str,
-        folder_id: str,
-        transaction: str | None = None,
-    ) -> dict | None:
-        """Get folder contents (container, folders, records)."""
-        pass
-
-    @abstractmethod
     async def validate_folder_in_kb(
         self,
         kb_id: str,
         folder_id: str,
         transaction: str | None = None,
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> bool:
-        """Validate that a folder exists and belongs to the KB."""
+        """Validate that a folder exists, belongs to the KB and matches *visibility*.
+
+        LIVE, the default, refuses a folder in the trash, which is never a place to
+        put something. DELETED tells a folder in the trash from one that is not
+        there, so the caller can say which.
+        """
         pass
 
 
@@ -2804,32 +3576,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def list_all_records(
-        self,
-        user_id: str,
-        org_id: str,
-        skip: int,
-        limit: int,
-        search: str | None,
-        record_types: list[str] | None,
-        origins: list[str] | None,
-        connectors: list[str] | None,
-        indexing_status: list[str] | None,
-        permissions: list[str] | None,
-        date_from: int | None,
-        date_to: int | None,
-        sort_by: str,
-        sort_order: str,
-        source: str,
-    ) -> tuple[list[dict], int, dict]:
-        """List all records the user can access. Returns (records, total_count, available_filters).
-
-        An empty list means the user can reach no matching record. A query that
-        could not be read raises; it is never reported as an empty list.
-        """
-        pass
-
-    @abstractmethod
     async def list_kb_records(
         self,
         kb_id: str,
@@ -2869,12 +3615,17 @@ class IGraphDBProvider(ABC):
         date_to: int | None,
         sort_by: str,
         sort_order: str,
-    ) -> tuple[list[dict], int]:
+        ownership: str = "all",
+    ) -> tuple[list[dict], dict[str, int]]:
         """Permission-first listing of user-visible artifacts.
 
         ``user_id`` is the graph user key (``_key`` / ``id``), not the
-        external auth ``userId``. The caller resolves that key first,
-        matching ``list_all_records``.
+        external auth ``userId``. The caller resolves that key first.
+
+        ``ownership`` narrows the page: ``mine`` keeps the user's OWNER edges,
+        ``shared`` every other role, anything else keeps both. The second
+        element is ``{"mine": n, "shared": n}`` counted with every filter but
+        ``ownership``, so one call yields the count of each gallery tab.
 
         Display-policy filters must run in the query (not post-fetch) so
         pagination totals stay correct:
@@ -2934,7 +3685,9 @@ class IGraphDBProvider(ABC):
         self,
         connector_id: str,
         org_id: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        raise_on_error: bool = False,
     ) -> list['AppUserGroup']:
         """
         Get all user groups for a connector in an organization.
@@ -2948,6 +3701,26 @@ class IGraphDBProvider(ABC):
             List[Dict]: List of user groups
         """
         pass
+
+    async def get_user_directory_groups(
+        self,
+        user_id: str,
+        org_id: str,
+        app_names: Sequence[str] | None = None,
+        limit: int = 1000,
+    ) -> list[dict[str, str]]:
+        """The directory groups a PipesHub user belongs to, as synced by connectors.
+
+        Follows the user and, through ``AUTHENTICATED_AS``, the source-system
+        account they signed a connector in as (the synced Entra user is a
+        different node from the PipesHub login), to the groups those accounts are
+        members of. Each row is ``{"id", "externalId", "name", "connectorId",
+        "appName"}``, ``externalId`` being the group's id in the source system.
+
+        Not abstract: a backend with no directory sync has nothing to return, and
+        the identity resolvers treat an empty answer as "unknown", not "none".
+        """
+        return []
 
     @abstractmethod
     async def batch_upsert_people(
@@ -3196,6 +3969,8 @@ class IGraphDBProvider(ABC):
         org_id: str,
         *,
         active_only: bool = True,
+        app_type: str | None = None,
+        raise_on_error: bool = False,
     ) -> list[dict]:
         """
         Get all apps for an organization.
@@ -3203,6 +3978,9 @@ class IGraphDBProvider(ABC):
         Args:
             org_id (str): Organization ID
             active_only: When True (default), only apps with isActive true.
+            app_type: Only apps of this type, filtered in the database.
+            raise_on_error: Raise instead of answering [] when the listing fails,
+                for a caller that must tell "none" from "unknown".
 
         Returns:
             List[Dict]: List of apps
@@ -3484,6 +4262,58 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def upsert_record_under_parent(
+        self,
+        record: "Record",
+        parent_record_id: str | None,
+        transaction: str | None = None,
+    ) -> None:
+        """Upsert a moved *record* and make *parent_record_id* its only PARENT_CHILD parent.
+
+        None leaves it under no parent: the root of its knowledge base. A parent
+        that is not in the graph, or is in the trash, raises ``MoveDestinationMissing``
+        before anything is written: a folder deleted while the move was on its way
+        would take the item out of its old folder and put it in none, and one moved
+        to the trash would hide it there. Records in the trash holding
+        the record's external id give it up, as in ``batch_upsert_records``.
+        Concrete by design: a provider with real transactions keeps the separate
+        calls. Neo4j overrides it with one statement: with the old edge deleted on
+        its own, a move that failed afterwards left the item, and everything
+        beneath it, in no folder at all.
+        """
+        if parent_record_id:
+            parent = await self.get_document(
+                parent_record_id, CollectionNames.RECORDS.value, transaction, raise_on_error=True
+            )
+            if not parent or not is_live_record(parent):
+                raise MoveDestinationMissing(record.id, parent_record_id)
+        await self.delete_parent_child_edge_to_record(record.id, transaction)
+        await self.batch_upsert_records([record], transaction, release_trashed_external_ids=True)
+        if parent_record_id:
+            await self.create_record_relation(
+                parent_record_id, record.id, RecordRelations.PARENT_CHILD.value, transaction
+            )
+            # Out of the KB root: a second hierarchy parent would list it twice.
+            await self._delete_hierarchy_edge(
+                record.connector_id, CollectionNames.APPS.value, record.id, transaction
+            )
+        else:
+            # At the root it hangs off its knowledge base's App, or the hub cannot reach it.
+            now = get_epoch_timestamp_in_ms()
+            await self.batch_create_edges(
+                [{
+                    "from_id": record.connector_id,
+                    "from_collection": CollectionNames.APPS.value,
+                    "to_id": record.id,
+                    "to_collection": CollectionNames.RECORDS.value,
+                    "relationshipType": RecordRelations.PARENT_CHILD.value,
+                    "createdAtTimestamp": now,
+                    "updatedAtTimestamp": now,
+                }],
+                CollectionNames.NODE_RELATIONS.value,
+                transaction,
+            )
+
     @abstractmethod
     async def batch_upsert_record_groups(
         self,
@@ -3550,23 +4380,24 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    async def get_virtual_record_ids_shared_outside_connector(
+    async def get_virtual_record_holders(
         self,
-        connector_id: str,
+        virtual_record_ids: list[str],
+        org_id: str,
         transaction: str | None = None,
-    ) -> list[str]:
-        """VRIDs of this connector's records that a live record elsewhere also holds.
+    ) -> dict[str, list[dict]]:
+        """Every record of ``org_id`` holding each of these VRIDs, trashed ones included.
 
         Deduplicated content is stored once, under whichever connector indexed
-        it first, and every other record with that VRID reads the same storage
-        documents. Before a connector's storage is deleted, these are the VRIDs
-        whose documents must survive.
+        it first; before that connector's storage is deleted its copy is handed
+        over to one of these holders. A trashed holder counts: a restore needs
+        the content, and the trash purge releases it later. VRIDs nobody holds
+        are absent from the result. Each holder carries ``id``, ``connectorId``,
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl``,
+        ``contentRev`` (None when unset) and ``isDeleted`` (a bool).
 
-        Same liveness rule as ``get_records_by_virtual_record_id``: soft-deleted
-        records do not count, and the lookup is not scoped by connector type.
-
-        Raises on failure rather than returning an empty list — an empty answer
-        tells the caller it may delete shared storage.
+        Raises on failure rather than returning an empty mapping, which would
+        read as "nothing is shared" and let the caller delete shared storage.
         """
         raise NotImplementedError
 
@@ -3614,6 +4445,46 @@ class IGraphDBProvider(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    async def get_virtual_record_ids_in_use(
+        self,
+        virtual_record_ids: list[str],
+        *,
+        visibility: RecordVisibility = RecordVisibility.LIVE,
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``virtual_record_ids`` that at least one record holds.
+
+        ``get_records_by_virtual_record_id`` answered for many VRIDs in one
+        round trip, with the same predicate per VRID: not scoped by connector or
+        org, and ``visibility`` choosing live or trashed records. A sweep over
+        many VRIDs asks this instead of one query each.
+
+        Raises on failure rather than answering an empty set, which would read
+        as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
     async def get_accessible_connector_types(
         self,
         user_id: str,
@@ -3638,6 +4509,23 @@ class IGraphDBProvider(ABC):
 
         Returns:
             List[str]: Distinct connector type values, in no particular order
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def records_accept_indexed_copy(self) -> bool:
+        """Whether record writes that carry ``hasIndexedCopy`` will be accepted.
+
+        A store that validates record documents refuses the field until its
+        schema allows it, and then refuses every finished-indexing write.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def backfill_indexed_copy_flags(self, batch_size: int = 10_000) -> int:
+        """Mark every COMPLETED record that predates ``hasIndexedCopy`` as having one.
+
+        Idempotent and batched; returns how many records it marked.
         """
         raise NotImplementedError
 
@@ -3702,14 +4590,13 @@ class IGraphDBProvider(ABC):
         grows with the corpus and is already past OpenSearch's default
         ``index.max_terms_count`` on large tenants.
 
-        Concrete rather than abstract, unlike
-        ``filter_accessible_virtual_record_ids``, because the safe answer here is
-        not the empty one. An all-empty result with no ``fallback_reason`` reads
+        Concrete rather than abstract because the safe answer here is not the
+        empty one. An all-empty result with no ``fallback_reason`` reads
         as "this user can search nothing" — a silent, total outage for any
         provider that had simply not implemented it. Encoding the fallback once
         is the value; a provider that overrides this opts in, and one that does
         not keeps today's behaviour. Same reasoning as
-        ``get_record_relations_batch``.
+        ``get_node_relations_batch``.
 
         ``apps`` and ``kb`` scope the result: an implementation must narrow
         every set to ``requested_scope_ids(filters)`` and echo that scope in
@@ -3829,24 +4716,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_file_permissions(
-        self,
-        file_key: str,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Get all permissions for a file.
-
-        Args:
-            file_key (str): File key
-            transaction (Optional[Any]): Optional transaction context
-
-        Returns:
-            List[Dict]: List of permissions
-        """
-        pass
-
-    @abstractmethod
     async def get_first_user_with_permission_to_node(
         self,
         node_id: str,
@@ -3959,24 +4828,6 @@ class IGraphDBProvider(ABC):
 
     # ==================== File/Parent Operations ====================
 
-    @abstractmethod
-    async def get_file_parents(
-        self,
-        file_key: str,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Get all parent IDs for a file.
-
-        Args:
-            file_key (str): File key
-            transaction (Optional[Any]): Optional transaction context
-
-        Returns:
-            List[Dict]: List of parent files
-        """
-        pass
-
     # ==================== Sync Point Operations ====================
 
     @abstractmethod
@@ -4025,6 +4876,30 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def backfill_block_name_folded(self, limit: int = 5000) -> int:
+        """Set ``nameFolded`` (lower-cased ``name``) on up to ``limit`` code blocks lacking it.
+
+        Returns how many were updated; 0 means none is left.
+        """
+        pass
+
+    @abstractmethod
+    async def update_sync_point_if(
+        self,
+        sync_point_key: str,
+        expected: dict[str, Any],
+        sync_point_data: dict,
+        collection: str,
+    ) -> bool:
+        """Update an existing sync point only if every ``expected`` field still holds its value.
+
+        A compare-and-set: ``None`` matches a missing or null field. Returns
+        whether the update was applied; False when the sync point is missing
+        or any expected field has changed since the caller read it.
+        """
+        pass
+
+    @abstractmethod
     async def remove_sync_point(
         self,
         key: str,
@@ -4069,9 +4944,13 @@ class IGraphDBProvider(ABC):
         transaction: str | None = None
     ) -> tuple[int, bool]:
         """
-        Delete only sync-created edges for a connector (belongsTo, recordRelations,
+        Delete only sync-created edges for a connector (belongsTo, nodeRelations,
         permission, inheritPermissions, userAppRelation). Does not delete nodes or
-        isOfType/indexing data. Used for full sync reset.
+        isOfType/indexing data.
+
+        A full sync no longer calls this before it starts: a sync cut off partway
+        left every node it had not reached yet unlinked. It removes what it did
+        not see after it finishes instead (``unlink_nodes_missed_by_full_sync``).
 
         Args:
             connector_id: The connector ID (app _key).
@@ -4079,6 +4958,41 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Tuple of (total_deleted_edges_count, success_flag).
+        """
+        pass
+
+    @abstractmethod
+    async def unlink_nodes_missed_by_full_sync(
+        self,
+        connector_id: str,
+        seen: Mapping[str, Collection[str]],
+        *,
+        window_start_ms: int | None = None,
+        windowed_group_types: Collection[str] = (),
+        transaction: str | None = None,
+    ) -> tuple[int, bool]:
+        """
+        After a full sync ran to the end, remove the sync edges of the connector's
+        records, record groups, groups and roles that it did not see.
+
+        Call this only for a full sync that finished: one cut off partway saw only
+        part of the source, and must unlink nothing.
+
+        Args:
+            connector_id: The connector ID (app _key).
+            seen: Per collection (records, recordGroups, groups, roles), the keys
+                of the nodes the sync wrote. A node not listed is unseen.
+            window_start_ms: When set, the sync read only items created at or
+                after this time. An unseen record created before it, an unseen
+                group of a type in ``windowed_group_types`` created before it, and
+                the unseen records in such a group keep their links: they were
+                not read, not deleted. They lose only their permission edges,
+                which the sync could not check.
+            windowed_group_types: Record group types the window applies to.
+            transaction: Optional transaction context.
+
+        Returns:
+            Tuple of (deleted_edges_count, success_flag).
         """
         pass
 
@@ -4224,66 +5138,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def batch_upsert_domains(
-        self,
-        domains: list[dict],
-        transaction: str | None = None
-    ) -> None:
-        """
-        Batch upsert domains.
-
-        Args:
-            domains (List[Dict]): List of domain data
-            transaction (Optional[Any]): Optional transaction context
-        """
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone(
-        self,
-        anyone: list[dict],
-        transaction: str | None = None
-    ) -> None:
-        """
-        Batch upsert 'anyone' permission entities.
-
-        Args:
-            anyone (List[Dict]): List of anyone entities
-            transaction (Optional[Any]): Optional transaction context
-        """
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_with_link(
-        self,
-        anyone_with_link: list[dict],
-        transaction: str | None = None
-    ) -> None:
-        """
-        Batch upsert 'anyone with link' permission entities.
-
-        Args:
-            anyone_with_link (List[Dict]): List of anyone with link entities
-            transaction (Optional[Any]): Optional transaction context
-        """
-        pass
-
-    @abstractmethod
-    async def batch_upsert_anyone_same_org(
-        self,
-        anyone_same_org: list[dict],
-        transaction: str | None = None
-    ) -> None:
-        """
-        Batch upsert 'anyone same org' permission entities.
-
-        Args:
-            anyone_same_org (List[Dict]): List of anyone same org entities
-            transaction (Optional[Any]): Optional transaction context
-        """
-        pass
-
-    @abstractmethod
     async def batch_create_user_app_edges(
         self,
         edges: list[dict]
@@ -4356,34 +5210,16 @@ class IGraphDBProvider(ABC):
     # ==================== Connector-Specific Operations ====================
 
     @abstractmethod
-    async def process_file_permissions(
-        self,
-        org_id: str,
-        file_key: str,
-        permissions: list[dict],
-        transaction: str | None = None
-    ) -> None:
-        """
-        Process and upsert file permissions.
-
-        Args:
-            org_id (str): Organization ID
-            file_key (str): File key
-            permissions (List[Dict]): List of permission data
-            transaction (Optional[Any]): Optional transaction context
-        """
-        pass
-
-    @abstractmethod
     async def delete_records_and_relations(
         self,
         record_key: str,
         *,
         hard_delete: bool = False,
         transaction: str | None = None,
-    ) -> None:
+    ) -> bool:
         """
-        Delete a record and all its relations.
+        Delete a record and all its relations. False when there was no such record.
+        A raw primitive: children are not re-pointed and no delete event is published.
 
         Args:
             record_key (str): Record key to delete
@@ -4471,6 +5307,17 @@ class IGraphDBProvider(ABC):
         """
         pass
 
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
+        teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
+
     @abstractmethod
     async def get_uploaded_document_ids(
         self,
@@ -4516,10 +5363,38 @@ class IGraphDBProvider(ABC):
         records linked via PARENT_CHILD survive (e.g. stories under a deleted epic).
         Survivors whose ``externalParentId`` points at a deleted root have that
         field cleared to null only if they already ``BELONGS_TO`` a RecordGroup.
+        Each such survivor is reported under the ``reparented`` key as
+        ``{record_id, record_group_id, inherits}`` (``inherits``: it inherited
+        permissions from the deleted parent). The edge sweep below removes the
+        hierarchy and inheritance edges that pointed at the deleted parent, and the
+        caller must re-point them: at the deleted record's own parent when that
+        parent is a record, and at the record group only when the deleted record
+        hung directly off the group.
 
         All edges touching the deleted nodes are swept regardless of
         *cascade_children*, type docs removed, and a deleteRecord event emitted per
         record that carries a virtualRecordId (Qdrant cleanup).
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def migrate_legacy_relation_edge(
+        self,
+        legacy_collection: str,
+        legacy_relationship_type: str,
+    ) -> dict:
+        """Move the hierarchy edge onto its current name.
+
+        The legacy names are passed in so the only module naming them is the
+        migration that owns the rename; a guard test keeps them out of the rest.
+        Arango renames the collection; Neo4j has no rename for a relationship
+        type and recreates each edge under the new type.
+
+        Idempotent: a store already on the new name reports ``already_current``
+        and changes nothing.
+
+        Returns:
+            Dict: {"migrated": int, "already_current": bool}
         """
         raise NotImplementedError
 
@@ -4547,7 +5422,7 @@ class IGraphDBProvider(ABC):
         Roots are scoped by ``connector_id`` (the KB id for a KB) and must be
         live, unless *include_trashed_roots*: a caller removing what the source
         no longer has also walks from a root already in the trash, which keeps
-        its own batch while its live descendants are marked. Descendants are reached through ``RECORD_RELATION`` edges whose
+        its own batch while its live descendants are marked. Descendants are reached through hierarchy edges whose
         ``relationshipType`` is in ``follow``: both kinds for a folder subtree,
         ``("ATTACHMENT",)`` to leave PARENT_CHILD children alone, ``()`` for the
         roots only. A descendant already in the trash keeps its own batch.
@@ -4795,6 +5670,23 @@ class IGraphDBProvider(ABC):
         isOfType type doc, records vertex, optional deleteRecord payload) but
         inventory is only the given record. Children stay. Missing/empty id is a
         no-op success.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_blocks_for_records(
+        self,
+        record_ids: list[str],
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the blocks projected from the given records, and their edges.
+
+        Blocks hang off their record by ``recordId`` alone, so a record vertex
+        can be removed without any of them going with it. Cross-file code edges
+        point straight at a block, never at its record, and outlive the record
+        sweep too -- both halves have to be removed here.
+
+        Returns the number of block nodes removed.
         """
         raise NotImplementedError
 
@@ -5098,29 +5990,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_user_accessible_team_app_ids(
-        self,
-        user_id: str,
-        transaction: str | None = None,
-    ) -> list[str]:
-        """Return the ids of team-scoped apps this user may access.
-
-        Mirrors the team-visibility rules used by
-        :meth:`get_filtered_connector_instances` for non-admin users: an app is
-        accessible when the user has a direct ``userAppRelation`` edge to it, or
-        reaches it through a team ``PERMISSION`` edge. Used to gate read-only
-        access (e.g. connector stats) so it matches connector-list visibility.
-
-        Args:
-            user_id: External userId value (as stored in ``user.userId``).
-            transaction: Optional transaction ID.
-
-        Returns:
-            List of accessible team app ids (empty when the user has none).
-        """
-        pass
-
-    @abstractmethod
     async def store_page_token(
         self,
         channel_id: str,
@@ -5213,27 +6082,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_failed_records_with_active_users(
-        self,
-        org_id: str,
-        connector_id: str
-    ) -> list[dict]:
-        """
-        Get failed records along with their active users who have permissions.
-
-        Generic method for getting records with indexing status FAILED and their permitted active users.
-        Records in the trash are left out.
-
-        Args:
-            org_id (str): Organization ID
-            connector_id (str): Connector ID
-
-        Returns:
-            List[Dict]: List of dictionaries with 'record' and 'users' keys
-        """
-        pass
-
-    @abstractmethod
     async def get_failed_records_by_org(
         self,
         org_id: str,
@@ -5277,6 +6125,39 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def check_api_toolset_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that may call an operation of the API toolset
+        (an `apiToolsetTools` entry starting with `"<instance_id>:"`).
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the toolset.
+        """
+        pass
+
+    @abstractmethod
+    async def check_mcp_instance_in_use(
+        self,
+        instance_id: str,
+        transaction: str | None = None
+    ) -> list[str]:
+        """
+        Names of the non-deleted agents that have the MCP server instance attached.
+
+        Args:
+            instance_id (str): MCP server instance ID to check
+            transaction (Optional[str]): Optional transaction ID
+
+        Returns:
+            List[str]: Agent names; empty when no agent uses the instance.
+        """
+        pass
+
+    @abstractmethod
     async def check_connector_in_use(
         self,
         connector_id: str,
@@ -5300,160 +6181,68 @@ class IGraphDBProvider(ABC):
 
     # ==================== Knowledge Hub Operations ====================
 
+    # The listing reads page by keyset, and raise on failure rather than returning
+    # an empty page: an empty listing is indistinguishable from "you may see
+    # nothing here".
+
     @abstractmethod
-    async def get_knowledge_hub_root_nodes(
+    async def get_knowledge_hub_root_nodes_v2(
         self,
         user_key: str,
         org_id: str,
         user_app_ids: list[str],
-        skip: int,
         limit: int,
-        sort_field: str,
-        sort_dir: str,
+        sort_field: str = "name",
+        sort_dir: str = "ASC",
         *,
-        only_containers: bool,
+        after: dict[str, Any] | None = None,
         origins: list[str] | None = None,
         node_types: list[str] | None = None,
-        transaction: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Get root level nodes (Apps) for Knowledge Hub.
-
-        Args:
-            user_key: User's internal key
-            org_id: Organization ID
-            user_app_ids: List of app IDs user has access to
-            skip: Number of items to skip
-            limit: Maximum items to return
-            sort_field: Field to sort by
-            sort_dir: Sort direction (ASC/DESC)
-            only_containers: Only return nodes with children
-            origins: Optional filter — e.g. ["COLLECTION"] to return only KB
-                        apps, ["CONNECTOR"] for external connector apps only.
-                        Filtering (and pagination) happens server-side so
-                        results are correctly paginated.
-            node_types: Optional filter on node type (currently only "app"
-                        is meaningful at root level).
-            transaction: Optional transaction context
-
-        Returns:
-            Dict with 'nodes' list and 'total' count
-        """
-        pass
-
-    @abstractmethod
-    async def get_knowledge_hub_children(
-        self,
-        parent_id: str,
-        parent_type: str,
-        org_id: str,
-        user_key: str,
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
-        *,
         only_containers: bool = False,
-        record_group_ids: list[str] | None = None,
-        transaction: str | None = None,
-    ) -> dict[str, Any]:
-        """
-        Get direct children of a parent node for tree navigation (browse mode).
-
-        For filtered/searched results, use get_knowledge_hub_search with parent_id instead.
-
-        Provider-agnostic: Each provider converts these parameters to its query language.
-
-        Args:
-            parent_id: The ID of the parent node
-            parent_type: The type of parent: 'app', 'recordGroup', 'folder', 'record'
-            org_id: The organization ID
-            user_key: The user's key for permission filtering
-            skip: Number of items to skip for pagination
-            limit: Maximum number of items to return
-            sort_field: Field to sort by
-            sort_dir: Sort direction ('ASC' or 'DESC')
-            only_containers: If True, only return nodes that can have children
-            record_group_ids: Optional list of record group IDs to restrict visibility.
-                When set, only recordGroup nodes whose IDs are in this list are returned;
-                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
-            transaction: Optional transaction ID
-
-        Returns:
-            Dict with 'nodes' list and 'total' count
-        """
-        pass
-
-    @abstractmethod
-    async def get_knowledge_hub_search(
-        self,
-        org_id: str,
-        user_key: str,
-        skip: int,
-        limit: int,
-        sort_field: str,
-        sort_dir: str,
         search_query: str | None = None,
-        node_types: list[str] | None = None,
         record_types: list[str] | None = None,
-        origins: list[str] | None = None,
-        connector_ids: list[str] | None = None,
         indexing_status: list[str] | None = None,
         created_at: dict[str, int | None] | None = None,
         updated_at: dict[str, int | None] | None = None,
         size: dict[str, int | None] | None = None,
-        *,
-        only_containers: bool = False,
-        parent_id: str | None = None,
-        parent_type: str | None = None,
-        record_group_ids: list[str] | None = None,
-        depth: int | None = None,
+        connector_ids: list[str] | None = None,
+        direction: str = "next",
+        include_ids: bool = False,
         transaction: str | None = None,
+        names_only: bool = False,
         exclude_app_ids: frozenset[str] = frozenset(),
     ) -> dict[str, Any]:
+        """The root listing (Apps), and a global search's Apps partition.
+
+        Returns the partitioned envelope every v2 read returns:
+        ``{"partitions": [{partitionId, partitionKind, appId, rows, hasMore,
+        exhausted, total, countsByType, ids}], "scope": ...}``. Each row carries
+        the comparator's own ``sortKey``/``nullRank``, which is what lets the
+        cursor and the cross-partition merge use one ordering rather than two
+        implementations of it.
         """
-        Unified search for knowledge hub nodes with permission-first traversal.
+        pass
 
-        Supports both:
-        - Global search (parent_id=None): Search across all accessible nodes
-        - Scoped search (parent_id set): Search within a specific parent's hierarchy
+    async def get_hidden_app_ids(
+        self, app_ids: list[str], transaction: str | None = None,
+    ) -> list[str]:
+        """The Apps among ``app_ids`` marked ``isHidden`` (a project's own file
+        collection): left out of top-level listings and unscoped search, still
+        reachable by id."""
+        raise NotImplementedError
 
-        Includes:
-        - RecordGroups with direct permissions
-        - Nested recordGroups via inheritPermissions edges (recursive)
-        - Records via inheritPermissions from accessible recordGroups
-        - Direct user/group/org permissions on records
+    @abstractmethod
+    async def get_knowledge_hub_access_context_v2(
+        self,
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+    ) -> dict[str, list[str]]:
+        """``{"grantee_ids": [...], "gated_app_ids": [...]}`` for one request.
 
-        Provider-agnostic: Each provider converts these parameters to its query language.
-
-        Args:
-            org_id: The organization ID
-            user_key: The user's key for permission filtering
-            skip: Number of items to skip for pagination
-            limit: Maximum number of items to return
-            sort_field: Field to sort by
-            sort_dir: Sort direction ('ASC' or 'DESC')
-            search_query: Optional search query to filter by name
-            node_types: Optional list of node types to filter by
-            record_types: Optional list of record types to filter by
-            origins: Optional list of origins to filter by (KB/CONNECTOR)
-            connector_ids: Optional list of connector IDs to filter by
-            indexing_status: Optional list of indexing statuses to filter by
-            created_at: Optional date range filter for creation date
-            updated_at: Optional date range filter for update date
-            size: Optional size range filter
-            only_containers: If True, only return nodes that can have children
-            parent_id: Optional parent node ID for scoped search
-            parent_type: Optional type of parent: 'app', 'recordGroup', 'folder', 'record'
-            record_group_ids: Optional list of record group IDs to restrict visibility.
-                When set, only recordGroup nodes whose IDs are in this list are returned;
-                non-recordGroup nodes (folders, records, apps) pass through unfiltered.
-            depth: Optional traversal depth limit for record/folder children-intersection
-                traversal. None preserves the existing unlimited (100-level) behavior.
-            transaction: Optional transaction ID
-
-        Returns:
-            Dict with 'nodes' list and 'total' count
+        Every other v2 method takes both, so they are resolved once here instead
+        of re-derived inside each query.
         """
         pass
 
@@ -5525,26 +6314,6 @@ class IGraphDBProvider(ABC):
 
         Returns:
             Dict with 'kbs' and 'apps' lists containing {id, name}
-        """
-        pass
-
-    @abstractmethod
-    async def get_knowledge_hub_node_info(
-        self,
-        node_id: str,
-        folder_mime_types: list[str],
-        transaction: str | None = None
-    ) -> dict[str, Any] | None:
-        """
-        Get node information including type and subtype.
-
-        Args:
-            node_id: Node ID
-            folder_mime_types: List of MIME types that indicate folders
-            transaction: Optional transaction context
-
-        Returns:
-            Dict with id, name, nodeType, subType or None if not found
         """
         pass
 
@@ -5681,28 +6450,6 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
-    async def get_related_records_by_relation_type(
-        self,
-        record_id: str,
-        relation_type: str,
-        edge_collection: str,
-        transaction: str | None = None
-    ) -> list[dict]:
-        """
-        Get related records connected via a specific relation type.
-
-        Args:
-            record_id (str): Source record ID
-            relation_type (str): Relation type to filter by (e.g., "ATTACHMENT")
-            edge_collection (str): Edge collection name
-            transaction (Optional[str]): Optional transaction ID
-
-        Returns:
-            List[Dict]: List of related records with messageId, id/key, and relationshipType
-        """
-        pass
-
-    @abstractmethod
     async def get_message_id_header_by_key(
         self,
         record_key: str,
@@ -5834,6 +6581,7 @@ class IGraphDBProvider(ABC):
     async def get_team_with_users(
         self,
         team_id: str,
+        org_id: str,
         user_key: str,
         transaction: str | None = None
     ) -> dict | None:
@@ -5842,6 +6590,8 @@ class IGraphDBProvider(ABC):
 
         Args:
             team_id (str): Team ID
+            org_id (str): Caller's organization ID; the team is only returned
+                when it belongs to this org
             user_key (str): Current user's key (for permission checking)
             transaction (Optional[str]): Optional transaction ID
 
@@ -6160,96 +6910,687 @@ class IGraphDBProvider(ABC):
         """
         pass
 
-    @abstractmethod
-    async def filter_nodes_with_permission_role(
+    async def backfill_app_org_ids(self) -> dict:
+        """Give every App without an ``orgId`` the id of the one organization
+        linked to it, so the org filters on Apps keep connectors created before
+        Apps carried one. Returns ``{"backfilled": n, "ambiguous": m}``: an App
+        linked from several organizations is left alone and counted."""
+        raise NotImplementedError
+
+    async def split_link_edges(self, batch_size: int = 1000) -> dict:
+        """Move link edges off the hierarchy edge type. Returns
+        ``{"migrated": n}``."""
+        raise NotImplementedError
+
+    async def backfill_hierarchy(self, batch_size: int = 1000) -> dict:
+        """Write the hierarchy edges an older graph lacks and a sync writes today:
+        from the App to a collection root item, from the parent group (or App) to
+        a group, from the group to a record with no parent record, a nested
+        record's inheritance from its parent record where it inherited from its
+        group, and from the group to a record nested under a record of another
+        group (it keeps inheriting from its own group, so it hangs off that group
+        as well). Only adds edges, never a grant, and never an App inheritance
+        edge (whether a group inherits from its App is not recorded).
+        Returns ``{"added": {shape: n}}``; raises if anything is left."""
+        raise NotImplementedError
+
+    async def drop_redundant_group_edges(self, batch_size: int = 1000) -> dict:
+        """Delete a nested record's inheritance edge to its own group and the
+        group's hierarchy edge to it, where the record inherits from a parent
+        record of that group. A sync deletes both when it rewrites such a record
+        (``link_record_to_group(inherit=False, browse_root=False)``); an older
+        build left them, so the record kept its group's audience past the parent
+        and was listed under the group as well. Only a non-placeholder, live
+        parent counts, and the record's membership in the group stays.
+        Returns ``{"removed": n}``; raises if anything is left."""
+        raise NotImplementedError
+
+    async def normalize_folder_mime_types(self, batch_size: int = 1000) -> dict:
+        """Write ``MimeTypes.FOLDER`` on every folder record (its File type node
+        says ``isFile = false``) that carries another mimeType. Returns
+        ``{"normalized": n}``, and raises if any is left, so a partial run is
+        retried. Records whose File says they are files are never touched."""
+        raise NotImplementedError
+
+    async def stamp_kh_listing_state(self, batch_size: int = 5000) -> dict:
+        """Write the derived state the knowledge hub listing reads (sort name,
+        flag and tree labels) on every record and group written before the write
+        paths kept it. Returns ``{"stamped": n}``; raises if any node is left
+        disagreeing with its properties and edges. Only Neo4j keeps this state;
+        the listing reads it once ``KH_LISTING_STATE_FLAG`` is set."""
+        raise NotImplementedError
+
+    # Knowledge hub scopes: the global listing read from precomputed per-connector scopes, behind the
+    # ENABLE_KH_SCOPE_LISTING flag. Only Neo4j keeps them; elsewhere these do nothing and the listing always
+    # runs its full query.
+    # True for a backend whose connector page reads its own connector's grants when
+    # handed ``user_key`` and no grants, and reports them through ``grants_out``
+    # (a dict it fills as ``{app_id: granted ids}``): the global listing then lets
+    # every connector's page read its grants beside the others.
+    kh_grants_per_connector = False
+
+    async def get_knowledge_hub_warm_sample(self) -> dict[str, str] | None:
+        """One user and one App, record group and record that user can browse
+        (``userId``, ``orgId``, ``appId``, ``groupId``, ``recordId``), for warming
+        the listing statements' plans; None when the backend has no use for it."""
+        return None
+
+    async def kh_scope_enabled(self) -> bool:
+        return False
+
+    async def kh_scope_mark_stale(self, connector_id: str) -> int | None:
+        """A sync of this connector is about to write: stop listing it from scopes until it is re-stamped.
+        Returns the generation the sync owns, for ``kh_scope_sync_ended``."""
+        return None
+
+    async def kh_scope_sync_ended(self, connector_id: str, generation: int | None = None) -> None:
+        """The writer that owns ``generation`` is done."""
+
+    async def kh_scope_mark_changed(self, connector_id: str) -> None:
+        """A write outside a sync changed the tree: stop listing it from scopes until it is re-stamped."""
+
+    async def kh_scope_forget(self, connector_id: str) -> None:
+        """The connector is gone: drop its scopes."""
+
+    async def kh_scope_stamp(self, connector_id: str) -> dict:
+        return {"connector": connector_id, "stamped": False, "reason": "not supported by this backend"}
+
+    async def kh_scope_reset_syncing(self) -> None:
+        """At startup, before any sync: clear marks a crash left behind."""
+
+    async def kh_scope_restamp_stale(self) -> list:
+        return []
+
+    async def check_access(
         self,
-        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        node_ids: Iterable[str] = (),
+        virtual_record_ids: Iterable[str] = (),
+        indexed_only: bool = False,
+        connector_ids: frozenset[str] | None = None,
+        scopes: Iterable[RowScope] = (),
+        access: dict[str, Any] | None = None,
+        transaction: str | None = None,
+    ) -> AccessCheck:
+        """The batch access check: which of these nodes and virtual record ids
+        the user may access. Every permission decision goes through it.
+
+        A node is accessible exactly when the knowledge-hub global flatten would
+        list it, except that ``hideChildren`` does not hide, only
+        PARENT_CHILD/ATTACHMENT edges are hierarchy, the node's ``orgId``
+        must be ``org_id``, and deleted nodes never are. A placeholder asked by
+        node id is, when the same walk would admit a real record: browsing and
+        navigate open a stub so the nodes under it stay reachable. A placeholder
+        reached only by virtual record id is not, so a search citation never
+        lands on a stub. A virtual record id is accessible when any record
+        carrying it is; the record to cite is the smallest accessible record id,
+        so the answer is deterministic.
+
+        Args:
+            user_key: The user's graph key (``User.id``), not ``userId``. Empty,
+                with no ``access``, means no identity: nothing is accessible.
+            org_id: The request's organization.
+            node_ids: Record, RecordGroup or App ids; duplicates and unknown ids
+                are fine.
+            virtual_record_ids: Virtual record ids, e.g. search hits.
+            indexed_only: Cite only a record that has finished indexing (search).
+            connector_ids: Cite only a record of these connectors (a search's
+                scope: vector membership is unioned per virtual record id, so a
+                hit can come from an out-of-scope copy). An empty set cites
+                nothing; None does not narrow. Neither filter narrows node ids.
+            scopes: Cite only a record every one of these admits (a selection
+                below app level, and an agent's or project's allow-list). Like
+                ``connector_ids`` they do not narrow ``node_ids``; the asked
+                nodes they admit are reported apart, in ``node_ids_in_scope``.
+            access: ``get_knowledge_hub_access_v3`` for this user, when the caller
+                already holds it; computed otherwise.
+            transaction: Optional transaction ID.
+
+        Raises:
+            PermissionVerificationUnavailableError: the graph could not answer.
+                Never an empty result instead, which is what total denial looks
+                like; each caller decides how to fail.
+            NotImplementedError: the backend has no batch check (it implements
+                no ``_kh_v3_accessible_rows``). Not defaulted to an answer: a
+                backend without it must fail loudly rather than deny or admit
+                everything.
+        """
+        asked_nodes = set(node_ids)
+        # An empty scope cites nothing, so its virtual record ids need no query.
+        asked_vrids = set(virtual_record_ids) if connector_ids != frozenset() else set()
+        if not (asked_nodes or asked_vrids) or (not user_key and access is None):
+            return AccessCheck()
+        try:
+            rows = await self._kh_v3_accessible_rows(
+                user_key, org_id, list(asked_nodes), list(asked_vrids),
+                access=access, transaction=transaction,
+            )
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            self.logger.error(
+                "check_access failed for %d nodes and %d vrids: %s",
+                len(asked_nodes), len(asked_vrids), exc,
+            )
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        records_by_vrid: dict[str, str] = {}
+        for row in rows:
+            vrid, record_id = row.get("vrid"), row.get("id")
+            if vrid not in asked_vrids or not record_id or row.get("isPlaceholder"):
+                continue
+            # An edited record queued again keeps serving its previous indexed copy.
+            if indexed_only and not is_searchable_record(row):
+                continue
+            if connector_ids is not None and row.get("connectorId") not in connector_ids:
+                continue
+            if not all(scope.admits(row) for scope in scopes):
+                continue
+            if vrid not in records_by_vrid or record_id < records_by_vrid[vrid]:
+                records_by_vrid[vrid] = record_id
+        accessible_nodes = [row for row in rows if row.get("id") in asked_nodes]
+        return AccessCheck(
+            node_ids=frozenset(row["id"] for row in accessible_nodes),
+            records_by_vrid=records_by_vrid,
+            node_ids_in_scope=frozenset(
+                row["id"] for row in accessible_nodes
+                if all(scope.admits(row) for scope in scopes)
+            ),
+            placeholder_ids=frozenset(
+                row["id"] for row in accessible_nodes if row.get("isPlaceholder")
+            ),
+        )
+
+    async def _kh_v3_accessible_rows(
+        self,
+        user_key: str,
+        org_id: str,
+        node_ids: list[str],
+        virtual_record_ids: list[str],
+        *,
+        access: dict[str, Any] | None,
+        transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """The rows ``check_access`` decides from: one per accessible node among
+        the asked ids and the records carrying the asked virtual record ids, as
+        ``{id, vrid, connectorId, indexingStatus, isInternal, isPlaceholder, groupIds}``
+        (``groupIds``: the record groups a record belongs to). ``isPlaceholder``
+        is true only for a stub the walk admitted because its id was asked."""
+        raise NotImplementedError
+
+    async def get_selection_nodes(
+        self,
+        org_id: str,
+        *,
+        group_ids: list[str],
+        record_ids: list[str],
+        exact_record_ids: list[str],
+        limit: int,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """What a selection below app level covers, read from the hierarchy alone.
+
+        ``groups``: the record groups in ``group_ids`` and every group nested
+        under them, as ``{id, connectorId}``. ``records``: the records in
+        ``record_ids`` with everything under them (PARENT_CHILD/ATTACHMENT,
+        up to ``ACCESS_WALK_MAX_DEPTH`` hops) and the records in
+        ``exact_record_ids`` alone, as ``{id, vrid, connectorId}``. A folder
+        is a record without content: it is returned with ``vrid`` None.
+
+        No permissions are applied: ``check_access`` decides every hit. Only
+        live nodes of ``org_id`` are returned, so an id of another org, of a
+        deleted node or of the wrong kind contributes nothing. Each list holds
+        at most ``limit + 1`` entries, so the caller can tell a selection that
+        is over the limit from one that is at it. ``truncated`` is true when the
+        walk stopped before it could tell (the caller treats that as over).
+        """
+        raise NotImplementedError
+
+    # A name search over a whole connector starts from the nodes whose name
+    # matches and walks up from each, instead of listing every visible node and
+    # filtering last. Past this many matches in the org (counted before access
+    # is decided) it is not selective, and the full listing is the cheaper way
+    # to the same rows.
+    _KH_NAME_FIRST_MAX = 20000
+
+    # A filter on what a node is or holds: a placeholder stub has no content, so
+    # it never matches one.
+    _KH_CONTENT_FILTERS = (
+        "search_query", "node_types", "record_types", "indexing_status",
+        "created_at", "updated_at", "size", "origins",
+    )
+
+    @classmethod
+    def _kh_lists_placeholders(cls, *, flatten: bool, filters: dict[str, Any] | None) -> bool:
+        """Whether a listing shows placeholder stubs. Browsing does: a stub holds
+        the place of a parent the sync did not read (filtered out, or out of
+        scope), and dropping it would hide every readable node below it. A flatten
+        or a content filter returns results, and a stub is never one."""
+        return not flatten and not any((filters or {}).get(key) for key in cls._KH_CONTENT_FILTERS)
+
+    def _kh_v3_empty_page(
+        self,
+        start_id: str | None,
+        *,
+        include_scope: bool,
+        include_total: bool,
+        admitted: bool,
+    ) -> dict[str, Any]:
+        scope = None
+        if include_scope:
+            scope = (
+                {"admitted": False, "nodeId": start_id}
+                if not admitted
+                else browse_scope(start_id or "", admitted=True, nodes=[], edges=[])
+            )
+        return {
+            "rows": [],
+            "hasMore": False,
+            "total": 0 if include_total else None,
+            "counts": {} if include_total else None,
+            "scope": scope,
+        }
+
+    async def _kh_v3_page_result(
+        self,
+        payload: dict[str, Any],
+        *,
+        limit: int,
+        direction: str,
+        include_total: bool,
+        include_scope: bool,
+        scoped_start: bool,
+        start_id: str,
+        app_id: str,
+        via_parent_id: str | None,
+        transaction: str | None,
+        org_id: str = "",
+        access: dict[str, Any] | None = None,
+        listed_under: str | None = None,
+        name_parents: bool = True,
+    ) -> dict[str, Any]:
+        """A page from a backend's ``payload``: ``rows`` (up to ``limit + 1``,
+        nearest the boundary first when paging back), ``total`` and the per-type
+        counts, and the breadcrumb graph of a scoped start. ``listed_under`` is
+        the node whose direct children these are (None for a flatten). Without
+        ``name_parents`` the rows keep their ``parentOptions`` for the caller to
+        name (``name_knowledge_hub_parents``)."""
+        page = list(payload.get("rows") or [])
+        has_more = len(page) > limit
+        page = page[:limit]
+        if direction == "prev":
+            page.reverse()
+        if name_parents:
+            await self._kh_v3_name_parents(
+                page, org_id=org_id, apps={app_id}, access=access, listed_under=listed_under,
+                transaction=transaction,
+            )
+        total = None
+        counts = None
+        if include_total:
+            total = payload.get("total") or 0
+            counts = {
+                "record": payload.get("nRecord") or 0,
+                "folder": payload.get("nFolder") or 0,
+                "recordGroup": payload.get("nGroup") or 0,
+            }
+            counts = {key: value for key, value in counts.items() if value}
+        scope_out = None
+        if include_scope:
+            if scoped_start:
+                scope_out = browse_scope(
+                    start_id, admitted=True,
+                    nodes=payload.get("crumbNodes") or [],
+                    edges=payload.get("crumbEdges") or [],
+                    via_parent_id=via_parent_id,
+                )
+            else:
+                scope_out = await (
+                    self._kh_v3_shared(("app-scope", app_id, via_parent_id),
+                                       lambda: self._kh_v3_app_scope(app_id, via_parent_id, None))
+                    if transaction is None else self._kh_v3_app_scope(app_id, via_parent_id, transaction)
+                )
+        return {
+            "rows": page,
+            "hasMore": has_more,
+            "total": total,
+            "counts": counts,
+            "scope": scope_out,
+        }
+
+    async def name_knowledge_hub_parents(
+        self,
+        rows: list[dict[str, Any]],
+        org_id: str,
+        access: dict[str, Any],
+        *,
+        transaction: str | None = None,
+    ) -> None:
+        """Name the parent of rows merged from several connector pages asked for
+        with ``name_parents=False``: one batch check for the whole page."""
+        await self._kh_v3_name_parents(
+            rows, org_id=org_id, apps=set(access.get("gated_app_ids") or ()), access=access,
+            listed_under=None, transaction=transaction,
+        )
+
+    async def _kh_v3_name_parents(
+        self,
+        rows: list[dict[str, Any]],
+        *,
+        org_id: str,
+        apps: set[str],
+        access: dict[str, Any] | None,
+        listed_under: str | None,
+        transaction: str | None,
+    ) -> None:
+        """The parent each row names, from its hierarchy parents, its own record
+        groups and the App (``parentOptions``, dropped here): the node it is
+        listed under when browsing; otherwise the first one the user can access,
+        a real record or group before an internal one such as Shared with Me,
+        then its own group (a chain-top), and the App only when no other is
+        reachable. Never a parent the user cannot access: its name would
+        disclose it.
+        ``apps`` are the Apps the user is gated into, named without asking."""
+        def ranked(row: dict[str, Any]) -> list[dict[str, Any]]:
+            # A group that is both a hierarchy parent and an own group ranks as the parent.
+            by_id: dict[str, dict[str, Any]] = {}
+            for o in row.get("parentOptions") or []:
+                if o and o.get("id") and (o["id"] not in by_id or by_id[o["id"]].get("ownGroup")):
+                    by_id[o["id"]] = o
+            options = sorted(by_id.values(), key=lambda o: o["id"])
+            under = [o for o in options if o["id"] == listed_under]
+            nested = [o for o in options if o.get("nodeType") != "app" and not o.get("ownGroup")]
+            real = [o for o in nested if not o.get("isInternal")]
+            internal = [o for o in nested if o.get("isInternal")]
+            own = [o for o in options if o.get("ownGroup") and o.get("nodeType") != "app"]
+            app_options = [o for o in options if o.get("nodeType") == "app"]
+            return under + real + internal + own + app_options
+
+        def known(option: dict[str, Any]) -> bool:
+            return option["id"] == listed_under or (option.get("nodeType") == "app" and option["id"] in apps)
+
+        rows = [row for row in rows if "parentOptions" in row]
+        unknown: set[str] = set()
+        for row in rows:
+            for option in ranked(row):
+                if known(option):
+                    break
+                unknown.add(option["id"])
+        admitted = (await self.check_access(
+            "", org_id, node_ids=unknown, access=access, transaction=transaction,
+        )).node_ids if unknown and access is not None else frozenset()
+        for row in rows:
+            options = ranked(row)
+            row.pop("parentOptions")
+            chosen = next((o for o in options if known(o) or o["id"] in admitted), None)
+            if chosen is not None:
+                row.update(
+                    parentId=chosen["id"], parentName=chosen.get("name"),
+                    parentType=chosen.get("nodeType"), parentIsInternal=bool(chosen.get("isInternal")),
+                )
+
+    async def _kh_v3_app_scope(
+        self, app_id: str, via_parent_id: str | None, transaction: str | None,
+    ) -> dict[str, Any]:
+        # A graph error fails the page rather than naming the App "".
+        app = await self.get_document(
+            app_id, CollectionNames.APPS.value, transaction, raise_on_error=True,
+        ) or {}
+        return browse_scope(
+            app_id, admitted=True,
+            nodes=[{
+                "id": app_id,
+                "name": app.get("name") or "",
+                "nodeType": "app",
+                "subType": app.get("type"),
+                "admitted": True,
+                "isInternal": False,
+                "ownGroups": [],
+            }],
+            edges=[],
+            via_parent_id=via_parent_id,
+        )
+
+    async def get_knowledge_hub_connector_page_v3(
+        self,
+        app_id: str,
+        org_id: str,
+        grantee_ids: list[str],
+        gated_app_ids: list[str],
+        granted_ids: list[str] | None = None,
+        limit: int = 50,
+        *,
+        flatten: bool = True,
+        sort_field: str = "name",
+        sort_dir: str = "ASC",
+        after: dict[str, Any] | None = None,
+        direction: str = "next",
+        filters: dict[str, Any] | None = None,
+        include_total: bool = True,
+        start_id: str | None = None,
+        start_type: str = "app",
+        grants_by_connector: dict[str, list[str]] | None = None,
+        include_scope: bool = False,
+        via_parent_id: str | None = None,
+        transaction: str | None = None,
+        name_parents: bool = True,
+        user_key: str | None = None,
+        max_depth: int = 50,
+    ) -> dict[str, Any]:
+        """One page of what the user may see under one start node: the App's
+        direct children, a folder or group's (``include_scope`` adds the browse
+        scope and breadcrumbs), or the whole connector (``flatten`` from the App).
+        Returns ``{rows, hasMore, total, counts, scope}``; rows carry their own
+        ``sortKey``/``nullRank`` for the partition merge. With neither
+        ``granted_ids`` nor ``grants_by_connector``, ``user_key`` has the page read
+        the grants of its own connector alone (``get_knowledge_hub_connector_grants``).
+        ``max_depth`` bounds a flatten's walk below the start (hops)."""
+        raise NotImplementedError
+
+    async def _kh_v3_shared(self, key: tuple, compute: Callable[[], Awaitable[_T]]) -> _T:
+        """``compute()``, shared by the callers that ask for ``key`` while it runs:
+        one click sends the main pane and the sidebar together, and both need the
+        same grants and chain-tops. Nothing is kept once it completes, so no answer
+        is older than the request that waited for it. Callers must not mutate it."""
+        running: dict[tuple, asyncio.Future] = self.__dict__.setdefault("_kh_v3_running", {})
+        task = running.get(key)
+        if task is None:
+            task = asyncio.ensure_future(compute())
+            running[key] = task
+            task.add_done_callback(lambda _done, k=key: running.pop(k, None))
+        # Shielded: one caller going away must not cancel it for the others.
+        return await asyncio.shield(task)
+
+    async def _kh_v3_scoped_start_access(
+        self,
+        start_id: str,
+        app_id: str,
+        org_id: str,
+        grantee_ids: list[str],
+        gated_app_ids: list[str],
+        grants_by_connector: dict[str, list[str]],
+        transaction: str | None,
+        probe: dict[str, Any] | None = None,
+    ) -> tuple[bool, list[str], list[str]]:
+        """What the batch check says about a browse start: whether it admits the
+        start, which of its ancestors it admits (the breadcrumb of a start the
+        walk from the App does not reach), and the declared scope the start lies
+        in: the groups under a RECORD_GROUP_LEVEL group it admits. Records
+        belonging to those groups are the rest of that scope, as in the check
+        and the flatten.
+        """
+        ancestors, declared = await self._kh_v3_start_lineage(start_id, app_id, transaction)
+        access = {
+            "grantee_ids": grantee_ids,
+            "gated_app_ids": gated_app_ids,
+            "by_connector": grants_by_connector,
+            # A backend that tests grants from the node instead of a list (Neo4j).
+            "probe": probe,
+        }
+        admitted = (await self.check_access(
+            "", org_id, node_ids=[start_id, *ancestors], access=access, transaction=transaction,
+        )).node_ids
+        if start_id not in admitted:
+            return False, [], []
+        declared = [d for d in declared if d in admitted]
+        scope = await self._kh_v3_declared_groups(declared, transaction) if declared else []
+        return True, [a for a in ancestors if a in admitted], scope
+
+    async def _kh_v3_chain_tops(
+        self,
+        app_id: str,
+        org_id: str,
+        access: dict[str, Any],
+        transaction: str | None,
+        *,
+        only_group: str | None = None,
+        by_groups: list[dict[str, Any]] | None = None,
+    ) -> dict[str, list[dict[str, Any]]]:
+        """The user's chain-tops in ``app_id`` by the node browse lists them under
+        (``kh_chain_tops.place_chain_tops``). Openable means admitted by the batch
+        check, against all the user's grantees. ``only_group``
+        limits the candidates to records of that group, for browsing it.
+        ``by_groups`` is ``_kh_v3_chain_top_groups`` for these grants, when the
+        caller already holds it."""
+        granted = list((access.get("by_connector") or {}).get(app_id) or [])
+        if not granted and not by_groups:
+            return {}
+
+        async def admitted(ids: set[str]) -> frozenset[str]:
+            return (await self.check_access(
+                "", org_id, node_ids=ids, access=access, transaction=transaction,
+            )).node_ids if ids else frozenset()
+
+        # Own groups first, in one pass over the grants: they are few, and a node
+        # whose own group opens is never listed under the App, so browsing the App
+        # never fetches it. A user can hold thousands of grants; most belong to a
+        # group they can open.
+        if by_groups is None:
+            by_groups = await self._kh_v3_chain_top_groups(app_id, org_id, granted, only_group, transaction)
+        open_groups = await admitted({g for s in by_groups for g in s["ownGroups"]})
+        ids = [
+            node_id for s in by_groups
+            if only_group is not None or not set(s["ownGroups"]) & open_groups
+            for node_id in s["ids"]
+        ]
+        if not ids:
+            return {}
+        candidates = [
+            c for c in await self._kh_v3_chain_top_candidates(app_id, ids, transaction)
+            # A direct child of the App is listed by the walk from it.
+            if app_id not in (c.get("parents") or ())
+        ]
+        if not candidates:
+            return {}
+        open_parents = await admitted({p for c in candidates for p in c["parents"]})
+        tops = [c for c in candidates if not set(c["parents"]) & open_parents]
+        if not tops:
+            return {}
+        # The costly walks run for the chain-tops only.
+        facts = await self._kh_v3_chain_top_facts(
+            app_id, [c["id"] for c in tops], sorted({g["id"] for c in tops for g in c["ownGroups"]}),
+            transaction,
+        )
+        for c in tops:
+            for g in c["ownGroups"]:
+                g["underApp"] = g["id"] in facts["underApp"]
+        tops = [c for c in tops if c["id"] not in facts["hidden"]]
+        return place_chain_tops(tops, open_groups | open_parents, app_id)
+
+    async def _kh_v3_chain_top_groups(
+        self,
+        app_id: str,
+        org_id: str,
+        granted_ids: list[str],
+        only_group: str | None,
+        transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """The granted nodes of ``app_id`` that could be chain-tops, by their own
+        groups, as ``{ownGroups: [ids], ids: [node ids]}``: OPEN, of the request's
+        org, not deleted or a placeholder; none in an App that opens everything.
+        Own groups are BELONGS_TO groups, or a group's parent groups.
+        ``only_group`` keeps the records of that group."""
+        raise NotImplementedError
+
+    async def _kh_v3_chain_top_candidates(
+        self, app_id: str, node_ids: list[str], transaction: str | None,
+    ) -> list[dict[str, Any]]:
+        """These nodes as ``{id, handle, parents, ownGroups: [{id, deleted}]}``:
+        ``parents`` are their hierarchy parents (the App included)."""
+        raise NotImplementedError
+
+    async def _kh_v3_chain_top_facts(
+        self,
+        app_id: str,
+        node_ids: list[str],
+        group_ids: list[str],
+        transaction: str | None,
+    ) -> dict[str, set[str]]:
+        """``hidden``: the nodes beneath a group that hides its children;
+        ``underApp``: the groups whose hierarchy reaches ``app_id``."""
+        raise NotImplementedError
+
+    async def _kh_v3_start_lineage(
+        self, start_id: str, app_id: str, transaction: str | None,
+    ) -> tuple[list[str], list[str]]:
+        """A browse start's hierarchy ancestors, and the RECORD_GROUP_LEVEL groups
+        of ``app_id`` among the start and them."""
+        raise NotImplementedError
+
+    async def _kh_v3_declared_groups(
+        self, declared: list[str], transaction: str | None,
+    ) -> list[str]:
+        """The groups under these declared groups, group to group, deleted groups
+        cut: the check's declared-scope arm."""
+        raise NotImplementedError
+
+    async def get_knowledge_hub_access_v3(
+        self,
         user_key: str,
         org_id: str,
         *,
         transaction: str | None = None,
-        raise_on_error: bool = False,
-    ) -> set[str]:
-        """Return ids from ``nodes`` where the user has a non-empty KH permission_role.
+    ) -> dict[str, Any]:
+        """Who the user is for the batch check and the v3 listing, resolved once per
+        request: ``grantee_ids`` (the user, the groups, roles and teams it holds a
+        USER permission on, its organization), ``gated_app_ids`` (the one connector
+        gate) and ``by_connector`` (records and groups granted directly,
+        bucketed by connector)."""
+        raise NotImplementedError
 
-        Each entry is ``{"id": str, "type": "record"|"recordGroup"}``.
-        Reuses the same ``_get_permission_role_*`` fragments as
-        ``get_knowledge_hub_node_access`` (full inheritPermissions paths).
-        Apps are not checked here — callers keep App trail segments via ACL.
+    async def count_active_apps_by_type(self) -> dict[str, int]:
+        """Active Apps per type (``unknown`` without one), for the connector_active
+        gauge. A backend should count in the database; this default reads the
+        type of every active App."""
+        counts: dict[str, int] = {}
+        for doc in await self.get_nodes_by_filters(
+            CollectionNames.APPS.value, {"isActive": True}, return_fields=["type"],
+        ) or []:
+            app_type = doc.get("type") or "unknown"
+            counts[app_type] = counts.get(app_type, 0) + 1
+        return counts
 
-        A query failure returns ``set()`` unless ``raise_on_error`` is true,
-        in which case it is re-raised so the caller can tell a failure apart
-        from "no access".
-
-        Not suitable for adjudicating search results: it takes record ids rather
-        than virtual record ids, so it cannot pick one record per VRID, and the
-        App carve-out above means it would admit a record whose connector the
-        user has lost. Use ``filter_accessible_virtual_record_ids``.
-        """
-        pass
-
-    @abstractmethod
-    async def filter_accessible_virtual_record_ids(
+    async def get_knowledge_hub_connector_grants(
         self,
-        virtual_record_ids: list[str],
-        user_id: str,
+        user_key: str,
         org_id: str,
+        connector_id: str,
         *,
-        trusted_app_ids: frozenset[str] | None = None,
-        trusted_group_ids: frozenset[str] | None = None,
-        scope_connector_ids: frozenset[str] | None = None,
         transaction: str | None = None,
-    ) -> dict[str, str]:
-        """Adjudicate retrieved virtual record ids, returning the record to cite for each.
+    ) -> list[str]:
+        """One connector's bucket of ``get_knowledge_hub_access_v3``: the records
+        and groups of ``connector_id`` granted directly, which is all that browsing
+        inside it reads. A backend may answer from that connector's grantees alone;
+        this default reads every grant."""
+        access = await self.get_knowledge_hub_access_v3(user_key, org_id, transaction=transaction)
+        return list(access["by_connector"].get(connector_id) or [])
 
-        The read-side counterpart to ``get_accessible_virtual_record_ids``, and
-        deliberately the same ``{virtualRecordId: recordId}`` shape: that method
-        enumerates a user's whole reachable corpus so a search can be scoped by
-        it, this one decides an already-retrieved handful. A caller swapping one
-        for the other keeps every downstream mapping.
+    async def get_gated_apps(
+        self, user_key: str, org_id: str, transaction: str | None = None,
+    ) -> list[dict]:
+        """The App documents of ``org_id`` this user passes the connector gate for."""
+        raise NotImplementedError
 
-        Resolving to a *single* record id per VRID is load-bearing, not a
-        convenience. A VRID is a content identity, so one can carry records from
-        several connectors; returning the wrong one cites a copy the user cannot
-        open. Implementations must return only ids the user may read, and must
-        apply the same gates as ``check_record_access_with_details``: the
-        connector must still be reachable, and the record must not be
-        soft-deleted or mid-indexing.
-
-        Abstract rather than defaulted because there is no safe default — an
-        empty map denies every search result, and anything permissive leaks.
-
-        Args:
-            virtual_record_ids: VRIDs returned by the vector search.
-            user_id: The ``userId`` field value, not the graph key.
-            org_id: Organization scope. A VRID is content identity and is not
-                unique across orgs, so this is a tenant boundary, not a filter.
-            trusted_app_ids: Apps declaring ``APP_LEVEL`` (connector instances
-                and Collections alike), where reaching the app proves reaching
-                every record under it. Records under these skip the role
-                resolution — every other gate still applies.
-            trusted_group_ids: Groups declaring ``RECORD_GROUP_LEVEL``. A record
-                qualifies only by reaching one through ``INHERIT_PERMISSIONS`` —
-                not by ``belongsTo`` membership, which is written unconditionally
-                and so would admit a record with ``inherit_permissions=False``.
-                Both default to empty, which reproduces full adjudication.
-            scope_connector_ids: The request's ``apps`` ∪ ``kb`` scope; only
-                records whose ``connectorId`` is in it may be cited. Needed even
-                though the search was already scoped: vector membership arrays
-                are unioned per VRID, so content shared with an out-of-scope app
-                can match. None means unscoped; an empty set grants nothing.
-
-        Returns:
-            ``{virtualRecordId: recordId}`` for the readable subset. VRIDs the
-            user cannot read are absent, so an empty map means every one was
-            denied.
-
-        Raises:
-            PermissionVerificationUnavailableError: the graph could not answer.
-        """
-        pass
-
-    @abstractmethod
     async def filter_accessible_record_ids(
         self,
         record_ids: list[str],
@@ -6258,14 +7599,12 @@ class IGraphDBProvider(ABC):
         *,
         transaction: str | None = None,
     ) -> set[str]:
-        """The subset of ``record_ids`` the user may read.
-
-        For records reached by graph traversal rather than by search (a hit's
-        parent, attachment or child), so it keys on record ids and applies the gates of
-        ``filter_accessible_virtual_record_ids`` except ``indexingStatus``: a
-        record that synced but did not index still has its permissions and its
-        metadata. Placeholder and internal records are excluded — they are
-        stubs, not content.
+        """The subset of ``record_ids`` the user may read, by the batch access
+        check (``check_access``), for records reached by graph traversal rather
+        than by search (a hit's parent, attachment or child). Not gated on
+        ``indexingStatus``: a record that synced but did not index still has
+        its permissions and its metadata. Placeholder and internal records are
+        excluded — they are stubs, not content.
 
         Args:
             record_ids: Record ids to adjudicate.
@@ -6276,9 +7615,109 @@ class IGraphDBProvider(ABC):
             The readable ids. Empty means every id was denied.
 
         Raises:
-            PermissionVerificationUnavailableError: the graph could not answer.
+            PermissionVerificationUnavailableError: the graph could not answer,
+                including the caller's own lookup.
         """
-        pass
+        asked = {r for r in record_ids if r}
+        if not asked:
+            return set()
+        try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        user_key = (user or {}).get("id") or (user or {}).get("_key")
+        if not user_key:
+            return set()
+        try:
+            rows = await self._kh_v3_accessible_rows(
+                user_key, org_id, list(asked), [], access=None, transaction=transaction,
+            )
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        return {
+            r["id"] for r in rows
+            if r.get("id") in asked and not r.get("isInternal") and not r.get("isPlaceholder")
+        }
+
+    async def filter_accessible_virtual_record_ids(
+        self,
+        virtual_record_ids: list[str],
+        user_id: str,
+        org_id: str,
+        *,
+        trusted_app_ids: frozenset[str] | None = None,
+        trusted_group_ids: frozenset[str] | None = None,
+        scope_connector_ids: frozenset[str] | None = None,
+        scopes: Iterable[RowScope] = (),
+        transaction: str | None = None,
+    ) -> dict[str, str]:
+        """``{virtualRecordId: recordId}`` for the retrieved virtual record ids the
+        user may read, by the batch access check (``check_access``). The record
+        cited is live, indexed and, when ``scope_connector_ids`` is given, of one
+        of those connectors (an empty set cites nothing); with ``scopes``, one
+        that every scope admits.
+
+        Nothing is trusted: ``trusted_app_ids`` and ``trusted_group_ids`` are
+        accepted and ignored, and every id is checked.
+
+        Args:
+            virtual_record_ids: Virtual record ids returned by a search.
+            user_id: The ``userId`` field value, not the graph key.
+            org_id: Tenant boundary.
+
+        Returns:
+            The readable subset. Empty means every id was denied.
+
+        Raises:
+            PermissionVerificationUnavailableError: the graph could not answer,
+                including the caller's own lookup.
+        """
+        asked = [v for v in dict.fromkeys(virtual_record_ids) if v]
+        if not asked:
+            return {}
+        try:
+            user = await self.get_user_by_user_id(user_id, raise_on_error=True)
+        except Exception as exc:
+            raise PermissionVerificationUnavailableError(str(exc)) from exc
+        user_key = (user or {}).get("id") or (user or {}).get("_key")
+        if not user_key:
+            return {}
+        check = await self.check_access(
+            user_key, org_id, virtual_record_ids=asked, indexed_only=True,
+            connector_ids=scope_connector_ids, scopes=scopes, transaction=transaction,
+        )
+        return dict(check.records_by_vrid)
+
+    async def filter_nodes_with_permission_role(
+        self,
+        nodes: list[dict[str, str]],
+        user_key: str,
+        org_id: str,
+        *,
+        transaction: str | None = None,
+        raise_on_error: bool = False,
+    ) -> set[str]:
+        """The ids among ``nodes`` (each ``{"id": str, "type": "record"|"recordGroup"}``)
+        the user may access, by the batch access check (``check_access``).
+
+        A failed check returns ``set()`` unless ``raise_on_error``, which
+        re-raises it so the caller can tell a failure apart from "no access".
+        """
+        ids = [node.get("id") for node in nodes or [] if node.get("id")]
+        if not ids or not user_key:
+            return set()
+        try:
+            check = await self.check_access(user_key, org_id, node_ids=ids, transaction=transaction)
+        except NotImplementedError:
+            raise
+        except Exception as exc:
+            if raise_on_error:
+                raise
+            self.logger.warning("filter_nodes_with_permission_role: access check failed: %s", exc)
+            return set()
+        return set(check.node_ids)
 
     @abstractmethod
     async def get_record_parent_adjacency(
@@ -6308,7 +7747,7 @@ class IGraphDBProvider(ABC):
               },
               "parents": {
                 "<child_id>": [
-                  {"parent_id": str, "parent_type": str, "via": "recordRelations"|"belongsTo"},
+                  {"parent_id": str, "parent_type": str, "via": "nodeRelations"|"belongsTo"},
                   ...
                 ],
               },
@@ -6343,6 +7782,34 @@ class IGraphDBProvider(ABC):
             level (``"1"``/``"2"``/``"3"``) or None for every other entity
             type, and ``orgId`` is the node's org or None (a legacy node or a
             global department). ``sync_entities_for_duplicate`` reads all six.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_taxonomy_links(
+        self,
+        record_keys: list[str],
+        transaction: str | None = None,
+        *,
+        include_departments: bool = False,
+    ) -> list[dict[str, Any]]:
+        """Every ``belongsTo*`` edge from the given records to a category,
+        subcategory, topic or language node, with the spelling the record's
+        own extraction gave that node.
+
+        Rows are ``{recordId, collection, entityId, name, canonical,
+        extractedName, migrated}``: ``name`` is the node's stored name,
+        ``canonical`` whether the node is a per-org canonical node (it has a
+        ``normalizedName``), ``extractedName`` the edge's own spelling or
+        None, and ``migrated`` whether the edge was moved off a legacy node.
+        ``app.services.graph_db.taxonomy.TaxonomyLink`` reads them.
+        Departments are included only with ``include_departments`` (the
+        record-delete cleanup); their rows carry the department's name and
+        no spelling.
+
+        Raises:
+            Exception: on query failure; a partial answer would read as the
+            records having fewer labels.
         """
         pass
 
@@ -6435,19 +7902,22 @@ class IGraphDBProvider(ABC):
         window: int = 200,
         timeout_seconds: float | None = None,
     ) -> "dict[tuple[str, str], PermittedEntityRows]":
-        """The records of each entity in ``refs`` that the user may read,
-        checked inside the query.
+        """One window of each entity's candidate records, filtered inside the
+        query by connector or permission role. Not the access decision: the
+        role test reads neither ``accessRule`` nor the connector gate.
 
         Candidates are exactly those of :meth:`get_entity_candidate_records`
         (same refs, scoping, scan cap and newest-first order). Of these, the
         window ``[offset, offset + window)`` is walked in order and a row is
         returned when:
-          - its ``connectorId`` is in ``app_level_connector_ids`` (app access
-            grants every record), or
-          - the user ``user_key`` holds a permission role on it, by the same
-            paths as :meth:`filter_nodes_with_permission_role`.
+          - its ``connectorId`` is in ``app_level_connector_ids``, or
+          - the user ``user_key`` holds a permission role on it.
         Domain, "anyone" and link shares grant no access, as in every other
         access check.
+        ``app.modules.retrieval.entity_permissions`` passes every candidate's
+        connector, so the whole window comes back, and decides each row with
+        :meth:`check_access`; the role test remains for callers that pass
+        fewer.
         The walk stops after ``limit_per_entity`` permitted rows, so the
         permission work per entity is bounded by the window and usually ends
         sooner.
@@ -6506,6 +7976,38 @@ class IGraphDBProvider(ABC):
 
         Raises:
             Exception: on any query failure.
+        """
+        pass
+
+    @abstractmethod
+    async def get_unreached_taxonomy_entities(
+        self,
+        refs: list[dict[str, Any]],
+        org_id: str,
+        transaction: str | None = None,
+    ) -> set[tuple[str, str]]:
+        """The taxonomy entities in ``refs`` that no non-deleted record of
+        ``org_id`` reaches over a ``belongsTo*`` edge any more, or whose node
+        is gone. The record-delete cleanup deletes their entity points.
+
+        Reaching is counted over every connector, knowledge base and copy of a
+        record, as in ``get_taxonomy_entity_membership``, but each entity stops
+        at its first live record, so an entity most of the org links to (a
+        language) costs one edge read, not one per record.
+
+        Args:
+            refs: ``{"id": str, "type": str}`` for ``department``, ``category``,
+                ``subcategory`` (levels 1-3), ``topic`` or ``language``; other
+                types are never returned.
+            org_id: Organization scope. Empty returns an empty set without
+                querying.
+            transaction: Optional transaction id.
+
+        Returns:
+            ``{(entity_type, entity_id)}`` of the unreached refs.
+
+        Raises:
+            Exception: on any query failure, never an empty answer.
         """
         pass
 
@@ -6681,3 +8183,150 @@ class IGraphDBProvider(ABC):
             Exception: on write failure.
         """
         pass
+
+    @abstractmethod
+    async def create_named_entities_if_absent(self, nodes: list[dict]) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities(self, org_id: str, kind: str, norm_keys: list[str]) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_by_ids(self, org_id: str, ids: list[str]) -> list[dict]:
+        """``{id, kind, name, normKey}`` of the org's named-entity nodes among ``ids``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def find_named_entities_by_key_prefix(
+        self, org_id: str, prefixes: list[tuple[str, str]], limit: int = 21
+    ) -> list[dict]:
+        """Nodes whose key is a ``(kind, key)`` pair's key followed by more words,
+        at most ``limit`` per pair, each row tagged with that ``key``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entity_mentions_in_records(
+        self, org_id: str, entity_ids: list[str], record_ids: list[str]
+    ) -> list[dict]:
+        """Mention edges between ``record_ids`` (records the caller already resolved)
+        and ``entity_ids``: ``{recordId, entityId, blockIndexes, extractedNames, mentionCount}``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def add_named_entity_aliases(
+        self, org_id: str, kind: str, key: str, aliases: list[str], normalized: list[str]
+    ) -> None:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def query_named_entities(self, org_id: str, query) -> dict:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_records_for_named_entities(
+        self,
+        org_id: str,
+        entity_ids: list[str] | None = None,
+        query=None,
+        limit: int = 5000,
+        within: list[str] | None = None,
+    ) -> dict:
+        """Records matching every constraint. With ``within``, only those record ids
+        are considered, so a caller's answer never depends on records it cannot read."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_named_entities_for_record(self, record_id: str) -> list[dict]:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def copy_named_entity_mentions(self, source_key: str, target_key: str) -> int:
+        raise NotImplementedError
+
+    def is_named_entity_write_retryable(self, error: BaseException) -> bool:
+        return False
+
+    @abstractmethod
+    async def find_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        skip_kinds: list[str] | None = None,
+    ) -> list[str]:
+        """Keys :meth:`delete_orphan_named_entities` would delete now, without deleting
+        them, leaving out ``skip_kinds``."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_orphan_named_entities(
+        self,
+        org_id: str,
+        batch_size: int = 200,
+        marked_before_ms: int | None = None,
+        entity_ids: list[str] | None = None,
+    ) -> list[str]:
+        """Delete entities no record mentions. With ``marked_before_ms``, only those
+        marked orphaned at or before it, so a node written a moment ago and not yet
+        linked is not removed. With ``entity_ids``, only those of them still orphaned."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def mark_orphan_named_entities(self, org_id: str, now_ms: int, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_orphan_named_entity_marks(self, org_id: str, batch_size: int = 200) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_mentions(self, entity_ids: list[str]) -> int:
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_persist_retry(
+        self, org_id: str, record_id: str, error: str, attempts_so_far: int = 0,
+    ) -> int:
+        """Record that ``record_id``'s named-entity write failed: due again after a
+        backoff that doubles per failure. ``attempts_so_far`` carries a retry's count
+        when its marker is already gone (its claim committed before the failure).
+        Returns the record's failure count."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def get_due_named_entity_persist_retries(self, limit: int, *, reextract: bool = False) -> list[dict]:
+        """Retries due now, oldest first: ``recordId``, ``orgId``, ``attempts``, ``dueAt``.
+        ``reextract`` selects the re-extraction jobs instead of the write retries."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def schedule_named_entity_reextract(self, org_id: str, record_id: str) -> None:
+        """Queue ``record_id`` to have its named entities extracted again from its
+        stored blocks, due now. A normal write of the record drops it."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def clear_named_entity_persist_retry(
+        self, record_id: str, due_at: int | None, transaction: str | None = None,
+    ) -> bool:
+        """Drop the retry, only while its due time is still ``due_at``; with no
+        ``due_at``, whatever is pending. Returns whether one was dropped."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def resolve_named_entity_redirects(self, org_id: str, ids: list[str]) -> dict[str, str]:
+        """Each named-entity id mapped to the node it was finally merged into."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def replace_named_entity_values(
+        self, record_id: str, docs: list[dict], transaction: str | None = None,
+    ) -> None:
+        """Make ``docs`` the typed values (dates, amounts, quantities…) the record mentions."""
+        raise NotImplementedError
+
+    @abstractmethod
+    async def delete_dangling_named_entity_values(self, org_id: str, batch_size: int = 200) -> int:
+        """Remove value rows whose record no longer exists; returns how many."""
+        raise NotImplementedError

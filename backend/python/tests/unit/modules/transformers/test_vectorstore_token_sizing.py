@@ -183,3 +183,10 @@ class TestSplitToTokenCeiling:
         assert "".join(pieces) == text
         assert "�" not in "".join(pieces)
         assert all(len(p.encode("utf-8")) <= CEILING for p in pieces)
+
+
+def test_a_special_token_written_in_the_text_is_counted_and_split_as_text() -> None:
+    """Code about LLMs holds `<|endoftext|>` literally; tiktoken refused it and the file failed to index."""
+    text = 'STOP = "<|endoftext|>"\n' * 2000
+    assert _token_len(text) > 0
+    assert "".join(_split_to_token_ceiling(text, 512)) == text

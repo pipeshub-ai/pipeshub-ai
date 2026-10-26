@@ -13,6 +13,7 @@ from app.utils.url_fetcher import (
     _MAX_REDIRECTS,
     FetchError,
     FetchResult,
+    HostCheckError,
     PublicTarget,
     _build_headers,
     _curl_pinned_request,
@@ -22,9 +23,11 @@ from app.utils.url_fetcher import (
     _try_cloudscraper,
     _try_curl_cffi,
     _try_requests,
+    check_http_url_without_resolving,
     fetch_url,
     resolve_public_http_target,
     validate_public_http_url,
+    vetted_addresses,
 )
 
 # The autouse stub below replaces DNS; the loopback socket tests need the real resolver back.
@@ -470,7 +473,7 @@ class TestTryRequests:
 
 
 class TestSsrfValidation:
-    """Host validation runs before fetch strategies (initial URL only)."""
+    """Host validation runs before fetch strategies and on every redirect hop."""
 
     def test_blocks_literal_loopback_ipv4(self) -> None:
         with pytest.raises(FetchError, match="Blocked unsafe URL"):
@@ -504,6 +507,42 @@ class TestSsrfValidation:
     def test_rejects_non_http_scheme(self) -> None:
         with pytest.raises(FetchError, match="Only HTTP/HTTPS"):
             fetch_url("file:///etc/passwd")
+
+    # Every hop goes through fetch_url's pinned per-hop loop.
+    @staticmethod
+    def _redirect_then_ok(location: str) -> list[FetchResult]:
+        return [
+            _fetch_result(302, "https://example.com/page", {"Location": location}),
+            _fetch_result(200, location),
+        ]
+
+    @staticmethod
+    def _dns(private_host: str):  # noqa: ANN205
+        def fake_getaddrinfo(
+            host: str, port: object, *_args: object, **_kwargs: object
+        ) -> list[tuple[int, int, int, str, tuple[str, int]]]:
+            addr = "10.0.0.1" if host == private_host else "8.8.8.8"
+            return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (addr, 0))]
+
+        return fake_getaddrinfo
+
+    @pytest.mark.parametrize(
+        "location",
+        ["http://127.0.0.1/secret", "http://169.254.169.254/latest/meta-data/", "http://10.0.0.8/logo.png"],
+    )
+    def test_blocks_redirect_to_loopback_metadata_or_private_literal(self, location: str) -> None:
+        with patch("app.utils.url_fetcher._try_requests", side_effect=self._redirect_then_ok(location)) as mock:
+            with pytest.raises(FetchError, match="Blocked"):
+                fetch_url("https://example.com/page", strategy="requests")
+        assert mock.call_count == 1
+
+    def test_blocks_redirect_to_hostname_that_resolves_private(self) -> None:
+        responses = self._redirect_then_ok("http://internal.corp/")
+        with patch("socket.getaddrinfo", side_effect=self._dns("internal.corp")), \
+             patch("app.utils.url_fetcher._try_requests", side_effect=responses) as mock:
+            with pytest.raises(FetchError, match="Blocked"):
+                fetch_url("https://example.com/page", strategy="requests")
+        assert mock.call_count == 1
 
 
 class TestFetchUrl:
@@ -1378,3 +1417,163 @@ class TestPinnedTransportsOnTheWire:
         assert result is not None
         assert result.status_code == 200
         assert hosts == [f"pinned.invalid:{port}"]
+
+
+class TestVettedAddresses:
+    """Hosts users type for a database connection, looked up once and checked before anything dials them."""
+
+    @pytest.mark.parametrize("host", ["169.254.169.254", "metadata.google.internal", "fd00:ec2::254"])
+    async def test_metadata_addresses_are_always_refused(self, host, monkeypatch):
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        with pytest.raises(HostCheckError, match="never allowed"):
+            await vetted_addresses(host)
+
+    @pytest.mark.parametrize("host", ["10.0.0.5", "127.0.0.1", "localhost", "100.64.1.1"])
+    async def test_private_addresses_are_allowed_unless_the_switch_is_on(self, host, monkeypatch):
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        assert await vetted_addresses(host)
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        with pytest.raises(HostCheckError, match="private or internal address"):
+            await vetted_addresses(host)
+
+    async def test_a_name_resolving_inside_the_network_is_refused_without_saying_where(self, monkeypatch):
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        monkeypatch.setattr(
+            socket, "getaddrinfo", lambda *a, **k: [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.1.2.3", 0))]
+        )
+        with pytest.raises(HostCheckError) as exc:
+            await vetted_addresses("db.corp.example")
+        assert "private or internal address" in str(exc.value)
+        assert "10.1.2.3" not in str(exc.value)
+
+    async def test_a_socket_path_counts_as_local(self, monkeypatch):
+        monkeypatch.delenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", raising=False)
+        assert await vetted_addresses("/var/run/postgresql") == []
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        with pytest.raises(HostCheckError, match="private or internal address"):
+            await vetted_addresses("/var/run/postgresql")
+
+    @pytest.mark.parametrize("switch", ["", "true"])
+    async def test_a_lookup_that_fails_or_hangs_is_refused_in_every_mode(self, switch, monkeypatch):
+        import time
+
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", switch)
+
+        def no_such_host(*a, **k):
+            raise socket.gaierror(11001, "getaddrinfo failed")
+
+        monkeypatch.setattr(socket, "getaddrinfo", no_such_host)
+        with pytest.raises(HostCheckError, match="Could not find a server"):
+            await vetted_addresses("no-such-host.invalid")
+
+        monkeypatch.setattr(socket, "getaddrinfo", lambda *a, **k: time.sleep(0.5) or [])
+        with pytest.raises(HostCheckError, match="timed out"):
+            await vetted_addresses("slow.example", lookup_timeout_s=0.05)
+
+    async def test_a_public_name_returns_what_it_resolved_to(self, monkeypatch):
+        monkeypatch.setenv("PIPESHUB_BLOCK_PRIVATE_ADDRESSES", "true")
+        assert [str(ip) for ip in await vetted_addresses("db.example.com")] == ["8.8.8.8"]  # stubbed DNS
+# ---------------------------------------------------------------------------
+# allow_private — admin-configured targets on the deployment's own network
+# ---------------------------------------------------------------------------
+
+
+class TestAllowPrivate:
+    @pytest.mark.parametrize("address", ["10.0.0.5", "192.168.1.1", "172.16.0.9", "100.64.1.1", "fd12::1"])
+    def test_private_network_addresses_are_accepted(self, address: str) -> None:
+        host = f"[{address}]" if ":" in address else address
+        target = resolve_public_http_target(f"https://{host}/mcp", block_non_global=False, allow_private=True)
+        assert str(target.pinned_address) == address
+
+    @pytest.mark.parametrize(
+        "address",
+        ["127.0.0.1", "::1", "169.254.169.254", "fe80::1", "0.0.0.0", "224.0.0.1", "240.0.0.1",
+         "fd00:ec2::254", "100.100.100.200", "168.63.129.16", "::ffff:127.0.0.1"],
+    )
+    def test_loopback_link_local_and_metadata_stay_blocked(self, address: str) -> None:
+        host = f"[{address}]" if ":" in address else address
+        with pytest.raises(FetchError):
+            resolve_public_http_target(f"https://{host}/mcp", allow_private=True)
+
+    @pytest.mark.parametrize("hostname", ["localhost", "metadata.google.internal", "app.localhost"])
+    def test_blocked_hostnames_stay_blocked(self, hostname: str) -> None:
+        with pytest.raises(FetchError):
+            resolve_public_http_target(f"https://{hostname}/mcp", allow_private=True)
+
+    def test_mdns_names_are_allowed_only_with_allow_private(self) -> None:
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.20", 0))]
+        with patch("socket.getaddrinfo", return_value=infos):
+            resolve_public_http_target("http://mcp.local/", allow_private=True)
+            with pytest.raises(FetchError):
+                resolve_public_http_target("http://mcp.local/")
+
+    def test_a_hostname_resolving_to_loopback_is_blocked(self) -> None:
+        infos = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))]
+        with patch("socket.getaddrinfo", return_value=infos), pytest.raises(FetchError):
+            resolve_public_http_target("https://rebind.example.com/", allow_private=True)
+
+    def test_default_policy_still_blocks_private_addresses(self) -> None:
+        with pytest.raises(FetchError):
+            resolve_public_http_target("https://10.0.0.5/mcp")
+
+
+class TestIPv6FormsCarryingAnIPv4Address:
+    """The metadata list and the IPv4 rules are applied to the IPv4 address an IPv6 address
+    carries; `::ffff:168.63.129.16` used to pass every policy."""
+
+    POLICIES = [
+        {},
+        {"block_non_global": False},
+        {"block_non_global": False, "allow_private": True},
+    ]
+
+    @pytest.mark.parametrize("policy", POLICIES)
+    @pytest.mark.parametrize(
+        "address", ["::ffff:100.100.100.200", "::ffff:168.63.129.16", "::ffff:169.254.169.254", "::ffff:127.0.0.1"],
+    )
+    def test_mapped_metadata_and_loopback_are_refused_under_every_policy(self, address: str, policy: dict) -> None:
+        with pytest.raises(FetchError, match="Blocked unsafe URL"):
+            resolve_public_http_target(f"https://[{address}]/", **policy)
+
+    def test_a_mapped_public_address_is_reachable(self) -> None:
+        target = resolve_public_http_target("https://[::ffff:8.8.8.8]/")
+        assert target.pinned_address == ipaddress.ip_address("::ffff:8.8.8.8")
+
+    def test_a_mapped_private_address_follows_the_private_rule(self) -> None:
+        with pytest.raises(FetchError):
+            resolve_public_http_target("https://[::ffff:10.0.0.5]/")
+        resolve_public_http_target("https://[::ffff:10.0.0.5]/", block_non_global=False, allow_private=True)
+
+    @pytest.mark.parametrize(
+        "address",
+        [
+            "2002:a9fe:a9fe::1",  # 6to4 of 169.254.169.254
+            "2002:6464:64c8::1",  # 6to4 of 100.100.100.200
+            "2001:0:a9fe:a9fe::1",  # Teredo, server 169.254.169.254
+        ],
+    )
+    def test_relayed_forms_carrying_metadata_are_refused_even_on_the_private_network(self, address: str) -> None:
+        with pytest.raises(FetchError, match="Blocked unsafe URL"):
+            resolve_public_http_target(f"https://[{address}]/", block_non_global=False, allow_private=True)
+
+    def test_a_hostname_whose_aaaa_record_is_mapped_metadata_is_refused(self) -> None:
+        infos = [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::ffff:100.100.100.200", 0, 0, 0))]
+        with patch("socket.getaddrinfo", return_value=infos), pytest.raises(FetchError, match="Blocked unsafe URL"):
+            resolve_public_http_target("https://innocent.example/", block_non_global=False, allow_private=True)
+
+    def test_the_save_time_literal_check_refuses_mapped_metadata(self) -> None:
+        with pytest.raises(FetchError):
+            check_http_url_without_resolving("https://[::ffff:168.63.129.16]/", allow_private=True)
+
+
+class TestCheckHttpUrlWithoutResolving:
+    def test_does_not_touch_dns(self) -> None:
+        with patch("socket.getaddrinfo", side_effect=AssertionError("no DNS at save time")):
+            check_http_url_without_resolving("https://does-not-resolve.invalid/mcp")
+
+    @pytest.mark.parametrize(
+        "url", ["ftp://example.com/", "https://localhost/", "http://169.254.169.254/latest", "https:///nohost"],
+    )
+    def test_rejects_what_it_can_decide_statically(self, url: str) -> None:
+        with pytest.raises(FetchError):
+            check_http_url_without_resolving(url, allow_private=True)

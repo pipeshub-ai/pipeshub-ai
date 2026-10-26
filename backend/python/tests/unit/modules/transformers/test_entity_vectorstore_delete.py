@@ -11,6 +11,7 @@ The five phases are:
 """
 from __future__ import annotations
 
+import asyncio
 import copy
 from unittest.mock import AsyncMock, MagicMock
 
@@ -740,3 +741,162 @@ class TestNoProgressBehindAStalePage:
         with pytest.raises(RuntimeError, match="no progress"):
             await _store_over(entities)._shrink_connector_membership("org-1", "conn-a", [], page_size=1)
         assert writes == [["topic:t1"], ["topic:t1"]]
+
+
+def _refs(*pairs: tuple[str, str]) -> list[dict[str, str]]:
+    return [{"type": entity_type, "id": entity_id} for entity_type, entity_id in pairs]
+
+
+class TestDeleteUnreachedEntities:
+    """A deleted record's taxonomy entities: the points no other live record
+    reaches go, and the rest are left exactly as they are."""
+
+    @pytest.mark.asyncio
+    async def test_unreached_points_go_and_reached_ones_keep_their_membership(self) -> None:
+        entities = _Entities(
+            _entity_point("only-here", "topic", ["kb-1"], ["g1"]),
+            _entity_point("shared", "topic", ["kb-1", "conn-b"], ["g1", "gb"]),
+            _entity_point("c1", "category", ["kb-1"], ["g1"]),
+        )
+        lookup = AsyncMock(return_value={("topic", "only-here"), ("category", "c1")})
+
+        await _store_over(entities).delete_unreached_entities(
+            "org-1", _refs(("topic", "only-here"), ("topic", "shared"), ("category", "c1")), lookup,
+        )
+
+        assert list(entities.points) == ["topic:shared"]
+        # Membership is a recall hint; tightening it would read every record
+        # linked to the entity, so a reached point is not rewritten.
+        assert _membership(entities, "topic:shared") == (["kb-1", "conn-b"], ["g1", "gb"])
+        assert entities.by_id_writes == []
+        assert entities.set_payload_calls == []
+
+    @pytest.mark.asyncio
+    async def test_one_lookup_names_every_ref_once(self) -> None:
+        entities = _Entities()
+        lookup = AsyncMock(return_value=set())
+
+        await _store_over(entities).delete_unreached_entities(
+            "org-1", _refs(("topic", "t1"), ("category", "c1"), ("topic", "t1")), lookup,
+        )
+
+        lookup.assert_awaited_once()
+        (asked,) = lookup.await_args.args
+        assert asked == [{"id": "c1", "type": "category"}, {"id": "t1", "type": "topic"}]
+        assert entities.delete_calls == []
+
+    @pytest.mark.asyncio
+    async def test_a_lookup_never_widens_the_delete(self) -> None:
+        entities = _Entities(
+            _entity_point("t1", "topic", ["kb-1"], []),
+            _entity_point("other", "topic", ["kb-1"], []),
+        )
+        lookup = AsyncMock(return_value={("topic", "other"), ("record", "r9")})
+
+        await _store_over(entities).delete_unreached_entities("org-1", _refs(("topic", "t1")), lookup)
+
+        assert sorted(entities.points) == ["topic:other", "topic:t1"]
+        assert entities.delete_calls == []
+
+    @pytest.mark.asyncio
+    async def test_another_orgs_point_of_the_same_id_is_untouched(self) -> None:
+        other_org = _entity_point("t1", "topic", ["kb-9"], [], org="org-2")
+        other_org.id = "org-2:topic:t1"
+        entities = _Entities(_entity_point("t1", "topic", ["kb-1"], []), other_org)
+
+        await _store_over(entities).delete_unreached_entities(
+            "org-1", _refs(("topic", "t1")), AsyncMock(return_value={("topic", "t1")}),
+        )
+
+        assert list(entities.points) == ["org-2:topic:t1"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_raises_and_deletes_nothing(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["kb-1"], []))
+        lookup = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with pytest.raises(RuntimeError):
+            await _store_over(entities).delete_unreached_entities("org-1", _refs(("topic", "t1")), lookup)
+
+        assert list(entities.points) == ["topic:t1"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_raises(self) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["kb-1"], []))
+        entities.delete_points = AsyncMock(side_effect=RuntimeError("vector db down"))
+
+        with pytest.raises(RuntimeError):
+            await _store_over(entities).delete_unreached_entities(
+                "org-1", _refs(("topic", "t1")), AsyncMock(return_value={("topic", "t1")}),
+            )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "org_id, refs",
+        [
+            ("", [{"type": "topic", "id": "t1"}]),
+            ("org-1", []),
+            ("org-1", None),
+            ("org-1", [{"type": "topic"}, {"id": "t1"}, "topic:t1", None]),
+        ],
+        ids=["no-org", "no-refs", "none", "malformed"],
+    )
+    async def test_nothing_to_clean_asks_the_graph_nothing(self, org_id, refs) -> None:
+        entities = _Entities(_entity_point("t1", "topic", ["kb-1"], []))
+        lookup = AsyncMock(return_value={("topic", "t1")})
+
+        await _store_over(entities).delete_unreached_entities(org_id, refs, lookup)
+
+        lookup.assert_not_awaited()
+        assert list(entities.points) == ["topic:t1"]
+
+    @pytest.mark.asyncio
+    async def test_missing_collection_is_a_no_op(self) -> None:
+        entities = _Entities()
+        entities.collection_exists = AsyncMock(return_value=False)
+        lookup = AsyncMock(return_value={("topic", "t1")})
+
+        await _store_over(entities).delete_unreached_entities("org-1", _refs(("topic", "t1")), lookup)
+
+        lookup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_lookup_runs_under_the_entities_locks(self) -> None:
+        """Indexing writes a point under the same lock after committing its
+        edge, so a record linked meanwhile shows in the lookup or writes after."""
+        entities = _Entities(_entity_point("t1", "topic", ["kb-1"], []))
+        store = _store_over(entities)
+        held: list[bool] = []
+
+        async def lookup(refs: list[dict[str, str]]) -> set[tuple[str, str]]:
+            held.append(store._entity_lock(store._entity_key("org-1", "topic", "t1")).locked())
+            held.append(store._entity_lock(store._entity_key("org-1", "category", "c1")).locked())
+            return set()
+
+        await store.delete_unreached_entities("org-1", _refs(("topic", "t1"), ("category", "c1")), lookup)
+
+        assert held == [True, True]
+
+    @pytest.mark.asyncio
+    async def test_a_write_waiting_on_the_lock_lands_after_the_delete(self) -> None:
+        """A record indexed while the cleanup holds the lock rewrites the point
+        once the delete is done, so it is not lost."""
+        entities = _Entities(_entity_point("t1", "topic", ["kb-1"], []))
+        store = _store_over(entities)
+        rewrite = _entity_point("t1", "topic", ["kb-2"], ["g2"])
+        writer: list[asyncio.Task] = []
+
+        async def write_under_the_lock() -> None:
+            async with store._entity_lock(store._entity_key("org-1", "topic", "t1")):
+                entities.points[rewrite.id] = rewrite
+
+        async def lookup(refs: list[dict[str, str]]) -> set[tuple[str, str]]:
+            writer.append(asyncio.create_task(write_under_the_lock()))
+            await asyncio.sleep(0)
+            assert "topic:t1" in entities.points and _membership(entities, "topic:t1")[0] == ["kb-1"]
+            return {("topic", "t1")}
+
+        await store.delete_unreached_entities("org-1", _refs(("topic", "t1")), lookup)
+        await writer[0]
+
+        assert _membership(entities, "topic:t1") == (["kb-2"], ["g2"])

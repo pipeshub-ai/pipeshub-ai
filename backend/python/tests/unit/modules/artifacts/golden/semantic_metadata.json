@@ -1,0 +1,71 @@
+{
+  "multimodal": false,
+  "record": {
+    "virtual_record_id": "vr-semantic",
+    "record_name": "policy.docx",
+    "mime_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "semantic_metadata": {
+      "summary": "Travel policy for staff.",
+      "categories": [
+        "Policy"
+      ],
+      "topics": [
+        "Travel",
+        "Expenses"
+      ],
+      "departments": [
+        "Finance"
+      ],
+      "languages": [
+        "English"
+      ],
+      "sub_category_level_1": "Travel",
+      "sub_category_level_2": "",
+      "sub_category_level_3": ""
+    },
+    "block_containers": {
+      "blocks": [
+        {
+          "index": 0,
+          "type": "text",
+          "data": "Book economy class for flights under six hours."
+        },
+        {
+          "index": 1,
+          "type": "text",
+          "data": "Hotels must be booked through the travel desk."
+        }
+      ],
+      "block_groups": []
+    }
+  },
+  "hits": [
+    {
+      "metadata": {
+        "virtualRecordId": "vr-semantic",
+        "isRecordSummary": true,
+        "isBlockGroup": false
+      },
+      "score": 0.93,
+      "content": "Travel policy for staff."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-semantic",
+        "isBlockGroup": false,
+        "blockIndex": 0
+      },
+      "score": 0.84,
+      "content": "Book economy class for flights under six hours."
+    },
+    {
+      "metadata": {
+        "virtualRecordId": "vr-semantic",
+        "isBlockGroup": false,
+        "blockIndex": 1
+      },
+      "score": 0.6,
+      "content": "Hotels must be booked through the travel desk."
+    }
+  ]
+}

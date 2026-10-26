@@ -484,6 +484,8 @@ class FakeGitLab:
             return _json(group.to_json())
         if rest[1:] == ["members", "all"]:
             return self._offset_page(self._member_rows(self.group_members_all(group)), req, raw_path)
+        if rest[1:] == ["members"]:
+            return self._offset_page(self._member_rows(dict(group.members)), req, raw_path)
         if rest[1:] == ["projects"]:
             include_sub = _flag(req.params, "include_subgroups")
             projects = [p for p in sorted(self.projects.values(), key=lambda p: p.path_with_namespace)

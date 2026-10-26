@@ -15,6 +15,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
 
   order 1  TC-SYNC-001        — full sync baseline vs fixture snapshot + live JQL
   order 2  TC-JIRA-001        — users / USER_APP_RELATION
+  order 2  TC-JIRA-AUTH-001   — the creator's link to the Jira account the API token belongs to
   order 3  TC-JIRA-002        — site groups count
   order 4  TC-JIRA-ROLE-001   — all primary-project AppRoles + synced User→Role members
   order 5  TC-JIRA-003        — project RecordGroup
@@ -24,7 +25,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
   order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
-  order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_RELATION
+  order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
   order 14 TC-JIRA-BLOCKS-001 — streamed application/blocks expected snapshot
   order 15 TC-BROWSE-001      — BROWSE_PROJECTS scheme → PERMISSION→RecordGroup
@@ -39,7 +40,7 @@ import logging
 import os
 import sys
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
@@ -58,11 +59,12 @@ from app.connectors.utils.value_mapper import map_relationship_type  # type: ign
 from app.models.entities import FileRecord, RecordType  # type: ignore[import-not-found]  # noqa: E402
 from app.sources.external.jira.jira import JiraDataSource  # type: ignore[import-not-found]  # noqa: E402
 from helper.assertions import ConnectorAssertions  # noqa: E402
+from helper.authenticated_identity import assert_authenticated_identity_link  # noqa: E402
 from helper.graph_provider import GraphProviderProtocol  # noqa: E402
 from helper.graph_provider_utils import (  # noqa: E402
     apply_filter_full_sync,
+    async_poll_until,
     count_owned_records,
-    wait_for_record_by_external_id,
     wait_for_sync_completion,
 )
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]  # noqa: E402
@@ -72,6 +74,7 @@ from validation.graph_entity_validator import (  # noqa: E402
     assert_user_app_edge,
 )
 from connectors.jira.constants import (  # noqa: E402
+    connector_base_url,
     JIRA_FILTER_DATE_CUT_MS,
     JIRA_INDEXING_WAIT_SEC,
     JIRA_IT_ARTIFACT_PREFIX,
@@ -95,6 +98,7 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     count_jira_group_synced_members,
     count_jira_site_groups_bulk,
     count_jira_users_with_visible_email,
+    count_visible_jira_projects,
     fetch_ancestor_chain,
     get_jira_issue_updated_ms,
     issue_exists_in_project,
@@ -105,6 +109,9 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     preview_jira_role_member_counts,
     search_issues_jql,
     wait_until_jira_condition,
+)
+from helper.indexing_wait import (  # noqa: E402
+    RECORD_INDEXING_TERMINAL,
     wait_until_record_indexing_completed,
 )
 
@@ -126,6 +133,40 @@ def _restart_sync(pipeshub_client: PipeshubClient, connector_id: str) -> None:
     pipeshub_client.wait(5)
     pipeshub_client.toggle_sync(connector_id, enable=True)
     pipeshub_client.wait(8)
+
+
+_SYNC_ATTEMPTS = 3
+
+
+async def _sync_until(
+    pipeshub_client: PipeshubClient,
+    graph_provider: GraphProviderProtocol,
+    connector_id: str,
+    condition: Callable[[], Awaitable[bool]],
+    description: str,
+) -> None:
+    """Incremental-sync until ``condition`` holds.
+
+    The connector finds changes with a JQL search, which can lag a write the issue GET
+    already returns; that sync logs "No new/updated issues" and only a later one sees it.
+    """
+    for attempt in range(1, _SYNC_ATTEMPTS + 1):
+        _restart_sync(pipeshub_client, connector_id)
+        await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+        # An edit leaves the record counts the wait settles on unchanged, and the next
+        # restart would cancel a sync still writing it, so give the graph time first.
+        try:
+            await async_poll_until(condition, timeout=60, interval=5, description=description)
+            return
+        except TimeoutError:
+            logger.warning("%s not seen after sync %d of %d", description, attempt, _SYNC_ATTEMPTS)
+    raise AssertionError(f"{description} not seen after {_SYNC_ATTEMPTS} incremental syncs")
+
+
+async def _record_present(
+    graph_provider: GraphProviderProtocol, connector_id: str, external_id: str,
+) -> bool:
+    return await graph_provider.get_record_by_external_id(connector_id, external_id) is not None
 
 
 async def _delete_artifact_issue(
@@ -164,7 +205,7 @@ async def _delete_artifact_issue(
 
 def _jira_auth_config() -> dict[str, str]:
     """API-token auth block for a connector, from the suite's existing env vars."""
-    base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+    base_url = connector_base_url()
     email = os.getenv("JIRA_TEST_EMAIL") or ""
     api_token = os.getenv("JIRA_TEST_API_TOKEN") or ""
     if not (base_url and email and api_token):
@@ -239,6 +280,21 @@ def _sync_filters(**values: Any) -> dict[str, Any]:
 
 def _pk(operator: str, values: list[str]) -> dict[str, Any]:
     return {"operator": operator, "type": "list", "value": values}
+
+
+# No issue on the simulator pack or the IT site was created before 2000-01-01.
+_BEFORE_ANY_ISSUE_MS = 946_684_800_000
+
+
+def _no_issues() -> dict[str, Any]:
+    """A ``created`` filter no issue passes, for tests that assert on projects only.
+
+    ``not_in [primary]`` and an empty key list scope every visible project. On the
+    simulator that is about 25,000 issues: a full sync of over four minutes on Neo4j and
+    longer on ArangoDB, so both tests ran past the 300s wait. A project becomes a
+    RecordGroup before any of its issues is read, so those assertions never needed them.
+    """
+    return {"type": "datetime", "operator": "is_before", "value": {"start": None, "end": _BEFORE_ANY_ISSUE_MS}}
 
 
 pytestmark = [
@@ -349,7 +405,7 @@ class TestJiraConnector:
         """
         mutation_key = jira_connector["mutation_key"]
         issue_type = jira_connector["mutation_issue_type"]
-        base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+        base_url = connector_base_url()
 
         title = artifact_summary("IncrTest")
         new_id: str | None = None
@@ -384,8 +440,11 @@ class TestJiraConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, new_id),
+                    f"TC-INCR-001 new issue {new_key}",
+                )
 
                 # Assert the delta by external id (parallel-safe), not a global count delta.
                 actual = await graph_provider.get_typed_record_by_external_id(connector_id, new_id)
@@ -454,13 +513,12 @@ class TestJiraConnector:
                     timeout=120,
                 )
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
-
-                record_before = await wait_for_record_by_external_id(
-                    graph_provider, connector_id, target_id,
-                    timeout=120, description="TC-UPDATE-001 baseline record",
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id,
+                    lambda: _record_present(graph_provider, connector_id, target_id),
+                    f"TC-UPDATE-001 baseline record {target_key}",
                 )
+                record_before = await graph_provider.get_record_by_external_id(connector_id, target_id)
                 old_version = int(record_before.version)
 
                 new_summary = artifact_summary("Edited")
@@ -472,9 +530,14 @@ class TestJiraConnector:
                 assert edit_resp.status in (200, 204), f"edit_issue failed: HTTP {edit_resp.status}"
                 pipeshub_client.wait(5)
 
-                _restart_sync(pipeshub_client, connector_id)
-                await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id, timeout=240)
+                async def _edit_synced() -> bool:
+                    record = await graph_provider.get_record_by_external_id(connector_id, target_id)
+                    return record is not None and new_summary in (record.record_name or "")
 
+                await _sync_until(
+                    pipeshub_client, graph_provider, connector_id, _edit_synced,
+                    f"TC-UPDATE-001 edited summary of {target_key}",
+                )
                 record_after = await graph_provider.get_record_by_external_id(connector_id, target_id)
                 assert record_after is not None, "Record missing after sync"
                 assert record_after.version == old_version + 1, (
@@ -519,6 +582,30 @@ class TestJiraValidation:
         )
         await assert_user_app_edge(account_id, connector_id=connector_id, graph_provider=graph_provider)
         logger.info("TC-JIRA-001 passed: %d users", rel_count)
+
+    @pytest.mark.order(2)
+    async def test_tc_jira_auth_001_authenticated_identity(
+        self,
+        jira_connector: dict[str, Any],
+        jira_datasource: JiraDataSource,
+        graph_provider: GraphProviderProtocol,
+    ) -> None:
+        """TC-JIRA-AUTH-001: the creator is linked to the Jira account the API token belongs to.
+
+        That link is what lets a creator whose PipesHub email differs see the account's
+        permissions on this connector. Read from the same ``GET /myself`` the connector reads.
+        """
+        resp = await jira_api_call_with_retry(
+            jira_datasource.get_current_user, context="TC-JIRA-AUTH-001 get_current_user",
+        )
+        assert resp.status == 200, f"get_current_user failed: HTTP {resp.status}"
+        me = resp.json() or {}
+        await assert_authenticated_identity_link(
+            graph_provider, jira_connector["connector_id"],
+            (me.get("emailAddress") or "").strip() or None,
+            me.get("accountId"),
+        )
+        logger.info("TC-JIRA-AUTH-001 passed: Jira account %s", me.get("accountId"))
 
     @pytest.mark.order(3)
     async def test_tc_jira_002_group_properties(
@@ -670,7 +757,7 @@ class TestJiraValidation:
         if not target_key:
             pytest.skip("No reference issue discovered on primary — skipping")
         target_id = jira_connector["reference_issue_id"]
-        base_url = (os.getenv("JIRA_TEST_BASE_URL") or "").rstrip("/")
+        base_url = connector_base_url()
 
         async def _live_and_graph() -> tuple[Any, Any]:
             live = await JiraExpected.ticket_record(
@@ -763,7 +850,7 @@ class TestJiraValidation:
         jira_datasource: JiraDataSource,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-LINKS-001: outward issuelinks on the link-source ticket → mapped RECORD_RELATION edges."""
+        """TC-JIRA-LINKS-001: outward issuelinks on the link-source ticket → mapped RECORD_LINK edges."""
         connector_id = jira_connector["connector_id"]
         source_key = jira_connector.get("link_source_issue_key")
         if not source_key:
@@ -830,10 +917,18 @@ class TestJiraIndexing:
             pytest.skip("No reference issue discovered on primary — skipping")
         external_id = jira_connector["reference_issue_id"]
 
+        # The reference issue is queued behind the whole first sync of the primary project
+        # (about 400 issues on the simulator), so the wait follows the queue: it fails when
+        # indexing stops moving, not when a slower message broker takes longer to reach it.
+        async def indexed_so_far() -> int:
+            records = await graph_provider.fetch_records_by_type(connector_id, "")
+            return sum(1 for r in records if r.get("indexingStatus") in RECORD_INDEXING_TERMINAL)
+
         rec = await wait_until_record_indexing_completed(
             graph_provider, connector_id, external_id,
             timeout=JIRA_INDEXING_WAIT_SEC,
             description=f"TC-JIRA-IDX-001 {key}", pipeshub_client=pipeshub_client,
+            queue_progress=indexed_so_far,
         )
         assert rec.indexing_status == ProgressStatus.COMPLETED.value
         assert rec.record_type == RecordType.TICKET
@@ -971,8 +1066,8 @@ class TestJiraBlocks:
             pytest.skip("JIRA_BLOCKS_ISSUE_KEY unset / not in primary / not synced — skipping")
 
         live_updated_ms = await get_jira_issue_updated_ms(jira_datasource, blocks_key)
-        expected, meta = load_expected()
-        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":
+        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":  # a bootstrap may have no snapshot yet: it writes one below
+            expected, meta = load_expected()
             assert_snapshot_source_unchanged(meta, issue_key=blocks_key, live_updated_ms=live_updated_ms)
 
         # External Jira issue id → internal graph record id (what stream_record expects).
@@ -1064,25 +1159,29 @@ class TestJiraFilters:
     async def test_tc_filter_002_not_in_primary(
         self,
         jira_connector: dict[str, Any],
+        jira_datasource: JiraDataSource,
         pipeshub_client: PipeshubClient,
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-FILTER-002: not_in [primary] → primary absent, other IT projects present."""
+        """TC-FILTER-002: not_in [primary] → primary absent, every other visible project present."""
         connector_id = jira_connector["connector_id"]
         keys = jira_connector["project_keys"]
         primary_key = jira_connector["primary_key"]
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("not_in", [primary_key])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("not_in", [primary_key]), created=_no_issues()),
         )
         primary_rg = await graph_provider.get_record_group_by_external_id(
             connector_id, project_id_by_key[primary_key],
         )
         # BELONGS_TO-guarded: primary lost its RG→App edge on the narrowing full sync.
+        # The site may hold projects beyond the IT ones; not_in keeps all of them.
+        expected = await count_visible_jira_projects(jira_datasource) - 1
         app_rg_edges = await graph_provider.count_app_record_group_edges(connector_id)
-        assert app_rg_edges == len(keys) - 1, (
-            f"expected {len(keys) - 1} in-scope RecordGroups, got {app_rg_edges}; primary_rg={primary_rg!r}"
+        assert app_rg_edges == expected, (
+            f"expected {expected} in-scope RecordGroups, got {app_rg_edges}; primary_rg={primary_rg!r}"
         )
         for key in keys:
             if key == primary_key:
@@ -1220,7 +1319,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", [])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("in", []), created=_no_issues()),
         )
         rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert rgs >= len(keys), f"empty=all should sync ≥ {len(keys)} RecordGroups, got {rgs}"

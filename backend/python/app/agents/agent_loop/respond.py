@@ -69,9 +69,15 @@ from app.agent_loop_lib.transport.opik_tracing import (
     maybe_start_named_span,
     record_named_span_output,
 )
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import (
+    classify_error,
+    redact_error_for_log,
+)
+from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
+from app.agents.agent_loop.mcp_sign_in import sign_in_part
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
+from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE, RESUMING
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
 from app.telemetry.event_buffer import record_event
 from app.telemetry.identity import domain_from_email
@@ -116,7 +122,7 @@ class AnswerFinalizer:
         self._context = context
         self._collector = collector
 
-    def _attach_parts(self, completion_data: dict[str, Any], *, final_text: str | None = None) -> None:
+    def _attach_parts(self, completion_data: dict[str, Any], *, final_text: str | None = None, append: bool = False) -> None:
         """Fills `completion_data["parts"]` from `context.transcript_
         collector` — a no-op for `protocol == "legacy"` (`transcript_
         collector` is `None` there), keeping this additive. `final_text`,
@@ -129,8 +135,14 @@ class AnswerFinalizer:
         if collector is None:
             return
         if final_text is not None:
-            collector.replace_final_text(final_text)
-        completion_data["parts"] = filter_reasoning_parts(collector.parts)
+            if append:
+                collector.append_final_text(final_text)
+            else:
+                collector.replace_final_text(final_text)
+        parts = filter_reasoning_parts(collector.parts)
+        if (sign_in := sign_in_part(self._context)) is not None:
+            parts = [*parts, sign_in]
+        completion_data["parts"] = parts
 
     async def run(
         self,
@@ -185,9 +197,15 @@ class AnswerFinalizer:
             )
 
         if not agent_success:
-            return await self._emit_error_response(
-                agent_error or "An error occurred", event_sink=event_sink
+            error_msg = agent_error or "An error occurred"
+            log.error(
+                "AnswerFinalizer: agent run failed, answering with an error message "
+                "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
+                classify_error(error_msg)[0], self._context.org_id,
+                self._context.conversation_id, self._context.run_id,
+                redact_error_for_log(error_msg),
             )
+            return await self._emit_error_response(error_msg, event_sink=event_sink)
 
         with maybe_start_named_span(
             enabled=is_opik_configured(),
@@ -284,7 +302,7 @@ class AnswerFinalizer:
         agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
         streamed = (streamed_answer or "").strip()
-        is_resume = bool(state.get("ask_user_question_resume"))
+        is_resume = bool(state.get("ask_user_question_resume") or state.get(RESUMING))
         if (
             not (agent_output or "").strip()
             and streamed
@@ -353,7 +371,15 @@ class AnswerFinalizer:
         # text so ALL text parts still have their raw `[source](refN)` refs
         # available for the unified normalization pass below.
         completion_data: dict[str, Any] = {}
-        self._attach_parts(completion_data, final_text=clean_output)
+        # A call is waiting for the person's approval: the answer says so, after what the model
+        # wrote first. Usually the run ended on it; a sub-agent run outside the parent's scope can
+        # ask while the parent answers, and then the answer is followed by the waiting message.
+        pending_message = state.get(PENDING_MESSAGE)
+        awaiting_approval = bool(pending_message)
+        ended_on_it = awaiting_approval and clean_output.strip() == str(pending_message).strip()
+        if awaiting_approval and not ended_on_it:
+            clean_output = f"{clean_output.rstrip()}\n\n{pending_message}"
+        self._attach_parts(completion_data, final_text=clean_output, append=ended_on_it)
 
         parts = completion_data.get("parts")
         if parts:
@@ -437,6 +463,8 @@ class AnswerFinalizer:
         completion_data["answer"] = normalized
         completion_data["citations"] = citations
         completion_data["confidence"] = confidence
+        if awaiting_approval:
+            completion_data["answerMatchType"] = "Approval Needed"
         reasoning_payload = build_reasoning_payload(reasoning_turns)
         if reasoning_payload is not None:
             completion_data["reasoning"] = reasoning_payload
@@ -450,7 +478,9 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
-        _record_answer_generated(self._context, state, citations)
+        # A turn that only asked for approval hasn't answered anything yet.
+        if not awaiting_approval:
+            _record_answer_generated(self._context, state, citations)
         return completion_data
 
     async def _run_cancelled_path(
@@ -554,8 +584,12 @@ class AnswerFinalizer:
                 payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
             except (json.JSONDecodeError, TypeError):
                 payload = raw_result
+            # A refused call showed no card; an event for it would make the client drop the
+            # answer it is streaming in favour of a card with nothing to show.
+            if row.get("status") == "error":
+                continue
             for evt in self._context.formatter.ask_user_question(
-                self._context, status=row.get("status"), tool_data=payload,
+                self._context, status=row.get("status"), tool_data=parked_turn.with_expiry(payload),
             ):
                 await event_sink.write(evt)
             state["ask_user_question_emitted"] = True

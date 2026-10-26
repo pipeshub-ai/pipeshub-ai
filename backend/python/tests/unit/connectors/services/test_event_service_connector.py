@@ -25,6 +25,7 @@ from app.connectors.services.event_service import EventService
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
     current,
@@ -120,6 +121,148 @@ class TestUpdateAppStatus:
         assert call_args["isLocked"] is False
 
 
+# What ArangoDB raised when the sync task wrote the app document at the same
+# moment as the full-sync prep released its lock (nightly run, 20 Oct 2026).
+_ARANGO_WRITE_CONFLICT = (
+    "Batch insert failed with 1 error(s): Item 0: [1200] write-write conflict"
+)
+
+
+def _arango_conflicts(gp) -> None:
+    """Classify errors as the real ArangoDB provider does."""
+    from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+
+    gp.is_write_conflict = ArangoHTTPProvider.__new__(ArangoHTTPProvider).is_write_conflict
+
+
+def _upserted_locks(gp) -> list:
+    return [
+        args[0][0]["isLocked"]
+        for name, args, _kwargs in gp.mock_calls
+        if name == "batch_upsert_nodes" and "isLocked" in args[0][0]
+    ]
+
+
+_SLEEP = "app.connectors.services.event_service.asyncio.sleep"
+
+
+class TestReleaseFullSyncLock:
+    """The release lost a write-write conflict to the sync task's own start
+    write, the lock stayed set after the sync ended, and every toggle, filter
+    change and delete of the connector answered 409."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_is_retried_on_a_connector_that_is_still_there(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(return_value={"id": "c1", "status": "FULL_SYNCING", "isLocked": True})
+        gp.update_node = AsyncMock(return_value=True)
+        with patch(_SLEEP, new_callable=AsyncMock):
+            assert await service._release_full_sync_lock("c1") is True
+
+        gp.batch_upsert_nodes.assert_awaited_once()
+        assert gp.get_document.await_args.kwargs["raise_on_error"] is True
+        key, collection, updates = gp.update_node.await_args.args
+        assert (key, collection, updates["isLocked"]) == ("c1", CollectionNames.APPS.value, False)
+        assert "status" not in updates
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("doc", [None, {"id": "c1", "status": "DELETING", "isLocked": True}])
+    async def test_a_deleted_or_deleting_connector_is_not_written_again(self, service, doc) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(return_value=doc)
+        gp.update_node = AsyncMock(return_value=True)
+        with patch(_SLEEP, new_callable=AsyncMock):
+            assert await service._release_full_sync_lock("c1") is False
+
+        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_read_is_raised_not_taken_as_deleted(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(side_effect=Exception("503 Service Unavailable"))
+        gp.update_node = AsyncMock(return_value=True)
+        with patch(_SLEEP, new_callable=AsyncMock), pytest.raises(Exception, match="503"):
+            await service._release_full_sync_lock("c1")
+
+        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.update_node.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_any_other_failure_is_raised_without_a_retry(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("connection refused"))
+        gp.get_document = AsyncMock()
+        with patch(_SLEEP, new_callable=AsyncMock), pytest.raises(Exception, match="connection refused"):
+            await service._release_full_sync_lock("c1")
+
+        gp.get_document.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_that_never_clears_is_raised_in_the_end(self, service) -> None:
+        from app.connectors.services import event_service as module
+
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        gp.get_document = AsyncMock(return_value={"id": "c1", "status": "FULL_SYNCING"})
+        gp.update_node = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        with patch(_SLEEP, new_callable=AsyncMock), pytest.raises(Exception, match="write-write conflict"):
+            await service._release_full_sync_lock("c1")
+
+        assert gp.update_node.await_count == module._LOCK_RELEASE_RETRIES
+
+    @pytest.mark.asyncio
+    async def test_full_sync_start_releases_the_lock_after_a_conflict(self, service) -> None:
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=[True, Exception(_ARANGO_WRITE_CONFLICT)])
+        gp.get_document = AsyncMock(side_effect=[None, {"id": "c1", "status": "FULL_SYNCING", "isLocked": True}])
+        gp.update_node = AsyncMock(return_value=True)
+        mock_conn = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch(_SLEEP, new_callable=AsyncMock), \
+             current_coordinator() as mock_stm:
+            mock_stm.spawn = AsyncMock(side_effect=spawned)
+            result = await service._handle_start_sync("gmail", {
+                "orgId": "org1", "connectorId": "c1", "fullSync": True
+            })
+
+        assert result is True
+        assert _upserted_locks(gp) == [True, False]
+        assert gp.update_node.await_args.args[2]["isLocked"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_lock_set_that_collides_is_not_retried_and_runs_no_prep(self, service) -> None:
+        """The winner may be the delete route's DELETING or stop's IDLE repair;
+        writing FULL_SYNCING over it and deleting sync points would undo it.
+        Refused, the event is redelivered and meets the DELETING check."""
+        gp = service.graph_provider
+        _arango_conflicts(gp)
+        gp.batch_upsert_nodes = AsyncMock(side_effect=Exception(_ARANGO_WRITE_CONFLICT))
+        mock_conn = AsyncMock()
+        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
+             patch.object(service, "_get_connector", return_value=mock_conn), \
+             patch(_SLEEP, new_callable=AsyncMock), \
+             current_coordinator() as mock_stm:
+            result = await service._handle_start_sync("gmail", {
+                "orgId": "org1", "connectorId": "c1", "fullSync": True
+            })
+
+        assert result is False
+        gp.batch_upsert_nodes.assert_awaited_once()
+        gp.delete_sync_points_by_connector_id.assert_not_awaited()
+        mock_stm.spawn.assert_not_awaited()
+
+
 # ===========================================================================
 # _get_connector / _store_connector
 # ===========================================================================
@@ -210,6 +353,23 @@ class TestStoreConnector:
             await service._store_connector("conn1", MagicMock())
 
         previous.cleanup.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_does_not_close_an_instance_a_reindex_is_using(self, service) -> None:
+        """A stage reindex publishes through the previous instance's processor;
+        disposing it would close that producer mid-reindex."""
+        spec_container = MagicMock(spec=[])
+        previous = AsyncMock()
+        spec_container.connectors_map = {"conn1": previous}
+        service.app_container = spec_container
+
+        with patch("app.connectors.services.event_service._running_here", return_value=False), \
+             patch("app.connectors.services.event_service._reindexing_here", return_value=True), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            await service._store_connector("conn1", MagicMock())
+
+        dispose.assert_not_awaited()
 
 
 # ===========================================================================
@@ -399,6 +559,57 @@ class TestHandleInit:
             result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("init", [
+        AsyncMock(return_value=False),
+        AsyncMock(side_effect=OSError("share unreachable")),
+    ], ids=["returns_false", "raises"])
+    async def test_failed_init_disposes_the_connector(self, service, init) -> None:
+        """The factory hands the connector an open processor; a redelivered init
+        event builds another, so each failure must close its own."""
+        mock_conn = AsyncMock()
+        mock_conn.init = init
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is False
+        dispose.assert_awaited_once_with(mock_conn)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inserted", [False, True], ids=["before_insert", "after_insert"])
+    async def test_a_store_failure_disposes_only_an_uncached_connector(self, service, inserted) -> None:
+        """Failing before the cache holds it leaves no one to close it; once
+        cached, closing it would break the tasks that pick it up."""
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.app_container = MagicMock(spec=["connector_notification_service"])
+        service.app_container.connectors_map = {}
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+
+        async def store(connector_id, connector) -> None:
+            if inserted:
+                service.app_container.connectors_map[connector_id] = connector
+            raise RuntimeError("cache")
+
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch.object(service, "_store_connector", side_effect=store), \
+             patch.object(service, "_config_service_for", return_value=AsyncMock()), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is False
+        if inserted:
+            dispose.assert_not_awaited()
+        else:
+            dispose.assert_awaited_once_with(mock_conn)
 
 def _close_then_raise(key, coro):
     """start_if_idle owns the coroutine, so a raising stub must still close it
@@ -613,9 +824,9 @@ class TestHandleStartSync:
             service.graph_provider.delete_sync_points_by_connector_id.assert_awaited_once_with(
                 connector_id="c1"
             )
-            service.graph_provider.delete_connector_sync_edges.assert_awaited_once_with(
-                connector_id="c1"
-            )
+            # Links are not deleted up front any more: a sync cut off partway
+            # left everything it had not reached readable by nobody.
+            service.graph_provider.delete_connector_sync_edges.assert_not_awaited()
             
             # Verify pendingFullSync was cleared after successful schedule
             service.graph_provider.update_node.assert_awaited_once_with(
@@ -1008,6 +1219,31 @@ class TestHandleReindex:
             mock_start.await_args.args[1].close()
 
     @pytest.mark.asyncio
+    async def test_run_reindex_of_a_group_keeps_only_children_the_user_may_access(self, service) -> None:
+        """The providers' user filter is the old model; with the batch access
+        check the children are filtered through it instead."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+        batch = [MagicMock(id=rid, is_placeholder=False) for rid in ("open", "restricted")]
+        service.graph_provider.get_records_by_record_group = AsyncMock(side_effect=[batch, []])
+        service.graph_provider.check_access = AsyncMock(
+            return_value=AccessCheck(node_ids=frozenset({"open"})),
+        )
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="confluence", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id="rg-1", depth=1, user_key="user-key", status_filters=None,
+        )
+
+        assert service.graph_provider.get_records_by_record_group.await_args.kwargs["user_key"] is None
+        service.graph_provider.check_access.assert_awaited_once_with(
+            "user-key", "org1", node_ids=["open", "restricted"],
+        )
+        reindexed = mock_conn.reindex_records.await_args.args[0]
+        assert [r.id for r in reindexed] == ["open"]
+
+    @pytest.mark.asyncio
     async def test_run_reindex_pages_with_keyset_cursor(self, service):
         """_run_reindex walks batches by cursor and stops on a short batch."""
         mock_conn = AsyncMock()
@@ -1134,6 +1370,7 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_graph_delete_fails_reverts(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False, "error": "DB error"
         })
@@ -1147,6 +1384,51 @@ class TestHandleDelete:
             assert service.graph_provider.batch_upsert_nodes.await_count >= 1
 
     @pytest.mark.asyncio
+    async def test_a_connector_the_graph_delete_already_removed_is_acked_not_recreated(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": False, "error": "Connector instance c1 not found"
+        })
+        config_svc = AsyncMock()
+        service.app_container.config_service.return_value = config_svc
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is True
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        # Its credentials and storage are left to the release its intent keeps.
+        config_svc.delete_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failure_after_the_graph_delete_committed_is_acked_without_a_revert(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with current_coordinator() as mock_stm, patch(
+            "app.connectors.services.event_service.build_connector_cleanup_events",
+            side_effect=RuntimeError("after the graph delete"),
+        ):
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is True
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_revert_whose_read_fails_writes_nothing(self, service):
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={
+            "success": False, "error": "DB error"
+        })
+        service.graph_provider.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+        with current_coordinator() as mock_stm:
+            mock_stm.cancel_sync = AsyncMock()
+            result = await service._handle_delete("gmail", {
+                "orgId": "org1", "connectorId": "c1", "previousIsActive": True
+            })
+        assert result is False
+        service.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_kafka_publish_fails(self, service):
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": True, "virtual_record_ids": ["vr1"], "deleted_records_count": 1
@@ -1158,19 +1440,6 @@ class TestHandleDelete:
             config_svc.delete_config = AsyncMock()
             service.app_container.config_service.return_value = config_svc
             # Should still succeed (kafka failure is non-fatal for delete)
-            result = await service._handle_delete("gmail", {
-                "orgId": "org1", "connectorId": "c1"
-            })
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_config_delete_fails(self, service):
-        with current_coordinator() as mock_stm:
-            mock_stm.cancel_sync = AsyncMock()
-            config_svc = AsyncMock()
-            config_svc.delete_config = AsyncMock(side_effect=Exception("etcd error"))
-            service.app_container.config_service.return_value = config_svc
-            # Should still succeed (config delete failure is non-fatal)
             result = await service._handle_delete("gmail", {
                 "orgId": "org1", "connectorId": "c1"
             })
@@ -1218,10 +1487,15 @@ class TestHandleDelete:
         with current_coordinator() as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             assert await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}) is True
-        assert calls == ["intent:/services/entityCleanup/pending/c1:org1", "graph-delete"]
+        assert calls[:3] == [
+            "intent:/services/entityCleanup/pending/c1:org1",
+            "intent:/services/storageRelease/pending/c1:org1",
+            "graph-delete",
+        ]
 
     @pytest.mark.asyncio
     async def test_no_graph_delete_without_a_recorded_intent(self, service):
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         config_svc = AsyncMock()
         config_svc.set_config = AsyncMock(return_value=False)
         service.app_container.config_service.return_value = config_svc
@@ -1282,18 +1556,84 @@ class TestConfigServiceFor:
 
     @pytest.mark.asyncio
     async def test_delete_event_deletes_config_through_org_service(self, service):
+        from app.connectors.services import event_service
+
         org_config = AsyncMock()
+        release = AsyncMock(return_value=True)
         with current_coordinator() as mock_stm, \
-             patch.object(service, "_config_service_for", return_value=org_config) as config_for:
+             patch.object(service, "_config_service_for", return_value=org_config) as config_for, \
+             patch.object(event_service, "release_connector_storage", release):
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+            while event_service._storage_release_tasks:
+                await asyncio.gather(*list(event_service._storage_release_tasks))
 
         assert result is True
         config_for.assert_called_once_with("org1")
-        org_config.delete_config.assert_awaited_once_with("/services/connectors/c1/config")
+        assert release.await_args.kwargs["org_config_service"] is org_config
+        org_config.delete_config.assert_not_awaited()
         service.app_container.config_service.return_value.delete_config.assert_not_awaited()
-        # The entity cleanup intent is service-wide: indexing reads it back.
-        service.app_container.config_service.return_value.set_config.assert_awaited_once()
+        # Cleanup intents are service-wide: the reconcilers read them back.
+        written = [c.args[0] for c in service.app_container.config_service.return_value.set_config.await_args_list]
+        assert written[:2] == ["/services/entityCleanup/pending/c1", "/services/storageRelease/pending/c1"]
+
+
+class TestConnectorClassComesFromStoredType:
+    """The event name can come from a request body; the instance's stored type picks the class."""
+
+    _APP_DOC = {
+        "_key": "c1", "isActive": True, "orgId": "org1", "scope": "team",
+        "createdBy": "user-1", "type": "Google Drive",
+    }
+
+    @pytest.mark.asyncio
+    async def test_init_event_with_another_name_builds_the_stored_type(self, service) -> None:
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            await service._handle_init("slack", {"orgId": "org1", "connectorId": "c1"})
+
+        assert mock_factory.create_connector.await_args.kwargs["name"] == "googledrive"
+        service.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_init_with_another_name_builds_the_stored_type(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("slack", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "googledrive"
+
+    @pytest.mark.asyncio
+    async def test_matching_name_builds_without_a_warning(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("googledrive", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "googledrive"
+        service.logger.warning.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_instance_without_a_stored_type_keeps_the_event_name(self, service) -> None:
+        doc = {k: v for k, v in self._APP_DOC.items() if k != "type"}
+        service.graph_provider.get_document = AsyncMock(return_value=doc)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("gmail", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "gmail"
 
 
 # ===========================================================================

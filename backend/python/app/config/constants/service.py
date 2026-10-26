@@ -30,6 +30,10 @@ class config_node_constants(Enum):
     MIGRATIONS = "/services/migrations"
     DEPLOYMENT = "/services/deployment"
     INHERITANCE = "/services/inheritance"
+    NAMED_ENTITIES = "/services/namedEntities"
+    # Org-wide rules for which identity fields may be sent to a model gateway.
+    # Written by the Node admin API; read-only from Python.
+    AI_GATEWAY_IDENTITY_POLICY = "/services/aiGateway/identityPolicy"
 
 
     # Non-service paths
@@ -60,6 +64,8 @@ class TokenScopes(Enum):
     CALLER_ROLE = "caller:role"
     DOCUMENT_PARSE = "document:parse"
     DOCUMENT_CLASSIFY = "document:classify"
+    # Node -> connectors: write verified profile email onto the graph user.
+    ENTITY_USER_WRITE = "entity:user:write"
 
 
 class OAuthScopes(str, Enum):
@@ -101,6 +107,9 @@ class OAuthScopes(str, Enum):
     CONNECTOR_SYNC = "connector:sync"
     CONNECTOR_DELETE = "connector:delete"
 
+    # Code graph
+    CODE_READ = "code:read"
+
     # Teams
     TEAM_READ = "team:read"
     TEAM_WRITE = "team:write"
@@ -138,8 +147,18 @@ class Routes(Enum):
     STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
     STORAGE_PURGE_DOCUMENT = "/api/v1/document/internal/{documentId}/purge"
     STORAGE_PURGE_VIRTUAL_RECORD = "/api/v1/document/internal/records/{virtualRecordId}/purge"
+    STORAGE_VIRTUAL_RECORD_DOCUMENTS = "/api/v1/document/internal/records/{virtualRecordId}/documents"
+    STORAGE_FLAT_RECORD_DOCUMENTS = "/api/v1/document/internal/records/flat-documents"
     STORAGE_MOVE_TREE = "/api/v1/document/internal/move-tree"
     STORAGE_DELETE_CONNECTOR = "/api/v1/document/internal/connector/{connector_id}"
+    STORAGE_CONNECTOR_VIRTUAL_RECORDS = "/api/v1/document/internal/connector/{connector_id}/virtual-records"
+    STORAGE_RELOCATE_RECORDS = "/api/v1/document/internal/records/relocate"
+    STORAGE_MISSING_DOCUMENTS = "/api/v1/document/internal/missing"
+    # Artifact sets: one storage document per content revision of a virtual record.
+    STORAGE_ARTIFACTS = "/api/v1/document/internal/artifacts"
+    STORAGE_ARTIFACTS_PRESIGN = "/api/v1/document/internal/artifacts/presign"
+    STORAGE_ARTIFACT_SET = "/api/v1/document/internal/artifacts/{documentId}"
+    STORAGE_ARTIFACT_READ_URLS = "/api/v1/document/internal/artifacts/{documentId}/read-urls"
 
     # User-facing, permission-checked record bytes
     KB_STREAM_RECORD = "/api/v1/knowledgeBase/stream/record/{recordId}"

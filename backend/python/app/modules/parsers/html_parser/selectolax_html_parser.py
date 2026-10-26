@@ -20,7 +20,10 @@ from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
 
 from app.models.blocks import BlocksContainer
-from app.modules.parsers.html_parser.html_to_blocks import HtmlToBlocksConverter
+from app.modules.parsers.html_parser.html_to_blocks import (
+    ORIGINAL_ALT_ATTR,
+    HtmlToBlocksConverter,
+)
 from app.modules.parsers.html_parser.url_utils import replace_relative_image_urls
 from app.modules.parsers.text_decoding import decode_text
 
@@ -159,7 +162,8 @@ class SelectolaxHtmlParser:
 
         Returns:
             A 2-tuple of:
-            - Modified HTML with ``alt`` attributes rewritten to ``Image_N``.
+            - Modified HTML with ``alt`` attributes rewritten to ``Image_N``
+              and the author's alt kept in ``data-ph-alt``.
             - List of dicts describing each image::
 
                 {
@@ -188,6 +192,9 @@ class SelectolaxHtmlParser:
             original_alt = img_tag.get("alt", "").strip()
             new_alt = f"Image_{image_counter}"
             img_tag["alt"] = new_alt
+            # The key replaces the only description the image has; the
+            # converter reads it back as the image's alt text and caption.
+            img_tag[ORIGINAL_ALT_ATTR] = original_alt
             images.append({
                 "url": src,
                 "alt_text": original_alt,

@@ -11,11 +11,13 @@ Authentication: OAuth 2.0 (3-legged OAuth)
 
 import asyncio
 import base64
+import hashlib
 import json
+import time
 import uuid
 from collections import defaultdict
-from collections.abc import AsyncGenerator, Awaitable, Callable
-from datetime import datetime, timezone
+from collections.abc import AsyncGenerator, Awaitable, Callable, Iterable
+from datetime import datetime, timedelta, timezone
 from logging import Logger
 from typing import (
     Any,
@@ -29,29 +31,43 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
+    AccessRule,
     Connectors,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.data_store import DataStoreProvider
+from app.connectors.core.base.error.stream_errors import (
+    connector_not_ready,
+    map_source_status,
+    not_downloadable,
+    not_found_at_source,
+    to_stream_error,
+)
 from app.connectors.core.base.sync_point.sync_point import (
     SyncDataPointType,
     SyncPoint,
     generate_record_sync_point_key,
 )
-from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO, IconPaths
+from app.connectors.core.constants import (
+    CONNECTOR_EMAIL_IDENTITY_INFO,
+    IconPaths,
+    OAuthConfigKeys,
+)
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import OAuthConfigKeys
 from app.connectors.core.registry.auth_utils import include_jira_scope_enabled
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -74,6 +90,7 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.confluence_cloud.block_parser import (
     ConfluenceBlockParser,
 )
@@ -85,6 +102,7 @@ from app.connectors.sources.atlassian.core.auth_fields import (
 from app.connectors.sources.atlassian.core.confluence_access import (
     _is_folder,
     apply_page_access_to_dependents,
+    listing_modified_after,
     unresolved_principal_permission,
     v1_next_start,
 )
@@ -95,12 +113,22 @@ from app.connectors.sources.atlassian.core.confluence_html import (
     prepare_streaming_html,
 )
 from app.connectors.sources.atlassian.core.oauth import AtlassianScope
+from app.connectors.sources.atlassian.core.quota import (
+    API_TOKEN_REQUESTS_PER_SECOND,
+    OAUTH_REQUESTS_PER_SECOND,
+    AtlassianQuotaExhausted,
+    QuotaAwarePolicy,
+    quota_reset_text,
+)
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.blocks import (
+    Block,
     BlockComment,
     BlockGroup,
     BlockGroupChildren,
     BlocksContainer,
+    BlockSubType,
+    BlockType,
     ChildRecord,
     ChildType,
     DataFormat,
@@ -122,6 +150,7 @@ from app.models.entities import (
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
+    NotificationOutcome,
     NotificationRecipientRole,
     NotificationSeverity,
     NotificationType,
@@ -129,24 +158,17 @@ from app.services.notification.types import (
 from app.sources.client.confluence.confluence import (
     ConfluenceClient as ExternalConfluenceClient,
 )
-from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.client.http.http_retry import is_retryable_status
+from app.sources.external.common.atlassian import AtlassianMultiSiteError
 from app.sources.external.confluence.confluence import ConfluenceDataSource
 from app.utils.streaming import create_stream_record_response
-from app.connectors.core.base.error.stream_errors import (
-    connector_not_ready,
-    map_source_status,
-    not_downloadable,
-    not_found_at_source,
-    to_stream_error,
-)
 
 # Confluence Cloud OAuth URLs
 AUTHORIZE_URL = "https://auth.atlassian.com/authorize"
 TOKEN_URL = "https://auth.atlassian.com/oauth/token"
 
-# Time offset (in hours) applied to date filters to handle timezone differences
-# between the application and Confluence server, ensuring no data is missed during sync
+# How far back each incremental sync re-reads before its checkpoint. CQL reads dates
+# in the site's time zone, not UTC; the admin's date filters are used as set.
 TIME_OFFSET_HOURS = 24
 
 # Expand parameters for fetching pages and blogposts with required metadata
@@ -179,11 +201,48 @@ V2_CONTENT_LIST_LIMIT = 250
 ID_SEARCH_CHUNK = 50
 
 
+class GoneAtSource(Exception):
+    """Confluence answered 404 for a stored record: it was deleted or the account lost access."""
+
+
+class CommentsUnreadable(Exception):
+    """A page's comments could not be read in full, so its blocks must not be indexed without them."""
+
+
+# Each item's own read restriction, for finding changed restrictions without the audit log
+RESTRICTION_EXPAND_PARAMS = "restrictions.read.restrictions.user,restrictions.read.restrictions.group"
+RESTRICTION_LISTING_LIMIT = 100
+
+
+def read_restriction_fingerprint(item: dict[str, Any]) -> str | None:
+    """Who a listed item's own read restriction names; None when it has none."""
+    read = ((item.get("restrictions") or {}).get("read") or {}).get("restrictions") or {}
+    users = read.get("user") or {}
+    groups = read.get("group") or {}
+    names = sorted(str(u.get("accountId")) for u in users.get("results") or [] if isinstance(u, dict))
+    names += sorted(
+        f"group:{g.get('id') or g.get('name')}" for g in groups.get("results") or [] if isinstance(g, dict)
+    )
+    totals = [
+        listing.get("totalSize") if isinstance(listing.get("totalSize"), int) else listing.get("size")
+        for listing in (users, groups)
+    ]
+    if not names and not any(totals):
+        return None
+    listed = len(users.get("results") or []) + len(groups.get("results") or [])
+    if listed < sum(t for t in totals if isinstance(t, int)):
+        # Names past the listing's first page can't be compared: always check such an item again.
+        return f"unlisted@{time.time()}"
+    return f"{totals[0]}/{totals[1]}:" + ",".join(names)
+
+
 class ContentListing(NamedTuple):
     """What one space's page or blog post listing read.
 
     ``full`` means it ran without a checkpoint, so ``seen`` holds every item the
     sync filters admit; otherwise ``seen`` holds only what changed since then.
+    ``resumed``: a full listing that picked up where an earlier one stopped, so
+    ``seen`` lacks what that earlier part read.
     ``checkpoint_time`` is the checkpoint the listing earned, or None when it
     must not move.
     """
@@ -193,18 +252,58 @@ class ContentListing(NamedTuple):
     seen: frozenset[str]
     checkpoint_key: str
     checkpoint_time: str | None
+    resumed: bool = False
 
 
 # Constant for pseudo-user group prefix
 PSEUDO_USER_GROUP_PREFIX = "[Pseudo-User]"
 
-# Confluence v2 space permission access-class principals (ROLES-mode / default ACLs)
+# Largest image inlined into a page's content (10 MiB, as fetch_authenticated_binary allows).
+MAX_INLINE_IMAGE_BYTES = 10 * 1024 * 1024
+# Images inlined into one page in all; past it the rest stay attachment records.
+MAX_INLINE_IMAGE_BYTES_PER_PAGE = 40 * 1024 * 1024
+
+
+def images_not_inlined(attachments: list[dict[str, Any]]) -> set[str]:
+    """Image attachments left out of the page body, so they stay attachment records instead.
+
+    Decided from the attachment list alone, so sync and streaming leave out the same ones:
+    an image over MAX_INLINE_IMAGE_BYTES, and any image that would take the page's images
+    past MAX_INLINE_IMAGE_BYTES_PER_PAGE (in list order).
+    """
+    left_out: set[str] = set()
+    total = 0
+    for att in attachments:
+        att_id = att.get("id")
+        extensions = att.get("extensions") or {}
+        if not att_id or not str(att.get("mediaType") or extensions.get("mediaType") or "").startswith("image/"):
+            continue
+        size = att.get("fileSize", extensions.get("fileSize"))
+        # shortcut: an image of unknown size counts as 0; the per-download size guard still applies.
+        size = size if isinstance(size, int) else 0
+        if size > MAX_INLINE_IMAGE_BYTES or total + size > MAX_INLINE_IMAGE_BYTES_PER_PAGE:
+            left_out.add(str(att_id))
+        else:
+            total += size
+    return left_out
+
+# Most users /wiki/rest/api/search/user?cql=type=user returns (Atlassian's documented cap).
+USER_SEARCH_CAP = 10_000
+
+# Confluence v2 space permission access-class principals (ROLES-mode / default ACLs), as
+# normalised by _access_class_id: Cloud spells them "access-class"/"ALL_LICENSED_USERS" or
+# "ACCESS_CLASS"/"all-licensed-users".
 ACCESS_CLASS_LICENSED_USERS = "ALL_LICENSED_USERS"
 ACCESS_CLASS_PRODUCT_ADMINS = "ALL_PRODUCT_ADMINS"
+ACCESS_CLASS_AUTHENTICATED_USERS = "AUTHENTICATED_USERS"
+ACCESS_CLASS_ANONYMOUS_USERS = "ANONYMOUS_USERS"
 
-# Ordered fallbacks: first synced group name match wins
+# Synced groups an access class stands for: exact names, then name prefixes. Cloud sites
+# name them per site, e.g. "confluence-users-acme" and "confluence-admins-acme".
 LICENSED_USER_GROUP_NAMES = ("confluence-users",)
-PRODUCT_ADMIN_GROUP_NAMES = ("org-admins", "confluence-administrators", "site-admins")
+LICENSED_USER_GROUP_PREFIXES = ("confluence-users-",)
+PRODUCT_ADMIN_GROUP_NAMES = ("org-admins", "confluence-administrators", "site-admins", "system-administrators")
+PRODUCT_ADMIN_GROUP_PREFIXES = ("confluence-admins-",)
 
 def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
     """
@@ -273,6 +372,7 @@ def extract_media_from_adf(adf_content: dict[str, Any]) -> list[dict[str, Any]]:
     .with_description("Sync pages, folders, spaces, and users from Confluence Cloud")\
     .with_categories(["Knowledge Management", "Collaboration"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(rate_limit=API_TOKEN_REQUESTS_PER_SECOND, max_retries=3)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="Confluence",
@@ -442,6 +542,8 @@ class ConfluenceConnector(BaseConnector):
     Authentication: OAuth 2.0 (3LO - 3-legged OAuth)
     """
 
+    user_link_steps = ("_sync_users", "_sync_user_groups", "_reconcile_inactive_app_users")
+
     def __init__(
         self,
         logger: Logger,
@@ -489,7 +591,40 @@ class ConfluenceConnector(BaseConnector):
 
         # Lazy cache: lowercased Confluence group name -> external group id (UUID)
         self._group_name_to_external_id: dict[str, str] | None = None
+        # From the members' accountStatus in the last group sync that read every member list.
+        self._inactive_account_ids: set[str] = set()
+        self._active_member_emails: set[str] = set()
+        # This sync's group read, kept only once it has read every member list.
+        self._pending_inactive_ids: set[str] = set()
+        self._pending_active_emails: set[str] = set()
+        self._group_read_complete = False
+        # Until one group read completes (as after a restart) no status is known, so every user waits for it.
+        self._account_statuses_known = False
+        # Users _sync_users held back; saved if this sync's group read finds them active.
+        self._held_back_users: list[AppUser] = []
         self._space_listing_complete = False
+        # The site's wiki URL (https://<site>/wiki) from a listing's _links.base, for web links.
+        self._site_wiki_url: str | None = None
+        # What this run could not do, sent once as one notification when it ends.
+        self._sync_problems: list[str] = []
+        # (space key, what was skipped) -> count, shown as one line per pair.
+        self._skipped_items: dict[tuple[str, str], int] = defaultdict(int)
+        # Part of the source went unread, so a full sync must not unlink what it did not see.
+        self._sync_read_incomplete = False
+        # The client's retry policy, one per request rate (see _client_resilience).
+        self._client_policies: dict[float, QuotaAwarePolicy] = {}
+        self._client_policy: QuotaAwarePolicy | None = None
+        self._run_started_at = 0.0
+        self._persistent_problems: set[str] = set()
+        self._quota_hit_in_run = False
+        # Syncs, re-indexes and streams running on this instance; the HTTP client closes after the last.
+        self._in_use = 0
+        self._sync_finished = False
+        self._close_after_sync = False
+        # Pages just stored as blocks, whose comment records from older versions are dropped once saved.
+        self._now_blocks: dict[str, RecordType] = {}
+        # The status the audit log was refused with this run (401/403), if it was.
+        self._audit_log_refused: int | None = None
 
     async def _build_confluence_client(self):
         """EE override point: swap to EE ConfluenceClient for org-scoped OAuth inheritance."""
@@ -497,7 +632,40 @@ class ConfluenceConnector(BaseConnector):
             logger=self.logger,
             config_service=self.config_service,
             connector_instance_id=self.connector_id,
+            resilience=await self._client_resilience(),
         )
+
+    async def _client_resilience(self) -> QuotaAwarePolicy:
+        """The rate limit and retry policy for this connector's client, by how it authenticates.
+
+        OAuth calls are paced lower than API-token calls to stay inside Atlassian's hourly
+        points quota. Kept across re-inits so a re-init does not reset a throttle or a spent quota.
+        """
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        auth = config.get("auth") if isinstance(config, dict) else None
+        # Unknown auth gets the lower OAuth pace.
+        auth_type = str((auth.get("authType") if isinstance(auth, dict) else None) or "OAUTH").upper()
+        rate = OAUTH_REQUESTS_PER_SECOND if auth_type == "OAUTH" else API_TOKEN_REQUESTS_PER_SECOND
+        policy = self._client_policies.get(rate)
+        if policy is None:
+            declared = self.resilience
+            policy = QuotaAwarePolicy(
+                rate_limit=rate,
+                max_retries=declared.max_retries if declared else 3,
+                base_delay=declared.base_delay if declared else 1.0,
+                max_delay=declared.max_delay if declared else 60.0,
+                name=str(self.connector_name),
+                logger=self.logger,
+            )
+            self._client_policies[rate] = policy
+        self._client_policy = policy
+        return policy
+
+    def _quota_spent_this_run(self) -> float | None:
+        """When Atlassian's quota resets, if running out of it stopped part of this run; else None."""
+        policy = self._client_policy
+        reset_at = policy.quota_reset_at if policy else None
+        return reset_at if reset_at and self._quota_hit_in_run else None
 
     async def init(self) -> bool:
         """Initialize the Confluence connector with credentials and client."""
@@ -510,6 +678,7 @@ class ConfluenceConnector(BaseConnector):
             # Initialize data source
             self.data_source = ConfluenceDataSource(self.external_client)
             await self._cache_authenticated_confluence_email()
+            await self._remember_configured_site()
 
             self.logger.info("✅ Confluence connector initialized successfully")
             return True
@@ -519,9 +688,50 @@ class ConfluenceConnector(BaseConnector):
             # generic "Failed to initialize connector" message.
             await self._notify_multi_site_ambiguity(e)
             raise ConnectorInitError(str(e)) from e
+        except ValueError as e:
+            # The client builder's own message names the missing or bad setting.
+            self.logger.error(f"❌ Failed to initialize Confluence connector: {e}")
+            raise ConnectorInitError(f"Confluence settings are incomplete: {e}") from e
         except Exception as e:
             self.logger.error(f"❌ Failed to initialize Confluence connector: {e}", exc_info=True)
-            return False
+            # The message reaches any user who opens a record while the connector starts, so no raw
+            # error text (hosts, response bodies): that stays in the log.
+            raise ConnectorInitError(
+                "Couldn't connect to Confluence. Check the site URL and the credentials; "
+                "the connector's log has the details."
+            ) from e
+
+    # Process-wide: each failed start builds a new connector instance.
+    _failed_start_noticed_at: dict[str, float] = {}
+    _FAILED_START_NOTICE_WINDOW_S = 600
+
+    async def on_background_init_failed(self, error: Optional[Exception]) -> None:
+        """A sync could not start: tell the creator and the org admins, on every failed start."""
+        if error is not None and isinstance(error.__cause__, AtlassianMultiSiteError):
+            return  # init already sent its own notice for this
+        # One start can be retried several times (a redelivered event builds a new instance each
+        # time), so one notice per connector per window; the next scheduled run notifies again.
+        now = time.time()
+        last = ConfluenceConnector._failed_start_noticed_at.get(self.connector_id, 0.0)
+        if now - last < self._FAILED_START_NOTICE_WINDOW_S:
+            return
+        ConfluenceConnector._failed_start_noticed_at[self.connector_id] = now
+        reason = str(error)[:300] if error else "the connector could not be set up"
+        try:
+            await self.notify_and_wait(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: could not start",
+                message=(
+                    f"PipesHub could not start the Confluence connector: {reason}. Syncs and opening its "
+                    "records fail until this is fixed; check the connector's settings and credentials."
+                ),
+                recipient_user_ids=[self.created_by] if self.created_by else None,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+                suppress_repeats=False,
+            )
+        except Exception as e:
+            self.logger.error(f"Could not send the failed-start notification: {e}")
 
     async def _cache_authenticated_confluence_email(self) -> None:
         """Cache the email of the account the connector is authenticated as; never fails init."""
@@ -605,28 +815,90 @@ class ConfluenceConnector(BaseConnector):
         return ConfluenceDataSource(self.external_client)
 
     async def test_connection_and_access(self) -> bool:
-        """Test connection and access to Confluence API."""
-        try:
-            if not self.external_client:
-                self.logger.error("External client not initialized")
-                return False
+        """Test connection and access to Confluence API.
 
+        Raises ConnectorInitError with a message the admin can act on (bad credentials,
+        missing OAuth scope, wrong site URL, no Confluence access); the API shows it as is.
+        """
+        if not self.external_client:
+            self.logger.error("External client not initialized")
+            return False
+        try:
             # Test by fetching spaces with a limit of 1
             datasource = await self._get_fresh_datasource()
             response = await datasource.get_spaces(
                 limit=1
             )
-
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.error(f"Connection test failed with status: {response.status if response else 'No response'}")
-                return False
-
-            self.logger.info("✅ Confluence connector connection test passed")
-            return True
-
+        except (ConnectorInitError, HTTPException):
+            # An HTTPException here already says what to do (e.g. the connector is not connected).
+            raise
         except Exception as e:
             self.logger.error(f"Connection test failed: {e}", exc_info=True)
-            return False
+            raise ConnectorInitError(
+                f"Couldn't reach Confluence at {self._site_url_for_messages()}. "
+                "Check the site URL and that it can be reached from PipesHub."
+            ) from e
+
+        status = response.status if response else None
+        if status == HttpStatusCode.SUCCESS.value:
+            self.logger.info("✅ Confluence connector connection test passed")
+            return True
+        self.logger.error(f"Connection test failed with status: {status if status else 'No response'}")
+        raise ConnectorInitError(await self._connection_error_message(status, response))
+
+    def _site_url_for_messages(self) -> str:
+        """The site this connector talks to, for error messages."""
+        try:
+            return self.external_client.get_client().get_base_url().split("/wiki/")[0]
+        except Exception:
+            return "the configured site"
+
+    async def _connection_error_message(self, status: int | None, response: object) -> str:
+        """What a failed connection test means, by HTTP status."""
+        site = self._site_url_for_messages()
+        try:
+            body = (response.text() or "") if response is not None else ""
+        except Exception:
+            body = ""
+        if status == HttpStatusCode.UNAUTHORIZED.value and "scope" in body.lower():
+            missing = await self._missing_oauth_scopes()
+            named = f" Missing: {', '.join(missing)}." if missing else ""
+            return (
+                "The OAuth app was not granted every Confluence scope the connector needs."
+                f"{named} Add them to the app in the Atlassian Developer Console, then reconnect."
+            )
+        if status == HttpStatusCode.UNAUTHORIZED.value:
+            return (
+                f"Confluence at {site} rejected the credentials (HTTP 401). Check the email and API "
+                "token, or reconnect the OAuth app."
+            )
+        if status == HttpStatusCode.FORBIDDEN.value:
+            return (
+                f"The account signed in to {site} but can't read Confluence (HTTP 403). Give it "
+                "Confluence access and permission to view the spaces to sync."
+            )
+        if status == HttpStatusCode.NOT_FOUND.value:
+            return (
+                f"No Confluence site was found at {site} (HTTP 404). The site URL should look like "
+                "https://yourcompany.atlassian.net."
+            )
+        return (
+            f"Confluence at {site} did not answer the connection test (HTTP {status or 'no response'}). "
+            "Try again in a few minutes."
+        )
+
+    async def _missing_oauth_scopes(self) -> list[str]:
+        """The connector's OAuth scopes that the token was not granted; empty when unknown."""
+        try:
+            token = self.external_client.get_client().get_token()
+            resources = await ExternalConfluenceClient.get_accessible_resources(token)
+        except Exception as e:
+            self.logger.debug(f"Could not read the granted OAuth scopes: {e}")
+            return []
+        granted = {scope for resource in resources for scope in (getattr(resource, "scopes", None) or [])}
+        if not granted:
+            return []
+        return sorted(set(AtlassianScope.get_confluence_read_access()) - granted)
 
     async def run_sync(self) -> None:
         """
@@ -645,6 +917,15 @@ class ConfluenceConnector(BaseConnector):
             - Attachments
             - Comments (inline, footer)
         """
+        self._sync_problems = []
+        self._skipped_items = defaultdict(int)
+        self._sync_read_incomplete = False
+        self._persistent_problems = set()
+        self._quota_hit_in_run = False
+        self._run_started_at = time.time()
+        self._in_use += 1
+        self._sync_finished = False
+        self._now_blocks = {}
         try:
             org_id = self.data_entities_processor.org_id
             self.logger.info(f"🚀 Starting Confluence Cloud sync for org: {org_id}")
@@ -661,12 +942,14 @@ class ConfluenceConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "confluence", self.connector_id, self.logger
             )
+            await self._open_audit_window()
 
             # Step 1: Sync users
             await self._sync_users()
 
             # Step 2: Sync groups and memberships
             await self._sync_user_groups()
+            await self._reconcile_inactive_app_users()
 
             # Step 3: Sync spaces
             spaces = await self._sync_spaces()
@@ -677,17 +960,141 @@ class ConfluenceConnector(BaseConnector):
 
             # Step 5: Sync permission changes from audit log
             # This catches permission changes that don't update content's lastModified
-            await self._sync_permission_changes_from_audit_log()
+            await self._sync_permission_changes_from_audit_log(spaces)
 
             # Step 6: Backfill placeholder ancestors that out-of-scope sync filters left
             # unreconciled (metadata + permissions only; they remain non-indexed stubs).
             await self._sweep_placeholder_records(org_id)
 
             self.logger.info("✅ Confluence sync completed successfully")
+            self._sync_finished = True
 
+        except asyncio.CancelledError:
+            # Stopped on purpose (disabled, deleted, stopped): no notice saying it finished.
+            self._sync_problems = []
+            self._skipped_items = defaultdict(int)
+            self._sync_read_incomplete = True
+            raise
+        except AtlassianQuotaExhausted as e:
+            # Not a failure: the next sync resumes from the checkpoints this one kept.
+            self.logger.warning(f"⚠️ Confluence sync stopped: {e}")
+            self._sync_read_incomplete = True
+            self._quota_hit_in_run = True
         except Exception as e:
             self.logger.error(f"❌ Error during Confluence sync: {e}", exc_info=True)
+            # init already sent its own notice for a multi-site OAuth app.
+            if not isinstance(e, ConnectorInitError):
+                self._note_problem(f"The sync stopped: {str(e)[:200]}")
             raise
+        finally:
+            await self._report_sync_problems()
+            await self._release()
+
+    async def _release(self) -> None:
+        """One use of this instance ended; close the client if it was evicted meanwhile."""
+        self._in_use -= 1
+        if self._close_after_sync and not self._in_use:
+            self._close_after_sync = False
+            await self.cleanup()
+
+    # Per connector, across instances: the persistent conditions last reported, and the quota
+    # reset time last reported.
+    _persistent_noticed: dict[str, set[str]] = {}
+    _quota_noticed_reset: dict[str, int] = {}
+
+    # Most lines one notification lists; the rest are counted.
+    _MAX_PROBLEMS_SHOWN = 10
+
+    def _note_problem(self, problem: str, *, unread: bool = True, persistent: bool = False) -> None:
+        """Note a step this sync could not finish; all of them are reported once when the sync ends.
+
+        ``unread``: part of the source was not read (or not saved), so a full sync must not
+        unlink what it did not see. False for a problem that left nothing unread, such as a
+        removal that is retried next sync. ``persistent``: a setting-like condition (no audit
+        log access, an access class with no group) reported when it first appears, not every run.
+        """
+        if problem not in self._sync_problems:
+            self._sync_problems.append(problem)
+        if persistent:
+            self._persistent_problems.add(problem)
+        if unread:
+            self._sync_read_incomplete = True
+        self._note_quota_hit()
+
+    def _note_skipped(self, space_key: str, what: str) -> None:
+        """Count one item skipped this run, e.g. ("ENG", "pages whose restrictions could not be read")."""
+        self._skipped_items[(space_key, what)] += 1
+        self._sync_read_incomplete = True
+        self._note_quota_hit()
+
+    def _note_quota_hit(self) -> None:
+        """A problem noted while the quota is spent was most likely caused by it."""
+        policy = self._client_policy
+        if policy and policy.quota_reset_at and policy.quota_reset_at > time.time():
+            self._quota_hit_in_run = True
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left part of Confluence unread unlinks nothing it did not see."""
+        return FullSyncCoverage(complete=not self._sync_read_incomplete)
+
+    async def _report_sync_problems(self) -> None:
+        """Send one notification listing what this sync could not do, to the creator and org admins.
+
+        Nothing is sent for a sync with no problems. Every failing run sends it, even when
+        the previous run sent the same one. Never raises: it runs as the sync ends.
+        """
+        problems = list(self._sync_problems) + [
+            f"Space {space_key}: skipped {count} {what}"
+            for (space_key, what), count in self._skipped_items.items()
+        ]
+        # A persistent condition is shown when it first appears; it is shown again once it
+        # has gone away and come back.
+        noticed = ConfluenceConnector._persistent_noticed.get(self.connector_id, set())
+        problems = [p for p in problems if p not in self._persistent_problems or p not in noticed]
+        if self._sync_finished:
+            # A run that stopped early may not have reached the step that reports a condition.
+            ConfluenceConnector._persistent_noticed[self.connector_id] = set(self._persistent_problems)
+        quota_reset_at = self._quota_spent_this_run()
+        if quota_reset_at:
+            # By the minute: a rebuilt connector computes the same reset a little differently.
+            reset_minute = int(quota_reset_at // 60)
+            if ConfluenceConnector._quota_noticed_reset.get(self.connector_id) == reset_minute:
+                return  # This quota stop was already reported; the next notice comes after the reset.
+            ConfluenceConnector._quota_noticed_reset[self.connector_id] = reset_minute
+            self._sync_read_incomplete = True
+            problems.insert(0, (
+                f"Atlassian's hourly API quota for this connector is used up until {quota_reset_text(quota_reset_at)}, "
+                "so the sync stopped early; the steps below did not finish because of it, and the next "
+                "sync after that time continues where this one stopped"
+            ))
+        if not problems:
+            return
+        shown = problems[: self._MAX_PROBLEMS_SHOWN]
+        lines = "\n".join(f"- {p}" for p in shown)
+        if len(problems) > len(shown):
+            lines += f"\n- and {len(problems) - len(shown)} more (see the connector logs)"
+        stopped = bool(quota_reset_at) or any(p.startswith("The sync stopped") for p in self._sync_problems)
+        try:
+            outcome = await self.notify_and_wait(
+                type=NotificationType.CONNECTOR_SYNC_ERROR,
+                severity=NotificationSeverity.ERROR if stopped else NotificationSeverity.WARNING,
+                title=(
+                    f"{self.display_name}: sync paused, Atlassian API quota used up" if quota_reset_at
+                    else f"{self.display_name}: sync {'failed' if stopped else 'finished with problems'}"
+                ),
+                message=(
+                    f"{'The sync stopped before it finished' if stopped else 'The sync finished, but'} "
+                    f"these steps did not complete:\n{lines}\n"
+                    "What was not read is read again on the next sync."
+                ),
+                recipient_user_ids=[self.created_by] if self.created_by else None,
+                recipient_roles=[NotificationRecipientRole.ADMIN],
+                suppress_repeats=False,
+            )
+            if outcome != NotificationOutcome.SENT:
+                self.logger.warning(f"The sync problems notification was not sent ({outcome.value})")
+        except Exception as e:
+            self.logger.error(f"Could not send the sync problems notification: {e}")
 
     # Bound the per-level source fanout; Confluence is rate-limited.
     _PLACEHOLDER_SWEEP_CONCURRENCY = 5
@@ -740,12 +1147,13 @@ class ConfluenceConnector(BaseConnector):
                     is_folder = isinstance(record, FileRecord) and not record.is_file
                     record.is_placeholder = not is_folder
                 else:
-                    # Source fetch failed (inaccessible/deleted/unsupported). Re-submit the
-                    # persisted stub anyway so its structural edges — record group (BELONGS_TO)
-                    # and parent (PARENT_CHILD) — which a full sync deletes are still restored.
-                    # Keeps it a stub; access fails closed (inherits the record group's perms).
-                    record, permissions = stub, []
-                    record.is_placeholder = True
+                    # Unchanged since it was filled in, or the source can't be read: keep the stub
+                    # as stored. Writing it again with no permissions replaced its grants with
+                    # none on a full sync, hiding the in-scope pages under it from everyone.
+                    self.data_entities_processor.note_kept_records(self.connector_id, [stub.id])
+                    if stub.parent_external_record_id and stub.parent_record_type:
+                        parent_refs.append((stub.parent_external_record_id, stub.parent_record_type))
+                    continue
                 backfills.append((record, permissions))
                 if record.parent_external_record_id and record.parent_record_type:
                     parent_refs.append((record.parent_external_record_id, record.parent_record_type))
@@ -828,10 +1236,15 @@ class ConfluenceConnector(BaseConnector):
         permissions = await self._fetch_page_permissions(folder_id)
         if permissions is None:
             return None
-        # Mirror _sync_folders: only drop space inheritance when READ restrictions exist.
-        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-        if len(read_permissions) > 0:
-            folder_record.inherit_permissions = False
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED
+        # instead: the node then needs its own grant as well as the space.
+        # EDIT-only restrictions stay STRICT.
+        folder_record.access_rule = (
+            AccessRule.RESTRICTED
+            if any(p.type == PermissionType.READ for p in permissions)
+            else AccessRule.STRICT
+        )
+        folder_record.rewrite_permissions = True
         return (folder_record, permissions)
 
     async def _sync_users(self) -> None:
@@ -843,12 +1256,15 @@ class ConfluenceConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting user synchronization...")
+            self._held_back_users = []
 
             # Pagination variables
             batch_size = 100
             start = 0
             total_synced = 0
             total_skipped = 0
+            seen_account_ids: set[str] = set()
+            user_list_complete = True
 
             # Paginate through all users
             while True:
@@ -862,6 +1278,8 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch users: {response.status if response else 'No response'}")
+                    self._note_problem("Couldn't read the Confluence user list (HTTP %s)" % (response.status if response else "no response"))
+                    user_list_complete = False
                     break
 
                 response_data = response.json()
@@ -869,6 +1287,13 @@ class ConfluenceConnector(BaseConnector):
 
                 if not users_data:
                     break
+                page_ids = {r.get("user", {}).get("accountId") or r.get("accountId") for r in users_data} - {None}
+                if not page_ids - seen_account_ids:
+                    # The same page again: the offset is being ignored, so stop rather than loop.
+                    self._note_problem("The Confluence user list repeated a page, so it may not have been read to the end")
+                    user_list_complete = False
+                    break
+                seen_account_ids |= page_ids
 
                 # Transform users (skip users without email)
                 app_users = []
@@ -884,56 +1309,58 @@ class ConfluenceConnector(BaseConnector):
                         continue
 
                     app_user = self._transform_to_app_user(user_data)
-                    if app_user:
-                        app_users.append(app_user)
+                    if not app_user:
+                        continue
+                    # search/user carries no account status: hold back what the last complete
+                    # group read saw inactive until this sync's group read says otherwise.
+                    if (
+                        not self._account_statuses_known
+                        or app_user.source_user_id in self._inactive_account_ids
+                    ):
+                        self._held_back_users.append(app_user)
+                        continue
+                    app_users.append(app_user)
 
                 # Save batch to database
                 if app_users:
-                    await self.data_entities_processor.on_new_app_users(app_users)
+                    await self._save_app_users(app_users)
                     total_synced += len(app_users)
                     self.logger.info(f"Synced {len(app_users)} users (batch starting at {start})")
 
-                    # For each user with email, migrate pseudo-group permissions (Confluence-specific)
-                    for user in app_users:
-                        if user.email and "@" in user.email and user.source_user_id:
-                            try:
-                                await self.data_entities_processor.migrate_group_to_user_by_external_id(
-                                    group_external_id=user.source_user_id,
-                                    user_email=user.email,
-                                    connector_id=self.connector_id
-                                )
-                            except Exception as e:
-                                # Log error but continue with other users
-                                self.logger.warning(
-                                    f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
-                                    exc_info=True
-                                )
-                                continue
+                # Cloud's /search/user has no next link and its totalSize is the page size, and a
+                # page can come back short before the end, so only an empty page ends the list.
+                start += len(users_data)
 
-                # Move to next page
-                start += batch_size
-
-                # Check if we've reached the end
-                # FIX: Do not rely on totalSize as it returns incorrect values (e.g. 100) for /search/user
-                # Instead, stop if we received fewer results than requested
-                if len(users_data) < batch_size:
-                    break
-
+            if len(seen_account_ids) >= USER_SEARCH_CAP:
+                # Atlassian: "cql=type=user will return up to 10k users".
+                self._note_problem(
+                    f"Confluence's user search returns at most {USER_SEARCH_CAP:,} users, so users past that "
+                    "were not added and can't be given access from Confluence"
+                )
+            elif user_list_complete and seen_account_ids:
+                await self._withdraw_users_gone_from_source(seen_account_ids)
             self.logger.info(f"✅ User sync complete. Synced: {total_synced}, Skipped (no email): {total_skipped}")
 
             try:
-                await self._link_platform_users_via_jira()
+                if user_list_complete and len(seen_account_ids) < USER_SEARCH_CAP:
+                    await self._link_platform_users_via_jira(seen_account_ids)
+                else:
+                    # A Jira account can only be trusted as a Confluence user when Confluence's list confirms it.
+                    self.logger.warning("Not matching users who hide their email through Jira: Confluence's user list is incomplete")
             except Exception as link_err:
                 self.logger.error(
                     f"Jira user linking fallback failed (user sync still complete): {link_err}",
                     exc_info=True,
+                )
+                self._note_problem(
+                    f"Couldn't match users who hide their email through Jira: {str(link_err)[:200]}", unread=False
                 )
 
         except Exception as e:
             self.logger.error(f"❌ User sync failed: {e}", exc_info=True)
             raise
 
-    async def _include_jira_scope_setting(self, auth_config: dict[str, Any]) -> Any:
+    async def _include_jira_scope_setting(self, auth_config: dict[str, Any]) -> object:
         """The connector's own includeJiraScope, else the one saved on its OAuth app."""
         value = auth_config.get(INCLUDE_JIRA_SCOPE)
         oauth_config_id = auth_config.get(OAuthConfigKeys.OAUTH_CONFIG_ID)
@@ -955,7 +1382,7 @@ class ConfluenceConnector(BaseConnector):
             return value
         return ((shared or {}).get(OAuthConfigKeys.CONFIG) or {}).get(INCLUDE_JIRA_SCOPE)
 
-    async def _link_platform_users_via_jira(self) -> None:
+    async def _link_platform_users_via_jira(self, confluence_account_ids: set[str] | None = None) -> None:
         """
         Link active platform users to Confluence via Jira user search.
 
@@ -975,6 +1402,8 @@ class ConfluenceConnector(BaseConnector):
 
         datasource = await self._get_fresh_datasource()
         org_id = self.data_entities_processor.org_id
+        policy = self._client_policy
+        quota_already_spent = bool(policy and policy.quota_reset_at and policy.quota_reset_at > time.time())
 
         active_users = await self.data_entities_processor.get_all_active_users()
         linked_users = await self.data_entities_processor.get_all_app_users(self.connector_id)
@@ -1022,7 +1451,14 @@ class ConfluenceConnector(BaseConnector):
             
             async with semaphore:
                 try:
-                    account_id = await datasource.find_user_account_id_by_email(email)
+                    try:
+                        account_id = await datasource.find_user_account_id_by_email(email)
+                    except AtlassianQuotaExhausted as quota_error:
+                        # Jira's quota, not Confluence's: undo the mark the shared policy just set
+                        # (unless Confluence's own quota was already spent) and stop linking.
+                        if policy is not None and not quota_already_spent:
+                            policy.quota_reset_at = None
+                        raise RuntimeError(f"Jira rate limit: {quota_error}") from quota_error
                     if not account_id:
                         not_found_count += 1
                         return None
@@ -1066,6 +1502,11 @@ class ConfluenceConnector(BaseConnector):
                             "Consider reducing sync frequency or requesting higher rate limits from Atlassian."
                         )
                         rate_limit_hit = True
+                        self._note_problem(
+                            "Jira's rate limit stopped matching users who hide their email; "
+                            "the rest are tried next sync",
+                            unread=False,
+                        )
                         break
                     # Other exceptions already logged and counted in try_link_user
                     continue
@@ -1075,6 +1516,9 @@ class ConfluenceConnector(BaseConnector):
                 
                 # Successfully found a match
                 account_id, email, display_name = result
+                if confluence_account_ids is not None and account_id not in confluence_account_ids:
+                    # A Jira account that Confluence's user list lacks has no Confluence access.
+                    continue
                 app_user = AppUser(
                     app_name=Connectors.CONFLUENCE,
                     connector_id=self.connector_id,
@@ -1133,6 +1577,24 @@ class ConfluenceConnector(BaseConnector):
                 "deployment, this is expected (Jira fallback only works with Cloud instances)."
             )
 
+    async def _save_app_users(self, app_users: list[AppUser]) -> None:
+        await self.data_entities_processor.on_new_app_users(app_users)
+        # For each user with email, migrate pseudo-group permissions (Confluence-specific)
+        for user in app_users:
+            if user.email and "@" in user.email and user.source_user_id:
+                try:
+                    await self.data_entities_processor.migrate_group_to_user_by_external_id(
+                        group_external_id=user.source_user_id,
+                        user_email=user.email,
+                        connector_id=self.connector_id
+                    )
+                except Exception as e:
+                    # Log error but continue with other users
+                    self.logger.warning(
+                        f"Failed to migrate pseudo-group permissions for user {user.email}: {e}",
+                        exc_info=True
+                    )
+
     async def _sync_user_groups(self) -> None:
         """
         Sync user groups and their memberships from Confluence.
@@ -1147,6 +1609,15 @@ class ConfluenceConnector(BaseConnector):
 
             # Groups may change between sync runs on a long-lived connector instance.
             self._group_name_to_external_id = None
+            self._group_read_complete = False
+            self._pending_inactive_ids = set()
+            self._pending_active_emails = set()
+            every_member_list_read = True
+            # (group, member emails, member accountIds) of each group read in full.
+            read_groups: list[tuple[dict, list[str], list[str]]] = []
+            # Every group id the listing returned, and whether it was read to the end.
+            listed_group_ids: set[str] = set()
+            group_list_complete = True
 
             # Pagination variables for groups
             batch_size = 50
@@ -1165,53 +1636,50 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch groups: {response.status if response else 'No response'}")
+                    self._note_problem("Couldn't read the Confluence group list (HTTP %s)" % (response.status if response else "no response"))
+                    every_member_list_read = False
+                    group_list_complete = False
                     break
 
                 response_data = response.json()
                 groups_data = response_data.get("results", [])
 
                 if not groups_data:
+                    if (response_data.get("_links") or {}).get("next"):
+                        # Only a missing next link ends the list; removal must not see a gap as deletions.
+                        group_list_complete = False
+                        self._note_problem("The Confluence group list stopped early")
                     break
 
-                # Process each group and its members
                 for group_data in groups_data:
                     try:
                         group_id = group_data.get("id")
                         group_name = group_data.get("name")
 
+                        if group_id:
+                            listed_group_ids.add(str(group_id))
                         if not group_id or not group_name:
                             continue
 
-                        self.logger.debug(f"  Processing group: {group_name} ({group_id})")
+                        self.logger.debug(f"  Reading group: {group_name} ({group_id})")
 
-                        # Fetch members for this group
                         members = await self._fetch_group_members(group_id, group_name)
                         if members is None:
                             # Saving the group now would replace its members with an empty list.
                             self.logger.warning(
                                 f"Keeping the stored members of group {group_name}: its member list could not be read"
                             )
+                            self._note_problem(f"Couldn't read the members of group {group_name}; its stored members were kept")
+                            every_member_list_read = False
                             continue
-                        member_emails, member_account_ids = members
+                        read_groups.append((group_data, *members))
 
-                        # Create user group
-                        user_group = self._transform_to_user_group(group_data)
-                        if not user_group:
-                            continue
-
-                        # Get AppUser objects for members
-                        app_users = await self._resolve_group_app_users(
-                            member_emails, member_account_ids
-                        )
-
-                        # Save group with members
-                        await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
-                        total_groups_synced += 1
-                        total_memberships_synced += len(app_users)
-                        self.logger.debug(f"Group {group_name}: {len(app_users)} members")
-
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as group_error:
-                        self.logger.error(f"❌ Failed to process group {group_data.get('name')}: {group_error}")
+                        self.logger.error(f"❌ Failed to read group {group_data.get('name')}: {group_error}")
+                        self._note_problem(f"Couldn't read group {group_data.get('name')}: {str(group_error)[:200]}")
+                        every_member_list_read = False
                         continue
 
                 try:
@@ -1219,10 +1687,55 @@ class ConfluenceConnector(BaseConnector):
                 except ValueError as e:
                     # Groups are saved one by one, so the ones not reached keep what is stored.
                     self.logger.error(f"❌ Stopping the group list: {e}")
+                    self._note_problem("Couldn't follow the Confluence group list to its next page")
+                    every_member_list_read = False
+                    group_list_complete = False
                     break
                 if next_start is None:
                     break
                 start = next_start
+
+            if every_member_list_read:
+                self._inactive_account_ids = self._pending_inactive_ids
+                self._active_member_emails = self._pending_active_emails
+                self._group_read_complete = True
+                self._account_statuses_known = True
+            # Members resolve only to users linked to the connector, so a reactivated
+            # account has to be linked again before its groups are saved.
+            await self._restore_reactivated_users()
+
+            for group_data, member_emails, member_account_ids in read_groups:
+                group_name = group_data.get("name")
+                try:
+                    user_group = self._transform_to_user_group(group_data)
+                    if not user_group:
+                        continue
+
+                    try:
+                        app_users = await self._resolve_group_app_users(
+                            member_emails, member_account_ids
+                        )
+                    except Exception as lookup_error:
+                        # Saving the group now would replace its members with an empty list.
+                        self.logger.warning(
+                            f"Keeping the stored members of group {group_name}: "
+                            f"its members could not be looked up ({lookup_error})"
+                        )
+                        self._note_problem(f"Couldn't look up the members of group {group_name}; its stored members were kept")
+                        continue
+
+                    await self.data_entities_processor.on_new_user_groups([(user_group, app_users)])
+                    total_groups_synced += 1
+                    total_memberships_synced += len(app_users)
+                    self.logger.debug(f"Group {group_name}: {len(app_users)} members")
+
+                except Exception as group_error:
+                    self.logger.error(f"❌ Failed to process group {group_name}: {group_error}")
+                    self._note_problem(f"Couldn't save group {group_name}: {str(group_error)[:200]}")
+                    continue
+
+            if group_list_complete:
+                await self._remove_groups_gone_from_source(listed_group_ids)
 
             self.logger.info(f"✅ Group sync complete. Groups: {total_groups_synced}, Memberships: {total_memberships_synced}")
 
@@ -1265,6 +1778,7 @@ class ConfluenceConnector(BaseConnector):
             # Pagination variables
             batch_size = 20
             cursor = None
+            followed: set[str] = set()
             total_spaces_synced = 0
             total_permissions_synced = 0
             base_url = None  # Extract from first response
@@ -1283,6 +1797,9 @@ class ConfluenceConnector(BaseConnector):
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch spaces: {response.status if response else 'No response'}")
+                    self._note_problem(
+                        "Couldn't read the Confluence space list (HTTP %s); no space was removed" % (response.status if response else "no response")
+                    )
                     listing_complete = False
                     break
 
@@ -1290,10 +1807,12 @@ class ConfluenceConnector(BaseConnector):
                 spaces_data = response_data.get("results") if isinstance(response_data, dict) else None
                 if not isinstance(spaces_data, list):
                     self.logger.error("❌ Space listing had no results list")
+                    self._note_problem("The Confluence space list came back without results; no space was removed")
                     listing_complete = False
                     break
 
                 # Extract base URL from first response
+                self._remember_site_wiki_url(response_data)
                 if not base_url and response_data.get("_links", {}).get("base"):
                     base_url = response_data["_links"]["base"]
                     self.logger.debug(f"Base URL extracted: {base_url}")
@@ -1301,6 +1820,7 @@ class ConfluenceConnector(BaseConnector):
                 if not spaces_data:
                     if (response_data.get("_links") or {}).get("next"):
                         listing_complete = False
+                        self._note_problem("The Confluence space list stopped early; no space was removed")
                     break
 
                 # Apply client-side exclusion filter if NOT_IN
@@ -1323,6 +1843,7 @@ class ConfluenceConnector(BaseConnector):
 
                         if not space_id or not space_name:
                             listing_complete = False
+                            self._note_problem("A space came back without its id or name; no space was removed")
                             continue
 
                         self.logger.debug(f"Processing space: {space_name} ({space_id})")
@@ -1343,14 +1864,18 @@ class ConfluenceConnector(BaseConnector):
                             self.logger.warning(
                                 f"Keeping the stored access of space {space_name}: its permissions could not be read"
                             )
+                            self._note_problem(f"Couldn't read the permissions of space {space_name}; its stored access was kept")
                             continue
 
                         total_permissions_synced += len(permissions)
                         record_groups_with_permissions.append((record_group, permissions))
                         self.logger.debug(f"Space {space_name}: {len(permissions)} permissions")
 
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as space_error:
                         self.logger.error(f"❌ Failed to process space {space_data.get('name')}: {space_error}")
+                        self._note_problem(f"Couldn't sync space {space_data.get('name')}: {str(space_error)[:200]}")
                         listing_complete = False
                         continue
 
@@ -1367,7 +1892,13 @@ class ConfluenceConnector(BaseConnector):
                 cursor = self._extract_cursor_from_next_link(next_url)
                 if not cursor:
                     listing_complete = False
+                    self._note_problem("Couldn't follow the Confluence space list to its next page; no space was removed")
                     break
+                if cursor in followed:
+                    listing_complete = False
+                    self._note_problem("The Confluence space list pointed back at a page it had read; no space was removed")
+                    break
+                followed.add(cursor)
 
             self.logger.info(f"✅ Space sync complete. Spaces: {total_spaces_synced}, Permissions: {total_permissions_synced}")
 
@@ -1417,14 +1948,13 @@ class ConfluenceConnector(BaseConnector):
             if created_filter:
                 created_after, created_before = created_filter.get_datetime_iso()
 
-            # Merge modified_after with checkpoint (use the latest)
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"🔄 Using latest modified_after: {modified_after}")
-            elif modified_after:
+            filter_modified_after = modified_after
+            modified_after = listing_modified_after(filter_modified_after, last_sync_time, TIME_OFFSET_HOURS)
+            if filter_modified_after and last_sync_time:
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
+            elif filter_modified_after:
                 self.logger.info(f"🔍 Using filter: Fetching folders modified after {modified_after}")
             elif last_sync_time:
-                modified_after = last_sync_time
                 self.logger.info(f"🔄 Incremental sync: Fetching folders modified after {modified_after}")
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all folders (first time)")
@@ -1432,6 +1962,7 @@ class ConfluenceConnector(BaseConnector):
             # Pagination variables — v1 content/search may use start (offset) or cursor
             batch_size = 50
             pagination_token: Optional[str] = None
+            followed: set[str] = set()
             total_synced = 0
             total_permissions_synced = 0
             listing_complete = True
@@ -1454,12 +1985,12 @@ class ConfluenceConnector(BaseConnector):
                     order_by="lastModified",
                     sort_order="asc",
                     expand=FOLDER_EXPAND_PARAMS,
-                    time_offset_hours=TIME_OFFSET_HOURS
                 )
 
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch folders: {response.status if response else 'No response'}")
+                    self._note_problem(f"Space {space_key}: couldn't read the folder list (HTTP %s)" % (response.status if response else "no response"))
                     listing_complete = False
                     break
 
@@ -1467,6 +1998,10 @@ class ConfluenceConnector(BaseConnector):
                 items_data = response_data.get("results", [])
 
                 if not items_data:
+                    # Only a missing next link ends the listing; an empty page that points further is a failed read.
+                    if (response_data.get("_links") or {}).get("next"):
+                        listing_complete = False
+                        self._note_problem(f"Space {space_key}: the folder list stopped early")
                     break
 
                 # Transform folders to FileRecords with permissions
@@ -1487,11 +2022,13 @@ class ConfluenceConnector(BaseConnector):
                             external_record_id=item_id
                         )
 
-                        # Fetch folder permissions
+                        # Fetch folder permissions. None means the ACL could not
+                        # be read — skip rather than write the folder as STRICT,
+                        # which would expose a restricted one to the whole space.
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
-                            # Saving it without its restrictions would open it to the whole space.
                             self.logger.warning(f"Skipping folder {item_id} this run: its restrictions could not be read")
+                            self._note_skipped(space_key, "folders whose restrictions could not be read")
                             listing_complete = False
                             continue
                         total_permissions_synced += len(permissions)
@@ -1504,24 +2041,36 @@ class ConfluenceConnector(BaseConnector):
                         if not folder_record:
                             continue
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            folder_record.inherit_permissions = False
+                        # A READ restriction keeps inheriting and is recorded as
+                        # RESTRICTED instead; EDIT-only stays STRICT.
+                        folder_record.access_rule = (
+                            AccessRule.RESTRICTED
+                            if any(p.type == PermissionType.READ for p in permissions)
+                            else AccessRule.STRICT
+                        )
+                        folder_record.rewrite_permissions = True
 
                         # Add folder to batch
                         records_with_permissions.append((folder_record, permissions))
                         total_synced += 1
                         self.logger.debug(f"Folder {item_title}: {len(permissions)} permissions")
 
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as item_error:
                         self.logger.error(f"❌ Failed to process folder {item_data.get('title')}: {item_error}")
+                        self._note_skipped(space_key, "folders that failed to sync")
+                        listing_complete = False
                         continue
 
                 # Save batch to database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} folders")
+                await self._save_batch_checkpoint(
+                    sync_point_key, items_data, nothing_skipped=listing_complete, field="last_sync_time",
+                    current=last_sync_time,
+                )
 
                 # Extract next page token from _links.next
                 # May contain either start=N (offset) or cursor=<token> depending on API version
@@ -1531,7 +2080,14 @@ class ConfluenceConnector(BaseConnector):
 
                 pagination_token = self._extract_cursor_from_next_link(next_url)
                 if not pagination_token:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: couldn't follow the folder list to its next page")
                     break
+                if pagination_token in followed:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: the folder list pointed back at a page it had read")
+                    break
+                followed.add(pagination_token)
 
             # Update sync checkpoint with current time (only if we synced something)
             if not listing_complete:
@@ -1574,6 +2130,8 @@ class ConfluenceConnector(BaseConnector):
         """
         # Derive content_type from record_type for logging and sync point
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
+        # Read once: each read goes to the config service.
+        comments_indexed = await self._comments_indexed(record_type)
 
         try:
             self.logger.info(f"Starting {content_type} synchronization for space {space_key}...")
@@ -1606,6 +2164,12 @@ class ConfluenceConnector(BaseConnector):
             )
             last_sync_data = None if within_ids else await self.pages_sync_point.read_sync_point(sync_point_key)
             last_sync_time = last_sync_data.get("last_sync_time") if last_sync_data else None
+            # Where an unfinished full listing stopped; a full listing keeps no checkpoint until it ends.
+            full_resume_after = None if last_sync_time else (last_sync_data or {}).get("full_resume_after")
+            if full_resume_after:
+                self.logger.info(f"🔁 Resuming the full {content_type} listing after {full_resume_after}")
+                # What the earlier part read is not seen by this run, so a full sync must not unlink it.
+                self._sync_read_incomplete = True
             if last_sync_time:
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {last_sync_time}")
 
@@ -1626,14 +2190,15 @@ class ConfluenceConnector(BaseConnector):
             if created_filter:
                 created_after, created_before = created_filter.get_datetime_iso()
 
-            # Merge modified_after with checkpoint (use the latest)
-            if modified_after and last_sync_time:
-                modified_after = max(modified_after, last_sync_time)
-                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {modified_after}, checkpoint: {last_sync_time})")
-            elif modified_after:
+            filter_modified_after = modified_after
+            modified_after = listing_modified_after(
+                filter_modified_after, last_sync_time or full_resume_after, TIME_OFFSET_HOURS
+            )
+            if filter_modified_after and last_sync_time:
+                self.logger.info(f"🔄 Using latest modified_after: {modified_after} (filter: {filter_modified_after}, checkpoint: {last_sync_time} less {TIME_OFFSET_HOURS}h)")
+            elif filter_modified_after:
                 self.logger.info(f"🔍 Using filter: Fetching {content_type}s modified after {modified_after}")
             elif last_sync_time:
-                modified_after = last_sync_time
                 self.logger.info(f"🔄 Incremental sync: Fetching {content_type}s modified after {modified_after}")
             else:
                 self.logger.info(f"🆕 Full sync: Fetching all {content_type}s (first time)")
@@ -1650,6 +2215,7 @@ class ConfluenceConnector(BaseConnector):
             # v1 content/search may use offset (start) or cursor depending on Confluence version
             batch_size = 50
             pagination_token: Optional[str] = None
+            followed: set[str] = set()
             total_synced = 0
             total_attachments_synced = 0
             total_permissions_synced = 0
@@ -1679,7 +2245,6 @@ class ConfluenceConnector(BaseConnector):
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS,
                         within_ids=within_ids,
                     )
                 else:  # CONFLUENCE_BLOGPOST
@@ -1697,20 +2262,22 @@ class ConfluenceConnector(BaseConnector):
                         order_by="lastModified",
                         sort_order="asc",
                         expand=CONTENT_EXPAND_PARAMS,
-                        time_offset_hours=TIME_OFFSET_HOURS,
                         within_ids=within_ids,
                     )
 
                 # Check response
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
                     self.logger.error(f"❌ Failed to fetch {content_type}s: {response.status if response else 'No response'}")
+                    self._note_problem(f"Space {space_key}: couldn't read the {content_type} list (HTTP %s)" % (response.status if response else "no response"))
                     listing_complete = False
                     break
 
                 response_data = response.json()
+                self._remember_site_wiki_url(response_data)
                 items_data = response_data.get("results") if isinstance(response_data, dict) else None
                 if not isinstance(items_data, list):
                     self.logger.error(f"❌ {content_type.capitalize()} listing for space {space_key} had no results list")
+                    self._note_problem(f"Space {space_key}: the {content_type} list came back without results")
                     listing_complete = False
                     break
 
@@ -1718,6 +2285,7 @@ class ConfluenceConnector(BaseConnector):
                     # Only a missing next link ends the listing; an empty page that points further is a failed read.
                     if (response_data.get("_links") or {}).get("next"):
                         listing_complete = False
+                        self._note_problem(f"Space {space_key}: the {content_type} list stopped early")
                     break
 
 
@@ -1742,11 +2310,13 @@ class ConfluenceConnector(BaseConnector):
                             external_record_id=item_id
                         )
 
-                        # Fetch page permissions
+                        # Fetch page permissions. None means the ACL could not be
+                        # read — skip rather than write the page as STRICT, which
+                        # would expose a restricted one to the whole space.
                         permissions = await self._fetch_page_permissions(item_id)
                         if permissions is None:
-                            # Saving it without its restrictions would open it to the whole space.
                             self.logger.warning(f"Skipping {content_type} {item_id} this run: its restrictions could not be read")
+                            self._note_skipped(space_key, f"{content_type}s whose restrictions could not be read")
                             listing_complete = False
                             continue
                         total_permissions_synced += len(permissions)
@@ -1765,11 +2335,13 @@ class ConfluenceConnector(BaseConnector):
                         if not content_indexing_enabled:
                             webpage_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-                        # Only set inherit_permissions to False if there are READ restrictions
-                        # EDIT-only restrictions should still inherit from space for READ access
-                        read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                        if len(read_permissions) > 0:
-                            webpage_record.inherit_permissions = False
+                        # A READ restriction keeps inheriting and is recorded as
+                        # RESTRICTED instead; EDIT-only stays STRICT.
+                        webpage_record.access_rule = (
+                            AccessRule.RESTRICTED
+                            if any(p.type == PermissionType.READ for p in permissions)
+                            else AccessRule.STRICT
+                        )
 
                         # Add item to batch
                         records_with_permissions.append((webpage_record, permissions))
@@ -1787,6 +2359,10 @@ class ConfluenceConnector(BaseConnector):
                         children = item_data.get("children", {})
                         attachment_data = children.get("attachment", {})
                         attachments = attachment_data.get("results", [])
+                        # Only a list read in full can say an attachment is gone.
+                        attachments_complete = not attachments and not attachment_data.get("size") and not (
+                            attachment_data.get("_links") or {}
+                        ).get("next")
 
                         if attachments:
                             # v2 list API puts base URL only on response _links, not per attachment
@@ -1799,11 +2375,15 @@ class ConfluenceConnector(BaseConnector):
                                     attachments_v2, v2_base_url, attachments_cut_short = (
                                         await self._list_current_attachments_v2(datasource, item_id, content_type)
                                     )
+                                    attachments_complete = bool(attachments_v2) and not attachments_cut_short
                                     if attachments_v2:
                                         attachments = attachments_v2
                                         v2_attachments_base_url = v2_base_url
                                     if attachments_cut_short:
                                         listing_complete = False
+                                        self._note_skipped(
+                                            space_key, f"{content_type}s whose attachment list could not be read in full"
+                                        )
                                 except Exception as v2_error:
                                     self.logger.debug(f"Error fetching v2 attachments: {v2_error}")
 
@@ -1814,6 +2394,8 @@ class ConfluenceConnector(BaseConnector):
                                         mime_type = att.get("mediaType", "")
                                         if mime_type:
                                             attachment_mime_types[att_id] = mime_type
+                                # Not inlined into the page: kept as an attachment record instead, or it would be in neither.
+                                oversized_image_ids = images_not_inlined(attachments)
                                 if content_type == "page":
                                     page_adf_response = await datasource.get_page_content_v2(
                                         page_id=item_id,
@@ -1841,80 +2423,82 @@ class ConfluenceConnector(BaseConnector):
                                         attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
                                         if attachment_id:
                                             mime_type = attachment_mime_types.get(attachment_id, "")
-                                            if mime_type.startswith("image/"):
+                                            if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
                                                 embedded_image_ids.add(attachment_id)
 
-                                try:
-                                    if content_type == "page":
-                                        footer_comments_response = await datasource.get_page_footer_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
-                                    else:
-                                        footer_comments_response = await datasource.get_blog_post_footer_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
+                                # Comments are streamed into the page only when indexed; otherwise their images stay files.
+                                if comments_indexed:
+                                    try:
+                                        if content_type == "page":
+                                            footer_comments_response = await datasource.get_page_footer_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
+                                        else:
+                                            footer_comments_response = await datasource.get_blog_post_footer_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
 
-                                    if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.value:
-                                        footer_comments_data = footer_comments_response.json()
-                                        footer_comments = footer_comments_data.get("results", [])
+                                        if footer_comments_response and footer_comments_response.status == HttpStatusCode.SUCCESS.value:
+                                            footer_comments_data = footer_comments_response.json()
+                                            footer_comments = footer_comments_data.get("results", [])
 
-                                        for comment in footer_comments:
-                                            comment_body = comment.get("body", {})
-                                            comment_adf = comment_body.get("atlas_doc_format", {})
-                                            comment_adf_value = comment_adf.get("value")
+                                            for comment in footer_comments:
+                                                comment_body = comment.get("body", {})
+                                                comment_adf = comment_body.get("atlas_doc_format", {})
+                                                comment_adf_value = comment_adf.get("value")
 
-                                            if comment_adf_value:
-                                                comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
-                                                comment_media_nodes = extract_media_from_adf(comment_content)
+                                                if comment_adf_value:
+                                                    comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
+                                                    comment_media_nodes = extract_media_from_adf(comment_content)
 
-                                                for media_info in comment_media_nodes:
-                                                    attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
-                                                    if attachment_id:
-                                                        mime_type = attachment_mime_types.get(attachment_id, "")
-                                                        if mime_type.startswith("image/"):
-                                                            embedded_image_ids.add(attachment_id)
-                                except Exception as comment_error:
-                                    self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
+                                                    for media_info in comment_media_nodes:
+                                                        attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                                        if attachment_id:
+                                                            mime_type = attachment_mime_types.get(attachment_id, "")
+                                                            if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
+                                                                embedded_image_ids.add(attachment_id)
+                                    except Exception as comment_error:
+                                        self.logger.debug(f"Failed to fetch footer comments for embedded image detection: {comment_error}", exc_info=True)
 
-                                try:
-                                    if content_type == "page":
-                                        inline_comments_response = await datasource.get_page_inline_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
-                                    else:
-                                        inline_comments_response = await datasource.get_blog_post_inline_comments(
-                                            id=int(item_id),
-                                            body_format="atlas_doc_format",
-                                            limit=100
-                                        )
+                                    try:
+                                        if content_type == "page":
+                                            inline_comments_response = await datasource.get_page_inline_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
+                                        else:
+                                            inline_comments_response = await datasource.get_blog_post_inline_comments(
+                                                id=int(item_id),
+                                                body_format="atlas_doc_format",
+                                                limit=100
+                                            )
 
-                                    if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.value:
-                                        inline_comments_data = inline_comments_response.json()
-                                        inline_comments = inline_comments_data.get("results", [])
+                                        if inline_comments_response and inline_comments_response.status == HttpStatusCode.SUCCESS.value:
+                                            inline_comments_data = inline_comments_response.json()
+                                            inline_comments = inline_comments_data.get("results", [])
 
-                                        for comment in inline_comments:
-                                            comment_body = comment.get("body", {})
-                                            comment_adf = comment_body.get("atlas_doc_format", {})
-                                            comment_adf_value = comment_adf.get("value")
+                                            for comment in inline_comments:
+                                                comment_body = comment.get("body", {})
+                                                comment_adf = comment_body.get("atlas_doc_format", {})
+                                                comment_adf_value = comment_adf.get("value")
 
-                                            if comment_adf_value:
-                                                comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
-                                                comment_media_nodes = extract_media_from_adf(comment_content)
+                                                if comment_adf_value:
+                                                    comment_content = json.loads(comment_adf_value) if isinstance(comment_adf_value, str) else comment_adf_value
+                                                    comment_media_nodes = extract_media_from_adf(comment_content)
 
-                                                for media_info in comment_media_nodes:
-                                                    attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
-                                                    if attachment_id:
-                                                        mime_type = attachment_mime_types.get(attachment_id, "")
-                                                        if mime_type.startswith("image/"):
-                                                            embedded_image_ids.add(attachment_id)
-                                except Exception as comment_error:
-                                    self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
+                                                    for media_info in comment_media_nodes:
+                                                        attachment_id = self._resolve_confluence_attachment_id(media_info, attachments)
+                                                        if attachment_id:
+                                                            mime_type = attachment_mime_types.get(attachment_id, "")
+                                                            if mime_type.startswith("image/") and attachment_id not in oversized_image_ids:
+                                                                embedded_image_ids.add(attachment_id)
+                                    except Exception as comment_error:
+                                        self.logger.debug(f"Failed to fetch inline comments for embedded image detection: {comment_error}", exc_info=True)
 
                             except Exception as adf_error:
                                 self.logger.warning(f"Failed to detect embedded images for {content_type} {item_id}, all attachments will be created as FileRecords: {adf_error}")
@@ -1945,23 +2529,44 @@ class ConfluenceConnector(BaseConnector):
                                     if attachment_record:
                                         if not content_attachments_indexing_enabled:
                                             attachment_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
-                                        # Attachments get the page's grants; the space's only if the page is open.
-                                        attachment_record.inherit_permissions = webpage_record.inherit_permissions
-                                        records_with_permissions.append((attachment_record, permissions))
+                                        # Attachments follow the page's access through inheritance.
+                                        attachment_record.inherit_permissions = True
+                                        attachment_record.rewrite_permissions = True
+                                        records_with_permissions.append((attachment_record, []))
                                         total_attachments_synced += 1
 
+                                except AtlassianQuotaExhausted:
+                                    raise
                                 except Exception as att_error:
                                     self.logger.error(f"Failed to process attachment: {att_error}")
+                                    self._note_skipped(space_key, "attachments that failed to sync")
+                                    listing_complete = False
                                     continue
 
+                        if attachments_complete and existing_record is not None:
+                            await self._remove_attachments_gone(
+                                item_id, {str(a.get("id")) for a in attachments if a.get("id")}, space_key
+                            )
+
+                    except AtlassianQuotaExhausted:
+                        raise
                     except Exception as item_error:
                         self.logger.error(f"Failed to process {content_type} {item_data.get('title')}: {item_error}")
+                        self._note_skipped(space_key, f"{content_type}s that failed to sync")
+                        listing_complete = False
                         continue
 
                 # Save batch to database
                 if records_with_permissions:
                     await self.data_entities_processor.on_new_records(records_with_permissions)
                     self.logger.info(f"Synced batch of {len(records_with_permissions)} items ({content_type}s + attachments)")
+                    await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
+                if not within_ids:
+                    await self._save_batch_checkpoint(
+                        sync_point_key, items_data, nothing_skipped=listing_complete,
+                        field="last_sync_time" if last_sync_time else "full_resume_after",
+                        current=last_sync_time or full_resume_after,
+                    )
 
                 # Extract next page token from _links.next
                 # May contain either start=N (offset) or cursor=<token> depending on API version
@@ -1972,7 +2577,13 @@ class ConfluenceConnector(BaseConnector):
                 pagination_token = self._extract_cursor_from_next_link(next_url)
                 if not pagination_token:
                     listing_complete = False
+                    self._note_problem(f"Space {space_key}: couldn't follow the {content_type} list to its next page")
                     break
+                if pagination_token in followed:
+                    listing_complete = False
+                    self._note_problem(f"Space {space_key}: the {content_type} list pointed back at a page it had read")
+                    break
+                followed.add(pagination_token)
 
             # Update sync checkpoint with current time (only if we synced something)
             # Using current time instead of last item's time avoids re-fetching due to the 24-hour offset
@@ -1985,47 +2596,268 @@ class ConfluenceConnector(BaseConnector):
             if listing_complete and total_synced > 0 and not within_ids:
                 current_sync_time = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
                 if not defer_checkpoint:
-                    await self.pages_sync_point.update_sync_point(sync_point_key, {"last_sync_time": current_sync_time})
+                    await self.pages_sync_point.update_sync_point(
+                        sync_point_key, {"last_sync_time": current_sync_time, "full_resume_after": ""}
+                    )
                     self.logger.info(f"Updated {content_type}s sync checkpoint to {current_sync_time}")
 
             self.logger.info(f"✅ {content_type.capitalize()} sync complete. {content_type.capitalize()}s: {total_synced}, Attachments: {total_attachments_synced}, Permissions: {total_permissions_synced}")
             return ContentListing(
                 full=not last_sync_time, complete=listing_complete, seen=frozenset(seen),
                 checkpoint_key=sync_point_key, checkpoint_time=current_sync_time,
+                resumed=bool(full_resume_after),
             )
 
         except Exception as e:
             self.logger.error(f"❌ {content_type.capitalize()} sync failed: {e}", exc_info=True)
             raise
 
+    # A comment changed this long before the last checkpoint is still looked at: the checkpoint
+    # is taken at the end of a sync, after its comment search.
+    _COMMENT_CHECK_OVERLAP = timedelta(minutes=10)
+    # How long an item a filtered search left out is not searched for again.
+    _UNSTORED_RECHECK_SECONDS = 24 * 3600
+
+    async def _reindex_pages_with_changed_comments(self, space_key: str) -> None:
+        """Re-index the stored pages and blog posts of a space whose comments changed since the last check.
+
+        A comment changes neither its page's version nor its last modified time, so the listing
+        never brings the page back. One search per space covers both types; its own checkpoint
+        moves only after a search read to the end, so quiet spaces don't re-index the same page
+        on every run. The first sync only sets the checkpoint: it indexes every page anyway.
+        """
+        types = {
+            "page": await self._comments_indexed(RecordType.CONFLUENCE_PAGE),
+            "blogpost": await self._comments_indexed(RecordType.CONFLUENCE_BLOGPOST),
+        }
+        if not any(types.values()):
+            return
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_comments", space_key)
+        stored = await self.pages_sync_point.read_sync_point(key) or {}
+        checked_at = stored.get("checked_at")
+        searched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        if not checked_at:
+            await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+            return
+        containers = await self._containers_changed_since(space_key, "comment", checked_at)
+        if containers is None:
+            return
+        page_ids = {item_id for item_id, kind in containers.items() if types.get(kind)}
+
+        records = []
+        for page_id in sorted(page_ids):
+            # Typed: re-indexing needs the WebpageRecord, not the base record the external-id lookup gives.
+            record = await self.data_entities_processor.get_typed_record_by_external_id(self.connector_id, page_id)
+            # A page left out of indexing on purpose stays out: a comment is not a request to index it.
+            if (
+                record is not None and not record.is_placeholder
+                and record.indexing_status != ProgressStatus.AUTO_INDEX_OFF.value
+            ):
+                records.append(record)
+        if records:
+            self.logger.info(f"Re-indexing {len(records)} pages and blog posts in space {space_key} whose comments changed")
+            await self._fix_legacy_mime_types(records)
+            await self.data_entities_processor.reindex_existing_records(records)
+            await self._drop_legacy_comment_records(self._saved_as_blocks(records, every_page=True))
+        await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+
+    async def _containers_changed_since(
+        self, space_key: str, content_type: str, checked_at: str
+    ) -> dict[str, str] | None:
+        """Pages and blog posts (id to type) whose comments or attachments changed since ``checked_at``.
+
+        None, with the problem noted, when the search could not be read to the end.
+        """
+        since = datetime.fromisoformat(checked_at.replace("Z", "+00:00")) - self._COMMENT_CHECK_OVERLAP
+        search_after = listing_modified_after(None, checked_at, TIME_OFFSET_HOURS)
+        problem = f"Space {space_key}: couldn't check for changed {content_type}s; the next sync tries again"
+        containers: dict[str, str] = {}
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_comments_v1(
+                    space_key=space_key, modified_after=search_after, start=offset, cursor=cursor, limit=100,
+                    content_type=content_type,
+                )
+                data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Could not search the {content_type}s of space {space_key}: {e}")
+                data = None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                self._note_problem(problem, unread=False)
+                return None
+            for item in results:
+                container = item.get("container") or {}
+                # An attachment on a comment names the comment; only pages and blog posts are synced.
+                if container.get("type") not in ("page", "blogpost") or not container.get("id"):
+                    continue
+                if self._changed_since(item, since):
+                    containers[str(container["id"])] = container["type"]
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return containers
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                self._note_problem(problem, unread=False)
+                return None
+            followed.add(token)
+
+    async def _resync_pages_with_changed_attachments(self, space_key: str) -> None:
+        """Sync again the pages and blog posts of a space whose attachments changed since the last check.
+
+        Uploading a file, or a new version of one, adds no page version, so the listing by
+        last change never brings the page back and the new file would not be synced. Its
+        own checkpoint moves only after every such page was synced again; the first sync
+        only sets it.
+        """
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_attachments", space_key)
+        stored = await self.pages_sync_point.read_sync_point(key) or {}
+        checked_at = stored.get("checked_at")
+        searched_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        if not checked_at:
+            await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+            return
+        containers = await self._containers_changed_since(space_key, "attachment", checked_at)
+        if containers is None:
+            return
+        complete = True
+        for record_type, kind in ((RecordType.CONFLUENCE_PAGE, "page"), (RecordType.CONFLUENCE_BLOGPOST, "blogpost")):
+            ids = sorted(item_id for item_id, item_kind in containers.items() if item_kind == kind)
+            for start in range(0, len(ids), ID_SEARCH_CHUNK):
+                result = await self._sync_content(
+                    space_key, record_type, defer_checkpoint=True, within_ids=ids[start:start + ID_SEARCH_CHUNK],
+                )
+                complete = complete and result.complete
+            if ids:
+                self.logger.info(f"Synced {len(ids)} {kind}s in space {space_key} again: their attachments changed")
+        if complete:
+            await self.pages_sync_point.update_sync_point(key, {"checked_at": searched_at})
+        else:
+            self._note_problem(
+                f"Space {space_key}: couldn't sync every page whose attachments changed; the next sync tries again",
+                unread=False,
+            )
+
+    @staticmethod
+    def _changed_since(item: dict[str, Any], since: datetime) -> bool:
+        """Whether a search result changed after ``since``; true when its time can't be read."""
+        changed = ((item.get("version") or {}).get("when") or "").replace("Z", "+00:00")
+        if not changed:
+            return True
+        try:
+            when = datetime.fromisoformat(changed)
+        except ValueError:
+            return True
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        return when > since
+
+    async def _save_batch_checkpoint(
+        self, sync_point_key: str, items: list[dict[str, Any]], *, nothing_skipped: bool,
+        field: str, current: str | None,
+    ) -> None:
+        """Move a listing's checkpoint to the latest change in a batch that was just saved.
+
+        The listing runs oldest change first, so a sync stopped later resumes after this
+        batch instead of from the start. Only while nothing so far in the listing was
+        skipped: the checkpoint never moves past an item that was not saved. ``field``
+        is ``last_sync_time``, or ``full_resume_after`` for a full listing, which keeps
+        no checkpoint until it ends. Never moves back: the listing looks back a day.
+        """
+        if not nothing_skipped or not items:
+            return
+        latest: datetime | None = None
+        for item in items:
+            when = ((item.get("history") or {}).get("lastUpdated") or {}).get("when")
+            try:
+                changed = datetime.fromisoformat(when.replace("Z", "+00:00")) if when else None
+            except ValueError:
+                changed = None
+            if changed is None or changed.tzinfo is None:
+                # Without every item's time the batch can't say how far it got.
+                return
+            latest = changed if latest is None or changed > latest else latest
+        if current:
+            try:
+                if latest <= datetime.fromisoformat(current.replace("Z", "+00:00")):
+                    return
+            except ValueError:
+                pass
+        checkpoint = latest.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+        await self.pages_sync_point.update_sync_point(sync_point_key, {field: checkpoint})
+
     async def _sync_spaces_content(self, spaces: list[RecordGroup]) -> None:
         """Sync each space's folders, pages and blog posts, then remove what left the source.
 
         A space's page or blog post checkpoint moves only once that space's removals
         for that type have succeeded, so a failed read or delete is repeated by the
-        next sync.
+        next sync. A space that fails is reported and the rest still sync.
         """
         for space in spaces:
-            space_key = space.short_name
+            try:
+                await self._sync_space_content(space)
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.error(f"Could not sync space {space.short_name}: {e}", exc_info=True)
+                self._note_problem(f"Space {space.short_name}: sync failed ({str(e)[:200]}); the next sync tries again")
 
-            self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
-            await self._sync_folders(space_key)
+    async def _sync_space_content(self, space: RecordGroup) -> None:
+        """One space's folders, pages and blog posts, then what left it."""
+        space_key = space.short_name
 
-            for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
-                self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
-                listing = await self._sync_content(space_key, record_type, defer_checkpoint=True)
-                settled = await self._remove_content_gone_from_source(space, record_type, listing)
-                if not listing.checkpoint_time:
-                    continue
-                if settled:
+        self.logger.info(f"Syncing folders for space: {space.name} ({space_key})")
+        await self._sync_folders(space_key)
+        await self._remove_folders_gone(space)
+
+        try:
+            await self._reindex_pages_with_changed_comments(space_key)
+        except AtlassianQuotaExhausted:
+            raise
+        except Exception as e:
+            # The comment check keeps its clock, so the next sync looks at these comments again.
+            self.logger.warning(f"Could not check the comments of space {space_key}: {e}", exc_info=True)
+            self._note_problem(
+                f"Space {space_key}: couldn't check for new comments; the next sync tries again", unread=False
+            )
+
+        for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST):
+            self.logger.info(f"Syncing {record_type.value} records for space: {space.name} ({space_key})")
+            listing = await self._sync_content(space_key, record_type, defer_checkpoint=True)
+            settled = await self._remove_content_gone_from_source(space, record_type, listing)
+            if settled:
+                if listing.checkpoint_time:
                     await self.pages_sync_point.update_sync_point(
-                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time}
+                        listing.checkpoint_key, {"last_sync_time": listing.checkpoint_time, "full_resume_after": ""}
                     )
-                else:
-                    self.logger.warning(
-                        f"Keeping the {record_type.value} checkpoint for space {space_key}: some removals "
-                        "could not be checked or made, so the next sync repeats them"
-                    )
+            else:
+                self.logger.warning(
+                    f"Keeping the {record_type.value} checkpoint for space {space_key}: some removals "
+                    "could not be checked or made, so the next sync repeats them"
+                )
+                self._note_problem(
+                    f"Space {space_key}: couldn't check or remove some deleted items; the next sync tries again",
+                    # After a full listing an unsettled check may hide items it missed: no unlink then.
+                    unread=listing.full,
+                )
+
+        try:
+            await self._resync_pages_with_changed_attachments(space_key)
+        except AtlassianQuotaExhausted:
+            raise
+        except Exception as e:
+            # The attachment check keeps its clock, so the next sync looks at these files again.
+            self.logger.warning(f"Could not check the attachments of space {space_key}: {e}", exc_info=True)
+            self._note_problem(
+                f"Space {space_key}: couldn't check for changed attachments; the next sync tries again",
+                unread=False,
+            )
 
     async def _remove_content_gone_from_source(
         self, space: RecordGroup, record_type: RecordType, listing: ContentListing
@@ -2041,7 +2873,8 @@ class ConfluenceConnector(BaseConnector):
         False when a read or delete failed, or a missed item could not be
         explained, so the caller holds the checkpoint.
         """
-        existing = await self._list_space_content(space.external_group_id, record_type)
+        parents: dict[str, str] = {}
+        existing = await self._list_space_content(space.external_group_id, record_type, parents)
         if existing is None:
             return False
         try:
@@ -2053,6 +2886,12 @@ class ConfluenceConnector(BaseConnector):
         settled = True
         if not listing.full:
             settled = await self._sync_listed_but_not_stored(space, record_type, existing, stored, listing)
+        else:
+            # The content search leaves archived pages out; Confluence still shows them to those
+            # allowed, so a full sync keeps them as stored rather than unlinking them.
+            archived = [r.id for r in stored if existing.get(r.external_record_id) == "archived"]
+            if archived:
+                self.data_entities_processor.note_kept_records(self.connector_id, archived)
         doomed = [r for r in stored if r.external_record_id not in existing]
         if doomed:
             self.logger.info(
@@ -2060,18 +2899,29 @@ class ConfluenceConnector(BaseConnector):
                 f"in space {space.short_name}"
             )
         filters = self._content_filter_kwargs(record_type)
+        if listing.full and listing.complete and not filters and not listing.resumed:
+            # Without filters a full listing should have seen every current item; one it missed
+            # (a search index behind the database) is read again, or the full sync would unlink it.
+            missed = [
+                r.external_record_id for r in stored
+                if existing.get(r.external_record_id) == "current" and r.external_record_id not in listing.seen
+            ]
+            if missed and not await self._read_missed_again(space, record_type, missed):
+                settled = False
         if listing.full and listing.complete and filters:
             missed = [
                 r.external_record_id for r in stored
                 if existing.get(r.external_record_id) == "current" and r.external_record_id not in listing.seen
             ]
             if missed:
-                verdict = await self._filter_verdict(space.short_name, record_type, missed, filters)
+                verdict = await self._filter_verdict(
+                    space.short_name, record_type, missed, filters, resumed=listing.resumed
+                )
                 if verdict is None:
                     settled = False
                 else:
                     excluded, unexplained = verdict
-                    if unexplained:
+                    if unexplained and not await self._read_missed_again(space, record_type, sorted(unexplained)):
                         self.logger.warning(
                             f"{len(unexplained)} {record_type.value} records in space {space.short_name} were missed by "
                             "the listing but the search can't say why; keeping them and the full sync owed"
@@ -2086,7 +2936,71 @@ class ConfluenceConnector(BaseConnector):
                     doomed.extend(left_out)
         if doomed:
             settled = await self._delete_content_records(doomed) and settled
+        if record_type == RecordType.CONFLUENCE_PAGE:
+            gone = {r.external_record_id for r in doomed}
+            settled = await self._resync_moved_pages(
+                space, [r for r in stored if r.external_record_id not in gone], parents,
+                just_listed=listing.full and not listing.resumed,
+            ) and settled
         return settled
+
+    async def _resync_moved_pages(
+        self, space: RecordGroup, stored: list[Record], parents: dict[str, str], *, just_listed: bool
+    ) -> bool:
+        """Sync again stored pages whose parent in the space listing differs from the stored one.
+
+        Moving a page need not change its version, so the listing by last change may never
+        bring it back, and its stored parent (and the access inherited through it) stays.
+        A difference still there after a page was synced again comes from how the two APIs
+        name the parent, not from a move: it is remembered and not synced again until the
+        listed parent changes. ``just_listed``: this run listed every page, so the stored
+        parents are fresh and differences are only remembered. False if a sync failed.
+        """
+        listed_differs = {
+            r.external_record_id: parents[r.external_record_id] for r in stored
+            if r.external_record_id in parents and parents[r.external_record_id] != r.parent_external_record_id
+        }
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "parents", space.short_name)
+        seen = await self.pages_sync_point.read_sync_point(key)
+        before: dict[str, str] = json.loads(seen.get("differs") or "{}") if seen else {}
+        moved = [] if just_listed else sorted(i for i, parent in listed_differs.items() if before.get(i) != parent)
+        failed: set[str] = set()
+        for start in range(0, len(moved), ID_SEARCH_CHUNK):
+            chunk = moved[start:start + ID_SEARCH_CHUNK]
+            result = await self._sync_content(
+                space.short_name, RecordType.CONFLUENCE_PAGE, defer_checkpoint=True, within_ids=chunk,
+            )
+            if not result.complete:
+                failed.update(chunk)
+        if moved:
+            self.logger.info(f"Synced {len(moved)} pages in space {space.short_name} again: their parent changed")
+        # A failed page is left out, so the next sync tries it again.
+        remembered = {i: parent for i, parent in listed_differs.items() if i not in failed}
+        await self.pages_sync_point.update_sync_point(key, {"differs": json.dumps(remembered, sort_keys=True)})
+        return not failed
+
+    async def _read_missed_again(self, space: RecordGroup, record_type: RecordType, ids: list[str]) -> bool:
+        """Read again, by id, stored items a full listing missed; True if every one was read.
+
+        One that still can't be read is kept as stored, and the sync reports a partial read so
+        the full sync does not unlink it.
+        """
+        seen: set[str] = set()
+        complete = True
+        for start in range(0, len(ids), ID_SEARCH_CHUNK):
+            result = await self._sync_content(
+                space.short_name, record_type, defer_checkpoint=True, within_ids=ids[start:start + ID_SEARCH_CHUNK],
+            )
+            seen |= result.seen
+            complete = complete and result.complete
+        still_missed = set(ids) - seen
+        if still_missed or not complete:
+            self._note_problem(
+                f"Space {space.short_name}: {len(still_missed) or 'some'} stored {record_type.value} records could not be "
+                "read in this sync; they are kept as they were",
+            )
+            return False
+        return True
 
     async def _sync_listed_but_not_stored(
         self,
@@ -2103,12 +3017,26 @@ class ConfluenceConnector(BaseConnector):
         modified time, so the incremental search would never return it. The sync
         filters still apply, so an item they leave out stays out. Returns False
         when a read failed, so the caller holds the checkpoint.
+
+        Items the search did not return (left out by the filters, or placeholder
+        ancestors) are searched again once a day or when the filters change, not every run.
         """
         stored_ids = {r.external_record_id for r in stored}
-        unseen = sorted(
+        unstored = {
             item_id for item_id, status in existing.items()
             if status == "current" and item_id not in stored_ids and item_id not in listing.seen
+        }
+        key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "unstored", f"{record_type.value}/{space.short_name}")
+        filters_tag = hashlib.sha256(
+            json.dumps(self._content_filter_kwargs(record_type), sort_keys=True, default=str).encode()
+        ).hexdigest()
+        before = await self.pages_sync_point.read_sync_point(key) or {}
+        recent = (
+            before.get("filters") == filters_tag
+            and time.time() - float(before.get("at") or 0) < self._UNSTORED_RECHECK_SECONDS
         )
+        not_returned = set(json.loads(before.get("ids") or "[]")) & unstored if recent else set()
+        unseen = sorted(unstored - not_returned)
         if not unseen:
             return True
         self.logger.info(
@@ -2116,14 +3044,21 @@ class ConfluenceConnector(BaseConnector):
         )
         complete = True
         for start in range(0, len(unseen), ID_SEARCH_CHUNK):
-            result = await self._sync_content(
-                space.short_name, record_type, defer_checkpoint=True,
-                within_ids=unseen[start:start + ID_SEARCH_CHUNK],
-            )
+            chunk = unseen[start:start + ID_SEARCH_CHUNK]
+            result = await self._sync_content(space.short_name, record_type, defer_checkpoint=True, within_ids=chunk)
             complete = complete and result.complete
+            if result.complete:
+                not_returned |= set(chunk) - set(result.seen)
+        await self.pages_sync_point.update_sync_point(key, {
+            "filters": filters_tag,
+            "at": before.get("at") if recent else time.time(),
+            "ids": json.dumps(sorted(not_returned)),
+        })
         return complete
 
-    async def _list_space_content(self, space_id: str, record_type: RecordType) -> dict[str, str] | None:
+    async def _list_space_content(
+        self, space_id: str, record_type: RecordType, parents: dict[str, str] | None = None
+    ) -> dict[str, str] | None:
         """Status by id of every page or blog post in a space the account can see; None unless read to the end.
 
         The v2 listing defaults to current and archived pages and current blog
@@ -2159,6 +3094,8 @@ class ConfluenceConnector(BaseConnector):
             for item in results:
                 if isinstance(item, dict) and item.get("id"):
                     statuses[str(item["id"])] = str(item.get("status") or "current")
+                    if parents is not None and item.get("parentId"):
+                        parents[str(item["id"])] = str(item["parentId"])
             next_url = (data.get("_links") or {}).get("next")
             if not next_url:
                 return statuses
@@ -2169,8 +3106,10 @@ class ConfluenceConnector(BaseConnector):
             visited.add(next_cursor)
             cursor = next_cursor
 
-    async def _stored_content(self, space_id: str, record_type: RecordType) -> list[Record]:
-        """Stored records of this type in the space, without placeholder ancestors.
+    async def _stored_content(
+        self, space_id: str, record_type: RecordType, *, with_placeholders: bool = False
+    ) -> list[Record]:
+        """Stored records of this type in the space, without placeholder ancestors unless asked.
 
         Placeholders hold the breadcrumb of in-scope pages and are never listed themselves.
         """
@@ -2182,7 +3121,9 @@ class ConfluenceConnector(BaseConnector):
                 self.connector_id, space_id, RECORD_SCAN_PAGE_SIZE, after_key,
                 visibility=RecordVisibility.ALL,
             )
-            stored.extend(r for r in page if r.record_type == record_type and not r.is_placeholder)
+            stored.extend(
+                r for r in page if r.record_type == record_type and (with_placeholders or not r.is_placeholder)
+            )
             if len(page) < RECORD_SCAN_PAGE_SIZE:
                 return stored
             after_key = page[-1].id
@@ -2210,18 +3151,19 @@ class ConfluenceConnector(BaseConnector):
                     kwargs[after_arg] = after
                 if before:
                     kwargs[before_arg] = before
-        if any(k in kwargs for k in ("modified_after", "modified_before", "created_after", "created_before")):
-            kwargs["time_offset_hours"] = TIME_OFFSET_HOURS
         return kwargs
 
     async def _filter_verdict(
-        self, space_key: str, record_type: RecordType, ids: list[str], filters: dict[str, Any]
+        self, space_key: str, record_type: RecordType, ids: list[str], filters: dict[str, Any],
+        *, resumed: bool = False,
     ) -> tuple[set[str], set[str]] | None:
         """Split ids the full listing missed into (left out by the filters, unexplained); None if a search failed.
 
         Left out: a search of the space finds the id without the filters and not
         with them. Unexplained: the search doesn't find it at all (a lagging index)
-        or finds it with the filters too (the listing skipped it).
+        or finds it with the filters too (the listing skipped it). After a resumed
+        listing, one the filters still admit was read before it stopped, so only
+        an id the search doesn't find is unexplained.
         """
         anywhere = await self._search_ids_in_space(space_key, record_type, ids, {})
         if anywhere is None:
@@ -2230,6 +3172,8 @@ class ConfluenceConnector(BaseConnector):
         if in_scope is None:
             return None
         excluded = anywhere - in_scope
+        if resumed:
+            return excluded, set(ids) - anywhere
         return excluded, set(ids) - excluded
 
     async def _search_ids_in_space(
@@ -2242,6 +3186,7 @@ class ConfluenceConnector(BaseConnector):
         for start in range(0, len(ids), ID_SEARCH_CHUNK):
             chunk = ids[start:start + ID_SEARCH_CHUNK]
             token: str | None = None
+            followed: set[str] = set()
             while True:
                 offset, cursor = self._split_pagination_token(token)
                 try:
@@ -2262,11 +3207,156 @@ class ConfluenceConnector(BaseConnector):
                 if not next_url:
                     break
                 next_token = self._extract_cursor_from_next_link(next_url)
-                if not results or not next_token or next_token == token:
+                if not results or not next_token or next_token in followed:
                     self.logger.warning(f"Can't follow the search of space {space_key}; nothing removed")
                     return None
+                followed.add(next_token)
                 token = next_token
         return found
+
+    async def _list_folder_ids(self, space_key: str) -> set[str] | None:
+        """Ids of every folder a search of the space finds; None unless read to the end."""
+        ids: set[str] = set()
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_folders_v1(space_key=space_key, start=offset, cursor=cursor, limit=250)
+            data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                return None
+            ids.update(str(item["id"]) for item in results if isinstance(item, dict) and item.get("id"))
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return ids
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                return None
+            followed.add(token)
+
+    async def _remove_folders_gone(self, space: RecordGroup) -> None:
+        """Delete the space's stored folders Confluence no longer has there (trashed, purged or moved away).
+
+        Only a folder the search no longer finds is looked up, one by one; a lookup that
+        fails keeps it. Its pages are detached to the space root, as Confluence does.
+        """
+        try:
+            stored = [r for r in await self._stored_content(space.external_group_id, RecordType.FILE) if _is_folder(r)]
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored folders of space {space.short_name}: {e}")
+            return
+        if not stored:
+            return
+        listed = await self._list_folder_ids(space.short_name)
+        if listed is None:
+            self._note_problem(
+                f"Space {space.short_name}: couldn't check for deleted folders; the next sync tries again", unread=False
+            )
+            return
+        if self.data_entities_processor.full_sync_running(self.connector_id):
+            # A folder filled in above an in-scope page is not listed when the filters leave it out;
+            # unseen, the full sync would unlink it and hide the pages under it.
+            for folder in stored:
+                if str(folder.external_record_id) in listed and await self.data_entities_processor.get_records_by_parent(
+                    self.connector_id, folder.external_record_id
+                ):
+                    self.data_entities_processor.note_kept_records(self.connector_id, [folder.id])
+        gone: list[Record] = []
+        for folder in (f for f in stored if str(f.external_record_id) not in listed):
+            try:
+                datasource = await self._get_fresh_datasource()
+                response = await datasource.get_folder_by_id(id=int(folder.external_record_id))
+            except Exception as e:
+                self.logger.warning(f"Could not look up folder {folder.external_record_id}: {e}")
+                continue
+            if response and response.status == HttpStatusCode.NOT_FOUND.value:
+                gone.append(folder)
+            elif response and response.status == HttpStatusCode.SUCCESS.value:
+                data = response.json() or {}
+                moved = data.get("spaceId") and str(data["spaceId"]) != str(space.external_group_id)
+                if data.get("status") in ("trashed", "deleted") or moved:
+                    gone.append(folder)
+        if gone:
+            self.logger.info(f"Removing {len(gone)} folders space {space.short_name} no longer has")
+            if not await self._delete_content_records(gone):
+                self._note_problem(
+                    f"Space {space.short_name}: couldn't remove some deleted folders; the next sync tries again",
+                    unread=False,
+                )
+
+    async def _remove_attachments_gone(self, page_id: str, current_ids: set[str], space_key: str) -> None:
+        """Delete a page's stored attachments that its complete attachment list no longer has.
+
+        Removing an attachment leaves the page in place, so nothing else ever removed its record.
+        """
+        try:
+            children = await self.data_entities_processor.get_records_by_parent(
+                connector_id=self.connector_id, parent_external_record_id=page_id
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored attachments of {page_id}: {e}")
+            self._note_problem(
+                f"Space {space_key}: couldn't check a page for deleted attachments; the next sync tries again",
+                unread=False,
+            )
+            return
+        gone = [
+            c for c in children
+            if c.record_type == RecordType.FILE and not _is_folder(c) and str(c.external_record_id) not in current_ids
+        ]
+        if not gone:
+            return
+        self.logger.info(f"Removing {len(gone)} attachments page {page_id} no longer has")
+        if not await self._delete_content_records(gone):
+            self._note_problem(
+                f"Space {space_key}: couldn't remove some deleted attachments; the next sync tries again", unread=False
+            )
+
+    def _saved_as_blocks(self, records: Iterable[Record], *, every_page: bool = False) -> dict[str, RecordType]:
+        """The saved ``records`` just stored as blocks (or, with ``every_page``, all their pages and blog posts)."""
+        pages: dict[str, RecordType] = {}
+        for record in records:
+            record_type = self._now_blocks.pop(record.external_record_id, None)
+            if record_type is None and every_page and record.record_type in (
+                RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST
+            ) and record.mime_type == MimeTypes.BLOCKS.value:
+                record_type = record.record_type
+            if record_type is not None:
+                pages[record.external_record_id] = record_type
+        return pages
+
+    async def _drop_legacy_comment_records(self, pages: dict[str, RecordType]) -> None:
+        """Delete the comment records older versions stored under these pages, now stored as blocks.
+
+        The blocks carry the page's comments, so the separate records would answer twice.
+        An HTML page keeps them until it is converted (when it next changes or is re-indexed).
+        With comment indexing off the blocks carry no comments, so the records stay.
+        """
+        comment_types = (RecordType.COMMENT, RecordType.INLINE_COMMENT)
+        indexed: dict[RecordType, bool] = {}
+        for page_id, record_type in sorted(pages.items()):
+            if record_type not in indexed:
+                indexed[record_type] = await self._comments_indexed(record_type)
+            if not indexed[record_type]:
+                continue
+            try:
+                queue, owned = [page_id], []
+                while queue:
+                    for child in await self.data_entities_processor.get_records_by_parent(
+                        self.connector_id, queue.pop(), visibility=RecordVisibility.ALL
+                    ):
+                        if child.record_type in comment_types:
+                            owned.append(child)
+                            queue.append(child.external_record_id)
+                for child in owned:
+                    await self.data_entities_processor.on_record_deleted(child.id)
+                if owned:
+                    self.logger.info(f"Removed {len(owned)} comment records of page {page_id}: its blocks hold them")
+            except Exception as e:
+                # shortcut: not retried; the page is blocks now, so these stay until the page is deleted.
+                self.logger.warning(f"Could not remove the old comment records of page {page_id}: {e}")
 
     async def _delete_content_records(self, records: list[Record]) -> bool:
         """Delete pages or blog posts with their file attachments and comments; True if every delete succeeded.
@@ -2350,10 +3440,13 @@ class ConfluenceConnector(BaseConnector):
                 after_key = page[-1].id
         except Exception as e:
             self.logger.warning(f"Could not read the stored spaces; no space removed: {e}")
+            self._note_problem("Couldn't check for deleted spaces; the next sync tries again", unread=False)
             return
 
+        # A space last seen in scope that has no records is in no record, so it comes from the last scope.
+        left_scope = {str(p) for p in (cleaned.get("space_ids") or [])} - wanted
         unfinished: list[str] = []
-        for space_id in sorted(set(by_space) | pending):
+        for space_id in sorted(set(by_space) | pending | left_scope):
             try:
                 removed = await self._remove_space(space_id, by_space.get(space_id, []))
             except Exception as e:
@@ -2361,6 +3454,11 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"Could not finish removing space {space_id}; retrying next sync: {e}")
             if not removed:
                 unfinished.append(space_id)
+                self._note_problem(
+                    f"Couldn't finish removing space {space_id}, which Confluence no longer lists; "
+                    "the next sync tries again",
+                    unread=False,
+                )
         # The store merges fields, so an empty list clears what an earlier run left pending.
         await self.pages_sync_point.update_sync_point(
             key, {"pending": unfinished} if unfinished else {"space_ids": in_scope, "pending": []}
@@ -2391,7 +3489,16 @@ class ConfluenceConnector(BaseConnector):
                 generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_pages", group.short_name),
                 generate_record_sync_point_key(RecordType.WEBPAGE.value, "confluence_blogposts", group.short_name),
             ):
-                await self.pages_sync_point.update_sync_point(checkpoint_key, {"last_sync_time": ""})
+                await self.pages_sync_point.update_sync_point(
+                    checkpoint_key, {"last_sync_time": "", "full_resume_after": ""}
+                )
+            for kind in ("confluence_comments", "confluence_attachments"):
+                await self.pages_sync_point.update_sync_point(
+                    generate_record_sync_point_key(RecordType.WEBPAGE.value, kind, group.short_name), {"checked_at": ""}
+                )
+            await self.pages_sync_point.update_sync_point(
+                generate_record_sync_point_key(RecordType.WEBPAGE.value, "parents", group.short_name), {"differs": ""}
+            )
         if group is not None and not await self.data_entities_processor.on_record_group_deleted(
             space_id, self.connector_id
         ):
@@ -2399,7 +3506,25 @@ class ConfluenceConnector(BaseConnector):
             return False
         return True
 
-    async def _sync_permission_changes_from_audit_log(self) -> None:
+    def _audit_sync_key(self) -> str:
+        return generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
+
+    async def _open_audit_window(self) -> None:
+        """Start the audit log window when the sync starts, if none is open yet.
+
+        Without it the first sync opened the window only when it ended, so a restriction
+        changed while it ran (after its page was read) was never read again.
+        """
+        try:
+            if not await self.audit_log_sync_point.read_sync_point(self._audit_sync_key()):
+                await self.audit_log_sync_point.update_sync_point(
+                    self._audit_sync_key(), {"last_sync_time_ms": int(datetime.now(timezone.utc).timestamp() * 1000)}
+                )
+        except Exception as e:
+            # The window then opens when the sync ends, as before.
+            self.logger.warning(f"Could not open the audit log window: {e}")
+
+    async def _sync_permission_changes_from_audit_log(self, spaces: list[RecordGroup] | None = None) -> None:
         """
         Sync permission changes for pages/blogs using Confluence Audit Log API.
 
@@ -2424,7 +3549,7 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info("🔍 Starting permission sync from audit log...")
 
             # Sync point key for audit log
-            audit_sync_key = generate_record_sync_point_key(RecordType.WEBPAGE.value, "permissions", "audit_log")
+            audit_sync_key = self._audit_sync_key()
 
             # Get last audit sync timestamp
             last_audit_sync = await self.audit_log_sync_point.read_sync_point(audit_sync_key)
@@ -2447,12 +3572,22 @@ class ConfluenceConnector(BaseConnector):
                 )
                 return
 
-            self.logger.info(f"🔄 Fetching audit logs from {last_sync_time_ms} to {current_time_ms}")
+            # Events can reach the log a little late; reading them twice is harmless.
+            window_start_ms = last_sync_time_ms - self._AUDIT_OVERLAP_MS
+            self.logger.info(f"🔄 Fetching audit logs from {window_start_ms} to {current_time_ms}")
 
             # Fetch audit logs and extract content titles that had permission changes
-            content_titles = await self._fetch_permission_audit_logs(last_sync_time_ms, current_time_ms)
+            content_titles = await self._fetch_permission_audit_logs(window_start_ms, current_time_ms)
 
             if content_titles is None:
+                if spaces is not None:
+                    # Find restriction changes from the listings instead, so they still apply, also when
+                    # the audit log keeps failing. Only a refusal moves the window: other failures read it again.
+                    if await self._recheck_restrictions(spaces) and self._audit_log_refused:
+                        await self.audit_log_sync_point.update_sync_point(
+                            audit_sync_key, {"last_sync_time_ms": current_time_ms}
+                        )
+                    return
                 self.logger.warning(
                     "Keeping the audit log checkpoint: the audit log could not be read in full, "
                     "so the next sync reads this window again"
@@ -2471,7 +3606,16 @@ class ConfluenceConnector(BaseConnector):
             self.logger.info(f"📋 Found {len(content_titles)} content items with permission changes")
 
             # Search for content by titles and sync their permissions (only if exists in DB)
-            await self._sync_content_permissions_by_titles(content_titles)
+            try:
+                await self._sync_content_permissions_by_titles(content_titles)
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Keeping the audit log window: some restriction changes could not be applied: {e}")
+                self._note_problem(
+                    "Couldn't apply some restriction changes from the audit log; the next sync tries again"
+                )
+                return
 
             # Update audit log sync point with current time
             await self.audit_log_sync_point.update_sync_point(
@@ -2484,6 +3628,9 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Permission sync from audit log failed: {e}", exc_info=True)
             raise
+
+    # Overlap of each audit log read with the last one.
+    _AUDIT_OVERLAP_MS = 15 * 60 * 1000
 
     async def _fetch_permission_audit_logs(
         self,
@@ -2508,6 +3655,7 @@ class ConfluenceConnector(BaseConnector):
         content_titles_set: set[str] = set()
         batch_size = 100
         start = 0
+        self._audit_log_refused = None
 
         while True:
             datasource = await self._get_fresh_datasource()
@@ -2520,6 +3668,21 @@ class ConfluenceConnector(BaseConnector):
 
             if not response or response.status != HttpStatusCode.SUCCESS.value:
                 self.logger.warning(f"⚠️ Failed to fetch audit logs: {response.status if response else 'No response'}")
+                # Any 4xx but 429 repeats every run (no permission, a plan or site without the endpoint).
+                refused = response is not None and 400 <= response.status < 500 and response.status != 429
+                if refused:
+                    self._audit_log_refused = response.status
+                    problem = (
+                        f"Couldn't read the Confluence audit log (HTTP {response.status}): it needs a Confluence "
+                        "administrator account (and the read:audit-log:confluence scope for OAuth). Instead, each "
+                        "sync re-reads every page's read restriction (one request per 100 pages in a space)"
+                    )
+                else:
+                    problem = (
+                        "Couldn't read the Confluence audit log (HTTP %s); restriction changes are read again "
+                        "next sync" % (response.status if response else "no response")
+                    )
+                self._note_problem(problem, unread=False, persistent=refused)
                 return None
 
             response_data = response.json()
@@ -2538,6 +3701,10 @@ class ConfluenceConnector(BaseConnector):
                 next_start = v1_next_start(response_data, start, len(audit_records), batch_size, use_link_offset=True)
             except ValueError as e:
                 self.logger.warning(f"⚠️ Failed to follow the audit log: {e}")
+                self._note_problem(
+                    "Couldn't follow the Confluence audit log to its next page; restriction changes are read again next sync",
+                    unread=False,
+                )
                 return None
             if next_start is None:
                 break
@@ -2545,13 +3712,231 @@ class ConfluenceConnector(BaseConnector):
 
         return list(content_titles_set)
 
+    async def _recheck_restrictions(self, spaces: list[RecordGroup]) -> bool:
+        """Sync again the stored pages, blog posts and folders whose own read restriction changed.
+
+        For when the audit log is refused. Placeholder ancestors and folders only get their
+        access read again; in-scope pages and blog posts are synced again. One listing per space and type carries each
+        item's read restriction. An item is synced again when that restriction differs
+        from the one the previous check saw, or when it has none and is stored as
+        restricted; the first check therefore syncs every restricted item once. Returns
+        False when a listing, the stored records or a sync could not be read in full.
+        """
+        complete = True
+        for space in spaces:
+            for record_type in (RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST, RecordType.FILE):
+                listed = await self._list_read_restrictions(space.short_name, record_type)
+                if listed is None:
+                    complete = False
+                    continue
+                try:
+                    stored = await self._stored_content(
+                        space.external_group_id, record_type, with_placeholders=True
+                    )
+                    if record_type == RecordType.FILE:
+                        stored = [r for r in stored if _is_folder(r)]
+                except Exception as e:
+                    self.logger.warning(f"Could not read the stored records of space {space.short_name}: {e}")
+                    complete = False
+                    continue
+                key = generate_record_sync_point_key(
+                    RecordType.WEBPAGE.value, "restrictions", f"{record_type.value}/{space.short_name}"
+                )
+                seen = await self.audit_log_sync_point.read_sync_point(key)
+                before: dict[str, str] = json.loads(seen.get("restricted") or "{}") if seen else {}
+                stored_rule = {r.external_record_id: r.access_rule for r in stored}
+                changed = sorted(
+                    item_id for item_id, fingerprint in listed.items()
+                    if item_id in stored_rule and (
+                        fingerprint != before.get(item_id) if fingerprint
+                        else stored_rule[item_id] == AccessRule.RESTRICTED
+                    )
+                )
+                by_id = {r.external_record_id: r for r in stored}
+                access_only = [i for i in changed if record_type == RecordType.FILE or by_id[i].is_placeholder]
+                failed = await self._refresh_access_by_ids(space.short_name, record_type, access_only, by_id)
+                changed_content = [i for i in changed if i not in set(access_only)]
+                for start in range(0, len(changed_content), ID_SEARCH_CHUNK):
+                    chunk = changed_content[start:start + ID_SEARCH_CHUNK]
+                    result = await self._sync_content(
+                        space.short_name, record_type, defer_checkpoint=True, within_ids=chunk,
+                    )
+                    # One the search did not return (its index behind) is checked again next sync.
+                    failed.update(chunk if not result.complete else set(chunk) - set(result.seen))
+                if changed:
+                    self.logger.info(
+                        f"Synced {len(changed)} {record_type.value} items in space {space.short_name} again: "
+                        "their read restriction changed"
+                    )
+                complete = complete and not failed
+                # A failed item keeps the restriction last seen, so the next check retries it.
+                restricted = {
+                    item_id: (before.get(item_id) if item_id in failed else fingerprint)
+                    for item_id, fingerprint in listed.items()
+                }
+                await self.audit_log_sync_point.update_sync_point(
+                    key, {"restricted": json.dumps({k: v for k, v in restricted.items() if v}, sort_keys=True)}
+                )
+        if not complete:
+            self._note_problem("Couldn't re-check every page's restrictions; the next sync tries again")
+        return complete
+
+    async def _with_current_access(
+        self, item_data: dict[str, Any], record_type: RecordType, existing_record: Record
+    ) -> tuple[Record, list[Permission]] | None:
+        """A stored page, blog post or folder with its access read again.
+
+        None when the item could not be read into a record; raises when its restrictions could not be read.
+        """
+        item_id = str(item_data.get("id"))
+        # Transform to WebpageRecord (a folder is a FileRecord)
+        record = (
+            self._transform_to_folder_file_record(item_data, existing_record)
+            if record_type == RecordType.FILE
+            else self._transform_to_webpage_record(item_data, record_type, existing_record)
+        )
+        if not record:
+            return None
+        # A stub of an item the filters leave out stays a stub: only its access changes.
+        record.is_placeholder = bool(getattr(existing_record, "is_placeholder", False))
+        permissions = await self._fetch_page_permissions(item_id)
+        if permissions is None:
+            raise ValueError(f"Restrictions for {item_id} could not be read; keeping what is stored")
+        # A READ restriction keeps inheriting and is recorded as RESTRICTED instead; EDIT-only stays STRICT.
+        record.access_rule = (
+            AccessRule.RESTRICTED if any(p.type == PermissionType.READ for p in permissions) else AccessRule.STRICT
+        )
+        record.rewrite_permissions = True
+        return record, permissions
+
+    async def _save_with_access(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
+        """Save records whose access was read again, and pass it to their stored files and comments."""
+        await self.data_entities_processor.on_new_records(records_with_permissions)
+        self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
+        await self._drop_legacy_comment_records(self._saved_as_blocks(r for r, _ in records_with_permissions))
+        # Their stored files and comments would otherwise keep the page's old access.
+        for record, permissions in records_with_permissions:
+            await apply_page_access_to_dependents(
+                self.data_entities_processor,
+                self.connector_id,
+                record.external_record_id,
+                permissions,
+                inherits_space=record.inherit_permissions,
+            )
+
+    async def _refresh_access_by_ids(
+        self, space_key: str, record_type: RecordType, ids: list[str], stored: dict[str, Record]
+    ) -> set[str]:
+        """Read again the access of stored folders and placeholder ancestors; returns the ids that failed.
+
+        Their content is not synced: a folder has none, and a placeholder stays one.
+        """
+        datasource = await self._get_fresh_datasource()
+        failed = set(ids)
+        for start in range(0, len(ids), ID_SEARCH_CHUNK):
+            chunk = ids[start:start + ID_SEARCH_CHUNK]
+            if record_type == RecordType.FILE:
+                listing, by_ids = datasource.get_folders_v1, {"folder_ids": chunk, "folder_ids_operator": "in"}
+            elif record_type == RecordType.CONFLUENCE_PAGE:
+                listing, by_ids = datasource.get_pages_v1, {"within_ids": chunk}
+            else:
+                listing, by_ids = datasource.get_blogposts_v1, {"within_ids": chunk}
+            token: str | None = None
+            followed: set[str] = set()
+            while True:
+                offset, cursor = self._split_pagination_token(token)
+                try:
+                    response = await listing(
+                        space_key=space_key, expand="version,space,history.lastUpdated,ancestors",
+                        start=offset, cursor=cursor, limit=ID_SEARCH_CHUNK, **by_ids,
+                    )
+                    data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+                except AtlassianQuotaExhausted:
+                    raise
+                except Exception as e:
+                    self.logger.warning(f"Could not read items of space {space_key} to update their access: {e}")
+                    break
+                results = data.get("results") if isinstance(data, dict) else None
+                if not isinstance(results, list):
+                    break
+                batch: list[tuple[Record, list[Permission]]] = []
+                for item in results:
+                    item_id = str(item.get("id")) if isinstance(item, dict) else None
+                    if item_id in stored:
+                        try:
+                            refreshed = await self._with_current_access(item, record_type, stored[item_id])
+                        except AtlassianQuotaExhausted:
+                            raise
+                        except Exception as e:
+                            self.logger.warning(f"Could not update the access of {item_id}: {e}")
+                            continue
+                        if refreshed is not None:
+                            batch.append(refreshed)
+                            failed.discard(item_id)
+                if batch:
+                    try:
+                        await self._save_with_access(batch)
+                    except Exception as e:
+                        self.logger.warning(f"Could not save the access of items in space {space_key}: {e}")
+                        failed.update(str(r.external_record_id) for r, _ in batch)
+                next_url = (data.get("_links") or {}).get("next")
+                token = self._extract_cursor_from_next_link(next_url) if next_url else None
+                if not token or not results or token in followed:
+                    break
+                followed.add(token)
+        return failed
+
+    async def _list_read_restrictions(self, space_key: str, record_type: RecordType) -> dict[str, str | None] | None:
+        """Read restriction fingerprint by id of every page, blog post or folder (FILE) in a space; None unless read to the end."""
+        datasource = await self._get_fresh_datasource()
+        listing = {
+            RecordType.CONFLUENCE_PAGE: datasource.get_pages_v1,
+            RecordType.CONFLUENCE_BLOGPOST: datasource.get_blogposts_v1,
+            RecordType.FILE: datasource.get_folders_v1,
+        }[record_type]
+        found: dict[str, str | None] = {}
+        token: str | None = None
+        followed: set[str] = set()
+        while True:
+            offset, cursor = self._split_pagination_token(token)
+            try:
+                response = await listing(
+                    space_key=space_key, expand=RESTRICTION_EXPAND_PARAMS, start=offset, cursor=cursor,
+                    limit=RESTRICTION_LISTING_LIMIT,
+                )
+                data = response.json() if response and response.status == HttpStatusCode.SUCCESS.value else None
+            except AtlassianQuotaExhausted:
+                raise
+            except Exception as e:
+                self.logger.warning(f"Could not list the restrictions in space {space_key}: {e}")
+                return None
+            results = data.get("results") if isinstance(data, dict) else None
+            if not isinstance(results, list):
+                self.logger.warning(f"Could not list the restrictions in space {space_key}")
+                return None
+            for item in results:
+                if not isinstance(item, dict) or not item.get("id"):
+                    continue
+                if "read" not in (item.get("restrictions") or {}):
+                    self.logger.warning(f"The listing of space {space_key} did not carry read restrictions")
+                    return None
+                found[str(item["id"])] = read_restriction_fingerprint(item)
+            next_url = (data.get("_links") or {}).get("next")
+            if not next_url:
+                return found
+            token = self._extract_cursor_from_next_link(next_url)
+            if not results or not token or token in followed:
+                self.logger.warning(f"Can't follow the restriction listing of space {space_key}")
+                return None
+            followed.add(token)
+
     def _extract_content_title_from_audit_record(self, record: dict[str, Any]) -> str | None:
         """
         Extract content title from an audit record if it's a content permission change.
 
         Filters for:
         - category = "Permissions"
-        - Has a Page or Blog in associatedObjects (content-level permission)
+        - Has a Page, Blog or Folder in associatedObjects (content-level permission)
         - Has a Space in associatedObjects (confirms it's content, not global)
 
         Args:
@@ -2569,7 +3954,8 @@ class ConfluenceConnector(BaseConnector):
         # Check for content-level permission (must have both content AND space)
         has_space = any(obj.get("objectType") == "Space" for obj in associated_objects)
         content_obj = next(
-            (obj for obj in associated_objects if obj.get("objectType") in ["Page", "Blog"]),
+            # shortcut: "Folder" is assumed from the page and blog names; no real folder entry was seen yet.
+            (obj for obj in associated_objects if obj.get("objectType") in ["Page", "Blog", "Folder"]),
             None
         )
 
@@ -2611,6 +3997,7 @@ class ConfluenceConnector(BaseConnector):
             try:
                 # One shared title can fill a page, so the search is read to its last page.
                 pagination_token: Optional[str] = None
+                followed: set[str] = set()
                 while True:
                     datasource = await self._get_fresh_datasource()
                     start_offset, cursor_token = self._split_pagination_token(pagination_token)
@@ -2649,6 +4036,8 @@ class ConfluenceConnector(BaseConnector):
                                 record_type = RecordType.CONFLUENCE_PAGE
                             elif item_type == "blogpost":
                                 record_type = RecordType.CONFLUENCE_BLOGPOST
+                            elif item_type == "folder":
+                                record_type = RecordType.FILE
                             else:
                                 self.logger.debug(f"Skipping unknown content type: {item_type}")
                                 continue
@@ -2669,28 +4058,11 @@ class ConfluenceConnector(BaseConnector):
                                 continue
 
                             self.logger.debug(f"Updating permissions for {item_type}: {item_title} ({item_id})")
-
-                            # Transform to WebpageRecord
-                            webpage_record = self._transform_to_webpage_record(item_data, record_type)
-                            if not webpage_record:
+                            refreshed = await self._with_current_access(item_data, record_type, existing_record)
+                            if refreshed is None:
                                 continue
-
-                            # Fetch current permissions
-                            permissions = await self._fetch_page_permissions(item_id)
-                            if permissions is None:
-                                self.logger.warning(f"Restrictions for {item_id} could not be read; keeping what is stored")
-                                has_failures = True
-                                continue
-                            total_permissions += len(permissions)
-
-                            # Only set inherit_permissions to False if there are READ restrictions
-                            # EDIT-only restrictions should still inherit from space for READ access
-                            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-                            if len(read_permissions) > 0:
-                                webpage_record.inherit_permissions = False
-
-                            # Add to batch for update
-                            records_with_permissions.append((webpage_record, permissions))
+                            total_permissions += len(refreshed[1])
+                            records_with_permissions.append(refreshed)
                             total_synced += 1
 
                         except Exception as item_error:
@@ -2700,26 +4072,17 @@ class ConfluenceConnector(BaseConnector):
 
                     # Update batch in database
                     if records_with_permissions:
-                        await self.data_entities_processor.on_new_records(records_with_permissions)
-                        self.logger.info(f"Updated permissions for {len(records_with_permissions)} content items")
-                        # Their stored files and comments would otherwise keep the page's old access.
-                        for webpage_record, permissions in records_with_permissions:
-                            await apply_page_access_to_dependents(
-                                self.data_entities_processor,
-                                self.connector_id,
-                                webpage_record.external_record_id,
-                                permissions,
-                                inherits_space=webpage_record.inherit_permissions,
-                            )
+                        await self._save_with_access(records_with_permissions)
 
                     next_url = response_data.get("_links", {}).get("next")
                     if not next_url:
                         break
                     pagination_token = self._extract_cursor_from_next_link(next_url)
-                    if not pagination_token:
+                    if not pagination_token or pagination_token in followed:
                         self.logger.warning(f"⚠️ Title search has a next page that could not be followed: {next_url}")
                         has_failures = True
                         break
+                    followed.add(pagination_token)
 
             except Exception as batch_error:
                 self.logger.error(f"❌ Failed to process titles batch: {batch_error}")
@@ -2749,6 +4112,7 @@ class ConfluenceConnector(BaseConnector):
             permissions = []
             batch_size = 100
             cursor = None
+            followed: set[str] = set()
 
             # Paginate through space permissions
             while True:
@@ -2766,24 +4130,32 @@ class ConfluenceConnector(BaseConnector):
 
                 response_data = response.json()
                 permissions_data = response_data.get("results", [])
+                next_url = (response_data.get("_links") or {}).get("next")
 
                 if not permissions_data:
+                    if next_url:
+                        # Saving a list read only in part would take the rest of the grants away.
+                        self.logger.warning(f"⚠️ Permissions of space {space_name} stopped early")
+                        return None
                     break
 
                 # Transform permissions and add to list
                 for perm_data in permissions_data:
+                    if self._access_class_id(perm_data):
+                        permissions.extend(await self._access_class_permissions(perm_data, space_name))
+                        continue
                     permission = await self._transform_space_permission(perm_data)
                     if permission:
                         permissions.append(permission)
 
-                # Extract next cursor
-                next_url = response_data.get("_links", {}).get("next")
                 if not next_url:
                     break
 
                 cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
+                if not cursor or cursor in followed:
+                    self.logger.warning(f"⚠️ Couldn't follow the permissions of space {space_name}: {next_url}")
+                    return None
+                followed.add(cursor)
 
             deduped = self._dedupe_space_permissions(permissions)
             self.logger.debug(
@@ -2797,6 +4169,70 @@ class ConfluenceConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch permissions for space {space_name}: {e}")
             return None
+
+    # Users and groups per operation in one restriction response (Cloud's default and our page size).
+    _RESTRICTION_PAGE = 100
+    # Runaway backstop: 100 pages is 10,000 users and 10,000 groups on one restriction.
+    _RESTRICTION_MAX_PAGES = 100
+
+    async def _read_all_restrictions(self, page_id: str) -> Optional[list[dict[str, Any]]]:
+        """Every user and group of each of a content item's restrictions; None when it can't be read.
+
+        Cloud returns at most ``limit`` users and ``limit`` groups per operation in one
+        response, so a longer list is read page by page and merged per operation.
+        """
+        merged: dict[str, dict[str, Any]] = {}
+        seen: set[tuple[str, str, str]] = set()
+        # How many users / groups each operation has in all, when Confluence says (totalSize).
+        expected: dict[tuple[str, str], int] = {}
+        start = 0
+        for _ in range(self._RESTRICTION_MAX_PAGES):
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_page_permissions_v1(
+                page_id=page_id, start=start, limit=self._RESTRICTION_PAGE
+            )
+            if not response or response.status != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
+                return None
+            more = False
+            new = False
+            step = self._RESTRICTION_PAGE
+            for restriction in response.json().get("results", []) or []:
+                operation = restriction.get("operation")
+                target = merged.setdefault(operation, {
+                    "operation": operation,
+                    "restrictions": {"user": {"results": []}, "group": {"results": []}},
+                })
+                for kind in ("user", "group"):
+                    listing = (restriction.get("restrictions") or {}).get(kind) or {}
+                    entries = listing.get("results") or []
+                    if isinstance(listing.get("totalSize"), int):
+                        expected[(str(operation), kind)] = listing["totalSize"]
+                    for entry in entries:
+                        key = (str(operation), kind, str(entry.get("accountId") or entry.get("id") or entry.get("name")))
+                        if key not in seen:
+                            seen.add(key)
+                            new = True
+                            target["restrictions"][kind]["results"].append(entry)
+                    # The page size Confluence used, which a system limit may set below ours.
+                    page_size = listing.get("limit") if isinstance(listing.get("limit"), int) else self._RESTRICTION_PAGE
+                    more = more or (page_size > 0 and len(entries) >= page_size)
+                    if 0 < page_size < step:
+                        step = page_size
+            # The next page starts after what this one could hold, at Confluence's page size.
+            start += step
+            # A full page may be followed by more; a page that adds nothing new ends it.
+            if not more or not new:
+                read = {
+                    (str(op), kind): len(data["restrictions"][kind]["results"])
+                    for op, data in merged.items() for kind in ("user", "group")
+                }
+                if any(read.get(key, 0) < total for key, total in expected.items()):
+                    self.logger.warning(f"⚠️ Restrictions of {page_id} could not be read in full")
+                    return None
+                return list(merged.values())
+        self.logger.warning(f"⚠️ Restrictions of {page_id} have more than {self._RESTRICTION_MAX_PAGES} pages")
+        return None
 
     async def _fetch_page_permissions(self, page_id: str) -> Optional[list[Permission]]:
         """
@@ -2814,19 +4250,9 @@ class ConfluenceConnector(BaseConnector):
         try:
             self.logger.debug(f"Fetching permissions for page: {page_id}")
 
-            # Fetch page restrictions using v1 API
-            datasource = await self._get_fresh_datasource()
-            response = await datasource.get_page_permissions_v1(
-                page_id=page_id
-            )
-
-            # Check response
-            if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"⚠️ Failed to fetch permissions for page {page_id}: {response.status if response else 'No response'}")
+            restrictions = await self._read_all_restrictions(page_id)
+            if restrictions is None:
                 return None
-
-            response_data = response.json()
-            restrictions = response_data.get("results", [])
 
             # Process each restriction (read and update operations)
             for restriction_data in restrictions:
@@ -2836,6 +4262,8 @@ class ConfluenceConnector(BaseConnector):
             self.logger.debug(f"Found {len(permissions)} permissions for page {page_id}")
             return permissions
 
+        except AtlassianQuotaExhausted:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch permissions for page {page_id}: {e}")
             return None
@@ -2864,12 +4292,41 @@ class ConfluenceConnector(BaseConnector):
             return f"{base_url}{web_path}"
 
         # Fall back to v1 format (extract from _links.self)
-        self_link = links.get("self")
-        if self_link and "https://" in self_link and "/wiki/" in self_link:
-            extracted_base_url = self_link.split("/wiki/")[0] + "/wiki"
+        extracted_base_url = self._wiki_base_from_self_link(links.get("self"))
+        if extracted_base_url and extracted_base_url.startswith("https://"):
             return f"{extracted_base_url}{web_path}"
 
         return None
+
+    def _wiki_base_from_self_link(self, self_link: str | None) -> str | None:
+        """The site's wiki URL for a v1 item's self link.
+
+        Through OAuth the self link is the API gateway (api.atlassian.com/ex/confluence/...),
+        not the site, so the site URL a listing reported (``_links.base``) is used instead.
+        """
+        if not self_link or "/wiki/" not in self_link:
+            return None
+        if urlparse(self_link).hostname == "api.atlassian.com":
+            return self._site_wiki_url
+        return self_link.split("/wiki/")[0] + "/wiki"
+
+    async def _remember_configured_site(self) -> None:
+        """Start from the site URL in the settings until a listing reports it in ``_links.base``."""
+        try:
+            config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+            auth = config.get("auth") if isinstance(config, dict) else None
+            site = (auth.get("baseUrl") if isinstance(auth, dict) else None) or ""
+        except Exception:
+            return
+        site = str(site).strip().rstrip("/")
+        if site.startswith("http") and not self._site_wiki_url:
+            self._site_wiki_url = site if site.endswith("/wiki") else f"{site}/wiki"
+
+    def _remember_site_wiki_url(self, response_data: object) -> None:
+        """Keep the site's wiki URL a response reports in ``_links.base``, for links built later."""
+        base = ((response_data or {}).get("_links") or {}).get("base") if isinstance(response_data, dict) else None
+        if isinstance(base, str) and base.startswith("http") and urlparse(base).hostname != "api.atlassian.com":
+            self._site_wiki_url = base.rstrip("/")
 
     @staticmethod
     def _split_pagination_token(token: Optional[str]) -> tuple[Optional[int], Optional[str]]:
@@ -3002,8 +4459,9 @@ class ConfluenceConnector(BaseConnector):
             return None
 
         except Exception as e:
+            # A failed lookup is not "not found": callers keep what is stored instead.
             self.logger.error(f"❌ Failed to create permission from principal: {e}")
-            return None
+            raise
 
     async def _create_pseudo_group(self, account_id: str) -> AppUserGroup | None:
         """
@@ -3043,8 +4501,9 @@ class ConfluenceConnector(BaseConnector):
             return self._group_name_to_external_id
 
         name_map: dict[str, str] = {}
+        # Raised, not read as no groups: every access-class grant would map to nothing for the whole sync.
         groups = await self.data_entities_processor.get_all_user_groups(
-            connector_id=self.connector_id,
+            connector_id=self.connector_id, raise_on_error=True,
         )
         for group in groups:
             if group.name and group.source_user_group_id:
@@ -3057,79 +4516,57 @@ class ConfluenceConnector(BaseConnector):
         )
         return name_map
 
-    async def _resolve_group_external_id_by_names(
-        self,
-        names: tuple[str, ...],
-    ) -> tuple[str, str] | None:
-        """Return (matched_group_name, external_id) for the first synced group name hit."""
+    @staticmethod
+    def _access_class_id(perm_data: dict[str, Any]) -> str | None:
+        """The access class a space permission row grants, normalised (e.g. ALL_LICENSED_USERS); None for a user or group."""
+        principal = perm_data.get("principal") or {}
+        kind = str(principal.get("type") or "").lower().replace("_", "-")
+        if kind != "access-class" or not principal.get("id"):
+            return None
+        return str(principal["id"]).upper().replace("-", "_")
+
+    async def _groups_matching(self, names: tuple[str, ...], prefixes: tuple[str, ...]) -> list[str]:
+        """External ids of every synced group named one of ``names`` or starting with one of ``prefixes``."""
         name_map = await self._ensure_group_name_cache()
-        for name in names:
-            external_id = name_map.get(name.lower())
-            if external_id:
-                return name, external_id
-        return None
+        wanted = {n.lower() for n in names}
+        return sorted({
+            external_id for name, external_id in name_map.items()
+            if name in wanted or any(name.startswith(prefix) for prefix in prefixes)
+        })
 
-    async def _permission_for_access_class_group_or_org(
-        self,
-        group_names: tuple[str, ...],
-        permission_type: PermissionType,
-    ) -> Permission:
+    async def _access_class_permissions(
+        self, perm_data: dict[str, Any], space_name: str = ""
+    ) -> list[Permission]:
+        """Map an access-class space grant to the synced groups it stands for.
+
+        Never to the whole PipesHub org, except anonymous access (a public space), which
+        is open to everyone. A class with no synced group grants nothing and is reported.
         """
-        Map an access-class grant to a synced Confluence group, or ORG as fallback.
-
-        ORG fallback may grant all org members access (same tradeoff as Jira Cloud
-        applicationRole → ORG mapping for unresolvable licensed-user grants).
-        """
-        resolved = await self._resolve_group_external_id_by_names(group_names)
-        if resolved:
-            matched_name, external_id = resolved
-            return Permission(
-                entity_type=EntityType.GROUP,
-                external_id=external_id,
-                type=permission_type,
+        access_class = self._access_class_id(perm_data)
+        operation = perm_data.get("operation") or {}
+        operation_key, target_type = operation.get("key"), operation.get("targetType")
+        if target_type != "space":
+            return []
+        if access_class == ACCESS_CLASS_ANONYMOUS_USERS and operation_key == "read":
+            return [Permission(entity_type=EntityType.ORG, type=PermissionType.READ)]
+        if access_class in (ACCESS_CLASS_LICENSED_USERS, ACCESS_CLASS_AUTHENTICATED_USERS) and operation_key == "read":
+            names, prefixes, permission_type = LICENSED_USER_GROUP_NAMES, LICENSED_USER_GROUP_PREFIXES, PermissionType.READ
+        elif access_class == ACCESS_CLASS_PRODUCT_ADMINS and operation_key == "administer":
+            names, prefixes, permission_type = PRODUCT_ADMIN_GROUP_NAMES, PRODUCT_ADMIN_GROUP_PREFIXES, PermissionType.OWNER
+        else:
+            self.logger.debug("Skipping access-class %s for operation %s/%s", access_class, operation_key, target_type)
+            return []
+        group_ids = await self._groups_matching(names, prefixes)
+        if not group_ids:
+            self.logger.warning(f"Space {space_name}: no synced group stands for access class {access_class}; it grants nothing")
+            self._note_problem(
+                f"Space {space_name}: its {access_class.lower().replace('_', ' ')} grant matches no synced Confluence "
+                "group, so it gives no one access in PipesHub",
+                unread=False,
+                persistent=True,
             )
-
-        self.logger.info(
-            "Mapped access-class to ORG fallback → %s (groups %s not synced)",
-            permission_type.value,
-            group_names,
-        )
-        return Permission(entity_type=EntityType.ORG, type=permission_type)
-
-    async def _transform_access_class_space_permission(
-        self,
-        principal_id: str,
-        operation_key: str,
-        target_type: str,
-    ) -> Optional[Permission]:
-        """Map Confluence access-class principals to group or org permissions."""
-        if (
-            principal_id == ACCESS_CLASS_LICENSED_USERS
-            and operation_key == "read"
-            and target_type == "space"
-        ):
-            return await self._permission_for_access_class_group_or_org(
-                LICENSED_USER_GROUP_NAMES,
-                PermissionType.READ,
-            )
-
-        if (
-            principal_id == ACCESS_CLASS_PRODUCT_ADMINS
-            and operation_key == "administer"
-            and target_type == "space"
-        ):
-            return await self._permission_for_access_class_group_or_org(
-                PRODUCT_ADMIN_GROUP_NAMES,
-                PermissionType.OWNER,
-            )
-
-        self.logger.debug(
-            "Skipping access-class %s for operation %s/%s",
-            principal_id,
-            operation_key,
-            target_type,
-        )
-        return None
+            return []
+        return [Permission(entity_type=EntityType.GROUP, external_id=g, type=permission_type) for g in group_ids]
 
     @staticmethod
     def _dedupe_space_permissions(permissions: list[Permission]) -> list[Permission]:
@@ -3177,26 +4614,27 @@ class ConfluenceConnector(BaseConnector):
             if not principal_type or not principal_id or not operation_key:
                 return None
 
-            if principal_type == "access-class":
-                return await self._transform_access_class_space_permission(
-                    principal_id,
-                    operation_key,
-                    target_type or "",
-                )
+            if self._access_class_id(perm_data):
+                # Callers that keep every grant use _access_class_permissions; this keeps the first.
+                granted = await self._access_class_permissions(perm_data)
+                return granted[0] if granted else None
 
             # Map Confluence permission to PermissionType
             permission_type = self._map_confluence_permission(operation_key, target_type)
 
             # Use common function to create permission
+            # A user whose email is hidden keeps their space access through a pseudo-group, as on pages.
             return await self._create_permission_from_principal(
                 principal_type,
                 principal_id,
-                permission_type
+                permission_type,
+                create_pseudo_group_if_missing=True,
             )
 
         except Exception as e:
+            # Raised, not dropped: saving the space without this grant would take it away.
             self.logger.error(f"❌ Failed to transform space permission: {e}")
-            return None
+            raise
 
     def _map_confluence_permission(self, operation_key: str, target_type: str) -> PermissionType:
         """
@@ -3291,7 +4729,7 @@ class ConfluenceConnector(BaseConnector):
 
         try:
             operation = restriction_data.get("operation")
-            if not operation:
+            if operation != "read":
                 return permissions
 
             # Map operation to PermissionType
@@ -3306,6 +4744,10 @@ class ConfluenceConnector(BaseConnector):
             for user_data in user_results:
                 # Extract accountId (could be under different keys)
                 principal_id = user_data.get("accountId") or user_data.get("id")
+                if not principal_id:
+                    # Dropping it could leave the restriction with no grants, which reads as open.
+                    permissions.append(unresolved_principal_permission("unidentified-user", permission_type))
+                    continue
                 if principal_id:
                     permission = await self._create_permission_from_principal(
                         "user",
@@ -3321,6 +4763,11 @@ class ConfluenceConnector(BaseConnector):
 
             for group_data in group_results:
                 principal_id = group_data.get("id")
+                if not principal_id and group_data.get("name"):
+                    principal_id = (await self._ensure_group_name_cache()).get(str(group_data["name"]).lower())
+                if not principal_id:
+                    permissions.append(unresolved_principal_permission("unidentified-group", permission_type))
+                    continue
                 if principal_id:
                     permission = await self._create_permission_from_principal(
                         "group",
@@ -3332,6 +4779,7 @@ class ConfluenceConnector(BaseConnector):
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform page restriction: {e}")
+            raise
 
         return permissions
 
@@ -3384,6 +4832,14 @@ class ConfluenceConnector(BaseConnector):
                 web_url=web_url,
                 source_created_at=source_created_at,
                 source_updated_at=source_created_at,  # Confluence doesn't provide updated timestamp for spaces
+                # Every space carries its own permission list, so app access
+                # alone must never reveal one: it inherits from the App, but the
+                # restriction means a grant is needed as well.
+                # Inheritance is not optional: it defaults to False, and without
+                # the edge the inherited half of the RESTRICTED rule is never
+                # met, so the space becomes invisible to everyone.
+                inherit_permissions=True,
+                access_rule=AccessRule.RESTRICTED,
             )
 
         except Exception as e:
@@ -3500,9 +4956,8 @@ class ConfluenceConnector(BaseConnector):
                     web_url = f"{base_url}{webui}"
                 else:
                     # Fall back to v1 format (extract from _links.self)
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    base_url = self._wiki_base_from_self_link(links.get("self"))
+                    if base_url:
                         web_url = f"{base_url}{webui}"
 
             # Set parent_record_type from parent's actual type when available
@@ -3533,6 +4988,18 @@ class ConfluenceConnector(BaseConnector):
                 else:
                     record_version = existing_record.version
 
+            mime_type = (
+                existing_record.mime_type
+                if not is_new and isinstance(existing_record.mime_type, str) and existing_record.mime_type
+                and str(version_number) == existing_record.external_revision_id
+                else MimeTypes.BLOCKS.value
+            )
+            if (
+                not is_new and isinstance(existing_record.mime_type, str)
+                and existing_record.mime_type != MimeTypes.BLOCKS.value and mime_type == MimeTypes.BLOCKS.value
+            ):
+                self._now_blocks[item_id] = record_type
+
             return WebpageRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
@@ -3549,7 +5016,11 @@ class ConfluenceConnector(BaseConnector):
                 parent_external_record_id=parent_external_record_id,
                 parent_record_type=parent_record_type,
                 weburl=web_url,
-                mime_type=MimeTypes.HTML.value,
+                # Blocks carry the page's comments. A stored HTML page keeps HTML until its content
+                # changes (or it is re-indexed), so what is stored matches what was indexed.
+                mime_type=mime_type,
+                # The preview has no renderer for blocks; as for Jira, the page opens at its link.
+                preview_renderable=False,
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
                 is_dependent_node=False,  # Pages are root nodes
@@ -3657,9 +5128,8 @@ class ConfluenceConnector(BaseConnector):
                 if base_url:
                     web_url = f"{base_url}{webui}"
                 else:
-                    self_link = links.get("self")
-                    if self_link and "/wiki/" in self_link:
-                        base_url = self_link.split("/wiki/")[0] + "/wiki"
+                    base_url = self._wiki_base_from_self_link(links.get("self"))
+                    if base_url:
                         web_url = f"{base_url}{webui}"
 
             # Set parent_record_type from parent's actual type
@@ -3687,7 +5157,7 @@ class ConfluenceConnector(BaseConnector):
                 else:
                     record_version = existing_record.version
 
-            return FileRecord(
+            folder_record = FileRecord(
                 id=record_id,
                 org_id=self.data_entities_processor.org_id,
                 record_name=folder_title,
@@ -3711,6 +5181,10 @@ class ConfluenceConnector(BaseConnector):
                 source_created_at=source_created_at,
                 source_updated_at=source_updated_at,
             )
+            # Manual indexing turns every key off; a folder has no key of its own.
+            if not self.indexing_filters.is_enabled(IndexingFilterKey.FOLDERS):
+                folder_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
+            return folder_record
 
         except Exception as e:
             self.logger.error(f"❌ Failed to transform folder: {e}")
@@ -3896,6 +5370,8 @@ class ConfluenceConnector(BaseConnector):
         webpage_record = self._transform_to_webpage_record(
             data, record_type, existing_record
         )
+        if webpage_record:
+            webpage_record.rewrite_permissions = True
 
         if not webpage_record:
             return RecordUpdate(
@@ -3997,7 +5473,14 @@ class ConfluenceConnector(BaseConnector):
                 for member_data in members_data:
                     email = (member_data.get("email") or "").strip()
                     account_id = (member_data.get("accountId") or member_data.get("id") or "").strip()
+                    # Deactivated accounts keep their memberships in Confluence; the product
+                    # API reports the status only here (search/user leaves it out).
+                    if member_data.get("accountStatus", "active") != "active":
+                        if account_id:
+                            self._pending_inactive_ids.add(account_id)
+                        continue
                     if email:
+                        self._pending_active_emails.add(email.lower())
                         member_emails.append(email)
                     elif account_id:
                         member_account_ids.append(account_id)
@@ -4014,15 +5497,135 @@ class ConfluenceConnector(BaseConnector):
 
             return member_emails, member_account_ids
 
+        except AtlassianQuotaExhausted:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Failed to fetch members for group {group_name}: {e}")
             return None
 
+    async def _remove_groups_gone_from_source(self, listed_group_ids: set[str]) -> None:
+        """Delete the stored groups a complete group listing no longer has, with their access.
+
+        Space grants are re-read every sync, but a page restricted to a deleted group is not,
+        so the group's former members kept that page until it was edited. Pseudo-groups are
+        the connector's own and stay. An empty listing removes nothing: that is the account
+        failing, not every group going.
+        """
+        if not listed_group_ids:
+            return
+        try:
+            stored = await self.data_entities_processor.get_all_user_groups(self.connector_id, raise_on_error=True)
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored groups; none removed: {e}")
+            self._note_problem("Couldn't check for deleted Confluence groups; the next sync tries again", unread=False)
+            return
+        for group in stored:
+            if (group.name or "").startswith(PSEUDO_USER_GROUP_PREFIX):
+                continue
+            if str(group.source_user_group_id) in listed_group_ids:
+                continue
+            # An offset list can skip a group that shifted between pages: only a 404 says it is gone.
+            if not await self._group_is_gone(group.source_user_group_id):
+                continue
+            try:
+                await self.data_entities_processor.on_user_group_deleted(group.source_user_group_id, self.connector_id)
+                self.logger.info(f"Removed group {group.name}: Confluence no longer has it")
+            except Exception as e:
+                self.logger.warning(f"Could not remove group {group.name}: {e}")
+                self._note_problem(
+                    f"Couldn't remove group {group.name}, which Confluence no longer has; the next sync tries again",
+                    unread=False,
+                )
+
+    async def _group_is_gone(self, group_id: str) -> bool:
+        """True only when Confluence answers 404 for the group; any other answer keeps it."""
+        try:
+            datasource = await self._get_fresh_datasource()
+            response = await datasource.get_group_members(group_id=group_id, start=0, limit=1)
+        except AtlassianQuotaExhausted:
+            raise
+        except Exception as e:
+            self.logger.debug(f"Could not look up group {group_id}: {e}")
+            return False
+        return response is not None and response.status == HttpStatusCode.NOT_FOUND.value
+
+    async def _restore_reactivated_users(self) -> None:
+        """Save the users _sync_users held back whose account this sync's full group read
+        reports active again. Statuses from a partial group read are not trusted."""
+        held_back, self._held_back_users = self._held_back_users, []
+        if not self._group_read_complete:
+            if held_back:
+                self.logger.warning(
+                    f"Not saving {len(held_back)} Confluence user(s) this sync: their account status is unknown"
+                )
+                self._note_problem(
+                    f"Didn't save {len(held_back)} Confluence user(s): their account status is unknown "
+                    "until every group's member list can be read"
+                )
+            return
+        active = [u for u in held_back if u.source_user_id not in self._inactive_account_ids]
+        if active:
+            await self._save_app_users(active)
+            self.logger.info(f"Saved {len(active)} held-back Confluence user(s) the group read reports active")
+
+    async def _reconcile_inactive_app_users(self) -> None:
+        """After the group sync: withdraw the stored users now inactive, from a full group read only."""
+        if not self._group_read_complete:
+            self.logger.warning(
+                "Not every group member list was read: account statuses stay as last read in full"
+            )
+            return
+        await self._withdraw_inactive_app_users()
+
+    async def _withdraw_users_gone_from_source(self, listed_account_ids: set[str]) -> None:
+        """Take the connector away from stored users a complete user list no longer has.
+
+        A user removed from the site, or without Confluence access any more, is not
+        deactivated, so the inactive check never sees them; their grants would stay.
+        When more than half the stored users are missing the list is not trusted.
+        """
+        try:
+            stored = await self.data_entities_processor.get_all_app_users(self.connector_id)
+        except Exception as e:
+            self.logger.warning(f"Could not read the stored users; none withdrawn: {e}")
+            return
+        gone = [u for u in stored if u.source_user_id and u.source_user_id not in listed_account_ids]
+        if not gone:
+            return
+        if len(gone) * 2 > len(stored):
+            self._note_problem(
+                f"{len(gone)} of {len(stored)} stored users were missing from Confluence's user list; "
+                "none was removed, because that many looks like a misread",
+                unread=False,
+                persistent=True,
+            )
+            return
+        self.logger.info(f"Withdrawing {len(gone)} users Confluence no longer lists")
+        await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
+    async def _withdraw_inactive_app_users(self) -> None:
+        """Take the connector away from stored users whose account a group listing reported
+        inactive, unless another account with their email is an active member."""
+        if not self._inactive_account_ids:
+            return
+        gone = [
+            u for u in await self.data_entities_processor.get_all_app_users(self.connector_id)
+            if u.source_user_id in self._inactive_account_ids
+            and (u.email or "").lower() not in self._active_member_emails
+        ]
+        if gone:
+            await self.data_entities_processor.withdraw_app_user_access(self.connector_id, gone)
+
     async def _app_user_from_linked_source_id(self, account_id: str) -> Optional[AppUser]:
-        """Build AppUser for a Confluence accountId linked to this connector."""
+        """Build AppUser for a Confluence accountId linked to this connector.
+
+        Returns None when no user is linked to the accountId. A failed read
+        raises instead: a group saved from it would lose its members.
+        """
         user = await self.data_entities_processor.get_user_by_source_id(
             source_user_id=account_id,
             connector_id=self.connector_id,
+            raise_on_error=True,
         )
         if not user or not user.email:
             return None
@@ -4062,33 +5665,32 @@ class ConfluenceConnector(BaseConnector):
 
         Returns:
             List of AppUser objects found in database
+
+        Raises:
+            Whatever the database read raised. A failed read is not "none of
+            these people are users": a group saved from it would lose its members.
         """
         if not emails:
             return []
 
-        try:
-            # Fetch all users from database
-            all_app_users = await self.data_entities_processor.get_all_app_users(
-                connector_id=self.connector_id
-            )
+        # Fetch all users from database
+        all_app_users = await self.data_entities_processor.get_all_app_users(
+            connector_id=self.connector_id, raise_on_error=True
+        )
 
-            self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
+        self.logger.debug(f"Fetched {len(all_app_users)} total users from database for email lookup")
 
-            # Create email lookup map
-            email_set = set(emails)
+        # Create email lookup map
+        email_set = set(emails)
 
-            # Filter users by email
-            filtered_users = [user for user in all_app_users if user.email in email_set]
+        # Filter users by email
+        filtered_users = [user for user in all_app_users if user.email in email_set]
 
-            if len(filtered_users) < len(emails):
-                missing_count = len(emails) - len(filtered_users)
-                self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
+        if len(filtered_users) < len(emails):
+            missing_count = len(emails) - len(filtered_users)
+            self.logger.debug(f"  ⚠️ {missing_count} user(s) not found in database")
 
-            return filtered_users
-
-        except Exception as e:
-            self.logger.error(f"❌ Failed to get users by emails: {e}")
-            return []
+        return filtered_users
 
     def _transform_to_app_user(self, user_data: dict[str, Any]) -> AppUser | None:
         """
@@ -4122,6 +5724,8 @@ class ConfluenceConnector(BaseConnector):
                 full_name=user_data.get("displayName"),
                 is_active=False,
                 source_updated_at=source_updated_at,
+                # Guests and external collaborators see only what they are given; not org members.
+                is_guest=bool(user_data.get("isGuest") or user_data.get("isExternalCollaborator")),
             )
 
         except Exception as e:
@@ -4187,6 +5791,15 @@ class ConfluenceConnector(BaseConnector):
         return ""
 
     async def stream_record(self, record: Record) -> StreamingResponse:
+        """Stream a record; see ``_stream_record``."""
+        # shortcut: covers building the response; a file still downloading after it is returned is not covered.
+        self._in_use += 1
+        try:
+            return await self._stream_record(record)
+        finally:
+            await self._release()
+
+    async def _stream_record(self, record: Record) -> StreamingResponse:
         """
         Stream record content (page BlocksContainer or attachment file) from Confluence.
 
@@ -4235,6 +5848,8 @@ class ConfluenceConnector(BaseConnector):
                         "page" if record.record_type == RecordType.CONFLUENCE_PAGE else "blogpost",
                     )
                     self.logger.debug(f"Fetched {len(attachments_data)} attachment(s) for streaming")
+                except AtlassianQuotaExhausted:
+                    raise
                 except Exception as e:
                     self.logger.warning(f"Failed to fetch attachments for streaming: {e}", exc_info=True)
                     attachments_data = []
@@ -4314,9 +5929,20 @@ class ConfluenceConnector(BaseConnector):
 
         except HTTPException:
             raise  # Re-raise HTTP exceptions as-is
+        except AtlassianQuotaExhausted as e:
+            raise self._quota_http_error(e) from e
         except Exception as e:
             self.logger.error(f"❌ Failed to stream record: {e}", exc_info=True)
             raise to_stream_error(e, connector=self.display_name) from e
+
+    @staticmethod
+    def _quota_http_error(error: AtlassianQuotaExhausted) -> HTTPException:
+        """A 429 with Retry-After, so indexing defers the record instead of failing it."""
+        return HTTPException(
+            status_code=HttpStatusCode.TOO_MANY_REQUESTS.value,
+            detail=f"Confluence can't be read right now: {error}. Try again after that.",
+            headers={"Retry-After": str(max(1, int(error.reset_at - time.time())))},
+        )
 
     async def _fetch_page_content(self, page_id: str, record_type: RecordType) -> str:
         """
@@ -4516,6 +6142,8 @@ class ConfluenceConnector(BaseConnector):
                 meta_cache[attachment_id] = meta
                 return meta
             meta_cache[attachment_id] = None
+        except AtlassianQuotaExhausted:
+            raise
         except Exception as e:
             self.logger.debug(f"Attachment metadata lookup failed for {attachment_id}: {e}")
             meta_cache[attachment_id] = None
@@ -4615,17 +6243,26 @@ class ConfluenceConnector(BaseConnector):
             attachment_id = attachment.get("id")
             if not attachment_id:
                 return None
+            if str(attachment_id) in images_not_inlined(await _ensure_page_attachments()):
+                return None
 
             try:
-                content_bytes = b""
+                content = bytearray()
                 async for chunk in datasource.download_attachment(
                     parent_page_id=page_id,
                     attachment_id=str(attachment_id),
                 ):
-                    content_bytes += chunk
+                    content.extend(chunk)
+                    if len(content) > MAX_INLINE_IMAGE_BYTES:
+                        # Inlined as base64 in the page: a huge image would sit in memory several times over.
+                        self.logger.debug(f"Image {attachment_id} is over {MAX_INLINE_IMAGE_BYTES} bytes; left out of the page body")
+                        return None
+                content_bytes = bytes(content)
                 if not content_bytes:
                     return None
                 return content_bytes, mime_type
+            except AtlassianQuotaExhausted:
+                raise
             except Exception as e:
                 self.logger.debug(
                     f"REST attachment download failed for {attachment_id} on page {page_id}: {e}"
@@ -4778,13 +6415,21 @@ class ConfluenceConnector(BaseConnector):
             if not mime_type.startswith("image/"):
                 self.logger.debug(f"Skipping non-image media type: {mime_type} for {media_alt}")
                 return None
+            if str(attachment_id) in images_not_inlined(page_attachments):
+                self.logger.debug(f"Image {attachment_id} is left out of the page body; it stays an attachment")
+                return None
 
-            content_bytes = b""
+            content = bytearray()
             async for chunk in datasource.download_attachment(
                 parent_page_id=page_id,
                 attachment_id=str(attachment_id),
             ):
-                content_bytes += chunk
+                content.extend(chunk)
+                if len(content) > MAX_INLINE_IMAGE_BYTES:
+                    # Inlined as base64 in the page: a huge image would sit in memory several times over.
+                    self.logger.debug(f"Image {attachment_id} is over {MAX_INLINE_IMAGE_BYTES} bytes; left out of the page body")
+                    return None
+            content_bytes = bytes(content)
 
             if not content_bytes:
                 return None
@@ -4792,11 +6437,31 @@ class ConfluenceConnector(BaseConnector):
             base64_data = base64.b64encode(content_bytes).decode("utf-8")
             return f"data:{mime_type};base64,{base64_data}"
 
+        except AtlassianQuotaExhausted:
+            raise
         except Exception as e:
             self.logger.warning(
                 f"Error fetching media (id='{media_id}', alt='{media_alt}') for page {page_id}: {e}"
             )
             return None
+
+    async def _comments_indexed(self, record_type: RecordType) -> bool:
+        """Whether the "Index page comments" / "Index blog post comments" setting is on (default on).
+
+        Read from the settings at stream time: indexing streams through an instance whose
+        sync never ran, so its loaded filters may be empty.
+        """
+        try:
+            _, indexing_filters = await load_connector_filters(
+                self.config_service, "confluence", self.connector_id, self.logger
+            )
+        except Exception:
+            indexing_filters = self.indexing_filters
+        key = (
+            IndexingFilterKey.PAGE_COMMENTS if record_type == RecordType.CONFLUENCE_PAGE
+            else IndexingFilterKey.BLOGPOST_COMMENTS
+        )
+        return indexing_filters.is_enabled(key)
 
     async def _fetch_page_comments_recursive(
         self,
@@ -4819,6 +6484,7 @@ class ConfluenceConnector(BaseConnector):
         all_comments: list[dict[str, Any]] = []
         batch_size = 100
         cursor = None
+        followed: set[str] = set()
 
         # Early return for unsupported record types
         if record_type not in [RecordType.CONFLUENCE_PAGE, RecordType.CONFLUENCE_BLOGPOST]:
@@ -4866,8 +6532,10 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 if not response or response.status != HttpStatusCode.SUCCESS.value:
-                    self.logger.debug(f"Failed to fetch {comment_type} comments for {record_type}: {page_id}")
-                    break
+                    raise CommentsUnreadable(
+                        f"{comment_type} comments of {page_id} could not be read "
+                        f"(HTTP {response.status if response else 'no response'})"
+                    )
 
                 response_data = response.json()
                 comments_data = response_data.get("results", [])
@@ -4892,12 +6560,15 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
+                if not cursor or cursor in followed:
+                    raise CommentsUnreadable(f"{comment_type} comments of {page_id} could not be followed to the end")
+                followed.add(cursor)
 
+            except (CommentsUnreadable, AtlassianQuotaExhausted):
+                raise
             except Exception as e:
-                self.logger.error(f"Error fetching {comment_type} comments for page {page_id}: {e}", exc_info=True)
-                break
+                # Indexed without its comments the page would stay that way until it changes.
+                raise CommentsUnreadable(f"{comment_type} comments of {page_id} could not be read: {e}") from e
 
         return all_comments
 
@@ -4921,6 +6592,7 @@ class ConfluenceConnector(BaseConnector):
         all_children: list[dict[str, Any]] = []
         batch_size = 100
         cursor = None
+        followed: set[str] = set()
 
         datasource = await self._get_fresh_datasource()
         comment_id_int = int(comment_id) if isinstance(comment_id, str) else comment_id
@@ -4942,8 +6614,15 @@ class ConfluenceConnector(BaseConnector):
                         limit=batch_size
                     )
 
-                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                    # Deleted between the list and this read: its replies went with it.
+                    self.logger.warning(f"Replies to comment {comment_id} are gone; indexing the page without them")
                     break
+                if not response or response.status != HttpStatusCode.SUCCESS.value:
+                    raise CommentsUnreadable(
+                        f"replies to comment {comment_id} could not be read "
+                        f"(HTTP {response.status if response else 'no response'})"
+                    )
 
                 response_data = response.json()
                 children_data = response_data.get("results", [])
@@ -4968,12 +6647,14 @@ class ConfluenceConnector(BaseConnector):
                     break
 
                 cursor = self._extract_cursor_from_next_link(next_url)
-                if not cursor:
-                    break
+                if not cursor or cursor in followed:
+                    raise CommentsUnreadable(f"replies to comment {comment_id} could not be followed to the end")
+                followed.add(cursor)
 
+            except (CommentsUnreadable, AtlassianQuotaExhausted):
+                raise
             except Exception as e:
-                self.logger.error(f"Error fetching children for comment {comment_id}: {e}", exc_info=True)
-                break
+                raise CommentsUnreadable(f"replies to comment {comment_id} could not be read: {e}") from e
 
         return all_children
 
@@ -4995,13 +6676,21 @@ class ConfluenceConnector(BaseConnector):
             return []
 
         threads: dict[str, list[dict[str, Any]]] = {}
+        parent_of = {
+            str(c.get("id", "")): str(c["parentCommentId"]) for c in comments_data if c.get("parentCommentId")
+        }
+
+        def root_of(comment_id: str) -> str:
+            # A reply to a reply belongs to the thread of the comment that started it.
+            seen: set[str] = set()
+            while comment_id in parent_of and comment_id not in seen:
+                seen.add(comment_id)
+                comment_id = parent_of[comment_id]
+            return comment_id
 
         for comment in comments_data:
             comment_id = str(comment.get("id", ""))
-            parent_comment_id = comment.get("parentCommentId")
-
-            # Thread ID is parent's ID if it's a reply, or self ID if top-level
-            thread_id = str(parent_comment_id) if parent_comment_id else comment_id
+            thread_id = root_of(comment_id) if comment_id else ""
             if not thread_id:
                 continue
 
@@ -5009,12 +6698,13 @@ class ConfluenceConnector(BaseConnector):
                 threads[thread_id] = []
             threads[thread_id].append(comment)
 
-        # Sort each thread by created timestamp (oldest first)
+        # Sort each thread: the comment that started it first, then replies oldest first
         for thread_id in threads:
             threads[thread_id].sort(
-                key=lambda c: self._parse_confluence_datetime(
-                    c.get("version", {}).get("createdAt", "")
-                ) or 0
+                key=lambda c, root=thread_id: (
+                    str(c.get("id", "")) != root,
+                    self._parse_confluence_datetime(c.get("version", {}).get("createdAt", "")) or 0,
+                )
             )
 
         # Sort threads by first comment's created timestamp (oldest thread first)
@@ -5025,23 +6715,6 @@ class ConfluenceConnector(BaseConnector):
             ) or 0 if t else 0
         )
 
-
-    def _create_comment_media_fetcher(
-        self,
-        page_id: str,
-        content_type: str = "page",
-        attachments_data: list[dict[str, Any]] | None = None,
-    ) -> Callable[[str, str], Awaitable[str | None]]:
-        """
-        Create a media fetcher callback for comments.
-        Comments use collection "comment-container-{pageId}" but attachments
-        are still accessible via page attachments API.
-        """
-        return self._create_confluence_media_fetcher(
-            page_id,
-            content_type,
-            attachments_data=attachments_data,
-        )
 
     async def _parse_confluence_page_to_blocks(
         self,
@@ -5097,15 +6770,14 @@ class ConfluenceConnector(BaseConnector):
         # Determine content_type for API calls
         content_type = "page" if record_type == RecordType.CONFLUENCE_PAGE else "blogpost"
 
+        # One fetcher for the page and its comments, so the page's image budget covers both.
+        media_fetcher = self._create_confluence_media_fetcher(page_id, content_type, attachments_data=attachments_data)
+
         # 1. Parse ADF content to blocks (title prepended inside parse_adf as block 0)
         page_title_str = str(page_title).strip() if page_title and str(page_title).strip() else None
         blocks, block_groups = await parser.parse_adf(
             adf_content=adf_dict if adf_dict else {},
-            media_fetcher=self._create_confluence_media_fetcher(
-                page_id, content_type, attachments_data=attachments_data
-            )
-            if adf_dict
-            else None,
+            media_fetcher=media_fetcher if adf_dict else None,
             parent_page_url=weburl,
             page_id=page_id,
             page_title=page_title_str,
@@ -5144,18 +6816,21 @@ class ConfluenceConnector(BaseConnector):
             mime_type = _attachment_mime_types.get(attachment_id, "")
             return mime_type.startswith("image/")
 
+        # Images left out of the body stay attachment records
+        not_inlined = images_not_inlined(attachments_data or [])
+
         # Track which attachments were used as images in blocks
         if adf_dict:
             for media_info in extract_media_from_adf(adf_dict):
                 attachment_id = resolve_attachment_id(media_info)
-                if attachment_id and is_image_attachment(attachment_id):
+                if attachment_id and is_image_attachment(attachment_id) and attachment_id not in not_inlined:
                     used_attachment_ids.add(attachment_id)
 
         # 2. Fetch and process comments
         footer_comments: list[dict[str, Any]] = []
         inline_comments: list[dict[str, Any]] = []
 
-        if record_type:
+        if record_type and await self._comments_indexed(record_type):
             # Fetch footer comments
             footer_comments = await self._fetch_page_comments_recursive(
                 page_id=page_id,
@@ -5189,9 +6864,7 @@ class ConfluenceConnector(BaseConnector):
             await parser.attach_inline_comments_to_blocks(
                 blocks=blocks,
                 inline_comments=inline_comments,
-                media_fetcher=self._create_comment_media_fetcher(
-                    page_id, content_type, attachments_data=attachments_data
-                ),
+                media_fetcher=media_fetcher,
                 parent_page_url=weburl,
                 user_display_names=user_display_names,
             )
@@ -5199,10 +6872,15 @@ class ConfluenceConnector(BaseConnector):
         # 4. Process footer comments as COMMENT_THREAD/COMMENT BlockGroups
         comment_attachment_ids: set[str] = set()
 
-        if footer_comments:
-            sorted_threads = self._organize_confluence_comments_to_threads(footer_comments)
-
-            for thread_comments in sorted_threads:
+        # Inline threads are also anchored to their blocks above, but only block text is embedded,
+        # so they get comment groups too, as footer threads do, to be searchable.
+        comment_threads = [
+            (kind, thread)
+            for kind, comments in (("footer", footer_comments), ("inline", inline_comments))
+            for thread in self._organize_confluence_comments_to_threads(comments or [])
+        ]
+        if comment_threads:
+            for thread_comment_type, thread_comments in comment_threads:
                 if not thread_comments:
                     continue
 
@@ -5217,7 +6895,7 @@ class ConfluenceConnector(BaseConnector):
                 thread_group = parser.create_comment_thread_group(
                     thread_id=thread_id,
                     group_index=thread_group_index,
-                    comment_type="footer",
+                    comment_type=thread_comment_type,
                     page_title=page_title,
                     weburl=weburl,
                 )
@@ -5246,9 +6924,7 @@ class ConfluenceConnector(BaseConnector):
                     # Parse comment ADF directly to Blocks
                     comment_blocks, comment_block_groups = await parser.parse_adf(
                         adf_content=comment_body_adf,
-                        media_fetcher=self._create_comment_media_fetcher(
-                    page_id, content_type, attachments_data=attachments_data
-                ),
+                        media_fetcher=media_fetcher,
                         parent_page_url=weburl,
                         page_id=page_id,
                         page_title=None  # Don't add title for comments
@@ -5256,6 +6932,26 @@ class ConfluenceConnector(BaseConnector):
 
                     if not comment_blocks and not comment_block_groups:
                         continue
+
+                    # Who wrote it, and when (and what it is on, for an inline comment): without it
+                    # the model reads a comment as part of the page.
+                    header_index = len(blocks)
+                    author_id = (comment.get("version") or {}).get("authorId")
+                    blocks.append(Block(
+                        id=str(uuid.uuid4()),
+                        index=header_index,
+                        parent_index=None,
+                        type=BlockType.TEXT,
+                        sub_type=BlockSubType.PARAGRAPH,
+                        format=DataFormat.MARKDOWN,
+                        data=ConfluenceBlockParser.comment_header_text(
+                            user_display_names.get(author_id, "Unknown"),
+                            parser.comment_created_at(comment),
+                            (comment.get("properties") or {}).get("inlineOriginalSelection")
+                            if thread_comment_type == "inline" else None,
+                        ),
+                        weburl=weburl,
+                    ))
 
                     # Add comment blocks to main container (adjusting indices)
                     block_start_index = len(blocks)
@@ -5317,7 +7013,7 @@ class ConfluenceConnector(BaseConnector):
                         attachment_id = resolve_attachment_id(media_info)
                         if attachment_id and attachment_id in (attachment_children_map or {}):
                             comment_attachment_ids.add(attachment_id)
-                            if not is_image_attachment(attachment_id):
+                            if not is_image_attachment(attachment_id) or attachment_id in not_inlined:
                                 comment_children.append(attachment_children_map[attachment_id])
 
                     # Create BlockComment for metadata only
@@ -5328,7 +7024,7 @@ class ConfluenceConnector(BaseConnector):
                         author_name=user_display_names.get(author_id, "Unknown"),
                         thread_id=thread_id,
                         weburl=parser._normalize_url(comment_weburl),
-                        created_at=parser._parse_confluence_timestamp(comment.get("createdAt")),
+                        created_at=parser._parse_confluence_timestamp(parser.comment_created_at(comment)),
                     )
 
                     # Create COMMENT BlockGroup
@@ -5339,13 +7035,13 @@ class ConfluenceConnector(BaseConnector):
                         parent_group_index=thread_group_index,
                         source_id=comment_id,
                         children_records=comment_children if comment_children else None,
-                        block_indices=(block_start_index, block_end_index),
+                        block_indices=(header_index, block_end_index),
                     )
                     block_groups.append(comment_group)
 
                     # Set parent_index on top-level comment blocks (those without a parent yet)
                     # Blocks belonging to nested BlockGroups already have their parent set
-                    for i in range(block_start_index, block_end_index + 1):
+                    for i in range(header_index, block_end_index + 1):
                         if blocks[i].parent_index is None:
                             blocks[i].parent_index = comment_group_index
 
@@ -5496,67 +7192,27 @@ class ConfluenceConnector(BaseConnector):
         page_weburl: str | None,
         attachment_api_base_url: str | None = None,
     ) -> dict[str, ChildRecord]:
-        """
-        Process page attachments and create ChildRecords.
-        Creates FileRecords if they don't exist (for new attachments added after sync).
+        """Link a page's stored attachment records as children of its blocks.
 
-        Args:
-            attachment_api_base_url: v2 list response _links.base (required to build absolute web URLs for attachments).
+        Read only: the sync owns attachment records (it applies the attachment indexing
+        filters and leaves images shown in the page out), so streaming never creates one.
+        An attachment added since the last sync is linked once the sync has stored it.
         """
         attachment_children_map: dict[str, ChildRecord] = {}
-        new_file_records: list[tuple[FileRecord, list[Permission]]] = []
-        page_permissions: Optional[list[Permission]] = None
-        page_permissions_read = False
-
         for attachment in attachments_data:
             attachment_id = attachment.get("id")
             if not attachment_id:
                 continue
-
-            # Look up existing FileRecord (without "attachment_" prefix - matches how records are stored)
             existing_record = await self.data_entities_processor.get_record_by_external_id(
                 connector_id=self.connector_id,
-                external_record_id=str(attachment_id)  # No prefix - matches external_record_id in FileRecord
+                external_record_id=str(attachment_id),
             )
-
-            # Create FileRecord if it doesn't exist (new attachment added after sync)
-            if not existing_record:
-                # Transform to FileRecord
-                file_record = self._transform_to_attachment_file_record(
-                    attachment_data=attachment,
-                    parent_external_record_id=page_id,
-                    parent_external_record_group_id=space_id,
-                    existing_record=None,
-                    parent_node_id=page_node_id,
-                    attachment_api_base_url=attachment_api_base_url,
-                )
-
-                if file_record:
-                    if not page_permissions_read:
-                        page_permissions = await self._fetch_page_permissions(page_id)
-                        page_permissions_read = True
-                    if page_permissions is None:
-                        # Saved without the page's restrictions, it would be open to the whole space.
-                        self.logger.warning(
-                            f"Not saving new attachment {attachment_id} yet: restrictions of page {page_id} could not be read"
-                        )
-                    else:
-                        file_record.inherit_permissions = not any(p.type == PermissionType.READ for p in page_permissions)
-                        new_file_records.append((file_record, page_permissions))
-                        existing_record = file_record
-
             if existing_record:
                 attachment_children_map[str(attachment_id)] = ChildRecord(
                     child_type=ChildType.RECORD,
                     child_id=existing_record.id,
-                    child_name=existing_record.record_name
+                    child_name=existing_record.record_name,
                 )
-
-        # Save new FileRecords if any were created
-        if new_file_records:
-            await self.data_entities_processor.on_new_records(new_file_records)
-            self.logger.info(f"📎 Created {len(new_file_records)} new FileRecords for attachments added after sync")
-
         return attachment_children_map
 
     async def _fetch_attachment_content(self, record: Record) -> AsyncGenerator[bytes, None]:
@@ -5598,6 +7254,8 @@ class ConfluenceConnector(BaseConnector):
 
         except HTTPException:
             raise
+        except AtlassianQuotaExhausted as e:
+            raise self._quota_http_error(e) from e
         except Exception as e:
             self.logger.error(f"Failed to download attachment {record.external_record_id}: {e}", exc_info=True)
             raise to_stream_error(e, connector=self.display_name) from e
@@ -5607,6 +7265,14 @@ class ConfluenceConnector(BaseConnector):
         await self.run_sync()
 
     async def reindex_records(self, records: list[Record]) -> None:
+        """Reindex records; see ``_reindex_records``."""
+        self._in_use += 1
+        try:
+            await self._reindex_records(records)
+        finally:
+            await self._release()
+
+    async def _reindex_records(self, records: list[Record]) -> None:
         """Reindex a list of Confluence records.
 
         This method:
@@ -5641,6 +7307,10 @@ class ConfluenceConnector(BaseConnector):
                         updated_records.append((updated_record, permissions))
                     else:
                         non_updated_records.append(record)
+                except GoneAtSource:
+                    # Re-indexing it would only fail; the next sync's removal scan deletes it.
+                    self.logger.info(f"Not re-indexing {record.external_record_id}: it is gone from Confluence")
+                    continue
                 except Exception as e:
                     self.logger.error(f"Error checking record {record.id} at source: {e}")
                     continue
@@ -5652,32 +7322,33 @@ class ConfluenceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_content_update(updated_record)
 
                     # Update permissions if they exist
-                    if permissions:
-                        await self.data_entities_processor.on_updated_record_permissions(updated_record, permissions)
+                    if permissions or updated_record.rewrite_permissions:
+                        await self.data_entities_processor.on_updated_record_permissions(
+                            updated_record, list(permissions or [])
+                        )
 
                 self.logger.info(f"Published update events for {len(updated_records)} records that changed at source")
 
             # Reindex non-updated records (preserving existing mime types)
             if non_updated_records:
-                # DISABLED: Don't convert HTML to BLOCKS anymore to support HTML format for new records
-                # while preserving existing BLOCKS records
-                # fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
-                # TODO: Uncomment this when we want to convert HTML to BLOCKS again
-                # all_reindex_records = fixed_records + ok_records
-                
-                # Use records as-is (preserves existing BLOCKS, new ones are HTML)
-                all_reindex_records = non_updated_records
+                # A re-index is asked for, so a stored HTML page is indexed as blocks, with its comments.
+                fixed_records, ok_records = await self._fix_legacy_mime_types(non_updated_records)
+                all_reindex_records = fixed_records + ok_records
                 
                 if all_reindex_records:
                     await self.data_entities_processor.reindex_existing_records(all_reindex_records)
                     self.logger.info(f"Published reindex events for {len(all_reindex_records)} non-updated records")
+            # Every re-indexed page: comment indexing may have just been turned on for pages already stored as blocks.
+            await self._drop_legacy_comment_records(
+                self._saved_as_blocks([r for r, _ in updated_records] + non_updated_records, every_page=True)
+            )
         except Exception as e:
             self.logger.error(f"Error during Confluence reindex: {e}", exc_info=True)
             raise
 
     async def _check_and_fetch_updated_record(
         self, org_id: str, record: Record
-    ) -> tuple[Record, list[Permission]] | None:
+    ) -> tuple[Record, list[Permission]] | None:  # raises GoneAtSource for a 404
         """Fetch record from source and return data for reindexing.
 
         Supports: pages, blogposts, attachments, and comments.
@@ -5702,6 +7373,8 @@ class ConfluenceConnector(BaseConnector):
                 self.logger.warning(f"Unsupported record type for reindex: {record.record_type}")
                 return None
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error checking record {record.id} at source: {e}")
             return None
@@ -5720,8 +7393,10 @@ class ConfluenceConnector(BaseConnector):
                 body_format="storage"
             )
 
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                raise GoneAtSource(page_id)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Page {page_id} not found at source, may have been deleted")
+                self.logger.warning(f"Page {page_id} could not be read at source")
                 return None
 
             page_data = response.json()
@@ -5753,14 +7428,19 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
                 return None
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching page {record.external_record_id}: {e}")
             return None
@@ -5778,8 +7458,10 @@ class ConfluenceConnector(BaseConnector):
                 body_format="storage"
             )
 
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                raise GoneAtSource(blogpost_id)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Blogpost {blogpost_id} not found at source, may have been deleted")
+                self.logger.warning(f"Blogpost {blogpost_id} could not be read at source")
                 return None
 
             blogpost_data = response.json()
@@ -5811,14 +7493,19 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {blogpost_id} could not be read; reindexing what is stored")
                 return None
-            # Only set inherit_permissions to False if there are READ restrictions
-            # EDIT-only restrictions should still inherit from space for READ access
-            read_permissions = [p for p in permissions if p.type == PermissionType.READ]
-            if len(read_permissions) > 0:
-                webpage_record.inherit_permissions = False
+            # A READ restriction keeps inheriting and is recorded as RESTRICTED
+            # instead; EDIT-only stays STRICT.
+            webpage_record.access_rule = (
+                AccessRule.RESTRICTED
+                if any(p.type == PermissionType.READ for p in permissions)
+                else AccessRule.STRICT
+            )
+            webpage_record.rewrite_permissions = True
 
             return (webpage_record, permissions)
 
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching blogpost {record.external_record_id}: {e}")
             return None
@@ -5851,8 +7538,10 @@ class ConfluenceConnector(BaseConnector):
                 include_version=True
             )
 
+            if response is not None and response.status == HttpStatusCode.NOT_FOUND.value:
+                raise GoneAtSource(attachment_id)
             if not response or response.status != HttpStatusCode.SUCCESS.value:
-                self.logger.warning(f"Attachment {attachment_id} not found at source, may have been deleted")
+                self.logger.warning(f"Attachment {attachment_id} could not be read at source")
                 return None
 
             attachment_data = response.json()
@@ -5892,18 +7581,31 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {parent_page_id} could not be read; reindexing what is stored")
                 return None
-            attachment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
+            # Attachments follow the page's access through inheritance.
+            attachment_record.inherit_permissions = True
+            attachment_record.rewrite_permissions = True
+            return (attachment_record, [])
 
-            return (attachment_record, permissions)
-
+        except GoneAtSource:
+            raise
         except Exception as e:
             self.logger.error(f"Error fetching attachment {record.external_record_id}: {e}")
             return None
 
     async def cleanup(self) -> None:
-        """Cleanup resources."""
+        """Close the HTTP client, so its pooled connections go when the connector does."""
         self.logger.info("Cleaning up Confluence connector resources")
-        # Add cleanup logic if needed
+        if self._in_use:
+            # The router evicts a cached instance on a settings change; work on it still needs the client.
+            self.logger.info("Work is running on this connector; its HTTP client closes when it ends")
+            self._close_after_sync = True
+            return
+        client = self.external_client.get_client() if self.external_client else None
+        if client is not None and hasattr(client, "close"):
+            try:
+                await client.close()
+            except Exception as e:
+                self.logger.debug(f"Closing the Confluence HTTP client failed: {e}")
 
     async def get_filter_options(
         self,
@@ -6409,9 +8111,10 @@ class ConfluenceConnector(BaseConnector):
             if permissions is None:
                 self.logger.warning(f"Restrictions for {page_id} could not be read; reindexing what is stored")
                 return None
-            comment_record.inherit_permissions = not any(p.type == PermissionType.READ for p in permissions)
-
-            return (comment_record, permissions)
+            # Comments follow the page's access through inheritance.
+            comment_record.inherit_permissions = True
+            comment_record.rewrite_permissions = True
+            return (comment_record, [])
             
         except Exception as e:
             self.logger.error(f"Error fetching comment {record.external_record_id}: {e}")
@@ -6443,12 +8146,15 @@ class ConfluenceConnector(BaseConnector):
             has_html_mime = record.mime_type == MimeTypes.HTML.value
             
             if is_page_or_blogpost and has_html_mime:
+                self._now_blocks[record.external_record_id] = record.record_type
                 self.logger.info(
                     f"Detected legacy HTML mime type for {record.record_type.value} "
                     f"{record.record_name} ({record.external_record_id}), updating to BLOCKS"
                 )
                 # Update the mime type to match what stream_record returns
                 record.mime_type = MimeTypes.BLOCKS.value
+                # The preview has no renderer for blocks; the page opens at its link instead.
+                record.preview_renderable = False
                 records_to_fix.append(record)
             else:
                 records_ok.append(record)

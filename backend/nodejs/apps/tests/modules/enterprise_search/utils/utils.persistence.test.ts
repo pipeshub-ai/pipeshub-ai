@@ -8,15 +8,20 @@ import {
   attachSharedBy,
   attachSharedByIfRecipient,
   formatPreviousConversations,
+  keepRunAlive,
   markAgentConversationFailed,
   markConversationFailed,
+  releaseRun,
+  reserveRun,
   replaceMessageWithError,
   saveCompleteAgentConversation,
   saveCompleteConversation,
   savePartialConversation,
   staleAskUserQuestionToolCallIds,
 } from '../../../../src/modules/enterprise_search/utils/utils'
-import { InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { PassThrough } from 'stream'
+import { InMemoryChatStore } from '../controller/chat-test-harness'
+import { ConflictError, InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { CONVERSATION_STATUS } from '../../../../src/modules/enterprise_search/constants/constants'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
@@ -244,9 +249,19 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(conversation.status).to.equal(CONVERSATION_STATUS.STOPPED)
     })
 
+    it('savePartialConversation keeps the approved calls a stopped reply ran', async () => {
+      const conversation = makeConversation()
+      const { insert } = stubAppend(5)
+      const approved = { type: 'tool_call' as const, toolCallId: 'approved_1', toolName: 'x', status: 'completed' as const, approved: true }
+
+      await savePartialConversation(asDoc(conversation), 'Created', null, { parts: [approved] })
+
+      expect(at(insert.firstCall.args[0] as InsertedMessage[]).parts).to.deep.equal([approved])
+    })
+
     it('replaceMessageWithError still marks the conversation failed when the message is gone', async () => {
       const conversation = makeConversation()
-      sinon.stub(ChatSessionMessage, 'findById').resolves(null)
+      sinon.stub(ChatSessionMessage, 'findOne').resolves(null)
       const replace = sinon.stub(ChatSessionMessage, 'findOneAndReplace')
       const messageId = new mongoose.Types.ObjectId()
 
@@ -255,6 +270,224 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(replace.called).to.equal(false)
       expect(conversation.status).to.equal(CONVERSATION_STATUS.FAILED)
       expect(conversation.save.calledOnce).to.equal(true)
+    })
+  })
+
+  describe('reserveRun / releaseRun', () => {
+    const ORG = new mongoose.Types.ObjectId()
+    const USER = new mongoose.Types.ObjectId()
+    const mine = (id: unknown): Record<string, unknown> => ({ _id: id, orgId: ORG, userId: USER, isDeleted: false })
+
+    let store: InMemoryChatStore
+    const addThread = (fields: Record<string, unknown> = {}): ReturnType<InMemoryChatStore['addSession']> =>
+      store.addSession({ orgId: ORG, userId: USER, isDeleted: false, ...fields })
+    const fakeClock = (): sinon.SinonFakeTimers => sinon.useFakeTimers({ now: Date.now() })
+
+    beforeEach(() => {
+      store = new InMemoryChatStore()
+      store.install()
+    })
+
+    it('marks an idle thread in progress and remembers what it was', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+
+      const reservation = await reserveRun(mine(thread._id))
+
+      expect(reservation?.previousStatus).to.equal(CONVERSATION_STATUS.COMPLETE)
+      expect(String(reservation?.sessionId)).to.equal(String(thread._id))
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
+    })
+
+    it('returns null for a thread the caller does not own, and leaves it alone', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+
+      const reservation = await reserveRun({ ...mine(thread._id), userId: new mongoose.Types.ObjectId() })
+
+      expect(reservation).to.equal(null)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
+    })
+
+    it('lets exactly one of two simultaneous messages through', async () => {
+      const clock = fakeClock()
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+
+      const first = reserveRun(mine(thread._id), 1000)
+      const second = reserveRun(mine(thread._id), 1000)
+      const outcomes = Promise.allSettled([first, second])
+      await clock.tickAsync(1500)
+      const results = await outcomes
+
+      expect(results.filter((r) => r.status === 'fulfilled')).to.have.length(1)
+      const refused = results.find((r) => r.status === 'rejected') as PromiseRejectedResult
+      expect(refused.reason).to.be.instanceOf(ConflictError)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
+    })
+
+    it('refuses with a conflict when a run is still going after the settle window, without changing the thread', async () => {
+      const clock = fakeClock()
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
+
+      const outcome = rejection(reserveRun(mine(thread._id), 1000))
+      await clock.tickAsync(1500)
+
+      expect(await outcome).to.be.instanceOf(ConflictError)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
+    })
+
+    it('waits out a run that is being cancelled instead of refusing a quick Stop-then-send', async () => {
+      const clock = fakeClock()
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() })
+
+      const reserved = reserveRun(mine(thread._id), 5000)
+      await clock.tickAsync(500)
+      thread.set('status', CONVERSATION_STATUS.STOPPED)
+      await clock.tickAsync(500)
+      const reservation = await reserved
+
+      expect(reservation?.previousStatus).to.equal(CONVERSATION_STATUS.STOPPED)
+      expect(thread.status).to.equal(CONVERSATION_STATUS.INPROGRESS)
+    })
+
+    it('does not treat a stale in-progress status as a live run (a crashed server must not lock the thread)', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: Date.now() - 2 * 60 * 60 * 1000 })
+
+      const reservation = await reserveRun(mine(thread._id))
+
+      expect(reservation?.previousStatus, 'the abandoned run is recorded as failed, not as in progress').to.equal(
+        CONVERSATION_STATUS.FAILED,
+      )
+    })
+
+    it('does not block a thread that has no activity timestamp', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.INPROGRESS, lastActivityAt: null })
+
+      expect(await reserveRun(mine(thread._id))).to.not.equal(null)
+    })
+
+    it('does not read the thread inside a transaction, which would never see a status change', async () => {
+      const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+      const update = ChatSession.findOneAndUpdate as unknown as sinon.SinonStub
+
+      await reserveRun(mine(thread._id))
+
+      expect(update.firstCall.args[2]).to.not.have.property('session')
+    })
+
+    describe('keepRunAlive', () => {
+      const beat = (): sinon.SinonFakeTimers =>
+        sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'], now: Date.now() })
+
+      it('keeps a long-running run looking alive, so another request cannot take its thread', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, reservation?.runId)
+
+        await clock.tickAsync(45 * 60 * 1000)
+        const takeover = rejection(reserveRun(mine(thread._id), 1000))
+        await clock.tickAsync(1500)
+
+        expect(await takeover).to.be.instanceOf(ConflictError)
+        expect(Date.now() - (thread.lastActivityAt as number)).to.be.lessThan(2 * 60 * 1000)
+        stream.destroy()
+      })
+
+      it('stops when the stream closes, and no longer changes the thread', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, reservation?.runId)
+        stream.destroy()
+        await clock.tickAsync(0)
+        const stamped = thread.lastActivityAt
+
+        await clock.tickAsync(10 * 60 * 1000)
+
+        expect(thread.lastActivityAt).to.equal(stamped)
+      })
+
+      it('ignores a thread that has since been taken over by another run', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const older = await reserveRun(mine(thread._id))
+        thread.set('status', CONVERSATION_STATUS.COMPLETE)
+        await reserveRun(mine(thread._id))
+        const stamped = thread.lastActivityAt
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, older?.runId)
+
+        await clock.tickAsync(5 * 60 * 1000)
+
+        expect(thread.lastActivityAt).to.equal(stamped)
+        stream.destroy()
+      })
+
+      it('never records an update as a change to the conversation itself', async () => {
+        const clock = beat()
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        const stream = new PassThrough()
+        keepRunAlive(stream, thread._id, reservation?.runId)
+
+        await clock.tickAsync(61 * 1000)
+
+        const update = ChatSession.updateOne as unknown as sinon.SinonStub
+        expect(update.firstCall.args[2]).to.deep.equal({ timestamps: false })
+        stream.destroy()
+      })
+    })
+
+    describe('releaseRun', () => {
+      it('puts the thread back to what it was when the run never took it over', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+
+        await releaseRun(reservation)
+
+        expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
+      })
+
+      it('does not overwrite the outcome a run has already saved', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        thread.set('status', CONVERSATION_STATUS.STOPPED)
+
+        await releaseRun(reservation)
+
+        expect(thread.status).to.equal(CONVERSATION_STATUS.STOPPED)
+      })
+
+      it('does not touch a newer request\'s run when an older reservation is released late', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const older = await reserveRun(mine(thread._id))
+        thread.set('status', CONVERSATION_STATUS.COMPLETE) // the older run saved its answer
+        const newer = await reserveRun(mine(thread._id))
+
+        await releaseRun(older)
+
+        expect(thread.status, 'the newer run still owns the thread').to.equal(CONVERSATION_STATUS.INPROGRESS)
+        await releaseRun(newer)
+        expect(thread.status).to.equal(CONVERSATION_STATUS.COMPLETE)
+      })
+
+      it('does nothing without a reservation', async () => {
+        const update = ChatSession.findOneAndUpdate as unknown as sinon.SinonStub
+
+        await releaseRun(null)
+
+        expect(update.called).to.equal(false)
+      })
+
+      it('never throws if the database is unreachable, so it cannot mask the original error', async () => {
+        const thread = addThread({ status: CONVERSATION_STATUS.COMPLETE })
+        const reservation = await reserveRun(mine(thread._id))
+        sinon.restore()
+        sinon.stub(ChatSession, 'findOneAndUpdate').throws(new Error('connection lost'))
+
+        await releaseRun(reservation)
+      })
     })
   })
 
@@ -302,6 +535,18 @@ describe('Saving chat answers (enterprise search utils)', () => {
       ])
     })
 
+    it('marks a reply the user stopped, and only that one', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'plan it' } as IMessage,
+        { messageType: 'bot_response', content: 'Working on EU', status: 'stopped' } as IMessage,
+        { messageType: 'bot_response', content: 'Done.' } as IMessage,
+      ])
+
+      expect(history[0]).to.not.have.property('status')
+      expect(at(history, 1).status).to.equal('stopped')
+      expect(history[2]).to.not.have.property('status')
+    })
+
     it('adds no tool history for an answer without tool calls', () => {
       const [turn] = formatPreviousConversations([
         { messageType: 'bot_response', content: 'Hi', parts: [{ type: 'text', content: 'Hi' }] } as IMessage,
@@ -347,6 +592,71 @@ describe('Saving chat answers (enterprise search utils)', () => {
       expect(results).to.have.length(1)
       expect(results[0]?.result).to.contain('current')
       expect(results[0]?.result).to.not.contain('discarded')
+    })
+  })
+
+  describe('formatPreviousConversations unanswered turns', () => {
+    it('replays a turn that failed before an answer as a failed answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Summarise the Q3 deck' } as IMessage,
+        { messageType: 'bot_response', content: 'It covers revenue.' } as IMessage,
+        { messageType: 'user_query', content: 'List every open Jira epic' } as IMessage,
+        { messageType: 'error', content: 'Error Generating Response, Please try again' } as IMessage,
+      ])
+
+      expect(history.map((turn) => turn.role)).to.deep.equal([
+        'user_query',
+        'bot_response',
+        'user_query',
+        'bot_response',
+      ])
+      expect(at(history, 3)).to.deep.equal({ role: 'bot_response', content: '', status: 'failed' })
+    })
+
+    it('marks a failed turn whose error follows a system row', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'List every open Jira epic' } as IMessage,
+        { messageType: 'system', content: 'Forked from an earlier conversation' } as IMessage,
+        { messageType: 'error', content: 'Error Generating Response, Please try again' } as IMessage,
+        { messageType: 'user_query', content: 'Only the blocked ones' } as IMessage,
+      ])
+
+      const roles = history.map((turn) => turn.role)
+      expect(roles.indexOf('bot_response')).to.be.greaterThan(roles.indexOf('user_query'))
+      expect(roles.indexOf('bot_response')).to.be.lessThan(roles.lastIndexOf('user_query'))
+      expect(history.find((turn) => turn.role === 'bot_response')).to.deep.equal({
+        role: 'bot_response',
+        content: '',
+        status: 'failed',
+      })
+    })
+
+    it('keeps dropping an error row that follows an answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Open tickets?' } as IMessage,
+        { messageType: 'bot_response', content: 'Three.' } as IMessage,
+        { messageType: 'error', content: 'Something went wrong' } as IMessage,
+      ])
+
+      expect(history).to.have.length(2)
+    })
+
+    it('marks an answer the user stopped', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Compare every epic' } as IMessage,
+        { messageType: 'bot_response', content: 'Epic A is', status: 'stopped' } as IMessage,
+      ])
+
+      expect(at(history, 1)).to.include({ role: 'bot_response', content: 'Epic A is', status: 'stopped' })
+    })
+
+    it('adds no status to a completed answer', () => {
+      const history = formatPreviousConversations([
+        { messageType: 'user_query', content: 'Hi' } as IMessage,
+        { messageType: 'bot_response', content: 'Hello' } as IMessage,
+      ])
+
+      expect(at(history, 1)).to.not.have.property('status')
     })
   })
 

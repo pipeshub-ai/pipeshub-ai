@@ -15,6 +15,7 @@ import {
 import { LottieLoader } from "@/app/components/ui/lottie-loader";
 import { useProfilePage } from "./hooks/use-profile-page";
 import { USER_ROLES } from "../constants";
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Main Page
@@ -76,7 +77,7 @@ export default function ProfilePage() {
       />
 
       {/* Page content */}
-      <Box style={{ padding: "64px 100px" }}>
+      <SettingsPageContainer>
         {/* ── Page header ── */}
         <Box style={{ marginBottom: 'var(--space-6)' }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
@@ -124,7 +125,7 @@ export default function ProfilePage() {
             onChangePasswordClick={() => setChangePasswordOpen(true)}
           />
         </Box>
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Change Password Dialog ── */}
       <ChangePasswordDialog

@@ -18,6 +18,7 @@ from app.agent_loop_lib.core.messages import (
     ImagePart,
     ImageSource,
     TextPart,
+    ToolMessage,
     UserMessage,
 )
 from app.agent_loop_lib.transport.anthropic import AnthropicTransport
@@ -80,6 +81,26 @@ class TestResponsesApi:
     def test_text_only_stays_a_string(self) -> None:
         items = format_responses_input([UserMessage(content=[TextPart(text="hi")])], None)
         assert items[0]["content"] == "hi"
+
+    def test_multipart_tool_result_with_footer(self) -> None:
+        """A tool result with images plus a step footer raised TypeError (list + str)
+        and failed the whole turn."""
+        msg = ToolMessage(
+            content=[
+                TextPart(text="result"),
+                ImagePart(source=ImageSource(type="base64", media_type="image/png", data=PNG)),
+            ],
+            tool_call_id="c1",
+            step_footer=" [step 2 of 8]",
+        )
+        output = format_responses_input([msg], None)[0]["output"]
+        assert isinstance(output, list)
+        assert any(b["type"] == "input_image" for b in output)
+        assert output[-1] == {"type": "input_text", "text": " [step 2 of 8]"}
+
+    def test_text_tool_result_keeps_footer_appended(self) -> None:
+        msg = ToolMessage(content="result", tool_call_id="c1", step_footer=" [footer]")
+        assert format_responses_input([msg], None)[0]["output"] == "result [footer]"
 
 
 class TestGemini:

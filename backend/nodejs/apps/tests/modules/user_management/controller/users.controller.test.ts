@@ -12,6 +12,7 @@ import { UserDisplayPicture } from '../../../../src/modules/user_management/sche
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
 import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
 import {
@@ -965,17 +966,60 @@ describe('UserController', () => {
   });
 
   describe('checkUserExistsByEmail', () => {
-    it('should return users found by email', async () => {
+    const lookup = (exec: () => Promise<unknown>) =>
+      ({ select: () => ({ lean: () => ({ exec }) }) }) as any;
+
+    it('should return users found by the email the token was minted for', async () => {
       req.body = { email: 'test@test.com' };
+      req.tokenPayload = { email: 'test@test.com' };
       const mockUsers = [{ _id: 'u1', email: 'test@test.com' }];
 
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
+      const find = sinon.stub(Users, 'find').returns(lookup(async () => mockUsers));
 
       await controller.checkUserExistsByEmail(req, res, next);
 
+      expect(find.firstCall.args[0]).to.deep.equal({ email: 'test@test.com', isDeleted: false });
       expect(res.json.calledWith(mockUsers)).to.be.true;
     });
+
+    it('should refuse an email other than the token\'s without querying', async () => {
+      req.body = { email: 'victim@test.com' };
+      req.tokenPayload = { email: 'caller@test.com' };
+      const find = sinon.stub(Users, 'find');
+
+      await controller.checkUserExistsByEmail(req, res, next);
+
+      expect(find.called).to.be.false;
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403);
+    });
+
+    it('should refuse a token that carries no email without querying', async () => {
+      req.body = { email: 'test@test.com' };
+      req.tokenPayload = { userId: 'u1', orgId: 'o1' };
+      const find = sinon.stub(Users, 'find');
+
+      await controller.checkUserExistsByEmail(req, res, next);
+
+      expect(find.called).to.be.false;
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403);
+    });
   });
+
+  describe('checkUserExistsByEmail org scoping', () => {
+    it('confines the lookup to the token org when the token carries one', async () => {
+      req.body = { email: 'me@test.com' }
+      req.tokenPayload = { email: 'me@test.com', orgId: 'org-a' }
+      const find = sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: () => Promise.resolve([]) }) }),
+      } as any)
+
+      await controller.checkUserExistsByEmail(req, res, next)
+
+      expect(find.firstCall.args[0]).to.deep.equal({
+        email: 'me@test.com', isDeleted: false, orgId: 'org-a',
+      })
+    })
+  })
 
   describe('createUser', () => {
     it('should create a user and publish event', async () => {
@@ -2102,8 +2146,11 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail (additional)', () => {
     it('should return empty array when no users found', async () => {
       req.body = { email: 'notfound@test.com' };
+      req.tokenPayload = { email: 'notfound@test.com' };
 
-      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: async () => [] }) }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -2377,14 +2424,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('extractSamlUserDetails', () => {
-    it('should be a private method on the controller', () => {
-      // extractSamlUserDetails is a private method, so not accessible via public interface
-      // but exists at runtime on the instance
-      expect((controller as any).extractSamlUserDetails).to.be.a('function');
-    });
-  });
-
   describe('extractGoogleUserDetails (additional)', () => {
     it('should use display name from payload.name', () => {
       const payload = { name: 'Display Name Only' };
@@ -2639,41 +2678,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('provisionSamlUser', () => {
-    it('should create user, add to group, and publish event', async () => {
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-        orgId: 'org1',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: 'new-user-id',
-          email: 'saml@test.com',
-          fullName: 'SAML User',
-        }),
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      sinon.stub(Users.prototype, 'toObject').returns(mockNewUser.toObject());
-      Object.defineProperty(Users.prototype, '_id', { get: () => 'new-user-id', configurable: true });
-      Object.defineProperty(Users.prototype, 'fullName', { get: () => 'SAML User', configurable: true });
-      Object.defineProperty(Users.prototype, 'email', { get: () => 'saml@test.com', configurable: true });
-
-      try {
-        await controller.provisionSamlUser(
-          'saml@test.com',
-          { firstName: 'SAML', lastName: 'User' },
-          'org1',
-          mockLogger,
-        );
-      } catch (err) {
-        // May fail due to prototype manipulation; that's fine - we're testing the flow
-      }
-    });
-  });
-
   describe('provisionJitUser', () => {
     it('should throw BadRequestError for deleted user with same email', async () => {
       sinon.stub(Users, 'findOne').resolves({ _id: 'deleted-user', isDeleted: true } as any);
@@ -2690,101 +2694,6 @@ describe('UserController', () => {
       } catch (error: any) {
         expect(error.message).to.include('deleted by admin');
       }
-    });
-  });
-
-  describe('extractSamlUserDetails', () => {
-    it('should extract details from standard SAML claims', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { firstName: 'John', lastName: 'Doe', displayName: 'John Doe' },
-        'john@test.com',
-      );
-      expect(result.fullName).to.equal('John Doe');
-      expect(result.firstName).to.equal('John');
-      expect(result.lastName).to.equal('Doe');
-    });
-
-    it('should use SAML claim URIs as fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname': 'Jane',
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname': 'Smith',
-        },
-        'jane@test.com',
-      );
-      expect(result.firstName).to.equal('Jane');
-      expect(result.lastName).to.equal('Smith');
-      expect(result.fullName).to.equal('Jane Smith');
-    });
-
-    it('should use OID-based SAML attributes as fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'urn:oid:2.5.4.42': 'Bob',
-          'urn:oid:2.5.4.4': 'Jones',
-        },
-        'bob@test.com',
-      );
-      expect(result.firstName).to.equal('Bob');
-      expect(result.lastName).to.equal('Jones');
-    });
-
-    it('should use display name SAML OID attribute', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'urn:oid:2.16.840.1.113730.3.1.241': 'Display Name',
-        },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Display Name');
-    });
-
-    it('should fall back to email prefix when no name info', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {},
-        'fallback@test.com',
-      );
-      expect(result.fullName).to.equal('fallback');
-    });
-
-    it('should use givenName as firstName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { givenName: 'Given' },
-        'user@test.com',
-      );
-      expect(result.firstName).to.equal('Given');
-    });
-
-    it('should use surname as lastName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { surname: 'Surname' },
-        'user@test.com',
-      );
-      expect(result.lastName).to.equal('Surname');
-    });
-
-    it('should use sn as lastName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { sn: 'SN' },
-        'user@test.com',
-      );
-      expect(result.lastName).to.equal('SN');
-    });
-
-    it('should use name attribute for display name', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { name: 'Name Attr' },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Name Attr');
-    });
-
-    it('should use fullName attribute for display name', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { fullName: 'Full Name Attr' },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Full Name Attr');
     });
   });
 
@@ -3686,57 +3595,6 @@ describe('UserController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // provisionSamlUser - success flow
-  // -----------------------------------------------------------------------
-  describe('provisionSamlUser - success', () => {
-    it('should create user and publish event', async () => {
-      const saveStub = sinon.stub().resolves();
-      const toObjectStub = sinon.stub().returns({
-        _id: 'new-u1',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-      });
-      sinon.stub(Users.prototype, 'save').callsFake(saveStub);
-      sinon.stub(Users.prototype, 'toObject').callsFake(toObjectStub);
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML', lastName: 'User' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      expect(saveStub.calledOnce).to.be.true;
-      expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      expect(result).to.have.property('fullName');
-    });
-
-    it('should handle event publish failure gracefully', async () => {
-      sinon.stub(Users.prototype, 'save').resolves();
-      sinon.stub(Users.prototype, 'toObject').returns({
-        _id: 'new-u1',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-      });
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML', lastName: 'User' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      // Should still succeed even if event fails
-      expect(result).to.have.property('fullName');
-      expect(mockEventService.stop.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // provisionJitUser - success flow
   // -----------------------------------------------------------------------
   describe('provisionJitUser - success', () => {
@@ -3790,6 +3648,13 @@ describe('UserController', () => {
   // createUser - success
   // -----------------------------------------------------------------------
   describe('createUser - success', () => {
+    // A demo address first clears this org's removed sample account; none here.
+    beforeEach(() => {
+      sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: async () => [] }),
+      } as any);
+    });
+
     it('should create a user, add to group, and publish event', async () => {
       req.body = {
         email: 'newuser@test.com',
@@ -4106,8 +3971,54 @@ describe('UserController', () => {
 
       await controller.updateUserDisplayPicture(req, res, next);
 
-      // sharp will throw when given null, so next should be called
       expect(next.calledOnce).to.be.true;
+    });
+  });
+
+  describe('updateUserDisplayPicture - file bytes', () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>',
+    );
+
+    it('rejects SVG bytes labelled as PNG and does not store them', async () => {
+      req.body = {
+        fileBuffer: { buffer: svg, mimetype: 'image/png' },
+      };
+      const update = sinon.stub(UserDisplayPicture, 'findOneAndUpdate');
+
+      await controller.updateUserDisplayPicture(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'Profile photo must be a PNG, JPEG, WebP or GIF image',
+      );
+      expect(update.called).to.be.false;
+    });
+
+    it('stores a JPEG for a real PNG', async () => {
+      const sharp = require('sharp');
+      const png = await sharp({
+        create: {
+          width: 8,
+          height: 8,
+          channels: 3,
+          background: { r: 10, g: 20, b: 30 },
+        },
+      })
+        .png()
+        .toBuffer();
+      req.body = { fileBuffer: { buffer: png, mimetype: 'image/png' } };
+      sinon.stub(UserDisplayPicture, 'findOneAndUpdate').resolves({} as any);
+
+      await controller.updateUserDisplayPicture(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.setHeader.calledWith('Content-Type', 'image/jpeg')).to.be.true;
+      const sent = res.send.firstCall.args[0] as Buffer;
+      expect(sent.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).to.equal(
+        true,
+      );
     });
   });
 
@@ -4447,11 +4358,16 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('checkUserExistsByEmail - found', () => {
     it('should return found users', async () => {
-      sinon.stub(Users, 'find').resolves([
-        { _id: 'u1', email: 'exists@test.com' },
-      ] as any);
+      sinon.stub(Users, 'find').returns({
+        select: () => ({
+          lean: () => ({
+            exec: async () => [{ _id: 'u1', email: 'exists@test.com' }],
+          }),
+        }),
+      } as any);
 
       req.body = { email: 'exists@test.com' };
+      req.tokenPayload = { email: 'exists@test.com' };
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -4770,6 +4686,24 @@ describe('UserController', () => {
       expect(notice.templateData.newEmail).to.equal('alice@new.example');
       // The notice carries no link: nothing in it can be used to complete or undo the change.
       expect(notice.templateData.link).to.be.undefined;
+    });
+
+    it('names the configured product in both subjects', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      setBrandResolver(() => ({ ...DEFAULT_BRAND, productName: 'Acme Search' }));
+      try {
+        await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+      } finally {
+        setBrandResolver(() => DEFAULT_BRAND);
+      }
+
+      const subjects = mockMailService.sendMail.args.map(
+        (a: [{ subject: string }, ...unknown[]]) => a[0].subject,
+      );
+      expect(subjects).to.deep.equal([
+        'Acme Search | Verify your email !',
+        'Acme Search | Your email address is being changed',
+      ]);
     });
 
     it('still succeeds when the notice to the current address cannot be sent', async () => {
@@ -5481,39 +5415,6 @@ describe('UserController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // Branch coverage: provisionSamlUser - event publish error
-  // -----------------------------------------------------------------------
-  describe('provisionSamlUser - event publish error', () => {
-    it('should continue when event publishing fails', async () => {
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ _id: 'new-user-id' }),
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      (mockNewUser as any).constructor = Users;
-      sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.start.resolves();
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-      mockEventService.stop.resolves();
-
-      // The method should not throw despite event publishing failure
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      expect(mockLogger.error.called).to.be.true;
-      expect(mockEventService.stop.called).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // Branch coverage: provisionJitUser - event publish error
   // -----------------------------------------------------------------------
   describe('provisionJitUser - event publish error', () => {
@@ -5850,7 +5751,12 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail - error handling', () => {
     it('should call next on database error', async () => {
       req.body = { email: 'test@test.com' };
-      sinon.stub(Users, 'find').rejects(new Error('DB error'));
+      req.tokenPayload = { email: 'test@test.com' };
+      sinon.stub(Users, 'find').returns({
+        select: () => ({
+          lean: () => ({ exec: () => Promise.reject(new Error('DB error')) }),
+        }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 

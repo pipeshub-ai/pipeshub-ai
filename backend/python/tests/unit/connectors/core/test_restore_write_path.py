@@ -186,6 +186,7 @@ class TestRestoreTrashedRecords:
             "the same item was added again after this one was deleted. To restore this one, delete "
             "'report.pdf' first, then try again."
         )
+        assert refused.value.details["blockedRecordId"] == "r1"
         assert refused.value.details["conflicting_record_id"] == "live"
         assert store.restored == [] and store.released == []
 
@@ -357,5 +358,6 @@ class TestOnRecordDeletedReportsTheTrash:
         proc = _processor()
         store = _with_store(proc, AsyncMock())
         store.get_record_by_key = AsyncMock(return_value=None)
+        store.delete_single_record = AsyncMock(return_value={"success": True})
         with patch(f"{MODULE}.is_soft_delete_enabled", AsyncMock(return_value=False)):
             assert await proc.on_record_deleted("r1") is False

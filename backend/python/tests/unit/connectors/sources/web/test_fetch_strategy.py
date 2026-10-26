@@ -820,11 +820,14 @@ class TestFetchUrlWithFallback:
                 mock_sleep.assert_called_once_with(3.0)
 
     @pytest.mark.asyncio
-    async def test_429_exhausted_moves_to_next_strategy(self, log):
-        """When 429 persists beyond max backoff, move to next strategy."""
+    @pytest.mark.parametrize(("status", "next_strategy_tried"), [(429, False), (503, True)])
+    async def test_a_rate_limit_that_outlasts_the_back_off_ends_the_fetch_unless_it_may_be_a_challenge(
+        self, log, status, next_strategy_tried,
+    ) -> None:
+        """Another client is no answer to a 429; a 503 may be a challenge page a disguise passes."""
         mock_session = AsyncMock()
         rate_limited_resp = FetchResponse(
-            429, b"", {}, "https://example.com", "curl_cffi"
+            status, b"", {}, "https://example.com", "curl_cffi"
         )
         success_resp = FetchResponse(
             200, b"ok", {}, "https://example.com", "cloudscraper"
@@ -850,7 +853,7 @@ class TestFetchUrlWithFallback:
                             max_retries_per_strategy=1,
                         )
                         assert result is not None
-                        assert result.status_code == 200
+                        assert result.status_code == (200 if next_strategy_tried else status)
 
     @pytest.mark.asyncio
     async def test_429_exhausted_all_strategies_returns_last(self, log):

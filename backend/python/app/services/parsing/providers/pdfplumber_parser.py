@@ -29,8 +29,18 @@ class PdfPlumberParser:
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
         record_name_pdf = record_name if record_name.lower().endswith(".pdf") else f"{record_name}.pdf"
-        parsed_data = await self._processor.parse_document(record_name_pdf, content)
-        block_containers = await self._processor.create_blocks(parsed_data)
+        try:
+            parsed_data = await self._processor.parse_document(record_name_pdf, content)
+            block_containers = await self._processor.create_blocks(
+                parsed_data,
+                skip_llm_enrichment=bool((config or {}).get("skip_table_enrichment")),
+            )
+        except Exception as e:
+            # A ParseError lets SmartPDFParser fall back to OCR, as the in-process path does.
+            raise ParseError(
+                ParseErrorCode.PARSE_FAILED,
+                f"PdfPlumber+OpenCV failed on '{record_name}': {e}",
+            ) from e
         if block_containers is None:
             raise ParseError(
                 ParseErrorCode.PARSE_FAILED,

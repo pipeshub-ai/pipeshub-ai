@@ -4,7 +4,9 @@ import { useEffect } from 'react';
 import { CONNECTOR_INSTANCE_STATUS } from '../constants';
 import { refreshConnectorInstanceDetails } from './refresh-instance-details';
 
-const SYNC_POLL_MS = 60_000;
+// A queued sync usually starts within seconds, so poll often at first and back off to once a minute.
+const FIRST_POLL_MS = 5_000;
+const MAX_POLL_MS = 60_000;
 
 function isSyncInProgressStatus(status?: string | null): boolean {
   const normalized = (status ?? CONNECTOR_INSTANCE_STATUS.IDLE).toUpperCase();
@@ -16,7 +18,7 @@ function isSyncInProgressStatus(status?: string | null): boolean {
   );
 }
 
-/** Refetch one instance every minute while its backend status is SYNCING / FULL_SYNCING. */
+/** Refetch one instance while its backend status is QUEUED / SYNCING / FULL_SYNCING: after 5 s, doubling up to every minute. */
 export function usePollInstanceWhileSyncing(
   connectorId: string | undefined,
   status?: string | null
@@ -26,12 +28,17 @@ export function usePollInstanceWhileSyncing(
       return;
     }
 
-    const intervalId = window.setInterval(() => {
+    let delay = FIRST_POLL_MS;
+    let timeoutId: number;
+    const poll = () => {
       void refreshConnectorInstanceDetails(connectorId).catch(() => {});
-    }, SYNC_POLL_MS);
+      delay = Math.min(delay * 2, MAX_POLL_MS);
+      timeoutId = window.setTimeout(poll, delay);
+    };
+    timeoutId = window.setTimeout(poll, delay);
 
     return () => {
-      window.clearInterval(intervalId);
+      window.clearTimeout(timeoutId);
     };
   }, [connectorId, status]);
 }

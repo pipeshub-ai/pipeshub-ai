@@ -6,9 +6,12 @@ import { Box, Button, Flex, Grid, Heading, IconButton, SegmentedControl, Text, T
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
+import { useBrand } from '@/lib/branding';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 import type { AIModelProvider, ConfiguredModel } from '../types';
 import type { CapabilitySection } from '../types';
-import { CAPABILITY_SECTION_ORDER, LLM_SECTION_MODEL_TYPES } from '../types';
+import { CAPABILITY_SECTION_ORDER, modelTypesForSection } from '../types';
 import type { MainSection } from '../store';
 import { aiModelsCapabilityBadge, aiModelsCapabilityLabel, aiModelsCapabilitySectionTab } from '../capability-i18n';
 import { ProviderRow } from './provider-card';
@@ -29,6 +32,8 @@ interface ProviderGridProps {
   onEdit: (provider: AIModelProvider, capability: string, model: ConfiguredModel) => void;
   onSetDefault: (modelType: string, modelKey: string) => Promise<void>;
   onDelete: (modelType: string, modelKey: string, modelName: string) => void;
+  onRotate?: (model: ConfiguredModel) => void;
+  onIdentityForwarding?: (model: ConfiguredModel) => void;
   isLoading?: boolean;
   onRefresh: () => void;
   /** Full workspace page vs compact onboarding-style panel. */
@@ -41,14 +46,10 @@ interface ProviderGridProps {
   hideCapabilityBadges?: boolean;
   /** Passed to configured-models list; false hides built-in embedding row (e.g. onboarding). */
   showEmbeddingBuiltinPlaceholder?: boolean;
-}
-
-function modelTypesForSection(section: CapabilitySection): readonly string[] {
-  if (section === 'text_generation') return LLM_SECTION_MODEL_TYPES;
-  if (section === 'embedding') return ['embedding'];
-  if (section === 'tts') return ['tts'];
-  if (section === 'stt') return ['stt'];
-  return ['imageGeneration'];
+  /** Extra page-header actions, rendered before Documentation. */
+  headerActions?: React.ReactNode;
+  /** Content rendered between the page header and the section tabs. */
+  belowHeader?: React.ReactNode;
 }
 
 function providerMatchesSearch(
@@ -84,6 +85,8 @@ export function ProviderGrid({
   onEdit,
   onSetDefault,
   onDelete,
+  onRotate,
+  onIdentityForwarding,
   isLoading = false,
   onRefresh,
   layout = 'page',
@@ -91,8 +94,14 @@ export function ProviderGrid({
   capabilityTabs: capabilityTabsProp,
   hideCapabilityBadges = false,
   showEmbeddingBuiltinPlaceholder = true,
+  headerActions,
+  belowHeader,
 }: ProviderGridProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
+  const brand = useBrand();
+  const docsOverviewUrl =
+    brand.docsHref('ai-models/overview') ?? `${EXTERNAL_LINKS.documentation}ai-models/overview`;
   const isEmbedded = layout === 'embedded';
   const showPageHeader = showPageHeaderProp ?? !isEmbedded;
   const capabilityTabs = capabilityTabsProp ?? (isEmbedded ? 'hidden' : 'all');
@@ -187,7 +196,7 @@ export function ProviderGrid({
             paddingRight: 0,
           }
           : {
-            paddingTop: pagePaddingY,
+            paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : pagePaddingY,
             paddingBottom: pagePaddingY,
             paddingLeft: pagePaddingX,
             paddingRight: pagePaddingX,
@@ -206,13 +215,14 @@ export function ProviderGrid({
           </Flex>
 
           <Flex align="center" gap="3" wrap="wrap" justify="end">
+            {headerActions}
             <Button
               variant="outline"
               color="gray"
               size="2"
               style={{ cursor: 'pointer', gap: 6 }}
               onClick={() =>
-                window.open(`${EXTERNAL_LINKS.documentation}ai-models/overview`, '_blank', 'noopener,noreferrer')
+                window.open(docsOverviewUrl, '_blank', 'noopener,noreferrer')
               }
             >
               <MaterialIcon name="open_in_new" size={16} color="var(--gray-11)" />
@@ -223,12 +233,15 @@ export function ProviderGrid({
         </Flex>
       ) : null}
 
+      {belowHeader}
+
       {/* Primary sections: page = tabs + search; embedded = tabs + refresh + search */}
       <Flex
         direction={{ initial: 'column', sm: 'row' }}
         align={{ initial: 'stretch', sm: 'center' }}
         justify={{ initial: 'start', sm: 'between' }}
         gap="3"
+        wrap="wrap"
         style={{ width: '100%', minWidth: 0, flexShrink: 0 }}
       >
         <Box width={{ initial: '100%', sm: 'auto' }} minWidth="0">
@@ -236,13 +249,14 @@ export function ProviderGrid({
             value={mainSection}
             onValueChange={(v) => onMainSectionChange(v as MainSection)}
             size="2"
+            className="segmented-fill"
             style={{ width: '100%' }}
           >
             <SegmentedControl.Item value="providers">
-              {t('workspace.aiModels.mainSectionProviders')}
+              <span className="segmented-fill-text">{t('workspace.aiModels.mainSectionProviders')}</span>
             </SegmentedControl.Item>
             <SegmentedControl.Item value="configured">
-              {t('workspace.aiModels.mainSectionConfigured')}
+              <span className="segmented-fill-text">{t('workspace.aiModels.mainSectionConfigured')}</span>
               {configuredCount > 0 ? (
                 <Text
                   as="span"
@@ -250,6 +264,7 @@ export function ProviderGrid({
                   weight="medium"
                   style={{
                     marginLeft: 6,
+                    flexShrink: 0,
                     padding: '1px 6px',
                     borderRadius: 999,
                     backgroundColor: 'var(--gray-a4)',
@@ -269,7 +284,8 @@ export function ProviderGrid({
             gap="3"
             wrap="wrap"
             justify={{ initial: 'start', sm: 'end' }}
-            style={{ flex: 1, minWidth: 0, width: '100%', alignSelf: 'stretch' }}
+            // Basis 240px in the row layout: below that the search drops under the tabs instead of shrinking.
+            style={{ flex: isMobile ? 1 : '1 1 240px', minWidth: 0, width: '100%', alignSelf: 'stretch' }}
           >
             {searchField}
           </Flex>
@@ -374,6 +390,8 @@ export function ProviderGrid({
           onEdit={onEdit}
           onSetDefault={onSetDefault}
           onDelete={onDelete}
+          onRotate={onRotate}
+          onIdentityForwarding={onIdentityForwarding}
           isLoading={isLoading}
           showEmbeddingBuiltinPlaceholder={showEmbeddingBuiltinPlaceholder}
         />

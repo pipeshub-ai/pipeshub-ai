@@ -3,7 +3,6 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { KnowledgeBaseContainer } from '../../../../src/modules/knowledge_base/container/kb_container'
 import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
-import { RecordsEventProducer } from '../../../../src/modules/knowledge_base/services/records_events.service'
 import { SyncEventProducer } from '../../../../src/modules/knowledge_base/services/sync_events.service'
 import * as messageBrokerFactory from '../../../../src/libs/services/message-broker.factory'
 import {
@@ -214,7 +213,6 @@ describe('KnowledgeBaseContainer - coverage', () => {
         isConnected: sandbox.stub().returns(true),
       }
       sandbox.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
-      sandbox.stub(RecordsEventProducer.prototype, 'start').resolves()
       sandbox.stub(SyncEventProducer.prototype, 'start').resolves()
 
       const cmConfig = {
@@ -243,7 +241,8 @@ describe('KnowledgeBaseContainer - coverage', () => {
       expect(container.isBound('ConfigurationManagerConfig')).to.be.true
       expect(container.isBound('AppConfig')).to.be.true
       expect(container.isBound('KeyValueStoreService')).to.be.true
-      expect(container.isBound('RecordsEventProducer')).to.be.true
+      // Record events are published by the Python services only.
+      expect(container.isBound('RecordsEventProducer')).to.be.false
       expect(container.isBound('SyncEventProducer')).to.be.true
       expect(container.isBound('AuthMiddleware')).to.be.true
 
@@ -279,39 +278,6 @@ describe('KnowledgeBaseContainer - coverage', () => {
         expect.fail('Should have thrown')
       } catch (error: any) {
         expect(error.message).to.include('KV store unreachable')
-      }
-    })
-
-    it('should throw when RecordsEventProducer.start fails', async () => {
-      const mockKvStore = {
-        connect: sandbox.stub().resolves(),
-        disconnect: sandbox.stub().resolves(),
-        isConnected: sandbox.stub().returns(true),
-      }
-      sandbox.stub(KeyValueStoreService, 'getInstance').returns(mockKvStore as any)
-      // Stub RecordsEventProducer.start to simulate failure
-      sandbox.stub(RecordsEventProducer.prototype, 'start').rejects(new Error('RecordsEventProducer start failed'))
-
-      const cmConfig = {
-        host: 'localhost',
-        port: 2379,
-        storeType: 'etcd' as const,
-        algorithm: 'aes-256-cbc',
-        secretKey: 'test-secret-key-32-chars-long!!',
-      }
-
-      const appConfig = {
-        jwtSecret: 'test-jwt-secret',
-        scopedJwtSecret: 'test-scoped-jwt-secret',
-        kafka: { brokers: ['localhost:9092'], clientId: 'test' },
-        redis: { host: 'localhost', port: 6379 },
-      } as any
-
-      try {
-        await KnowledgeBaseContainer.initialize(cmConfig as any, appConfig)
-        expect.fail('Should have thrown')
-      } catch (error: any) {
-        expect(error.message).to.include('RecordsEventProducer start failed')
       }
     })
 

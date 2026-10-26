@@ -7,10 +7,8 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-from app.agent_loop_lib.core.types import Goal
 from app.agent_loop_lib.tools.base import ToolOutput
 from app.agents.agent_loop.context import AgentContext
-from app.agents.agent_loop.hooks.memory import conversation_enrichment
 from app.agents.agent_loop.hooks.result_accumulation import (
     result_accumulation,
     stash_tool_call_metadata,
@@ -21,7 +19,6 @@ from tests.unit.agents.adapter.support.hook_helpers import (
     assert_denied,
     run_post_tool,
     run_pre_tool,
-    run_pre_turn,
 )
 
 
@@ -195,42 +192,3 @@ class TestResultAccumulation:
             )
         results = context.tool_state["all_tool_results"]
         assert [r["result"] for r in results] == ["result0", "result1", "result2"]
-
-
-class TestConversationEnrichment:
-    async def test_noop_when_no_previous_conversations(self) -> None:
-        context = _make_context()
-        context.previous_conversations = []
-        middleware = conversation_enrichment(context)
-
-        ctx = await run_pre_turn(middleware, turn_index=0)
-        assert ctx.scope is None  # helper doesn't set a scope by default
-
-    async def test_appends_reminder_for_follow_up_query(self) -> None:
-        context = _make_context()
-        context.previous_conversations = [
-            {"role": "user_query", "content": "search jira for bug 123"},
-            {"role": "bot_response", "content": "Found ticket JIRA-123 about a login bug."},
-        ]
-        middleware = conversation_enrichment(context)
-
-        goal = Goal(description="yes")
-        run_scope = SimpleNamespace(goal=goal)
-        turn_scope = SimpleNamespace(run=run_scope)
-
-        ctx = await run_pre_turn(middleware, turn_index=0, scope=turn_scope)
-        assert ctx.scope is turn_scope
-        assert len(goal.constraints) == 1
-        assert "follow-up" in goal.constraints[0].lower()
-
-    async def test_only_fires_on_first_turn(self) -> None:
-        context = _make_context()
-        context.previous_conversations = [{"role": "user_query", "content": "yes"}]
-        middleware = conversation_enrichment(context)
-
-        goal = Goal(description="yes")
-        run_scope = SimpleNamespace(goal=goal)
-        turn_scope = SimpleNamespace(run=run_scope)
-
-        await run_pre_turn(middleware, turn_index=1, scope=turn_scope)
-        assert goal.constraints == []

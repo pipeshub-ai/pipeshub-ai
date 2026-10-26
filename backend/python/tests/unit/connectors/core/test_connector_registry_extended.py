@@ -602,15 +602,14 @@ class TestGetAllConnectorInstances:
         assert len(result["connectors"]) == 0
 
     @pytest.mark.asyncio
-    async def test_exception(self):
+    async def test_exception_propagates(self):
         registry, container = _make_registry()
         container.data_store = AsyncMock(side_effect=Exception("db error"))
 
-        result = await registry.get_all_connector_instances(
-            "user1", "org1", is_admin=True
-        )
-        assert result["connectors"] == []
-        assert result["pagination"]["totalCount"] == 0
+        with pytest.raises(Exception, match="db error"):
+            await registry.get_all_connector_instances(
+                "user1", "org1", is_admin=True
+            )
 
 
 # ===========================================================================

@@ -7,7 +7,9 @@ written, renamed and deleted at the source, so each gets a small subclass of
 ``StorageScenarioAdapter`` and the rest lives here.
 
 Every item sits in this run's folder, under ``kept/`` except the one the filter
-scenario excludes, which sits under ``filtered/``. The connector starts scoped to
+scenario excludes, which sits under ``filtered/``. The folder-rename item has a
+folder of its own, ``kept/dir-<token>/``; the move scenario moves its item into
+``kept/moved-<token>/``. The connector starts scoped to
 the run folder (the "Folders" sync filter); the exclusion filter narrows it to
 ``kept/``. Narrowing that filter is the one sync filter all six connectors
 share, and all six remove what falls outside it (``clean_up_scope`` in
@@ -63,9 +65,16 @@ class StorageScenarioAdapter(ScenarioAdapter):
     def _rename(self, key: str, new_key: str) -> None:
         raise NotImplementedError
 
+    def _rename_folder(self, prefix: str, new_prefix: str, keys: list[str]) -> None:
+        """Rename folder *prefix* (holding *keys*) to *new_prefix*. A bucket has no
+        folders, so renaming one renames every object under it."""
+        for key in keys:
+            self._rename(key, new_prefix + key[len(prefix):])
+
     def key_for(self, role: Role, token: str, *, name: str | None = None) -> str:
         area = EXCLUDED if role is Role.FILTERED else KEPT
-        return f"{self.folder}{area}/{name or f'{role.value}-{token}.txt'}"
+        folder = f"dir-{token}/" if role is Role.FOLDER else ""
+        return f"{self.folder}{area}/{folder}{name or f'{role.value}-{token}.txt'}"
 
     @staticmethod
     def _item(role: Role, key: str, text: str, token: str) -> SourceItem:
@@ -89,6 +98,23 @@ class StorageScenarioAdapter(ScenarioAdapter):
 
     async def delete_item(self, item: SourceItem) -> None:
         self._delete(item.key)
+
+    async def move_item(self, item: SourceItem) -> SourceItem:
+        folder = f"moved-{item.token}"
+        new_key = f"{self.folder}{KEPT}/{folder}/{item.record_name}"
+        self._rename(item.key, new_key)
+        moved = self._item(item.role, new_key, item.text, item.token)
+        moved.extra["folder"] = folder
+        return moved
+
+    async def rename_folder(self, item: SourceItem) -> SourceItem:
+        old, new = f"dir-{item.token}", f"dir-{item.token}-renamed"
+        prefix = f"{self.folder}{KEPT}/{old}/"
+        new_prefix = f"{self.folder}{KEPT}/{new}/"
+        self._rename_folder(prefix, new_prefix, [item.key])
+        renamed = self._item(item.role, new_prefix + item.key[len(prefix):], item.text, item.token)
+        renamed.extra["folder"] = new
+        return renamed
 
     async def exclusion_filter(self, excluded: SourceItem, kept: list[SourceItem]) -> dict[str, Any]:
         kept_folder = f"{self.folder}{KEPT}/"

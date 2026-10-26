@@ -16,8 +16,9 @@ import { DocumentPreview, UnknownPreview } from './index';
 const PDFRenderer = dynamic(() => import('./pdf-renderer').then((m) => m.PDFRenderer), { ssr: false });
 import { getRendererType } from '../utils';
 import type { FilePreviewRendererProps } from '../types';
+import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
 
-export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, citationClickVersion, onHighlightClick, webUrl, previewRenderable }: FilePreviewRendererProps) {
+function FilePreviewRendererInner({ fileUrl, fileName, fileType, fileBlob, pagination, highlightBox, highlightPage, citations, activeCitationId, citationClickVersion, onHighlightClick, webUrl, previewRenderable }: FilePreviewRendererProps) {
   const rendererType = getRendererType(fileType || '', fileName);
 
   // Callers skip the stream for non-previewable records, so there is no content to
@@ -51,4 +52,15 @@ export function FilePreviewRenderer({ fileUrl, fileName, fileType, fileBlob, pag
     default:
       return <UnknownPreview fileUrl={fileUrl} fileName={fileName} fileType={fileType} webUrl={webUrl} previewRenderable={previewRenderable} />;
   }
+}
+
+export function FilePreviewRenderer(props: FilePreviewRendererProps) {
+  return (
+    <ErrorBoundary
+      resetKeys={[props.fileUrl, props.fileName]}
+      fallback={(error, reset) => <ErrorFallback error={error} reset={reset} compact />}
+    >
+      <FilePreviewRendererInner {...props} />
+    </ErrorBoundary>
+  );
 }

@@ -44,7 +44,7 @@ import pytest
 import pytest_asyncio
 
 from helper.clients.kb_client import KBClient
-from helper.indexing_progress import record_fields, wait_until_finished
+from helper.indexing_progress import record_fields, wait_until_enriched, wait_until_finished
 from helper.mongo_store import records_folder
 from helper.vector_rebuild import (
     DELETE_REFUSED_PHRASE,
@@ -82,6 +82,9 @@ TIMEOUT = int(os.getenv("RESILIENCE_VECTOR_REBUILD_TIMEOUT_SEC", "1800"))
 DROP_TIMEOUT = 660
 POLL = 5
 COLLECTION = "records"
+# Search answers 404 with this message, not an empty 200, when the knowledge base
+# holds no indexed record, as it does right after "Delete all embeddings".
+NOTHING_INDEXED_MESSAGE = "No documents are available for you to search yet"
 
 
 class CollectionSizeMismatch(AssertionError):
@@ -170,6 +173,9 @@ async def _upload(
     )
     virtual_id = str(record_fields(kb_client.get_record(record_id)).get("virtualRecordId") or "")
     assert virtual_id, f"{name} finished indexing without a virtualRecordId."
+    # The record reads COMPLETED before enrichment rewrites its summary vector, so a
+    # point count taken earlier is not the one the later steps compare against.
+    await wait_until_enriched(kb_client, record_id, timeout=TIMEOUT)
     await _wait_for(
         lambda: vector_store.count_for_virtual_record(virtual_id), f"embeddings for {name}"
     )
@@ -188,8 +194,10 @@ async def _upload(
     )
 
 
-def _hits(search_client, kb_id: str, query: str) -> set[str]:
+def _hits(search_client, kb_id: str, query: str, *, nothing_indexed_ok: bool = False) -> set[str]:
     resp = search_client.search(query, limit=10, filters={"kb": [kb_id]})
+    if nothing_indexed_ok and resp.status_code == 404 and NOTHING_INDEXED_MESSAGE in error_message(resp):
+        return set()
     assert resp.status_code == 200, f"Search failed with HTTP {resp.status_code}: {resp.text[:400]}"
     results = (resp.json().get("searchResponse") or {}).get("searchResults") or []
     return {vid for vid in (virtual_id_of(hit) for hit in results) if vid}
@@ -466,7 +474,7 @@ async def test_deleting_all_embeddings_empties_the_vector_store_and_keeps_everyt
         assert await mongo_store.count_documents_under_path(doc.storage_prefix) == journey.mongo_counts[doc.name], (
             f"Deleting embeddings changed {doc.name}'s storage documents in MongoDB."
         )
-        found = _hits(search_client, journey.kb_id, doc.token)
+        found = _hits(search_client, journey.kb_id, doc.token, nothing_indexed_ok=True)
         assert doc.virtual_record_id not in found, (
             f"Search still returns {doc.name} after every embedding was deleted."
         )
@@ -505,19 +513,6 @@ async def test_deleting_all_embeddings_again_before_the_model_change(
 
 
 @pytest.mark.order(6)
-@pytest.mark.xfail(
-    strict=True,
-    raises=CollectionSizeMismatch,
-    reason=(
-        "Adding an embedding model that is not the default, while the vector store is "
-        "empty, rebuilds the collection at that model's size. The model health check "
-        "(health.py perform_embedding_health_check -> check_collection_info -> "
-        "handle_model_change) runs the collection guard for every add, whatever "
-        "isDefault says, and recreates the collections at the new model's dimension "
-        "when they hold no points. The default model is unchanged, so the next "
-        "upload is embedded at the old size and refused by the collection."
-    ),
-)
 async def test_adding_a_model_that_is_not_the_default_leaves_the_collection_alone(
     journey: Journey, pipeshub_client, vector_store
 ) -> None:
@@ -587,18 +582,6 @@ async def test_recreating_embeddings_with_the_new_model(
 
 
 @pytest.mark.order(9)
-@pytest.mark.xfail(
-    strict=True,
-    raises=CollectionSizeMismatch,
-    reason=(
-        "Deleting the default embedding model while the vector store holds its "
-        "vectors is accepted without any check. cm_controller.ts "
-        "deleteAIModelProvider makes the first remaining model the default and "
-        "calls no embedding health check, so the org silently switches to a model "
-        "of another size: the stored vectors no longer match queries, and every "
-        "new upload is refused by the collection."
-    ),
-)
 async def test_deleting_the_default_model_while_its_vectors_are_stored_is_refused(
     journey: Journey, pipeshub_client, vector_store
 ) -> None:
@@ -612,30 +595,25 @@ async def test_deleting_the_default_model_while_its_vectors_are_stored_is_refuse
     size_before = await vector_store.dense_size(COLLECTION)
 
     resp = delete_embedding_model(pipeshub_client, model_key)
-    if resp.status_code >= 400:
-        message = error_message(resp)
-        still_there = any(m.model_key == model_key for m in list_embedding_models(pipeshub_client))
-        assert DELETE_REFUSED_PHRASE in message.lower(), (
-            f"Deleting the default embedding model was refused with HTTP {resp.status_code} "
-            f"({message}), but not because the vector store holds its vectors."
+    if resp.status_code < 400:
+        # The model is gone; the module's restore puts the original default back.
+        journey.local_model_key = None
+        now_default = default_model(list_embedding_models(pipeshub_client))
+        size = await vector_store.dense_size(COLLECTION)
+        pytest.fail(
+            f"Deleting {LOCAL_MODEL_NAME}, the default embedding model, while the vector "
+            f"store holds its vectors answered HTTP {resp.status_code} instead of being "
+            f"refused. The default is now {now_default}, and the collection is {size} wide."
         )
-        assert still_there and await vector_store.dense_size(COLLECTION) == size_before, (
-            "The delete was refused, yet the model or the collection changed anyway."
-        )
-        return
-    journey.local_model_key = None
-    now_default = default_model(list_embedding_models(pipeshub_client))
-    assert now_default == journey.default_before, (
-        f"After deleting {LOCAL_MODEL_NAME}, the default embedding model is {now_default}, "
-        f"not the original {journey.default_before}."
+    message = error_message(resp)
+    still_there = any(m.model_key == model_key for m in list_embedding_models(pipeshub_client))
+    assert DELETE_REFUSED_PHRASE in message.lower(), (
+        f"Deleting the default embedding model was refused with HTTP {resp.status_code} "
+        f"({message}), but not because the vector store holds its vectors."
     )
-    size = await vector_store.dense_size(COLLECTION)
-    if size != journey.size_before:
-        raise CollectionSizeMismatch(
-            f"Deleting {LOCAL_MODEL_NAME} made {now_default.model} the default, but the "
-            f"collection still holds {LOCAL_MODEL_DIMENSION}-wide vectors "
-            f"(size {size}, the new default writes {journey.size_before})."
-        )
+    assert still_there and await vector_store.dense_size(COLLECTION) == size_before, (
+        "The delete was refused, yet the model or the collection changed anyway."
+    )
 
 
 @pytest.mark.order(10)

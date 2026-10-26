@@ -78,10 +78,11 @@ export const logError = (
   message: string,
   error: any,
   context?: any,
+  level: 'error' | 'warn' = 'error',
 ): void => {
   try {
     const errorData = extractErrorData(error);
-    logger.error(message, {
+    logger[level](message, {
       error: errorData,
       context,
     });

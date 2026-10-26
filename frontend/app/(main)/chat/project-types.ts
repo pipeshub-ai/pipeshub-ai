@@ -15,6 +15,10 @@ export const PROJECT_ID_UNASSIGNED = 'unassigned';
 export interface ProjectKnowledgeScope {
   apps?: string[];
   kb?: string[];
+  /** Record groups, with the groups nested in them. */
+  recordGroups?: string[];
+  /** Folders or records, with everything under them. */
+  records?: string[];
 }
 
 export interface ProjectMember {

@@ -215,3 +215,17 @@ def test_a_remote_host_gets_no_default_key(monkeypatch) -> None:
 
 def test_a_remote_host_without_a_key_is_fine() -> None:
     VectorStoreProbe(host="qdrant.example.com", api_key="")
+
+
+def test_a_path_with_a_quote_is_passed_as_an_argument_not_spliced_into_the_script() -> None:
+    import subprocess
+
+    probe = BlobStoreProbe(container="c")
+    with patch.object(probe, "_run_docker", return_value=_completed(0)) as run:
+        probe._local_files_under("org/records/c/pipeshub-it's Files/a")
+    args = run.call_args.args[0]
+    script, target = args[args.index("-c") + 1], args[-1]
+    assert target.endswith("pipeshub-it's Files/a") and "it's" not in script
+    # The real shell sees the name whole.
+    out = subprocess.run(["sh", "-c", 'printf %s "$1"', "sh", target], capture_output=True, text=True)
+    assert out.stdout == target

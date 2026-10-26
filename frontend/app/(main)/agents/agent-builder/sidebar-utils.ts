@@ -1,15 +1,55 @@
 import type { Connector } from '@/app/(main)/workspace/connectors/types';
 import type { NodeTemplate } from './types';
-import { normalizeDisplayName } from './display-utils';
+import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import type { McpMyServerEntry } from '../../workspace/mcp-servers/types';
+import { normalizeDisplayName, normalizePaletteLabel } from './display-utils';
+
+type SearchText = string | null | undefined;
+
+/** Case-insensitive substring match of the palette search query against any of `texts`. An empty query matches. */
+export function matchesPaletteSearch(query: string, ...texts: SearchText[]): boolean {
+  const q = query.trim().toLowerCase();
+  if (!q) return true;
+  return texts.some((text) => typeof text === 'string' && text.toLowerCase().includes(q));
+}
+
+/**
+ * Items a palette group shows for `query`: all of them when the query is empty or names the group,
+ * else the ones that match. `null` means the group has no match and should be hidden.
+ */
+export function filterPaletteGroup<T>(
+  query: string,
+  groupTexts: SearchText[],
+  items: T[],
+  itemTexts: (item: T) => SearchText[]
+): T[] | null {
+  if (matchesPaletteSearch(query, ...groupTexts)) return items;
+  const hits = items.filter((item) => matchesPaletteSearch(query, ...itemTexts(item)));
+  return hits.length > 0 ? hits : null;
+}
+
+/** Tools of `toolset` to list for `query` (all when it names the toolset); `null` hides the toolset. */
+export function filterToolsetTools(
+  toolset: BuilderSidebarToolset,
+  query: string
+): BuilderSidebarToolset['tools'] | null {
+  const type = toolset.toolsetType || toolset.name;
+  return filterPaletteGroup(
+    query,
+    [toolset.instanceName, toolset.displayName, toolset.name, type, type && normalizePaletteLabel(type)],
+    toolset.tools ?? [],
+    (tool) => [tool.name, tool.fullName, tool.description]
+  );
+}
+
+/** Tools of an MCP server to list for `query` (all when it names the server); `null` hides the server. */
+export function filterMcpServerTools(entry: McpMyServerEntry, query: string): McpMyServerEntry['tools'] | null {
+  return filterPaletteGroup(query, [entry.name, entry.typeId], entry.tools ?? [], (tool) => [tool.name, tool.description]);
+}
 
 export function filterTemplatesBySearch(templates: NodeTemplate[], q: string): NodeTemplate[] {
-  if (!q.trim()) return templates;
-  const query = q.toLowerCase();
-  return templates.filter(
-    (t) =>
-      t.label.toLowerCase().includes(query) ||
-      t.description.toLowerCase().includes(query) ||
-      (t.defaultConfig?.appName as string)?.toLowerCase().includes(query)
+  return templates.filter((t) =>
+    matchesPaletteSearch(q, t.label, t.description, t.defaultConfig?.appName as string | undefined)
   );
 }
 

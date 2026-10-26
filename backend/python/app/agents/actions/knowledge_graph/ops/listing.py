@@ -14,15 +14,26 @@ import json
 import logging
 from typing import TYPE_CHECKING, Any
 
-from app.modules.demo_data.chat import excluded_app_ids
 from app.connectors.sources.localKB.api.knowledge_hub_models import (
     KnowledgeHubNodesResponse,
     NodeItem,
     NodeType,
 )
-from app.connectors.sources.localKB.handlers.knowledge_hub_service import KnowledgeHubService
+from app.connectors.sources.localKB.handlers.kh_bounded import (
+    BOUNDED_BATCH,
+    BOUNDED_MAX_BATCHES,
+    Position,
+    read_inside,
+)
+from app.connectors.sources.localKB.handlers.knowledge_hub_service import (
+    KnowledgeHubService,
+)
+from app.modules.demo_data.chat import excluded_app_ids
+from app.services.graph_db.interface.graph_db_provider import ALLOWED_FILTER_KEYS
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from app.modules.agents.qna.chat_state import ChatState
     from app.utils.chat_helpers import RecordIdShortener
 
@@ -121,6 +132,49 @@ def _render_flat_text(
     return "\n".join(lines)
 
 
+def _bound_as_selection(filters: dict[str, Any]) -> dict[str, Any]:
+    """``filters`` with what every bound below app level names written as the
+    turn's selection, so ``list_selected_nodes`` lists those nodes and keeps
+    each one every bound admits: a file one bound names inside a folder another
+    names is listed, and the folder is not. A bound of whole apps only adds
+    nothing, or it would list every app it names."""
+    from app.modules.retrieval.selection_scope import allowed_filters
+
+    selection: dict[str, list[str]] = {"apps": [], "recordGroups": [], "records": []}
+    for bound in allowed_filters(filters):
+        if bound["recordGroups"] or bound["records"]:
+            for key, ids in selection.items():
+                ids.extend(i for i in bound[key] if i not in ids)
+    bounded = {key: filters[key] for key in ALLOWED_FILTER_KEYS if key in filters}
+    return {**bounded, **selection, "kb": []}
+
+
+async def _page_inside_bounds(
+    fetch: Callable[..., Awaitable[KnowledgeHubNodesResponse]],
+    inside: Callable[[list[str]], Awaitable[set[str]]],
+    *,
+    page: int,
+    limit: int,
+) -> tuple[KnowledgeHubNodesResponse, str | None]:
+    """Page ``page`` of the rows ``inside`` admits, read from the source's pages
+    until it is full or they run out, and a line saying whether more follow.
+    The response carries no total: the source's counts include dropped rows."""
+    read = await read_inside(fetch, inside, start=Position(), want=page * limit + 1)
+    if read.failed:
+        return read.first, None
+    items = read.kept[(page - 1) * limit:page * limit]
+    if len(read.kept) > page * limit:
+        hint = f"(More items follow: call again with page={page + 1}.)"
+    elif read.stop is not None:
+        hint = (
+            f"(Stopped after checking {BOUNDED_BATCH * BOUNDED_MAX_BATCHES} items; more may match. "
+            "Narrow the query to find them.)"
+        )
+    else:
+        hint = None
+    return KnowledgeHubNodesResponse(success=True, items=items), hint
+
+
 async def execute_list_files(
     state: "ChatState",
     *,
@@ -132,6 +186,7 @@ async def execute_list_files(
     limit: int = 20,
     sort_by: str = "updatedAt",
     sort_order: str = "desc",
+    cursor: str | None = None,
 ) -> tuple[bool, str]:
     """List or search items in the knowledge graph.
 
@@ -152,7 +207,18 @@ async def execute_list_files(
         if not graph_provider:
             return False, "Graph provider not available."
 
-        from app.agents.actions.knowledge_graph.ops.scope import resolve_scope
+        from app.agents.actions.knowledge_graph.ops.scope import (
+            ids_within_scope,
+            list_selected_nodes,
+            resolve_scope,
+        )
+        from app.modules.retrieval.selection_scope import resolve_request_scopes
+
+        selected = await list_selected_nodes(
+            state, graph_provider, user_id, org_id, cursor=cursor,
+        )
+        if selected is not None:
+            return True, selected
 
         scope = await resolve_scope(state, allow_catalog_fallback=True)
         if scope.is_empty():
@@ -189,6 +255,34 @@ async def execute_list_files(
         allowed = set(agent_source_ids)
         matched = [sid for sid in source_ids_norm or [] if sid in allowed]
         use_connector_ids = matched or agent_source_ids
+
+        # The agent's sources can be everything the user reads, while a bound
+        # (a connected app's limit, a saved agent's or a project's sources) is
+        # narrower, and the listing service knows nothing of it.
+        filters = state.get("filters") or {}
+        bound_user_key: str | None = None
+        partial_ids: set[str] = set()
+        if any(key in filters for key in ALLOWED_FILTER_KEYS):
+            user = await graph_provider.get_user_by_user_id(user_id=user_id)
+            bound_user_key = (user.get("_key") or user.get("id")) if user else None
+            if not bound_user_key:
+                return False, "User not found."
+            _, bounds = await resolve_request_scopes(graph_provider, bound_user_key, org_id, filters)
+            for bound in bounds:
+                use_connector_ids = [sid for sid in use_connector_ids if sid in bound.connector_ids]
+            if not use_connector_ids:
+                return True, _render_flat_text(KnowledgeHubNodesResponse(success=True, items=[]), query)
+            # Sources a bound reaches only through some of its folders or files.
+            partial_ids = {sid for sid in use_connector_ids if any(sid not in b.app_ids for b in bounds)}
+            if partial_ids and not query:
+                # A root listing names sources, and a partly shared one lies
+                # outside its own bound: list what the bound names instead.
+                listing = await list_selected_nodes(
+                    {**state, "filters": _bound_as_selection(filters)}, graph_provider, user_id, org_id,
+                    cursor=cursor,
+                )
+                if listing is not None:
+                    return True, listing
         use_record_group_ids = [sid for sid in use_connector_ids if sid in kb_ids] or None
 
         service = KnowledgeHubService(
@@ -197,33 +291,50 @@ async def execute_list_files(
             excluded_app_ids=excluded_app_ids(state),
         )
 
-        response = await service.get_nodes(
-            user_id=user_id,
-            org_id=org_id,
-            parent_id=None,
-            parent_type=None,
-            only_containers=False,
-            page=page,
-            limit=limit,
-            sort_by=sort_by,
-            sort_order=sort_order,
-            q=query,
-            node_types=node_types,
-            record_types=record_types,
-            connector_ids=use_connector_ids,
-            # An explicit False makes the service list and drop the query;
-            # an omitted flag plus connector_ids makes it search.
-            flattened=None if query else False,
-            record_group_ids=use_record_group_ids,
-        )
+        async def fetch(service_page: int, service_limit: int) -> KnowledgeHubNodesResponse:
+            return await service.get_nodes(
+                user_id=user_id,
+                org_id=org_id,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=service_page,
+                limit=service_limit,
+                sort_by=sort_by,
+                sort_order=sort_order,
+                q=query,
+                node_types=node_types,
+                record_types=record_types,
+                connector_ids=use_connector_ids,
+                # An explicit False makes the service list; an omitted flag
+                # plus connector_ids makes it search.
+                flattened=None if query else False,
+                record_group_ids=use_record_group_ids,
+            )
+
+        hint: str | None = None
+        if bound_user_key and partial_ids:
+            # This service hands out no cursors, so a batch is read by page number.
+            response, hint = await _page_inside_bounds(
+                lambda position, **_: fetch(position.page, BOUNDED_BATCH),
+                lambda ids: ids_within_scope(state, graph_provider, bound_user_key, org_id, ids),
+                page=page, limit=limit,
+            )
+        else:
+            response = await fetch(page, limit)
 
         from app.modules.agents.qna.chat_state import remember_record_ids
-        remember_record_ids(state, _record_ids_in_items(response.items))
+        remember_record_ids(
+            state,
+            _record_ids_in_items(response.items),
+            names={item.id: item.name for item in response.items or []},
+        )
 
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
         record_id_shortener = get_record_id_shortener_if_enabled(state)
 
-        return True, _render_flat_text(response, query, record_id_shortener)
+        text = _render_flat_text(response, query, record_id_shortener)
+        return True, f"{text}\n{hint}" if hint else text
 
     except Exception as exc:
         logger_instance = state.get("logger", logger) if state else logger

@@ -13,9 +13,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.gitlab.gitlab import GitLabClient, GitLabResponse
 from app.sources.external.gitlab.gitlab_ import GitLabDataSource
@@ -137,7 +137,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("GitLab")\
     .in_group("Development")\
     .with_description("GitLab integration for repository management, issues, and merge requests")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.OAUTH).oauth(
             connector_name="GitLab",

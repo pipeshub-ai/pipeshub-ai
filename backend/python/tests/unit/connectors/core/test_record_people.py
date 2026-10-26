@@ -234,6 +234,49 @@ class TestReviewFixes:
             )
 
 
+class TestFailuresTheCallerMustSee:
+    """A conflict the caller retries, or a failure that ended its transaction,
+    is raised; any other failure keeps the record's sync going."""
+
+    @staticmethod
+    def _ticket() -> TicketRecord:
+        return TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE)
+
+    async def test_a_failed_clear_is_raised_when_the_caller_needs_it(self) -> None:
+        import pytest
+
+        store = _store()
+        store.delete_edges_from = AsyncMock(side_effect=RuntimeError("deadlock"))
+        with pytest.raises(RuntimeError, match="deadlock"):
+            await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
+        store.batch_create_entity_relations.assert_not_awaited()
+
+    async def test_a_failed_lookup_is_raised_when_the_caller_needs_it(self) -> None:
+        import pytest
+
+        store = _store()
+        store.get_user_by_email = AsyncMock(side_effect=RuntimeError("deadlock"))
+        with pytest.raises(RuntimeError, match="deadlock"):
+            await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
+
+    async def test_a_failed_new_edge_write_is_raised_when_the_caller_needs_it(self) -> None:
+        import pytest
+
+        store = _store()
+        store.batch_create_entity_relations = AsyncMock(side_effect=RuntimeError("deadlock"))
+        with pytest.raises(RuntimeError, match="deadlock"):
+            await link_record_people(
+                _mail(from_email="ann@acme.com"), store, logging.getLogger("t"), lambda exc: True,
+            )
+
+    async def test_other_failures_still_do_not_fail_the_record(self) -> None:
+        store = _store()
+        store.delete_edges_from = AsyncMock(side_effect=RuntimeError("boom"))
+        store.get_user_by_email = AsyncMock(side_effect=RuntimeError("boom"))
+        written = await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
+        assert written == 0
+
+
 def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
     ticket = TicketRecord(
         record_type=RecordType.TICKET, is_email_hidden=True, assignee_source_id=["src-ann"],

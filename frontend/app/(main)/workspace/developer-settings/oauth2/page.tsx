@@ -4,7 +4,7 @@ import React, { Suspense, useCallback, useEffect, useState } from 'react';
 import { Flex, Grid, Text, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useUserStore, selectIsProfileInitialized } from '@/lib/store/user-store';
-import { useBreakpoint } from '@/lib/hooks/use-breakpoint';
+import { pagePaddingX } from '@/app/components/ui/responsive';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { EntityEmptyState, EntityPagination } from '../../components';
 import { Oauth2Api } from './api';
@@ -16,7 +16,6 @@ import { OAuthApplicationCard } from './components/oauth-application-card';
 
 function Oauth2PageContent() {
   const { t } = useTranslation();
-  const breakpoint = useBreakpoint();
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [clients, setClients] = useState<OAuthClient[]>([]);
@@ -107,7 +106,6 @@ function Oauth2PageContent() {
     return null;
   }
 
-  const pagePaddingX = 'clamp(var(--space-4), 4vw, 40px)';
   const totalCount = pagination?.total ?? 0;
 
   const isEmpty =
@@ -119,8 +117,7 @@ function Oauth2PageContent() {
       style={{
         height: '100%',
         width: '100%',
-        paddingLeft: pagePaddingX,
-        paddingRight: pagePaddingX,
+        paddingInline: pagePaddingX(40),
         boxSizing: 'border-box',
         minWidth: 0,
       }}
@@ -133,8 +130,6 @@ function Oauth2PageContent() {
         onSearchChange={setSearchQuery}
         newApplicationLabel={t('workspace.oauth2.newApplication')}
         onNewApplication={handleNewApplication}
-        docsOpenLabel={t('workspace.oauth2.docsOpenLabel')}
-        breakpoint={breakpoint}
       />
 
       <Flex

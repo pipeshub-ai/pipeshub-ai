@@ -65,6 +65,37 @@ export const assignAgentCapabilitiesToPayload = (
   }
 };
 
+/**
+ * Forward the opt-in telemetry flag. Deliberately NOT folded into
+ * `assignAgentCapabilitiesToPayload`: that one is only called in agent mode,
+ * and this flag has to reach Python on every stream mode — `internal_search`
+ * most of all, since that is the mode evaluations measure. Omitted when
+ * absent so Python sees no key rather than an explicit false.
+ */
+export const assignRetrievalContextToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  if (body.includeRetrievalContext === true) {
+    payload.includeRetrievalContext = true;
+  }
+};
+
+/**
+ * Forward `keywordSearchBudget` (`short` | `full`) to every chat mode: it sets
+ * how long a search waits for the keyword pattern match, and every mode can
+ * search. Omitted when absent, so Python keeps its default full wait.
+ */
+export const assignKeywordSearchBudgetToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  const budget = body.keywordSearchBudget;
+  if (budget === 'short' || budget === 'full') {
+    payload.keywordSearchBudget = budget;
+  }
+};
+
 /** Which AI-backend chat a turn is for: the assistant, or one saved agent. */
 export type ChatTarget =
   | { kind: 'assistant' }
@@ -95,6 +126,16 @@ const nullable = (value: unknown): unknown => value || null;
  * `/chat`. The project's tool scope is applied after the request's own
  * `tools`, so a project always narrows what the caller asked for.
  */
+/** The answer to a tool approval card, for the agent paths (where MCP and toolset tools run). */
+const assignToolApprovalToPayload = (
+  payload: Record<string, unknown>,
+  body: Record<string, unknown>,
+): void => {
+  if (body.toolApproval && typeof body.toolApproval === 'object') {
+    payload.toolApproval = body.toolApproval;
+  }
+};
+
 export const buildAiChatRequest = (
   target: ChatTarget,
   body: Record<string, unknown>,
@@ -115,6 +156,8 @@ export const buildAiChatRequest = (
     conversationId: nullable(context.conversationId),
     runId: nullable(body.runId),
   };
+  assignRetrievalContextToPayload(payload, body);
+  assignKeywordSearchBudgetToPayload(payload, body);
 
   let path: string;
   if (target.kind === 'agent') {
@@ -124,6 +167,7 @@ export const buildAiChatRequest = (
     assignToolsToPayload(payload, body.tools);
     assignCallerContextToAiPayload(payload, body);
     assignAgentCapabilitiesToPayload(payload, body);
+    assignToolApprovalToPayload(payload, body);
   } else {
     const { chatMode, agentMode } = parseChatMode(
       body.chatMode as string | undefined,
@@ -133,6 +177,7 @@ export const buildAiChatRequest = (
     if (agentMode) {
       assignToolsToPayload(payload, body.tools);
       assignAgentCapabilitiesToPayload(payload, body);
+      assignToolApprovalToPayload(payload, body);
     }
   }
   applyProjectScope(payload, context.project);

@@ -34,19 +34,24 @@ describe('feature-flags-store selectors', () => {
     });
   });
 
-  describe('selectMcpEnabled (defaults to disabled)', () => {
-    it('is false when flags is null', () => {
-      expect(selectMcpEnabled(useFeatureFlagsStore.getState())).toBe(false);
+  describe('selectMcpEnabled (defaults to enabled)', () => {
+    it('is true when flags is null (unloaded must not read as disabled)', () => {
+      expect(selectMcpEnabled(useFeatureFlagsStore.getState())).toBe(true);
     });
 
-    it('is false when the key is absent from a loaded flags map', () => {
+    it('is true when the key is absent from a loaded flags map', () => {
       useFeatureFlagsStore.setState({ flags: {} });
-      expect(selectMcpEnabled(useFeatureFlagsStore.getState())).toBe(false);
+      expect(selectMcpEnabled(useFeatureFlagsStore.getState())).toBe(true);
     });
 
-    it('is true only when explicitly true', () => {
+    it('is true when explicitly true', () => {
       useFeatureFlagsStore.setState({ flags: { ENABLE_MCP: true } });
       expect(selectMcpEnabled(useFeatureFlagsStore.getState())).toBe(true);
+    });
+
+    it('is false only when explicitly false (admin opt-out)', () => {
+      useFeatureFlagsStore.setState({ flags: { ENABLE_MCP: false } });
+      expect(selectMcpEnabled(useFeatureFlagsStore.getState())).toBe(false);
     });
   });
 

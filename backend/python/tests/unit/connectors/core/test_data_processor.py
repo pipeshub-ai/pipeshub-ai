@@ -91,7 +91,7 @@ def _make_tx_store():
     tx_store.batch_upsert_record_groups = AsyncMock()
     tx_store.create_record_group_relation = AsyncMock()
     tx_store.create_record_relation = AsyncMock()
-    tx_store.batch_upsert_record_relations = AsyncMock()
+    tx_store.batch_upsert_node_relations = AsyncMock()
     tx_store.get_record_by_key = AsyncMock(return_value=None)
     tx_store.batch_upsert_nodes = AsyncMock()
     tx_store.get_user_by_email = AsyncMock(return_value=None)
@@ -672,6 +672,49 @@ class TestOnRecordContentUpdate:
             ProgressStatus.QUEUED.value,
         )
 
+    @staticmethod
+    def _stub_process_record(proc: DataSourceEntitiesProcessor) -> AsyncMock:
+        tx_store = _make_tx_store()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+        proc._process_record = AsyncMock(return_value=(None, []))
+        return proc._process_record
+
+    @pytest.mark.asyncio
+    async def test_content_update_without_permissions_keeps_stored_grants(self) -> None:
+        """A rewrite-flagged record updated with no grant list must not have its grants wiped."""
+        proc = _make_processor()
+        process_record = self._stub_process_record(proc)
+        record = _make_record()
+        record.rewrite_permissions = True
+
+        await proc.on_record_content_update(record)
+
+        args, kwargs = process_record.await_args
+        assert args[1] == []
+        assert kwargs["replace_permissions"] is False
+
+    @pytest.mark.asyncio
+    async def test_content_update_with_permissions_replaces_them(self) -> None:
+        """An explicit grant list (even an empty one) still replaces a rewrite-flagged record's grants."""
+        proc = _make_processor()
+        process_record = self._stub_process_record(proc)
+        record = _make_record()
+        record.rewrite_permissions = True
+        grant = MagicMock()
+
+        await proc.on_record_content_update(record, [grant])
+        args, kwargs = process_record.await_args
+        assert args[1] == [grant]
+        assert kwargs["replace_permissions"] is True
+
+        await proc.on_record_content_update(record, [])
+        args, kwargs = process_record.await_args
+        assert args[1] == []
+        assert kwargs["replace_permissions"] is True
+
 
 # ===========================================================================
 # on_record_metadata_update
@@ -727,8 +770,8 @@ class TestOnRecordDeleted:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_once_with("rec-1")
-        proc.messaging_producer.send_message.assert_not_awaited()
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
+        proc.messaging_producer.send_message.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_deletes_record_publishes_when_vrid_present(self):
@@ -738,6 +781,12 @@ class TestOnRecordDeleted:
         existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
                     "virtualRecordId": "vr-9", "connectorId": "conn-9"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        tx_store.delete_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "deleteRecord", "topic": "record-events", "payloads": [
+                {"recordId": "rec-1", "virtualRecordId": "vr-9", "orgId": "org-1", "connectorId": "conn-9"},
+            ]},
+        })
 
         ctx = AsyncMock()
         ctx.__aenter__ = AsyncMock(return_value=tx_store)
@@ -1317,6 +1366,33 @@ class TestHandleParentRecord:
         tx_store.create_record_relation.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_inherit_from_group_keeps_parent_but_not_its_audience(self) -> None:
+        """A story under an epic stays linked to the epic and inherits the project."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        parent = _make_record(external_record_id="epic")
+        parent.id = "epic-id"
+        parent.record_group_id = "group-1"
+        tx_store.get_record_by_external_id.return_value = parent
+
+        record = _make_record()
+        record.id = "story-id"
+        record.record_group_id = "group-1"
+        record.external_record_group_id = "proj"
+        record.parent_external_record_id = "epic"
+        record.parent_record_type = RecordType.TICKET
+        record.inherit_permissions = True
+        record.inherit_permissions_from_group = True
+
+        permissions_from_group = await proc._handle_parent_record(record, tx_store)
+
+        assert permissions_from_group.permissions_from_group is True
+        assert permissions_from_group.parent_outside_group is False
+        tx_store.create_record_relation.assert_awaited()
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited()
+
+    @pytest.mark.asyncio
     async def test_creates_attachment_relation_for_file_with_container_parent(self):
         """Creates ATTACHMENT relation when file record has attachment container parent."""
         from app.config.constants.arangodb import RecordRelations
@@ -1431,7 +1507,7 @@ class TestHandleRelatedExternalRecords:
 
         await proc._handle_related_external_records(record, [rel_ext], tx_store)
 
-        tx_store.batch_upsert_record_relations.assert_awaited()
+        tx_store.batch_upsert_node_relations.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_creates_placeholder_for_missing_related_record(self):
@@ -1496,7 +1572,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=True, leaving_group_id=None
+            "rec-1", "group-1", inherit=True, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1514,7 +1590,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store, existing)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=False, leaving_group_id=None
+            "rec-1", "group-1", inherit=False, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1549,7 +1625,7 @@ class TestLinkRecordToGroup:
             await proc._handle_parent_record(child, tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "ph-1", "group-1", inherit=False, leaving_group_id=None
+            "ph-1", "group-1", inherit=False, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1568,7 +1644,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store, None)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=None, leaving_group_id=None
+            "rec-1", "group-1", inherit=None, leaving_group_id=None, browse_root=True
         )
 
     @pytest.mark.asyncio
@@ -1610,7 +1686,7 @@ class TestLinkRecordToGroup:
 
         assert moved is True
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "new-group", inherit=True, leaving_group_id="old-group"
+            "rec-1", "new-group", inherit=True, leaving_group_id="old-group", browse_root=True
         )
         tx_store.delete_edge.assert_not_awaited()
 
@@ -1633,7 +1709,7 @@ class TestLinkRecordToGroup:
         await proc._link_record_to_group(record, "group-1", tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "group-1", inherit=True, leaving_group_id=None
+            "rec-1", "group-1", inherit=True, leaving_group_id=None, browse_root=True
         )
         tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-group-internal-id")
 
@@ -1728,6 +1804,46 @@ class TestOnNewUserGroups:
             "existing-ug-id", CollectionNames.GROUPS.value, [], CollectionNames.PERMISSION.value
         )
         tx_store.delete_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_keeps_existing_members_when_not_replacing(self) -> None:
+        """A caller that sees only part of a group's members must not wipe the rest."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        ctx = AsyncMock()
+        ctx.__aenter__ = AsyncMock(return_value=tx_store)
+        ctx.__aexit__ = AsyncMock(return_value=False)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        existing = MagicMock()
+        existing.id = "existing-ug-id"
+        tx_store.get_user_group_by_external_id.return_value = existing
+        user = MagicMock()
+        user.id = "user-1"
+        tx_store.get_user_by_email.return_value = user
+
+        from app.models.entities import AppUser, AppUserGroup, Connectors
+        group = AppUserGroup(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_group_id="sg-1",
+            name="Test Group",
+        )
+        member = AppUser(
+            app_name=Connectors.GOOGLE_MAIL,
+            connector_id="conn-1",
+            source_user_id="u-1",
+            org_id="org-1",
+            email="m@acme.com",
+            full_name="M",
+        )
+        await proc.on_new_user_groups([(group, [member])], replace_members=False)
+
+        assert group.id == "existing-ug-id"
+        tx_store.replace_edges_to.assert_not_awaited()
+        tx_store.delete_edges_to.assert_not_awaited()
+        tx_store.batch_upsert_user_groups.assert_awaited()
+        tx_store.batch_create_edges.assert_awaited()
 
 
 # ===========================================================================
@@ -1943,7 +2059,7 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "g1"
         mock_group.name = "Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         result = await proc.on_user_group_member_removed("ext-g", "user@test.com", "conn-1")
         assert result is True
@@ -2782,3 +2898,59 @@ class TestUpsertDoesNotDuplicateOnAFailedLookup:
             await proc.on_new_app_roles([(role, [])])
 
         assert len(calls) == 1, f"a write followed the failed lookup: {calls[1:]}"
+
+
+class TestStageRerunEvents:
+    def test_the_event_payload_names_the_stages(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        assert proc._reindex_event_payload(record, vector_db_only=False, stages=["classify"])["stages"] == ["classify"]
+        assert "stages" not in proc._reindex_event_payload(record, vector_db_only=False)
+
+    @pytest.mark.asyncio
+    async def test_a_stage_rerun_leaves_the_record_searchable(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        record.id = "rec-1"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True])
+        proc._mark_queued_after_publish = AsyncMock()
+
+        published = await proc.reindex_existing_records([record], stages=["classify"])
+
+        assert published == ["rec-1"]
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert messages[0][1]["payload"]["stages"] == ["classify"]
+        proc._mark_queued_after_publish.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stage_rerun_carries_the_revision_each_record_was_selected_on(self) -> None:
+        proc = _make_processor()
+        first, second = _make_record(), _make_record()
+        first.id, second.id = "rec-1", "rec-2"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1", "rec-2"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True, True])
+        proc._mark_queued_after_publish = AsyncMock()
+
+        third = _make_record()
+        third.id = "rec-3"
+        proc.data_store_provider.get_existing_record_keys = AsyncMock(return_value={"rec-1", "rec-2", "rec-3"})
+        proc.messaging_producer.send_messages = AsyncMock(return_value=[True, True, True])
+
+        await proc.reindex_existing_records(
+            [first, second, third], stages=["classify"], stage_revisions={"rec-1": "rev-a", "rec-2": None},
+        )
+
+        _topic, messages = proc.messaging_producer.send_messages.await_args.args
+        assert messages[0][1]["payload"]["stageRev"] == "rev-a"
+        # Selected before it had a revision: an explicit null, so a revision it gains later is not re-run.
+        assert "stageRev" in messages[1][1]["payload"] and messages[1][1]["payload"]["stageRev"] is None
+        assert "stageRev" not in messages[2][1]["payload"]
+
+    def test_a_revision_is_sent_only_with_stages(self) -> None:
+        proc = _make_processor()
+        record = _make_record()
+        assert "stageRev" not in proc._reindex_event_payload(
+            record, vector_db_only=False, stage_rev="rev-a", selected=True
+        )

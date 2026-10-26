@@ -421,3 +421,40 @@ class TestDedupeAgentsByIdReturnShape:
         ]
         for name in dedupe_agents_by_id(rows):
             assert isinstance(name, str)
+
+
+class TestBuildConnectorStatsResponseExtraction:
+    def test_extraction_statuses_are_counted_beside_indexing(self) -> None:
+        rows = [
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "extractionStatus": "COMPLETED", "cnt": 3},
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "extractionStatus": "FAILED", "cnt": 2},
+            {"recordType": "MAIL", "indexingStatus": "FAILED", "extractionStatus": None, "cnt": 1},
+        ]
+        result = build_connector_stats_response(rows=rows, statuses=STATUSES, org_id="o", connector_id="c")
+        assert result["stats"]["indexingStatus"]["COMPLETED"] == 5
+        assert result["stats"]["extractionStatus"] == {"PENDING": 0, "IN_PROGRESS": 0, "COMPLETED": 3, "FAILED": 2}
+        by_type = {r["recordType"]: r for r in result["byRecordType"]}
+        assert by_type["FILE"]["extractionStatus"]["FAILED"] == 2
+        assert sum(by_type["MAIL"]["extractionStatus"].values()) == 0
+
+
+class TestBuildConnectorStatsResponseEntities:
+    """Named entities have no record field; rows carry the record's entities stage status."""
+
+    def test_entities_status_is_counted_overall_and_per_type(self) -> None:
+        rows = [
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "entitiesStatus": "FAILED", "cnt": 3},
+            {"recordType": "FILE", "indexingStatus": "COMPLETED", "entitiesStatus": "COMPLETED", "cnt": 4},
+            {"recordType": "MAIL", "indexingStatus": "COMPLETED", "entitiesStatus": None, "cnt": 5},
+        ]
+        result = build_connector_stats_response(rows=rows, statuses=STATUSES, org_id="o", connector_id="c")
+        assert result["stats"]["total"] == 12
+        assert result["stats"]["entitiesStatus"] == {"PENDING": 0, "IN_PROGRESS": 0, "COMPLETED": 4, "FAILED": 3}
+        by_type = {rt["recordType"]: rt for rt in result["byRecordType"]}
+        assert by_type["FILE"]["entitiesStatus"]["FAILED"] == 3
+        assert sum(by_type["MAIL"]["entitiesStatus"].values()) == 0
+
+    def test_rows_without_the_field_count_nothing(self) -> None:
+        rows = [{"recordType": "FILE", "indexingStatus": "COMPLETED", "cnt": 2}]
+        result = build_connector_stats_response(rows=rows, statuses=STATUSES, org_id="o", connector_id="c")
+        assert sum(result["stats"]["entitiesStatus"].values()) == 0

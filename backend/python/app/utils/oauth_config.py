@@ -1,8 +1,10 @@
 import json
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
@@ -239,6 +241,29 @@ def _apply_salesforce_login_host(url: str, login_url: str) -> str:
     return urlparse(url)._replace(scheme="https", netloc=urlparse(login_url).netloc).geturl()
 
 
+_MICROSOFT_TENANT_SEGMENT = re.compile(r"^(https://login\.microsoftonline\.com/)[^/]+(/)")
+
+
+def apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
+    """Put *tenant_id* in place of the tenant segment of a Microsoft login URL.
+
+    A single-tenant Azure AD app cannot use the /common endpoints, so sign-in and every
+    refresh of its tokens must use its own tenant's. A blank or "common" tenant, or a URL
+    that is not Microsoft's, is returned unchanged.
+    """
+    # Anchored: only a URL on Microsoft's login host is changed, never one that merely mentions it.
+    if not url or not _MICROSOFT_TENANT_SEGMENT.match(url):
+        return url
+    tenant = str(tenant_id or "").strip()
+    if not tenant or tenant.lower() == "common":
+        return url
+    # The tenant is user input: encoded so it stays one path segment ("/", "?" and "#" cannot
+    # reshape the URL), and inserted by a function so a backslash is not read as a regex template.
+    # A real tenant (a GUID or a domain) has nothing to encode.
+    segment = quote(tenant, safe="")
+    return _MICROSOFT_TENANT_SEGMENT.sub(lambda m: f"{m.group(1)}{segment}{m.group(2)}", url, count=1)
+
+
 def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, Any] | None) -> None:
     """Raise ValueError when a Salesforce OAuth app's Login URL is not a Salesforce host.
 
@@ -248,6 +273,52 @@ def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, 
     if (connector_type or "").replace(" ", "").lower() != "salesforce":
         return
     normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
+
+
+@dataclass(frozen=True)
+class OAuthUrlRule:
+    """A connector's own rule for where its OAuth requests may go.
+
+    The code exchange and refresh send the client secret from the server, so a
+    connector whose endpoints are fixed by its settings registers one of these
+    instead of trusting the saved URL fields. ``check`` runs on save, ``pin``
+    rewrites the flow's URLs before every request; both raise ValueError with a
+    message fit to show the admin. ``settings`` are the keys ``pin`` reads.
+    """
+
+    check: Callable[[dict[str, Any]], None]
+    pin: Callable[[dict[str, Any]], None]
+    settings: tuple[str, ...] = ()
+
+
+_OAUTH_URL_RULES: dict[str, OAuthUrlRule] = {}
+
+
+def _rule_for(connector_type: str) -> OAuthUrlRule | None:
+    return _OAUTH_URL_RULES.get((connector_type or "").replace(" ", "").lower())
+
+
+def register_oauth_url_rule(connector_type: str, rule: OAuthUrlRule) -> None:
+    _OAUTH_URL_RULES[connector_type.replace(" ", "").lower()] = rule
+
+
+def check_oauth_url_settings(connector_type: str, settings: dict[str, Any] | None) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.check(settings or {})
+
+
+def pin_oauth_urls(connector_type: str, flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.pin(flow_config)
+
+
+def carry_oauth_url_settings(connector_type: str, source: dict[str, Any], flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    for key in rule.settings if rule else ():
+        if not flow_config.get(key) and source.get(key):
+            flow_config[key] = source[key]
 
 
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
@@ -308,7 +379,7 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         try:
             parsed_url = urlparse(token_url)
             hostname = parsed_url.hostname or ''
-            if _is_host_or_subdomain(hostname, 'notion.com'):
+            if _is_host_or_subdomain(hostname, 'notion.com') or _is_notion_override(token_url):
                 oauth_config.additional_params["use_basic_auth"] = True
                 oauth_config.additional_params["use_json_body"] = True
                 oauth_config.additional_params["notion_version"] = "2025-09-03"
@@ -324,6 +395,17 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
 # Token endpoints whose providers accept client credentials only in a Basic
 # header: their OAuth metadata lists client_secret_basic and no client_secret_post.
 _BASIC_AUTH_ONLY_TOKEN_HOSTS = ("airtable.com", "zoom.us")
+
+
+def _is_notion_override(token_url: str) -> bool:
+    """A token URL under NOTION_API_BASE_URL (a test stack's stand-in for Notion) is Notion's too."""
+    from app.sources.client.notion.notion import (
+        DEFAULT_NOTION_API_BASE_URL,
+        notion_api_base_url,
+    )
+
+    base = notion_api_base_url()
+    return base != DEFAULT_NOTION_API_BASE_URL and token_url.startswith(f"{base}/")
 
 
 def _is_host_or_subdomain(hostname: str, domain: str) -> bool:

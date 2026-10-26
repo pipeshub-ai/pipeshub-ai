@@ -148,7 +148,7 @@ export async function provisionAnsweringModels(api: APIRequestContext): Promise<
             'adding the test embedding model failed: this deployment already embeds content with the ' +
               'built-in model, and the backend refuses to switch models while those vectors are stored. ' +
               'Run on a fresh stack, add the embedding model before anything is indexed, or delete the ' +
-              `embeddings in Labs (Workspace > Labs > Vector Store) and run again. Backend answered: ${res.status()} ${body}`
+              `embeddings in Labs (Workspace > Labs > Vector store) and run again. Backend answered: ${res.status()} ${body}`
           );
         }
         throw new Error(`adding the test ${type} model failed: ${res.status()} ${body}`);

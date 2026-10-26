@@ -784,6 +784,30 @@ class TestMarkRecordOutcomes:
         proc.logger.warning.assert_called()
         assert "Failed to update indexing status" in proc.logger.warning.call_args.args[0]
 
+    @staticmethod
+    def _written(gp) -> dict:
+        return next(a for a in gp.update_node.await_args.args if isinstance(a, dict))
+
+    @pytest.mark.asyncio
+    async def test_an_empty_record_no_longer_has_an_indexed_copy(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.EMPTY)
+
+        assert self._written(gp)["hasIndexedCopy"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reindex_keeps_the_indexed_copy(self) -> None:
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = {"_key": "rec-1"}
+        gp.update_node.return_value = True
+
+        await proc._mark_record("rec-1", ProgressStatus.FAILED)
+
+        assert "hasIndexedCopy" not in self._written(gp)
+
     @pytest.mark.asyncio
     async def test_successful_mark(self):
         """Successfully marks record status."""
@@ -839,6 +863,7 @@ class TestProcessExcelDocumentEmptyAndMissing:
         gp.get_document.return_value = None
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers["xlsx"] = mock_parser
@@ -1689,6 +1714,32 @@ class TestProcessDocxDocument:
         assert events[0].event == "parsing_complete"
         assert events[1].event == "indexing_complete"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("record_name", "expected"),
+        [
+            ("report.docx", "report.docx"),
+            ("Report.DOCX", "Report.DOCX"),
+            ("legacy.doc", "legacy.doc.docx"),
+            ("export.json", "export.json.docx"),
+            ("untitled", "untitled.docx"),
+        ],
+    )
+    async def test_docling_is_given_a_docx_name(self, record_name: str, expected: str) -> None:
+        """Docling falls back to the extension, so a DOCX record must never reach it under another one."""
+        proc, _, gp, _ = _make_processor()
+        gp.get_document.return_value = None
+
+        mock_instance = AsyncMock()
+        mock_instance.parse_document = AsyncMock(return_value={})
+        mock_instance.create_blocks = AsyncMock(return_value=MagicMock())
+        proc.docling_processor = mock_instance
+        await _collect(proc.process_docx_document(
+            record_name, "rec-1", 1, "upload", "org-1", b"docx_binary", "vr-1"
+        ))
+
+        mock_instance.parse_document.assert_awaited_once_with(expected, b"docx_binary")
+
 
 # ===========================================================================
 # Processor._enhance_tables_with_llm (lines 674-805)
@@ -2027,6 +2078,7 @@ class TestProcessExcelDocument:
         gp.get_document.return_value = _base_record_dict()
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
@@ -2050,6 +2102,7 @@ class TestProcessExcelDocument:
         gp.get_document.return_value = None
 
         mock_parser = MagicMock()
+        mock_parser.new_document_parser.return_value = mock_parser
         mock_parser.load_workbook_from_binary = MagicMock()
         mock_parser.create_blocks = AsyncMock(return_value=MagicMock())
         proc.parsers[ExtensionTypes.XLSX.value] = mock_parser
@@ -3721,3 +3774,80 @@ class TestProcessSqlStructuredData:
                     record_type="SQL_TABLE"
                 )
             )
+
+# ===========================================================================
+# project_code_blocks_to_graph / process_code_document — failure propagation
+# ===========================================================================
+
+
+class TestProjectCodeBlocksToGraph:
+    """Swallowing is the default because the blocks are already searchable and
+    the edge pass can be re-run; a caller that has not yet marked the record
+    COMPLETED must opt in to the raise, or the edge builder resolves the repo
+    against a symbol table this file is missing from."""
+
+    @staticmethod
+    def _kwargs(**overrides: object) -> dict:
+        base = {
+            "record_id": "rec-1", "org_id": "org-1", "record_group_id": "repo-1",
+            "connector_id": "conn-1", "record_name": "a.py", "file_path": "src/a.py",
+            "language": "python", "block_containers": MagicMock(),
+        }
+        base.update(overrides)
+        return base
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_is_swallowed_by_default(self) -> None:
+        proc, logger, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph",
+                   AsyncMock(side_effect=RuntimeError("graph down"))):
+            assert await proc.project_code_blocks_to_graph(**self._kwargs()) is None
+        assert logger.error.called
+
+    @pytest.mark.asyncio
+    async def test_a_failed_write_raises_when_asked(self) -> None:
+        proc, _, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph",
+                   AsyncMock(side_effect=RuntimeError("graph down"))), \
+             pytest.raises(RuntimeError, match="graph down"):
+            await proc.project_code_blocks_to_graph(**self._kwargs(propagate_failure=True))
+
+    @pytest.mark.asyncio
+    async def test_disabled_code_graph_projects_nothing(self, monkeypatch) -> None:
+        from app.modules.code_graph import enabled
+        monkeypatch.setattr(enabled, "CODE_GRAPH_ENABLED", False)
+        proc, _, _, _ = _make_processor()
+        with patch("app.events.processor.write_code_file_blocks_to_graph", AsyncMock()) as write:
+            await proc.project_code_blocks_to_graph(**self._kwargs(propagate_failure=True))
+        write.assert_not_awaited()
+
+
+class TestProcessCodeDocumentProjection:
+    @pytest.mark.asyncio
+    async def test_a_failed_projection_stops_the_record_before_indexing(self) -> None:
+        """The in-process pipeline marks the record COMPLETED inside
+        `IndexingPipeline.apply`, so the projection ahead of it has to raise."""
+        from unittest.mock import create_autospec
+
+        proc, _, graph_provider, _ = _make_processor()
+        graph_provider.get_document = AsyncMock(return_value=_base_record_dict(
+            recordName="a.py", recordGroupId="repo-1", mimeType="text/x-python",
+        ))
+        parsed = MagicMock(blocks=[MagicMock()], block_groups=[])
+        proc.parsers["code"] = MagicMock(parse_to_blocks_off_loop=AsyncMock(return_value=parsed))
+        proc.project_code_blocks_to_graph = create_autospec(
+            Processor, instance=True
+        ).project_code_blocks_to_graph
+        proc.project_code_blocks_to_graph.side_effect = RuntimeError("graph down")
+        proc._create_transform_context = MagicMock()
+
+        with pytest.raises(DocumentProcessingError, match="graph down"):
+            await _collect(proc.process_code_document(
+                recordName="a.py", recordId="rec-1", code_binary=b"x = 1\n",
+                virtual_record_id="v-1", file_path="src/a.py",
+            ))
+
+        kwargs = proc.project_code_blocks_to_graph.await_args.kwargs
+        assert kwargs["propagate_failure"] is True
+        assert kwargs["file_path"] == "src/a.py"
+        proc._create_transform_context.assert_not_called()

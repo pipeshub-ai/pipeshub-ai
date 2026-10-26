@@ -177,6 +177,18 @@ class TestDockerClientProvider:
         assert await provider.ping() is False
         provider.close()
 
+    async def test_a_daemon_that_answers_but_not_with_ok_is_unreachable(self) -> None:
+        # docker-py's `ping` is `self._result(...) == 'OK'`: a 200 whose body
+        # is anything else returns False without raising. Reporting that as
+        # reachable sends the caller back to blaming the sandbox image.
+        provider = DockerClientProvider()
+        fake_client = MagicMock()
+        fake_client.ping.return_value = False
+        provider._client = fake_client
+
+        assert await provider.ping() is False
+        provider.close()
+
     def test_close_is_idempotent(self) -> None:
         provider = DockerClientProvider()
         fake_client = MagicMock()

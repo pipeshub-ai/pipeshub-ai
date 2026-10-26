@@ -41,6 +41,10 @@ describe('TokenScopes', () => {
     expect(TokenScopes.VALIDATE_EMAIL).to.equal('email:validate');
   });
 
+  it('should have ENTITY_USER_WRITE as "entity:user:write"', () => {
+    expect(TokenScopes.ENTITY_USER_WRITE).to.equal('entity:user:write');
+  });
+
   it('should have ORG_EMAIL_VERIFY as "org:email:verify"', () => {
     expect(TokenScopes.ORG_EMAIL_VERIFY).to.equal('org:email:verify');
   });
@@ -61,8 +65,8 @@ describe('TokenScopes', () => {
     expect(TokenScopes.SLACK_BOT_VERIFY).to.equal('slack-bot:verify');
   });
 
-  it('should have exactly 14 scopes', () => {
-    expect(Object.keys(TokenScopes)).to.have.lengthOf(14);
+  it('should have exactly 15 scopes', () => {
+    expect(Object.keys(TokenScopes)).to.have.lengthOf(15);
   });
 
   it('should contain only the expected keys', () => {
@@ -76,6 +80,7 @@ describe('TokenScopes', () => {
       'CONVERSATION_CREATE',
       'CONVERSATION_PERMISSIONS',
       'VALIDATE_EMAIL',
+      'ENTITY_USER_WRITE',
       'ORG_EMAIL_VERIFY',
       'EMAIL_VERIFIED',
       'DESKTOP_COMMAND',
@@ -124,6 +129,7 @@ describe('isUserActionScope', () => {
       TokenScopes.DESKTOP_COMMAND,
       TokenScopes.CALLER_ROLE,
       TokenScopes.SLACK_BOT_VERIFY,
+      TokenScopes.ENTITY_USER_WRITE,
       'not:a:scope',
     ].forEach((scope) => expect(isUserActionScope(scope)).to.be.false);
   });

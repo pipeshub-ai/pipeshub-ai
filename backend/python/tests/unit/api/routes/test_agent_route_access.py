@@ -15,11 +15,13 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from app.utils.user_messages import DATABASE_UNREACHABLE
 from tests.support.agent_routes import (
     AGENTS,
     ORGS_COLL,
     PERMISSION,
     USERS_COLL,
+    FakeConfigService,
     InMemoryGraph,
     as_user,
     make_client,
@@ -40,9 +42,29 @@ def graph() -> InMemoryGraph:
     return g
 
 
+# MCP server instances the attach tests use; `other-org` belongs to mallory's org. An
+# attachment takes its name and type from these stored records, not from the request.
+_MCP_INSTANCES = {
+    f"/services/mcp/instances/{instance_id}": {"_id": instance_id, "orgId": org_id, "name": name, "typeId": name}
+    for instance_id, org_id, name in (
+        ("inst-9", "org-1", "github"), ("i1", "org-1", "github"), ("i2", "org-1", "linear"), ("other-org", "org-2", "github"),
+    )
+}
+
+
+# The toolset instances they attach: org-1's `inst-1`, and a personal one of alice's.
+_TOOLSET_INSTANCES = {
+    "/services/toolset-instances": [{"_id": "inst-1", "orgId": "org-1", "instanceName": "Slack", "toolsetType": "slack"}],
+    "/services/toolset-user-instances/org-1/u-alice/alice-slack": {
+        "_id": "alice-slack", "orgId": "org-1", "createdBy": "u-alice", "scope": "personal",
+        "instanceName": "My Slack", "toolsetType": "slack",
+    },
+}
+
+
 @pytest.fixture
 def client(graph: InMemoryGraph) -> TestClient:
-    c, _ = make_client(graph)
+    c, _ = make_client(graph, FakeConfigService({**_MCP_INSTANCES, **_TOOLSET_INSTANCES}))
     return c
 
 
@@ -123,8 +145,9 @@ class TestReadAgent:
     def test_user_lookup_outage_is_not_reported_as_not_found(self, client, graph) -> None:
         graph.fail("get_user_by_user_id")
         response = client.get("/api/v1/agent/private", headers=as_user("alice"))
-        assert response.status_code == 500
-        assert response.json()["detail"] == "Failed to retrieve user information"
+        assert response.status_code == 503
+        assert response.json()["detail"] == DATABASE_UNREACHABLE
+        assert response.headers["retry-after"] == "5"
         _no_leak(response)
 
     def test_models_are_enriched_from_the_model_catalogue(self, graph) -> None:
@@ -313,6 +336,21 @@ class TestUpdateAttachments:
         (tool,) = graph.nodes["agentTools"].values()
         assert tool["fullName"] == "slack.send"
 
+    def test_a_toolset_instance_that_doesnt_exist_is_refused(self, client, graph) -> None:
+        self._seed_toolset(graph)
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [
+            {"name": "Slack", "instanceId": "never-existed", "tools": [{"name": "send"}]},
+        ]})
+        assert response.status_code == 400
+        assert "ts-old" in graph.nodes["agentToolsets"]
+
+    def test_a_personal_toolset_stays_off_an_agent_shared_with_the_org(self, client, graph) -> None:
+        personal = {"name": "Slack", "instanceId": "alice-slack", "tools": [{"name": "send"}]}
+        response = client.put("/api/v1/agent/shared", headers=as_user("alice"), json={"toolsets": [personal]})
+        assert response.status_code == 400
+        assert "Personal actions" in response.json()["detail"]
+        assert client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [personal]}).status_code == 200
+
     def test_replacing_with_several_toolsets_files_each_tool_correctly(self, client, graph) -> None:
         response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [
             {"name": "jira", "tools": [{"name": "search"}]},
@@ -331,6 +369,167 @@ class TestUpdateAttachments:
         assert graph.rolled_back
         _no_leak(response)
 
+    _SLACK = {"name": "Slack", "instanceId": "inst-1", "tools": [{"name": "send"}]}
+
+    def _linked_toolsets(self, graph: InMemoryGraph) -> list[str]:
+        return [e["_to"] for e in graph.edges_from("agentHasToolset", f"{AGENTS}/private")]
+
+    def _assert_old_toolset_intact(self, graph: InMemoryGraph) -> None:
+        assert self._linked_toolsets(graph) == ["agentToolsets/ts-old"]
+        assert set(graph.nodes["agentToolsets"]) == {"ts-old"}
+        assert set(graph.nodes["agentTools"]) == {"tool-old"}
+        assert [e["_to"] for e in graph.edges_from("toolsetHasTool", "agentToolsets/ts-old")] == [
+            "agentTools/tool-old",
+        ]
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    @pytest.mark.parametrize("failing,collection", [
+        ("batch_upsert_nodes", "agentToolsets"),
+        ("batch_upsert_nodes", "agentTools"),
+        ("batch_create_edges", "toolsetHasTool"),
+        ("batch_create_edges", "agentHasToolset"),
+    ])
+    @pytest.mark.parametrize("how", ["raises", "returns_false"])
+    def test_failed_toolset_save_keeps_the_old_toolsets(
+        self, client, graph, failing, collection, how, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = getattr(graph, failing)
+
+        async def fail_for(items: list[dict], target: str, transaction: str | None = None) -> bool:
+            if target == collection:
+                if how == "raises":
+                    raise RuntimeError("write timed out on 10.0.0.7")
+                return False
+            return await real(items, target, transaction)
+        setattr(graph, failing, fail_for)
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 500
+        assert response.json()["detail"].startswith("We couldn't save this agent.")
+        _no_leak(response)
+        self._assert_old_toolset_intact(graph)
+
+    def test_new_toolsets_are_written_in_the_saves_transaction(self, client, graph) -> None:
+        self._seed_toolset(graph)
+        seen: list[str | None] = []
+        for name in ("batch_upsert_nodes", "batch_create_edges"):
+            real = getattr(graph, name)
+
+            async def record(items: list[dict], target: str, transaction: str | None = None, real=real) -> bool:
+                if target in ("agentToolsets", "agentTools", "toolsetHasTool", "agentHasToolset"):
+                    seen.append(transaction)
+                return await real(items, target, transaction)
+            setattr(graph, name, record)
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 200
+        assert len(seen) == 4
+        (transaction,) = set(seen)
+        assert transaction in graph.committed
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_failure_between_old_unlinks_finishes_on_the_new_toolsets(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        graph.add_node("agentToolsets", {"_key": "ts-old2", "name": "github"})
+        graph.add_edge("agentHasToolset", {"_from": f"{AGENTS}/private", "_to": "agentToolsets/ts-old2"})
+        real = graph.delete_all_edges_for_node
+        failed: list[str] = []
+
+        async def fail_second_once(node_key: str, collection: str, transaction: str | None = None) -> int:
+            if node_key == "agentToolsets/ts-old2" and collection == "agentHasToolset" and not failed:
+                failed.append(node_key)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(node_key, collection, transaction)
+        graph.delete_all_edges_for_node = fail_second_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 500
+        assert response.json()["detail"].startswith("We couldn't save this agent.")
+        if rollback_undoes_writes:
+            assert sorted(self._linked_toolsets(graph)) == ["agentToolsets/ts-old", "agentToolsets/ts-old2"]
+            assert set(graph.nodes["agentToolsets"]) == {"ts-old", "ts-old2"}
+        else:
+            # Writes that can't be undone: the old links were going anyway, so the save finishes.
+            (new_toolset,) = self._linked_toolsets(graph)
+            new_key = new_toolset.split("/", 1)[1]
+            assert graph.nodes["agentToolsets"][new_key]["name"] == "slack"
+            assert set(graph.nodes["agentToolsets"]) == {new_key}
+            (tool,) = graph.nodes["agentTools"].values()
+            assert tool["fullName"] == "slack.send"
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_failure_removing_old_nodes_keeps_the_new_toolsets_linked(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_tools_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentTools" and "tool-old" in keys and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_tools_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": [self._SLACK]})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            self._assert_old_toolset_intact(graph)
+        else:
+            (new_toolset,) = self._linked_toolsets(graph)
+            assert new_toolset != "agentToolsets/ts-old"
+            assert "ts-old" not in graph.nodes["agentToolsets"]
+            assert "tool-old" not in graph.nodes["agentTools"]
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_failed_removal_of_every_toolset_keeps_them(self, client, graph, rollback_undoes_writes) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        graph.fail("delete_all_edges_for_node")
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": []})
+
+        assert response.status_code == 500
+        self._assert_old_toolset_intact(graph)
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_removing_every_toolset_still_cleans_up_when_old_nodes_fail_to_delete(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_toolset(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_tools_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentTools" and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_tools_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"toolsets": []})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            self._assert_old_toolset_intact(graph)
+        else:
+            # Every old link is already gone, as asked; the records they pointed to go too.
+            assert self._linked_toolsets(graph) == []
+            assert graph.nodes["agentToolsets"] == {}
+            assert graph.nodes["agentTools"] == {}
+
     def test_mcp_servers_are_replaced(self, client, graph) -> None:
         graph.add_node("agentMcpServers", {"_key": "mcp-old", "instanceId": "old"})
         graph.add_node("agentTools", {"_key": "mcp-tool-old", "name": "t"})
@@ -345,8 +544,21 @@ class TestUpdateAttachments:
         assert server["instanceId"] == "inst-9" and server["typeId"] == "github"
         assert server["userId"] == "u-alice"
         (tool,) = graph.nodes["agentTools"].values()
-        assert tool["fullName"] == "github.list_issues"
-        assert len(graph.committed) == 2
+        assert tool["fullName"] == "mcp_github_list_issues"
+        # Removing the old servers and attaching the new ones is one transaction.
+        assert len(graph.committed) == 1
+
+    @pytest.mark.parametrize("instance_id", ["never-existed", "other-org"])
+    def test_attaching_an_mcp_server_outside_the_org_is_rejected_before_any_write(
+        self, client, graph, instance_id,
+    ) -> None:
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"mcpServers": [
+            {"instanceId": instance_id, "name": "github", "displayName": "GitHub", "tools": [{"name": "t"}]},
+        ]})
+        assert response.status_code == 400
+        assert "MCP server(s) not found: GitHub" in response.json()["detail"]
+        assert not graph.calls_to("update_agent")
+        assert graph.committed == []
 
     def test_detaching_every_mcp_server(self, client, graph) -> None:
         graph.add_node("agentMcpServers", {"_key": "mcp-old", "instanceId": "old"})
@@ -517,6 +729,31 @@ class TestUpdateAttachments:
         assert response.status_code == 500
         assert graph.nodes.get("agentKnowledge", {}) == {}
         assert graph.edges_from("agentHasKnowledge", f"{AGENTS}/private") == []
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    def test_removing_all_knowledge_still_cleans_up_when_old_nodes_fail_to_delete(
+        self, client, graph, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        self._seed_two_old(graph)
+        real = graph.delete_nodes
+        failed: list[str] = []
+
+        async def fail_old_knowledge_once(keys: list[str], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentKnowledge" and not failed:
+                failed.append(collection)
+                raise RuntimeError("write timed out on 10.0.0.7")
+            return await real(keys, collection, transaction)
+        graph.delete_nodes = fail_old_knowledge_once
+
+        response = client.put("/api/v1/agent/private", headers=as_user("alice"), json={"knowledge": []})
+
+        assert response.status_code == 500
+        if rollback_undoes_writes:
+            assert self._linked(graph) == {"agentKnowledge/kn-old", "agentKnowledge/kn-old2"}
+        else:
+            assert self._linked(graph) == set()
+            assert graph.nodes["agentKnowledge"] == {}
 
     def test_skills_link_only_to_the_callers_own_or_builtin_active_skills(self, client, graph) -> None:
         skills = [
@@ -758,7 +995,7 @@ class TestCreateAgent:
             "webSearch": {"provider": "Tavily", "providerLabel": "Tavily"},
             "toolsets": [{"name": "jira", "tools": [{"name": "search"}]}, "junk", {"name": ""}],
             "mcpServers": [{"instanceId": "i1", "name": "github", "tools": [{"name": "t"}]}],
-            "knowledge": [{"connectorId": "c1", "filters": "not json"}],
+            "knowledge": [{"connectorId": "c1", "filters": "{}"}],
             "skills": ["mine"],
         })
         assert response.status_code == 200
@@ -769,8 +1006,30 @@ class TestCreateAgent:
         assert [m["name"] for m in agent["mcpServers"]] == ["github"]
         assert agent["knowledge"][0]["filters"] == {}
         assert agent["skills"] == [{"name": "mine"}]
-        assert len(graph.calls_to("begin_transaction")) == 1
-        assert len(graph.committed) == 1
+        # The agent's own transaction, then one per MCP server.
+        assert len(graph.calls_to("begin_transaction")) == 2
+        assert len(graph.committed) == 2
+        assert response.json()["status"] == "success"
+        assert response.json()["warnings"] is None
+
+    def test_creating_with_an_unknown_mcp_server_writes_nothing(self, client, graph) -> None:
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Bad", "mcpServers": [{"instanceId": "never-existed", "name": "github", "tools": []}],
+        })
+        assert response.status_code == 400
+        assert not graph.calls_to("begin_transaction")
+
+    @pytest.mark.parametrize("filters", ["not json", {"records": "x"}, {"records": [123]}, [1, 2]])
+    def test_a_knowledge_limit_that_cannot_be_read_is_refused_before_anything_is_written(
+        self, client, graph, filters,
+    ) -> None:
+        """Saved as "no filters" it would let the agent search the whole source."""
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Limited", "knowledge": [{"connectorId": "c1", "filters": filters}],
+        })
+        assert response.status_code == 400
+        assert "cannot be read" in response.json()["detail"]
+        assert not graph.calls_to("begin_transaction")
 
     def test_each_tool_is_filed_under_its_own_toolset(self, client, graph) -> None:
         response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
@@ -800,6 +1059,173 @@ class TestCreateAgent:
         assert response.json()["detail"].startswith("We couldn't create this agent.")
         assert "write conflict" not in response.text
         assert graph.rolled_back and not graph.committed
+
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    def test_failure_mid_create_on_neo4j_auto_commit_leaves_no_agent(self, client, graph, honours_explicit) -> None:
+        graph.rollback_undoes_writes = False
+        graph.honours_explicit = honours_explicit
+        before = set(graph.nodes[AGENTS])
+        graph.fail("batch_create_edges", RuntimeError("connection reset"))
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={"name": "x"})
+
+        assert response.status_code == 500
+        assert graph.explicit_requests == [True]
+        # With the kill switch off, today's auto-commit keeps the agent node without its owner.
+        assert len(set(graph.nodes[AGENTS]) - before) == (0 if honours_explicit else 1)
+
+
+    _TWO_MCP_SERVERS = [
+        {"instanceId": "i1", "name": "github", "displayName": "GitHub", "tools": [{"name": "issues"}]},
+        {"instanceId": "i2", "name": "linear", "tools": [{"name": "search"}]},
+    ]
+
+    def _attached_mcp_servers(self, graph: InMemoryGraph, agent_key: str) -> list[str]:
+        return sorted(
+            graph.nodes["agentMcpServers"][e["_to"].split("/", 1)[1]]["instanceId"]
+            for e in graph.edges_from("agentHasMcpServer", f"{AGENTS}/{agent_key}")
+        )
+
+    @pytest.mark.parametrize("rollback_undoes_writes", [True, False], ids=["transactional", "auto_commit"])
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    @pytest.mark.parametrize("how", ["raises", "returns_false"])
+    def test_a_failed_mcp_server_leaves_the_agent_created_with_a_warning(
+        self, client, graph, how, honours_explicit, rollback_undoes_writes,
+    ) -> None:
+        graph.rollback_undoes_writes = rollback_undoes_writes
+        graph.honours_explicit = honours_explicit
+        real = graph.batch_upsert_nodes
+
+        async def refuse_github(nodes: list[dict], collection: str, transaction: str | None = None) -> bool:
+            if collection == "agentMcpServers" and nodes[0]["instanceId"] == "i1":
+                if how == "raises":
+                    raise RuntimeError("connection reset by 10.0.0.7")
+                return False
+            return await real(nodes, collection, transaction)
+        graph.batch_upsert_nodes = refuse_github
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helper", "knowledge": [{"connectorId": "c1"}], "mcpServers": self._TWO_MCP_SERVERS,
+        })
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "partial_success"
+        assert body["message"] == "Agent created with warnings: 1 attachment(s) failed"
+        (warning,) = body["warnings"]
+        assert set(warning) == {"name", "error"}
+        assert warning["name"] == "github"
+        assert warning["error"].startswith("We couldn't add GitHub to the agent.")
+        _no_leak(response)
+        agent = body["agent"]
+        assert [m["name"] for m in agent["mcpServers"]] == ["linear"]
+        assert agent["knowledge"][0]["connectorId"] == "c1"
+        assert agent["_key"] in graph.nodes[AGENTS]
+        assert graph.edges_from("agentHasKnowledge", f"{AGENTS}/{agent['_key']}")
+        assert self._attached_mcp_servers(graph, agent["_key"]) == ["i2"]
+        assert graph.explicit_requests == [True, True, True]
+
+    def _refuse_github_write(self, graph: InMemoryGraph, collection: str, how: str) -> None:
+        """Fail github's write to *collection* (raising, or answering False)."""
+        is_node_write = collection in ("agentMcpServers", "agentTools")
+        method = "batch_upsert_nodes" if is_node_write else "batch_create_edges"
+        real = getattr(graph, method)
+
+        def is_github(items: list[dict]) -> bool:
+            if collection == "agentMcpServers":
+                return items[0]["instanceId"] == "i1"
+            if collection == "agentTools":
+                return items[0]["toolsetName"] == "github"
+            server_key = items[0]["_to" if collection == "agentHasMcpServer" else "_from"].split("/", 1)[1]
+            return graph.nodes["agentMcpServers"][server_key]["instanceId"] == "i1"
+
+        async def refuse(items: list[dict], target: str, transaction: str | None = None) -> bool:
+            if target == collection and is_github(items):
+                if how == "raises":
+                    raise RuntimeError(f"write conflict on {collection}/1")
+                return False
+            return await real(items, target, transaction)
+        setattr(graph, method, refuse)
+
+    _MCP_WRITES = ["agentMcpServers", "agentHasMcpServer", "agentTools", "mcpServerHasTool"]
+
+    @pytest.mark.parametrize("honours_explicit", [True, False], ids=["create_transactions", "kill_switch"])
+    @pytest.mark.parametrize("how", ["raises", "returns_false"])
+    @pytest.mark.parametrize("collection", _MCP_WRITES)
+    def test_a_failed_mcp_server_is_not_left_attached(self, client, graph, collection, how, honours_explicit) -> None:
+        graph.rollback_undoes_writes = False
+        graph.honours_explicit = honours_explicit
+        self._refuse_github_write(graph, collection, how)
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helper", "mcpServers": self._TWO_MCP_SERVERS,
+        })
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "partial_success"
+        (warning,) = body["warnings"]
+        assert warning["name"] == "github"
+        assert warning["error"].startswith("We couldn't add GitHub to the agent.")
+        key = body["agent"]["_key"]
+        fetched = client.get(f"/api/v1/agent/{key}", headers=as_user("alice")).json()["agent"]
+        assert [m["name"] for m in fetched["mcpServers"]] == [m["name"] for m in body["agent"]["mcpServers"]] == ["linear"]
+        assert self._attached_mcp_servers(graph, key) == ["i2"]
+        if collection != "agentHasMcpServer":
+            assert sorted(m["instanceId"] for m in graph.nodes["agentMcpServers"].values()) == ["i2"]
+
+    @pytest.mark.parametrize("failing", ["get_edges_from_node_with_target_name", "delete_all_edges_for_node"])
+    def test_a_partly_attached_mcp_server_that_cannot_be_removed_is_reported_as_such(
+        self, client, graph, failing,
+    ) -> None:
+        graph.rollback_undoes_writes = False
+        graph.honours_explicit = False
+        # The agent is linked last, so only a link that landed and then reported a failure
+        # leaves a server partly attached.
+        real = graph.batch_create_edges
+
+        async def link_then_fail(edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+            result = await real(edges, collection, transaction)
+            server_key = edges[0]["_to"].split("/", 1)[1]
+            if collection == "agentHasMcpServer" and graph.nodes["agentMcpServers"][server_key]["instanceId"] == "i1":
+                raise RuntimeError("connection reset after the write")
+            return result
+        graph.batch_create_edges = link_then_fail
+        graph.fail(failing)
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helper", "mcpServers": self._TWO_MCP_SERVERS,
+        })
+
+        assert response.status_code == 200
+        body = response.json()
+        assert body["status"] == "partial_success"
+        (warning,) = body["warnings"]
+        assert warning["name"] == "github"
+        assert "may be partly attached" in warning["error"]
+        assert "remove GitHub and add it again" in warning["error"]
+        _no_leak(response)
+        assert self._attached_mcp_servers(graph, body["agent"]["_key"]) == ["i1", "i2"]
+
+    def test_mcp_servers_are_not_attempted_when_the_agent_itself_fails(self, client, graph) -> None:
+        before = set(graph.nodes[AGENTS])
+        real = graph.batch_create_edges
+
+        async def refuse_permission(edges: list[dict], collection: str, transaction: str | None = None) -> bool:
+            if collection == PERMISSION:
+                raise RuntimeError("connection reset")
+            return await real(edges, collection, transaction)
+        graph.batch_create_edges = refuse_permission
+
+        response = client.post("/api/v1/agent/create", headers=as_user("alice"), json={
+            "name": "Helper", "mcpServers": self._TWO_MCP_SERVERS,
+        })
+
+        assert response.status_code == 500
+        assert response.json()["detail"].startswith("We couldn't create this agent.")
+        assert set(graph.nodes[AGENTS]) == before
+        assert graph.nodes.get("agentMcpServers", {}) == {}
+        assert len(graph.calls_to("begin_transaction")) == 1
 
 
 class TestTemplates:

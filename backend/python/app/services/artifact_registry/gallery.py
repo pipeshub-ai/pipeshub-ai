@@ -16,6 +16,7 @@ from app.services.artifact_registry.models import Actor
 
 __all__ = [
     "ALLOWED_GALLERY_ARTIFACT_TYPES",
+    "ALLOWED_GALLERY_OWNERSHIP",
     "ALLOWED_GALLERY_SORT_FIELDS",
     "ArtifactDisplayPolicy",
     "ArtifactGalleryService",
@@ -32,6 +33,7 @@ ALLOWED_GALLERY_SORT_FIELDS = frozenset(
 ALLOWED_GALLERY_ARTIFACT_TYPES = frozenset(
     t.value for t in ArtifactType if t is not ArtifactType.TOOL_RESULT
 )
+ALLOWED_GALLERY_OWNERSHIP = frozenset({"all", "mine", "shared"})
 
 
 def _enum_value(value: Any) -> str | None:
@@ -85,6 +87,7 @@ class ArtifactListQuery(BaseModel):
     date_to: int | None = None
     sort_by: str = "createdAtTimestamp"
     sort_order: str = "desc"
+    ownership: str = "all"
     page: int = 1
     limit: int = 50
 
@@ -112,6 +115,7 @@ class ArtifactListItem(BaseModel):
     conversation_id: str | None = Field(default=None, serialization_alias="conversationId")
     created_at: int | None = Field(default=None, serialization_alias="createdAt")
     updated_at: int | None = Field(default=None, serialization_alias="updatedAt")
+    role: str | None = None
 
 
 class ArtifactDetail(ArtifactListItem):
@@ -128,6 +132,7 @@ class ArtifactListPage(BaseModel):
     limit: int
     total_count: int = Field(serialization_alias="totalCount")
     total_pages: int = Field(serialization_alias="totalPages")
+    counts: dict[str, int] = Field(default_factory=dict)
 
 
 class ArtifactGalleryService:
@@ -139,10 +144,11 @@ class ArtifactGalleryService:
         sort_by = query.sort_by if query.sort_by in ALLOWED_GALLERY_SORT_FIELDS else "createdAtTimestamp"
         sort_order = "asc" if (query.sort_order or "").lower() == "asc" else "desc"
         artifact_types = self._sanitize_types(query.artifact_types)
+        ownership = query.ownership if query.ownership in ALLOWED_GALLERY_OWNERSHIP else "all"
         page = max(query.page, 1)
         limit = min(max(query.limit, 1), 100)
         skip = (page - 1) * limit
-        rows, total = await self._graph.list_accessible_artifacts(
+        rows, role_counts = await self._graph.list_accessible_artifacts(
             user_id=user_key,
             org_id=actor.org_id,
             skip=skip,
@@ -154,7 +160,12 @@ class ArtifactGalleryService:
             date_to=query.date_to,
             sort_by=sort_by,
             sort_order=sort_order,
+            ownership=ownership,
         )
+        mine = int(role_counts.get("mine") or 0)
+        shared = int(role_counts.get("shared") or 0)
+        counts = {"all": mine + shared, "mine": mine, "shared": shared}
+        total = counts[ownership]
         items = [self._to_list_item(row) for row in rows or []]
         total_pages = (total + limit - 1) // limit if limit else 0
         return ArtifactListPage(
@@ -163,6 +174,7 @@ class ArtifactGalleryService:
             limit=limit,
             total_count=total,
             total_pages=total_pages,
+            counts=counts,
         )
 
     async def get(self, actor: Actor, artifact_id: str) -> ArtifactDetail:
@@ -237,6 +249,7 @@ class ArtifactGalleryService:
             conversation_id=art.get("conversationId"),
             created_at=row.get("createdAtTimestamp"),
             updated_at=row.get("updatedAtTimestamp"),
+            role=(row.get("permission") or {}).get("role"),
         )
 
     @classmethod

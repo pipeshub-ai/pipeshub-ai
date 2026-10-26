@@ -14,12 +14,13 @@ No real database, Kafka, or HTTP calls are made.
 import copy
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import (
+    HIERARCHY_RELATION_TYPES,
     CollectionNames,
     Connectors as ConnectorsEnum,
     EntityRelations,
@@ -54,8 +55,13 @@ from app.models.entities import (
     WebpageRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
-from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+    matches_visibility,
+)
 from app.services.graph_db.common.utils import TRASHED_EXTERNAL_ID_PREFIX
+from app.services.graph_db.interface.graph_db_provider import MoveDestinationMissing
 
 # ---------------------------------------------------------------------------
 # Constants used across tests
@@ -97,7 +103,7 @@ class _InMemoryGraphStore:
         self.collections[collection][key] = doc
         return doc
 
-    def get_node(self, collection: str, key: str) -> Optional[Dict[str, Any]]:
+    def get_node(self, collection: str, key: str) -> Dict[str, Any] | None:
         return self.collections.get(collection, {}).get(key)
 
     def delete_node(self, collection: str, key: str) -> bool:
@@ -142,7 +148,7 @@ class _InMemoryGraphStore:
         return stored
 
     def get_edge(self, edge_collection: str, from_id: str, from_collection: str,
-                 to_id: str, to_collection: str) -> Optional[Dict[str, Any]]:
+                 to_id: str, to_collection: str) -> Dict[str, Any] | None:
         _from = f"{from_collection}/{from_id}"
         _to = f"{to_collection}/{to_id}"
         for e in self.edges.get(edge_collection, []):
@@ -183,7 +189,7 @@ class _InMemoryGraphStore:
         before = len(edges)
         self.edges[edge_collection] = [
             e for e in edges
-            if not (e.get("_from") == _from and e.get("relationType") in relationship_types)
+            if not (e.get("_from") == _from and e.get("relationshipType") in relationship_types)
         ]
         return before - len(self.edges[edge_collection])
 
@@ -260,7 +266,7 @@ class MockTransactionStore:
 
     async def get_record_by_external_id(
         self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
-    ) -> Optional[Record]:
+    ) -> Record | None:
         for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values():
             if (
                 doc.get("connectorId") == connector_id
@@ -270,10 +276,45 @@ class MockTransactionStore:
                 return self._doc_to_record(doc)
         return None
 
-    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Optional[Dict]:
+    async def get_record_by_key(self, key: str, *, raise_on_error: bool = False) -> Dict | None:
         """The stored document, as GraphTransactionStore.get_record_by_key returns it."""
         doc = self._s.get_node(CollectionNames.RECORDS.value, key)
         return dict(doc) if doc else None
+
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: str = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Record]:
+        return [
+            self._doc_to_record(doc)
+            for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values()
+            if (doc.get("connectorId") == connector_id
+                and doc.get("externalParentId") == parent_external_record_id
+                and (record_type is None or doc.get("recordType") == record_type)
+                and matches_visibility(doc, visibility))
+        ]
+
+    async def get_org_apps(self, org_id: str) -> list[dict]:
+        return []
+
+    async def get_records_by_weburls(self, weburls: list[str], org_id: str) -> list[dict]:
+        wanted = set(weburls)
+        return [
+            {"id": doc["_key"], "recordType": doc.get("recordType"), "webUrl": doc.get("webUrl"),
+             "isDependentNode": bool(doc.get("isDependentNode"))}
+            for doc in self._s.collections.get(CollectionNames.RECORDS.value, {}).values()
+            if doc.get("webUrl") in wanted and doc.get("orgId") == org_id
+            and doc.get("recordType") != RecordType.LINK.value and doc.get("isDeleted") is not True
+        ]
+
+    async def get_issue_sites(self, org_id: str, connector_names: list[str]) -> list[str]:
+        return []
+
+    async def get_records_linking_to_weburls(
+        self, weburls: list[str], org_id: str, connector_names: list[str],
+        limit: int = 100, after: str | None = None,
+    ) -> list[str]:
+        return []
 
     async def batch_upsert_records(
         self, records: List[Record], *, release_trashed_external_ids: bool = False
@@ -297,9 +338,17 @@ class MockTransactionStore:
             self._s.upsert_node(collection, node)
         return True
 
+    async def batch_update_nodes(self, nodes: list[dict], collection: str) -> bool:
+        # Update-only in production; upsert is close enough here, since the
+        # caller only ever updates nodes it has just read.
+        for node in nodes:
+            existing = self._s.get_node(collection, node.get("id") or node.get("_key"))
+            self._s.upsert_node(collection, {**(existing or {}), **node})
+        return True
+
     # -- record groups ---
 
-    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:
         for doc in self._s.collections.get(CollectionNames.RECORD_GROUPS.value, {}).values():
             if doc.get("connectorId") == connector_id and doc.get("externalGroupId") == external_id:
                 return RecordGroup(
@@ -335,18 +384,15 @@ class MockTransactionStore:
         })
 
     async def create_record_relation(self, from_record_id: str, to_record_id: str, relation_type: str) -> None:
-        self._s.add_edge(CollectionNames.RECORD_RELATIONS.value, {
+        self._s.add_edge(CollectionNames.NODE_RELATIONS.value, {
             "_from": f"{CollectionNames.RECORDS.value}/{from_record_id}",
             "_to": f"{CollectionNames.RECORDS.value}/{to_record_id}",
-            "relationType": relation_type,
+            "relationshipType": relation_type,
         })
 
-    async def batch_upsert_record_relations(self, edges: List[Dict]) -> None:
+    async def batch_upsert_node_relations(self, edges: list[dict]) -> None:
         for edge in edges:
-            stored = dict(edge)
-            if "relationshipType" in stored and "relationType" not in stored:
-                stored["relationType"] = stored["relationshipType"]
-            self._s.add_edge(CollectionNames.RECORD_RELATIONS.value, stored)
+            self._s.add_edge(CollectionNames.NODE_RELATIONS.value, dict(edge))
 
     async def create_inherit_permissions_relation_record_group(self, record_id: str, record_group_id: str) -> None:
         self._s.add_edge(CollectionNames.INHERIT_PERMISSIONS.value, {
@@ -363,9 +409,28 @@ class MockTransactionStore:
             record_group_id, CollectionNames.RECORD_GROUPS.value,
         )
 
+    async def create_inherit_permissions_relation_record(
+        self, child_record_id: str, parent_record_id: str
+    ) -> None:
+        self._s.add_edge(CollectionNames.INHERIT_PERMISSIONS.value, {
+            "from_id": child_record_id,
+            "from_collection": CollectionNames.RECORDS.value,
+            "to_id": parent_record_id,
+            "to_collection": CollectionNames.RECORDS.value,
+        })
+
+    async def delete_inherit_permissions_relation_record(
+        self, child_record_id: str, parent_record_id: str
+    ) -> None:
+        self._s.delete_edge(
+            CollectionNames.INHERIT_PERMISSIONS.value,
+            child_record_id, CollectionNames.RECORDS.value,
+            parent_record_id, CollectionNames.RECORDS.value,
+        )
+
     # -- users ---
 
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
         for doc in self._s.collections.get(CollectionNames.USERS.value, {}).values():
             if doc.get("email") == email:
                 return User(
@@ -423,7 +488,7 @@ class MockTransactionStore:
 
     # -- user groups ---
 
-    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> Optional[AppUserGroup]:
+    async def get_user_group_by_external_id(self, connector_id: str, external_id: str, *, raise_on_error: bool = False) -> AppUserGroup | None:
         for doc in self._s.collections.get(CollectionNames.GROUPS.value, {}).values():
             if doc.get("connectorId") == connector_id and doc.get("externalGroupId") == external_id:
                 return AppUserGroup(
@@ -443,7 +508,7 @@ class MockTransactionStore:
 
     # -- roles ---
 
-    async def get_app_role_by_external_id(self, external_id: str, connector_id: str, *, raise_on_error: bool = False) -> Optional[AppRole]:
+    async def get_app_role_by_external_id(self, external_id: str, connector_id: str, *, raise_on_error: bool = False) -> AppRole | None:
         for doc in self._s.collections.get(CollectionNames.ROLES.value, {}).values():
             if doc.get("connectorId") == connector_id and doc.get("externalRoleId") == external_id:
                 return AppRole(
@@ -465,7 +530,7 @@ class MockTransactionStore:
 
     async def batch_create_edges(self, edges: List[Dict], collection: str) -> bool:
         for edge in edges:
-            self._s.add_edge(collection, edge)
+            self._s.add_edge(collection, dict(edge))
         return True
 
     async def batch_create_entity_relations(self, edges: List[Dict]) -> None:
@@ -505,24 +570,49 @@ class MockTransactionStore:
         *,
         inherit: bool | None,
         leaving_group_id: str | None = None,
-    ) -> None:
+        browse_root: bool | None = None,
+    ) -> int:
+        """The number of inherit edges removed, as both providers answer."""
+        removed = 0
         if leaving_group_id:
             self._s.delete_edge(
                 CollectionNames.BELONGS_TO.value,
                 record_id, CollectionNames.RECORDS.value,
                 leaving_group_id, CollectionNames.RECORD_GROUPS.value,
             )
-            await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+            removed += await self._set_inheritance(record_id, leaving_group_id, inherit=False)
+            self._s.delete_edge(
+                CollectionNames.NODE_RELATIONS.value,
+                leaving_group_id, CollectionNames.RECORD_GROUPS.value,
+                record_id, CollectionNames.RECORDS.value,
+            )
         if record_group_id:
             await self.create_record_group_relation(record_id, record_group_id)
             if inherit is not None:
-                await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+                removed += await self._set_inheritance(record_id, record_group_id, inherit=inherit)
+            if browse_root:
+                await self.batch_create_edges([{
+                    "from_id": record_group_id, "from_collection": CollectionNames.RECORD_GROUPS.value,
+                    "to_id": record_id, "to_collection": CollectionNames.RECORDS.value,
+                    "relationshipType": RecordRelations.PARENT_CHILD.value,
+                }], CollectionNames.NODE_RELATIONS.value)
+            elif browse_root is False:
+                self._s.delete_edge(
+                    CollectionNames.NODE_RELATIONS.value,
+                    record_group_id, CollectionNames.RECORD_GROUPS.value,
+                    record_id, CollectionNames.RECORDS.value,
+                )
+        return removed
 
-    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> None:
+    async def _set_inheritance(self, record_id: str, record_group_id: str, *, inherit: bool) -> int:
         if inherit:
             await self.create_inherit_permissions_relation_record_group(record_id, record_group_id)
-        else:
-            await self.delete_inherit_permissions_relation_record_group(record_id, record_group_id)
+            return 0
+        return await self.batch_delete_edges(
+            [{"from_id": record_id, "from_collection": CollectionNames.RECORDS.value,
+              "to_id": record_group_id, "to_collection": CollectionNames.RECORD_GROUPS.value}],
+            CollectionNames.INHERIT_PERMISSIONS.value,
+        )
 
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> int:
         return self._s.delete_edges_from(collection, from_id, from_collection)
@@ -531,20 +621,61 @@ class MockTransactionStore:
                           to_collection: str, collection: str) -> bool:
         return self._s.delete_edge(collection, from_id, from_collection, to_id, to_collection)
 
+    async def batch_delete_edges(self, edges: list[dict], collection: str) -> int:
+        """The number of edges removed, as both providers answer."""
+        before = len(self._s.edges.get(collection, []))
+        for edge in edges:
+            self._s.delete_edge(
+                collection, edge["from_id"], edge["from_collection"], edge["to_id"], edge["to_collection"]
+            )
+        return before - len(self._s.edges.get(collection, []))
+
     async def delete_edges_by_relationship_types(
         self, from_id: str, from_collection: str, collection: str, relationship_types: List[str]
     ) -> int:
         return self._s.delete_edges_by_relationship_types(collection, from_id, from_collection, relationship_types)
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        # Scoped to record sources, as both providers are: a record group hangs
+        # its top-level records off itself with the same relationship type, and
+        # Shared with Me adds a second one. An unscoped delete takes those too
+        # and leaves the record with no hierarchy parent at all.
         _to = f"{CollectionNames.RECORDS.value}/{record_id}"
-        edges = self._s.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
+        record_prefix = f"{CollectionNames.RECORDS.value}/"
+        edges = self._s.edges.get(CollectionNames.NODE_RELATIONS.value, [])
         before = len(edges)
-        self._s.edges[CollectionNames.RECORD_RELATIONS.value] = [
+        self._s.edges[CollectionNames.NODE_RELATIONS.value] = [
             e for e in edges
-            if not (e.get("_to") == _to and e.get("relationType") == RecordRelations.PARENT_CHILD.value)
+            if not (
+                e.get("_to") == _to
+                and str(e.get("_from", "")).startswith(record_prefix)
+                and e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+            )
         ]
-        return before - len(self._s.edges[CollectionNames.RECORD_RELATIONS.value])
+        return before - len(self._s.edges[CollectionNames.NODE_RELATIONS.value])
+
+    async def upsert_record_under_parent(self, record: Record, parent_record_id: str | None) -> None:
+        if parent_record_id:
+            parent = self._s.get_node(CollectionNames.RECORDS.value, parent_record_id)
+            if parent is None or not is_live_record(parent):
+                raise MoveDestinationMissing(record.id, parent_record_id)
+        await self.delete_parent_child_edge_to_record(record.id)
+        await self.batch_upsert_records([record], release_trashed_external_ids=True)
+        app_edge = (
+            CollectionNames.NODE_RELATIONS.value,
+            record.connector_id, CollectionNames.APPS.value, record.id, CollectionNames.RECORDS.value,
+        )
+        if parent_record_id:
+            await self.create_record_relation(parent_record_id, record.id, RecordRelations.PARENT_CHILD.value)
+            # Out of the KB root, as the providers do.
+            self._s.delete_edge(*app_edge)
+        else:
+            # At the root a KB item hangs off its App, as the providers do.
+            await self.batch_create_edges([{
+                "from_id": record.connector_id, "from_collection": CollectionNames.APPS.value,
+                "to_id": record.id, "to_collection": CollectionNames.RECORDS.value,
+                "relationshipType": RecordRelations.PARENT_CHILD.value,
+            }], CollectionNames.NODE_RELATIONS.value)
 
     async def get_edges_from_node(self, from_node_id: str, edge_collection: str) -> List[Dict]:
         return self._s.get_edges_from_node(from_node_id, edge_collection)
@@ -567,12 +698,131 @@ class MockTransactionStore:
         rec = self._s.get_node(CollectionNames.RECORDS.value, record_id)
         if not rec or rec.get("isDeleted") is True:
             return empty
-        node_id = f"{CollectionNames.RECORDS.value}/{record_id}"
+        deleted_records, event_data = self._remove_records([record_id])
+        return {
+            "success": True,
+            "deleted_records": deleted_records,
+            "failed_records": [],
+            "total_requested": 1,
+            "successfully_deleted": 1,
+            "failed_count": 0,
+            "eventData": event_data,
+        }
+
+    async def delete_records_recursive(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        within_folder_id: str | None = None, *, include_trashed_roots: bool = False,
+    ) -> dict:
+        """What both providers' delete_records_recursive does, on the in-memory store."""
+        if not record_ids:
+            return {
+                "success": True, "deleted_records": [], "failed_records": [],
+                "total_requested": 0, "successfully_deleted": 0, "failed_count": 0,
+                "eventData": None,
+            }
+        records = self._s.collections.get(CollectionNames.RECORDS.value, {})
+        valid_roots: list[str] = []
+        for rid in record_ids:
+            rec = records.get(rid)
+            if (rec is not None and rid not in valid_roots
+                    and (include_trashed_roots or rec.get("isDeleted") is not True)
+                    and rec.get("connectorId") == connector_id
+                    and (within_folder_id is None or self._is_contained_in(rid, within_folder_id))):
+                valid_roots.append(rid)
+        traversal_types = (
+            HIERARCHY_RELATION_TYPES if cascade_children else {RecordRelations.ATTACHMENT.value}
+        )
+        doomed: list[str] = []
+        for root_id in valid_roots:
+            for rid in self._containment_subtree(root_id, connector_id, traversal_types):
+                if rid not in doomed:
+                    doomed.append(rid)
+
+        reparented: list[dict] = []
+        if not cascade_children:
+            root_external_ids = {records[rid].get("externalRecordId") for rid in valid_roots} - {None, ""}
+            doomed_handles = {f"{CollectionNames.RECORDS.value}/{rid}" for rid in doomed}
+            group_prefix = f"{CollectionNames.RECORD_GROUPS.value}/"
+            for key, doc in records.items():
+                if (key in doomed or doc.get("connectorId") != connector_id
+                        or doc.get("externalParentId") not in root_external_ids):
+                    continue
+                handle = f"{CollectionNames.RECORDS.value}/{key}"
+                groups = [
+                    e["_to"][len(group_prefix):]
+                    for e in self._s.get_edges_from_node(handle, CollectionNames.BELONGS_TO.value)
+                    if str(e.get("_to", "")).startswith(group_prefix)
+                ]
+                if not groups:
+                    continue
+                doc["externalParentId"] = None
+                reparented.append({
+                    "record_id": key,
+                    "record_group_id": doc.get("recordGroupId") if doc.get("recordGroupId") in groups else groups[0],
+                    "inherits": any(
+                        e.get("_to") in doomed_handles
+                        for e in self._s.get_edges_from_node(handle, CollectionNames.INHERIT_PERMISSIONS.value)
+                    ),
+                })
+
+        deleted_records, event_data = self._remove_records(doomed)
+        failed_records = [
+            {"record_id": rid, "reason": "Validation failed"}
+            for rid in record_ids if rid not in valid_roots
+        ]
+        return {
+            "success": True,
+            "deleted_records": deleted_records,
+            "failed_records": failed_records,
+            "total_requested": len(record_ids),
+            "successfully_deleted": len(valid_roots),
+            "failed_count": len(failed_records),
+            "eventData": event_data,
+            "reparented": reparented,
+        }
+
+    def _is_contained_in(self, record_id: str, folder_id: str) -> bool:
+        folder = f"{CollectionNames.RECORDS.value}/{folder_id}"
+        seen: set = set()
+        frontier = [f"{CollectionNames.RECORDS.value}/{record_id}"]
+        while frontier:
+            for e in self._s.get_edges_to_node(frontier.pop(), CollectionNames.NODE_RELATIONS.value):
+                parent = e.get("_from")
+                if e.get("relationshipType") not in HIERARCHY_RELATION_TYPES or parent in seen:
+                    continue
+                if parent == folder:
+                    return True
+                seen.add(parent)
+                frontier.append(parent)
+        return False
+
+    def _containment_subtree(self, root_id: str, connector_id: str, relationship_types) -> list[str]:
+        """The root and every record of its connector below it over these edge types."""
+        prefix = f"{CollectionNames.RECORDS.value}/"
+        found = [root_id]
+        frontier = [root_id]
+        while frontier:
+            for e in self._s.get_edges_from_node(prefix + frontier.pop(), CollectionNames.NODE_RELATIONS.value):
+                to = str(e.get("_to", ""))
+                if e.get("relationshipType") not in relationship_types or not to.startswith(prefix):
+                    continue
+                key = to[len(prefix):]
+                child = self._s.get_node(CollectionNames.RECORDS.value, key)
+                if child is None or child.get("connectorId") != connector_id or key in found:
+                    continue
+                found.append(key)
+                frontier.append(key)
+        return found
+
+    def _remove_records(self, record_ids: list[str]) -> tuple[list[dict], dict | None]:
+        """Remove the records, every edge on them and their isOfType type docs.
+        Returns the deleted_records entries and the deleteRecord event, if any."""
+        node_ids = {f"{CollectionNames.RECORDS.value}/{rid}" for rid in record_ids}
         for coll, edges in list(self._s.edges.items()):
             kept = []
             for e in edges:
-                if e.get("_from") == node_id or e.get("_to") == node_id:
-                    if coll == CollectionNames.IS_OF_TYPE.value and e.get("_from") == node_id:
+                if e.get("_from") in node_ids or e.get("_to") in node_ids:
+                    if coll == CollectionNames.IS_OF_TYPE.value and e.get("_from") in node_ids:
                         to = e.get("_to") or ""
                         if "/" in to:
                             tcoll, tkey = to.split("/", 1)
@@ -580,28 +830,25 @@ class MockTransactionStore:
                     continue
                 kept.append(e)
             self._s.edges[coll] = kept
-        self._s.delete_node(CollectionNames.RECORDS.value, record_id)
-        event_data = None
-        if rec.get("virtualRecordId"):
-            event_data = {
-                "eventType": "deleteRecord",
-                "topic": "record-events",
-                "payloads": [{
-                    "recordId": record_id,
+        deleted_records: list[dict] = []
+        payloads: list[dict] = []
+        for rid in record_ids:
+            rec = self._s.get_node(CollectionNames.RECORDS.value, rid) or {}
+            deleted_records.append({"record_id": rid, "name": rec.get("recordName", "Unknown")})
+            if rec.get("virtualRecordId"):
+                payloads.append({
+                    "recordId": rid,
                     "virtualRecordId": rec.get("virtualRecordId"),
                     "connectorName": rec.get("connectorName"),
                     "origin": rec.get("origin"),
-                }],
-            }
-        return {
-            "success": True,
-            "deleted_records": [{"record_id": record_id, "name": rec.get("recordName", "Unknown")}],
-            "failed_records": [],
-            "total_requested": 1,
-            "successfully_deleted": 1,
-            "failed_count": 0,
-            "eventData": event_data,
-        }
+                })
+            self._s.delete_node(CollectionNames.RECORDS.value, rid)
+        event_data = {
+            "eventType": "deleteRecord",
+            "topic": "record-events",
+            "payloads": payloads,
+        } if payloads else None
+        return deleted_records, event_data
 
     async def get_all_orgs(self) -> List[Dict]:
         return list(self._s.collections.get(CollectionNames.ORGS.value, {}).values())
@@ -637,6 +884,9 @@ class MockTransactionStore:
             connector_id=doc.get("connectorId", ""),
             mime_type=doc.get("mimeType", MimeTypes.UNKNOWN.value),
             indexing_status=doc.get("indexingStatus", ProgressStatus.QUEUED.value),
+            # Read back as the graph providers do; a move carries both onto the reused vertex.
+            virtual_record_id=doc.get("virtualRecordId"),
+            md5_hash=doc.get("md5Checksum"),
             **Record.delete_state_from_arango(doc),
         )
 
@@ -654,7 +904,7 @@ class MockDataStoreProvider:
         self.logger = MagicMock()
 
     @asynccontextmanager
-    async def transaction(self):
+    async def transaction(self, explicit: bool | None = None):
         yield MockTransactionStore(self._store)
 
     async def execute_in_transaction(self, func, *args, **kwargs):
@@ -1061,8 +1311,11 @@ class TestGoogleDriveFullSyncWorkflow:
         )
         await processor.on_new_records([(parent_folder, [])])
         await processor.on_new_records([(child_file, [])])
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc_edges = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        # Record -> record only; see the note in test_sync_page_hierarchy.
+        pc_edges = [e for e in rr
+                    if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+                    and e.get("_from", "").startswith(f"{CollectionNames.RECORDS.value}/")]
         assert len(pc_edges) == 1
 
     @pytest.mark.asyncio
@@ -1276,8 +1529,8 @@ class TestJiraFullSyncWorkflow:
             )
         ]
         await processor.on_new_records([(blocker, [])])
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        block_edges = [e for e in rr if e.get("relationType") == RecordRelations.BLOCKS.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        block_edges = [e for e in rr if e.get("relationshipType") == RecordRelations.BLOCKS.value]
         assert len(block_edges) == 1
 
 
@@ -1306,8 +1559,12 @@ class TestConfluenceWorkflow:
         child.parent_record_type = RecordType.CONFLUENCE_PAGE
         await processor.on_new_records([(parent, [])])
         await processor.on_new_records([(child, [])])
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        # Record -> record only. A record with no parent record also gets a
+        # hierarchy edge from its record group, which is not what this counts.
+        pc = [e for e in rr
+              if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+              and e.get("_from", "").startswith(f"{CollectionNames.RECORDS.value}/")]
         assert len(pc) == 1
 
     @pytest.mark.asyncio
@@ -1381,8 +1638,11 @@ class TestConfluenceWorkflow:
             author_source_id="user-abc-123",
         )
         await processor.on_new_records([(comment, [])])
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        # Record -> record only; see the note in test_sync_page_hierarchy.
+        pc = [e for e in rr
+              if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+              and e.get("_from", "").startswith(f"{CollectionNames.RECORDS.value}/")]
         assert len(pc) == 1
 
 
@@ -1566,8 +1826,8 @@ class TestIncrementalSyncWorkflow:
         child_v2.parent_record_type = RecordType.FILE
         await processor.on_new_records([(child_v2, [])])
         # Should have edge from parent2 to child, and the old one should be gone or replaced
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc_edges = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        pc_edges = [e for e in rr if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value]
         assert len(pc_edges) >= 1
 
 
@@ -2330,8 +2590,8 @@ class TestComplexRealWorldScenarios:
         # Verify: only 1 record group
         assert graph_store.count_collection(CollectionNames.RECORD_GROUPS.value) == 1
         # Verify parent-child edge for subtask
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        pc = [e for e in rr if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value]
         assert len(pc) >= 1
 
     @pytest.mark.asyncio
@@ -2360,8 +2620,11 @@ class TestComplexRealWorldScenarios:
         await processor.on_new_records([(sub_folder, [])])
         await processor.on_new_records([(deep_file, [])])
 
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc_edges = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        # Record -> record only; see the note in test_sync_page_hierarchy.
+        pc_edges = [e for e in rr
+                    if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+                    and e.get("_from", "").startswith(f"{CollectionNames.RECORDS.value}/")]
         assert len(pc_edges) == 2
 
     @pytest.mark.asyncio
@@ -2410,8 +2673,11 @@ class TestComplexRealWorldScenarios:
         )
         await processor.on_new_records([(comment, [])])
 
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        pc_edges = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        # Record -> record only; see the note in test_sync_page_hierarchy.
+        pc_edges = [e for e in rr
+                    if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value
+                    and e.get("_from", "").startswith(f"{CollectionNames.RECORDS.value}/")]
         assert len(pc_edges) == 2  # root->child, child->comment
 
     @pytest.mark.asyncio
@@ -2471,8 +2737,8 @@ class TestComplexRealWorldScenarios:
         attachment.parent_record_type = RecordType.TICKET
         await processor.on_new_records([(attachment, [])])
 
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        attachment_edges = [e for e in rr if e.get("relationType") == RecordRelations.ATTACHMENT.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        attachment_edges = [e for e in rr if e.get("relationshipType") == RecordRelations.ATTACHMENT.value]
         assert len(attachment_edges) == 1
 
     @pytest.mark.asyncio
@@ -2522,8 +2788,8 @@ class TestComplexRealWorldScenarios:
             is_public=LinkPublicStatus.TRUE,
         )
         await processor.on_new_records([(link, [])])
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        parent_child_edges = [e for e in rr if e.get("relationType") == RecordRelations.PARENT_CHILD.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        parent_child_edges = [e for e in rr if e.get("relationshipType") == RecordRelations.PARENT_CHILD.value]
         assert len(parent_child_edges) >= 1
 
     @pytest.mark.asyncio
@@ -2561,14 +2827,86 @@ class TestComplexRealWorldScenarios:
         attachment.parent_record_type = RecordType.MAIL
         await processor.on_new_records([(attachment, [])])
 
-        rr = graph_store.edges.get(CollectionNames.RECORD_RELATIONS.value, [])
-        attachment_edges = [e for e in rr if e.get("relationType") == RecordRelations.ATTACHMENT.value]
+        rr = graph_store.edges.get(CollectionNames.NODE_RELATIONS.value, [])
+        attachment_edges = [e for e in rr if e.get("relationshipType") == RecordRelations.ATTACHMENT.value]
         assert len(attachment_edges) == 1
 
 
 # ===========================================================================
 # 16. Edge cases and data integrity
 # ===========================================================================
+
+
+class TestKbMoveWorkflow:
+    """A knowledge-base item is under one folder at a time, or at the root under none."""
+
+    @staticmethod
+    def _kb_item(name: str, parent_id: str | None = None, *, is_file: bool = True) -> FileRecord:
+        record = make_file_record(
+            connector_id="kb-1", connector_name=ConnectorsEnum.KNOWLEDGE_BASE, name=name,
+            record_group_type=None, parent_ext_id=parent_id, is_file=is_file,
+            indexing_status=ProgressStatus.COMPLETED.value,
+        )
+        record.origin = OriginTypes.UPLOAD
+        record.external_record_id = record.id
+        return record
+
+    @staticmethod
+    def _parents(graph_store: _InMemoryGraphStore, record_id: str) -> list[str]:
+        return [
+            edge["_from"].split("/")[-1]
+            for edge in graph_store.get_edges_to_node(
+                f"{CollectionNames.RECORDS.value}/{record_id}", CollectionNames.NODE_RELATIONS.value
+            )
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_move_re_points_the_one_parent_edge(self, processor, graph_store) -> None:
+        old, new = self._kb_item("Old", is_file=False), self._kb_item("New", is_file=False)
+        report = self._kb_item("q3.pdf", old.id)
+        await processor.on_new_records([(old, []), (new, []), (report, [])])
+        assert self._parents(graph_store, report.id) == [old.id]
+
+        to_new = report.model_copy(update={"parent_external_record_id": new.id})
+        await processor.on_records_moved([(report.external_record_id, to_new, [])])
+
+        assert self._parents(graph_store, report.id) == [new.id]
+        stored = graph_store.get_node(CollectionNames.RECORDS.value, report.id)
+        assert stored["externalParentId"] == new.id
+
+        to_root = report.model_copy(update={"parent_external_record_id": None})
+        await processor.on_records_moved([(report.external_record_id, to_root, [])])
+
+        # At the root the item hangs off its knowledge base's App, its only hierarchy parent.
+        assert self._parents(graph_store, report.id) == [report.connector_id]
+        assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_move_under_a_folder_that_is_gone_moves_nothing(self, processor, graph_store) -> None:
+        old = self._kb_item("Old", is_file=False)
+        report = self._kb_item("q3.pdf", old.id)
+        await processor.on_new_records([(old, []), (report, [])])
+
+        to_nowhere = report.model_copy(update={"parent_external_record_id": "deleted-folder"})
+        with pytest.raises(MoveDestinationMissing):
+            await processor.on_records_moved([(report.external_record_id, to_nowhere, [])])
+
+        assert self._parents(graph_store, report.id) == [old.id]
+        assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] == old.id
+
+    @pytest.mark.asyncio
+    async def test_a_move_under_a_folder_in_the_trash_moves_nothing(self, processor, graph_store) -> None:
+        old, trashed = self._kb_item("Old", is_file=False), self._kb_item("Trashed", is_file=False)
+        report = self._kb_item("q3.pdf", old.id)
+        await processor.on_new_records([(old, []), (trashed, []), (report, [])])
+        graph_store.get_node(CollectionNames.RECORDS.value, trashed.id)["isDeleted"] = True
+
+        to_trash = report.model_copy(update={"parent_external_record_id": trashed.id})
+        with pytest.raises(MoveDestinationMissing):
+            await processor.on_records_moved([(report.external_record_id, to_trash, [])])
+
+        assert self._parents(graph_store, report.id) == [old.id]
+        assert graph_store.get_node(CollectionNames.RECORDS.value, report.id)["externalParentId"] == old.id
 
 
 class TestEdgeCasesAndDataIntegrity:
@@ -2709,3 +3047,55 @@ class TestEdgeCasesAndDataIntegrity:
         entity_edges = graph_store.edges.get(CollectionNames.ENTITY_RELATIONS.value, [])
         lead_edges = [e for e in entity_edges if e.get("edgeType") == EntityRelations.LEAD_BY.value]
         assert len(lead_edges) == 1
+
+
+class TestObjectStoreMoveWorkflow:
+    """An S3/MinIO rename reuses the record id with the same bucket/etag revision (PP-116)."""
+
+    @staticmethod
+    def _object(key: str) -> FileRecord:
+        record = make_file_record(
+            connector_id="s3-1", connector_name=ConnectorsEnum.S3, external_id=f"bucket-1/{key}",
+            name=key.rsplit("/", 1)[-1], record_group_ext_id="bucket-1", record_group_type=RecordGroupType.BUCKET,
+        )
+        record.external_revision_id = "bucket-1/etag-1"
+        return record
+
+    async def _indexed(self, processor, graph_store, key: str) -> FileRecord:
+        record = self._object(key)
+        await processor.on_new_records([(record, [])])
+        doc = graph_store.get_node(CollectionNames.RECORDS.value, record.id)
+        doc.update(indexingStatus=ProgressStatus.COMPLETED.value, md5Checksum="md5-1", virtualRecordId="vr-1")
+        processor.messaging_producer.reset_mock()
+        return record
+
+    @staticmethod
+    def _events(processor) -> list[str]:
+        return [m["eventType"] for call in processor.messaging_producer.send_messages.await_args_list for _k, m in call.args[1]]
+
+    @pytest.mark.asyncio
+    async def test_a_rename_keeps_the_indexed_content(self, processor, graph_store) -> None:
+        stored = await self._indexed(processor, graph_store, "a.txt")
+        moved = self._object("z.txt")
+        moved.id = stored.id
+
+        await processor.on_records_moved([(stored.external_record_id, moved, [])])
+
+        doc = graph_store.get_node(CollectionNames.RECORDS.value, stored.id)
+        assert doc["externalRecordId"] == "bucket-1/z.txt"
+        assert (doc["indexingStatus"], doc["md5Checksum"]) == (ProgressStatus.COMPLETED.value, "md5-1")
+        # The existing vectors only get their membership refreshed, under the same virtual record.
+        assert self._events(processor) == ["syncVectorMembership"]
+        _topic, [(vrid, _event)] = processor.messaging_producer.send_messages.await_args.args
+        assert vrid == "vr-1"
+
+    @pytest.mark.asyncio
+    async def test_a_rename_to_another_file_type_is_indexed_again(self, processor, graph_store) -> None:
+        stored = await self._indexed(processor, graph_store, "a.txt")
+        moved = self._object("a.md")
+        moved.id = stored.id
+
+        await processor.on_records_moved([(stored.external_record_id, moved, [])])
+
+        assert graph_store.get_node(CollectionNames.RECORDS.value, stored.id)["indexingStatus"] == ProgressStatus.QUEUED.value
+        assert self._events(processor) == ["updateRecord"]

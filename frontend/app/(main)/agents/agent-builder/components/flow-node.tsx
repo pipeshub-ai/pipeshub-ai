@@ -20,6 +20,12 @@ import { AgentCoreNode } from './agent-core-node';
 import { ToolsetFlowNode } from './toolset-flow-node';
 import { NODE_TYPES_WITHOUT_INPUT_HANDLES } from './node-constants';
 import { McpFlowNode } from './mcp-flow-node';
+import {
+  hasSourceLimit,
+  KnowledgeSourceLimitButton,
+  KnowledgeSourceLimitList,
+  KnowledgeSourceLimitNote,
+} from './knowledge-source-limit';
 import { FLOW_NODE_CARD, FLOW_NODE_PANEL_BG, FLOW_NODE_WELL, getFlowNodeChrome } from '../flow-theme';
 
 export type FlowNodeProps = {
@@ -247,6 +253,8 @@ export const FlowNode = React.memo(function FlowNode({
         </Box>
       );
     }
+  } else if (hasSourceLimit(data)) {
+    groupBody = <KnowledgeSourceLimitList data={data} />;
   }
 
   return (
@@ -302,6 +310,7 @@ export const FlowNode = React.memo(function FlowNode({
                     {subtitle}
                   </Text>
                 ) : null}
+                <KnowledgeSourceLimitNote data={data} />
               </Flex>
               {data.warning ? (
                 <Tooltip content={data.warning}>
@@ -314,19 +323,24 @@ export const FlowNode = React.memo(function FlowNode({
                 </Tooltip>
               ) : null}
             </Flex>
-            {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
-              <span className="flow-node-delete" style={{ flexShrink: 0 }}>
-                <IconButton
-                  size="1"
-                  variant="ghost"
-                  color="gray"
-                  onClick={() => onDelete(id)}
-                  aria-label={t('agentBuilder.removeNodeAriaLabel')}
-                >
-                  <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
-                </IconButton>
-              </span>
-            ) : null}
+            {/* Ghost buttons pull in by their padding (-4px each side), so the 8px gap only
+                makes them touch: the icons sit about 7px apart instead of about 17px. */}
+            <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
+              {!readOnly ? <KnowledgeSourceLimitButton nodeId={id} data={data} /> : null}
+              {!readOnly && data.type !== 'user-input' && data.type !== 'chat-response' && onDelete ? (
+                <span className="flow-node-delete" style={{ flexShrink: 0 }}>
+                  <IconButton
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    onClick={() => onDelete(id)}
+                    aria-label={t('agentBuilder.removeNodeAriaLabel')}
+                  >
+                    <MaterialIcon name="close" size={18} color="var(--agent-flow-text)" />
+                  </IconButton>
+                </span>
+              ) : null}
+            </Flex>
           </Flex>
         }
       >

@@ -29,6 +29,7 @@ export default function BotsPage() {
   const {
     slackBotConfigs,
     agents,
+    agentsComplete,
     isLoading,
     openPanel,
     setEditingBot,
@@ -51,7 +52,9 @@ export default function BotsPage() {
         setConfigs(configs.value);
       }
       if (agents.status === 'fulfilled') {
-        setAgents(agents.value);
+        setAgents(agents.value.agents, agents.value.complete);
+      } else {
+        setAgents(useBotsStore.getState().agents, false);
       }
       if (configs.status === 'rejected') {
         setError(t('workspace.bots.errors.loadConfigs'));
@@ -77,6 +80,7 @@ export default function BotsPage() {
       <BotPageLayout
         configs={slackBotConfigs}
         agents={agents}
+        agentsComplete={agentsComplete}
         isLoading={isLoading}
         onCreateBot={openPanel}
         onRefresh={handleRefresh}

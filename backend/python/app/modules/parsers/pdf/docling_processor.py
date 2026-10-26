@@ -32,9 +32,19 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
+from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
 
 SUCCESS_STATUS = "success"
+
+# The Docling service's PDF_PARSING_TIMEOUT_SECONDS. It gives up on a request
+# then, but a conversion runs in a thread that cannot be cancelled: without
+# Docling stopping itself it kept converting, holding its memory, while the
+# freed gate admitted the next.
+DOCUMENT_TIMEOUT_SECONDS = 40 * 60
+
+# The only formats callers hand to DoclingProcessor (see LocalDoclingParser).
+DOCLING_ROUTED_FORMATS = (InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX, InputFormat.MD)
 
 # Wired by each service's lifespan (see parsing_main.py/indexing_main.py/
 # docling_main.py) once a ResourceGovernor is constructed for that process —
@@ -84,6 +94,8 @@ def _get_process_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
         max_workers=scaled(LOCAL_DOCLING_PARSE_WORKERS),
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=start_housekeeping,
+        initargs=(os.getpid(),),
     )
 
 
@@ -102,12 +114,19 @@ def _get_converter() -> DocumentConverter:
         layout_batch_size=1,
         table_batch_size=1,
         queue_max_size=10,
+        document_timeout=DOCUMENT_TIMEOUT_SECONDS,
     )
-    return DocumentConverter(format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
-        InputFormat.DOCX: WordFormatOption(),
-        InputFormat.MD: MarkdownFormatOption(),
-    })
+    # Docling picks the backend from the bytes before the file name, so without this
+    # list a record routed here as PDF/DOCX/PPTX/MD could reach the JSON, METS, HTML
+    # or LaTeX backends just by looking like one of those formats.
+    return DocumentConverter(
+        allowed_formats=list(DOCLING_ROUTED_FORMATS),
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
+            InputFormat.DOCX: WordFormatOption(),
+            InputFormat.MD: MarkdownFormatOption(),
+        },
+    )
 
 
 def _parse_document_in_worker(
@@ -152,6 +171,7 @@ class DoclingProcessor():
             try:
                 serialized_doc = await loop.run_in_executor(
                     _get_process_pool(),
+                    run_and_release,
                     _parse_document_in_worker,
                     doc_name,
                     raw_content,

@@ -23,7 +23,7 @@ import re
 from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 from urllib.parse import parse_qs, unquote, urlsplit
 
 import httplib2
@@ -45,7 +45,7 @@ TOKEN_HOST = "oauth2.googleapis.com"
 GOOGLE_API_HOSTS = frozenset({"www.googleapis.com", "admin.googleapis.com", "gmail.googleapis.com", TOKEN_HOST})
 
 
-def google_error(status: int, reason: Optional[str | list[str]], message: str = "") -> tuple[int, dict]:
+def google_error(status: int, reason: str | list[str] | None, message: str = "") -> tuple[int, dict]:
     """A Google API error body in the shape googleapiclient parses into ``HttpError``.
 
     ``reason=None`` sends only a message, as some Google errors do; googleapiclient then
@@ -67,7 +67,7 @@ class ApiRequest:
     query: dict[str, str]
     headers: dict[str, str]
     body: bytes
-    identity: Optional[str]
+    identity: str | None
 
     def json(self) -> object:
         return json.loads(self.body or b"{}")
@@ -79,8 +79,8 @@ class _Fault:
     pattern: re.Pattern[str]
     status: int
     body: Any
-    remaining: Optional[int]
-    when: Optional[Callable[[ApiRequest], bool]] = None
+    remaining: int | None
+    when: Callable[[ApiRequest], bool] | None = None
 
 
 @dataclass
@@ -125,10 +125,10 @@ class FakeGoogleHttp:
         method: str,
         path_regex: str,
         status: int,
-        reason: Optional[str | list[str]],
+        reason: str | list[str] | None,
         *,
-        times: Optional[int] = None,
-        when: Optional[Callable[[ApiRequest], bool]] = None,
+        times: int | None = None,
+        when: Callable[[ApiRequest], bool] | None = None,
     ) -> None:
         """Answer matching calls with a Google error, ``times`` times (``None`` = always)."""
         _, body = google_error(status, reason)
@@ -165,7 +165,7 @@ class FakeGoogleHttp:
             uri: str,
             method: str = "GET",
             body: object = None,
-            headers: Optional[dict[str, str]] = None,
+            headers: dict[str, str] | None = None,
             redirections: int = 5,
             connection_type: object = None,
         ) -> tuple[httplib2.Response, bytes]:
@@ -296,6 +296,7 @@ class FakeEntitiesProcessor:
         self.record_group_permissions: dict[str, list[Any]] = {}
         self.app_users: dict[str, Any] = {}
         self.user_groups: dict[str, tuple[Any, list[Any]]] = {}
+        self.kept_user_groups: list[str] = []
         self.active_users: list[Any] = []
         self.deleted: list[str] = []
         self.metadata_updates: list[Any] = []
@@ -308,13 +309,20 @@ class FakeEntitiesProcessor:
         self.fail_owner_lookup = False
         self.fail_permission_lookup = False
         self.fail_group_permission_lookup = False
+        self.linked_authenticators: list[tuple[str, str, str, str]] = []
+        self.deleted_groups: list[str] = []
 
-    def _check_write(self, external_id: Optional[str]) -> None:
+    def _check_write(self, external_id: str | None) -> None:
         if external_id in self.fail_writes_for:
             raise RuntimeError(f"database unavailable while writing {external_id}")
 
-    def by_id(self, record_id: str) -> Optional[Record]:
+    def by_id(self, record_id: str) -> Record | None:
         return next((r for r in self.records.values() if r.id == record_id), None)
+
+    async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
+        """Whether the stored record inherits. The fake keeps that as the flag it was saved with."""
+        stored = self.by_id(stored_id) if stored_id else None
+        return bool(stored is not None and stored.inherit_permissions)
 
     def perm_emails(self, external_id: str) -> set[str]:
         return {p.email for p in self.permissions.get(external_id, []) if p.email}
@@ -325,11 +333,11 @@ class FakeEntitiesProcessor:
         """Both graph stores answer these lookups with a plain Record, never a FileRecord."""
         return Record.model_validate(record.model_dump(include=set(Record.model_fields)))
 
-    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Optional[Record]:
+    async def get_record_by_external_id(self, connector_id: str, external_record_id: str) -> Record | None:
         stored = self.records.get(external_record_id)
         return self._plain(stored) if stored is not None else None
 
-    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: Optional[str] = None) -> list[Any]:
+    async def get_records_by_parent(self, connector_id: str, parent_external_record_id: str, record_type: str | None = None) -> list[Any]:
         return [
             self._plain(r) for r in self.records.values()
             if r.parent_external_record_id == parent_external_record_id
@@ -350,20 +358,34 @@ class FakeEntitiesProcessor:
         visibility: RecordVisibility = RecordVisibility.LIVE,
     ) -> list[Any]:
         """Keyset pages ordered by id, typed as stored, live only unless asked, as both graph stores return them."""
-        assert record_group_id is None and not offset and not exclude_statuses, "not modelled"
+        assert not exclude_statuses, "not modelled"
         if self.fail_record_listing:
             raise RuntimeError("graph unavailable while listing records")
         found = sorted(
             (
                 r for r in self.records.values()
-                if (not status_filters or r.indexing_status in status_filters)
+                if getattr(r, "connector_id", None) == connector_id
+                and (not status_filters or r.indexing_status in status_filters)
                 and (is_placeholder is None or bool(getattr(r, "is_placeholder", False)) == is_placeholder)
+                and (record_group_id is None or getattr(r, "record_group_id", None) == record_group_id)
                 and (after_key is None or r.id > after_key)
                 and matches_visibility(r, visibility)
             ),
             key=lambda r: r.id,
-        )
+        )[offset:]
         return found[:limit] if limit else found
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None,
+        *, visibility: RecordVisibility = RecordVisibility.LIVE,
+    ) -> list[Any]:
+        """The real processor: the group by external id, then a keyset page of its records."""
+        group = await self.get_record_group_by_external_id(connector_id, external_group_id)
+        if group is None:
+            return []
+        return [r for r in self.records.values() if getattr(r, "external_record_group_id", None) == external_group_id
+                and getattr(r, "connector_id", None) == connector_id and matches_visibility(r, visibility)
+                and (after_key is None or r.id > after_key)][:limit]
 
     async def get_record_owner_source_user_email(self, record_id: str, *, raise_on_error: bool = False) -> str | None:
         if self.fail_owner_lookup:
@@ -382,13 +404,32 @@ class FakeEntitiesProcessor:
             None,
         )
 
+    async def get_record_group_by_external_id(self, connector_id: str, external_group_id: str) -> Any | None:
+        group = self.record_groups.get(external_group_id)
+        if group is not None and getattr(group, "connector_id", None) not in (None, connector_id):
+            return None
+        return group
+
+    async def on_record_group_deleted(
+        self, external_group_id: str, connector_id: str, *, trash_live_records: bool = False
+    ) -> bool:
+        self.record_groups.pop(external_group_id, None)
+        self.record_group_permissions.pop(external_group_id, None)
+        self.deleted_groups.append(external_group_id)
+        return True
+
+    async def link_authenticator_to_source_user(
+        self, connector_id: str, created_by: str, email: str, source_user_id: str, app_name: object
+    ) -> None:
+        self.linked_authenticators.append((connector_id, created_by, email, source_user_id))
+
     async def get_placeholder_records(self, connector_id: str, *_: object, **__: object) -> list[Any]:
         return [r for r in self.records.values() if getattr(r, "is_placeholder", False)]
 
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
 
-    async def get_user_by_user_id(self, user_id: str) -> Optional[object]:
+    async def get_user_by_user_id(self, user_id: str) -> object | None:
         return next((u for u in self.active_users if getattr(u, "id", None) == user_id), None)
 
     async def get_users_with_permission_to_node(
@@ -423,11 +464,20 @@ class FakeEntitiesProcessor:
         return [group for key, (group, _) in self.user_groups.items() if key in granted]
 
     # writes
-    async def on_new_records(self, records_with_permissions: list[tuple[Any, list[Any]]]) -> None:
+    async def on_new_records(
+        self,
+        records_with_permissions: list[tuple[Any, list[Any]]],
+        *,
+        replace_permissions: bool = False,
+    ) -> None:
+        del replace_permissions
         for record, _ in records_with_permissions:
             self._check_write(record.external_record_id)
         self.new_record_batches.append([r.external_record_id for r, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
+            group = self.record_groups.get(record.external_record_group_id)
+            if group is not None and not record.record_group_id:
+                record.record_group_id = group.id
             self.records[record.external_record_id] = record
             self._upsert_permissions(record.external_record_id, permissions)
             self._ensure_parent(record)
@@ -461,6 +511,8 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self.metadata_updates.append(record)
         self.records[record.external_record_id] = record
+        # The real processor routes this through _process_record -> _handle_parent_record.
+        self._ensure_parent(record)
 
     async def on_record_content_update(self, record: Record) -> None:
         self._check_write(record.external_record_id)
@@ -475,7 +527,9 @@ class FakeEntitiesProcessor:
         self._check_write(record.external_record_id)
         self._upsert_permissions(record.external_record_id, permissions)
 
-    async def delete_permission_from_record(self, record_id: str, user_email: str) -> None:
+    async def delete_permission_from_record(
+        self, record_id: str, user_email: str, connector_id: str | None = None
+    ) -> None:
         record = self.by_id(record_id)
         if record is not None:
             self.permissions[record.external_record_id] = [
@@ -490,25 +544,38 @@ class FakeEntitiesProcessor:
             self.permissions.pop(record.external_record_id, None)
         self.deleted.append(record_id)
 
-    async def on_records_deleted_cascade(self, record_ids: list[str], connector_id: str) -> dict[str, Any]:
+    async def on_records_deleted_cascade(
+        self, record_ids: list[str], connector_id: str, cascade_children: bool = True,
+        *, include_trashed_roots: bool = False, **_: object,
+    ) -> dict[str, Any]:
+        """Like the real processor, a root in the trash is left alone unless ``include_trashed_roots``."""
         deleted: list[str] = []
-        pending = list(record_ids)
+        for record_id in record_ids:
+            record = self.by_id(record_id)
+            if record is not None:
+                self._check_write(record.external_record_id)
+        roots = [self.by_id(record_id) for record_id in record_ids]
+        pending = [r.id for r in roots if r is not None and (include_trashed_roots or is_live_record(r))]
         while pending:
             record = self.by_id(pending.pop())
             if record is None:
                 continue
             deleted.append(record.id)
-            pending.extend(
-                r.id for r in self.records.values()
-                if r.parent_external_record_id == record.external_record_id
-            )
+            if cascade_children:
+                pending.extend(
+                    r.id for r in self.records.values()
+                    if r.parent_external_record_id == record.external_record_id
+                )
             del self.records[record.external_record_id]
             self.permissions.pop(record.external_record_id, None)
         self.deleted.extend(deleted)
-        return {"deleted_records": deleted}
+        return {"deleted_records": deleted, "successfully_deleted": len(deleted)}
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
+            existing = self.record_groups.get(group.external_group_id)
+            if existing is not None:
+                group.id = existing.id
             self.record_groups[group.external_group_id] = group
             self.record_group_permissions[group.external_group_id] = list(permissions)
 
@@ -516,9 +583,35 @@ class FakeEntitiesProcessor:
         for user in users:
             self.app_users[user.email] = user
 
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_user_groups.append(external_group_id)
+
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, members in groups:
             self.user_groups[group.source_user_group_id] = (group, list(members))
+
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return [group for group, _ in self.user_groups.values()]
+
+    async def on_user_group_deleted(self, external_group_id: str, connector_id: str) -> bool:
+        self.user_groups.pop(external_group_id, None)
+        self.deleted_groups.append(external_group_id)
+        return True
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_email: str) -> int:
+        """Drop the user's own grants on records and record groups, and their group memberships."""
+        removed = 0
+        email = user_email.lower()
+        for store in (self.permissions, self.record_group_permissions):
+            for key, perms in store.items():
+                kept = [p for p in perms if (getattr(p, "email", None) or "").lower() != email]
+                removed += len(perms) - len(kept)
+                store[key] = kept
+        for key, (group, members) in list(self.user_groups.items()):
+            kept_members = [m for m in members if (getattr(m, "email", None) or "").lower() != email]
+            removed += len(members) - len(kept_members)
+            self.user_groups[key] = (group, kept_members)
+        return removed
 
     async def reindex_existing_records(self, records: list[Any]) -> None:
         self.reindexed.extend(records)
@@ -540,7 +633,7 @@ class FakeSyncPointStore:
         self.sync_points: dict[str, dict[str, Any]] = {}
         self.writes: list[tuple[str, dict[str, Any]]] = []
 
-    async def get_sync_point(self, key: str, raise_on_error: bool = False) -> Optional[dict[str, Any]]:
+    async def get_sync_point(self, key: str, raise_on_error: bool = False) -> dict[str, Any] | None:
         return self.sync_points.get(key)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
@@ -552,13 +645,13 @@ class FakeSyncPointStore:
     async def delete_sync_point(self, key: str) -> None:
         self.sync_points.pop(key, None)
 
-    def value(self, key_suffix: str) -> Optional[dict[str, Any]]:
+    def value(self, key_suffix: str) -> dict[str, Any] | None:
         matches = [v for k, v in self.sync_points.items() if k.endswith(key_suffix)]
         assert len(matches) <= 1, f"ambiguous sync point suffix {key_suffix}: {list(self.sync_points)}"
         return matches[0] if matches else None
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeSyncPointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeSyncPointStore"]:
         yield self
 
 
@@ -570,7 +663,7 @@ class FakeConfigService:
     the app to this method, it would flag each place the app logs config.
     """
 
-    def __init__(self, connector_id: str, config: dict[str, Any], shared_apps: Optional[dict[str, list[dict[str, Any]]]] = None) -> None:
+    def __init__(self, connector_id: str, config: dict[str, Any], shared_apps: dict[str, list[dict[str, Any]]] | None = None) -> None:
         self.connector_id = connector_id
         self.config = config
         self.shared_apps = shared_apps or {}

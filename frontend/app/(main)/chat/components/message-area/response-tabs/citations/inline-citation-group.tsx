@@ -1,7 +1,8 @@
 'use client';
 
 import React, { useState } from 'react';
-import { Flex } from '@radix-ui/themes';
+import { Flex, Text } from '@radix-ui/themes';
+import { useTranslation } from 'react-i18next';
 import { CitationNumberCircle } from './citation-number-circle';
 import { CitationSourceLinkRow } from './citation-source-link-row';
 import type { CitationData, CitationCallbacks } from './types';
@@ -22,13 +23,19 @@ interface InlineCitationGroupProps {
   callbacks?: CitationCallbacks;
 }
 
+/** Circles shown before the rest collapse into a "+N" chip. */
+export const INLINE_CITATION_GROUP_VISIBLE = 2;
+
 /**
  * Inline pill used when consecutive `[N]` markers all point at the same record:
  * shows the connector icon + filename once, followed by one compact numbered
- * circle per citation.
+ * circle per citation. Past two circles the rest collapse into a "+N" chip
+ * that expands the group in place.
  */
 function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps) {
+  const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
+  const [expanded, setExpanded] = useState(false);
 
   const first = items[0]?.citation;
   if (!first) return null;
@@ -42,6 +49,9 @@ function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps)
     fileNameWithoutExt.length > 24
       ? fileNameWithoutExt.slice(0, 24) + '…'
       : fileNameWithoutExt;
+
+  const visibleItems = expanded ? items : items.slice(0, INLINE_CITATION_GROUP_VISIBLE);
+  const hiddenCount = items.length - visibleItems.length;
 
   return (
     <Flex
@@ -82,7 +92,7 @@ function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps)
           gap: '3px',
         }}
       >
-        {items.map((item, idx) => (
+        {visibleItems.map((item, idx) => (
           <CitationNumberCircle
             key={item.occurrenceKey ?? `cite-circle-${item.chunkIndex}-${idx}`}
             chunkIndex={item.chunkIndex}
@@ -91,6 +101,41 @@ function InlineCitationGroupImpl({ items, callbacks }: InlineCitationGroupProps)
             callbacks={callbacks}
           />
         ))}
+        {hiddenCount > 0 && (
+          <button
+            type="button"
+            className="citation-overflow-chip"
+            onClick={(e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              setExpanded(true);
+            }}
+            aria-label={t('chat.showMoreCitations', { count: hiddenCount })}
+            title={t('chat.showMoreCitations', { count: hiddenCount })}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              minWidth: '16px',
+              height: '16px',
+              padding: '0 4px',
+              margin: 0,
+              position: 'relative',
+              borderRadius: '999px',
+              background: 'var(--olive-3)',
+              border: '1px solid var(--olive-6)',
+              color: 'var(--olive-11)',
+              cursor: 'pointer',
+              font: 'inherit',
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >
+            <Text size="1" weight="bold" style={{ color: 'inherit', fontSize: '10px', lineHeight: 1 }}>
+              +{hiddenCount}
+            </Text>
+          </button>
+        )}
       </Flex>
     </Flex>
   );

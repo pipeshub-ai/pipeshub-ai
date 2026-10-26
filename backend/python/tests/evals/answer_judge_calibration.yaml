@@ -12,8 +12,9 @@
 # pass/fail decisions agree with these labels less than 95% of the time.
 #
 # The facts come from the Acme Corp fixture: the expense policy's approval
-# bands, PR #482's review, the export fix, the on-call handbook, the exports
-# launch and the 2026 holiday carry-over change.
+# bands, PR #482's review, the export fix, the Northwind renewal, the on-call
+# handbook, the exports launch, the 2026 holiday carry-over change and the 2026
+# pricing strategy.
 
 cases:
   # --- Expense approvals: the edge at $250 -------------------------------------
@@ -376,6 +377,54 @@ cases:
       - state: "A purchase of up to and including $250 needs no approval."
         expect: [contradicted, missing]
 
+  # Two nightly answers to "How much can I spend without my manager's
+  # approval?". Both are right, and the software rule they add is the policy's.
+  - id: expense-manager-band-with-software-rule
+    about: the manager band, plus the software rule that needs finance
+    answer: |
+      You can spend up to $250 per purchase without manager approval.
+      You must submit the receipt within 30 days.
+      Software subscriptions require Finance approval regardless of amount.
+    claims:
+      - state: "A purchase of up to and including $250 needs no manager approval."
+        expect: supported
+      - not_state: "Purchases above $250 need no manager approval."
+        expect: [contradicted, missing]
+
+  # Every f2 answer on 2026-10-17 put the receipt rule in the same sentence as the
+  # band, and all were failed as a condition on the approval. The receipt is a separate rule.
+  - id: expense-manager-band-with-receipt-in-the-same-sentence
+    about: the receipt requirement in the band's own sentence
+    answer: |
+      You can spend up to $250 per purchase without manager approval, as long as you submit the receipt within 30 days.
+      Purchases over $250 and up to $2,500 require manager approval.
+    claims:
+      - state: "A purchase of up to and including $250 needs no manager approval."
+        expect: supported
+      - not_state: "Purchases above $250 need no manager approval."
+        expect: [contradicted, missing]
+
+  - id: expense-manager-band-and-the-next-band
+    about: the manager band, then who approves above it
+    answer: |
+      You can spend up to $250 per purchase without manager approval.
+      Submit the receipt within 30 days.
+      Purchases over $250 and up to $2,500 require manager approval; software subscriptions require Finance approval regardless of amount.
+    claims:
+      - state: "A purchase of up to and including $250 needs no manager approval."
+        expect: supported
+      - not_state: "Purchases above $250 need no manager approval."
+        expect: [contradicted, missing]
+
+  - id: expense-no-approval-at-all-vs-software-rule
+    about: '"no approval at all" is taken back in part by the software rule'
+    answer: |
+      You can spend up to $250 per purchase without manager approval.
+      Software subscriptions require Finance approval regardless of amount.
+    claims:
+      - state: "A purchase of up to and including $250 needs no approval."
+        expect: [contradicted, missing]
+
   # --- PR #482's review ---------------------------------------------------------
   - id: pr482-full
     about: both facts, with code formatting in the answer
@@ -441,6 +490,82 @@ cases:
     answer: "Large exports are emailed as a download link that expires after seven days."
     claims:
       - state: "The emailed download link is valid for 24 hours."
+        expect: contradicted
+
+  # --- The Northwind renewal ----------------------------------------------------------
+  # The first two are nightly answers (2026-10-07 and 2026-10-09) that were failed
+  # as contradicting "no longer at risk". Both are right: the renewal is on track
+  # and still has to be signed.
+  - id: northwind-on-track-remaining-risk-is-signing
+    about: on track, plus the signature still to come called "the remaining risk"
+    answer: |
+      In the Acme Corp demo data, Northwind Traders is no longer considered at risk. The account plan, updated Apr 16, now marks it "on track," with renewal expected on time.
+      It was at risk in early April, when the export failures broke their monthly reporting and they were evaluating alternatives.
+      Engineering shipped the export fix in PR #211, and Omar and Bob checked their first export with them on the 16 April call.
+      The remaining risk is execution—getting the proposal agreed and signed by the target date, while converting the potential expansion to approximately 600 seats.
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: northwind-on-track-closing-depends-on-conditions
+    about: on track, while closing depends on the deal desk's conditions
+    answer: |
+      In the Acme Corp demo data, Northwind Traders' renewal was at risk in early April but is now considered on track.
+      The deal desk approved a 14% discount, conditional on a three-year term and an expansion to 600 seats.
+      Bottom line: the operational risk appears resolved and the renewal is currently on track, but closing the renewal still depends on delivering the conditions the deal desk set.
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: northwind-no-longer-at-risk-paraphrase
+    about: '"no longer at risk" and "renew on time" without the words "on track"'
+    answer: "Northwind is no longer at risk: they have stopped evaluating alternatives and expect to renew on time."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: northwind-still-at-risk
+    about: the 10 April view, given as the current one
+    answer: |
+      Yes, the Northwind renewal is at risk. Their ops lead says exports have failed all month and they are looking at options before 30 June.
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: contradicted
+
+  - id: northwind-hedged
+    about: on track, hedged
+    answer: "The renewal seems to be back on track after the export fix, but please confirm with Omar before relying on that."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: [missing, contradicted]
+
+  - id: northwind-history-only
+    about: the at-risk history with no current status
+    answer: "Northwind's renewal was at risk in early April, because their monthly exports kept failing."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: [missing, contradicted]
+
+  # A step still ahead leaves "on track" true; a condition that is not met takes it back.
+  - id: consistent-northwind-signature-due
+    about: on track, with the signature still to come
+    answer: "The Northwind renewal is on track; the signature is still due by 31 May."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: supported
+
+  - id: self-contradiction-northwind-only-if-cfo
+    about: on track only if a cancellation is reversed
+    answer: "The Northwind renewal is on track, but only if their CFO reverses the decision to cancel."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
+        expect: contradicted
+
+  - id: self-contradiction-northwind-at-risk-until-fixed
+    about: on track, yet at risk until a fix that has not happened
+    answer: "The Northwind renewal is on track, but it stays at risk until the export failures are fixed, and they haven't been yet."
+    claims:
+      - state: "The Northwind Traders renewal is now on track."
         expect: contradicted
 
   # --- On-call handbook -------------------------------------------------------------
@@ -602,3 +727,57 @@ cases:
     claims:
       - state: "A refund takes 10 to 15 working days."
         expect: [contradicted, missing]
+
+  # --- The 2026 pricing strategy ----------------------------------------------------
+  - id: pricing-platform-plus-usage
+    about: Bob's agent's answer on 2026-10-19, as the nightly logged it (bold markers removed)
+    answer: |
+      In the Acme Corp demo data, the 2026 enterprise pricing strategy is:
+      - Shift from per-seat pricing to a platform-plus-usage model.
+      - Base price: $48,000 annually, covering up to 250 seats.
+      - Usage bands: pricing tiers are structured around 250, 1,000, and 5,000 seats.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
+        expect: supported
+
+  - id: pricing-ten-times-the-fee
+    about: "$480,000 holds \"$48\" but is not the fee"
+    answer: "Enterprise moves to a platform fee of $480,000 a year plus usage bands."
+    claims:
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
+        expect: contradicted
+
+  - id: pricing-seat-discounts
+    about: the same seat counts as volume discounts on per-seat pricing
+    answer: "Enterprise keeps per-seat pricing in 2026, with volume discounts at 250, 1,000 and 5,000 seats."
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: contradicted
+
+  - id: pricing-grandfathered-customers
+    about: a 2026-10-21 answer that also says existing customers keep their pricing for now
+    answer: |
+      In the Acme Corp demo data, the 2026 Enterprise pricing strategy is:
+      - Replace per-seat pricing with an annual platform fee plus usage bands.
+      - Charge a $48,000 annual platform fee covering up to 250 seats.
+      - Define usage bands at 250, 1,000, and 5,000 seats.
+      - Grandfather existing customers on their current pricing through the end of their current term.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
+        expect: supported
+
+  - id: pricing-target-fee
+    about: a 2026-10-21 answer that gives the fee as a target, as the record does
+    answer: |
+      In the Acme Corp demo data, the 2026 enterprise pricing strategy is:
+      - Replace per-seat pricing with an annual platform fee plus usage bands.
+      - Set a target $48,000 annual platform fee covering up to 250 seats, with usage bands at 250, 1,000, and 5,000 seats.
+    claims:
+      - state: "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+        expect: supported
+      - state: "The 2026 strategy targets a $48,000 annual fee for Enterprise."
+        expect: supported

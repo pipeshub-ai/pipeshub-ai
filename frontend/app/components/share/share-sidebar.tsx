@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -49,6 +51,7 @@ export function ShareSidebar({
   onShareSuccess,
   headerContent,
 }: ShareSidebarProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const roleLabels = getShareRoleLabels(t);
   const currentUser = useAuthStore((s) => s.user);
@@ -259,6 +262,8 @@ export function ShareSidebar({
 
       setSelectedItems([]);
       updateSearchQuery('');
+      // Least privilege: the next person starts at the default level, not the last pick.
+      setSelectedRole('READER');
 
       onShareSuccess?.();
     } catch (error) {
@@ -290,7 +295,7 @@ export function ShareSidebar({
         toast.success(t('shareSidebar.roleUpdated'), {
           description: t('shareSidebar.roleUpdatedDescription', {
             name: member?.name ?? t('shareSidebar.member'),
-            role: t(`recordView.permission${newRole.charAt(0)}${newRole.slice(1).toLowerCase()}`),
+            role: (adapter.roleOptions?.labels ?? getShareRoleLabels(t))[newRole].label,
           }),
         });
       } catch (error) {
@@ -358,18 +363,12 @@ export function ShareSidebar({
           }
         }}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           overflow: 'hidden',
           display: 'flex',
@@ -510,6 +509,7 @@ export function ShareSidebar({
                 searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
+                roleOptions={adapter.roleOptions}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
                 onRoleChange={setSelectedRole}
@@ -655,6 +655,7 @@ export function ShareSidebar({
                           isOwner={member.isOwner}
                           role={member.role}
                           showRoleDropdown={!member.isCurrentUser}
+                          roleOptions={adapter.roleOptions}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: roleLabels[member.role]?.label ?? roleLabels.READER.label, description: roleLabels[member.role]?.description ?? '' }
