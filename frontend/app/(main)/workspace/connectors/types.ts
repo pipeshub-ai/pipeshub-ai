@@ -48,6 +48,8 @@ export interface Connector {
   lastSyncOutcome?: 'succeeded' | 'failed' | 'stopped' | 'skipped' | null;
   /** What the last run did, in the connector's own terms (see LastSyncSummary for the web connector's). */
   lastSyncSummary?: LastSyncSummary | null;
+  /** What the connector's admin has to do; shown as an action-needed badge until it is done. */
+  actionItems?: ConnectorActionItem[];
   createdBy?: string;
   updatedBy?: string;
   authType?: string;
@@ -182,6 +184,26 @@ export interface AuthSchemaField {
    * carry all the variants a user may need (e.g. Azure AI endpoints).
    */
   examples?: { label: string; value: string }[];
+  /**
+   * Shown only on an instance that already has a value saved for this field, never on a new one:
+   * a way of signing in kept for instances set up with it (see `authSchemaForInstance`).
+   */
+  savedOnly?: boolean;
+  /** Required, except on an instance that has a value saved for this other field. */
+  requiredUnlessSaved?: string;
+}
+
+/** Something a connector's admin has to do, reported by the connector (backend `ActionItem`). */
+export interface ConnectorActionItem {
+  code: string;
+  severity: 'warning' | 'error';
+  /** Shown as written; the connector words it. */
+  title: string;
+  message: string;
+  /** Where in the panel it is done: `authenticate` opens the Authenticate tab. */
+  action?: 'authenticate' | null;
+  /** The steps, on the docs site. */
+  docsUrl?: string | null;
 }
 
 export interface SyncCustomField {

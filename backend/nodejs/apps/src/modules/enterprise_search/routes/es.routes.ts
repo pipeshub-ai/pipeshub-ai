@@ -1,15 +1,5 @@
 import { NextFunction, Router, Response } from 'express';
 import { Container } from 'inversify';
-import {
-  createAccessRequest,
-  decideAccessRequest,
-  getAccessRequest,
-  listIncomingAccessRequests,
-} from '../controller/access_request.controller';
-import {
-  accessRequestIdParamsSchema,
-  createAccessRequestSchema,
-} from '../validators/es_validators';
 import multer from 'multer';
 import { createMulter } from '../../../libs/utils/multer.utils';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
@@ -26,6 +16,7 @@ import {
   pinConversation,
   regenerateAnswers,
   search,
+  retrieve,
   searchHistory,
   shareConversationById,
   shareSearch,
@@ -91,6 +82,7 @@ import {
   enterpriseSearchCreateSchema,
   enterpriseSearchStreamCreateSchema,
   enterpriseSearchSearchSchema,
+  enterpriseSearchRetrieveSchema,
   enterpriseSearchSearchHistorySchema,
   searchIdParamsSchema,
   addMessageParamsSchema,
@@ -567,7 +559,7 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(listAllArchivesConversationQuerySchema),
-    listAllArchivesConversation(appConfig),
+    listAllArchivesConversation,
   );
 
   /**
@@ -589,45 +581,18 @@ export function createConversationalRouter(container: Container): Router {
   return router;
 }
 
-export function createAccessRequestRouter(container: Container): Router {
+/** POST /api/v1/retrieve. Same scope as running a search; nothing is stored. */
+export function createRetrieveRouter(container: Container): Router {
   const router = Router();
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const appConfig = container.get<AppConfig>('AppConfig');
-  const authenticate = authMiddleware.authenticate.bind(authMiddleware);
-
   router.post(
     '/',
-    authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    ValidationMiddleware.validate(createAccessRequestSchema),
-    createAccessRequest(appConfig),
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
+    ValidationMiddleware.validate(enterpriseSearchRetrieveSchema),
+    retrieve(appConfig),
   );
-
-  router.get(
-    '/',
-    authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    listIncomingAccessRequests,
-  );
-
-  router.get(
-    '/:requestId',
-    authenticate,
-    requireScopes(OAuthScopeNames.CONVERSATION_READ),
-    ValidationMiddleware.validate(accessRequestIdParamsSchema),
-    getAccessRequest,
-  );
-
-  for (const decision of ['approve', 'deny'] as const) {
-    router.post(
-      `/:requestId/${decision}`,
-      authenticate,
-      requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
-      ValidationMiddleware.validate(accessRequestIdParamsSchema),
-      decideAccessRequest(appConfig, decision),
-    );
-  }
-
   return router;
 }
 
@@ -649,7 +614,7 @@ export function createSemanticSearchRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_READ),
     ValidationMiddleware.validate(enterpriseSearchSearchHistorySchema),
-    searchHistory(appConfig),
+    searchHistory,
   );
 
   router.get(
@@ -657,7 +622,7 @@ export function createSemanticSearchRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.SEMANTIC_READ),
     ValidationMiddleware.validate(searchIdParamsSchema),
-    getSearchById(appConfig),
+    getSearchById,
   );
 
   router.delete(
@@ -796,17 +761,17 @@ export function createAgentConversationalRouter(container: Container): Router {
     addMessageStreamToAgentConversation(appConfig),
   );
 
+  // Slack bot entry points. They carry a scoped token, not an OAuth/PAT token, so
+  // the scoped-token scope is the gate; requireScopes has no user to check here.
   router.post(
     '/:agentKey/conversations/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     addMessageStreamToAgentConversationInternal(appConfig, keyValueStoreService),
   );
 
   router.post(
     '/:agentKey/conversations/internal/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    // requireScopes(OAuthScopeNames.AGENT_EXECUTE),
     rejectClientConversationHistory,
     streamAgentConversationInternal(appConfig, keyValueStoreService),
   );

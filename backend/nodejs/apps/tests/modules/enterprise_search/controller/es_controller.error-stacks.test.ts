@@ -99,7 +99,7 @@ describe('es_controller: server stack traces saved with a failed answer never re
     for (const id of [chatId, agentChatId]) store.session(id)?.set({ isArchived: true, archivedBy: OWNER })
     const archived = store.sessions.map((s) => s.toObject())
 
-    expectNoStack(await respond(controller.listAllArchivesConversation(appConfig) as JsonHandler, {}))
+    expectNoStack(await respond(controller.listAllArchivesConversation as JsonHandler, {}))
     expectNoStack(await respond(controller.listAllArchivesAgentConversation() as JsonHandler, { params: { agentKey: AGENT_KEY } }))
 
     sinon.stub(ChatSessionMessage, 'aggregate').resolves([])

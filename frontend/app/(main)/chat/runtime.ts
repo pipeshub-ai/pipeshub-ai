@@ -30,7 +30,6 @@ import {
   type ChatSettings,
   type ChatSlot,
   type ConversationMessage,
-  type RequestAccessInfo,
   type MessagePart,
   type PendingAskUserQuestion,
   type StreamChatRequest,
@@ -63,15 +62,6 @@ export const EMPTY_ANSWER_FALLBACK =
 export function isUsableFollowUpText(text: string | undefined): boolean {
   const t = (text ?? '').trim();
   return t.length > 0 && t !== EMPTY_ANSWER_FALLBACK;
-}
-
-/** Attachments the viewer can open; a redacted one has no name or type to show. */
-function readableAttachments(msg: ConversationMessage): AttachmentRef[] {
-  return (msg.attachments ?? []).filter((a): a is AttachmentRef => !('redacted' in a));
-}
-
-function redactedAttachmentSources(msg: ConversationMessage): RequestAccessInfo[] {
-  return (msg.attachments ?? []).flatMap((a) => ('redacted' in a ? [a.requestAccess] : []));
 }
 
 function extractFinalAnswer(
@@ -711,7 +701,9 @@ export function loadHistoricalMessages(
         lastUnansweredAnswers = {};
       }
 
-      const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
+      // Each rating is appended to `feedback`, so the last entry is the one the user chose.
+      const feedbackHistory = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined) ?? [];
+      const feedbackEntry = feedbackHistory[feedbackHistory.length - 1];
       const feedbackInfo = feedbackEntry?.isHelpful === true
         ? { value: 'like' as const }
         : feedbackEntry?.isHelpful === false
@@ -757,8 +749,7 @@ export function loadHistoricalMessages(
               custom: {
                 ...prevCustomRest,
                 messageId: msg._id,
-                ...(msg.authorUserId ? { authorUserId: msg.authorUserId } : {}),
-                citationMaps: buildCitationMapsFromApi(msg.citations || [], msg.redaction, msg.detailsHidden),
+                citationMaps: buildCitationMapsFromApi(msg.citations || []),
                 confidence: msg.confidence,
                 modelInfo: msg.modelInfo,
                 ...(feedbackInfo ? { feedbackInfo } : {}),
@@ -778,8 +769,7 @@ export function loadHistoricalMessages(
         metadata: {
           custom: {
             messageId: msg._id,
-            ...(msg.authorUserId ? { authorUserId: msg.authorUserId } : {}),
-            citationMaps: buildCitationMapsFromApi(msg.citations || [], msg.redaction, msg.detailsHidden),
+            citationMaps: buildCitationMapsFromApi(msg.citations || []),
             confidence: msg.confidence,
             modelInfo: msg.modelInfo,
             ...(feedbackInfo ? { feedbackInfo } : {}),
@@ -903,10 +893,8 @@ export function loadHistoricalMessages(
       metadata: {
         custom: {
           createdAt: msg.createdAt,
-          ...(msg.askedBy ? { askedBy: msg.askedBy } : {}),
           ...(msg.appliedFilters ? { appliedFilters: msg.appliedFilters } : {}),
-          ...(readableAttachments(msg).length ? { attachments: readableAttachments(msg) } : {}),
-          ...(redactedAttachmentSources(msg).length ? { redactedAttachments: redactedAttachmentSources(msg) } : {}),
+          ...(msg.attachments?.length ? { attachments: msg.attachments } : {}),
         },
       },
     });

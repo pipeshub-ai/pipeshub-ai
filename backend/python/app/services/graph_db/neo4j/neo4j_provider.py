@@ -104,6 +104,11 @@ from app.models.permission import (
     RETIRED_ROLES,
     read_role,
 )
+from app.models.source_dates import (
+    DATED_ONLY_TIME_RANGE_KEY,
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    upload_times_undated,
+)
 from app.modules.code_graph.build_state import (
     SYNC_POINT_SUFFIX as CODE_EDGE_BUILD_SUFFIX,
 )
@@ -133,6 +138,7 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
+from app.services.graph_db.common.team_grant_role import cypher_team_grant_role
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -157,6 +163,12 @@ from app.services.graph_db.common.utils import (
     soft_delete_result,
     trash_purge_row,
     uploaded_document_id,
+)
+from app.services.graph_db.dated_scope import (
+    DatedRow,
+    frozen_filters,
+    read_within,
+    scope_for,
 )
 from app.services.graph_db.entity_index_queries import (
     APP_STATUS_DELETING,
@@ -291,6 +303,30 @@ _METADATA_FILTERS: tuple[tuple[str, str, str, str, str], ...] = (
 
 # Retired roles read as READER, inside Cypher too.
 _RETIRED_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES)) + "]"
+
+# What a member gets from a team's grant; the matches name the edges team_grant and team_member.
+_TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
+
+# The dates a time range bounds, read beside each record of a shared timeline
+# walk (``dated_scope``): as columns, as fields of a collected pair, and back
+# out of the pair.
+_DATED_COLUMNS = (
+    ", r.sourceCreatedAtTimestamp AS created, r.sourceLastModifiedTimestamp AS updated,"
+    f" r.{SOURCE_TIMESTAMP_ORIGIN_FIELD} AS origin"
+)
+_DATED_PAIR_FIELDS = (
+    ", created: r.sourceCreatedAtTimestamp, updated: r.sourceLastModifiedTimestamp,"
+    f" origin: r.{SOURCE_TIMESTAMP_ORIGIN_FIELD}"
+)
+_DATED_PAIR_COLUMNS = ", pair.created AS created, pair.updated AS updated, pair.origin AS origin"
+
+
+def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
+    return [
+        DatedRow(r.get("virtualId"), r.get("recordId"), r.get("created"), r.get("updated"), r.get("origin"))
+        for r in results or []
+    ]
+
 
 # Only an org-wide share's edge types grant access through the organization: a
 # domain or "anyone" edge left by an older version grants nothing.
@@ -1112,6 +1148,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         indexes.append(
             "CREATE INDEX record_parked_while_off IF NOT EXISTS "
             "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.reason, n.id)"
+        )
+
+        # COMPOSITE: "did this connector index anything since?", asked for a
+        # record about to fail on its rate-limit wait. The timestamp trails so
+        # a hit and a miss are both a range seek, not a read of the connector.
+        indexes.append(
+            "CREATE INDEX record_connector_status_indexed_at IF NOT EXISTS "
+            "FOR (n:Record) ON (n.connectorId, n.indexingStatus, n.lastIndexTimestamp)"
         )
 
         # COMPOSITE: "is every record of this repo indexed yet?", asked once per
@@ -4175,7 +4219,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         WHERE r.orgId = $org_id
         RETURN vid, r.id AS id, r.connectorId AS connectorId,
                r.connectorName AS connectorName, r.recordGroupId AS recordGroupId,
-               r.recordName AS recordName, r.webUrl AS webUrl,
+               r.recordName AS recordName, r.webUrl AS webUrl, r.contentRev AS contentRev,
                coalesce(r.isDeleted, false) AS isDeleted
         """
         results = await self.client.execute_query(
@@ -4657,6 +4701,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return {row["vrid"] for row in results or [] if row.get("vrid")}
+
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
+        # A range seek on the (connectorId, indexingStatus, lastIndexTimestamp)
+        # index, for a hit and a miss alike. Asked only for a record about to
+        # fail on its wait.
+        query = """
+        MATCH (r:Record {connectorId: $connector_id, indexingStatus: $completed})
+        WHERE r.lastIndexTimestamp > $since_ms
+        RETURN 1 AS hit
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            txn_id=transaction,
+        )
+        return bool(results)
 
     def _create_typed_record_from_neo4j(self, record_dict: dict, type_doc: dict | None) -> Record:
         """
@@ -7535,19 +7607,33 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """
         if not time_range:
             return ""
+        dated_only = bool(time_range.get(DATED_ONLY_TIME_RANGE_KEY)) and upload_times_undated()
+        # An upload dated only by its upload was written at or before that
+        # time: an after-bound still rules it out, a before-bound cannot.
+        undated = (
+            f" OR coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') = 'upload'"
+            if upload_times_undated() and not dated_only
+            else ""
+        )
+
+        def before(condition: str) -> str:
+            return f"AND ({condition}{undated})" if undated else f"AND {condition}"
+
         conditions: list[str] = []
         if "source_created_after_ms" in time_range:
             parameters["sourceCreatedAfterMs"] = time_range["source_created_after_ms"]
             conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp >= $sourceCreatedAfterMs")
         if "source_created_before_ms" in time_range:
             parameters["sourceCreatedBeforeMs"] = time_range["source_created_before_ms"]
-            conditions.append(f"AND {record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceCreatedAtTimestamp <= $sourceCreatedBeforeMs"))
         if "source_updated_after_ms" in time_range:
             parameters["sourceUpdatedAfterMs"] = time_range["source_updated_after_ms"]
             conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp >= $sourceUpdatedAfterMs")
         if "source_updated_before_ms" in time_range:
             parameters["sourceUpdatedBeforeMs"] = time_range["source_updated_before_ms"]
-            conditions.append(f"AND {record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs")
+            conditions.append(before(f"{record_var}.sourceLastModifiedTimestamp <= $sourceUpdatedBeforeMs"))
+        if dated_only:
+            conditions.append(f"AND coalesce({record_var}.{SOURCE_TIMESTAMP_ORIGIN_FIELD}, '') <> 'upload'")
         return "\n".join(conditions)
 
     @staticmethod
@@ -7602,9 +7688,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
+
+        With ``with_dates``, every row the walk reached instead, with the dates
+        its time bounds read, for a shared timeline walk (``dated_scope``).
 
         The records that inherit, at any depth, from a record or record group granted
         to the user, or from the App when the user passes its gate. A prefilter:
@@ -7695,13 +7785,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND {live_record}
               AND r.virtualRecordId IS NOT NULL AND r.id IS NOT NULL
               {metadata_filter_clause}{time_range_filter_clause}
-            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
+            RETURN r.virtualRecordId AS virtualId, r.id AS recordId{_DATED_COLUMNS if with_dates else ""}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
+            if with_dates:
+                return _dated_rows(results)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -7733,9 +7825,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
+        With ``with_dates``, every row instead, with its dates (``dated_scope``).
 
         Args:
             user_id: The userId field value
@@ -7790,7 +7884,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS directKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id{_DATED_PAIR_FIELDS if with_dates else ""}}}) AS directKbRecords
             }}
 
             CALL {{
@@ -7805,7 +7899,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS teamKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id{_DATED_PAIR_FIELDS if with_dates else ""}}}) AS teamKbRecords
             }}
 
             // Union all pairs and filter out nulls
@@ -7813,13 +7907,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND allPairs AS pair
             WITH pair
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
-            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId{_DATED_PAIR_COLUMNS if with_dates else ""}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
+            if with_dates:
+                return _dated_rows(results)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -8426,11 +8522,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 and not time_range
             )
 
+            # A dated read inside a timeline takes its records from one walk
+            # over the timeline's span, shared by all its searches (dated_scope).
+            shared = scope_for(time_range) if not use_cache else None
+
             def connector_task(connector_id: str) -> "Awaitable[dict[str, str]]":
                 if use_cache:
                     return self._get_connector_virtual_ids_cached(
                         user_id, org_id, connector_id, app_permission_map.get(connector_id),
                         raise_on_error=raise_on_error,
+                    )
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("connector", user_id, org_id, connector_id, frozen_filters(metadata_filters)),
+                        lambda: self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
                     )
                 return self._get_virtual_ids_for_connector(
                     user_id, org_id, connector_id, metadata_filters, time_range=time_range,
@@ -8441,6 +8551,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if use_cache:
                     return self._get_kb_virtual_ids_cached(
                         user_id, org_id, kb_filter, raise_on_error=raise_on_error
+                    )
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("kb", user_id, org_id, tuple(kb_filter or ()), frozen_filters(metadata_filters)),
+                        lambda: self._get_kb_virtual_ids(
+                            user_id, org_id, kb_filter, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
                     )
                 return self._get_kb_virtual_ids(
                     user_id, org_id, kb_filter, metadata_filters, time_range=time_range,
@@ -12329,14 +12449,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // KB Team access: Only for KB records, not connector records
             CALL (u, kh_kbs) {
                 UNWIND kh_kbs AS kb2
-                MATCH (team:Teams)-[teamKbPerm:PERMISSION {type: "TEAM"}]->(kb2)
-                WITH u, kb2, collect(DISTINCT team) AS kh_teams
-                UNWIND kh_teams AS team
-                MATCH (u)-[userTeamPerm:PERMISSION {type: "USER"}]->(team)
+                MATCH (team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb2)
+                MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team)
                 RETURN [x IN COLLECT({
                      type: "KNOWLEDGE_BASE_TEAM",
                      source: kb2,
-                     role: userTeamPerm.role,
+                     role: __TEAM_GRANT_ROLE__,
                      folder: null
                  }) WHERE x.source IS NOT NULL AND x.role IS NOT NULL] AS kbTeamAccess
             }
@@ -12359,7 +12477,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                  directAccess + groupAccess + recordGroupAccess + nestedRgAccess + directUserRgAccess + inheritedRgAccess + groupInheritedRgAccess + orgAccess + orgRgAccess + kbDirectAccess + kbTeamAccess AS allAccess
             WHERE size([a IN allAccess WHERE a.source IS NOT NULL]) > 0
             RETURN allAccess, directAccess, groupAccess, recordGroupAccess, nestedRgAccess, directUserRgAccess, inheritedRgAccess, groupInheritedRgAccess, orgAccess, orgRgAccess, kbDirectAccess, kbTeamAccess
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
 
             access_results = await self.client.execute_query(
                 access_query,
@@ -13386,8 +13504,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (kb:App {id: $kb_id, type: "KB"})
             OPTIONAL MATCH (u)-[d:PERMISSION {type: "USER"}]->(kb)
             WITH u, kb, d.role AS direct_role
-            OPTIONAL MATCH (u)-[ut:PERMISSION {type: "USER"}]->(team:Teams)-[tb:PERMISSION {type: "TEAM"}]->(kb)
-            WITH direct_role, collect(DISTINCT ut.role) AS team_roles
+            OPTIONAL MATCH (u)-[team_member:PERMISSION {type: "USER"}]->(team:Teams)-[team_grant:PERMISSION {type: "TEAM"}]->(kb)
+            WITH direct_role, collect(DISTINCT __TEAM_GRANT_ROLE__) AS team_roles
             WITH CASE WHEN direct_role IS NOT NULL THEN [direct_role] ELSE [] END +
                  [x IN team_roles WHERE x IS NOT NULL] AS candidates
             UNWIND candidates AS cand
@@ -13404,7 +13522,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             ORDER BY priority DESC
             LIMIT 1
             RETURN role AS role
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_CYPHER)
 
             results = await self.client.execute_query(
                 query,
@@ -13517,16 +13635,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     @staticmethod
     def _kb_best_role_rows(filters: str = "") -> str:
         """One row (kb, final_role) per KB the user holds a role on, directly or
-        through a team. The team role is the user's role in the team; a retired
-        role reads as READER; the highest role wins and a direct grant wins a tie."""
+        through a team. The team role is what the team's grant gives (see
+        team_grant_role); a retired role reads as READER; the highest role wins and
+        a direct grant wins a tie."""
         return f"""
             MATCH (u:User {{id: $user_id}})
             CALL (u) {{
                 MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(kb:App)
                 RETURN kb, r.role AS stored_role, true AS is_direct
                 UNION
-                MATCH (u)-[r:PERMISSION {{type: "USER"}}]->(:Teams)-[:PERMISSION {{type: "TEAM"}}]->(kb:App)
-                RETURN kb, r.role AS stored_role, false AS is_direct
+                MATCH (u)-[team_member:PERMISSION {{type: "USER"}}]->(:Teams)-[team_grant:PERMISSION {{type: "TEAM"}}]->(kb:App)
+                RETURN kb, {_TEAM_GRANT_ROLE_CYPHER} AS stored_role, false AS is_direct
             }}
             WITH kb, is_direct,
                  CASE WHEN stored_role IN {_RETIRED_ROLES_CYPHER} THEN 'READER' ELSE stored_role END AS role
@@ -15714,6 +15833,85 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             },
         )
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
+
+    @override
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        found: list[tuple[str, str]] = []
+        for start in range(0, len(ids), _STAGE_STATE_VRID_BATCH):
+            rows = await self._stage_cypher(
+                f"""
+                UNWIND $ids AS vrid
+                MATCH (state:{label})
+                WHERE state.virtualRecordId = vrid AND state.rev IS NOT NULL
+                WITH vrid, state.rev AS rev, max(coalesce(state.updatedAtMs, 0)) AS newest
+                WHERE newest < $before
+                  AND NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                  }}
+                RETURN vrid, rev ORDER BY vrid, rev
+                """,
+                {"ids": ids[start:start + _STAGE_STATE_VRID_BATCH], "before": updated_before_ms},
+            )
+            found.extend((str(row["vrid"]), str(row["rev"])) for row in rows)
+        return found
+
+    @override
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        pairs = sorted({(v, r) for v, r in revisions if v and r})
+        label = collection_to_label(CollectionNames.STAGE_STATES.value)
+        record_label = collection_to_label(CollectionNames.RECORDS.value)
+        deleted = 0
+        for start in range(0, len(pairs), _STAGE_STATE_VRID_BATCH):
+            # The rule is evaluated again here: a record may have moved back onto the
+            # revision, or its stage claimed again, since it was read. The states are
+            # locked before their age is read, as in stage_state_compare_and_set: a
+            # claim committed while this waited for the lock would otherwise be deleted
+            # on the age read before it.
+            rows = await self._stage_cypher(
+                f"""
+                UNWIND $pairs AS pair
+                WITH pair[0] AS vrid, pair[1] AS rev
+                MATCH (state:{label})
+                WHERE state.virtualRecordId = vrid AND state.rev = rev
+                SET state.{_MATCH_LOCK} = true
+                REMOVE state.{_MATCH_LOCK}
+                WITH vrid, rev, collect(state) AS states
+                WHERE all(s IN states WHERE coalesce(s.updatedAtMs, 0) < $before)
+                  AND NOT EXISTS {{
+                    MATCH (r:{record_label} {{virtualRecordId: vrid}}) WHERE r.contentRev = rev
+                  }}
+                UNWIND states AS state
+                DETACH DELETE state
+                RETURN count(*) AS deleted
+                """,
+                {"pairs": [list(p) for p in pairs[start:start + _STAGE_STATE_VRID_BATCH]], "before": updated_before_ms},
+            )
+            deleted += int(rows[0]["deleted"]) if rows else 0
+        return deleted
+
+    @override
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        after = "m.id > $after_key" if after_key is not None else "m.id IS NOT NULL"
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (m:{label}) WHERE {after}
+            WITH m ORDER BY m.id LIMIT $limit
+            RETURN m.id AS virtualRecordId, m.orgId AS orgId,
+                   m.currentRev AS currentRev, m.previousRev AS previousRev
+            """,
+            {"after_key": after_key, "limit": limit},
+        )
+        return [dict(row) for row in rows]
 
     @override
     async def get_record_content_revs(
@@ -21499,7 +21697,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
     _ENTITY_CANDIDATE_RECORD_PROJECTION = (
         "rec {_key: rec.id, .recordName, .recordType, .connectorId, .virtualRecordId, "
-        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp}"
+        ".webUrl, .hideWeburl, .sourceLastModifiedTimestamp, .updatedAtTimestamp, "
+        ".connectorName, .origin, .createdAtTimestamp, .sourceCreatedAtTimestamp, "
+        f".{SOURCE_TIMESTAMP_ORIGIN_FIELD}}}"
     )
 
     def _entity_node_match(self, entity_type: str) -> tuple[str, str]:
@@ -21524,9 +21724,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND {cypher_searchable_record("rec", "completed")}
                 AND rec.connectorId IN ref.connectorIds
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
-    _ENTITY_CANDIDATE_ORDER = (
-        "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0) DESC, rec.id ASC"
-    )
+
+    @property
+    def _entity_candidate_order(self) -> str:
+        newest = "coalesce(rec.sourceLastModifiedTimestamp, rec.updatedAtTimestamp, 0)"
+        if upload_times_undated():
+            newest = f"CASE WHEN rec.{SOURCE_TIMESTAMP_ORIGIN_FIELD} = 'upload' THEN 0 ELSE {newest} END"
+        return f"{newest} DESC, rec.id ASC"
 
     def _entity_candidate_records_cypher(self, entity_type: str) -> str:
         projection = self._ENTITY_CANDIDATE_RECORD_PROJECTION
@@ -21558,7 +21762,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                ORDER BY {self._entity_candidate_order}
                 SKIP $offset LIMIT $limit
                 RETURN collect({projection}) AS rows
               }}
@@ -21633,7 +21837,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WITH scanned
                 UNWIND scanned AS rec
                 WITH rec
-                ORDER BY {self._ENTITY_CANDIDATE_ORDER}
+                ORDER BY {self._entity_candidate_order}
                 SKIP $offset LIMIT $window
                 RETURN collect(rec) AS win
               }}
@@ -22883,16 +23087,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect(DISTINCT p5.role) AS role_roles
             }}
 
-            // Path 7: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Path 7: User -> Team -> target, the role the team's grant gives
             CALL {{
                 WITH principal, target
-                MATCH (team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(target)
-                WITH principal, collect(DISTINCT team) AS teams
-                UNWIND teams AS team
-                MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team)
-                WHERE ut.role IS NOT NULL AND ut.role <> ''
-                RETURN collect(DISTINCT ut.role) AS team_roles
+                MATCH (team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->(target)
+                MATCH (principal)-[team_member:PERMISSION {{type: 'USER'}}]->(team)
+                WITH {_TEAM_GRANT_ROLE_CYPHER} AS team_role
+                WHERE team_role IS NOT NULL
+                RETURN collect(DISTINCT team_role) AS team_roles
             }}
 
             // Path 9: User -> Org -> target
@@ -23012,16 +23214,14 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN collect(DISTINCT p5.role) AS role_roles
             }}
 
-            // Path 4: User -> Team -> target
-            // Use role from User->Team permission edge (ut.role), not Team->target edge
+            // Path 4: User -> Team -> target, the role the team's grant gives
             CALL {{
                 WITH principal, target
-                MATCH (team:Teams)-[:PERMISSION {{type: 'TEAM'}}]->(target)
-                WITH principal, collect(DISTINCT team) AS teams
-                UNWIND teams AS team
-                MATCH (principal)-[ut:PERMISSION {{type: 'USER'}}]->(team)
-                WHERE ut.role IS NOT NULL AND ut.role <> ''
-                RETURN collect(DISTINCT ut.role) AS team_roles
+                MATCH (team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->(target)
+                MATCH (principal)-[team_member:PERMISSION {{type: 'USER'}}]->(team)
+                WITH {_TEAM_GRANT_ROLE_CYPHER} AS team_role
+                WHERE team_role IS NOT NULL
+                RETURN collect(DISTINCT team_role) AS team_roles
             }}
 
             // Path 5: User -> Org -> target
@@ -23067,8 +23267,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         - Direct PERMISSION edge (explicit role, e.g. OWNER set on KB creation
           or via sharing) wins outright, regardless of admin/creator/scope.
-        - Team KB sharing: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
-          returns the user's team membership role.
+        - Team KB sharing: user→team (USER) + team→app (PERMISSION TEAM) returns
+          the role the team's grant gives (team_grant_role), never OWNER.
         - Otherwise: USER_APP_RELATION existence gates access; admin gets
           EDITOR (team apps) or OWNER (personal apps); the creator gets OWNER
           regardless of scope; team-only access (no USER_APP_RELATION) gets
@@ -23098,16 +23298,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             // Check direct PERMISSION edge (e.g. OWNER set on KB creation)
             OPTIONAL MATCH ({user_var})-[direct_perm:PERMISSION {{type: 'USER'}}]->({node_var})
 
-            // KB collection team share: user→team (USER, role) + team→app (PERMISSION TEAM, access only)
+            // KB collection team share: user→team (USER) + team→app (PERMISSION TEAM)
             // Uses a distinct variable name (kb_team) from the connector-share match above —
             // reusing `team` here would make Cypher treat it as a join constraint against
             // whatever (or nothing) the first OPTIONAL MATCH bound, silently breaking this
             // path whenever a team shares a KB via PERMISSION TEAM only (no USER_APP_RELATION).
-            OPTIONAL MATCH ({user_var})-[ut:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[tb:PERMISSION {{type: 'TEAM'}}]->({node_var})
+            OPTIONAL MATCH ({user_var})-[team_member:PERMISSION {{type: 'USER'}}]->(kb_team:Teams)-[team_grant:PERMISSION {{type: 'TEAM'}}]->({node_var})
 
             // Collect team KB roles and find highest priority
             WITH {node_var}, {user_var}, coalesce(own_app_rel, linked_app) AS user_app_rel, team_app_rel, direct_perm,
-                collect(DISTINCT ut.role) AS team_kb_roles_list
+                collect(DISTINCT {_TEAM_GRANT_ROLE_CYPHER}) AS team_kb_roles_list
 
             WITH {node_var}, {user_var}, user_app_rel, team_app_rel, direct_perm,
                 CASE
@@ -23137,7 +23337,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     AND coalesce({role_priority_map}[team_kb_role], 0) > coalesce({role_priority_map}[direct_role], 0)
                     THEN team_kb_role
                 WHEN direct_role IS NOT NULL THEN direct_role
-                // Team KB share: return user's team membership role
+                // Team KB share: the role the team's grant gives
                 WHEN team_kb_role IS NOT NULL THEN team_kb_role
                 // Access only via team->app: READER; admin gets EDITOR
                 WHEN user_app_rel IS NULL AND team_app_rel IS NOT NULL THEN (CASE WHEN is_admin THEN 'EDITOR' ELSE 'READER' END)
@@ -24702,7 +24902,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             }
 
             # Add only schema-allowed fields
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "tags", "isActive", "instructions", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

@@ -107,6 +107,116 @@ export function EntityDataTable<T>({
     onSelectionChange(next);
   };
 
+  // Refetch status while rows are shown: sticks below the header, announced to screen readers.
+  const refreshingStatus = (top: string) =>
+    isLoading && data.length > 0 ? (
+      <Box
+        style={{
+          position: 'sticky',
+          top,
+          float: 'right',
+          marginRight: 12,
+          zIndex: 2,
+          padding: '6px 10px',
+          borderRadius: 'var(--radius-3)',
+          backgroundColor: 'var(--olive-2)',
+          border: '1px solid var(--olive-4)',
+          boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
+          color: 'var(--slate-11)',
+        }}
+        aria-live="polite"
+        aria-label={t('common.refreshing')}
+      >
+        <Spinner size={14} />
+      </Box>
+    ) : null;
+
+  // Phones get a list: a row of desktop columns does not fit 390px, and scrolling it sideways
+  // under a pinned actions cell hid most of each row. The first column leads; the rest follow
+  // as labelled values on one wrapping line.
+  if (isMobile) {
+    const [primary, ...rest] = columns;
+    return (
+      <Flex direction="column" data-testid="entity-data-table" style={{ flex: 1, minHeight: 0, overflowY: 'auto' }}>
+        <Flex
+          align="center"
+          gap="2"
+          style={{
+            minHeight: 44,
+            padding: '0 var(--space-3)',
+            borderBottom: '1px solid var(--olive-6)',
+            backgroundColor: 'var(--olive-2)',
+            position: 'sticky',
+            top: 0,
+            zIndex: 2,
+            flexShrink: 0,
+          }}
+        >
+          <Checkbox
+            size="2"
+            checked={allSelected ? true : someSelected ? 'indeterminate' : false}
+            onCheckedChange={handleSelectAll}
+            aria-label={t('table.selectAll')}
+            style={{ cursor: 'pointer' }}
+          />
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('table.selectAll')}
+          </Text>
+        </Flex>
+        <Box style={{ position: 'relative', flex: '1 0 auto', opacity: isLoading && data.length > 0 ? 0.55 : 1 }}>
+          {isLoading && data.length === 0 ? (
+            <TableSkeleton rows={6} columns={[{ barWidth: 0.6 }]} hasRowActions={Boolean(renderRowActions)} />
+          ) : null}
+          {refreshingStatus('52px')}
+          {data.map((item) => {
+            const id = getItemId(item);
+            const isSelected = selectedIds.has(id);
+            return (
+              <Flex
+                key={id}
+                align="start"
+                gap="3"
+                tabIndex={0}
+                role="row"
+                aria-selected={isSelected}
+                onClick={() => onRowClick?.(item)}
+                style={{
+                  padding: 'var(--space-3)',
+                  borderBottom: '1px solid var(--olive-3)',
+                  backgroundColor: isSelected ? 'var(--accent-3)' : 'var(--olive-1)',
+                  cursor: 'pointer',
+                  userSelect: 'none',
+                }}
+              >
+                <Flex align="center" justify="center" className="touch-hit" style={{ paddingTop: 10 }} onClick={(e) => e.stopPropagation()}>
+                  <Checkbox size="2" checked={isSelected} onCheckedChange={() => handleSelectItem(id)} style={{ cursor: 'pointer' }} />
+                </Flex>
+                <Flex direction="column" gap="2" style={{ flex: 1, minWidth: 0 }}>
+                  {primary && <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{primary.render(item)}</Flex>}
+                  {rest.length > 0 && (
+                    <Flex align="center" wrap="wrap" gap="3" style={{ rowGap: 'var(--space-1)' }}>
+                      {rest.map((col) => (
+                        <Flex key={col.key} align="center" gap="1" style={{ minWidth: 0, maxWidth: '100%' }}>
+                          <Text size="1" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>{col.label}</Text>
+                          <Flex align="center" style={{ minWidth: 0, overflow: 'hidden' }}>{col.render(item)}</Flex>
+                        </Flex>
+                      ))}
+                    </Flex>
+                  )}
+                </Flex>
+                {renderRowActions && (
+                  <Flex align="center" gap="1" style={{ flexShrink: 0, paddingTop: 4 }} onClick={(e) => e.stopPropagation()}>
+                    {renderRowActions(item)}
+                  </Flex>
+                )}
+              </Flex>
+            );
+          })}
+        </Box>
+      </Flex>
+    );
+  }
+
   return (
     // One element scrolls both ways, so the header (top) and the actions cell (right) can be sticky.
     <Flex
@@ -191,27 +301,7 @@ export function EntityDataTable<T>({
         ) : null}
 
         {/* Refetch overlay spinner (data present, refreshing) */}
-        {isLoading && data.length > 0 ? (
-          <Box
-            style={{
-              position: 'sticky',
-              top: 'calc(var(--space-9) + 8px)',
-              float: 'right',
-              marginRight: 12,
-              zIndex: 2,
-              padding: '6px 10px',
-              borderRadius: 'var(--radius-3)',
-              backgroundColor: 'var(--olive-2)',
-              border: '1px solid var(--olive-4)',
-              boxShadow: '0 4px 12px rgba(0, 0, 0, 0.06)',
-              color: 'var(--slate-11)',
-            }}
-            aria-live="polite"
-            aria-label={t('common.refreshing')}
-          >
-            <Spinner size={14} />
-          </Box>
-        ) : null}
+        {refreshingStatus('calc(var(--space-9) + 8px)')}
 
         {data.map((item) => {
           const id = getItemId(item);

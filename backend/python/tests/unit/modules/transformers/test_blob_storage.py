@@ -8,7 +8,7 @@ import aiohttp
 import pytest
 from yarl import URL
 
-from app.modules.transformers.blob_storage import BlobStorage, StorageLookupUnavailableError
+from app.modules.transformers.blob_storage import STORED_REV, BlobStorage, StorageLookupUnavailableError
 
 
 # ---------------------------------------------------------------------------
@@ -392,6 +392,86 @@ class TestBlobStorageApply:
         bs.store_virtual_record_mapping.assert_awaited_once_with(
             "org-1", "vr-1", "new-doc", 2048
         )
+
+
+class TestStoredRevision:
+    """The mapping write records which content revision the stored record holds
+    (``storedRev``), so the artifact reader can tell a stale revision pointer."""
+
+    @staticmethod
+    def _ctx(settings: dict) -> MagicMock:
+        ctx = MagicMock()
+        ctx.record = _make_record_mock()
+        ctx.settings = settings
+        return ctx
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("kwargs", "expected"), [
+        ({"stored_rev": "rev-b"}, {"storedRev": "rev-b"}),
+        ({"stored_rev": None}, {"storedRev": None}),
+        ({}, {}),
+    ])
+    async def test_the_mapping_document_carries_the_revision_only_when_given(
+        self, kwargs: dict, expected: dict,
+    ) -> None:
+        graph_provider = AsyncMock()
+        graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+        bs = _make_blob_storage(graph_provider=graph_provider)
+
+        await bs.store_virtual_record_mapping("org-1", "vr-1", "doc-1", 10, **kwargs)
+
+        mapping_doc = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert {k: v for k, v in mapping_doc.items() if k == "storedRev"} == expected
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("rev", ["rev-b", None])
+    async def test_a_new_upload_maps_the_revision_from_the_context(self, rev: str | None) -> None:
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
+        bs.save_record_to_storage = AsyncMock(return_value=("doc-1", 10))
+        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
+
+        await bs.apply(self._ctx({STORED_REV: rev}))
+
+        bs.store_virtual_record_mapping.assert_awaited_once_with("org-1", "vr-1", "doc-1", 10, stored_rev=rev)
+
+    @pytest.mark.asyncio
+    async def test_an_update_in_place_maps_the_revision_from_the_context(self) -> None:
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._live_holders = AsyncMock(return_value=["rec-1"])
+        bs.update_record_buffer = AsyncMock(return_value=("doc-1", 10))
+        bs._get_current_document_path = AsyncMock(return_value=None)
+        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
+
+        await bs.apply(self._ctx({STORED_REV: "rev-b"}))
+
+        bs.store_virtual_record_mapping.assert_awaited_once_with("org-1", "vr-1", "doc-1", 10, stored_rev="rev-b")
+
+    @pytest.mark.asyncio
+    async def test_without_the_setting_the_revision_is_left_as_it_is(self) -> None:
+        bs = _make_blob_storage()
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
+        bs.save_record_to_storage = AsyncMock(return_value=("doc-1", 10))
+        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
+
+        await bs.apply(self._ctx({}))
+
+        assert "stored_rev" not in bs.store_virtual_record_mapping.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_a_classification_rewrite_leaves_the_revision_as_it_is(self) -> None:
+        bs = _make_blob_storage()
+        bs.get_record_from_storage = AsyncMock(return_value={"id": "rec-1", "block_containers": {}})
+        bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-1"})
+        bs._live_holders = AsyncMock(return_value=["rec-1"])
+        bs.update_record_buffer = AsyncMock(return_value=("doc-1", 10))
+        bs._get_current_document_path = AsyncMock(return_value=None)
+        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
+
+        await bs.save_semantic_metadata("org-1", "rec-1", "vr-1", {"summary": "s"})
+
+        assert "stored_rev" not in bs.store_virtual_record_mapping.await_args.kwargs
 
 
 # ===================================================================

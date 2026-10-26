@@ -426,6 +426,24 @@ class TestTypedReplyThroughTheFactory:
         context, _agent, _goal = await self._create("hello", [_user("file a bug"), _card("Which project?", status="error")])
         assert "ask_user_question_resume" not in context.tool_state
 
+    async def test_answers_with_no_card_in_the_history_are_a_new_request(self) -> None:
+        """Sent by hand, or the card's turn is not in this requester's history (a shared chat's
+        other turns reach the model without their tool rows): nothing to resume, so the message is
+        its own request, not a continuation of the earlier one."""
+        answers = _selections("Which project?", "PLAT")
+        context, _agent, goal = await self._create(answers, [_user("file a bug"), _bot("Filed PLAT-9.")])
+
+        assert "ask_user_question_resume" not in context.tool_state
+        assert goal.user_message == answers
+
+    async def test_tapped_answers_to_an_open_card_still_resume_it(self) -> None:
+        answers = _selections("Which project?", "PLAT")
+        context, agent, goal = await self._create(answers, [_user("file a bug"), _card("Which project?")])
+
+        assert context.tool_state["ask_user_question_resume"] == answers
+        assert goal.user_message == "file a bug"
+        assert isinstance((await agent.context.messages())[-1], ToolMessage)
+
 
 class TestOneResolutionPerCard:
     def test_an_answer_for_a_card_that_already_got_its_reply_is_a_repeat(self) -> None:
@@ -473,6 +491,11 @@ class TestOneResolutionPerCard:
         ]
         assert not card_already_answered(previous, _selections("Which priority?", "High"))
         assert card_already_answered(previous, _selections("Which project?", "WEB"))
+
+    def test_answers_sent_with_no_card_before_them_were_a_request_of_their_own(self) -> None:
+        answers = _selections("Which project?", "PLAT")
+        previous = [_user("file a bug"), _bot("Filed PLAT-9."), _user(answers), _bot("Noted.")]
+        assert last_real_user_query(previous, "fallback") == answers
 
     def test_a_typed_message_is_never_a_repeat(self) -> None:
         previous = [_user("file a bug"), _card("Which project?"), _user("PLAT"), _bot("Filed PLAT-9.")]

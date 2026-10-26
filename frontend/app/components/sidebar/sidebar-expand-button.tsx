@@ -5,7 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Box, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useNavHidden } from './use-nav-hidden';
 
 interface SidebarExpandButtonProps {
   /**
@@ -23,8 +23,7 @@ interface SidebarExpandButtonProps {
  */
 export function SidebarExpandButton({ placement = 'absolute' }: SidebarExpandButtonProps) {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
-  const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
+  const navHidden = useNavHidden();
   const setNavCollapsed = useSidebarWidthStore((s) => s.setNavCollapsed);
   const pageExpandControls = useSidebarWidthStore((s) => s.pageExpandControls);
   const registerPageExpandControl = useSidebarWidthStore((s) => s.registerPageExpandControl);
@@ -37,7 +36,7 @@ export function SidebarExpandButton({ placement = 'absolute' }: SidebarExpandBut
     return unregisterPageExpandControl;
   }, [isPageLevel, registerPageExpandControl, unregisterPageExpandControl]);
 
-  if (isMobile || !isNavCollapsed) return null;
+  if (!navHidden) return null;
   if (placement === 'shell' && pageExpandControls > 0) return null;
 
   const button = (

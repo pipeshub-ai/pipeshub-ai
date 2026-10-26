@@ -39,6 +39,11 @@ class TestRenderedBlocks:
 
 
 class TestBuildUrl:
+    def test_html_custom_property_value_does_not_hide_citation_text(self) -> None:
+        html = '<p style="--var: &quot;; display: none;&quot;">Visible citation passage with four words and a sentence.</p>'
+        url = generator.build_url(BASE, html, SourceFormat.HTML)
+        assert ":~:text=" in url
+
     def test_leading_symbols_do_not_drop_words(self) -> None:
         url = generator.build_url(BASE, "**Q3** results - the e-mail from Zürich isn't ready")
         directive = _directive_of(url)

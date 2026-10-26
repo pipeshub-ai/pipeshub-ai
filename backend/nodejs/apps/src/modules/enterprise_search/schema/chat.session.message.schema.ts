@@ -164,10 +164,6 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     // `nextSeq` counter. Gaps are legal; never treat this as a count or index.
     seq: { type: Number, required: true },
 
-    // The user this message was generated for. Redaction is per turn: only this
-    // user sees it in full. Absent = the session's initiator (pre-write-sharing rows).
-    authorUserId: { type: Schema.Types.ObjectId },
-
     messageType: {
       type: String,
       enum: [
@@ -273,9 +269,6 @@ const chatSessionMessageSchema = new Schema<IChatSessionMessageDocument>(
     referenceData: [referenceDataItemSchema],
     // Tool call data for tool_call messageType
     tools: [toolCallItemSchema],
-    // Records the turn drew on, cited or not. `default: undefined` keeps older rows
-    // absent ("unknown") instead of an empty list ("no sources").
-    sourceRecordIds: { type: [String], default: undefined },
     // Persisted chain-of-thought (additive, opt-out — see reasoningTurnSchema).
     reasoning: [reasoningTurnSchema],
     // Ordered agent-activity transcript (additive, `agui` protocol only) --

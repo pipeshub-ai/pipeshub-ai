@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.core.org_context import instrument_org_methods
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import (
@@ -27,6 +28,7 @@ from app.services.graph_db.common.record_visibility import (
     is_searchable_record,
 )
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -493,6 +495,11 @@ class IGraphDBProvider(ABC):
        During transition, providers should handle both old format (with _key, _from, _to)
        and new generic format to ensure smooth migration.
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
+
 
     # ==================== Connection Management ====================
 
@@ -1853,7 +1860,8 @@ class IGraphDBProvider(ABC):
         Those queries are issued concurrently. Awaiting them in place would make
         an unspecialised provider slower than the per-record code this replaced,
         which gathered the same calls; a caller must not lose latency by moving
-        to the batch API.
+        to the batch API. At most ``GRAPH_FANOUT_CONCURRENCY`` run at once, so a
+        page of hits does not open a burst of new database connections.
         """
         jobs = [
             (record_id, relation_type, outgoing)
@@ -1870,7 +1878,8 @@ class IGraphDBProvider(ABC):
             )
             return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
-        results = await asyncio.gather(
+        results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
             return_exceptions=True,
         )
@@ -2438,6 +2447,36 @@ class IGraphDBProvider(ABC):
         list and still advances the page.
 
         For stages with no status field on the record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        """``(virtualRecordId, rev)`` of these virtual records' revisions that have stage states,
+        that no record holding the virtual record is on (``contentRev``; records in the trash
+        count), and whose newest state was updated before ``updated_before_ms``.
+
+        Sorted by virtual record id, then rev. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        """Delete the stage states of each ``(virtualRecordId, rev)`` that still meets the rule of
+        :meth:`stage_states_unheld_revisions`, re-checked in the delete itself; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows, up to ``limit`` by key after ``after_key``.
+
+        Each is ``{"virtualRecordId", "orgId", "currentRev", "previousRev"}``; the revs are None
+        on a row whose virtual record has no artifact set, and such rows are returned too, so
+        one walk covers every virtual record. Raises on infrastructure errors.
         """
 
     @abstractmethod
@@ -4334,8 +4373,8 @@ class IGraphDBProvider(ABC):
         over to one of these holders. A trashed holder counts: a restore needs
         the content, and the trash purge releases it later. VRIDs nobody holds
         are absent from the result. Each holder carries ``id``, ``connectorId``,
-        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
-        ``isDeleted`` (a bool).
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl``,
+        ``contentRev`` (None when unset) and ``isDeleted`` (a bool).
 
         Raises on failure rather than returning an empty mapping, which would
         read as "nothing is shared" and let the caller delete shared storage.
@@ -4402,6 +4441,26 @@ class IGraphDBProvider(ABC):
 
         Raises on failure rather than answering an empty set, which would read
         as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
         """
         raise NotImplementedError
 

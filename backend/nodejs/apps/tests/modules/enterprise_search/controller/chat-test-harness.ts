@@ -6,6 +6,7 @@ import { ChatSession } from '../../../../src/modules/enterprise_search/schema/ch
 import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/schema/chat.session.message.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 
 /**
@@ -241,6 +242,21 @@ export class InMemoryChatStore {
   readonly citations: Array<InstanceType<typeof Citation>> = []
   /** One entry per write the controller performed, so a test can prove nothing was written. */
   readonly writes: string[] = []
+  /** Every inbox notification the controller created. */
+  readonly notifications: Doc[] = []
+
+  /**
+   * Sharing writes an inbox notification and looks up the sharer's name. Call this in a test that
+   * shares a chat, so neither reaches a database; each notification lands in `notifications`.
+   */
+  stubNotifications(): void {
+    const store = this
+    sinon.stub(Users, 'findOne').callsFake((() => new FakeQuery(() => ({ fullName: 'Owner Person' }))) as never)
+    sinon.stub(Notifications, 'create').callsFake((async (doc: Doc) => {
+      store.notifications.push(doc)
+      return { toObject: () => doc }
+    }) as never)
+  }
 
   addSession(fields: Doc): SessionDoc {
     const doc = new ChatSession({ lastActivityAt: Date.now(), status: 'Complete', ...fields })
@@ -336,10 +352,10 @@ export class InMemoryChatStore {
       }
       return Promise.resolve({ acknowledged: true, matchedCount: doc ? 1 : 0, modifiedCount: doc ? 1 : 0 })
     }) as never)
-    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: (SessionOption & { new?: boolean }) | null) => {
+    sinon.stub(ChatSession, 'findOneAndUpdate').callsFake(((filter: Filter, update: Doc, options?: (SessionOption & { returnDocument?: 'before' | 'after' }) | null) => {
       assertSessionUsable(options)
       const doc = store.findSessions(filter)[0]
-      // Like the driver, the document as it was before the update unless `new: true`.
+      // Like the driver, the document as it was before the update unless `returnDocument: 'after'`.
       const before = doc ? doc.toObject() : undefined
       if (doc) {
         applyUpdate(doc, update)
@@ -348,7 +364,7 @@ export class InMemoryChatStore {
       // An atomic $inc returns the counter as this call left it, even if another call runs before the await.
       const after = doc && update.$inc ? doc.toObject() : undefined
       return new FakeQuery((state) =>
-        options?.new === true ? (after ?? one(doc, state)) : (before ?? null),
+        options?.returnDocument === 'after' ? (after ?? one(doc, state)) : (before ?? null),
       )
     }) as never)
 

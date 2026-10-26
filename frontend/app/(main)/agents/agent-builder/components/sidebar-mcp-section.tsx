@@ -13,6 +13,8 @@ import {
   isMcpTypeIdConflict,
 } from '../sidebar-mcp-utils';
 import type { McpInstanceIdFlowNode } from '../sidebar-mcp-utils';
+import { filterMcpServerTools } from '../sidebar-utils';
+import { useSearchAwareExpanded } from '../sidebar-expand-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
 import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
@@ -21,6 +23,8 @@ import { isMcpOAuthSuccessMessageType } from '../../../workspace/mcp-servers/oau
 
 export function AgentBuilderMcpSection(props: {
   mcpServers: McpMyServerEntry[];
+  /** Palette search query: matches server names/descriptions and their tools. */
+  search?: string;
   loading: boolean;
   refreshMcpServers: () => Promise<void>;
   mcpMergeCheckNodes: McpInstanceIdFlowNode[];
@@ -35,6 +39,7 @@ export function AgentBuilderMcpSection(props: {
 }) {
   const {
     mcpServers,
+    search = '',
     loading,
     refreshMcpServers,
     mcpMergeCheckNodes,
@@ -47,7 +52,7 @@ export function AgentBuilderMcpSection(props: {
   } = props;
 
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const { isOpen, toggle } = useSearchAwareExpanded(search.trim() !== '');
   const [credentialsDialogInstance, setCredentialsDialogInstance] = useState<McpMyServerEntry | null>(
     null
   );
@@ -110,8 +115,10 @@ export function AgentBuilderMcpSection(props: {
   return (
     <Box>
       {mcpServers.map((entry) => {
+        const shownTools = filterMcpServerTools(entry, search);
+        if (shownTools === null) return null;
         const key = `mcp-row-${entry._id}`;
-        const isExpanded = expanded[key] ?? false;
+        const isExpanded = isOpen(key, false);
         const status = getMcpSidebarStatus(entry);
         const isPersonal = isPersonalMcpInstance(entry);
         const personalBlocked = isPersonal && agentShared;
@@ -139,9 +146,9 @@ export function AgentBuilderMcpSection(props: {
             key={entry._id}
             groupLabel={entry.name}
             groupMaterialIcon={isPersonal ? 'person' : entry.isCustom ? 'dns' : 'hub'}
-            itemCount={entry.tools.length}
+            itemCount={shownTools.length}
             isExpanded={isExpanded}
-            onToggle={() => setExpanded((p) => ({ ...p, [key]: !isExpanded }))}
+            onToggle={() => toggle(key, false)}
             dragType={dragType}
             dragData={dragBlocked ? undefined : dragPayload}
             onDragAttempt={onDragAttempt}
@@ -162,12 +169,12 @@ export function AgentBuilderMcpSection(props: {
             configureIconColor="var(--slate-11)"
             toolsetStatus={status}
           >
-            {entry.tools.length === 0 ? (
+            {shownTools.length === 0 ? (
               <Text size="1" style={{ color: 'var(--slate-11)', fontStyle: 'italic', padding: '4px 8px' }}>
                 {t('agentBuilder.noToolsSelected')}
               </Text>
             ) : (
-              entry.tools.map((tool) => (
+              shownTools.map((tool) => (
                 <SidebarToolDragRow
                   key={tool.namespacedName || tool.name}
                   name={tool.name}

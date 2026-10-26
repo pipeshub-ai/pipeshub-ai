@@ -20,9 +20,10 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { MessagePart, StatusMessage } from '../../types';
 import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
-import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
+import { stripAnswerMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
 import { CodeBlock, createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
@@ -373,9 +374,7 @@ const CONFIDENCE_TRAILER_RE = /(?:\n*-{3,}\s*\n)?\s*Confidence:\s*(?:Very High|H
 const NARRATION_REMARK_PLUGINS: PluggableList = [remarkGfm];
 
 function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const { text: withoutArtifacts } = parseArtifactMarkers(content);
-  const { text: afterDownloads } = parseDownloadMarkers(withoutArtifacts);
-  const withoutConfidence = afterDownloads.replace(CONFIDENCE_TRAILER_RE, '');
+  const withoutConfidence = stripAnswerMarkers(content).replace(CONFIDENCE_TRAILER_RE, '');
 
   // After stripping markers, lines like `- ::artifact[...]{...}` become
   // bare `- ` or `- \n`. Remove empty list items / headings so they don't
@@ -398,7 +397,7 @@ function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { conte
 
   return (
     <Box className="narration-text agent-activity-enter" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
@@ -418,7 +417,7 @@ const NarrationText = React.memo(NarrationTextImpl);
  * animation (see `TimelineRow`) signals "in progress" instead of an
  * in-text cursor, so this doesn't need its own accent bar. */
 function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const cleanContent = processMarkdownContent(content);
+  const cleanContent = processMarkdownContent(stripAnswerMarkers(content));
 
   const citMapsRef = useRef(citationMaps);
   citMapsRef.current = citationMaps;
@@ -443,7 +442,7 @@ function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { c
         lineHeight: 1.6,
       }}
     >
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>

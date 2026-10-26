@@ -208,6 +208,16 @@ describe('McpFlowNode', () => {
     expect(cfg.allTools).toBe(true);
     expect((cfg.tools as McpFlowTool[]).map((t) => t.name)).toEqual(['list_issues', 'create_pr']);
   });
+
+  it("shows the server's own logo in its header", () => {
+    renderNode({ allTools: true, tools: [LIST] });
+    expect(screen.getByRole('img', { name: 'github icon', hidden: true })).toBeTruthy();
+  });
+
+  it('goes by the catalog type when the server was renamed', () => {
+    renderNode({ allTools: true, tools: [LIST], name: 'Code host', displayName: 'Code host' });
+    expect(screen.getByRole('img', { name: 'github icon', hidden: true })).toBeTruthy();
+  });
 });
 
 describe('McpFlowNode with the live server', () => {

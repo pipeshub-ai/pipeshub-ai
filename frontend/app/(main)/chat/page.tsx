@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
+import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
@@ -191,7 +191,7 @@ function ChatContent() {
   const rawProjectParam = searchParams.get('projectId');
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -237,9 +237,6 @@ function ChatContent() {
   );
   const activeSlotIsOwner = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null
-  );
-  const activeSlotCanWrite = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.canWrite ?? null : null
   );
   const activeSlotConversationModelInfo = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.conversationModelInfo : undefined
@@ -700,7 +697,6 @@ function ChatContent() {
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
-        const canWrite = isOwner || detail.conversation.access?.accessLevel === 'write';
         const apiPagination = detail.pagination;
         const modelInfo = pickModelInfoFromConversationBundle({
           modelInfo: detail.conversation.modelInfo,
@@ -730,7 +726,6 @@ function ChatContent() {
           hasLoaded: true,
           remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
-          canWrite,
           messagePagination: {
             currentPage: apiPagination.page,
             hasOlderMessages: apiPagination.hasNextPage,
@@ -833,7 +828,7 @@ function ChatContent() {
       }
     }
 
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: suggestion.text }],
       startRun: true,
@@ -941,7 +936,7 @@ function ChatContent() {
     // pre-uploaded (the widget triggered the upload at attach-time), so we
     // forward the refs verbatim — same shape as a regular send from the
     // main composer.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
@@ -955,7 +950,7 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
+  }, [conversationId, aui, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
   const isBelowDesktop = useIsBelowDesktop();
@@ -1097,13 +1092,12 @@ function ChatContent() {
   const showInitialLoading =
     conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
 
-  // Hide chat input when viewing a shared conversation the user does not own or may not write to.
+  // Hide chat input when viewing a shared conversation the user does not own.
   // `null` means "not yet known": an existing chat that is still loading must not show the
   // composer, or a recipient sees it until the chat arrives. Otherwise (a new chat, or a chat
   // whose ownership could not be read) it stays visible.
-  // A user the chat is shared with for writing gets it too (`canWrite`), a read-only recipient does not.
   const showChatInput =
-    (activeSlotIsOwner !== false || activeSlotCanWrite === true) &&
+    activeSlotIsOwner !== false &&
     !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
   // Search mode: show results view when in search mode with results/in-progress search

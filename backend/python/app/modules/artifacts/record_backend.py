@@ -153,6 +153,11 @@ class ArtifactRecordBackend:
         document_id = (lookup or {}).get("manifestDocId")
         if not rev or not document_id:
             raise ArtifactUnavailable("no_pointer")
+        # The pointer moves only after a revision's set is written; a stored-record
+        # write whose set was not (a failed write, the write flag off) leaves it on
+        # an older revision than the stored record and its vectors hold.
+        if (lookup or {}).get("storedRev") != rev:
+            raise ArtifactUnavailable("stale", "the stored record holds another revision")
 
         limit = asyncio.Semaphore(self._read_concurrency)
         sidecar_path = classification_sidecar_path()

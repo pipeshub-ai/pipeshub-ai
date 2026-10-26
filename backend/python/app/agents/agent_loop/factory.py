@@ -691,6 +691,15 @@ class PipesHubAgentFactory:
         )
 
         resume_answers = query if is_ask_user_question_resume_query(query) else None
+        # Answers with no card in the history to answer (sent by hand, or the card's turn is not in
+        # this requester's history) are an ordinary message: resuming would drop their text and
+        # carry on an earlier request instead.
+        if resume_answers is not None and not any_card_shown(context.previous_conversations):
+            logger.info(
+                "ask_card_answers_without_a_card: conversation=%s run=%s",
+                context.conversation_id, context.run_id,
+            )
+            resume_answers = None
         # Typing instead of tapping answers the open card, as when a chat asks in text. A message
         # that carries files answers it too: every later reader of the history counts it so.
         typed_reply = resume_answers is None and is_open_card_reply(context.previous_conversations, query)
@@ -1547,10 +1556,18 @@ def _turn_showed_card(turn: Any) -> bool:  # noqa: ANN401
     )
 
 
+def any_card_shown(previous_conversations: list[dict[str, Any]] | None) -> bool:
+    """Whether any saved reply put a question card in front of the user."""
+    return any(_turn_showed_card(turn) for turn in previous_conversations or [])
+
+
 def _is_card_reply(turns: list[dict[str, Any]], index: int) -> bool:
-    """A user message that answers a card: tapped answers, or text typed while the card was open."""
+    """A user message that answers a card: tapped answers to a card shown before it, or text typed
+    while the card was open. Answers with no card before them were run as a request of their own."""
     content = str(turns[index].get("content") or "")
-    return is_ask_user_question_resume_query(content) or (index > 0 and _turn_showed_card(turns[index - 1]))
+    if is_ask_user_question_resume_query(content):
+        return any_card_shown(turns[:index])
+    return index > 0 and _turn_showed_card(turns[index - 1])
 
 
 def is_open_card_reply(previous_conversations: list[dict[str, Any]] | None, query: str | None) -> bool:

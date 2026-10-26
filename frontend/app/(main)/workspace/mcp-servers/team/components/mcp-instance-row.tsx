@@ -272,16 +272,19 @@ export function McpInstanceRow({
       </Flex>
 
       {needsAuth && (
+        // Wraps on narrow screens so the buttons drop under the text instead of off the edge.
         <Flex
           align="center"
           justify="between"
+          wrap="wrap"
+          gap="3"
           style={{
             padding: 'var(--space-3) var(--space-4)',
             borderTop: '1px solid var(--gray-a4)',
             backgroundColor: 'var(--gray-a2)',
           }}
         >
-          <Flex direction="column" gap="1">
+          <Flex direction="column" gap="1" style={{ flex: '1 1 240px', minWidth: 0 }}>
             <Text size="2" weight="medium" style={{ color: 'var(--gray-12)' }}>
               {reconnectNeeded
                 ? t('workspace.mcpServers.status.reconnectNeeded')
@@ -298,7 +301,7 @@ export function McpInstanceRow({
             </Text>
           </Flex>
 
-          <Flex align="center" gap="2">
+          <Flex align="center" gap="2" wrap="wrap">
             {instance.isAuthenticated ? (
               <>
                 <ActionButton

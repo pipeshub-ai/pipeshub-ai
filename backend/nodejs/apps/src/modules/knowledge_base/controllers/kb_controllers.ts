@@ -1349,6 +1349,10 @@ export const updateRecord =
           extension,
           lastModified,
           sha256Hash,
+          // Same clock and stage as the file processor's fallback for a missing
+          // lastModified. Python's own clock is read after the storage upload
+          // below, which has no time limit, so it cannot tell the two apart.
+          receivedAt: Date.now(),
         };
 
         // Get filename without extension to use as record name

@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from app.events.processor import convert_record_dict_to_record
-from app.models.blocks import SemanticMetadata
+from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.models.entities import Record
 from app.modules.named_entities.domain.models import NamedEntityExtraction
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
@@ -65,6 +65,7 @@ def _sink() -> MagicMock:
     sink = MagicMock()
     sink.prepare_enrichment = AsyncMock()
     sink.write_enrichment = AsyncMock()
+    sink.write_summary_point = AsyncMock()
     sink.persist_named_entities = AsyncMock(return_value="written")
     sink.entity_resolution_mode = MagicMock(return_value="apply")
     return sink
@@ -89,6 +90,10 @@ def _entities_io(blob: _Blob, rev: str = "rev-a") -> GraphEntitiesIO:
     )
 
 
+# The content the entities were extracted from, as the stage hands it to save().
+_BLOCKS = BlocksContainer(blocks=[], block_groups=[])
+
+
 def _extraction() -> NamedEntityExtraction:
     return NamedEntityExtraction(status="COMPLETED", strategy="deterministic")
 
@@ -102,7 +107,7 @@ async def test_a_record_that_moved_to_a_newer_revision_is_not_written() -> None:
     with pytest.raises(RevisionSuperseded):
         await io.restore_stored_metadata(_job(), SemanticMetadata(summary="s"))
     with pytest.raises(RevisionSuperseded):
-        await _entities_io(blob, rev="rev-b").save(_job("entities"), ["rec-1"], _extraction())
+        await _entities_io(blob, rev="rev-b").save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS)
     assert blob.saves == 0
 
 
@@ -121,6 +126,58 @@ async def test_a_kept_classification_is_restored_only_while_its_state_is_unchang
         await io.restore_stored_metadata(_job(), SemanticMetadata(summary="old"), still_current=superseded)
     assert blob.saves == 0
     await io.restore_stored_metadata(_job(), SemanticMetadata(summary="old"), still_current=unchanged)
+    assert blob.saves == 1
+
+
+@pytest.mark.asyncio
+async def test_a_restored_classification_puts_its_summary_point_back() -> None:
+    """A re-index of unchanged content deletes the record's vectors and rewrites the stored record
+    without its classification. Restoring the kept classification must also restore the summary
+    point, or the record silently drops out of summary-level search."""
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    sink = _sink()
+    io = _classify_io(blob, sink=sink)
+
+    async def superseded() -> bool:
+        return False
+
+    with pytest.raises(RevisionSuperseded):
+        await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"), still_current=superseded)
+    sink.write_summary_point.assert_not_awaited()
+
+    await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))
+
+    [call] = sink.write_summary_point.await_args_list
+    ctx: TransformContext = call.args[0]
+    assert ctx.record.id == "rec-1" and ctx.record.virtual_record_id == "vr-1"
+    assert ctx.record.semantic_metadata.summary == "kept"
+    sink.write_enrichment.assert_not_awaited()  # the taxonomy survives a re-index
+
+
+@pytest.mark.asyncio
+async def test_the_summary_point_is_written_before_the_classification_goes_back() -> None:
+    """Once the stored record holds the classification the job counts as done, so a summary
+    point that failed after that write would stay missing. Written first, a failure leaves the
+    classification out and the next delivery restores both."""
+    blob = _Blob({"block_containers": {"blocks": [], "block_groups": []}})
+    sink = _sink()
+    saves_when_written: list[int] = []
+
+    async def fail_once(ctx: TransformContext) -> None:
+        saves_when_written.append(blob.saves)
+        if len(saves_when_written) == 1:
+            raise RuntimeError("embedding model not loaded")
+
+    sink.write_summary_point = AsyncMock(side_effect=fail_once)
+    io = _classify_io(blob, sink=sink)
+
+    with pytest.raises(RuntimeError):
+        await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))
+    assert blob.saves == 0
+    assert not await _classify_io(blob).stored_metadata_present(_job())
+
+    await io.restore_stored_metadata(_job(), SemanticMetadata(summary="kept"))
+    assert saves_when_written == [0, 0]
     assert blob.saves == 1
 
 
@@ -147,7 +204,7 @@ async def test_entities_never_writes_the_stored_record() -> None:
     entities = _entities_io(blob)
     assert await entities.current_record_ids(_job("entities")) == ["rec-1"]
 
-    assert await entities.save(_job("entities"), ["rec-1"], _extraction()) == "written"
+    assert await entities.save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS) == "written"
 
     assert blob.saves == 0
     assert blob.stored["semantic_metadata"] is None  # type: ignore[index]
@@ -256,7 +313,7 @@ async def test_named_entities_are_persisted_under_each_records_lease(second_rev:
         return "kept"
 
     io._sink.persist_named_entities = AsyncMock(side_effect=persist)  # type: ignore[attr-defined]
-    assert await io.save(_job("entities"), ["rec-1", "rec-2"], _extraction()) == "kept"
+    assert await io.save(_job("entities"), ["rec-1", "rec-2"], _extraction(), _BLOCKS) == "kept"
     expected = [("rec-1", True), ("rec-2", True)] if second_rev == "rev-a" else [("rec-1", True)]
     assert seen == expected
 
@@ -283,7 +340,7 @@ async def test_classification_and_entities_are_written_under_the_jobs_virtual_re
         _job("entities"), Deadline(30), policy=DEFAULT_POLICY, graph=_graph("rev-a"), blob_storage=blob,  # type: ignore[arg-type]
         sink=sink, config_service=MagicMock(), record_from_document=_record, record_leases=RecordLeases(),
     )
-    await entities.save(_job("entities"), ["rec-1"], _extraction())
+    await entities.save(_job("entities"), ["rec-1"], _extraction(), _BLOCKS)
     assert seen == ["vr-1", "vr-1"]
 
 
@@ -381,7 +438,7 @@ async def test_entities_files_its_sidecar_only_for_a_written_extraction(outcome:
     io, sidecars = _with_sidecars(blob, entities=True, sink=sink)
     extraction = _extraction()
 
-    assert await io.save(_job("entities"), ["rec-1"], extraction) == outcome  # type: ignore[arg-type]
+    assert await io.save(_job("entities"), ["rec-1"], extraction, _BLOCKS) == outcome  # type: ignore[arg-type]
 
     if not filed:
         assert sidecars.calls == []

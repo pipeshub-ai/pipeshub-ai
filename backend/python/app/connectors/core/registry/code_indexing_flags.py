@@ -55,6 +55,36 @@ def exclude_paths_filter_field() -> FilterField:
     )
 
 
+def branch_filter_field() -> FilterField:
+    """The "Branch" sync filter every code-repository connector declares."""
+    return FilterField(
+        name=SyncFilterKey.BRANCH.value,
+        display_name="Branch",
+        filter_type=FilterType.SELECT,
+        category=FilterCategory.SYNC,
+        description=(
+            "The branch whose files are indexed. Leave it unset to follow the "
+            "repository's default branch."
+        ),
+        option_source_type=OptionSourceType.DYNAMIC,
+    )
+
+
+def code_branch(sync_filters: FilterCollection | None) -> str | None:
+    """The branch the admin picked for a code connector; None means the default branch."""
+    if not sync_filters:
+        return None
+    found = sync_filters.get(SyncFilterKey.BRANCH)
+    if found is None or found.is_empty():
+        return None
+    value = found.get_value(default=None)
+    # A SELECT is stored as a one-element list.
+    if isinstance(value, (list, tuple)):
+        value = value[0] if value else None
+    branch = str(value).strip() if value is not None else ""
+    return branch or None
+
+
 def code_exclude_globs(sync_filters: FilterCollection | None) -> tuple[str, ...]:
     """The admin's exclude globs for a code connector; none when unset."""
     if not sync_filters:

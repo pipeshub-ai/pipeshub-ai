@@ -124,7 +124,8 @@ async def _retry_one(
     graph_provider, sink, record_id: str, org_id: str | None, due: int, attempts: int = 0,
 ) -> str | None:
     from app.events.processor import convert_record_dict_to_record
-    from app.models.blocks import SemanticMetadata
+    from app.models.blocks import BlocksContainer, SemanticMetadata
+    from app.modules.indexing.content_dates import content_dates_apply
     from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
     from app.modules.transformers.transformer import TransformContext
 
@@ -143,6 +144,10 @@ async def _retry_one(
     # Only a record indexed before the entities stage keeps its extraction here; the stage
     # keeps it in its state, which reproject_named_entities reads first.
     record_obj.semantic_metadata = SemanticMetadata.model_validate(raw) if raw else None
+    # The persist also dates an upload by its content, which only the blocks show.
+    containers = blob.get("block_containers")
+    if containers and content_dates_apply(record_obj):
+        record_obj.block_containers = BlocksContainer.model_validate(containers)
     ctx = TransformContext(record=record_obj, settings={"skip_blob": True})
     # The count goes along: a claim that committed before a failure leaves no
     # marker to count from, and the retry must still stop after its last attempt.

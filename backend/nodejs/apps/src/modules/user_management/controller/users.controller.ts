@@ -29,10 +29,9 @@ import {
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
-  serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
-import { MailService } from '../services/mail.service';
+import { MailService, mailFailureError } from '../services/mail.service';
 import {
   EntitiesEventProducer,
   Event,
@@ -558,7 +557,7 @@ export class UserController {
             blockExpiresAt: null,
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       );
 
       if (!credential) {
@@ -791,7 +790,7 @@ export class UserController {
         }
         try {
           if (hashedPassword !== undefined) {
-            await UserCredentials.deleteOne({ userId: newUser._id });
+            await UserCredentials.deleteOne({ userId: String(newUser._id) });
           }
           await Users.deleteOne({ _id: newUser._id });
         } catch (cleanupError) {
@@ -1659,7 +1658,7 @@ export class UserController {
       user.deletedBy = req.user.userId ?? req.user._id;
 
       await UserCredentials.updateOne(
-        { userId },
+        { userId: String(userId) },
         { $unset: { hashedPassword: '' } },
       );
 
@@ -1731,7 +1730,7 @@ export class UserController {
           pic: compressedPic,
           mimeType: compressedPicMimeType,
         },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
       res.setHeader('Content-Type', compressedPicMimeType);
       res.status(201).send(compressedImageBuffer);
@@ -1869,9 +1868,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1893,9 +1890,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       }
 

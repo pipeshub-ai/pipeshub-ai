@@ -7,8 +7,6 @@ completion_data shape and the empty-answer / agent-failure fallback paths."""
 
 from __future__ import annotations
 
-import pytest
-
 from app.agents.agent_loop.error_classification import _USER_MESSAGES
 from app.agents.agent_loop.hooks.citations import CitationCollector
 from app.agents.agent_loop.respond import AnswerFinalizer
@@ -595,30 +593,3 @@ class TestCancelledPath:
 
         assert result["status"] == "stopped"
         assert "reasoning" in result
-
-
-class TestEveryAnswerCarriesSourceRecordIds:
-    """Node hides a shared answer unless it knows the records behind it, so
-    no way of ending a turn may omit `sourceRecordIds`."""
-
-    @pytest.mark.parametrize(
-        "run_kwargs",
-        [
-            {"agent_success": True, "agent_error": None, "agent_output": "42", "streamed_answer": "42"},
-            {"agent_success": True, "agent_error": None, "agent_output": "", "streamed_answer": ""},
-            {"agent_success": False, "agent_error": "boom", "agent_output": None, "streamed_answer": ""},
-            {"agent_success": False, "agent_error": "Cancelled", "agent_output": None, "streamed_answer": "part",
-             "agent_cancelled": True},
-        ],
-        ids=["success", "empty-fallback", "error", "stopped"],
-    )
-    async def test_complete_event_has_the_list(self, run_kwargs: dict) -> None:
-        context = make_context()
-        context.tool_state["known_record_ids"] = {"r1"}
-        sink = _RecordingSink()
-
-        await AnswerFinalizer(context, CitationCollector(context)).run(event_sink=sink, **run_kwargs)
-
-        complete = [e for e in sink.events if e["event"] == "complete"]
-        assert complete
-        assert complete[-1]["data"]["sourceRecordIds"] == ["r1"]

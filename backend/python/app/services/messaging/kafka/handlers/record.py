@@ -117,6 +117,7 @@ from app.utils.user_errors import (
 if TYPE_CHECKING:
     from redis.asyncio import Redis
 
+    from app.modules.pipeline.leases import RecordLeases
     from app.modules.transformers.entity_vectorstore import EntityVectorStore
 
 RECONCILE_ATTEMPTS = 2
@@ -248,6 +249,22 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.IN_PROGRESS.value,
     })
 
+    record_leases: "RecordLeases | None" = None  # bound by the indexing service, next to the lease manager
+
+    async def _claim_if_orphaned(self, record_id: str) -> str | None:
+        """The record's lease, taken when no live holder (a duplicate delivery, a stage) has it, else ``None``.
+
+        An IN_PROGRESS record nobody holds is orphaned. Holding the lease until the status write keeps a new delivery from
+        starting on it in between.
+        """
+        leases = self.record_leases
+        if leases is None or not leases.bound:
+            return None  # cannot tell: leave it to the stale scan
+        try:
+            return await leases.claim(record_id)
+        except Exception:
+            return None
+
     async def on_message_abandoned(
         self,
         message: StreamMessage | None,
@@ -286,6 +303,7 @@ class RecordEventHandler(BaseEventService):
             return
 
         record_id = str(record_id)
+        claim: str | None = None
         try:
             record = await self.event_processor.graph_provider.get_document(
                 record_id,
@@ -310,7 +328,12 @@ class RecordEventHandler(BaseEventService):
                 return
 
             current_status = record.get("indexingStatus")
-            if current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES:
+            # An in-flight record nobody holds: the delivery that was processing it ran out of attempts, nothing will
+            # finish it, and the stale scan would hand it back with a fresh retry budget, for ever.
+            if current_status in self._IN_FLIGHT_STATUSES:
+                claim = await self._claim_if_orphaned(record_id)
+            orphaned = claim is not None
+            if not orphaned and (current_status in self._SETTLED_STATUSES or current_status in self._IN_FLIGHT_STATUSES):
                 self.logger.info(
                     "Discarded message for record %s after %d attempt(s); "
                     "leaving status %s untouched: %s",
@@ -375,6 +398,9 @@ class RecordEventHandler(BaseEventService):
             # FAILED is terminal, so this may have been the repo's last file:
             # without asking here, the repo waits for an unrelated change.
             await self._request_code_edge_build_if_repo_drained(record_id, record)
+            if orphaned:
+                # Its queued copies were parked behind it; the next one gets its turn.
+                await self._trigger_next_queued_duplicate(record_id, record.get("virtualRecordId"))
         except Exception as e:
             self.logger.error(
                 "Error while marking record %s FAILED after its message was "
@@ -384,6 +410,9 @@ class RecordEventHandler(BaseEventService):
                 e,
                 exc_info=True,
             )
+        finally:
+            if claim is not None and self.record_leases is not None:
+                await self.record_leases.release(record_id, claim)
 
     async def on_recovery_exhausted(self, record_id: str, *, resume_enrichment: bool) -> None:
         """End a record stale recovery has given up on, and move its queued copies on.
@@ -944,7 +973,8 @@ class RecordEventHandler(BaseEventService):
 
         True when the record was handled: left QUEUED until the source's
         Retry-After for the stranded sweep to re-send, or, once it has waited
-        longer than allowed, FAILED. False leaves ``exc`` to the ordinary retry
+        longer than allowed while its connector got nothing indexed, FAILED.
+        False leaves ``exc`` to the ordinary retry
         path. See ``app/modules/indexing/rate_limit_deferral.py``.
         """
         retry_after = rate_limit_retry_after(exc)
@@ -964,6 +994,17 @@ class RecordEventHandler(BaseEventService):
         now = get_epoch_timestamp_in_ms()
         plan = plan_deferral(record, retry_after, now_ms=now, max_total_seconds=max_total)
         graph = self.event_processor.graph_provider
+        if plan.give_up and await self._connector_indexed_since(record["connectorId"], plan.since_ms):
+            # The source has been serving this connector all along; the record
+            # is behind the connector's own backlog, not refused.
+            self.logger.info(
+                "Record %s has been rate-limited since %s while its connector kept "
+                "indexing, so it is waiting its turn: its wait starts again",
+                record_id, plan.since_ms,
+            )
+            plan = plan_deferral(
+                record, retry_after, now_ms=now, max_total_seconds=max_total, new_run=True
+            )
         try:
             if plan.give_up:
                 reason = rate_limited_gave_up(source, plan.not_before_ms, now, max_total / 3600)
@@ -1001,6 +1042,24 @@ class RecordEventHandler(BaseEventService):
             record_id, retry_after, plan.not_before_ms,
         )
         return True
+
+    async def _connector_indexed_since(self, connector_id: str, since_ms: int) -> bool:
+        """Whether a record of the connector finished indexing after ``since_ms``.
+
+        False when that cannot be read, so the record fails as it would have
+        before the check, rather than waiting on an answer that never comes.
+        """
+        try:
+            return await self.event_processor.graph_provider.has_records_indexed_since(
+                connector_id, since_ms
+            )
+        except Exception as exc:
+            self.logger.warning(
+                "Could not tell whether connector %s indexed anything since %s, so a "
+                "record waiting that long on its rate limit is failed: %s",
+                connector_id, since_ms, exc,
+            )
+            return False
 
     async def _end_rate_limit_wait(self, record_id: str) -> None:
         """The source served the record, so its run of rate-limit waits is over."""
@@ -2157,7 +2216,7 @@ class RecordEventHandler(BaseEventService):
                 elif is_final:
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
-                    user_reason = to_user_reason(last_exception)
+                    user_reason = to_user_reason(last_exception, record=record, source=source_name)
                     if (refusal := too_large_refusal(last_exception)) is not None:
                         # A metrics fault must not stop the record being marked FAILED.
                         with contextlib.suppress(Exception):

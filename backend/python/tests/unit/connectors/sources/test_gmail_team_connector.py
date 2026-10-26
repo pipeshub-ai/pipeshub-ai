@@ -1297,9 +1297,9 @@ class TestProcessGroup:
         with patch.object(connector, "_fetch_group_members", new_callable=AsyncMock,
                           return_value=[{"type": "USER", "id": "m1"}]):
             await connector._process_group(group)
-            # A group with no user members is written empty, so people who left lose it.
-            written = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
-            assert len(written) == 1 and written[0][1] == []
+            # Members exist but none has an email: unknown is not empty, the stored members stay.
+            connector.data_entities_processor.on_new_user_groups.assert_not_called()
+            connector.data_entities_processor.note_kept_user_group.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_member_lookup_in_synced_users(self, connector):

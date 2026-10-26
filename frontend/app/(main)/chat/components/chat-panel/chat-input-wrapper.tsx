@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect } from 'react';
-import { useThreadRuntime } from '@assistant-ui/react';
+import { useAui } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
 import type { MentionNode } from '@/chat/utils/node-mentions';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
@@ -32,7 +32,7 @@ let lastEffectiveAgentIdForQueryMode: string | null = null;
  * Must be used inside AssistantRuntimeProvider.
  */
 export function ChatInputWrapper() {
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
 
@@ -222,7 +222,7 @@ export function ChatInputWrapper() {
     // Attachments were uploaded the moment they were added to the composer,
     // so by the time we reach here every ref is already server-assigned.
     // Forward verbatim to the runtime; no upload step at send time.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: message }],
       metadata: {

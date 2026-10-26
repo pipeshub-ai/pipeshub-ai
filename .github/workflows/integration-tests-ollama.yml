@@ -43,6 +43,7 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       PIPESHUB_BASE_URL: http://localhost:3000
       PIPESHUB_TEST_ENV: local
       TEST_GRAPH_DB_TYPE: neo4j
@@ -67,10 +68,19 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.commit_hash || github.sha }}
           persist-credentials: false
+
+      # Spot runners share addresses, so anonymous pulls run into Docker Hub's
+      # hourly cap. The token is read-only: PR code on the runner can read it.
+      - name: Log in to Docker Hub (read-only)
+        if: env.DOCKERHUB_PULL_LOGIN == 'true'
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
 
       # The bases for this tree's Dockerfile.base and uv.lock, by content hash
       # (see scripts/docker/ci_base_images.sh); the compose build reads the
@@ -85,12 +95,12 @@ jobs:
         run: docker compose -f docker-compose.integration.neo4j.yml build
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v7
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@v7
 
       - name: Install test dependencies
         working-directory: integration-tests
@@ -177,7 +187,7 @@ jobs:
 
       - name: Upload reports artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: reports-ollama
           path: integration-tests/reports/

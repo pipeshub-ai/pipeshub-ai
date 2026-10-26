@@ -278,17 +278,22 @@ class TestSearch:
         text = _rest_search(base_url, collection_pat, corpus["outside_needle"], {"kb": [corpus["kb_out"]]})
         assert corpus["outside_record"] not in text
 
+    @pytest.mark.parametrize("key", ["connectionApps", "connectionRecordGroups", "connectionRecords"])
     def test_a_client_cannot_send_the_servers_own_limit_keys(
-        self, base_url, unlimited_pat, collection_pat, corpus,
+        self, base_url, unlimited_pat, collection_pat, corpus, key,
     ) -> None:
-        # A limited token cannot widen its limit by sending one of its own ...
-        widened = _rest_search(base_url, collection_pat, corpus["outside_needle"],
-                               {"connectionApps": [corpus["kb_out"]]})
-        assert corpus["outside_record"] not in widened
-        # ... and an unlimited one is not narrowed by a client-sent key either: it is dropped.
-        ignored = _rest_search(base_url, unlimited_pat, corpus["outside_needle"],
-                               {"connectionApps": [corpus["kb_in"]]})
-        assert corpus["outside_record"] in ignored
+        """The gateway refuses the keys the server sets the limit with, so a
+        limited token cannot widen its limit with one, nor an unlimited one
+        narrow itself. Behind the gateway the query service drops them too."""
+        for token, ids in ((collection_pat, [corpus["kb_out"]]), (unlimited_pat, [corpus["kb_in"]])):
+            resp = requests.post(
+                f"{base_url}/api/v1/search",
+                headers=_bearer(token),
+                json={"query": corpus["outside_needle"], "limit": 10, "filters": {key: ids}},
+                timeout=120,
+            )
+            assert resp.status_code == 400, f"{resp.status_code} {resp.text[:400]}"
+            assert key in resp.text and corpus["outside_record"] not in resp.text, resp.text[:400]
 
     def test_the_website_session_is_not_limited(self, base_url, user_jwt, corpus) -> None:
         assert corpus["outside_record"] in _rest_search(base_url, user_jwt, corpus["outside_needle"])
@@ -352,15 +357,20 @@ class TestMcp:
         assert corpus["outside_needle"] not in outside
 
     def test_browsing_shows_only_what_is_shared(self, base_url, collection_pat, unlimited_pat, corpus) -> None:
-        (root, _), (opened_out, err_out) = mcp(
+        # Depth 3 lists records across the root's apps (app, folder, file),
+        # whatever a depth-1 root lists: the limit has to hold over records.
+        records = {"mode": "navigate", "depth": 3, "limit": 200}
+        (root, _), (root_records, _), (opened_out, err_out) = mcp(
             base_url, collection_pat,
             ("pipeshub_get_record_content", {"mode": "navigate"}),
+            ("pipeshub_get_record_content", records),
             ("pipeshub_get_record_content", {"mode": "navigate", "nodeId": corpus["kb_out"]}),
         )
-        (control_root, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", {"mode": "navigate"}))
-        # The root lists records flattened across apps, not the collections themselves.
-        assert corpus["outside_record"] in control_root, "the unlimited token should list both collections' records"
-        assert corpus["inside_record"] in root and corpus["outside_record"] not in root, root[:1500]
+        (control_records, _), = mcp(base_url, unlimited_pat, ("pipeshub_get_record_content", records))
+        assert corpus["outside_record"] in control_records, "the unlimited token should list both collections' records"
+        assert corpus["inside_record"] in root_records, root_records[:1500]
+        assert corpus["outside_record"] not in root_records, root_records[:1500]
+        assert corpus["kb_out"] not in root and corpus["outside_record"] not in root, root[:1500]
         assert err_out or OUTSIDE_MESSAGE in opened_out, opened_out[:1000]
         assert corpus["outside_record"] not in opened_out
 
@@ -581,7 +591,9 @@ class TestKnowledgeBaseRoutes:
         assert corpus["inside_needle"] in content.text
         assert folder not in content.text and folder_name not in content.text
 
-        # The whole collection's limit shares the folder, so the same file names it.
+        # The whole collection's limit shares the folder, so the same file names
+        # it, by its source parent: the details' ``folder`` is not filled for a
+        # collection file on either store, limited or not.
         whole = requests.get(record_url, headers=_bearer(collection_pat), timeout=60)
         assert whole.status_code == 200, whole.text[:300]
-        assert (whole.json().get("folder") or {}).get("id") == folder
+        assert (whole.json().get("record") or {}).get("externalParentId") == folder, whole.text[:500]

@@ -52,9 +52,17 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // when the vector store timed out or could not be reached, after a retry.
   'The search index took too long to respond, so no results are shown. Please try again in a minute.',
   "We couldn't reach the search index just now, so no results are shown. Please try again in a minute.",
+  // backend/python/app/api/routes/search.py (SEARCH_TIMED_OUT_MESSAGE) — the
+  // 503 when a search runs past SEARCH_DEADLINE_SECONDS and is stopped.
+  'This search took too long, so it was stopped and no results are shown. Try again, or narrow it with filters or a shorter date range.',
   // backend/python/app/utils/user_messages.py (DATABASE_UNREACHABLE) — the 503
   // when a route cannot read the calling user's record.
   "We couldn't reach PipesHub's database just now. Please try again in a few seconds.",
+  // backend/nodejs/apps/src/modules/mail/types/mail-event.types.ts
+  // (SMTP_PROBLEM_MESSAGES) — the 502 from the mail route when the SMTP server
+  // rejected the sign-in or could not be reached.
+  "The email wasn't sent because the mail (SMTP) server rejected the username or password. An admin can update them in Workspace settings > Mail.",
+  "The email wasn't sent because PipesHub couldn't reach the mail (SMTP) server. An admin can check the host and port in Workspace settings > Mail.",
 ]);
 
 const normalise = (text: string): string => text.trim().replace(/\s+/g, ' ');

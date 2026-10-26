@@ -16,6 +16,8 @@ from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.chatbot import warm_up_entity_vector_store
 from app.api.routes.records import router as records_router
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -34,8 +36,8 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
 from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
-from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.health import router as health_router
+from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
@@ -183,6 +185,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
 
+    await configure_envelope(app_container.config_service())
+
     from app.agents.actions.storage_search.storage_search import (
         sweep_orphan_views_at_startup,
     )
@@ -254,7 +258,24 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"❌ Embedding model warmup failed (will retry on first use): {warmup_error}"
                 )
 
-        app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
+        app.state.embedding_warmup_task = spawn_detached(_warmup_embedding_model())
+
+        # Builtin skill packs are seeded here, once per org per pack version,
+        # instead of being checked on every agent request.
+        try:
+            from app.agents.agent_loop.skills_wiring import skills_enabled
+            from app.services.featureflag.platform_settings import is_skills_enabled
+
+            if skills_enabled() and await is_skills_enabled(container.config_service()):
+                from app.agents.agent_loop.skills.manager_factory import (
+                    reconcile_builtin_skills_for_orgs,
+                )
+
+                app.state.skills_seed_task = asyncio.create_task(
+                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                )
+        except Exception as e:
+            logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
 
         # For OpenSearch: pre-load the k-NN HNSW graphs into the OS page cache
         # so that the first search after a restart or force-merge is not blocked
@@ -282,9 +303,9 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"k-NN index warmup failed (non-fatal, search will still work): {warmup_error}"
                 )
 
-        app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
+        app.state.knn_warmup_task = spawn_detached(_warmup_knn_index())
 
-        app.state.entity_store_warmup_task = asyncio.create_task(
+        app.state.entity_store_warmup_task = spawn_detached(
             warm_up_entity_vector_store(app_container, logger)
         )
 
@@ -300,7 +321,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             except Exception as reconcile_error:
                 logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
 
-        app.state.lexical_reconcile_task = asyncio.create_task(_reconcile_lexical_scoring())
+        app.state.lexical_reconcile_task = spawn_detached(_reconcile_lexical_scoring())
 
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
@@ -351,7 +372,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 warmup_error,
             )
 
-    app.state.sandbox_warmup_task = asyncio.create_task(_warmup_coding_sandbox())
+    app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
@@ -388,7 +409,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
-        "lexical_reconcile_task", "entity_store_warmup_task",
+        "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():

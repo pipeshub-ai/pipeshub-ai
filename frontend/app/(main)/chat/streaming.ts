@@ -19,6 +19,7 @@ import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapab
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
+import { stripAnswerMarkers } from './utils/parse-download-markers';
 import { debugLog } from './debug-logger';
 import {
   loadHistoricalMessages,
@@ -232,14 +233,19 @@ function followRemoteRun(slotId: string, convId: string): void {
  * - New message: replaces the trailing placeholder assistant row, or drops
  *   it entirely if the stream was stopped before any tokens arrived (e.g.
  *   during "Thinking") — an empty "stopped" bubble is just noise.
+ *
+ * The committed text is model output, not a backend-saved answer, so its
+ * markers are stripped: once committed it renders as `persisted` and any
+ * marker left in it would become a card.
  */
 function buildStoppedMessages(
   messages: ThreadMessageLike[],
   regenerateMessageId: string | null,
-  streamingContent: string,
+  rawStreamingContent: string,
   pendingAskUserQuestion?: PendingAskUserQuestion | null,
   streamingAssistantId?: string | null,
 ): ThreadMessageLike[] {
+  const streamingContent = stripAnswerMarkers(rawStreamingContent);
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>

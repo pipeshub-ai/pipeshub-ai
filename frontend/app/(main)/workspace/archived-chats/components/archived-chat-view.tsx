@@ -6,18 +6,12 @@ import { useTranslation } from 'react-i18next';
 import { ChatResponse, buildCitationMapsFromApi } from '@/chat/components';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
 import type { ConversationMessage } from '../types';
-import type { RequestAccessInfo } from '@/chat/types';
-
-type CitationMaps = ReturnType<typeof buildCitationMapsFromApi>;
 
 interface MessagePair {
   key: string;
   question: string;
   answer: string;
-  // The same per-viewer redaction the chat view shows (hidden sources, request access, who asked).
-  citationMaps: CitationMaps;
-  redactedAttachments: RequestAccessInfo[];
-  askedBy?: { userId: string; name: string };
+  citationMaps: ReturnType<typeof buildCitationMapsFromApi>;
 }
 
 /**
@@ -33,24 +27,15 @@ export function buildMessagePairs(messages: ConversationMessage[]): MessagePair[
 
     const next = messages[i + 1];
     const bot = next?.messageType === 'bot_response' ? next : undefined;
-    const answer = bot?.content ?? '';
 
     pairs.push({
       key: msg._id,
       question: msg.content,
-      answer,
-      citationMaps: buildCitationMapsFromApi(
-        bot?.citations ?? [],
-        bot?.redaction,
-        bot?.detailsHidden,
-      ),
-      redactedAttachments: (msg.attachments ?? []).flatMap((a) =>
-        'redacted' in a ? [a.requestAccess] : [],
-      ),
-      askedBy: msg.askedBy,
+      answer: bot?.content ?? '',
+      citationMaps: buildCitationMapsFromApi(bot?.citations ?? []),
     });
 
-    // Skip the bot_response in the outer loop
+    // Skip the bot_response in the outer loop, even an empty one
     if (bot) i++;
   }
 
@@ -97,8 +82,6 @@ function LoadingState() {
 // ======================================================
 
 interface ArchivedChatViewProps {
-  /** The chat shown: a redacted source is asked for in it. */
-  conversationId: string;
   conversationTitle: string;
   messages: ConversationMessage[];
   isLoading: boolean;
@@ -106,7 +89,6 @@ interface ArchivedChatViewProps {
 }
 
 export function ArchivedChatView({
-  conversationId,
   conversationTitle: _conversationTitle,
   messages,
   isLoading,
@@ -164,9 +146,6 @@ export function ArchivedChatView({
                 question={pair.question}
                 answer={pair.answer}
                 citationMaps={pair.citationMaps}
-                redactedAttachments={pair.redactedAttachments}
-                conversationId={conversationId}
-                askedBy={pair.askedBy}
                 isStreaming={false}
                 isLastMessage={false}
               />
