@@ -69,13 +69,15 @@ export function describeDocumentContract(fx: DocumentFixture): void {
     });
 
     it('a malformed id is not found, never a crash for the caller', async () => {
+      let found: unknown = null;
       let err: unknown;
       try {
-        expect(await repo.get(fx.newId(), 'not-an-id')).to.equal(null);
+        found = await repo.get(fx.newId(), 'not-an-id');
       } catch (e) {
         err = e;
       }
       // Either answer is today's behaviour (the store rejects the id); it must not hang or return a row.
+      expect(found).to.equal(null);
       expect(err === undefined || err instanceof Error).to.equal(true);
     });
   });
