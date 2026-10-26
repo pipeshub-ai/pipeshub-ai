@@ -7,7 +7,7 @@
  * the seam.
  */
 export interface Tx {
-  readonly store: 'mongo';
+  readonly store: 'mongo' | 'postgres';
 }
 
 export interface UnitOfWork {
@@ -20,6 +20,9 @@ export interface UnitOfWork {
    * `fn` may be called more than once if the store retries a transient
    * failure, so it must not have side effects outside `tx`.
    * Store errors leave as the typed errors in ./errors.
+   *
+   * `readOnly` declares that `fn` only reads: PostgreSQL then runs it as a read-only transaction that is not
+   * held up by a cutover freeze, and a write inside it fails. Mongo ignores it.
    */
-  run<T>(fn: (tx: Tx) => Promise<T>): Promise<T>;
+  run<T>(fn: (tx: Tx) => Promise<T>, opts?: { readOnly?: boolean }): Promise<T>;
 }

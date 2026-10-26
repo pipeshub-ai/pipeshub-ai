@@ -9,6 +9,10 @@
  * for a duplicate group name, catches UniqueConstraintError and does so itself.
  */
 import { DatabaseError } from '../errors/database.errors';
+import {
+  GatewayTimeoutError,
+  ServiceUnavailableError,
+} from '../errors/http.errors';
 import type { ErrorMetadata } from '../errors/base.error';
 
 export {
@@ -23,3 +27,27 @@ export class VersionConflictError extends DatabaseError {
     super('VERSION_CONFLICT', message, 500, metadata);
   }
 }
+
+/** The store is frozen for a cutover: retry after it (HTTP 503 with a Retry-After header; consumers re-throw so the message is redelivered). */
+export class DocStoreReadOnlyError extends ServiceUnavailableError {
+  constructor(retryAfterSeconds = 5) {
+    // `retryAfter` (a string) is the field the error middleware turns into a Retry-After header
+    super('The document store is read-only for a moment', {
+      retryAfter: String(retryAfterSeconds),
+    });
+  }
+}
+
+/** This process was started for a store that is no longer the live one: it must restart on the new profile. */
+export class DocStoreFencedError extends ServiceUnavailableError {
+  constructor(reason = 'store epoch is stale for this process') {
+    super(`The document store refused this write: ${reason}`);
+  }
+}
+
+/**
+ * A store failure that passes by itself (frozen for a cutover, a stale process, unreachable, timed out): a consumer re-throws it
+ * so the message is delivered again instead of being committed as handled.
+ */
+export const isRetryableStoreError = (e: unknown): boolean =>
+  e instanceof ServiceUnavailableError || e instanceof GatewayTimeoutError;
