@@ -558,6 +558,8 @@ export interface IndexingStatus {
   EMPTY: number;
   QUEUED: number;
   PAUSED: number;
+  SKIPPED?: number;
+  PASSWORD_PROTECTED?: number;
 }
 
 /**
@@ -631,6 +633,7 @@ export interface RecordsStatus {
   autoIndexOff: number;
   queued: number;
   empty: number;
+  passwordProtected: number;
 }
 
 /** Indexed record item */

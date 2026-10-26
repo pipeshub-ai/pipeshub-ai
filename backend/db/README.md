@@ -116,7 +116,7 @@ calls). Where LOAD is not allowed (managed platforms), `plan_explain` switches t
 org set; `check_index` falls back to it by itself.
 
 **`kernel.org_lineage(org)`** is the list the unit of work puts in `app.org_lineage`: the caller's org first, then the parents returned by
-`kernel.org_parent_ids(org)` (sorted, at most 16, well-formed ids only). Asking for another org's lineage answers like having no org. By default `org_parent_ids` returns nothing, so the lineage is the org alone. `org_parent_ids` is an extension point: its signature is
+`kernel.org_parent_ids(org)` (sorted, at most 16, well-formed ids only). Asking for another org's lineage answers like having no org. By default `org_parent_ids` returns nothing, so the lineage is the org alone. No table shipped here uses the `lineage` class (`test_no_shipped_table_uses_the_lineage_class`): it is a hook for deployments that add a parent hierarchy. `org_parent_ids` is an extension point: its signature is
 frozen (check 68), nobody but `org_lineage` can execute it (check 72), and an extra migration location replaces only its body (only functions named in `EXTENSION_POINTS` in `lib/vetted.py` may be extended) with a
 manifest entry marked `extends: true` (same signature, class and scope) and an `allowlist.yaml` whose `surface:` lists the new function
 line and whose `remove:` lists the old one. A body that reads the location's own tables first claims a new, empty schema
@@ -153,12 +153,12 @@ every role that reaches it.
 Roles: `python -m db.bootstrap_roles [--vetted schema,schema]` (administrative `PG_ADMIN_URL`; idempotent, additive, no
 role gets SUPERUSER, CREATEROLE or BYPASSRLS). On an existing database, run it again before every `db.migrate` upgrade: a new revision can need a role the old bootstrap did not create, and migrate stops at that revision. Each service has a login `pipeshub_<svc>_login`, a member of its own NOLOGIN
 service role `WITH INHERIT FALSE, SET TRUE`: the login holds no privileges until the unit of work switches role. No role
-bypasses RLS: `pipeshub_backup` reads every org through a SELECT policy, `pipeshub_restore` (NOLOGIN) inserts through a
+bypasses RLS: `pipeshub_backup` reads all rows through a SELECT policy, `pipeshub_restore` (NOLOGIN) inserts through a
 policy that admits only the org of an open restore window.
 
 Restore: `python -m db.restore_window open --org <id> [--hours N]` (needs `PG_ADMIN_URL`, `PG_MIGRATE_URL`, `PG_BACKUP_URL`,
 `PG_RESTORE_PASSWORD`) switches the application logins off and disconnects them, refuses unless that org has no rows,
-and gives `pipeshub_restore` a login that expires by itself. Export the org with `export --org <id> --dir <d>` (only that org's rows, parents first), `load` it as `pipeshub_restore`
+and gives `pipeshub_restore` a login that expires by itself. Export the org with `export [--org <id>] --dir <d>` (only that org's rows, parents first; without `--org` it takes the only org that has rows, and refuses when there are none or several), `load [--org <id>] --dir <d>` it as `pipeshub_restore` (without `--org`, the only org in the files)
 (a file holding another org's row is refused before anything is inserted: the database rejects a whole multi-row INSERT if
 one row is foreign, so a mixed dump would lose rows), then
 `sequences` (the migrator sets every column-owned sequence from the restored data), then `close`. Global tables are not

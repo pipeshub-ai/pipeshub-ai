@@ -10,6 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import httpx
 from dotenv import load_dotenv
@@ -50,10 +51,14 @@ def mint_token(subdomain: str, client_id: str, client_secret: str) -> str:
         payload = None
     if not response.is_success:
         error = payload.get("error") if isinstance(payload, dict) else None
+        # An account that cannot serve the API (a lapsed trial, a renamed subdomain) answers with a redirect.
+        # Only the path is named: the host is the account.
+        location = response.headers.get("location") if 300 <= response.status_code < 400 else None
         # A public client is refused with unauthorized_client; only confidential ones may use this grant.
         raise RuntimeError(
             f"Zendesk token request failed with HTTP {response.status_code}"
             + (f" ({error})" if isinstance(error, str) else "")
+            + (f" (redirected to {urlsplit(location).path})" if location else "")
         )
     access_token = payload.get("access_token") if isinstance(payload, dict) else None
     if not isinstance(access_token, str) or not access_token:

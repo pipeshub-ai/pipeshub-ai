@@ -467,7 +467,7 @@ class TestOAuthApps:
             create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}",
                              knowledge_limit={"apps": []})
 
-    def test_a_new_limit_and_a_lifted_one_both_revoke_the_apps_tokens(
+    def test_a_new_limit_revokes_the_apps_tokens_and_a_lifted_one_keeps_them_at_their_limit(
         self, base_url, user_jwt, corpus,
     ) -> None:
         app = create_oauth_app(base_url, user_jwt, name=f"pp7-it-{uuid.uuid4().hex[:10]}")
@@ -484,11 +484,19 @@ class TestOAuthApps:
             after = authorization_code_token(base_url, user_jwt, app)
             assert _claims(after["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
 
-            # Users agreed to the limit, so lifting it makes them connect again.
+            # Lifting widens what the app may reach, so connected clients stay connected, each at the
+            # limit its user agreed to; the new reach comes with the next connection.
             lifted = requests.put(edit, headers=_bearer(user_jwt), timeout=30, json={"knowledgeLimit": None})
             assert lifted.status_code == 200, f"{lifted.status_code} {lifted.text[:300]}"
-            with pytest.raises(RuntimeError):
-                refresh_token_grant(base_url, app, after["refresh_token"])
+            # The access token issued under the limit is not revoked either.
+            assert corpus["inside_record"] in _rest_search(
+                base_url, after["access_token"], corpus["inside_needle"],
+            )
+            kept = refresh_token_grant(base_url, app, after["refresh_token"])
+            assert _claims(kept["access_token"])["knowledgeLimit"]["apps"] == [corpus["kb_in"]]
+            assert corpus["outside_record"] not in _rest_search(
+                base_url, kept["access_token"], corpus["outside_needle"],
+            )
             again = authorization_code_token(base_url, user_jwt, app)
             assert "knowledgeLimit" not in _claims(again["access_token"])
         finally:

@@ -39,7 +39,7 @@ jobs:
       - name: Lint backend (changed files)
         run: |
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/nodejs/apps/src/**/*.ts' || true)
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/nodejs/apps/src/**/*.ts' ':(glob)backend/nodejs/apps/tests/**/*.ts' || true)
           if ((${#CHANGED_FILES[@]})); then
             echo "Linting changed TypeScript files:"
             printf '%s\n' "${CHANGED_FILES[@]}"

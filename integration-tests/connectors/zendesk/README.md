@@ -39,6 +39,10 @@ are not separate test variables. `ZENDESK_TEST_CLIENT_ID` and
 `ZENDESK_TEST_CLIENT_SECRET` belong to the Zendesk OAuth client. The plain
 `CLIENT_ID` and `CLIENT_SECRET` above belong to PipesHub's API client.
 
+If minting the token fails with `HTTP 302 (redirected to /agent/expired-trial)`,
+the Zendesk account's trial has lapsed and no OAuth call works until the account
+is extended or replaced; then update the subdomain and OAuth client settings.
+
 The running PipesHub stack also needs `PIPESHUB_BASE_URL`; either
 `CLIENT_ID`/`CLIENT_SECRET` for the PipesHub API or, in local mode,
 `PIPESHUB_TEST_USER_EMAIL`/`PIPESHUB_TEST_USER_PASSWORD` so the suite can create
