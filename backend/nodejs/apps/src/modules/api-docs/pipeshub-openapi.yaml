@@ -10908,7 +10908,10 @@ components:
           type: integer
           minimum: 1
           maximum: 50
-          description: Most chunks from any one record; left out, no cap beyond `limit`.
+          description: |
+            Most chunks from any one record. Left out, the search's own per-record
+            allowance applies: at least 4 passages from one record (more for a
+            large `limit`), so one long document does not fill the page.
         rewriteQuery:
           type: boolean
           default: false
