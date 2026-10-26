@@ -588,6 +588,8 @@ class Redshift:
         query: str,
     ) -> tuple[bool, str]:
         """Execute SQL query using configured Redshift client."""
+        # Redshift has no read-only transaction or timeout here (server-side enforcement is not
+        # verified): only the statement classifier (read_only_statement) protects it.
         try:
             if not query:
                 return self._result(False, {

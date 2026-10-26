@@ -66,8 +66,9 @@ async function openCollectionContents(page: Page, kbId: string) {
 
 function collectionEntry(page: Page, kbName: string) {
   // A collection with files gets an expand chevron whose icon text leads the accessible name.
+  // Its row menu is named "More options for <name>", which is not the entry itself.
   const escaped = kbName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return page.getByRole('button', { name: new RegExp(`(^|\\s)${escaped}$`) });
+  return page.getByRole('button', { name: new RegExp(`^(?!More options for )(.*\\s)?${escaped}$`) });
 }
 
 test.describe('Share a collection', () => {

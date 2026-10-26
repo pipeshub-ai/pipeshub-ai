@@ -123,7 +123,7 @@ export async function markRead(
         ...buildRetentionFilter(orgOid, userOid, null),
       },
       { $set: { status: 'read' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
@@ -153,7 +153,7 @@ export async function markUnread(
         ...buildRetentionFilter(orgOid, userOid, null),
       },
       { $set: { status: 'unread' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
@@ -183,7 +183,7 @@ export async function archiveNotification(
         ...buildRetentionFilter(orgOid, userOid, null),
       },
       { $set: { status: 'archived' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
@@ -213,7 +213,7 @@ export async function unarchiveNotification(
         ...buildRetentionFilter(orgOid, userOid, 'archived'),
       },
       { $set: { status: 'read' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });
@@ -243,7 +243,7 @@ export async function deleteNotification(
         ...buildRetentionFilter(orgOid, userOid, null, true),
       },
       { $set: { isDeleted: true, deletedBy: userOid } },
-      { new: true },
+      { returnDocument: 'after' },
     ).lean();
     if (!doc) {
       res.status(404).json({ message: 'Notification not found' });

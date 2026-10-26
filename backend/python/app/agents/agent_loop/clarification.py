@@ -78,18 +78,8 @@ async def emit_pre_run_clarification(
         for evt in context.formatter.ask_user_question(context, status="success", tool_data=tool_data):
             await event_sink.write(evt)
 
-    from app.agents.agent_loop.source_ids import OPAQUE_SOURCE
-
     clarifying_text = questions[0].question if questions else user_intent
-    # Nothing was retrieved, but the intent model read the turn's attachments, so the
-    # question can quote them; an attachment with no record id cannot be checked.
-    attachments = context.tool_state.get("attachments") or []
-    attached = sorted({str(a["recordId"]) for a in attachments if isinstance(a, dict) and a.get("recordId")})
-    unnamed = any(not (isinstance(a, dict) and a.get("recordId")) for a in attachments)
-    completion_data = await _emit_text_answer(
-        context, clarifying_text, "Clarification Needed", event_sink=event_sink,
-        source_record_ids=[*attached, OPAQUE_SOURCE] if unnamed else attached,
-    )
+    completion_data = await _emit_text_answer(context, clarifying_text, "Clarification Needed", event_sink=event_sink)
     context.tool_state["ask_user_question_emitted"] = True
     logger.info(
         "Pre-run clarification: asked %d question(s) instead of running the agent (org_id=%s conversation_id=%s)",
@@ -116,14 +106,12 @@ async def emit_already_answered(context: "AgentContext", *, event_sink: "EventSi
 
 async def _emit_text_answer(
     context: "AgentContext", text: str, match_type: str, *, event_sink: "EventSink",
-    source_record_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     completion_data: dict[str, Any] = {
         "answer": text,
         "citations": [],
         "confidence": "Medium",
         "answerMatchType": match_type,
-        **({"sourceRecordIds": source_record_ids} if source_record_ids is not None else {}),
     }
     for evt in context.formatter.answer_delta(
         context, chunk=text, accumulated=text, citations=[], raw_length=len(text),

@@ -17,6 +17,7 @@ import {
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
+import { mcpDiscoveryScopes } from '../config/scopes.config';
 
 /**
  * OpenID Connect Provider Controller
@@ -196,7 +197,7 @@ export class OIDCProviderController {
     const metadata: OAuthProtectedResourceMetadata = {
       resource: `${backendUrl}/mcp`,
       authorization_servers: [backendUrl],
-      scopes_supported: this.appConfig.mcpScopes,
+      scopes_supported: mcpDiscoveryScopes(this.appConfig.mcpScopes),
       bearer_methods_supported: ['header'],
       resource_documentation: `${backendUrl}/api/v1/docs`,
       ...(deviceClientId

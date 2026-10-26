@@ -34,12 +34,7 @@ import {
   loadProjectForSession,
   resolveProjectLink,
 } from '../utils/project-context';
-import {
-  assertNotReadOnlyViewer,
-  buildUserQueryMessage,
-  extractModelInfo,
-  ownerOrWriterFilter,
-} from '../utils/utils';
+import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
 import { hydrateScopedRequestAsUser } from '../utils/scoped-request';
 
 const logger = Logger.getInstance({ service: 'Non-streaming chat' });
@@ -146,34 +141,23 @@ const nonStreamingTurn =
       } else {
         // Project context always comes from the session row, never the
         // request body — a follow-up turn cannot move itself into a project.
-        const scope = {
-          _id: req.params.conversationId,
-          orgId,
-          isDeleted: false,
-          ...(target.kind === 'agent'
-            ? { agentKey: target.agentKey, ...ONLY_AGENT }
-            : EXCLUDE_AGENT),
-        };
-        // An agent conversation is shared read-only: only its owner adds messages,
-        // and anyone else gets the 404 of a conversation they cannot see.
-        if (target.kind !== 'agent')
-          await assertNotReadOnlyViewer(scope, userId);
         const continued = await continueConversation(
           {
-            ...scope,
+            _id: req.params.conversationId,
+            orgId,
+            userId,
+            isDeleted: false,
             ...(target.kind === 'agent'
-              ? { userId }
-              : ownerOrWriterFilter(userId)),
+              ? { agentKey: target.agentKey, ...ONLY_AGENT }
+              : EXCLUDE_AGENT),
           },
           userMessage,
-          { appConfig, userId: String(userId), orgId: String(orgId) },
         );
         conversation = continued.conversation;
         previousConversations = continued.previousConversations;
-        // The requester's project access, not the owner's.
         project = await loadProjectForSession(
           String(conversation.orgId),
-          String(userId),
+          String(conversation.userId),
           conversation.projectId,
         );
       }
@@ -197,7 +181,6 @@ const nonStreamingTurn =
         headers: req.headers as Record<string, string>,
         modelInfo: extractModelInfo(body),
         requestId,
-        viewer: { appConfig, userId: String(userId), orgId: String(orgId) },
       });
 
       const meta = {

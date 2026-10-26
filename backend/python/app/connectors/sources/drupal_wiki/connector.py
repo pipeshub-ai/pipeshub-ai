@@ -77,6 +77,7 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     OptionSourceType,
     SyncFilterKey,
+    extension_passes_filter,
     load_connector_filters,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
@@ -134,6 +135,16 @@ def page_external_id(page_id: int | str) -> str:
 
 def attachment_external_id(attachment_id: int | str) -> str:
     return f"{ATTACHMENT_ID_PREFIX}{attachment_id}"
+
+
+def _attachment_extension(attachment: dict[str, Any]) -> str | None:
+    """Lower-cased extension of an attachment's file name, or None when it has none."""
+    file_name = (
+        attachment.get("fileName")
+        or attachment.get("name")
+        or f"attachment-{attachment.get('id')}"
+    )
+    return file_name.rsplit(".", 1)[-1].lower() if "." in file_name else None
 
 
 def source_id_from_external(external_id: str, prefix: str) -> int | None:
@@ -255,6 +266,14 @@ def _as_int(value: object) -> int | None:
             category=FilterCategory.SYNC,
             default_value=[],
             option_source_type=OptionSourceType.DYNAMIC,
+        ))
+        .add_filter_field(CommonFields.file_extension_filter(
+            display_name="Attachment types",
+            description=(
+                "Sync only these attachment types (Include), or every type except them "
+                "(Exclude). Applies to attachments only; pages are always synced. "
+                "Leave empty to sync every attachment."
+            ),
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .add_filter_field(FilterField(
@@ -1021,6 +1040,7 @@ class DrupalWikiConnector(BaseConnector):
                 [],
             )
             for attachment in source_attachments
+            if extension_passes_filter(self.sync_filters, _attachment_extension(attachment))
         )
         return records
 
@@ -1083,7 +1103,7 @@ class DrupalWikiConnector(BaseConnector):
             or f"attachment-{attachment_id}"
         )
         last_modified = attachment.get("lastModified")
-        extension = file_name.rsplit(".", 1)[-1].lower() if "." in file_name else None
+        extension = _attachment_extension(attachment)
         mime_type, _ = mimetypes.guess_type(file_name)
         record = FileRecord(
             org_id=self.data_entities_processor.org_id,

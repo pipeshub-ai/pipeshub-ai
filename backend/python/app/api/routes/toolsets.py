@@ -66,6 +66,7 @@ from app.services.notification.types import (
     NotificationType,
 )
 from app.utils.oauth_config import (
+    apply_tenant_to_microsoft_oauth_url as _apply_tenant_to_microsoft_oauth_url,
     check_salesforce_login_url_setting,
     extract_oauth_error_message,
     get_oauth_config,
@@ -572,37 +573,6 @@ def _generate_oauth_config_id() -> str:
 # ============================================================================
 # Auth Config Helpers
 # ============================================================================
-
-def _apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
-    """Substitute the tenant segment in a Microsoft login URL.
-
-    Microsoft OAuth URLs are of the form:
-        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/authorize
-        https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token
-
-    If *tenant_id* is provided and is not empty / "common" / "organizations",
-    we replace the current tenant segment with the supplied value so that
-    single-tenant Azure AD applications (which cannot use the /common endpoint)
-    can authenticate successfully.
-    """
-    if not url or "login.microsoftonline.com" not in url:
-        return url
-
-    # Normalise – treat blank or "common" as no-op
-    tenant = (tenant_id or "").strip()
-    if not tenant or tenant.lower() == "common":
-        return url
-
-    # Replace the tenant segment — URL looks like:
-    #   https://login.microsoftonline.com/<current_tenant>/oauth2/...
-    import re as _re
-    return _re.sub(
-        r"(https://login\.microsoftonline\.com/)[^/]+(/)",
-        rf"\g<1>{tenant}\2",
-        url,
-        count=1,
-    )
-
 
 def _get_oauth_config_from_registry(toolset_type: str, registry: ToolsetRegistry) -> OAuthConfig:
     """Get OAuth config from toolset registry (returns dataclass instance)"""

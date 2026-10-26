@@ -133,6 +133,7 @@ class ConnectorStateKeys:
     LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
     LAST_SYNC_OUTCOME = "lastSyncOutcome"
     LAST_SYNC_SUMMARY = "lastSyncSummary"
+    ACTION_ITEMS = "actionItems"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"

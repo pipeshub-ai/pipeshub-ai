@@ -25,6 +25,8 @@ import pdfplumber
 import pypdfium2 as pdfium
 from PIL import Image
 
+from app.services.resource_governor.probe import effective_cpu_count
+from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
@@ -56,18 +58,24 @@ def _get_pdf_raster_worker_count() -> int:
         except ValueError:
             pass
 
-    cpu_count = os.cpu_count() or 1
-    return max(1, min(cpu_count, 2))
+    return max(1, min(effective_cpu_count(), 2))
 
 
 PDF_RASTER_WORKERS = _get_pdf_raster_worker_count()
 
 
+def pdf_raster_pool_size() -> int:
+    """Processes the rasterizer pool uses in this service process (for /health)."""
+    return scaled(PDF_RASTER_WORKERS)
+
+
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
-        max_workers=scaled(PDF_RASTER_WORKERS),
+        max_workers=pdf_raster_pool_size(),
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=start_housekeeping,
+        initargs=(os.getpid(),),
     )
 
 
@@ -230,7 +238,7 @@ def _worker_count_chars_from_bytes(pdf_bytes: bytes) -> list[int]:
 
 def _run_in_pool(fn, *args):
     try:
-        return _get_pdf_raster_pool().submit(fn, *args).result()
+        return _get_pdf_raster_pool().submit(run_and_release, fn, *args).result()
     except BrokenProcessPool:
         _logger.warning(
             "PDF rasterization process pool broke (worker likely OOM-killed); "
@@ -336,6 +344,7 @@ async def render_all_pages_from_bytes(
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         _get_pdf_raster_pool(),
+        run_and_release,
         _worker_render_all_from_bytes,
         pdf_bytes,
         resolution,

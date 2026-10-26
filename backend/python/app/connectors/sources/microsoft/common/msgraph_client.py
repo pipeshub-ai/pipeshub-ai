@@ -404,12 +404,13 @@ class MSGraphClient:
             raise
 
 
-    async def get_delta_response(self, url: str) -> dict:
+    async def get_delta_response(self, url: str, *, show_sharing_changes: bool = False) -> dict:
         """
         Retrieves the drive items, delta token and next link for a given Microsoft Graph API URL.
 
         Args:
             url (str): The full Microsoft Graph API URL to query.
+            show_sharing_changes: Also report items whose sharing alone changed.
 
         Returns:
             dict: Dictionary containing 'deltaLink', 'nextLink', and 'driveItems'.
@@ -423,6 +424,8 @@ class MSGraphClient:
 
             async with self.rate_limiter:
                 request_info = RequestInformation(Method.GET, url)
+                if show_sharing_changes:
+                    request_info.headers.add("Prefer", SHAREPOINT_DELTA_PREFER)
                 error_mapping: Dict[str, type[ParsableFactory]] = {
                     "4XX": ODataError,
                     "5XX": ODataError,

@@ -35,6 +35,8 @@ class GmailProblem:
 @dataclass
 class GmailSyncHealth:
     problems: list[GmailProblem] = field(default_factory=list)
+    #: Groups whose members could not be read: their stored members stay, the run still succeeds.
+    unread_groups: list[str] = field(default_factory=list)
 
     def record(self, mailbox: str, error: BaseException, what: str) -> GmailFailure:
         failure = classify(error)
@@ -60,7 +62,7 @@ class GmailSyncHealth:
 
     def coverage(self) -> FullSyncCoverage:
         """A full sync that missed part of a mailbox cannot tell what is gone, so it removes nothing."""
-        return FullSyncCoverage(complete=self.complete)
+        return FullSyncCoverage(complete=self.complete and not self.unread_groups)
 
     def summary(self) -> dict[str, object]:
         failed = sorted({p.mailbox for p in self.failures})

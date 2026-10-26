@@ -16,7 +16,11 @@ import {
   FullSyncButton,
 } from './primitives';
 import { InlineEditableName } from '../inline-editable-name';
-import { InstanceSyncOperationIndicator, InstanceSetupStatusRow } from './instance-status-badges';
+import {
+  InstanceActionNeededBadge,
+  InstanceSyncOperationIndicator,
+  InstanceSetupStatusRow,
+} from './instance-status-badges';
 import { deriveSyncStatusState, getSyncStrategyLabel, getSyncIntervalLabel, lastSyncedAt } from './utils';
 import { CONNECTOR_INSTANCE_STATUS } from '../../constants';
 import { usePollInstanceWhileSyncing } from '../../utils/use-poll-instance-while-syncing';
@@ -214,6 +218,8 @@ export function InstanceCard({
             truncate
             style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}
           />
+
+          <InstanceActionNeededBadge instance={instance} onOpen={onChevronClick} />
 
           {onRefresh ? (
             <IconButton className="touch-hit"

@@ -420,7 +420,6 @@ export function ChatInput({
   const agentHasInternalSearch = hasAnyFilter(agentKnowledgeDefaults);
   const scopedInternalSearch = scopedAgentCapabilities?.internalSearch ?? true;
   const scopedWebSearch = scopedAgentCapabilities?.webSearch ?? true;
-  const scopedDeepResearch = scopedAgentCapabilities?.deepSearch ?? false;
   const universalAgentToolGroups = useChatStore((s) => s.universalAgentToolGroups);
   // Project-scoped chat (`/chat?projectId=` or the /projects workspace). Hydrated by
   // `useProjectScopeHydration`; null everywhere else.
@@ -449,14 +448,6 @@ export function ChatInput({
     return {
       internalSearch: isAgentChat ? scopedInternalSearch : settings.agentCapabilities.internalSearch,
       webSearch: isAgentChat ? scopedWebSearch : settings.agentCapabilities.webSearch,
-      deepResearch: isAgentChat ? scopedDeepResearch : (settings.agentCapabilities.deepSearch ?? false),
-      // Capabilities reach the backend only in agent mode, so the toggle is offered only there.
-      onToggleDeepResearch: isAgentChat || settings.queryMode === 'agent'
-        ? (enabled: boolean) => {
-            if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { deepSearch: enabled });
-            else if (!isAgentChat) setAgentCapabilities({ deepSearch: enabled });
-          }
-        : undefined,
       onToggleInternalSearch: (enabled: boolean) => {
         if (canPersistScoped) setScopedAgentCapabilities(agentId as string, { internalSearch: enabled });
         else if (!isAgentChat) setAgentCapabilities({ internalSearch: enabled });
@@ -477,9 +468,7 @@ export function ChatInput({
     agentId,
     scopedInternalSearch,
     scopedWebSearch,
-    scopedDeepResearch,
     settings.agentCapabilities,
-    settings.queryMode,
     setScopedAgentCapabilities,
     setAgentCapabilities,
     agentHasInternalSearch,
@@ -488,7 +477,6 @@ export function ChatInput({
   const showPlusMenuFilterBadge = hasNonDefaultSearchCapabilities(
     plusMenuCapabilities.internalSearch,
     plusMenuCapabilities.webSearch,
-    plusMenuCapabilities.onToggleDeepResearch ? plusMenuCapabilities.deepResearch : false,
   );
 
   // Context key for the active (agent-scoped or assistant) chat. All

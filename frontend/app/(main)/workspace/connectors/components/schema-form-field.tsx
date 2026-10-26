@@ -1,8 +1,6 @@
 'use client';
 
 import React, { useState, useRef, useContext, useMemo, useEffect, useId } from 'react';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import { touchTarget } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, Box, Checkbox, Switch, Select, IconButton, Tooltip, Button } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -660,7 +658,6 @@ function PasswordInput({
   revealed?: boolean;
 }) {
   const { t } = useTranslation();
-  const isMobile = useIsMobile();
   const [showPassword, setShowPassword] = useState(false);
   // Follow the reveal: shown when the form fetched the stored value, hidden again when it
   // moves to another config. The eye still toggles freely in between.
@@ -705,11 +702,13 @@ function PasswordInput({
           size="1"
           aria-label={t(showPassword ? 'auth.common.hidePassword' : 'auth.common.showPassword')}
           onClick={() => setShowPassword(!showPassword)}
+          // touch-hit widens the tap area without growing the icon out of the field.
+          className="touch-hit"
           style={{
-            ...touchTarget(isMobile),
             position: 'absolute',
             right: 6,
-            top: 8,
+            top: '50%',
+            transform: 'translateY(-50%)',
             cursor: 'pointer',
           }}
         >

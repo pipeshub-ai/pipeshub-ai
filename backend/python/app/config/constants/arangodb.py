@@ -390,6 +390,25 @@ class ExtensionTypes(Enum):
     YAML = "yaml"
     YML = "yml"
 
+# Common file types PipesHub cannot index. Sync filters offer them so a user can
+# exclude them (Not in); they are kept out of ExtensionTypes because that enum
+# lists the types that can be indexed.
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
+    # archives
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
+    # databases
+    "db", "sqlite", "sqlite3", "mdb", "accdb",
+    # executables and installers
+    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
+    # temporary and backup files
+    "tmp", "bak", "swp", "lock",
+    # logs
+    "log",
+    # video and audio
+    "mp4", "mov", "avi", "mkv", "webm", "wmv",
+    "mp3", "wav", "flac", "m4a", "aac", "ogg",
+)
+
 class MimeTypes(Enum):
     PDF = "application/pdf"
     GMAIL = "text/gmail_content"

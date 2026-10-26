@@ -403,7 +403,7 @@ test.describe('Ask user question — journeys', () => {
     await expect(page.getByText('Which region?')).toBeVisible();
   });
 
-  test('card then a later hi, then answering the card, puts the reply under the card', async ({ page }) => {
+  test('a later hi answers the open card: the card closes and the reply shows', async ({ page }) => {
     const id = 'conv-ask-then-hi';
     const asked = [
       msg({ _id: 'u1', messageType: 'user_query', content: 'helpme' }),
@@ -432,19 +432,6 @@ test.describe('Ask user question — journeys', () => {
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const query = String(route.request().postDataJSON().query ?? '');
-      if (query.startsWith('User selections')) {
-        return route.fulfill({
-          status: 200,
-          headers: { 'Content-Type': 'text/event-stream' },
-          body: sseWithMessages(id, 'Planning the EU launch.', [
-            ...asked,
-            msg({ _id: 'u2', messageType: 'user_query', content: 'hiii' }),
-            msg({ _id: 'b2', messageType: 'bot_response', content: 'Hi! How can I help you today?' }),
-            msg({ _id: 'sel', messageType: 'user_query', content: query }),
-            msg({ _id: 'b3', messageType: 'bot_response', content: 'Planning the EU launch.' }),
-          ]),
-        });
-      }
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
@@ -457,23 +444,14 @@ test.describe('Ask user question — journeys', () => {
     });
     await send(page, 'hiii');
     await expect(page.getByText('Hi! How can I help you today?')).toBeVisible({ timeout: 20_000 });
-    await expect(submitBtn(page)).toHaveCount(1);
-
-    await page.locator('[role="radio"]').first().click();
-    await submitBtn(page).first().click();
-    await expect(page.getByText('Planning the EU launch.')).toBeVisible({ timeout: 20_000 });
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible();
-    await expect(page.getByText('Hi! How can I help you today?')).toBeVisible();
-    await expect(page.getByText('Question', { exact: true })).toHaveCount(0);
+    // Typing while the card is open answers it, so the card closes.
     await expect(submitBtn(page)).toHaveCount(0);
     await expect(page.getByTestId('chat-stopped-marker')).toHaveCount(0);
   });
 
-  test('answering after a later chat does not copy that chat onto the card', async ({ page }) => {
+  test('a later chat answers the open card once and does not copy onto it', async ({ page }) => {
     const id = 'conv-ask-then-later-list';
     const later = 'You asked me to: send an email saying Hello from Pipeshub.';
-    const reply = 'Nice, work or study it is.';
     const asked = [
       msg({ _id: 'u1', messageType: 'user_query', content: 'ask me one question' }),
       msg({
@@ -501,18 +479,6 @@ test.describe('Ask user question — journeys', () => {
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const query = String(route.request().postDataJSON().query ?? '');
-      if (query.startsWith('User selections')) {
-        return route.fulfill({
-          status: 200,
-          headers: { 'Content-Type': 'text/event-stream' },
-          body: sseWithMessages(id, reply, [
-            ...asked,
-            msg({ _id: 'sel', messageType: 'user_query', content: query }),
-            msg({ _id: 'u2', messageType: 'user_query', content: 'what are the things i asked u to do' }),
-            msg({ _id: 'b2', messageType: 'bot_response', content: later }),
-          ]),
-        });
-      }
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
@@ -525,16 +491,9 @@ test.describe('Ask user question — journeys', () => {
     });
     await send(page, 'what are the things i asked u to do');
     await expect(page.getByText(later)).toBeVisible({ timeout: 20_000 });
-    await expect(submitBtn(page)).toHaveCount(1);
-
-    await page.locator('[role="radio"]').first().click();
-    await submitBtn(page).first().click();
-    await expect(page.getByText(reply)).toBeVisible({ timeout: 20_000 });
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible();
-    await expect(page.getByText(later)).toHaveCount(1);
-    await expect(page.getByText(reply)).toHaveCount(1);
+    // Typing while the card is open answers it, so the card closes.
     await expect(submitBtn(page)).toHaveCount(0);
+    await expect(page.getByText(later)).toHaveCount(1);
   });
 
   test('five questions in one card: Next through them, then Submit once', async ({ page }) => {
@@ -720,7 +679,7 @@ test.describe('Ask user question — journeys', () => {
 });
 
 test.describe('Ask user question — stop a first turn that only asked', () => {
-  test('Stop as the card appears, then chat, then answer: reply sits under the card', async ({ page }) => {
+  test('Stop as the card appears, then chat: the chat answers the card and nothing is left Stopped', async ({ page }) => {
     const id = 'conv-ask-stop-then-chat';
     const asked = [
       msg({ _id: 'u1', messageType: 'user_query', content: 'helpme' }),
@@ -761,19 +720,6 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     await page.route(`**/api/v1/conversations/${id}/messages/stream`, (route) => {
       if (route.request().method() !== 'POST') return route.continue();
       const query = String(route.request().postDataJSON().query ?? '');
-      if (query.startsWith('User selections')) {
-        return route.fulfill({
-          status: 200,
-          headers: { 'Content-Type': 'text/event-stream' },
-          body: sseWithMessages(id, 'Planning the EU launch.', [
-            ...asked,
-            msg({ _id: 'u2', messageType: 'user_query', content: 'hiii' }),
-            msg({ _id: 'b2', messageType: 'bot_response', content: 'Hi! How can I help you today?' }),
-            msg({ _id: 'sel', messageType: 'user_query', content: query }),
-            msg({ _id: 'b3', messageType: 'bot_response', content: 'Planning the EU launch.' }),
-          ]),
-        });
-      }
       return route.fulfill({
         status: 200,
         headers: { 'Content-Type': 'text/event-stream' },
@@ -786,15 +732,7 @@ test.describe('Ask user question — stop a first turn that only asked', () => {
     });
     await send(page, 'hiii');
     await expect(page.getByText('Hi! How can I help you today?')).toBeVisible({ timeout: 20_000 });
-    await expect(submitBtn(page)).toHaveCount(1);
-
-    await page.locator('[role="radio"]').first().click();
-    await submitBtn(page).first().click();
-    await expect(page.getByText('Planning the EU launch.')).toBeVisible({ timeout: 20_000 });
-    await openClosedCards(page, 'Which region?');
-    await expect(page.getByText('Which region?')).toBeVisible();
-    await expect(page.getByText('Hi! How can I help you today?')).toBeVisible();
-    await expect(page.getByText('Question', { exact: true })).toHaveCount(0);
+    // Typing while the card is open answers it, so the card closes.
     await expect(submitBtn(page)).toHaveCount(0);
     await expect(page.getByTestId('chat-stopped-marker')).toHaveCount(0);
   });

@@ -180,6 +180,16 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
     Returns:
         (is_safe, error_message) tuple
     """
+    # Imported here to avoid an import cycle.
+    from app.agents.actions.util.read_only_sql import (
+        MAX_SQL_CHARS,
+        calls_side_effect_function,
+    )
+
+    # The side-effect scan reads the whole text, so text it won't read is refused, not half-checked.
+    if len(query) > MAX_SQL_CHARS:
+        return False, "Blocked: the statement is too long to check"
+
     query_upper = query.upper().strip()
 
     # Remove comments and extra whitespace
@@ -249,10 +259,8 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         'DBCC',
         # Oracle specific
         'DUMP',
-        # BigQuery specific
-        'DECLARE', 'SET',
         # Multiple dialects
-        'USE', 'VALUES',
+        'VALUES',
     ]
 
     if not any(query_clean.startswith(start) for start in allowed_starts):
@@ -283,6 +291,9 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
     for pattern in dynamic_sql_patterns:
         if pattern in query_clean:
             return False, "Blocked: Dynamic SQL execution is not allowed"
+
+    if calls_side_effect_function(query):
+        return False, "Blocked: this statement calls a function that is not a plain read"
 
     return True, ""
 

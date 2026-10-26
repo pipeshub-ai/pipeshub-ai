@@ -20,10 +20,14 @@ import {
   staleAskUserQuestionToolCallIds,
   handleRegenerationError,
 } from './../utils/utils';
-import { assertRasterImage, sharp } from '../../../libs/utils/image.utils';
+import {
+  assertRasterImage,
+  RasterImageFormat,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
-import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -31,7 +35,6 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
-  ForbiddenError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -84,8 +87,6 @@ import {
   attachPopulatedCitations,
   appendMessages,
   getMessages,
-  ownerOrWriterFilter,
-  assertNotReadOnlyViewer,
   attachMessages,
   appendMessageFeedback,
   findSessionIdsMatchingContent,
@@ -111,6 +112,7 @@ import {
   isAGUI,
   resolveProtocol,
 } from '../utils/agui';
+import { notifyChatShared } from '../utils/share-notification';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import EnterpriseSemanticSearch, {
   IEnterpriseSemanticSearch,
@@ -128,13 +130,6 @@ import {
 } from '../constants/constants';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import {
-  conversationForAuthorOnly,
-  redactConversationFor,
-  redactMessagesFor,
-  redactSearchesFor,
-  type ViewerMessage,
-} from '../utils/viewer-redaction';
 import { validateNoFormatSpecifiers } from '../../../utils/xss-sanitization';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import {
@@ -142,6 +137,10 @@ import {
   loadProjectForSession,
   resolveProjectLink,
 } from '../utils/project-context';
+import {
+  buildAiRequestLogMetadata,
+  buildFilterLogMetadata,
+} from '../utils/ai-request-log';
 import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
@@ -344,20 +343,20 @@ export const startAIStream = async (
   }
 };
 
-// Image compression configuration: re-encode raster images that exceed the
-// per-file threshold so they fit comfortably within multimodal LLM image
-// limits and don't bloat downstream storage / token cost. PDFs and small
-// images pass through untouched.
-const COMPRESSIBLE_IMAGE_MIMES = new Set([
+const RASTER_IMAGE_MIMES = new Set([
   'image/jpeg',
   'image/jpg',
   'image/png',
   'image/webp',
 ]);
-const IMAGE_COMPRESS_THRESHOLD_BYTES = 1 * 1024 * 1024; // 1 MB
-const IMAGE_COMPRESS_TARGET_BYTES = 1 * 1024 * 1024;
-const IMAGE_MAX_LONGEST_SIDE_PX = 2048;
-const IMAGE_QUALITY_LADDER = [85, 75, 65, 55, 45];
+// A decode allocates by pixel count, not file size: a 5 MiB PNG can hold
+// hundreds of megapixels. 50 MP admits a 48 MP camera photo (8000 × 6000).
+const MAX_ATTACHMENT_IMAGE_PIXELS = 50_000_000;
+// The image types an attachment can be stored as, by what its bytes are.
+const ATTACHMENT_MIME_BY_FORMAT: Partial<Record<RasterImageFormat, string>> = {
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+};
 
 export interface NormalizedAttachmentFile {
   fileName: string;
@@ -366,37 +365,26 @@ export interface NormalizedAttachmentFile {
   buffer: Buffer;
 }
 
-export const formatBytes = (bytes: number): string => {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KB`;
-  }
-  return `${bytes} B`;
-};
-
-export const compressImageIfNeeded = async (
+/**
+ * Rejects an image that does not decode as a raster or is over the pixel cap,
+ * and forwards every file's bytes exactly as uploaded: the stored file is what
+ * downloads, code and other apps receive, so it stays the user's original. The
+ * query service shrinks only the copy the model reads.
+ */
+export const validateAttachmentFile = async (
   file: Express.Multer.File,
 ): Promise<NormalizedAttachmentFile> => {
-  const mime = (file.mimetype || '').toLowerCase();
   const passthrough: NormalizedAttachmentFile = {
     fileName: file.originalname,
     mimeType: file.mimetype,
     size: file.size,
     buffer: file.buffer,
   };
-
-  if (!COMPRESSIBLE_IMAGE_MIMES.has(mime)) {
-    logger.info(
-      `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — non-image MIME, passthrough`,
-    );
+  if (!RASTER_IMAGE_MIMES.has((file.mimetype || '').toLowerCase())) {
     return passthrough;
   }
 
   // Magic bytes reject SVG, but they also accept a bare PNG signature.
-  // Decode before the size shortcut: that shortcut returns the original
-  // bytes, and the catch below keeps the original when compression fails.
   const invalidImageMessage =
     `${file.originalname} is not a valid JPEG, PNG or WebP image`;
   const format = assertRasterImage(
@@ -404,89 +392,31 @@ export const compressImageIfNeeded = async (
     ['jpeg', 'png', 'webp'],
     invalidImageMessage,
   );
+  let pixels: number;
   try {
-    await sharp(file.buffer).raw().toBuffer();
+    const { width, height } = await sharp(file.buffer).metadata();
+    pixels = width * height;
   } catch {
     throw new BadRequestError(invalidImageMessage);
   }
-
-  if (file.size <= IMAGE_COMPRESS_THRESHOLD_BYTES) {
-    logger.info(
-      `[image-compress] skip ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype}) — under threshold (${formatBytes(IMAGE_COMPRESS_THRESHOLD_BYTES)})`,
+  if (pixels > MAX_ATTACHMENT_IMAGE_PIXELS) {
+    throw new BadRequestError(
+      `${file.originalname} is too large to attach: images can be at most 50 megapixels`,
     );
-    return passthrough;
   }
-
-  logger.info(
-    `[image-compress] start ${file.originalname}: ${formatBytes(file.size)} (${file.mimetype})`,
-  );
-
   try {
-    const metadata = await sharp(file.buffer).metadata();
-    const longestSide = Math.max(metadata.width || 0, metadata.height || 0);
-    const needsResize = longestSide > IMAGE_MAX_LONGEST_SIDE_PX;
-    const hasAlpha = format === 'png' && metadata.hasAlpha;
-
-    const buildBase = () => {
-      const base = sharp(file.buffer).rotate();
-      if (needsResize) {
-        base.resize({
-          width: IMAGE_MAX_LONGEST_SIDE_PX,
-          height: IMAGE_MAX_LONGEST_SIDE_PX,
-          fit: 'inside',
-          withoutEnlargement: true,
-        });
-      }
-      return base;
-    };
-
-    let outBuffer: Buffer | null = null;
-    let outMime = mime;
-
-    if (hasAlpha) {
-      outBuffer = await buildBase()
-        .png({ compressionLevel: 9, palette: true })
-        .toBuffer();
-      outMime = 'image/png';
-    } else {
-      outMime = 'image/jpeg';
-      for (const quality of IMAGE_QUALITY_LADDER) {
-        outBuffer = await buildBase().jpeg({ quality, mozjpeg: true }).toBuffer();
-        if (outBuffer.length <= IMAGE_COMPRESS_TARGET_BYTES) {
-          break;
-        }
-      }
-    }
-
-    if (!outBuffer || outBuffer.length >= file.size) {
-      logger.info(
-        `[image-compress] no-gain ${file.originalname}: before=${formatBytes(file.size)}, after=${formatBytes(outBuffer?.length ?? file.size)} — keeping original`,
-      );
-      return passthrough;
-    }
-
-    let newFileName = file.originalname;
-    if (outMime === 'image/jpeg' && !/\.(jpe?g)$/i.test(newFileName)) {
-      newFileName = newFileName.replace(/\.[^.]+$/, '') + '.jpg';
-    }
-
-    const reduction = (((file.size - outBuffer.length) / file.size) * 100).toFixed(1);
-    logger.info(
-      `[image-compress] done ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}), after=${formatBytes(outBuffer.length)} (${outMime}), reduction=${reduction}%`,
-    );
-
-    return {
-      fileName: newFileName,
-      mimeType: outMime,
-      size: outBuffer.length,
-      buffer: outBuffer,
-    };
-  } catch (err) {
-    logger.warn(
-      `[image-compress] failed ${file.originalname}: before=${formatBytes(file.size)} (${file.mimetype}) — keeping original: ${(err as Error).message}`,
-    );
-    return passthrough;
+    await sharp(file.buffer, { limitInputPixels: MAX_ATTACHMENT_IMAGE_PIXELS })
+      .raw()
+      .toBuffer();
+  } catch {
+    throw new BadRequestError(invalidImageMessage);
   }
+  // A browser labels a file by its name, so a renamed screenshot arrives as
+  // the wrong type: store the type its bytes are. A WebP keeps its label:
+  // WebP is not an attachment type, so relabelling it would refuse an upload
+  // that works today.
+  const actualMime = ATTACHMENT_MIME_BY_FORMAT[format];
+  return actualMime ? { ...passthrough, mimeType: actualMime } : passthrough;
 };
 
 /** Shared with `projects/controller/project.controller.ts` — project file uploads reuse this same chat-attachment pipeline. */
@@ -529,7 +459,7 @@ export const uploadChatAttachments =
           : null;
 
       const normalizedFiles = await Promise.all(
-        files.map((file) => compressImageIfNeeded(file)),
+        files.map((file) => validateAttachmentFile(file)),
       );
 
       const aiPayload = {
@@ -614,7 +544,7 @@ export const uploadChatAttachmentsInternal =
       }
 
       const normalizedFiles = await Promise.all(
-        files.map((file) => compressImageIfNeeded(file)),
+        files.map((file) => validateAttachmentFile(file)),
       );
 
       const attachments = normalizedFiles.map((file) => ({
@@ -1333,6 +1263,19 @@ export const streamChatInternal =
     }
   };
 
+/**
+ * Express 4 drops a rejected async handler, so a refusal before the stream starts
+ * goes to `next`. Internal wrappers pass no `next` and catch the throw themselves.
+ */
+const refuseBeforeStream = (
+  next: NextFunction | undefined,
+  message: string,
+): void => {
+  const error = new BadRequestError(message);
+  if (!next) throw error;
+  next(error);
+};
+
 export const addMessageStream =
   (appConfig: AppConfig) =>
   async (
@@ -1356,19 +1299,8 @@ export const addMessageStream =
       req.query as Record<string, unknown>,
     );
 
-    // Express 4 drops a rejected async handler, so refusals before the stream
-    // starts go to `next` (the internal wrappers pass none and catch it themselves).
-    try {
-      if (!req.body.query) {
-        throw new BadRequestError('Query is required');
-      }
-      await assertNotReadOnlyViewer(
-        { _id: conversationId, orgId, isDeleted: false, ...EXCLUDE_AGENT },
-        userId,
-      );
-    } catch (error) {
-      if (!next) throw error;
-      return next(error);
+    if (!req.body.query) {
+      return refuseBeforeStream(next, 'Query is required');
     }
 
     // Helper function that contains the common conversation operations
@@ -1379,9 +1311,9 @@ export const addMessageStream =
       const conversation = await ChatSession.findOne({
         _id: conversationId,
         orgId,
+        userId,
         isDeleted: false,
         ...EXCLUDE_AGENT,
-        ...ownerOrWriterFilter(userId),
       });
 
       if (!conversation) {
@@ -1421,7 +1353,6 @@ export const addMessageStream =
           ),
         ],
         session,
-        String(userId),
       );
       conversation.lastActivityAt = Date.now();
 
@@ -1471,17 +1402,16 @@ export const addMessageStream =
         requestId,
         conversationId,
         userId,
-        query: req.body.query,
-        filters: req.body.filters,
+        ...buildAiRequestLogMetadata(req.body as Record<string, unknown>),
         timestamp: new Date().toISOString(),
       });
 
       reservation = await reserveRun({
         _id: conversationId,
         orgId,
+        userId,
         isDeleted: false,
         ...EXCLUDE_AGENT,
-        ...ownerOrWriterFilter(userId),
       });
 
       // Get existing conversation and add user message
@@ -1502,31 +1432,18 @@ export const addMessageStream =
         existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
-      // The model history is redacted for the requester like any view of other
-      // users' turns, or the model could repeat content they cannot read.
-      const allMessagesSoFar = (await redactMessagesFor(
-        appConfig,
-        (await getMessages(
-          confirmedConversation._id,
-          {
-            orgId: confirmedConversation.orgId,
-            populateCitations: !!confirmedConversation.isShared,
-          },
-          session,
-        )) as ViewerMessage[],
-        (confirmedConversation.initiator as Types.ObjectId | undefined)
-          ?.toString(),
-        { userId: String(userId), orgId: String(orgId) },
+      const allMessagesSoFar = (await getMessages(
+        confirmedConversation._id,
+        { orgId: confirmedConversation.orgId },
+        session,
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
       );
 
-      // The requester's project access, not the owner's: instructions and scope
-      // apply only to someone who may use the project.
       const followUpProject = await loadProjectForSession(
         confirmedConversation.orgId.toString(),
-        String(userId),
+        confirmedConversation.userId.toString(),
         confirmedConversation.projectId,
       );
       const aiRequest = buildAiChatRequest({ kind: 'assistant' }, req.body, {
@@ -1573,10 +1490,7 @@ export const addMessageStream =
           existingConversation,
           contentAccumulator.getText(),
           null,
-          {
-            parts: contentAccumulator.getParts(),
-            authorUserId: String(userId),
-          },
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -1824,7 +1738,6 @@ export const addMessageStream =
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
-                    String(userId),
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
@@ -1869,7 +1782,6 @@ export const addMessageStream =
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
-                    String(userId),
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
@@ -1939,7 +1851,6 @@ export const addMessageStream =
                   existingConversation.orgId,
                   [aiResponseMessage],
                   session,
-                  String(userId),
                 )
               )[0];
               existingConversation.lastActivityAt = Date.now();
@@ -1960,15 +1871,11 @@ export const addMessageStream =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await redactConversationFor(
-                appConfig,
-                await attachPopulatedCitations(
-                  updatedConversation.toObject(),
-                  [insertedAiMessage!.toObject()],
-                  savedCitations,
-                  session,
-                ),
-                { userId: String(userId), orgId: String(orgId) },
+              const responseConversation = await attachPopulatedCitations(
+                updatedConversation.toObject(),
+                [insertedAiMessage!.toObject()],
+                savedCitations,
+                session,
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -2193,7 +2100,7 @@ export const getAllConversations = async (
       message: 'Fetching conversations',
       userId,
       conversationId: req.query.conversationId,
-      query: req.query,
+      queryParams: Object.keys(req.query),
     });
 
     const source = req.query.source ?? 'owned';
@@ -2214,7 +2121,6 @@ export const getAllConversations = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
-        String(userId),
       );
     }
     const accessibleProjectIds = !isOwned
@@ -2447,7 +2353,6 @@ export const getConversationById =
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
-        String(userId),
       );
     }
     const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
@@ -2562,16 +2467,11 @@ export const getConversationById =
     const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
-    const sortedMessages = (await redactMessagesFor(
-      appConfig,
-      sortMessages(
-        (conversationWithMessages?.messages ||
-          []) as unknown as IMessageDocument[],
-        messageSortOptions as { field: keyof IMessage },
-      ),
-      initiatorId,
-      { userId: String(userId), orgId: String(orgId) },
-    )) as unknown as IMessageDocument[];
+    const sortedMessages = sortMessages(
+      (conversationWithMessages?.messages ||
+        []) as unknown as IMessageDocument[],
+      messageSortOptions as { field: keyof IMessage },
+    );
 
     const conversationResponse = await attachSharedByIfRecipient(
       buildConversationResponse(
@@ -2664,11 +2564,7 @@ const deleteConversation = async (
 
     const ownerOrWriter: Record<string, unknown>[] = [
       { initiator: userId },
-      {
-        sharedWith: {
-          $elemMatch: { userId: String(userId), accessLevel: 'write' },
-        },
-      },
+      { 'sharedWith.userId': userId as string, 'sharedWith.accessLevel': 'write' },
     ];
     const deletable: Record<string, unknown> = {
       _id: conversationId,
@@ -2709,7 +2605,7 @@ const deleteConversation = async (
           },
         },
         {
-          new: true,
+          returnDocument: 'after',
           session,
           runValidators: true,
         },
@@ -2738,7 +2634,7 @@ const deleteConversation = async (
       if (citationIds.length > 0) {
         await Citation.updateMany(
           {
-            _id: { $in: citationIds },
+            _id: { $in: citationIds as Types.ObjectId[] },
             orgId,
             isDeleted: false,
           },
@@ -2758,11 +2654,10 @@ const deleteConversation = async (
     let result;
     if (rsAvailable) {
       session = await mongoose.startSession();
-      session.startTransaction();
+      // withTransaction starts and commits (or aborts and retries) the transaction itself.
       result = await session.withTransaction(() =>
         performDeleteConversation(session),
       );
-      await session.commitTransaction();
     } else {
       result = await performDeleteConversation();
     }
@@ -2911,11 +2806,20 @@ const createShareConversationHandler =
       if (unknownId) {
         throw new BadRequestError(`User not found: ${unknownId}`);
       }
-      // A level is set only when the caller named one (a new share defaults to read below).
       const validUsers = recipientIds.map((id) => ({
         userId: new mongoose.Types.ObjectId(id),
-        accessLevel: accessLevel as 'read' | 'write' | undefined,
+        accessLevel: accessLevel || 'read',
       }));
+
+      // Only users who did not already have access are told; re-sharing or a level change is not news.
+      const alreadySharedIds = new Set(
+        (ownedConversation.sharedWith || []).map((share) =>
+          String(share.userId).toLowerCase(),
+        ),
+      );
+      const newlySharedIds = recipientIds.filter(
+        (id) => !alreadySharedIds.has(id),
+      );
 
       async function performShareConversation(session?: ClientSession | null) {
         // Update object for conversation
@@ -2940,15 +2844,11 @@ const createShareConversationHandler =
         for (const newUser of validUsers) {
           const existingUser = existingUserMap.get(newUser.userId.toString());
           if (existingUser) {
-            // Change the level only when the caller named one
-            if (newUser.accessLevel)
-              existingUser.accessLevel = newUser.accessLevel;
+            // Update access level if user already exists
+            existingUser.accessLevel = newUser.accessLevel;
           } else {
-            // Add new user if they don't exist (read unless write was asked for)
-            mergedSharedWith.push({
-              ...newUser,
-              accessLevel: newUser.accessLevel || 'read',
-            });
+            // Add new user if they don't exist
+            mergedSharedWith.push(newUser);
           }
         }
 
@@ -2960,7 +2860,7 @@ const createShareConversationHandler =
           { _id: conversationId, ...scope },
           updateObject,
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -3008,6 +2908,15 @@ const createShareConversationHandler =
         ...grantor,
         records: 'artifacts',
         body: { conversationId, userIds },
+      });
+
+      await notifyChatShared({
+        orgId: String(orgId),
+        ownerId: String(userId),
+        recipientIds: newlySharedIds,
+        conversationId: String(conversationId),
+        chatTitle: updatedConversation.title,
+        agentKey: scope.agentKey as string | undefined,
       });
 
       logger.debug('Conversation shared successfully', {
@@ -3147,7 +3056,7 @@ const createUnshareConversationHandler =
           { _id: conversationId, ...scope },
           updateObject,
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -3315,7 +3224,7 @@ export const setConversationProject = async (
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
       update,
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) {
       throw new InternalServerError('Failed to update conversation project link');
@@ -3378,7 +3287,7 @@ export const setConversationProjectVisibility = async (
     const updated = await ChatSession.findOneAndUpdate(
       { _id: conversationId, ...sessionTypeFilter },
       { $set: { projectVisibility: visibility } },
-      { new: true },
+      { returnDocument: 'after' },
     );
     if (!updated) {
       throw new InternalServerError('Failed to update conversation visibility');
@@ -3609,16 +3518,6 @@ async function regenerateAnswersInternal(
         'Can only regenerate the last message in the conversation',
       );
     }
-    // The answer was built from its author's access, so only the author may redo it.
-    const turnAuthor = (
-      lastBot.authorUserId ??
-      (conversation.initiator as Types.ObjectId | undefined)
-    )?.toString();
-    if (turnAuthor !== String(userId)) {
-      throw new ForbiddenError(
-        'Only the person whose message this answers can regenerate it.',
-      );
-    }
     if (ranApprovedCall(lastBot.parts)) {
       throw new BadRequestError(
         'This reply ran an action you approved. Regenerating it could run that action again, so ask again instead.',
@@ -3705,7 +3604,7 @@ async function regenerateAnswersInternal(
         orgId as string | undefined,
         userId as string | undefined,
         agentKey,
-      ) as FilterQuery<IChatSessionDocument>,
+      ) as QueryFilter<IChatSessionDocument>,
     );
 
     // Validate conversation and message
@@ -3785,20 +3684,10 @@ async function regenerateAnswersInternal(
 
     // Format previous conversations up to this message (exclude last bot
     // response and the user query that triggered it)
-    // Redacted for the requester: other users' turns may rest on sources they cannot read.
-    const allMessagesForRegen = (await redactMessagesFor(
-      appConfig,
-      (await getMessages(
-        existingConversation._id,
-        {
-          orgId: existingConversation.orgId,
-          populateCitations: !!existingConversation.isShared,
-        },
-        session,
-      )) as ViewerMessage[],
-      (existingConversation.initiator as Types.ObjectId | undefined)
-        ?.toString(),
-      { userId: String(userId), orgId: String(orgId) },
+    const allMessagesForRegen = (await getMessages(
+      existingConversation._id,
+      { orgId: existingConversation.orgId },
+      session,
     )) as Array<IMessage & { _id?: mongoose.Types.ObjectId }>;
     // The turn being regenerated (its user query, its answer, and any
     // `tool_call` rows saved after it) is excluded by position, not by a
@@ -3950,7 +3839,7 @@ async function regenerateAnswersInternal(
     }
     const regenProject = await loadProjectForSession(
       existingConversation.orgId.toString(),
-      String(userId),
+      existingConversation.userId.toString(),
       existingConversation.projectId,
     );
     applyProjectScope(aiPayload, regenProject);
@@ -4093,7 +3982,7 @@ async function regenerateAnswersInternal(
             }
             answersReplaced = true;
           }
-          const { conversation: regeneratedConversation, savedCitations } =
+          const { conversation: responseConversation, savedCitations } =
             await handleRegenerationSuccess(
               completeData,
               existingConversation,
@@ -4105,7 +3994,7 @@ async function regenerateAnswersInternal(
               staleAskToolCallIds,
             );
           if (await dropReplacedTurn()) {
-            const shown = regeneratedConversation as {
+            const shown = responseConversation as {
               messages: Array<{ _id?: unknown }>;
             };
             const gone = new Set(replacedTurnIds.map(String));
@@ -4113,12 +4002,6 @@ async function regenerateAnswersInternal(
               (row) => !gone.has(String(row._id)),
             );
           }
-
-          const responseConversation = await redactConversationFor(
-            appConfig,
-            regeneratedConversation,
-            { userId: String(userId), orgId: String(orgId) },
-          );
 
           // Send final response event with the complete conversation data
           sendSSECompleteEvent(
@@ -4169,7 +4052,7 @@ async function regenerateAnswersInternal(
                 res,
                 errorMessage,
                 undefined,
-                conversationForAuthorOnly(plainConversation, String(userId)),
+                plainConversation,
                 protocol,
               );
             } else {
@@ -4237,7 +4120,7 @@ async function regenerateAnswersInternal(
                 res,
                 errorMessage,
                 dbError.message,
-                conversationForAuthorOnly(plainConversation, String(userId)),
+                plainConversation,
                 protocol,
               );
             } else {
@@ -4306,7 +4189,6 @@ async function regenerateAnswersInternal(
           requestId || '',
           'stream_error',
           protocol,
-          String(userId),
         );
       } catch (dbError: any) {
         logger.error('Failed to replace message with error', {
@@ -4351,7 +4233,6 @@ async function regenerateAnswersInternal(
         requestId || '',
         'regeneration_error',
         protocol,
-        String(userId),
       );
     } catch (dbError: any) {
       logger.error('Failed to mark conversation as failed in catch block', {
@@ -4385,9 +4266,9 @@ export const regenerateAnswers =
       buildQueryFilter: (conversationId, orgId, userId) => ({
         _id: conversationId,
         orgId,
+        userId,
         isDeleted: false,
         ...EXCLUDE_AGENT,
-        ...ownerOrWriterFilter(userId),
       }),
       buildAIEndpoint: (appConfig) =>
         `${appConfig.aiBackend}/api/v1/chat/stream`,
@@ -4418,9 +4299,9 @@ export const cancelConversationStream =
       const conversation = await ChatSession.findOne({
         _id: conversationId,
         orgId,
+        userId,
         isDeleted: false,
         ...EXCLUDE_AGENT,
-        ...ownerOrWriterFilter(userId),
       });
       if (!conversation) {
         throw new NotFoundError('Conversation not found or unauthorized');
@@ -4772,7 +4653,7 @@ export const forkConversation =
             conversationId,
             true,
             false,
-          ) as FilterQuery<IChatSessionDocument>),
+          ) as QueryFilter<IChatSessionDocument>),
           ...EXCLUDE_AGENT,
         }),
     });
@@ -4804,7 +4685,7 @@ export const forkAgentConversation =
             userId,
             agentKey,
             conversationId,
-          ) as FilterQuery<IChatSessionDocument>,
+          ) as QueryFilter<IChatSessionDocument>,
         ),
     });
   };
@@ -4983,11 +4864,7 @@ export const archiveConversation = async (
         ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
-          {
-        sharedWith: {
-          $elemMatch: { userId: String(userId), accessLevel: 'write' },
-        },
-      },
+          { 'sharedWith.userId': userId as string, 'sharedWith.accessLevel': 'write' },
         ],
       });
 
@@ -5016,7 +4893,7 @@ export const archiveConversation = async (
             $unset: { isPinned: 1 },
           },
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -5102,11 +4979,7 @@ export const unarchiveConversation = async (
         ...EXCLUDE_AGENT,
         $or: [
           { initiator: userId },
-          {
-        sharedWith: {
-          $elemMatch: { userId: String(userId), accessLevel: 'write' },
-        },
-      },
+          { 'sharedWith.userId': userId as string, 'sharedWith.accessLevel': 'write' },
         ],
       });
 
@@ -5132,7 +5005,7 @@ export const unarchiveConversation = async (
             },
           },
           {
-            new: true,
+            returnDocument: 'after',
             session,
             runValidators: true,
           },
@@ -5224,7 +5097,7 @@ const setConversationPinned =
         // Unpinning removes the field rather than storing `false`; see the schema.
         pinned ? { $set: { isPinned: true } } : { $unset: { isPinned: 1 } },
         // Pinning is not an edit of the chat, so it must not change `updatedAt`.
-        { new: true, timestamps: false },
+        { returnDocument: 'after', timestamps: false },
       ).exec();
 
       if (!updated) {
@@ -5255,149 +5128,138 @@ const setConversationPinned =
 export const pinConversation = setConversationPinned(true);
 export const unpinConversation = setConversationPinned(false);
 
-export const listAllArchivesConversation =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    const startTime = Date.now();
-    try {
-      const userId = req.user?.userId;
-      const orgId = req.user?.orgId;
-      if (!userId || !orgId) {
-        throw new BadRequestError('User ID and Organization ID are required');
-      }
-      const { conversationId } = req.query;
+export const listAllArchivesConversation = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+  try {
+    const userId = req.user?.userId;
+    const orgId = req.user?.orgId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+    const { conversationId } = req.query;
 
-      logger.debug('Fetching all archived conversations', {
-        requestId,
+    logger.debug('Fetching all archived conversations', {
+      requestId,
+      userId,
+    });
+
+    const { skip, limit, page } = getPaginationParams(req);
+    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+    if (req.query.search) {
+      const escapedSearch = validateAndEscapeSearch(req.query.search);
+      contentMatchIds = await findSessionIdsMatchingContent(
+        orgId,
+        escapedSearch,
+      );
+    }
+    const filter = {
+      ...buildFilter(
+        req,
+        orgId,
         userId,
-      });
+        conversationId as string,
+        true,
+        true,
+        contentMatchIds,
+      ),
+      isArchived: true, // Add archived filter
+      archivedBy: { $exists: true }, // Ensure it was properly archived
+    };
+    const sortOptions = buildSortOptions(req);
+    const sessionFilter = { ...filter, ...EXCLUDE_AGENT };
 
-      const { skip, limit, page } = getPaginationParams(req);
-      let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
-      if (req.query.search) {
-        const escapedSearch = validateAndEscapeSearch(req.query.search);
-        contentMatchIds = await findSessionIdsMatchingContent(
-          orgId,
-          escapedSearch,
-          String(userId),
-        );
-      }
-      const filter = {
-        ...buildFilter(
-          req,
-          orgId,
-          userId,
-          conversationId as string,
-          true,
-          true,
-          contentMatchIds,
-        ),
-        isArchived: true, // Add archived filter
-        archivedBy: { $exists: true }, // Ensure it was properly archived
-      };
-      const sortOptions = buildSortOptions(req);
-      const sessionFilter = { ...filter, ...EXCLUDE_AGENT };
-
-      // Execute query
-      const [conversations, totalCount] = await Promise.all([
-        ChatSession.find(sessionFilter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .lean()
-          .exec(),
-        ChatSession.countDocuments(sessionFilter),
-      ]);
-
-      // Batch-fetch every message for the page in one query, grouped in
-      // memory by sessionId — never a per-row query.
-      const pageIds = conversations.map((c: any) => c._id);
-      const allMessages = await ChatSessionMessage.find({
-        sessionId: { $in: pageIds },
-      })
-        .sort({ seq: 1 })
-        // The redaction below judges a citation by its record, so it must be populated.
-        .populate({
-          path: 'citations.citationId',
-          model: 'citation',
-          select: '-__v',
-        })
+    // Execute query
+    const [conversations, totalCount] = await Promise.all([
+      ChatSession.find(sessionFilter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .select('-__v')
         .lean()
-        .exec();
-      const messagesBySession = new Map<string, any[]>();
-      for (const message of allMessages) {
-        const key = message.sessionId.toString();
-        const bucket = messagesBySession.get(key);
-        if (bucket) {
-          bucket.push(message);
-        } else {
-          messagesBySession.set(key, [message]);
-        }
+        .exec(),
+      ChatSession.countDocuments(sessionFilter),
+    ]);
+
+    // Batch-fetch every message for the page in one query, grouped in
+    // memory by sessionId — never a per-row query.
+    const pageIds = conversations.map((c: any) => c._id);
+    const allMessages = await ChatSessionMessage.find({
+      sessionId: { $in: pageIds },
+    })
+      .sort({ seq: 1 })
+      .lean()
+      .exec();
+    const messagesBySession = new Map<string, any[]>();
+    for (const message of allMessages) {
+      const key = message.sessionId.toString();
+      const bucket = messagesBySession.get(key);
+      if (bucket) {
+        bucket.push(message);
+      } else {
+        messagesBySession.set(key, [message]);
       }
+    }
 
-      // Process results with computed fields and restructured citations
-      const processedConversations = await Promise.all(
-        conversations.map(async (conversation: any) => {
-          const sessionMessages =
-            messagesBySession.get(conversation._id.toString()) || [];
-          // Same per-viewer redaction as getConversationById: archiving must not
-          // widen what a shared viewer sees.
-          const conversationWithMessages = (await redactConversationFor(
-            appConfig,
-            attachMessages(conversation, sessionMessages),
-            { userId: String(userId), orgId: String(orgId) },
-          )) as IConversation;
-          const conversationWithComputedFields = addComputedFields(
-            conversationWithMessages,
-            userId,
-          );
-
-          return {
-            ...conversationWithComputedFields,
-            archivedAt: conversation.updatedAt,
-            archivedBy: conversation.archivedBy,
-          };
-        }),
+    // Process results with computed fields and restructured citations
+    const processedConversations = conversations.map((conversation: any) => {
+      const sessionMessages =
+        messagesBySession.get(conversation._id.toString()) || [];
+      const conversationWithMessages = attachMessages(
+        conversation,
+        sessionMessages,
+      );
+      const conversationWithComputedFields = addComputedFields(
+        conversationWithMessages as IConversation,
+        userId,
       );
 
-      // Build response with metadata
-      const response = {
-        conversations: processedConversations,
-        pagination: buildPaginationMetadata(totalCount, page, limit),
-        filters: buildFiltersMetadata(filter, req.query),
-        summary: {
-          totalArchived: totalCount,
-          oldestArchive: processedConversations[0]?.archivedAt,
-          newestArchive:
-            processedConversations[processedConversations.length - 1]
-              ?.archivedAt,
-        },
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
-        },
+      return {
+        ...conversationWithComputedFields,
+        archivedAt: conversation.updatedAt,
+        archivedBy: conversation.archivedBy,
       };
+    });
 
-      logger.debug('Successfully fetched archived conversations', {
+    // Build response with metadata
+    const response = {
+      conversations: processedConversations,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      filters: buildFiltersMetadata(filter, req.query),
+      summary: {
+        totalArchived: totalCount,
+        oldestArchive: processedConversations[0]?.archivedAt,
+        newestArchive:
+          processedConversations[processedConversations.length - 1]?.archivedAt,
+      },
+      meta: {
         requestId,
-        count: conversations.length,
-        totalCount,
+        timestamp: new Date().toISOString(),
         duration: Date.now() - startTime,
-      });
+      },
+    };
 
-      res.status(HTTP_STATUS.OK).json(response);
-    } catch (error: any) {
-      logger.error('Error fetching archived conversations', {
-        requestId,
-        message: 'Error fetching archived conversations',
-        error: error.message,
-      });
-      next(error);
-    }
-  };
+    logger.debug('Successfully fetched archived conversations', {
+      requestId,
+      count: conversations.length,
+      totalCount,
+      duration: Date.now() - startTime,
+    });
+
+    res.status(HTTP_STATUS.OK).json(response);
+  } catch (error: any) {
+    logger.error('Error fetching archived conversations', {
+      requestId,
+      message: 'Error fetching archived conversations',
+      error: error.message,
+    });
+    next(error);
+  }
+};
 
 /**
  * Search across all archived conversations — both assistant (Conversation)
@@ -5453,7 +5315,6 @@ export const searchArchivedConversations =
     const contentMatchIds = await findSessionIdsMatchingContent(
       orgId,
       escapedSearch,
-      String(userId),
     );
     const titleOrContentMatch = {
       $or: [
@@ -5602,9 +5463,9 @@ export const search =
 
       logger.debug('Attempting to search', {
         requestId,
-        query,
+        queryLength: typeof query === 'string' ? query.length : 0,
         limit,
-        filters,
+        ...buildFilterLogMetadata(filters),
         timestamp: new Date().toISOString(),
       });
 
@@ -5717,111 +5578,171 @@ export const search =
     }
   };
 
-export const searchHistory =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+/**
+ * POST /api/v1/retrieve: ranked chunks with citations, for a developer's own
+ * RAG or agent. Unlike `search`, nothing is stored: no citation documents and
+ * no search history, since an app may call this on every request it serves.
+ */
+export const retrieve =
+  (
+    appConfig: AppConfig,
+  ): ((
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ) => Promise<void>) =>
+  async (req, res, next) => {
     const requestId = req.context?.requestId;
-    const startTime = Date.now();
-
     try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      if (!userId || !orgId) {
-        throw new BadRequestError('User ID and Organization ID are required');
+      const body = req.body as Record<string, unknown>;
+      if (typeof body.query === 'string') {
+        validateNoFormatSpecifiers(body.query, 'retrieve query');
       }
-      const { page, limit, skip } = getPaginationParams(req);
-      const sortOptions = buildSortOptions(req);
-      const filter = buildFilter(req, orgId, userId);
-
-      logger.debug('Attempting to get search history', {
-        requestId,
-        timestamp: new Date().toISOString(),
-      });
-
-      const [searchHistory, totalCount] = await Promise.all([
-        EnterpriseSemanticSearch.find(filter)
-          .sort(sortOptions as any)
-          .skip(skip)
-          .limit(limit)
-          .exec(),
-        EnterpriseSemanticSearch.countDocuments(
-          filter as Record<string, unknown>,
-        ),
-      ]);
-
-      // Searches shared with the caller are listed too: redact them like the by-id read.
-      const plain = searchHistory.map((doc) => doc.toJSON());
-      const response = {
-        searchHistory: await redactSearchesFor(appConfig, plain, {
-          userId: String(userId),
-          orgId: String(orgId),
-        }),
-        pagination: buildPaginationMetadata(totalCount, page, limit),
-        filters: buildFiltersMetadata(filter, req.query),
-        meta: {
-          requestId,
-          timestamp: new Date().toISOString(),
-          duration: Date.now() - startTime,
-        },
-      };
-      res.status(HTTP_STATUS.OK).json(response);
-    } catch (error: any) {
-      logger.error('Error searching history', {
-        requestId,
-        message: 'Error searching history',
-        error: error.message,
-      });
-      next(error);
-    }
-  };
-
-export const getSearchById =
-  (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    const requestId = req.context?.requestId;
-    const searchId = req.params.searchId;
-
-    try {
-      const orgId = req.user?.orgId;
-      const userId = req.user?.userId;
-      const filter = buildFilter(req, orgId, userId, searchId);
-
-      logger.debug('Attempting to get search', {
-        requestId,
-        searchId,
-        timestamp: new Date().toISOString(),
-      });
-      const search = await EnterpriseSemanticSearch.find(filter)
-        .populate({
-          path: 'citationIds',
-          model: 'citation',
-          select: '-__v',
-        })
-        .lean()
-        .exec();
-      if (!search) {
-        throw new NotFoundError('Search Id not found');
+      // Only the fields the caller set, so the AI service's defaults apply.
+      const forwarded: Record<string, unknown> = {};
+      for (const key of [
+        'query',
+        'filters',
+        'limit',
+        'maxChunksPerRecord',
+        'rewriteQuery',
+        ...SEARCH_DATE_BOUNDS,
+      ]) {
+        if (body[key] !== undefined) forwarded[key] = body[key];
       }
 
-      // A search shared with this user holds the author's hits: show only the
-      // ones this user can read.
-      res
-        .status(HTTP_STATUS.OK)
-        .json(
-          await redactSearchesFor(appConfig, search, {
-            userId: String(userId),
-            orgId: String(orgId),
-          }),
+      // The body may be missing on a broken upstream answer, so it is typed so.
+      const aiCommand = new AIServiceCommand<
+        Record<string, unknown> | undefined
+      >({
+        uri: `${appConfig.aiBackend}/api/v1/retrieve`,
+        method: HttpMethod.POST,
+        headers: req.headers as Record<string, string>,
+        body: forwarded,
+      });
+      let aiResponse: AIServiceResponse<Record<string, unknown> | undefined>;
+      try {
+        aiResponse = await aiCommand.execute();
+      } catch (error: unknown) {
+        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, {
+          cause: error,
+        });
+      }
+      const data = aiResponse.data;
+      if (data === undefined) {
+        throw new InternalServerError('Failed to get response from AI service');
+      }
+      if (aiResponse.statusCode !== 200) {
+        throw handleBackendError(
+          { response: { status: aiResponse.statusCode, data } },
+          'Retrieve',
         );
-    } catch (error: any) {
-      logger.error('Error getting search by ID', {
+      }
+      res.status(HTTP_STATUS.OK).json({ requestId, ...data });
+    } catch (error: unknown) {
+      logger.error('Error retrieving chunks', {
         requestId,
-        message: 'Error getting search by ID',
-        error: error.message,
+        error: error instanceof Error ? error.message : String(error),
       });
       next(error);
     }
   };
+
+export const searchHistory = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const requestId = req.context?.requestId;
+  const startTime = Date.now();
+
+  try {
+    const orgId = req.user?.orgId;
+    const userId = req.user?.userId;
+    if (!userId || !orgId) {
+      throw new BadRequestError('User ID and Organization ID are required');
+    }
+    const { page, limit, skip } = getPaginationParams(req);
+    const sortOptions = buildSortOptions(req);
+    const filter = buildFilter(req, orgId, userId);
+
+    logger.debug('Attempting to get search history', {
+      requestId,
+      timestamp: new Date().toISOString(),
+    });
+
+    const [searchHistory, totalCount] = await Promise.all([
+      EnterpriseSemanticSearch.find(filter)
+        .sort(sortOptions as any)
+        .skip(skip)
+        .limit(limit)
+        .exec(),
+      EnterpriseSemanticSearch.countDocuments(
+        filter as Record<string, unknown>,
+      ),
+    ]);
+
+    const response = {
+      searchHistory: searchHistory,
+      pagination: buildPaginationMetadata(totalCount, page, limit),
+      filters: buildFiltersMetadata(filter, req.query),
+      meta: {
+        requestId,
+        timestamp: new Date().toISOString(),
+        duration: Date.now() - startTime,
+      },
+    };
+    res.status(HTTP_STATUS.OK).json(response);
+  } catch (error: any) {
+    logger.error('Error searching history', {
+      requestId,
+      message: 'Error searching history',
+      error: error.message,
+    });
+    next(error);
+  }
+};
+
+export const getSearchById = async (
+  req: AuthenticatedUserRequest,
+  res: Response,
+  next: NextFunction,
+): Promise<void> => {
+  const requestId = req.context?.requestId;
+  const searchId = req.params.searchId;
+
+  try {
+    const orgId = req.user?.orgId;
+    const userId = req.user?.userId;
+    const filter = buildFilter(req, orgId, userId, searchId);
+
+    logger.debug('Attempting to get search', {
+      requestId,
+      searchId,
+      timestamp: new Date().toISOString(),
+    });
+    const search = await EnterpriseSemanticSearch.find(filter)
+      .populate({
+        path: 'citationIds',
+        model: 'citation',
+        select: '-__v',
+      })
+      .lean()
+      .exec();
+    if (!search) {
+      throw new NotFoundError('Search Id not found');
+    }
+
+    res.status(HTTP_STATUS.OK).json(search);
+  } catch (error: any) {
+    logger.error('Error getting search by ID', {
+      requestId,
+      message: 'Error getting search by ID',
+      error: error.message,
+    });
+    next(error);
+  }
+};
 
 export const deleteSearchById = async (
   req: AuthenticatedUserRequest,
@@ -7317,7 +7238,7 @@ export const addMessageStreamToAgentConversation =
     req: AuthenticatedUserRequest | AuthenticatedServiceRequest,
     res: Response,
     next?: NextFunction,
-  ) => {
+  ): Promise<void> => {
     const requestId = req.context?.requestId;
     const startTime = Date.now();
     let userId: Types.ObjectId | undefined;
@@ -7333,10 +7254,10 @@ export const addMessageStreamToAgentConversation =
     }
 
     if (!userId) {
-      throw new BadRequestError('User ID is required');
+      return refuseBeforeStream(next, 'User ID is required');
     }
     if (!orgId) {
-      throw new BadRequestError('Organization ID is required');
+      return refuseBeforeStream(next, 'Organization ID is required');
     }
     const { conversationId, agentKey } = req.params;
 
@@ -7350,13 +7271,8 @@ export const addMessageStreamToAgentConversation =
       req.query as Record<string, unknown>,
     );
 
-    try {
-      if (!req.body.query) {
-        throw new BadRequestError('Query is required');
-      }
-    } catch (error) {
-      if (!next) throw error;
-      return next(error);
+    if (!req.body.query) {
+      return refuseBeforeStream(next, 'Query is required');
     }
 
     // Helper function that contains the common conversation operations
@@ -7409,7 +7325,6 @@ export const addMessageStreamToAgentConversation =
           ),
         ],
         session,
-        String(userId),
       );
       conversation.lastActivityAt = Date.now();
 
@@ -7461,8 +7376,7 @@ export const addMessageStreamToAgentConversation =
         conversationId,
         userId,
         agentKey,
-        query: req.body.query,
-        filters: req.body.filters,
+        ...buildAiRequestLogMetadata(req.body as Record<string, unknown>),
         timestamp: new Date().toISOString(),
       });
 
@@ -7493,21 +7407,10 @@ export const addMessageStreamToAgentConversation =
         existingConversation as IChatSessionDocument;
 
       // Format previous conversations for context (excluding the user message we just added)
-      // The model history is redacted for the requester like any view of other
-      // users' turns, or the model could repeat content they cannot read.
-      const allMessagesSoFar = (await redactMessagesFor(
-        appConfig,
-        (await getMessages(
-          confirmedConversation._id,
-          {
-            orgId: confirmedConversation.orgId,
-            populateCitations: !!confirmedConversation.isShared,
-          },
-          session,
-        )) as ViewerMessage[],
-        (confirmedConversation.initiator as Types.ObjectId | undefined)
-          ?.toString(),
-        { userId: String(userId), orgId: String(orgId) },
+      const allMessagesSoFar = (await getMessages(
+        confirmedConversation._id,
+        { orgId: confirmedConversation.orgId },
+        session,
       )) as IMessage[];
       const previousConversations = formatPreviousConversations(
         allMessagesSoFar.slice(0, -1),
@@ -7515,12 +7418,12 @@ export const addMessageStreamToAgentConversation =
 
       const followUpProject = await loadProjectForSession(
         confirmedConversation.orgId.toString(),
-        String(userId),
+        confirmedConversation.userId.toString(),
         confirmedConversation.projectId,
       );
       const aiRequest = buildAiChatRequest(
         { kind: 'agent', agentKey: agentKey as string },
-        req.body as Record<string, unknown>,
+        req.body,
         {
           conversationId,
           previousConversations,
@@ -7566,10 +7469,7 @@ export const addMessageStreamToAgentConversation =
           existingConversation,
           contentAccumulator.getText(),
           null,
-          {
-            parts: contentAccumulator.getParts(),
-            authorUserId: String(userId),
-          },
+          { parts: contentAccumulator.getParts() },
         ).catch((err: any) => {
           logger.error('Failed to save partial conversation on disconnect', {
             requestId,
@@ -7729,7 +7629,6 @@ export const addMessageStreamToAgentConversation =
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
-                    String(userId),
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
@@ -7861,7 +7760,6 @@ export const addMessageStreamToAgentConversation =
                     existingConversation.orgId,
                     [toolCallMessage as unknown as IMessage],
                     session,
-                    String(userId),
                   ).catch((saveErr: any) => {
                     logger.error(
                       'Failed to persist ask_user_question tool_call message',
@@ -7931,7 +7829,6 @@ export const addMessageStreamToAgentConversation =
                   existingConversation.orgId,
                   [aiResponseMessage],
                   session,
-                  String(userId),
                 )
               )[0];
               existingConversation.lastActivityAt = Date.now();
@@ -7952,15 +7849,11 @@ export const addMessageStreamToAgentConversation =
               }
 
               // Return the updated conversation in the same format as addMessage
-              const responseConversation = await redactConversationFor(
-                appConfig,
-                await attachPopulatedCitations(
-                  updatedConversation.toObject(),
-                  [insertedAiMessage!.toObject()],
-                  savedCitations,
-                  session,
-                ),
-                { userId: String(userId), orgId: String(orgId) },
+              const responseConversation = await attachPopulatedCitations(
+                updatedConversation.toObject(),
+                [insertedAiMessage!.toObject()],
+                savedCitations,
+                session,
               );
 
               // Send the final conversation data in the same format as addMessage
@@ -8211,9 +8104,6 @@ export const cancelAgentConversationStream =
         userId as string,
         agentKey as string,
         conversationId as string,
-        undefined,
-        undefined,
-        'write',
       );
       const conversation = await ChatSession.findOne(filter);
       if (!conversation) {
@@ -8273,7 +8163,7 @@ export const getAllAgentConversations = async (
       userId,
       agentKey,
       conversationId: req.params.conversationId,
-      query: req.query,
+      queryParams: Object.keys(req.query),
     });
 
     const { skip, limit, page } = getPaginationParams(req);
@@ -8285,7 +8175,6 @@ export const getAllAgentConversations = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
-        String(userId),
       );
     }
     const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
@@ -8425,7 +8314,6 @@ const getAgentConversationByIdOf = async (
       contentMatchIds = await findSessionIdsMatchingContent(
         orgId,
         escapedSearch,
-        String(userId),
       );
     }
     const accessibleProjectIds = await ProjectService.getAccessibleProjectIds(
@@ -8440,7 +8328,7 @@ const getAgentConversationByIdOf = async (
       conversationId as string,
       contentMatchIds,
       accessibleProjectIds,
-      'read',
+      true,
     );
 
     // Build message filter
@@ -8536,16 +8424,11 @@ const getAgentConversationByIdOf = async (
     const conversationWithMessages = attachMessages(session, messages);
 
     // Sort messages using existing helper
-    const sortedMessages = (await redactMessagesFor(
-      appConfig,
-      sortMessages(
-        (conversationWithMessages?.messages ||
-          []) as unknown as IMessageDocument[],
-        messageSortOptions as { field: keyof IMessage },
-      ),
-      session.initiator.toString(),
-      { userId, orgId },
-    )) as unknown as IMessageDocument[];
+    const sortedMessages = sortMessages(
+      (conversationWithMessages?.messages ||
+        []) as unknown as IMessageDocument[],
+      messageSortOptions as { field: keyof IMessage },
+    );
 
     // Build conversation response using existing helper
     const builtResponse = buildConversationResponse(
@@ -8714,7 +8597,7 @@ export const archiveAgentConversation = async (
             lastActivityAt: Date.now(),
           },
         },
-        { new: true, session: s, runValidators: true },
+        { returnDocument: 'after', session: s, runValidators: true },
       ).exec();
 
       if (!updated) {
@@ -8819,7 +8702,7 @@ export const unarchiveAgentConversation = async (
             lastActivityAt: Date.now(),
           },
         },
-        { new: true, session: s, runValidators: true },
+        { returnDocument: 'after', session: s, runValidators: true },
       ).exec();
 
       if (!updated) {
@@ -8871,100 +8754,98 @@ export const unarchiveAgentConversation = async (
   }
 };
 
-export const listAllArchivesAgentConversation = () =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
-    const { agentKey } = req.params;
+export const listAllArchivesAgentConversation =
+  () =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
+      const { agentKey } = req.params;
 
-    logger.debug('Fetching all archived agent conversations', {
-      requestId,
-      userId,
-      agentKey,
-    });
-
-    const { skip, limit, page } = getPaginationParams(req);
-    let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
-    if (req.query.search) {
-      const escapedSearch = validateAndEscapeSearch(req.query.search, {
-        formatSpecifiers: true,
-      });
-      contentMatchIds = await findSessionIdsMatchingContent(
-        orgId,
-        escapedSearch,
-        String(userId),
-      );
-    }
-    const filter = {
-      ...buildAgentConversationFilter(
-        req,
-        orgId,
-        userId,
-        agentKey as string,
-        undefined,
-        contentMatchIds,
-      ),
-      isArchived: true,
-      archivedBy: { $exists: true },
-    };
-    const sortOptions = buildSortOptions(req);
-
-    const [conversations, totalCount] = await Promise.all([
-      ChatSession.find(filter)
-        .sort(sortOptions as any)
-        .skip(skip)
-        .limit(limit)
-        .select('-__v')
-        .lean()
-        .exec(),
-      ChatSession.countDocuments(filter),
-    ]);
-
-    const processedConversations = conversations.map((conversation: any) => ({
-      ...addComputedFields(conversation as IAgentConversation, userId),
-      archivedAt: conversation.updatedAt,
-      archivedBy: conversation.archivedBy,
-    }));
-
-    logger.debug('Successfully fetched archived agent conversations', {
-      requestId,
-      count: conversations.length,
-      totalCount,
-      duration: Date.now() - startTime,
-    });
-
-    res.status(HTTP_STATUS.OK).json({
-      conversations: processedConversations,
-      pagination: buildPaginationMetadata(totalCount, page, limit),
-      filters: buildFiltersMetadata(filter, req.query),
-      summary: {
-        totalArchived: totalCount,
-        oldestArchive: processedConversations[0]?.archivedAt,
-        newestArchive: processedConversations[processedConversations.length - 1]?.archivedAt,
-      },
-      meta: {
+      logger.debug('Fetching all archived agent conversations', {
         requestId,
-        timestamp: new Date().toISOString(),
+        userId,
+        agentKey,
+      });
+
+      const { skip, limit, page } = getPaginationParams(req);
+      let contentMatchIds: mongoose.Types.ObjectId[] | undefined;
+      if (req.query.search) {
+        const escapedSearch = validateAndEscapeSearch(req.query.search, {
+          formatSpecifiers: true,
+        });
+        contentMatchIds = await findSessionIdsMatchingContent(
+          orgId,
+          escapedSearch,
+        );
+      }
+      const filter = {
+        ...buildAgentConversationFilter(
+          req,
+          orgId,
+          userId,
+          agentKey as string,
+          undefined,
+          contentMatchIds,
+        ),
+        isArchived: true,
+        archivedBy: { $exists: true },
+      };
+      const sortOptions = buildSortOptions(req);
+
+      const [conversations, totalCount] = await Promise.all([
+        ChatSession.find(filter)
+          .sort(sortOptions as any)
+          .skip(skip)
+          .limit(limit)
+          .select('-__v')
+          .lean()
+          .exec(),
+        ChatSession.countDocuments(filter),
+      ]);
+
+      const processedConversations = conversations.map((conversation: any) => ({
+        ...addComputedFields(conversation as IAgentConversation, userId),
+        archivedAt: conversation.updatedAt,
+        archivedBy: conversation.archivedBy,
+      }));
+
+      logger.debug('Successfully fetched archived agent conversations', {
+        requestId,
+        count: conversations.length,
+        totalCount,
         duration: Date.now() - startTime,
-      },
-    });
-  } catch (error: any) {
-    logger.error('Error fetching archived agent conversations', {
-      requestId,
-      message: 'Error fetching archived agent conversations',
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
-    next(error);
-  }
+      });
+
+      res.status(HTTP_STATUS.OK).json({
+        conversations: processedConversations,
+        pagination: buildPaginationMetadata(totalCount, page, limit),
+        filters: buildFiltersMetadata(filter, req.query),
+        summary: {
+          totalArchived: totalCount,
+          oldestArchive: processedConversations[0]?.archivedAt,
+          newestArchive:
+            processedConversations[processedConversations.length - 1]
+              ?.archivedAt,
+        },
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error fetching archived agent conversations', {
+        requestId,
+        message: 'Error fetching archived agent conversations',
+        error: error.message,
+        stack: error.stack,
+        duration: Date.now() - startTime,
+      });
+      next(error);
+    }
   };
 
 export const updateAgentConversationTitle = async (
@@ -9138,130 +9019,145 @@ export const updateAgentFeedback = async (
  */
 export const listAllAgentsArchivedConversationsGrouped =
   (appConfig: AppConfig) =>
-  async (
-    req: AuthenticatedUserRequest,
-    res: Response,
-    next: NextFunction,
-  ): Promise<void> => {
-  const requestId = req.context?.requestId;
-  const startTime = Date.now();
-  try {
-    const userId = req.user?.userId;
-    const orgId = req.user?.orgId;
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    const requestId = req.context?.requestId;
+    const startTime = Date.now();
+    try {
+      const userId = req.user?.userId;
+      const orgId = req.user?.orgId;
 
-    if (!userId || !orgId) {
-      throw new BadRequestError('User ID and Organization ID are required');
-    }
+      if (!userId || !orgId) {
+        throw new BadRequestError('User ID and Organization ID are required');
+      }
 
-    const deletedAgentKeys = await fetchDeletedAgentKeysForUser(appConfig, req);
+      const deletedAgentKeys = await fetchDeletedAgentKeysForUser(
+        appConfig,
+        req,
+      );
 
-    // Agent-level pagination params
-    const agentPage = Math.max(1, parseInt(req.query.agentPage as string, 10) || 1);
-    const agentLimit = Math.min(
-      100,
-      Math.max(1, parseInt(req.query.agentLimit as string, 10) || AGENT_ARCHIVES_INITIAL_AGENT_LIMIT),
-    );
-    const agentSkip = (agentPage - 1) * agentLimit;
+      // Agent-level pagination params
+      const agentPage = Math.max(
+        1,
+        parseInt(req.query.agentPage as string, 10) || 1,
+      );
+      const agentLimit = Math.min(
+        100,
+        Math.max(
+          1,
+          parseInt(req.query.agentLimit as string, 10) ||
+            AGENT_ARCHIVES_INITIAL_AGENT_LIMIT,
+        ),
+      );
+      const agentSkip = (agentPage - 1) * agentLimit;
 
-    logger.debug('Fetching all agents archived conversations (grouped)', {
-      requestId,
-      userId,
-      agentPage,
-      agentLimit,
-    });
-
-    const filter: Record<string, unknown> = {
-      orgId: new mongoose.Types.ObjectId(`${orgId}`),
-      $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
-      isArchived: true,
-      archivedBy: { $exists: true },
-      isDeleted: false,
-      ...ONLY_AGENT,
-    };
-    if (deletedAgentKeys !== null) {
-      filter.agentKey = { $nin: deletedAgentKeys };
-    }
-
-    // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
-    // Use a cheap count pipeline + the full data pipeline instead of $facet.
-    const [countRows, rawGroups] = await Promise.all([
-      ChatSession.aggregate<{ totalAgentCount: number }>([
-        { $match: filter },
-        { $group: { _id: '$agentKey' } },
-        { $count: 'totalAgentCount' },
-      ]),
-      ChatSession.aggregate([
-        { $match: filter },
-        // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
-        // so that the initial 5 chats here align with page 1 of the per-agent pagination
-        { $sort: { lastActivityAt: -1 as const } },
-        // Exclude heavy fields before grouping
-        { $project: { __v: 0, messages: 0, nextSeq: 0, sessionType: 0 } },
-        {
-          $group: {
-            _id: '$agentKey',
-            conversations: { $push: '$$ROOT' },
-            totalCount: { $sum: 1 },
-            latestActivity: { $first: '$lastActivityAt' },
-          },
-        },
-        // Sort agent groups by most recent activity
-        { $sort: { latestActivity: -1 as const } },
-        { $skip: agentSkip },
-        { $limit: agentLimit },
-        {
-          $project: {
-            agentKey: '$_id',
-            conversations: { $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT] },
-            totalCount: 1,
-          },
-        },
-      ]),
-    ]);
-
-    const totalAgentCount = countRows[0]?.totalAgentCount ?? 0;
-
-    // Apply computed fields (isOwner, accessLevel) to sliced conversations
-    const groups = rawGroups.map((g: any) => ({
-      agentKey: g.agentKey,
-      conversations: g.conversations.map((c: any) => ({
-        ...addComputedFields(c as IAgentConversation, userId),
-        archivedAt: c.updatedAt,
-        archivedBy: c.archivedBy,
-      })),
-      pagination: buildPaginationMetadata(g.totalCount, 1, AGENT_ARCHIVES_INITIAL_CHAT_LIMIT),
-    }));
-
-    logger.debug('Successfully fetched grouped archived agent conversations', {
-      requestId,
-      agentGroupCount: groups.length,
-      totalAgentCount,
-      duration: Date.now() - startTime,
-    });
-
-    res.status(HTTP_STATUS.OK).json({
-      groups,
-      agentPagination: {
-        page: agentPage,
-        limit: agentLimit,
-        totalCount: totalAgentCount,
-        totalPages: Math.ceil(totalAgentCount / agentLimit),
-        hasNextPage: agentPage * agentLimit < totalAgentCount,
-        hasPrevPage: agentPage > 1,
-      },
-      meta: {
+      logger.debug('Fetching all agents archived conversations (grouped)', {
         requestId,
-        timestamp: new Date().toISOString(),
+        userId,
+        agentPage,
+        agentLimit,
+      });
+
+      const filter: Record<string, unknown> = {
+        orgId: new mongoose.Types.ObjectId(`${orgId}`),
+        $or: [{ userId: new mongoose.Types.ObjectId(`${userId}`) }],
+        isArchived: true,
+        archivedBy: { $exists: true },
+        isDeleted: false,
+        ...ONLY_AGENT,
+      };
+      if (deletedAgentKeys !== null) {
+        filter.agentKey = { $nin: deletedAgentKeys };
+      }
+
+      // Amazon DocumentDB does not support the $facet stage (see AWS aggregation compatibility).
+      // Use a cheap count pipeline + the full data pipeline instead of $facet.
+      const [countRows, rawGroups] = await Promise.all([
+        ChatSession.aggregate<{ totalAgentCount: number }>([
+          { $match: filter },
+          { $group: { _id: '$agentKey' } },
+          { $count: 'totalAgentCount' },
+        ]),
+        ChatSession.aggregate([
+          { $match: filter },
+          // Sort by lastActivityAt desc — must match the per-agent archive endpoint's default sort
+          // so that the initial 5 chats here align with page 1 of the per-agent pagination
+          { $sort: { lastActivityAt: -1 as const } },
+          // Exclude heavy fields before grouping
+          { $project: { __v: 0, messages: 0, nextSeq: 0, sessionType: 0 } },
+          {
+            $group: {
+              _id: '$agentKey',
+              conversations: { $push: '$$ROOT' },
+              totalCount: { $sum: 1 },
+              latestActivity: { $first: '$lastActivityAt' },
+            },
+          },
+          // Sort agent groups by most recent activity
+          { $sort: { latestActivity: -1 as const } },
+          { $skip: agentSkip },
+          { $limit: agentLimit },
+          {
+            $project: {
+              agentKey: '$_id',
+              conversations: {
+                $slice: ['$conversations', AGENT_ARCHIVES_INITIAL_CHAT_LIMIT],
+              },
+              totalCount: 1,
+            },
+          },
+        ]),
+      ]);
+
+      const totalAgentCount = countRows[0]?.totalAgentCount ?? 0;
+
+      // Apply computed fields (isOwner, accessLevel) to sliced conversations
+      const groups = rawGroups.map((g: any) => ({
+        agentKey: g.agentKey,
+        conversations: g.conversations.map((c: any) => ({
+          ...addComputedFields(c as IAgentConversation, userId),
+          archivedAt: c.updatedAt,
+          archivedBy: c.archivedBy,
+        })),
+        pagination: buildPaginationMetadata(
+          g.totalCount,
+          1,
+          AGENT_ARCHIVES_INITIAL_CHAT_LIMIT,
+        ),
+      }));
+
+      logger.debug(
+        'Successfully fetched grouped archived agent conversations',
+        {
+          requestId,
+          agentGroupCount: groups.length,
+          totalAgentCount,
+          duration: Date.now() - startTime,
+        },
+      );
+
+      res.status(HTTP_STATUS.OK).json({
+        groups,
+        agentPagination: {
+          page: agentPage,
+          limit: agentLimit,
+          totalCount: totalAgentCount,
+          totalPages: Math.ceil(totalAgentCount / agentLimit),
+          hasNextPage: agentPage * agentLimit < totalAgentCount,
+          hasPrevPage: agentPage > 1,
+        },
+        meta: {
+          requestId,
+          timestamp: new Date().toISOString(),
+          duration: Date.now() - startTime,
+        },
+      });
+    } catch (error: any) {
+      logger.error('Error fetching grouped archived agent conversations', {
+        requestId,
+        error: error.message,
+        stack: error.stack,
         duration: Date.now() - startTime,
-      },
-    });
-  } catch (error: any) {
-    logger.error('Error fetching grouped archived agent conversations', {
-      requestId,
-      error: error.message,
-      stack: error.stack,
-      duration: Date.now() - startTime,
-    });
-    next(error);
-  }
-};
+      });
+      next(error);
+    }
+  };

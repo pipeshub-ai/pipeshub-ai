@@ -103,7 +103,7 @@ export default function MailPage() {
       <SettingsPageContainer>
         {/* ── Page header ── */}
         <Flex align="start" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
-          <Box>
+          <Box style={{ flex: '1 1 240px', minWidth: 0 }}>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.mail.title')}
             </Heading>

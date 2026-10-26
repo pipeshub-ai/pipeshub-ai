@@ -396,25 +396,16 @@
     "filterOnlyUnread": "未读",
     "filterArchived": "已归档",
     "filterTooltip": "筛选：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 与你共享了一个聊天",
+      "titleAgent": "{{name}} 与你共享了一个智能体聊天",
+      "body": "你现在可以打开“{{chat}}”。",
+      "bodyNoTitle": "你现在可以在“{{place}}”中打开它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
-    "removeFailed": "无法移除通知",
-    "accessRequest": {
-      "approve": "批准",
-      "deny": "拒绝",
-      "approved": "已授予访问权限",
-      "denied": "已拒绝申请",
-      "failed": "无法保存你的决定，请重试。",
-      "approveTitle": "批准访问？",
-      "approveBodyCollection": "这将授予 {{user}} 对整个集合“{{name}}”的读取权限。",
-      "approveBodyRecord": "这将授予 {{user}} 对此记录的读取权限。",
-      "cancel": "取消",
-      "alreadyDecided": "此申请已处理。",
-      "someone": "有人",
-      "alreadyApproved": "已批准",
-      "alreadyDeclined": "已拒绝",
-      "forwarded": "此记录的访问权限在其源系统中授予。"
-    }
+    "removeFailed": "无法移除通知"
   },
   "action": {
     "find": "查找",
@@ -754,7 +745,9 @@
       "open": "打开",
       "preview": "预览",
       "goToParent": "转到上级",
-      "goToNamed": "转到 {{name}}"
+      "goToNamed": "转到 {{name}}",
+      "moreFor": "{{name}} 的更多选项",
+      "select": "选择 {{name}}"
     },
     "upload": {
       "title": "上传数据",
@@ -884,8 +877,6 @@
     "sharedChats": "共享的聊天",
     "sharedBy": "由 {{name}} 共享",
     "agentChat": "智能体聊天",
-    "askedBy": "{{name}} 提问",
-    "askedByUnknown": "其他用户提问",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -1427,9 +1418,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此智能体未配置",
       "internalSearch": "内部搜索",
-      "webSearch": "网络搜索",
-      "deepResearch": "深度研究",
-      "deepResearchNeedsWebSearch": "开启网页搜索后才能使用深度研究"
+      "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
     "toolApproval": {
@@ -1487,20 +1476,7 @@
       "download": "下载产物",
       "downloading": "正在下载产物"
     },
-    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
-    "redaction": {
-      "partial": "此回答部分基于你无权访问的来源。",
-      "hidden": "此回答基于你无权访问的来源。",
-      "sourceLabel": "你无权访问的来源",
-      "requestAccess": "申请访问",
-      "requested": "已申请访问",
-      "requestFailed": "无法发送申请，请重试。",
-      "openInSource": "在来源中打开",
-      "inlineHidden": "已隐藏：你没有访问权限",
-      "alreadyAccessible": "你现在可以打开此来源，请刷新对话。",
-      "detailsHidden": "工具结果和推理等详情对共享查看者隐藏。",
-      "collectionLabel": "申请访问包含此来源的集合"
-    }
+    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -2807,7 +2783,8 @@
         "errorFallback": "禁用连接器失败。请重试。",
         "actions": {
           "removeInstance": "移除此连接器实例",
-          "saveConfig": "保存配置更改"
+          "saveConfig": "保存配置更改",
+          "saveAuth": "保存新的凭据"
         }
       },
       "adminAccessDialog": {
@@ -2939,7 +2916,22 @@
         "localWatcherLabel": "本地监视器",
         "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
         "classification": "分类",
-        "classificationSkipped": "已跳过",
+        "enrichment": {
+          "title": "AI 数据提取",
+          "description": "记录可搜索后在后台运行，搜索无需等待。",
+          "classificationHint": "添加摘要、主题和类别",
+          "entities": "实体提取",
+          "entitiesHint": "识别人物、组织和地点",
+          "progress": "{{completed}} / {{total}}",
+          "waiting": "等待中",
+          "skipped": "已跳过",
+          "notStarted": "记录可搜索后开始",
+          "inProgress": "进行中",
+          "done": "已完成",
+          "failedCount_one": "{{count}} 个失败",
+          "failedCount_other": "{{count}} 个失败",
+          "retry": "重试"
+        },
         "retryFailedClassification": "重试失败的分类",
         "retryClassificationSuccess": "分类重试已加入队列",
         "retryClassificationError": "重试分类失败",
@@ -3028,7 +3020,9 @@
           "ready": "已完成",
           "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
           "desktopOffline": "桌面端离线",
-          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。",
+          "actionNeeded": "需要处理",
+          "actionNeededTooltip": "需要您处理：{{items}}"
         },
         "sync": {
           "kind": "同步",
@@ -3275,6 +3269,12 @@
           "wholeSite": "整个网站",
           "onePage": "单个页面"
         }
+      },
+      "actionItems": {
+        "badge": "需要处理",
+        "title": "需要处理",
+        "openAuthentication": "更新身份验证",
+        "viewSteps": "查看设置步骤"
       }
     },
     "mcpServers": {
@@ -4385,6 +4385,12 @@
         "scopesHelp": "选择此令牌可以执行的操作。没有默认值：无人值守运行的凭据应当只拥有他人明确为其选择的权限。",
         "expiryLabel": "有效期",
         "expiryDays": "{{count}} 天",
+        "expiryCustom": "自定义",
+        "expiryCustomLabel": "令牌过期前的天数",
+        "expiryCustomUnit": "天",
+        "expiryCustomHelp": "请输入 1 到 {{max}} 之间的天数。",
+        "expiryCustomInvalid": "请输入 1 到 {{max}} 之间的整数天数。",
+        "expiryCustomPreview": "将于 {{date}} 过期",
         "existing": "令牌",
         "none": "此账号尚未持有任何令牌。",
         "lastUsed": "上次使用 {{date}}",
@@ -4642,20 +4648,17 @@
     "agentName": "名称",
     "createdBy": "创建者",
     "agentNamePlaceholder": "例如：支持机器人",
-    "serviceAccountBadge": "服务智能体",
-    "serviceAccountBadgeTooltip": "此服务智能体使用自己的工具集凭据。它以创建者的权限检索知识，因此所有使用者看到的结果都来自创建者有权阅读的内容。",
-    "convertToServiceAccount": "转换为服务智能体",
-    "convertToServiceAccountTooltip": "永久性操作：智能体级别的工具集、与整个组织共享，并以创建者的权限检索知识。无法撤销。",
-    "convertToServiceAccountTooltipNewAgent": "将此智能体创建为服务智能体：智能体级别的工具集、与整个组织共享，并以您的权限检索知识。",
-    "createAsServiceAccount": "服务智能体",
-    "createAsServiceAccountTooltip": "创建时使用智能体级别的工具集并与整个组织共享。它以您的权限检索知识。",
+    "serviceAgentBadge": "服务智能体",
+    "serviceAgentBadgeTooltip": "此服务智能体使用自己的工具集凭据。它以创建者的权限检索知识，因此所有使用者看到的结果都来自创建者有权阅读的内容。",
+    "convertToServiceAgentTooltip": "永久性操作：智能体级别的工具集、与整个组织共享，并以创建者的权限检索知识。无法撤销。",
+    "convertToServiceAgentTooltipNewAgent": "将此智能体创建为服务智能体：智能体级别的工具集、与整个组织共享，并以您的权限检索知识。",
     "agentActionsMenuAria": "智能体菜单",
     "agentMenuCreateAsServiceAgent": "创建为服务智能体",
     "agentMenuConvertToServiceAgent": "转换为服务智能体",
     "share": "共享",
     "shareWithOrg": "与所有人共享",
     "shareWithOrgTooltip": "与您组织中的所有人共享此智能体。",
-    "serviceAccountShareTooltip": "服务智能体始终与整个组织共享。",
+    "serviceAgentShareTooltip": "服务智能体始终与整个组织共享。",
     "saving": "正在保存…",
     "saveChanges": "保存更改",
     "createAgent": "创建智能体",
@@ -4665,8 +4668,19 @@
     "userAgentDesc": "个人智能体，采用按用户的工具集身份验证。",
     "serviceAgent": "服务智能体",
     "serviceAgentDesc": "全组织范围的智能体，使用智能体级别的工具集凭据。以创建者的权限检索知识。",
+    "identitySearchesAs": "以{{identity}}的身份检索",
+    "identityCreator": "创建者",
+    "identityBoundUnknown": "某个服务账号",
+    "identityTooltip": "选择该智能体检索知识时使用的身份。所有使用它的人，看到的都是该身份有权读取的内容。",
+    "identityDialogTitle": "以此身份检索知识",
+    "identityDialogBody": "该智能体与整个组织共享，因此这决定了所有人的提问能触及的范围。默认是它的创建者。服务账号是管理员有意授予权限的身份。",
+    "identityChoose": "选择",
+    "identityLoading": "正在加载服务账号…",
+    "identityLoadError": "无法加载服务账号。",
+    "identityRetry": "重试",
+    "identityNone": "尚无服务账号。请在“工作区 → 服务账号”中创建。",
     "nameRequired": "请输入名称以继续。",
-    "saveAsServiceAccountFirst": "请先将该智能体保存为服务智能体，然后再配置工具集凭据。",
+    "saveAsServiceAgentFirst": "请先将该智能体保存为服务智能体，然后再配置工具集凭据。",
     "hidePalette": "隐藏面板",
     "showPalette": "显示面板",
     "openInChat": "在聊天中打开",
@@ -4684,7 +4698,7 @@
     "agentLoadFailedTitle": "无法加载此智能体",
     "agentLoadFailedDescription": "请检查网络连接后重试。智能体加载完成前不会保存任何内容。",
     "agentLoadRetry": "重试",
-    "paletteViewOnlyServiceAccount": "仅供查看。此组织服务智能体的面板和工具集设置已锁定。",
+    "paletteViewOnlyServiceAgent": "仅供查看。此组织服务智能体的面板和工具集设置已锁定。",
     "paletteActionBlockedViewOnly": "仅供查看。此组织服务智能体无法在此处更改。",
     "viewerPaletteDragBlocked": "仅供查看。流程已锁定；请在“工具”下对工具集进行身份验证。",
     "paletteViewerAuthenticateInTools": "仅供查看。画布拖动已关闭；请在“工具”下登录工具集。",
@@ -4701,8 +4715,8 @@
     "skillDisabled": "此技能已停用，重新启用前智能体将无法使用",
     "collapse": "收起",
     "expand": "展开",
-    "serviceAccountCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
-    "serviceAccountConverted": "智能体已转换为服务智能体。请使用面板中的钥匙图标配置工具集凭据。",
+    "serviceAgentCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
+    "serviceAgentConverted": "智能体已转换为服务智能体。请使用面板中的钥匙图标配置工具集凭据。",
     "unsavedChangesConfirm": "您有未保存的更改。确定要离开吗？",
     "agentUpdated": "智能体已更新",
     "agentUpdatedDesc": "您的更改已保存。",
@@ -5334,7 +5348,8 @@
     "serverError": "服务器错误",
     "timedOut": "请求超时",
     "somethingWentWrong": "出了点问题",
-    "tryAgainShortly": "请稍后重试"
+    "tryAgainShortly": "请稍后重试",
+    "connectedServiceProblem": "关联服务出现问题"
   },
   "validation": {
     "password": {
@@ -5394,10 +5409,6 @@
         "label": "可查看",
         "description": "仅有查看权限"
       }
-    },
-    "chatRoles": {
-      "writer": "可查看并发送消息。其回答使用其自身的访问权限。",
-      "reader": "只能查看聊天。"
     },
     "team": "团队",
     "teamsNoRoles": "团队没有角色",

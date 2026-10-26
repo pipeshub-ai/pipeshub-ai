@@ -35,6 +35,7 @@ from __future__ import annotations
 import logging
 import os
 import sys
+import uuid
 from pathlib import Path
 from typing import Iterator
 
@@ -57,6 +58,7 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
+    assert_response_strictly_matches_openapi_operation,
 )
 
 _logger = logging.getLogger(__name__)
@@ -159,6 +161,53 @@ class TestOAuthAuthorize(OAuthProviderTestBase):
         assert resp.status_code in (200, 302, 303), (
             f"Expected 200/302/303, got {resp.status_code}"
         )
+
+
+    def test_consent_json_for_a_session_matches_spec(
+        self, user_session_client: SessionClient
+    ) -> None:
+        """A signed-in caller gets the consent JSON, with the app's knowledgeLimit and the workspace."""
+        source = str(uuid.uuid4())
+        created = user_session_client.request(
+            "POST",
+            "/api/v1/oauth-clients",
+            json={
+                "name": f"integration-consent-{uuid.uuid4().hex[:12]}",
+                "allowedScopes": ["openid", "kb:read"],
+                "allowedGrantTypes": ["authorization_code"],
+                "redirectUris": ["http://localhost/callback"],
+                "isConfidential": False,
+                "knowledgeLimit": {"recordGroups": [source]},
+            },
+        )
+        assert created.status_code == 201, created.text
+        app = created.json()["app"]
+        try:
+            resp = user_session_client.request(
+                "GET",
+                "/api/v1/oauth2/authorize",
+                headers={"Accept": "application/json"},
+                allow_redirects=False,
+                params={
+                    "response_type": "code",
+                    "client_id": app["clientId"],
+                    "redirect_uri": "http://localhost/callback",
+                    "scope": "openid kb:read",
+                    "state": "teststate123",
+                    "code_challenge": "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM",
+                    "code_challenge_method": "S256",
+                },
+            )
+            assert resp.status_code == 200, resp.text
+            body = resp.json()
+            assert body["consentData"]["app"]["knowledgeLimit"] == {
+                "apps": [],
+                "recordGroups": [source],
+                "records": [],
+            }, body
+            assert_response_strictly_matches_openapi_operation(body, "oauthAuthorize")
+        finally:
+            user_session_client.request("DELETE", f"/api/v1/oauth-clients/{app['id']}")
 
 
 # ====================================================================

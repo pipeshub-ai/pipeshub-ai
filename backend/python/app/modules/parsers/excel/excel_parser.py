@@ -50,6 +50,50 @@ from app.utils.streaming import (
 )
 from app.utils.table_enrichment import fallback_table_summary
 
+
+def _color_to_str(color: object) -> str | None:
+    """Return a colour's ``rgb`` only when it is a real string.
+
+    Theme and indexed colours expose ``rgb`` as an error descriptor rather than
+    a string, so anything that is not a ``str`` is treated as "no colour".
+    """
+    rgb = getattr(color, "rgb", None)
+    return rgb if isinstance(rgb, str) else None
+
+
+def get_cell_background_color(cell: object) -> str | None:
+    """Background colour of a cell as a string, or None.
+
+    Handles ``PatternFill`` (foreground colour) and ``GradientFill`` (first
+    colour stop). Styling is decorative, so a failure reading it yields None
+    instead of failing the cell.
+    """
+    try:
+        # cell.fill is a StyleProxy, so isinstance() against the fill classes
+        # is always False; tell the two kinds apart by their attributes.
+        fill = getattr(cell, "fill", None)
+        if fill is None:
+            return None
+        start_color = getattr(fill, "start_color", None)
+        if start_color is not None:  # PatternFill
+            return _color_to_str(start_color)
+        stops = getattr(fill, "stop", None)  # GradientFill: colour stops
+        if not stops:
+            return None
+        first = stops[0]
+        return _color_to_str(getattr(first, "color", first))
+    except Exception:
+        return None
+
+
+def get_cell_font_color(cell: object) -> str | None:
+    """Font colour of a cell as a string, or None (theme/indexed give None)."""
+    try:
+        return _color_to_str(cell.font.color)
+    except Exception:
+        return None
+
+
 # Module-level constants for Excel processing (mirror CSV parser)
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
 MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header generation
@@ -629,16 +673,10 @@ class ExcelParser:
                                     "bold": cell.font.bold,
                                     "italic": cell.font.italic,
                                     "size": cell.font.size,
-                                    "color": (
-                                        cell.font.color.rgb if cell.font.color else None
-                                    ),
+                                    "color": get_cell_font_color(cell),
                                 },
                                 "fill": {
-                                    "background_color": (
-                                        cell.fill.start_color.rgb
-                                        if cell.fill.start_color
-                                        else None
-                                    )
+                                    "background_color": get_cell_background_color(cell),
                                 },
                                 "alignment": {
                                     "horizontal": cell.alignment.horizontal,
@@ -969,12 +1007,10 @@ class ExcelParser:
                         "bold": cell.font.bold,
                         "italic": cell.font.italic,
                         "size": cell.font.size,
-                        "color": cell.font.color.rgb if cell.font.color else None,
+                        "color": get_cell_font_color(cell),
                     },
                     "fill": {
-                        "background_color": (
-                            cell.fill.start_color.rgb if cell.fill.start_color else None
-                        )
+                        "background_color": get_cell_background_color(cell),
                     },
                     "alignment": {
                         "horizontal": cell.alignment.horizontal,

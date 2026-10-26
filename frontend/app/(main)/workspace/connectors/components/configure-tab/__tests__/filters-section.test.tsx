@@ -355,6 +355,87 @@ describe('FiltersSection — dynamic options', () => {
   });
 });
 
+describe('FiltersSection — branch picker', () => {
+  const selectField = (name: string, displayName: string, required = false): FilterSchemaField => ({
+    name,
+    displayName,
+    filterType: 'select',
+    operators: ['in'],
+    optionSourceType: 'dynamic',
+    required,
+  });
+  const branch = selectField('branch', 'Branch');
+
+  it.each([
+    ['GitHub', 'repo_ids', 'acme/api'],
+    ['GitLab', 'project_ids', 'acme/platform/api'],
+  ])('asks %s for the branches of the selected repository', async (_name, parent, repoId) => {
+    getFilterFieldOptions.mockResolvedValue(page([{ id: 'main', label: 'main (default)' }]));
+    setup({
+      sync: [selectField(parent, 'Repository', true), branch],
+      syncValues: {
+        [parent]: { operator: 'in', value: [{ id: repoId, label: repoId }] },
+      },
+    });
+    fireEvent.keyDown(screen.getByRole('button', { name: /add filter/i }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Branch' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select branch' }));
+
+    await waitFor(() =>
+      expect(getFilterFieldOptions).toHaveBeenCalledWith('conn-1', 'branch', {
+        limit: 20,
+        page: 1,
+        contextGroupPath: [repoId],
+      }),
+    );
+  });
+
+  it('clears the branch when another repository is picked', async () => {
+    getFilterFieldOptions.mockImplementation(async (_id, key) =>
+      key === 'repo_ids'
+        ? page([
+            { id: 'acme/api', label: 'acme/api' },
+            { id: 'acme/web', label: 'acme/web' },
+          ])
+        : page([]),
+    );
+    setup({
+      sync: [selectField('repo_ids', 'Repository', true), branch],
+      syncValues: {
+        repo_ids: { operator: 'in', value: [{ id: 'acme/api', label: 'acme/api' }] },
+        branch: { operator: 'in', value: [{ id: 'release/1.x', label: 'release/1.x' }] },
+      },
+    });
+    expect(screen.getByRole('button', { name: 'release/1.x' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'acme/api' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'acme/web' }));
+
+    expect(syncValue('repo_ids')).toMatchObject({ value: [{ id: 'acme/web', label: 'acme/web' }] });
+    expect(syncValue('branch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'release/1.x' })).toBeNull();
+  });
+
+  it('keeps the branch when the same repository is picked again', async () => {
+    getFilterFieldOptions.mockImplementation(async (_id, key) =>
+      key === 'repo_ids' ? page([{ id: 'acme/api', label: 'acme/api' }]) : page([]),
+    );
+    setup({
+      sync: [selectField('repo_ids', 'Repository', true), branch],
+      syncValues: {
+        repo_ids: { operator: 'in', value: [{ id: 'acme/api', label: 'acme/api' }] },
+        branch: { operator: 'in', value: [{ id: 'release/1.x', label: 'release/1.x' }] },
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'acme/api' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'acme/api' }));
+
+    expect(syncValue('branch')).toMatchObject({ value: [{ id: 'release/1.x', label: 'release/1.x' }] });
+  });
+});
+
 describe('FiltersSection — single choice, free text, booleans, numbers', () => {
   const project: FilterSchemaField = {
     name: 'project',

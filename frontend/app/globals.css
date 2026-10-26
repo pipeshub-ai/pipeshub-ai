@@ -1591,14 +1591,19 @@ th code {
   }
 }
 
-/* iOS Safari zooms into inputs under 16px. */
+/* iOS Safari zooms into any focused field under 16px. !important beats the inline font sizes
+   several fields set (the chat composer among them); the composer's backdrop and placeholder
+   follow so the chips stay aligned with the text. */
 @media (max-width: 768px) and (pointer: coarse) {
   .rt-TextFieldInput,
   .rt-TextAreaInput,
   textarea,
   input,
-  select {
-    font-size: 16px;
+  select,
+  [contenteditable]:not([contenteditable='false']),
+  .chat-input-backdrop,
+  .chat-placeholder-shimmer {
+    font-size: 16px !important;
   }
 }
 

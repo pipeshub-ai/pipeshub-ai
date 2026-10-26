@@ -319,25 +319,16 @@
     "filterOnlyUnread": "No leídas",
     "filterArchived": "Archivadas",
     "filterTooltip": "Filtro: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} ha compartido un chat contigo",
+      "titleAgent": "{{name}} ha compartido un chat de agente contigo",
+      "body": "Ahora puedes abrir «{{chat}}».",
+      "bodyNoTitle": "Ahora puedes abrirlo desde «{{place}}».",
+      "someone": "Un compañero"
+    },
     "loadFailed": "No se pudieron cargar las notificaciones",
     "updateFailed": "No se pudo actualizar la notificación",
-    "removeFailed": "No se pudo eliminar la notificación",
-    "accessRequest": {
-      "approve": "Aprobar",
-      "deny": "Denegar",
-      "approved": "Acceso concedido",
-      "denied": "Solicitud rechazada",
-      "failed": "No se pudo guardar tu decisión. Inténtalo de nuevo.",
-      "approveTitle": "¿Aprobar el acceso?",
-      "approveBodyCollection": "Esto da a {{user}} acceso de lectura a toda la colección «{{name}}».",
-      "approveBodyRecord": "Esto da a {{user}} acceso de lectura a este registro.",
-      "cancel": "Cancelar",
-      "alreadyDecided": "Esta solicitud ya se resolvió.",
-      "someone": "Alguien",
-      "alreadyApproved": "Ya aprobada",
-      "alreadyDeclined": "Ya rechazada",
-      "forwarded": "El acceso a este registro se concede en su sistema de origen."
-    }
+    "removeFailed": "No se pudo eliminar la notificación"
   },
   "action": {
     "find": "Buscar",
@@ -674,7 +665,9 @@
       "open": "Abrir",
       "preview": "Vista previa",
       "goToParent": "Ir a la carpeta superior",
-      "goToNamed": "Ir a {{name}}"
+      "goToNamed": "Ir a {{name}}",
+      "moreFor": "Más opciones para {{name}}",
+      "select": "Seleccionar {{name}}"
     },
     "upload": {
       "title": "Subir datos",
@@ -807,8 +800,6 @@
     "sharedChats": "Chats compartidos",
     "sharedBy": "Compartido por {{name}}",
     "agentChat": "Chat de agente",
-    "askedBy": "{{name}} preguntó",
-    "askedByUnknown": "Otro usuario preguntó",
     "noSharedChats": "No hay chats compartidos",
     "yourChats": "Tus chats",
     "noChatsFound": "No se encontraron chats",
@@ -1361,9 +1352,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "No configurado en este agente",
       "internalSearch": "Búsqueda interna",
-      "webSearch": "Búsqueda web",
-      "deepResearch": "Investigación a fondo",
-      "deepResearchNeedsWebSearch": "Activa la búsqueda web para usar la investigación a fondo"
+      "webSearch": "Búsqueda web"
     },
     "resizePanels": "Redimensionar los paneles de chat y vista previa",
     "toolApproval": {
@@ -1424,20 +1413,7 @@
       "download": "Descargar artefacto",
       "downloading": "Descargando artefacto"
     },
-    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
-    "redaction": {
-      "partial": "Esta respuesta se basa en parte en fuentes a las que no tienes acceso.",
-      "hidden": "Esta respuesta se basa en fuentes a las que no tienes acceso.",
-      "sourceLabel": "Fuente sin acceso",
-      "requestAccess": "Solicitar acceso",
-      "requested": "Acceso solicitado",
-      "requestFailed": "No se pudo enviar la solicitud. Inténtalo de nuevo.",
-      "openInSource": "Abrir en el origen",
-      "inlineHidden": "Oculto: no tienes acceso",
-      "alreadyAccessible": "Ya puedes abrir esta fuente. Actualiza el chat.",
-      "detailsHidden": "Los detalles, como los resultados de herramientas y el razonamiento, están ocultos para quienes ven un chat compartido.",
-      "collectionLabel": "Solicitar acceso a la colección que contiene esta fuente"
-    }
+    "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán."
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -2696,7 +2672,8 @@
         "errorFallback": "No se pudo deshabilitar el conector. Por favor, inténtelo de nuevo.",
         "actions": {
           "removeInstance": "eliminar esta instancia del conector",
-          "saveConfig": "guardar los cambios de configuración"
+          "saveConfig": "guardar los cambios de configuración",
+          "saveAuth": "guardar las nuevas credenciales"
         }
       },
       "adminAccessDialog": {
@@ -2828,7 +2805,23 @@
         "localWatcherLabel": "VIGILANTE LOCAL",
         "localWatcherStatus": "{{state}} · {{pending}} pendientes · {{failed}} fallidos",
         "classification": "Clasificación",
-        "classificationSkipped": "Omitidos",
+        "enrichment": {
+          "title": "Extracción de datos con IA",
+          "description": "Se ejecuta en segundo plano cuando un registro ya se puede buscar. La búsqueda no lo espera.",
+          "classificationHint": "Añade un resumen, temas y categorías",
+          "entities": "Extracción de entidades",
+          "entitiesHint": "Encuentra personas, organizaciones y lugares",
+          "progress": "{{completed}} de {{total}}",
+          "waiting": "En espera",
+          "skipped": "Omitidos",
+          "notStarted": "Empieza cuando los registros se pueden buscar",
+          "inProgress": "En curso",
+          "done": "Listo",
+          "failedCount_one": "{{count}} fallido",
+          "failedCount_many": "{{count}} fallidos",
+          "failedCount_other": "{{count}} fallidos",
+          "retry": "Reintentar"
+        },
         "retryFailedClassification": "Reintentar clasificación fallida",
         "retryClassificationSuccess": "Reintento de clasificación en cola",
         "retryClassificationError": "No se pudo reintentar la clasificación",
@@ -2917,7 +2910,9 @@
           "ready": "Completo",
           "readyTooltip": "La configuración está completa y autenticada. La sincronización puede ejecutarse cuando esté habilitada.",
           "desktopOffline": "Escritorio desconectado",
-          "desktopOfflineTooltip": "La aplicación de escritorio que gestiona esta carpeta no está conectada. Ábrela en ese equipo para sincronizar."
+          "desktopOfflineTooltip": "La aplicación de escritorio que gestiona esta carpeta no está conectada. Ábrela en ese equipo para sincronizar.",
+          "actionNeeded": "Acción necesaria",
+          "actionNeededTooltip": "Requiere su atención: {{items}}"
         },
         "sync": {
           "kind": "Sync",
@@ -3164,6 +3159,12 @@
           "wholeSite": "Sitio completo",
           "onePage": "Una página"
         }
+      },
+      "actionItems": {
+        "badge": "Acción necesaria",
+        "title": "Acción necesaria",
+        "openAuthentication": "Actualizar autenticación",
+        "viewSteps": "Ver los pasos de configuración"
       }
     },
     "mcpServers": {
@@ -4351,6 +4352,12 @@
         "scopesHelp": "Elija qué puede hacer este token. No hay valor predeterminado: una credencial que se ejecuta sin supervisión debe tener el acceso que alguien haya elegido para ella.",
         "expiryLabel": "Caduca después de",
         "expiryDays": "{{count}} días",
+        "expiryCustom": "Personalizado",
+        "expiryCustomLabel": "Días hasta que caduque el token",
+        "expiryCustomUnit": "días",
+        "expiryCustomHelp": "Introduce un número de días entre 1 y {{max}}.",
+        "expiryCustomInvalid": "Introduce un número entero de días entre 1 y {{max}}.",
+        "expiryCustomPreview": "Caduca el {{date}}",
         "existing": "Tokens",
         "none": "Esta cuenta todavía no tiene ningún token.",
         "lastUsed": "Último uso: {{date}}",
@@ -4622,20 +4629,17 @@
     "agentName": "Nombre del agente",
     "createdBy": "Creado por",
     "agentNamePlaceholder": "p. ej. Bot de soporte, Asistente de investigación",
-    "serviceAccountBadge": "Agente de servicio",
-    "serviceAccountBadgeTooltip": "Este agente de servicio usa sus propias credenciales de conjunto de herramientas. Busca en el conocimiento con el acceso de quien lo creó, por lo que todos los que lo usan ven resultados de lo que esa persona puede leer.",
-    "convertToServiceAccount": "Convertir a agente de servicio",
-    "convertToServiceAccountTooltip": "Permanente: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con el acceso de quien lo creó. No se puede deshacer.",
-    "convertToServiceAccountTooltipNewAgent": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con tu acceso.",
-    "createAsServiceAccount": "Agente de servicio",
-    "createAsServiceAccountTooltip": "Crear con conjuntos de herramientas a nivel de agente, compartido con toda la organización. Busca en el conocimiento con tu acceso.",
+    "serviceAgentBadge": "Agente de servicio",
+    "serviceAgentBadgeTooltip": "Este agente de servicio usa sus propias credenciales de conjunto de herramientas. Busca en el conocimiento con el acceso de quien lo creó, por lo que todos los que lo usan ven resultados de lo que esa persona puede leer.",
+    "convertToServiceAgentTooltip": "Permanente: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con el acceso de quien lo creó. No se puede deshacer.",
+    "convertToServiceAgentTooltipNewAgent": "Crea este agente como agente de servicio: conjuntos de herramientas a nivel de agente, compartido con toda la organización y búsqueda de conocimiento con tu acceso.",
     "agentActionsMenuAria": "Menú del agente",
     "agentMenuCreateAsServiceAgent": "Crear como agente de servicio",
     "agentMenuConvertToServiceAgent": "Convertir a agente de servicio",
     "share": "Compartir",
     "shareWithOrg": "Compartir con todos",
     "shareWithOrgTooltip": "Compartir este agente con todos en su organización.",
-    "serviceAccountShareTooltip": "Los agentes de servicio siempre se comparten con la organización.",
+    "serviceAgentShareTooltip": "Los agentes de servicio siempre se comparten con la organización.",
     "saving": "Guardando…",
     "saveChanges": "Guardar cambios",
     "createAgent": "Crear agente",
@@ -4645,8 +4649,19 @@
     "userAgentDesc": "Agente personal con autenticación de conjunto de herramientas por usuario.",
     "serviceAgent": "Agente de servicio",
     "serviceAgentDesc": "Agente de toda la organización con credenciales a nivel de agente. Busca en el conocimiento con el acceso de quien lo creó.",
+    "identitySearchesAs": "Busca como {{identity}}",
+    "identityCreator": "su creador",
+    "identityBoundUnknown": "una cuenta de servicio",
+    "identityTooltip": "Elige la identidad con la que este agente busca en el conocimiento. Quienes lo usen verán resultados de lo que esa identidad puede leer.",
+    "identityDialogTitle": "Buscar en el conocimiento como",
+    "identityDialogBody": "Este agente se comparte con toda tu organización, así que esto decide hasta dónde llegan las preguntas de todos. Su creador es la opción predeterminada. Una cuenta de servicio es una identidad que un administrador concede de forma deliberada.",
+    "identityChoose": "Elegir",
+    "identityLoading": "Cargando cuentas de servicio…",
+    "identityLoadError": "No se pudieron cargar las cuentas de servicio.",
+    "identityRetry": "Reintentar",
+    "identityNone": "Aún no hay cuentas de servicio. Crea una en Espacio de trabajo → Cuentas de servicio.",
     "nameRequired": "El nombre es obligatorio",
-    "saveAsServiceAccountFirst": "Guarde el agente como agente de servicio primero, luego configure las credenciales del conjunto de herramientas.",
+    "saveAsServiceAgentFirst": "Guarde el agente como agente de servicio primero, luego configure las credenciales del conjunto de herramientas.",
     "hidePalette": "Ocultar paleta",
     "showPalette": "Mostrar paleta",
     "openInChat": "Abrir en chat",
@@ -4664,7 +4679,7 @@
     "agentLoadFailedTitle": "No se pudo cargar este agente",
     "agentLoadFailedDescription": "Comprueba tu conexión e inténtalo de nuevo. No se guarda nada hasta que se cargue el agente.",
     "agentLoadRetry": "Reintentar",
-    "paletteViewOnlyServiceAccount": "Solo lectura: la paleta y la configuración de conjuntos de herramientas están bloqueadas para este agente de servicio de la organización.",
+    "paletteViewOnlyServiceAgent": "Solo lectura: la paleta y la configuración de conjuntos de herramientas están bloqueadas para este agente de servicio de la organización.",
     "paletteActionBlockedViewOnly": "Solo lectura: no puede cambiar este agente de servicio de la organización ni sus conjuntos de herramientas desde aquí.",
     "viewerPaletteDragBlocked": "Solo lectura: no puede cambiar el flujo desde aquí. Aún puede autenticar conjuntos de herramientas en Herramientas más abajo.",
     "paletteViewerAuthenticateInTools": "Solo lectura: arrastrar modelos, conocimiento y herramientas al lienzo está desactivado. Use Herramientas más abajo para iniciar sesión en los conjuntos que necesite.",
@@ -4677,8 +4692,8 @@
     "noSkills": "Aún no hay skills: cree o importe una en Sus Skills",
     "collapse": "Contraer",
     "expand": "Expandir",
-    "serviceAccountCreated": "Agente de servicio creado. Configure cada conjunto de herramientas con el icono de llave en la paleta.",
-    "serviceAccountConverted": "Agente convertido en agente de servicio. Configure las credenciales del conjunto de herramientas con el icono de llave en la paleta.",
+    "serviceAgentCreated": "Agente de servicio creado. Configure cada conjunto de herramientas con el icono de llave en la paleta.",
+    "serviceAgentConverted": "Agente convertido en agente de servicio. Configure las credenciales del conjunto de herramientas con el icono de llave en la paleta.",
     "unsavedChangesConfirm": "Tiene cambios sin guardar. ¿Está seguro de que desea salir?",
     "agentUpdated": "Agente actualizado",
     "agentUpdatedDesc": "Los cambios han sido guardados.",
@@ -5424,7 +5439,8 @@
     "serverError": "Error del servidor",
     "timedOut": "La solicitud ha caducado",
     "somethingWentWrong": "Algo salió mal",
-    "tryAgainShortly": "Inténtalo de nuevo en unos momentos"
+    "tryAgainShortly": "Inténtalo de nuevo en unos momentos",
+    "connectedServiceProblem": "Problema con un servicio conectado"
   },
   "validation": {
     "password": {
@@ -5485,10 +5501,6 @@
         "label": "Puede ver",
         "description": "Solo acceso de lectura"
       }
-    },
-    "chatRoles": {
-      "writer": "Puede ver y enviar mensajes. Sus respuestas usan su propio acceso.",
-      "reader": "Solo puede ver el chat."
     },
     "team": "Equipo",
     "teamsNoRoles": "Los equipos no tienen roles",

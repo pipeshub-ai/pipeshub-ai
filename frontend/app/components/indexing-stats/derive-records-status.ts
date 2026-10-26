@@ -1,40 +1,49 @@
-import type { ConnectorStatsResponse, RecordsStatus } from '@/app/(main)/workspace/connectors/types';
+import type {
+  ConnectorStatsResponse,
+  ExtractionStatusCounts,
+  RecordsStatus,
+} from '@/app/(main)/workspace/connectors/types';
 
-export interface ClassificationStatus {
+/**
+ * Progress of one enrichment stage (classification or entity extraction) over the
+ * records that reached it. NOT_STARTED records are not yet searchable, so they are
+ * left out; a paused stage (model provider down) is still waiting, not stuck.
+ */
+export interface StageProgress {
   completed: number;
-  skipped: number;
+  waiting: number;
   failed: number;
-  queued: number;
+  skipped: number;
+}
+
+function stageProgress(counts: ExtractionStatusCounts): StageProgress {
+  return {
+    completed: counts.COMPLETED ?? 0,
+    waiting: (counts.QUEUED ?? 0) + (counts.IN_PROGRESS ?? 0) + (counts.PAUSED ?? 0),
+    failed: counts.FAILED ?? 0,
+    skipped: counts.SKIPPED ?? 0,
+  };
+}
+
+/** Records the stage still applies to: everything it reached except the skipped ones. */
+export function stageApplicableCount(progress: StageProgress): number {
+  return progress.completed + progress.waiting + progress.failed;
 }
 
 /** Null when the backend predates pipeline stages and sends no extractionStatus. */
 export function deriveClassificationStatus(
   stats?: ConnectorStatsResponse['data'] | null
-): ClassificationStatus | null {
+): StageProgress | null {
   const ext = stats?.stats?.extractionStatus;
-  if (!ext) return null;
-  return {
-    completed: ext.COMPLETED ?? 0,
-    skipped: ext.SKIPPED ?? 0,
-    failed: ext.FAILED ?? 0,
-    queued: ext.QUEUED ?? 0,
-  };
+  return ext ? stageProgress(ext) : null;
 }
-
-export type EntitiesStatus = ClassificationStatus;
 
 /** Null when the backend predates the entities stage and sends no entitiesStatus. */
 export function deriveEntitiesStatus(
   stats?: ConnectorStatsResponse['data'] | null
-): EntitiesStatus | null {
+): StageProgress | null {
   const ent = stats?.stats?.entitiesStatus;
-  if (!ent) return null;
-  return {
-    completed: ent.COMPLETED ?? 0,
-    skipped: ent.SKIPPED ?? 0,
-    failed: ent.FAILED ?? 0,
-    queued: ent.QUEUED ?? 0,
-  };
+  return ent ? stageProgress(ent) : null;
 }
 
 export function deriveRecordsStatus(

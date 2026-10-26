@@ -36,6 +36,12 @@ AZURITE = f"DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKe
 SAS_ONLY = "BlobEndpoint=https://acct.blob.core.windows.net/;SharedAccessSignature=sv=2022-11-02&ss=b&srt=co&sp=rl&sig=abc"
 
 
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.azure.azure_blob.check_url_allowed", lambda *_a, **_k: None)
+
+
 def data_source(connection_string: str) -> AzureBlobDataSource:
     return AzureBlobDataSource(AzureBlobClient(AzureBlobRESTClient(AzureBlobConnectionStringConfig(connection_string))))
 

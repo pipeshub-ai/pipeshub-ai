@@ -25,6 +25,7 @@ from app.connectors.sources.linear.api_gateway import (
 from app.connectors.sources.linear.connector import (
     LINEAR_CONFIG_PATH,
     LINEAR_TRANSIENT_RETRIES,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
 )
 from app.connectors.sources.linear.team_access import WORKSPACE_MEMBERS_GROUP_ID
@@ -1256,7 +1257,7 @@ class TestSyncProjectsForTeams:
         await connector._sync_projects_for_teams([(rg, [])])
         connector.data_entities_processor.on_new_records.assert_awaited_once_with([(mock_proj, [])])
         connector._project_to_records.assert_awaited_once_with("p1", {"t1"})
-        assert connector.projects_sync_point.store["projects"]["last_sync_time"] == 1700000005000
+        assert connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]["last_sync_time"] == 1700000005000
 
     @pytest.mark.asyncio
     async def test_project_shared_by_two_teams_is_read_once(self) -> None:
@@ -1285,7 +1286,7 @@ class TestSyncProjectsForTeams:
         connector = _make_connector()
         connector.sync_filters = None
         connector.notify = AsyncMock()
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1700000000000}
         rg = _team_rg()
 
         ds = MagicMock()
@@ -1304,7 +1305,7 @@ class TestSyncProjectsForTeams:
         assert connector._project_to_records.await_count == 2
         connector.data_entities_processor.on_new_records.assert_awaited_once_with(good)
         connector.notify.assert_awaited_once()
-        stored = connector.projects_sync_point.store["projects"]
+        stored = connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]
         assert stored["last_sync_time"] == 1700000000000
         assert stored["held_runs"] == 1
 
@@ -1313,7 +1314,7 @@ class TestSyncProjectsForTeams:
         connector = _make_connector()
         connector.sync_filters = None
         connector.notify = AsyncMock()
-        connector.projects_sync_point.store["projects"] = {"last_sync_time": 1700000000000, "held_runs": 3}
+        connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY] = {"last_sync_time": 1700000000000, "held_runs": 3}
         rg = _team_rg()
 
         ds = MagicMock()
@@ -1325,7 +1326,7 @@ class TestSyncProjectsForTeams:
 
         await connector._sync_projects_for_teams([(rg, [])])
 
-        stored = connector.projects_sync_point.store["projects"]
+        stored = connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY]
         assert stored["last_sync_time"] > 1700000000000
         assert stored["held_runs"] == 0
 

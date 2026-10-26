@@ -537,7 +537,8 @@ export function OAuthAuthorizeView() {
   return (
     <Flex
       style={{
-        minHeight: '100dvh',
+        // A fixed height, not minHeight: body is overflow: hidden, so this box must be the scroll container.
+        height: '100dvh',
         overflowY: 'auto',
         padding: 'var(--space-5)',
         background: 'var(--gray-2)',

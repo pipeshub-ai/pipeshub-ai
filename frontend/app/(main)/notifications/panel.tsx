@@ -25,6 +25,7 @@ import {
 import { useTranslation } from 'react-i18next';
 import { usePathname, useSearchParams } from 'next/navigation';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
+import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import {
   PANEL_COMPACT_TIME_WIDTH,
@@ -79,7 +80,7 @@ export function NotificationsPanel() {
   }, [pathname, searchKey, closePanel]);
 
   const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
-  const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed);
+  const navHidden = useNavHidden();
   const isMobile = useIsMobile();
   const storedPanelWidth = useNotificationPanelWidthStore((s) => s.panelWidth);
   const setPanelWidth = useNotificationPanelWidthStore((s) => s.setPanelWidth);
@@ -89,7 +90,7 @@ export function NotificationsPanel() {
 
   // On mobile the sidebar is a fixed overlay and doesn't consume layout space,
   // so the panel should start from the left edge.
-  const leftOffset = isMobile || isNavCollapsed ? 0 : sidebarWidth;
+  const leftOffset = isMobile || navHidden ? 0 : sidebarWidth;
 
   // ── Animation state ────────────────────────────────────────────────────────
   // `isVisible`  — controls whether the portal is in the DOM at all.
@@ -194,13 +195,13 @@ export function NotificationsPanel() {
     const observer = new ResizeObserver((entries) => {
       const el = panelRef.current;
       if (!el) return;
-      const w = isMobile || isNavCollapsed ? 0 : Math.round(entries[0].contentRect.width);
+      const w = isMobile || navHidden ? 0 : Math.round(entries[0].contentRect.width);
       el.style.left = `${w}px`;
     });
 
     observer.observe(slot);
     return () => observer.disconnect();
-  }, [isVisible, isMobile, isNavCollapsed]);
+  }, [isVisible, isMobile, navHidden]);
   // ──────────────────────────────────────────────────────────────────────────
 
   const [loading, setLoading] = useState(false);

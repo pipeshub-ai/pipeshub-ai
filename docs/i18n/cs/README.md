@@ -180,9 +180,9 @@ Chcete stejné vyhledávání ve vlastním kódu nebo za vyhledávacím polem pr
 
 ## PipesHub Cloud
 
-Chcete plně spravovaný PipesHub bez provozu vlastní infrastruktury? Zaregistrujte se do **[PipesHub Cloud](https://app.pipeshub.com)**: stejné konektory, vyhledávání respektující oprávnění a API, bez nutnosti cokoli instalovat.
+Dáváte přednost plně spravovanému PipesHub bez provozování vlastní infrastruktury? Zaregistrujte se v **[PipesHub Cloud](https://app.pipeshub.com)**: stejné konektory, vyhledávání respektující oprávnění a API, aniž byste cokoli instalovali.
 
-Programovací agenti se připojují k `https://app.pipeshub.com/mcp` s osobním přístupovým tokenem. Viz [Pro programovací agenty](https://docs.pipeshub.com/for-agents).
+Kódovací agenti se připojují k `https://app.pipeshub.com/mcp` pomocí osobního přístupového tokenu. Viz [Pro kódovací agenty](https://docs.pipeshub.com/for-agents).
 
 ## Konektory
 

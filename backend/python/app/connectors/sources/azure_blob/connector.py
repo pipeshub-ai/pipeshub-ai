@@ -131,9 +131,12 @@ _SETUP_INFO = (
     "The connection string under Access keys in the Azure portal holds the account key, which "
     "has full control of the whole storage account. Prefer a SAS with only Read and List "
     "permissions, or the Microsoft Entra ID option with the Storage Blob Data Reader role. "
-    "A team connector must name the containers to sync: everyone in the organisation can read "
-    "what it syncs. Citations open files in PipesHub's viewer, since blob URLs of a private "
-    "container cannot be opened in a browser."
+    "Azure permissions (role assignments, SAS scope, access policies) are not applied in "
+    "PipesHub: everyone with access to this connector can read every file it syncs, and a team "
+    "connector shares them with the whole organisation. With no containers picked under "
+    "Container Names, it syncs every container the credentials can list, so for a team "
+    "connector pick only containers the whole organisation may read. Citations open files in "
+    "PipesHub's viewer, since blob URLs of a private container cannot be opened in a browser."
 )
 
 # When sync targets explicit container names without a prior list response, fetch each
@@ -424,7 +427,7 @@ class AzureBlobDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             display_name="Container Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Containers to sync. Required for a team connector: everyone in the organisation can read what it syncs.",
+            description="Containers to sync; leave empty to sync every container the credentials can list. Everything a team connector syncs is visible to the whole organisation.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_value=[],
             default_operator=MultiselectOperator.IN.value
@@ -680,18 +683,6 @@ class AzureBlobConnector(BaseConnector):
 
             # Get container filter if specified
             selected_containers = included_names(sync_filters, "containers")
-            if self.scope == ConnectorScope.TEAM.value and not selected_containers and not self.container_name:
-                # Every container the credential can see would be readable by the whole org.
-                message = (
-                    "Pick the containers to sync under Container Names (In) in the connector's filters: "
-                    "a team connector shares what it syncs with everyone in the organisation."
-                )
-                removed = await self._remove_containers_of_cleared_selection()
-                if removed:
-                    message += f" The {removed} container(s) it synced before were removed from PipesHub."
-                await self._notify_error(NotificationType.CONNECTOR_SYNC_ERROR, "No containers selected", message)
-                raise ValueError(message)
-
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(
                     self.connector_id
@@ -812,44 +803,6 @@ class AzureBlobConnector(BaseConnector):
                 "The next sync retries them; the connector's log names each one."
             )
         return " ".join(text)
-
-    async def _remove_containers_of_cleared_selection(self) -> int:
-        """Remove what a team connector synced once its Container Names are cleared, since the
-        whole org could still read it. Returns how many containers were removed.
-
-        Only on a fresh read of the saved filters whose Container Names is unset or an empty In: a
-        failed or empty read, which ``load_connector_filters`` cannot tell from a cleared filter,
-        removes nothing, and neither does a Not in filter, even one naming no container.
-        """
-        try:
-            config = await self.config_service.get_config(
-                f"/services/connectors/{self.connector_id}/config", use_cache=False, raise_on_error=True,
-            )
-        except Exception as e:
-            self.logger.warning(f"Not removing synced containers: the connector config could not be read: {e}")
-            return 0
-        filters = config.get("filters") if isinstance(config, dict) else None
-        sync = filters.get("sync") if isinstance(filters, dict) else None
-        values = sync.get("values") if isinstance(sync, dict) else None
-        if not isinstance(values, dict):
-            return 0
-        containers = FilterCollection.from_dict(values, self.logger).get("containers")
-        if containers is not None and (
-            not containers.is_empty() or containers.operator_value == FilterOperator.NOT_IN
-        ):
-            return 0
-        try:
-            stored = await stored_containers(self.data_entities_processor, self.connector_id)
-        except Exception as e:  # retried on the next sync
-            self.logger.warning(f"Not removing synced containers: the stored ones could not be read: {e}")
-            return 0
-        removed = 0
-        for name in sorted(stored):
-            removed += await remove_container(
-                self.data_entities_processor, self.connector_id, name,
-                "now that this team connector names no container", self.logger,
-            )
-        return removed
 
     async def _sync_containers(self, container_names: list[str]) -> dict[str, str]:
         """Sync containers a few at a time, so one large container does not hold up the rest.

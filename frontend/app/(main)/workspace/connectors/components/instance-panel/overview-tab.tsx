@@ -27,6 +27,7 @@ import type {
 import { IndexingStatsPanel } from '@/app/components/indexing-stats/indexing-stats-panel';
 import { CodeGraphStatus } from './code-graph-status';
 import { LastRunSummary } from './last-run-summary';
+import { ActionItemsCallout } from './action-items-callout';
 
 // ========================================
 // Props
@@ -61,6 +62,8 @@ export function OverviewTab({
   const { t } = useTranslation();
   const router = useRouter();
   const closeInstancePanel = useConnectorsStore((s) => s.closeInstancePanel);
+  const openPanel = useConnectorsStore((s) => s.openPanel);
+  const setPanelActiveTab = useConnectorsStore((s) => s.setPanelActiveTab);
   const instanceConfigs = useConnectorsStore((s) => s.instanceConfigs);
   const setLocalSyncStatus = useConnectorsStore((s) => s.setLocalSyncStatus);
   const addToast = useToastStore((s) => s.addToast);
@@ -330,6 +333,16 @@ export function OverviewTab({
           </Text>
         </Flex>
       )}
+
+      <ActionItemsCallout
+        instance={instance}
+        onOpenAuthentication={() => {
+          closeInstancePanel();
+          openPanel(instance, instance._key, instance.scope === 'personal' ? 'personal' : 'team');
+          // openPanel picks Configure for an authenticated connector; the fix is on Authenticate.
+          setPanelActiveTab('authenticate');
+        }}
+      />
 
       {stats?.byRecordType?.some((t) => t.recordType === 'CODE_FILE' && t.total > 0) && (
         <CodeGraphStatus connectorId={instance._key} />

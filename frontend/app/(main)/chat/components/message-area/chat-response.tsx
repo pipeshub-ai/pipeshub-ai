@@ -6,7 +6,6 @@ import { SelectedCollections } from '../selected-collections';
 import { AppliedFilters } from '../applied-filters';
 import { ResponseTabs } from './response-tabs';
 import { ConfidenceIndicator } from './confidence-indicator';
-import { DetailsHiddenNote, RedactedAttachments, RedactedSourcesNotice } from './redacted-sources';
 import { AnswerContent } from './answer-content';
 import { StatusMessageComponent } from './status-message';
 import { MessageActions } from './message-actions';
@@ -37,10 +36,9 @@ import { streamMessageForSlot } from '../../streaming';
 import { buildStreamChatRequestForSlot } from '../../runtime';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useChatStore } from '../../store';
-import { getCurrentUserId } from '../../utils/current-user-id';
 import { debugLog } from '../../debug-logger';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
-import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, AppliedFilterNode, MessagePart, RequestAccessInfo } from '../../types';
+import type { AskUserQuestionAnswer, AskUserQuestionPayload, AttachmentRef, ConfidenceLevel, ModelInfo, StatusMessage, ResponseTab, ChatArtifact, AppliedFilters as AppliedFiltersData, AppliedFilterNode, MessagePart } from '../../types';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getMimeTypeExtension } from '@/lib/utils/file-icon-utils';
@@ -48,7 +46,7 @@ import type { CitationMaps, CitationCallbacks } from './response-tabs/citations'
 import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
-import { parseDownloadMarkers, parseArtifactMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
+import { extractAnswerMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
 import { isAskUserQuestionTool } from '../../utils/tool-display';
 import { BELOW_APP_KEYS, hasAnyFilter } from '../../utils/tree-selection';
 import { DownloadTasks } from './download-tasks';
@@ -113,8 +111,6 @@ interface ChatResponseProps {
   appliedFilters?: AppliedFiltersData;
   /** Backend _id of the bot_response message (used for regenerate) */
   messageId?: string;
-  /** Who this answer was generated for; absent = the chat owner. */
-  authorUserId?: string;
   /** Whether this is the last bot message in the conversation */
   isLastMessage?: boolean;
   /** This reply's row in the thread (`messagePairs[].key`): an approval card's answer carries it on. */
@@ -142,12 +138,6 @@ interface ChatResponseProps {
   createdAt?: string;
   /** Attachments uploaded with this user query (PDF / JPEG / PNG). */
   attachments?: AttachmentRef[];
-  /** Attachments the viewer may not read (shared chats): a Request access row each. */
-  redactedAttachments?: RequestAccessInfo[];
-  /** The chat this answer is in: a redacted source is asked for in it. */
-  conversationId?: string;
-  /** Who asked this question, when it was not the signed-in user. */
-  askedBy?: { userId: string; name: string };
   /** Persisted ask_user_question payload from a historical tool_call — renders read-only question card */
   persistedAskUserQuestion?: AskUserQuestionPayload;
   persistedAskUserQuestionAnswers?: Record<string, AskUserQuestionAnswer>;
@@ -188,11 +178,7 @@ export const ChatResponse = React.memo(function ChatResponse({
   collections,
   appliedFilters,
   attachments,
-  redactedAttachments,
-  conversationId,
-  askedBy,
   messageId,
-  authorUserId,
   isLastMessage = false,
   rowId,
   streamingContent = '',
@@ -500,18 +486,17 @@ export const ChatResponse = React.memo(function ChatResponse({
       ),
     [isStreaming, streamingContent, answer],
   );
-  // Extract persisted artifact + legacy download-task markers so the markdown
-  // pipeline doesn't try to render them as raw text. The backend appends these
-  // markers to the final saved answer content:
-  //   ::artifact[name](url){mime|docId|recordId}
-  //   ::download_conversation_task[name](url)  (legacy CSV download)
-  const { text: contentWithoutArtifacts, artifacts: persistedArtifacts } = useMemo(
-    () => parseArtifactMarkers(processedContent),
-    [processedContent],
-  );
-  const { text: displayContent, tasks: downloadTasks } = useMemo(
-    () => parseDownloadMarkers(contentWithoutArtifacts),
-    [contentWithoutArtifacts],
+  // Markers are always stripped from the markdown; they become cards only in
+  // a saved answer (see `MarkerSource`). While streaming, live cards come
+  // solely from the backend's typed artifact events (`streamingArtifacts`),
+  // never from the model's own text.
+  const {
+    text: displayContent,
+    artifacts: persistedArtifacts,
+    downloadTasks,
+  } = useMemo(
+    () => extractAnswerMarkers(processedContent, isStreaming ? 'streamed' : 'persisted'),
+    [processedContent, isStreaming],
   );
   const EMPTY_ANSWER_FALLBACK =
     "I wasn't able to generate a response. Please try rephrasing.";
@@ -525,15 +510,9 @@ export const ChatResponse = React.memo(function ChatResponse({
     hasQuestionCard && displayContent.trim() === EMPTY_ANSWER_FALLBACK
       ? ''
       : displayContent;
-  // During streaming, use live artifacts from SSE events (they arrive before
-  // the final content exists). Once streaming ends, the markers in the saved
-  // content become the source of truth — slot.artifacts gets wiped on
-  // complete, so parsing from content keeps the panel populated for both
-  // freshly completed and historically loaded messages.
-  const effectiveArtifacts: ChatArtifact[] =
-    isStreaming && streamingArtifacts && streamingArtifacts.length > 0
-      ? streamingArtifacts
-      : persistedArtifacts;
+  const effectiveArtifacts: ChatArtifact[] = isStreaming
+    ? streamingArtifacts ?? []
+    : persistedArtifacts;
   const currentStatusMessage = currentStatusMessageProp;
   const streamingStatusToShow =
     currentStatusMessage ?? (isStreaming && !displayContent ? streamingFallbackStatus : null);
@@ -567,18 +546,6 @@ export const ChatResponse = React.memo(function ChatResponse({
     [effectiveParts, approvalReceipts],
   );
   const answerShown = hasApprovalCard ? withoutWaitingLine(visibleAnswer) : visibleAnswer;
-  // An answer is redone only by the person it was generated for (the server refuses anyone else).
-  const currentUserId = getCurrentUserId();
-  const slotIsOwner = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.isOwner ?? null : null,
-  );
-  const slotCanWrite = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.canWrite ?? null : null,
-  );
-  // Current access, not just authorship: a user moved to Can view cannot redo even their own answer.
-  const isOwnTurn =
-    slotCanWrite !== false &&
-    (authorUserId ? authorUserId === currentUserId : slotIsOwner !== false);
   // Regenerating could run an approved call again, or answer a card twice: the server refuses both.
   const ranApprovedCall = useMemo(
     () => hasApprovedCall(effectiveParts) || answeredToolApproval(effectiveParts),
@@ -840,11 +807,6 @@ export const ChatResponse = React.memo(function ChatResponse({
               </Box>
             )}
 
-            {!isStreaming && effectiveCitationMaps.redaction && (
-              <RedactedSourcesNotice redaction={effectiveCitationMaps.redaction} conversationId={conversationId} />
-            )}
-            {!isStreaming && effectiveCitationMaps.detailsHidden && <DetailsHiddenNote />}
-
             {/* After an answered question the reply carries on in this row and can stop on an
                 approval: its card shows under the question. Only an unanswered question comes first. */}
             {toolApproval && !questionPending && (
@@ -978,9 +940,9 @@ export const ChatResponse = React.memo(function ChatResponse({
     });
   }, [messageId, question, isStreaming, appliedFilters, attachments]);
 
-  // When the active question card owns this row, read aloud the question text
-  // and its options instead of the hidden bot response.
-  const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
+  // While this row's question card waits for an answer, read aloud and copy the
+  // question and its options. Once answered, the reply written after it is the content.
+  const speakContent = questionPending && pendingAskUserQuestion
     ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
     : visibleAnswer;
 
@@ -997,17 +959,6 @@ export const ChatResponse = React.memo(function ChatResponse({
               : 'var(--space-4)',
         }}
       >
-        {askedBy && (
-          <Text
-            as="div"
-            size="1"
-            color="gray"
-            data-testid="asked-by"
-            style={{ marginBottom: 'var(--space-1)' }}
-          >
-            {askedBy.name ? t('chat.askedBy', { name: askedBy.name }) : t('chat.askedByUnknown')}
-          </Text>
-        )}
         <ExpandableUserQuery
           question={question}
           isMobile={isMobile}
@@ -1038,9 +989,6 @@ export const ChatResponse = React.memo(function ChatResponse({
       )}
 
       {/* Attachment chips — uploaded files sent with this message */}
-      {redactedAttachments && redactedAttachments.length > 0 && (
-        <RedactedAttachments sources={redactedAttachments} conversationId={conversationId} />
-      )}
       {attachments && attachments.length > 0 && (
         <Flex
           align="center"
@@ -1150,7 +1098,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           isLastMessage={isLastMessage && !questionPending}
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
-          canRegenerate={!ranApprovedCall && isOwnTurn}
+          canRegenerate={!ranApprovedCall}
         />
       )}
 

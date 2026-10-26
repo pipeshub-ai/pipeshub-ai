@@ -256,6 +256,18 @@ class TestProcessIssueToTicket:
         assert result is not None
         assert result.record.type == "TASK"
 
+    @pytest.mark.parametrize(("state", "status"), [("opened", "OPEN"), ("closed", "CLOSED"), ("locked", "locked")])
+    async def test_issue_state_maps_to_status(self, state: str, status: str) -> None:
+        c = make_mock_connector()
+        _, ctx = await self._make_tx_context(None)
+        c.data_store_provider = MagicMock()
+        c.data_store_provider.transaction = MagicMock(return_value=ctx)
+
+        result = await IssuesSync(c)._process_issue_incident_task_to_ticket(_make_issue(state=state))
+
+        assert result is not None
+        assert getattr(result.record.status, "value", result.record.status) == status
+
     async def test_existing_record_marked_as_updated(self) -> None:
         c = make_mock_connector()
         existing = MagicMock()

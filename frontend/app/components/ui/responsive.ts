@@ -1,7 +1,13 @@
 import type React from 'react';
 
 export const PAGE_PADDING_X = 'clamp(var(--space-4), 4vw, 100px)';
-export const CATALOG_MAX_WIDTH = 1280;
+
+/**
+ * Page side padding: fluid below desktop, exactly `desktopPx` from 1024px up, so desktop
+ * pages keep their fixed gutters. The min() term is negative below 1024px and `desktopPx` above.
+ */
+export const pagePaddingX = (desktopPx: number): string =>
+  `max(clamp(var(--space-4), 4vw, ${desktopPx}px), min(${desktopPx}px, calc((100vw - 1023px) * 1000)))`;
 export const TOUCH_TARGET_PX = 44;
 
 /** Overlay width that never exceeds the viewport minus 16px gutters. */

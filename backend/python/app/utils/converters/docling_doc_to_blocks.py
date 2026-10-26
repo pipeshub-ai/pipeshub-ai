@@ -317,6 +317,39 @@ class DoclingDocToBlocksConverter():
 
             return block
 
+        def _is_rich_cell_group(ref: Any) -> bool:  # noqa: ANN401
+            ref_path = ref.get(DOCLING_REF_NODE, "") if isinstance(ref, dict) else ref
+            if not isinstance(ref_path, str) or not ref_path.startswith("#/groups/"):
+                return False
+            try:
+                group = doc_dict.get("groups", [])[int(ref_path.split("/")[2])]
+            except (IndexError, ValueError):
+                return False
+            return isinstance(group, dict) and str(group.get("name", "")).startswith("rich_cell_group")
+
+        def _mark_processed(ref: Any, pictures: list[Any]) -> None:  # noqa: ANN401
+            """Mark a rich-cell subtree as handled so no other walk emits its text.
+
+            Pictures are collected into ``pictures`` instead, so the caller still
+            emits them as image blocks.
+            """
+            ref_path = ref.get(DOCLING_REF_NODE, "") if isinstance(ref, dict) else ref
+            if not isinstance(ref_path, str) or ref_path in processed_refs:
+                return
+            parts = ref_path.split("/")
+            if len(parts) < 3:
+                return
+            if parts[1] == DOCLING_IMAGE_BLOCK_TYPE:
+                pictures.append(ref)
+                return
+            processed_refs.add(ref_path)
+            try:
+                node = doc_dict.get(parts[1], [])[int(parts[2])]
+            except (IndexError, ValueError):
+                return
+            for child in (node.get("children", []) if isinstance(node, dict) else []):
+                _mark_processed(child, pictures)
+
         async def _handle_table_block(item: dict[str, Any], doc_dict: dict[str, Any],parent_index: int | None, ref_path: str,level: int,doc: DoclingDocument) -> BlockGroup|None:
             table_data = item.get("data", {})
             cell_data = table_data.get("table_cells", [])
@@ -408,8 +441,16 @@ class DoclingDocToBlocksConverter():
 
             block_group.children = BlockGroupChildren.from_indices(block_indices=table_row_block_indices)
             block_groups.append(block_group)
-            children = item.get("children", [])
-            for child in children:
+            # Docling 2.135+ moves table cells holding line breaks or inline markup into
+            # "rich cell" child groups. Their text is already in the rows above, so
+            # emitting them again would index every such cell twice.
+            for child in item.get("children", []):
+                if _is_rich_cell_group(child):
+                    cell_pictures: list[Any] = []
+                    _mark_processed(child, cell_pictures)
+                    for picture in cell_pictures:
+                        await _process_item(picture, doc, level + 1)
+                    continue
                 await _process_item(child, doc, level + 1)
 
             return block_group
@@ -444,7 +485,7 @@ class DoclingDocToBlocksConverter():
             if not item or not isinstance(item, dict) or item_type not in [DOCLING_TEXT_BLOCK_TYPE, DOCLING_GROUP_BLOCK_TYPE, DOCLING_IMAGE_BLOCK_TYPE, DOCLING_TABLE_BLOCK_TYPE]:
                 self.logger.error(f"Invalid item type: {item_type} {item}")
                 return None
-                
+
             # Create block
             result = None
             if item_type == DOCLING_TEXT_BLOCK_TYPE:

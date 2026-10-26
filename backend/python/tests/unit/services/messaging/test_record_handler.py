@@ -12,13 +12,18 @@ import pytest
 
 from app.config.constants.arangodb import (
     CollectionNames,
+    Connectors,
     EventTypes,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordTypes,
 )
-from app.exceptions.indexing_exceptions import DocumentProcessingError, IndexingError
+from app.exceptions.indexing_exceptions import (
+    BlockContainerValidationError,
+    DocumentProcessingError,
+    IndexingError,
+)
 from app.services.graph_db.interface.graph_db_provider import (
     promoted_duplicate_extraction_status,
 )
@@ -3186,6 +3191,61 @@ class TestProcessEventErrors:
         assert updates["reason"] == user_errors.UNREADABLE_FILE
 
     @pytest.mark.asyncio
+    async def test_a_synced_item_that_fails_is_not_told_to_upload_again(self) -> None:
+        """A connector's pull request fails with the reason for a synced item, naming its source."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "connectorId": "conn-1",
+            "origin": OriginTypes.CONNECTOR.value,
+            "recordType": RecordTypes.PULL_REQUEST.value,
+            "connectorName": Connectors.GITHUB_TEAMS.value,
+            "mimeType": "text/markdown",
+        }
+        connector_instance = {"_key": "conn-1", "isActive": True, "name": "GitHub Apache"}
+        # The record read for processing, its connector, the final failure's
+        # check whether this attempt indexed it, then __update_document_status.
+        gp.get_document = AsyncMock(side_effect=[record, connector_instance, record, record])
+        gp.update_node = AsyncMock(return_value=True)
+        handler._propagate_primary_failure_to_queued_duplicates = AsyncMock()
+
+        handler.event_processor.on_event = lambda event_data: _failing_async_gen(
+            BlockContainerValidationError([], record_id="r1")
+        )
+        payload = {"recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1", "is_final_failure": True}
+
+        with patch("app.services.messaging.kafka.handlers.record.generate_jwt", new_callable=AsyncMock) as mock_jwt:
+            mock_jwt.return_value = "token"
+            with patch("app.services.messaging.kafka.handlers.record.make_api_call", new_callable=AsyncMock) as mock_api:
+                mock_api.return_value = {"data": b"# A pull request"}
+                handler.config_service.get_config = AsyncMock(
+                    return_value={"connectors": {"endpoint": "http://localhost:8088"}}
+                )
+                with patch(
+                    "app.services.messaging.kafka.handlers.record.MessageErrorClassifier.classify_by_exception",
+                    return_value=MessageErrorType.TERMINAL,
+                ):
+                    with pytest.raises(BlockContainerValidationError):
+                        await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
+
+        updates = gp.update_node.call_args.args[2]
+        assert updates["indexingStatus"] == ProgressStatus.FAILED.value
+        assert updates["reason"] == user_errors.for_synced_item(
+            user_errors.UNREADABLE_FILE, RecordTypes.PULL_REQUEST.value, "GitHub Apache",
+            Connectors.GITHUB_TEAMS.value,
+        )
+        assert "upload" not in updates["reason"]
+        # The app refuses Reindex on one GitHub record, so it isn't suggested.
+        assert "Reindex" not in updates["reason"]
+        # Queued copies are told the same.
+        handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
+            "r1", "vr1", updates["reason"]
+        )
+
+    @pytest.mark.asyncio
     async def test_terminal_error_record_not_found_skips_trigger_duplicate(self):
         """When __update_document_status returns None, _trigger_next_queued_duplicate should not be called."""
         handler = _make_handler()
@@ -5570,6 +5630,32 @@ class TestOnMessageAbandoned:
 
         gp.compare_and_set_indexing_status.assert_not_awaited()
         gp.update_node.assert_not_awaited()
+
+    @pytest.mark.parametrize(("bound", "held", "marked"), [(True, False, True), (True, True, False), (False, False, False)])
+    @pytest.mark.asyncio
+    async def test_an_in_progress_record_nobody_holds_is_failed_once_its_delivery_is_exhausted(self, bound, held, marked) -> None:
+        """The consumer that was processing it died on every delivery. With no live holder of the record's lease the record is
+        FAILED, else the stale scan hands it out again with a fresh retry budget for ever. A live holder, or no way to tell
+        (leases not bound), keeps the record untouched."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        gp.get_document = AsyncMock(return_value={"_key": "r1", "indexingStatus": ProgressStatus.IN_PROGRESS.value})
+        gp.update_node = AsyncMock(return_value=True)
+        gp.compare_and_set_indexing_status = AsyncMock(return_value=["r1"])
+        handler._trigger_next_queued_duplicate = AsyncMock()
+        handler.record_leases = MagicMock(
+            bound=bound, claim=AsyncMock(return_value=None if held else "holder-1"), release=AsyncMock()
+        )
+
+        await handler.on_message_abandoned(self._message(), reason="delivered 10 times", attempts=10)
+
+        assert gp.compare_and_set_indexing_status.await_count == int(marked)
+        assert handler._trigger_next_queued_duplicate.await_count == int(marked)
+        if marked:
+            assert gp.update_node.await_args.args[2]["indexingStatus"] == ProgressStatus.FAILED.value
+            handler.record_leases.release.assert_awaited_once_with("r1", "holder-1")
+        else:
+            handler.record_leases.release.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_tolerates_a_deleted_record(self):

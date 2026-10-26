@@ -8,7 +8,6 @@ import { Spinner } from '@/app/components/ui/spinner';
 import { useTranslation } from 'react-i18next';
 import type { NotificationListItem, NotificationSeverity } from './api';
 import { NOTIFICATIONS_PANEL_TOOLTIP_CLASS } from './notification-filter-menu';
-import { AccessRequestActions } from './access-request-actions';
 
 export type NotificationRowAction =
   | 'markRead'
@@ -102,6 +101,28 @@ const titleWrapStyle: CSSProperties = {
   whiteSpace: 'normal',
   overflowWrap: 'anywhere',
 };
+
+/**
+ * A "chat shared with you" notification is stored with plain English text, so it is built here
+ * from its payload in the viewer's language. A row without a sharer name keeps the stored text.
+ */
+function sharedChatText(
+  n: NotificationListItem,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): { title: string; message: string } | null {
+  const payload = n.payload ?? {};
+  const name = typeof payload.sharerName === 'string' && payload.sharerName.trim()
+    ? payload.sharerName.trim()
+    : t('notifications.chatShared.someone');
+  if (typeof payload.conversationId !== 'string') return null;
+  const chat = typeof payload.chatTitle === 'string' ? payload.chatTitle.trim() : '';
+  return {
+    title: t(payload.agentKey ? 'notifications.chatShared.titleAgent' : 'notifications.chatShared.title', { name }),
+    message: chat
+      ? t('notifications.chatShared.body', { chat })
+      : t('notifications.chatShared.bodyNoTitle', { place: t('nav.shared') }),
+  };
+}
 
 function NotificationTitle({
   title,
@@ -229,7 +250,7 @@ export function NotificationRow({
   compactTime?: boolean;
   pendingAction?: NotificationRowAction | null;
 }) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   // Hidden unclamped clone used solely for measuring the natural text height.
@@ -241,8 +262,9 @@ export function NotificationRow({
 
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
-  const title = n.title ?? '';
-  const message = n.message ?? '';
+  const shared = n.type === 'chatShared' ? sharedChatText(n, t) : null;
+  const title = shared?.title ?? n.title ?? '';
+  const message = shared?.message ?? n.message ?? '';
   const href = notificationHref(n.redirectLink ?? '');
 
   const isRead = n.status === 'read' || n.status === 'archived';
@@ -399,13 +421,6 @@ export function NotificationRow({
               >
                 show less
               </span>
-            )}
-            {n.type === 'accessRequest' && typeof n.payload?.requestId === 'string' && (
-              <AccessRequestActions
-                requestId={n.payload.requestId}
-                requesterName={typeof n.payload.requesterName === 'string' ? n.payload.requesterName : undefined}
-                collectionName={typeof n.payload.collectionName === 'string' ? n.payload.collectionName : undefined}
-              />
             )}
           </Flex>
 

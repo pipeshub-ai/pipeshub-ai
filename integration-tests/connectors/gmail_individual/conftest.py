@@ -2,10 +2,11 @@
 
 """Gmail (personal) integration fixtures (DESIGN.md in connectors/gmail/).
 
-``gmail_personal`` is class-scoped: it builds a simulated mailbox for the Drive personal suite's account, registers
-that suite's OAuth client and refresh token with the simulator, creates a personal Gmail connector with the same
-client, exchanges the refresh token at the simulator's token endpoint (never Google's), runs the first sync, and on
-teardown deletes the connector and checks its graph is gone.
+``gmail_personal`` is class-scoped: it builds a simulated mailbox for gmail_sim.env's personal account, registers
+that file's OAuth client and refresh token with the simulator, waits until the account's PipesHub user is active in
+the graph, creates a personal Gmail connector with the same client, exchanges the refresh token at the simulator's
+token endpoint (never Google's), runs the first sync, and on teardown deletes the connector and checks its graph
+is gone.
 """
 
 from __future__ import annotations
@@ -22,12 +23,13 @@ from connectors.gmail.gmail_env import (
     ENV_CLIENT_ID,
     ENV_CLIENT_SECRET,
     ENV_REFRESH_TOKEN,
+    PERSONAL_VARS,
     personal_env,
 )
 from connectors.gmail.gmail_sim import GmailSim, personal_oauth
+from connectors.gmail.gmail_users import ensure_active_user
 from connectors.google_drive_workspace.drive_workspace_test_utils import (  # type: ignore[import-not-found]
     connector_filters,
-    ensure_pipeshub_user_exists,
 )
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
@@ -64,12 +66,11 @@ async def gmail_personal(
     try:
         env = personal_env()
     except ValueError as e:
-        source_unavailable(f"The Google OAuth credentials the Drive personal suite uses are not configured: {e}")
+        source_unavailable(f"The simulated Gmail account is not configured: {e}", secrets=PERSONAL_VARS)
     sim = GmailSim()
-    if not sim.reachable():
-        source_unavailable(f"The Gmail simulator is not reachable at {sim.base_url} (compose profile gmail-sim)")
+    sim.require_reachable()
     sim.load({**personal_scenario(env.user), "oauth": personal_oauth(env, "me")})
-    user_id, _ = ensure_pipeshub_user_exists(users_client, env.user)
+    user_id = await ensure_active_user(users_client, graph_provider, env.user)
 
     instance = pipeshub_client.create_connector(
         connector_type="Gmail",

@@ -21,8 +21,7 @@ import { OnboardingTour } from "./components/tours/onboarding"
 import { useOnboardingStore } from "./onboarding/store"
 import { getOnboardingStatus } from "./onboarding/api"
 import { useAuthStore } from "@/config"
-import { useSidebarWidthStore, useAppliedSidebarWidth } from "@/lib/store/sidebar-width-store"
-import { useIsMobile } from "@/lib/hooks/use-is-mobile"
+import { useAppliedSidebarWidth } from "@/lib/store/sidebar-width-store"
 import { AuthGuard } from '@/app/components/ui/auth-guard'
 import { HealthGate } from '@/app/components/ui/health-gate'
 import { AuthHydrator } from '@/lib/store/auth-hydrator'
@@ -34,6 +33,7 @@ import { ServerUrlGuard } from '@/app/components/electron/server-url-setup'
 import { NotificationProvider } from './notifications/websocket-manager'
 import { NotificationsPanel } from './notifications/panel'
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button'
+import { useNavHidden } from '@/app/components/sidebar/use-nav-hidden'
 import { SIDEBAR_WIDTH } from "@/app/components/sidebar/constants"
 import { MobileMenuButton } from './components/mobile-menu-button'
 
@@ -136,9 +136,8 @@ function AppLayout({
   const isAuthenticated = useAuthStore((s) => s.isAuthenticated)
   const isHydrated = useAuthStore((s) => s.isHydrated)
   const setOnboardingActive = useOnboardingStore((s) => s.setOnboardingActive)
-  const isMobile = useIsMobile()
   const sidebarWidth = useAppliedSidebarWidth()
-  const isNavCollapsed = useSidebarWidthStore((s) => s.isNavCollapsed)
+  const navHidden = useNavHidden()
 
   // ── Full-name guard ────────────────────────────────────────────────────────
   const profile = useUserStore((s) => s.profile)
@@ -219,13 +218,13 @@ function AppLayout({
           key="app-sidebar-slot"
           data-ph-sidebar-slot=""
           style={{
-            maxWidth: (!isMobile && isNavCollapsed)
+            maxWidth: navHidden
               ? 0
               : `${sidebarWidth + SIDEBAR_SECONDARY_PANEL_EXTRA_PX}px`,
             overflow: 'hidden',
-            visibility: (!isMobile && isNavCollapsed) ? 'hidden' : 'visible',
+            visibility: navHidden ? 'hidden' : 'visible',
             flexShrink: 0,
-            transition: (!isMobile && isNavCollapsed)
+            transition: navHidden
               ? 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1), visibility 0s linear 0.28s'
               : 'max-width 0.28s cubic-bezier(0.4, 0, 0.2, 1)',
             position: 'relative',
