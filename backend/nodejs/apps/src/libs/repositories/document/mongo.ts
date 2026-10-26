@@ -69,6 +69,35 @@ function connectorFilters(scope: ConnectorScope): {
   return { connectorTag, underPrefixes };
 }
 
+/**
+ * Moves the revision's write stamp and returns it, or null when there is no such revision.
+ * A claimed revision is refused; a claim past the stale bound is from a delete that died and is
+ * dropped here: nothing else would clear it once a record is back on the revision.
+ */
+async function touchArtifactSet(
+  filter: Record<string, unknown>,
+  { now, staleMs }: ArtifactFence,
+): Promise<DocumentRow | null> {
+  const touched = await DocumentModel.findOneAndUpdate(
+    {
+      ...filter,
+      $or: [
+        { 'artifactSet.retiringAt': { $exists: false } },
+        { 'artifactSet.retiringAt': { $lt: now - staleMs } },
+      ],
+    } as never,
+    { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
+    { new: true, timestamps: false },
+  );
+  if (touched) return row(touched);
+  if (await DocumentModel.findOne(filter as never)) {
+    throw new ConflictError(
+      'This revision is being deleted; write it again once the delete has finished',
+    );
+  }
+  return null;
+}
+
 export class MongoDocumentRepository implements DocumentRepository {
   async get(orgId: string, id: string): Promise<DocumentRow | null> {
     const doc = await DocumentModel.findOne({ _id: id, orgId: orgId });
@@ -465,7 +494,7 @@ export class MongoDocumentRepository implements DocumentRepository {
       },
       'artifactSet.rev': { $eq: input.artifactSet?.rev },
     };
-    const existing = await this.touchArtifactSet(filter, fence);
+    const existing = await touchArtifactSet(filter, fence);
     if (existing) return existing;
     try {
       return row(await DocumentModel.create(input as never));
@@ -474,45 +503,20 @@ export class MongoDocumentRepository implements DocumentRepository {
       if ((error as { code?: unknown } | null)?.code !== MONGO_DUPLICATE_KEY) {
         throw mapMongoError(error);
       }
-      const winner = await this.touchArtifactSet(filter, fence);
+      const winner = await touchArtifactSet(filter, fence);
       if (!winner) throw mapMongoError(error);
       return winner;
     }
   }
 
-  /**
-   * Moves the revision's write stamp and returns it, or null when there is no such revision.
-   * A claimed revision is refused; a claim past the stale bound is from a delete that died and is
-   * dropped here: nothing else would clear it once a record is back on the revision.
-   */
-  private async touchArtifactSet(
-    filter: Record<string, unknown>,
-    { now, staleMs }: ArtifactFence,
-  ): Promise<DocumentRow | null> {
-    const touched = await DocumentModel.findOneAndUpdate(
-      {
-        ...filter,
-        $or: [
-          { 'artifactSet.retiringAt': { $exists: false } },
-          { 'artifactSet.retiringAt': { $lt: now - staleMs } },
-        ],
-      } as never,
-      { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
-      { new: true, timestamps: false },
-    );
-    if (touched) return row(touched);
-    if (await DocumentModel.findOne(filter as never)) {
-      throw new ConflictError(
-        'This revision is being deleted; write it again once the delete has finished',
-      );
-    }
-    return null;
-  }
-
   async claimArtifactSetForDelete(
     orgId: string,
     id: string,
-    { now, staleMs, ifUnchangedSince }: {
+    {
+      now,
+      staleMs,
+      ifUnchangedSince,
+    }: {
       now: number;
       staleMs: number;
       ifUnchangedSince?: number;

@@ -199,7 +199,10 @@ export interface DocumentRepository {
    * than `staleMs` ago is refused with a `ConflictError`: its files may already be going. An older
    * claim is from a delete that died and is cleared by this write.
    */
-  createArtifactSetOnce(row: NewDocument, fence: ArtifactFence): Promise<DocumentRow>;
+  createArtifactSetOnce(
+    row: NewDocument,
+    fence: ArtifactFence,
+  ): Promise<DocumentRow>;
   /**
    * Claims a revision for deletion: sets `artifactSet.retiringAt = now` without moving the write
    * stamp, and returns the row. With `ifUnchangedSince` the claim also requires the write stamp to
