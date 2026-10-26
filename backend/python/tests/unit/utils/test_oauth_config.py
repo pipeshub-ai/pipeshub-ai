@@ -1,6 +1,7 @@
 """Unit tests for app.utils.oauth_config."""
 
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote, urlparse
 
 import pytest
 
@@ -1142,8 +1143,26 @@ class TestApplyTenantToMicrosoftOAuthUrl:
         """Any user can now enter a tenant on a personal action; it must not act as a regex template."""
         assert (
             apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant)
+            == f"https://login.microsoftonline.com/{quote(tenant, safe='')}/oauth2/v2.0/token"
+        )
+
+    @pytest.mark.parametrize(
+        "tenant",
+        ["contoso.onmicrosoft.com", "72f988bf-86f1-41af-91ab-2d7cd011db47", "organizations"],
+    )
+    def test_a_real_tenant_goes_in_as_written(self, tenant):
+        assert (
+            apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant)
             == f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
         )
+
+    @pytest.mark.parametrize("tenant", ["evil/x", "../..", "x?redirect=1", "x#frag", "a b"])
+    def test_a_tenant_cannot_reshape_the_url(self, tenant):
+        """A tenant stays one path segment on Microsoft's host, whatever a user types."""
+        parsed = urlparse(apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant))
+        assert parsed.netloc == "login.microsoftonline.com"
+        assert parsed.path.split("/")[1:] == [quote(tenant, safe=""), "oauth2", "v2.0", "token"]
+        assert parsed.query == "" and parsed.fragment == ""
 
     def test_strips_surrounding_whitespace(self):
         assert "/contoso/" in apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "  contoso  ")

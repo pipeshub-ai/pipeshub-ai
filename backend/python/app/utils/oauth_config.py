@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
@@ -256,8 +256,11 @@ def apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
     tenant = str(tenant_id or "").strip()
     if not tenant or tenant.lower() == "common":
         return url
-    # A function, not a template: the tenant is user input, and a backslash in it must stay text.
-    return _MICROSOFT_TENANT_SEGMENT.sub(lambda m: f"{m.group(1)}{tenant}{m.group(2)}", url, count=1)
+    # The tenant is user input: encoded so it stays one path segment ("/", "?" and "#" cannot
+    # reshape the URL), and inserted by a function so a backslash is not read as a regex template.
+    # A real tenant (a GUID or a domain) has nothing to encode.
+    segment = quote(tenant, safe="")
+    return _MICROSOFT_TENANT_SEGMENT.sub(lambda m: f"{m.group(1)}{segment}{m.group(2)}", url, count=1)
 
 
 def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, Any] | None) -> None:
