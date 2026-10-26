@@ -10883,7 +10883,7 @@ components:
           type: string
           minLength: 1
           maxLength: 100000
-          description: What to find, searched as written unless `rewriteQuery` is true.
+          description: What to find. This text is always searched.
         limit:
           type: integer
           minimum: 1
@@ -10916,7 +10916,9 @@ components:
         rewriteQuery:
           type: boolean
           default: false
-          description: Rewrite and expand the query with the org's model first (slower).
+          description: |
+            Also search rewritten and expanded versions of the query, made by the
+            org's model (slower). The original text is still searched.
     RetrieveChunk:
       type: object
       required: [id, text, record, citation]
@@ -36874,8 +36876,8 @@ paths:
 
         Unlike `POST /search`, nothing is stored: no search history and no
         citation documents, so an application can call this on every request
-        it serves. The query is searched as sent unless `rewriteQuery` is
-        true.
+        it serves. The query text is always searched; `rewriteQuery` adds the
+        model's rewritten and expanded versions.
 
         Nothing to find (no match, no accessible records, nothing indexed
         yet) is a `200` with an empty `chunks` list.
@@ -36920,9 +36922,10 @@ paths:
           description: Bearer token lacks the `semantic:write` scope.
         '404':
           description: |
-            A referenced app or collection filter could not be resolved, or
-            nothing selected below app level exists or is readable by the
-            caller (as for `POST /search`).
+            A `recordGroups`, `records` or `recordsExact` selection resolves to
+            nothing the caller can read (as for `POST /search`). An app or
+            collection id that does not exist or is not readable is not a 404:
+            it is a `200` with no chunks.
           content:
             application/json:
               schema:
