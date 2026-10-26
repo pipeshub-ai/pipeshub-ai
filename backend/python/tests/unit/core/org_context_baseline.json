@@ -182,7 +182,7 @@
   "app/modules/entity_resolution/consolidation.py": 2,
   "app/modules/entity_resolution/resolver.py": 3,
   "app/modules/indexing/duplicate_reconcile.py": 2,
-  "app/modules/indexing/entity_index_rebuild.py": 4,
+  "app/modules/indexing/entity_index_rebuild.py": 5,
   "app/modules/indexing/lane_upkeep.py": 1,
   "app/modules/indexing/named_entity_completion.py": 2,
   "app/modules/indexing/named_entity_persist_retry.py": 2,

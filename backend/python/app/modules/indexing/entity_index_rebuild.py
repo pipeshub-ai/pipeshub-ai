@@ -439,6 +439,7 @@ class EntityIndexRebuilder:
         app = await self.graph.get_document(run.key, _APPS, raise_on_error=True)
         if app and app.get("status") != APP_STATUS_DELETING:
             return False
+        # The app's stored owner, which the cleanup must name; data being cleaned up, not the acting org.
         org_id = _text(run.doc.get("orgId"))
         self.logger.warning(
             "entity_index_rebuild: connector deleted during its page; removing the page's points | connector=%s",
