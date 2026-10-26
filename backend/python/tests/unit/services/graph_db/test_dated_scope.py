@@ -10,6 +10,7 @@ backends in ``tests/integration/graph_db/test_dated_scope_real_backends.py``.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
@@ -296,3 +297,27 @@ class TestTheTimelineOpensTheScope:
         if start is not None:
             expected["source_created_after_ms"] = start
         assert seen[0].span == expected
+
+
+@pytest.mark.asyncio
+async def test_closing_the_scope_cancels_a_walk_nobody_waits_for() -> None:
+    from app.services.graph_db.dated_scope import shared_dated_scope
+
+    started = asyncio.Event()
+
+    async def slow_walk() -> list:
+        started.set()
+        await asyncio.sleep(3600)
+        return []
+
+    with shared_dated_scope({"source_created_after_ms": 0}) as scope:
+        waiter = asyncio.ensure_future(scope.rows(("connector", "u", "o", "c", ()), slow_walk))
+        await started.wait()
+        walk = next(iter(scope._reads.values()))
+        waiter.cancel()  # the search gives up; the shielded walk keeps going
+        with contextlib.suppress(asyncio.CancelledError):
+            await waiter
+        assert not walk.done()
+    await asyncio.sleep(0)
+    assert walk.cancelled()
+    assert scope._reads == {}

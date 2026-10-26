@@ -130,6 +130,21 @@ class DatedScope:
                 del self._reads[key]
             raise
 
+    def close(self) -> None:
+        """Cancel the walks still running once no search can ask for them.
+
+        A walk outlives a search that gave up on it (it is shielded), so one
+        left running when the scope closes would keep querying the graph for
+        nobody. A finished walk's error is read here, so asyncio doesn't report
+        it as never retrieved.
+        """
+        for task in self._reads.values():
+            if not task.done():
+                task.cancel()
+            elif not task.cancelled():
+                task.exception()
+        self._reads.clear()
+
 
 _scope: ContextVar[DatedScope | None] = ContextVar("dated_permission_scope", default=None)
 
@@ -148,6 +163,7 @@ def shared_dated_scope(span: Mapping[str, Any]) -> Iterator[DatedScope]:
         yield scope
     finally:
         _scope.reset(token)
+        scope.close()
 
 
 def scope_for(time_range: Mapping[str, Any] | None) -> DatedScope | None:

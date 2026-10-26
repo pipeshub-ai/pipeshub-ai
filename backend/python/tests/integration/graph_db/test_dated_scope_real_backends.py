@@ -226,6 +226,9 @@ class _Contract:
                     g.user_id, ORG, g.app, None, time_range=time_range, raise_on_error=True,
                 )
                 shared = virtual_ids_in_range(rows, time_range)
+                if time_range == _RANGES[0]:
+                    # Two empty reads would also match; this one must find a record.
+                    assert f"{g.run}-early-vr" in live, time_range
                 assert shared.keys() == live.keys(), time_range
                 # A virtual record shared by two records may come through
                 # either; both reads pick one the range admits.
