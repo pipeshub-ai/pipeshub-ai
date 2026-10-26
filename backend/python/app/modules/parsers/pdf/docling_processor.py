@@ -36,6 +36,12 @@ from app.utils.worker_scaling import scaled
 
 SUCCESS_STATUS = "success"
 
+# The Docling service's PDF_PARSING_TIMEOUT_SECONDS. It gives up on a request
+# then, but a conversion runs in a thread that cannot be cancelled: without
+# Docling stopping itself it kept converting, holding its memory, while the
+# freed gate admitted the next.
+DOCUMENT_TIMEOUT_SECONDS = 40 * 60
+
 # The only formats callers hand to DoclingProcessor (see LocalDoclingParser).
 DOCLING_ROUTED_FORMATS = (InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX, InputFormat.MD)
 
@@ -105,6 +111,7 @@ def _get_converter() -> DocumentConverter:
         layout_batch_size=1,
         table_batch_size=1,
         queue_max_size=10,
+        document_timeout=DOCUMENT_TIMEOUT_SECONDS,
     )
     # Docling picks the backend from the bytes before the file name, so without this
     # list a record routed here as PDF/DOCX/PPTX/MD could reach the JSON, METS, HTML

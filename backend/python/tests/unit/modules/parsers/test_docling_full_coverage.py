@@ -298,6 +298,18 @@ class TestGetConverter:
             assert result is mock_converter
             _get_converter.cache_clear()
 
+    def test_docling_stops_a_conversion_at_the_service_timeout(self) -> None:
+        """The service cannot cancel the conversion thread, so Docling must stop it."""
+        from docling.datamodel.base_models import InputFormat
+
+        from app.modules.parsers.pdf import docling_processor as mod
+        mod._get_converter.cache_clear()
+        try:
+            options = mod._get_converter().format_to_options[InputFormat.PDF].pipeline_options
+        finally:
+            mod._get_converter.cache_clear()
+        assert options.document_timeout == mod.DOCUMENT_TIMEOUT_SECONDS
+
 
 # ===========================================================================
 # process_document (line 120-121)
