@@ -96,7 +96,8 @@ dependencies = [
   "Pillow>=13.0.0,<14",
   "pillow-avif-plugin==1.6.0",
   "prometheus-client==0.26.0",
-  "protobuf>=4.25.0,<6",
+  # Same as backend/python/pyproject.toml.
+  "protobuf>=6.33.5,<7",
   "pydantic==2.14.1",
   "py-trello==0.20.1",
   "python-arango==8.3.6",

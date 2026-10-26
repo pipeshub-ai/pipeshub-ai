@@ -33,8 +33,6 @@ updates:
         versions: [">=1.13"]
       - dependency-name: "Pillow"
         versions: [">=14"]
-      - dependency-name: "protobuf"
-        versions: [">=6"]
       - dependency-name: "reportlab"
         versions: [">=5"]
       - dependency-name: "fpdf2"
@@ -72,8 +70,6 @@ updates:
     ignore:
       - dependency-name: "Pillow"
         versions: [">=14"]
-      - dependency-name: "protobuf"
-        versions: [">=6"]
       # Held until the code moves with them; integration-tests imports app code, so both
       # manifests hold the same versions. 0.137 nests included routers, which changes the
       # matched route path used as the request-metrics label.
