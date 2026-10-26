@@ -42,6 +42,10 @@ class CONFIG:
     # Indexing also stores each content revision as a directory of artifact
     # files beside the stored record. Nothing reads them yet. Defaults to disabled.
     ENABLE_ARTIFACT_WRITE = "ENABLE_ARTIFACT_WRITE"
+    # Experimental. The knowledge-base push routes (application/blocks records and the
+    # KB property schema) on the connectors service. Defaults to disabled; the routes
+    # then answer 404 as if absent.
+    ENABLE_KB_PUSH = "ENABLE_KB_PUSH"
     # Query-side record reads also read the artifact set and compare it with the
     # stored record they serve. Defaults to disabled.
     ENABLE_ARTIFACT_READ_SHADOW = "ENABLE_ARTIFACT_READ_SHADOW"

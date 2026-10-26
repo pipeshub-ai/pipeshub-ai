@@ -1,0 +1,151 @@
+"""Create one immutable document in the storage service from a file on disk.
+
+The document is never overwritten: a new revision of anything is a new document.
+Uploads go through the internal route like the other connectors' uploads, so
+local, S3 and Azure storage all work; for S3 and Azure the service answers with a
+redirect to a presigned URL, which is followed as a PUT of the raw bytes.
+"""
+
+from __future__ import annotations
+
+import os
+from typing import TYPE_CHECKING
+
+import aiohttp
+from yarl import URL
+
+from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.modules.transformers.blob_storage import (
+    CustomMetadataEntry,
+    _add_custom_metadata_to_form,
+    _signed_upload_headers,
+    _upload_succeeded,
+)
+from app.utils.jwt import generate_jwt
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Mapping
+
+    from app.config.configuration_service import ConfigurationService
+
+_REDIRECTS = frozenset({301, 302, 307, 308})
+_TIMEOUT = aiohttp.ClientTimeout(total=90)
+
+
+class StorageUploadError(Exception):
+    """The storage service did not store the document."""
+
+
+def document_id_from_upload(headers: Mapping[str, str], data: object) -> str | None:
+    """The id of a created document, from the response headers or JSON body."""
+    header = headers.get("x-document-id") or headers.get("X-Document-Id")
+    if isinstance(header, str) and header.strip():
+        return header.strip()
+    if not isinstance(data, dict):
+        return None
+    for source in (data, data.get("document")):
+        if isinstance(source, dict):
+            found = source.get("_id") or source.get("id")
+            if found:
+                return str(found)
+    return None
+
+
+class StorageDocuments:
+    def __init__(self, config_service: ConfigurationService, logger: logging.Logger) -> None:
+        self.config_service = config_service
+        self.logger = logger
+
+    async def _storage_url(self) -> str:
+        endpoints = await self.config_service.get_config(config_node_constants.ENDPOINTS.value)
+        return (endpoints or {}).get("storage", {}).get("endpoint", DefaultEndpoints.STORAGE_ENDPOINT.value)
+
+    async def create(
+        self,
+        *,
+        org_id: str,
+        name: str,
+        document_path: str,
+        file_path: str,
+        extension: str,
+        content_type: str,
+        tags: dict[str, str],
+    ) -> str:
+        """Upload ``file_path`` as a new document and return its id. Raises ``StorageUploadError``."""
+        token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
+        base = await self._storage_url()
+        size = os.path.getsize(file_path)
+        tag_list: list[CustomMetadataEntry] = [{"key": k, "value": v} for k, v in tags.items()]
+        try:
+            async with aiohttp.ClientSession(timeout=_TIMEOUT) as session:
+                with open(file_path, "rb") as source:
+                    form = aiohttp.FormData()
+                    form.add_field("file", source, filename=f"{name}.{extension}", content_type=content_type)
+                    form.add_field("documentName", name)
+                    form.add_field("documentPath", document_path)
+                    form.add_field("isVersionedFile", "false")
+                    _add_custom_metadata_to_form(form, tag_list)
+                    async with session.post(
+                        f"{base}/api/v1/document/internal/upload",
+                        data=form,
+                        headers={"Authorization": f"Bearer {token}"},
+                        allow_redirects=False,
+                    ) as resp:
+                        if resp.status in _REDIRECTS:
+                            return await self._put_presigned(session, resp, file_path, size)
+                        if resp.status == 200:
+                            doc_id = document_id_from_upload(resp.headers, await resp.json())
+                            if doc_id:
+                                return doc_id
+                            raise StorageUploadError("the storage service did not return a document id")
+                        raise StorageUploadError(f"the storage service answered {resp.status}")
+        except StorageUploadError:
+            raise
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
+
+    async def exists(self, org_id: str, document_id: str) -> bool:
+        """Whether the storage service still has the document (absent or soft-deleted is False).
+
+        Raises ``StorageUploadError`` when the answer is unknown.
+        """
+        token = await generate_jwt(self.config_service, {"orgId": org_id, "scopes": ["storage:token"]})
+        base = await self._storage_url()
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as session, session.get(
+                f"{base}/api/v1/document/internal/{document_id}", headers={"Authorization": f"Bearer {token}"},
+            ) as resp:
+                if resp.status in (404, 410):
+                    return False
+                if resp.status != 200:
+                    raise StorageUploadError(f"the storage service answered {resp.status}")
+                body = await resp.json()
+        except (aiohttp.ClientError, TimeoutError, OSError) as e:
+            raise StorageUploadError(f"the storage service could not be reached: {type(e).__name__}") from e
+        document = body.get("document", body) if isinstance(body, dict) else {}
+        return not (isinstance(document, dict) and document.get("isDeleted") is True)
+
+    async def _put_presigned(
+        self, session: aiohttp.ClientSession, resp: aiohttp.ClientResponse, file_path: str, size: int
+    ) -> str:
+        location = resp.headers.get("Location") or resp.headers.get("location")
+        if not location:
+            raise StorageUploadError("the storage redirect has no Location")
+        try:
+            data = await resp.json()
+        except Exception:
+            data = None
+        doc_id = document_id_from_upload(resp.headers, data)
+        if not doc_id:
+            raise StorageUploadError("the storage redirect did not return a document id")
+        # The URL is signed with an empty Content-Type; aiohttp would add one and break the signature.
+        headers = {"Content-Length": str(size), **_signed_upload_headers(location)}
+        with open(file_path, "rb") as source:
+            async with session.put(
+                URL(location, encoded=True), data=source, headers=headers,
+                skip_auto_headers={"Content-Type"}, allow_redirects=False,
+            ) as put:
+                if not _upload_succeeded(put.status):
+                    raise StorageUploadError(f"the presigned upload answered {put.status}")
+        return doc_id
