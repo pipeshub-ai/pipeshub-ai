@@ -79,6 +79,12 @@ def _exit_with_parent(parent_pid: int) -> None:
     holding its memory, beside the restarted service's worker for the same record."""
     while os.getppid() == parent_pid:
         time.sleep(_PARENT_POLL_SECONDS)
+    # parse_pool starts each worker in a session of its own, and the pools a
+    # parse starts (Docling's) live in it: take them along, as stop() would.
+    # Never the group of a worker started some other way, which is its parent's.
+    if os.getpgrp() == os.getpid():
+        with contextlib.suppress(OSError):
+            os.killpg(os.getpid(), signal.SIGKILL)
     os._exit(0)
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import pickle
 import select
+import signal
 import subprocess
 import sys
 import time
@@ -29,8 +30,10 @@ def test_trims_the_heap_after_each_job() -> None:
     with os.fdopen(request_w, "wb") as requests:
         parse_worker.write_frame(requests, (sum, ([1, 2],)))
         parse_worker.write_frame(requests, (sum, ([3, 4],)))
+    # main() ignores SIGINT for good; pytest's own handler must survive it.
     with patch.object(parse_worker, "_release_freed_memory") as trim, \
-            patch.object(parse_worker.threading, "Thread"):
+            patch.object(parse_worker.threading, "Thread"), \
+            patch.object(parse_worker.signal, "signal"):
         parse_worker.main(request_r, reply_w)
 
     with os.fdopen(reply_r, "rb") as replies:
@@ -42,9 +45,31 @@ def test_trims_the_heap_after_each_job() -> None:
 def test_exits_once_its_parent_is_gone() -> None:
     with patch.object(parse_worker.os, "getppid", side_effect=[10, 10, 1]), \
             patch.object(parse_worker.time, "sleep"), \
+            patch.object(parse_worker.os, "getpgrp", return_value=-1), \
             patch.object(parse_worker.os, "_exit") as exit_:
         parse_worker._exit_with_parent(10)
     exit_.assert_called_once_with(0)
+
+
+def test_takes_its_process_group_along_when_it_leads_one() -> None:
+    with patch.object(parse_worker.os, "getppid", side_effect=[10, 1]), \
+            patch.object(parse_worker.time, "sleep"), \
+            patch.object(parse_worker.os, "getpgrp", return_value=4242), \
+            patch.object(parse_worker.os, "getpid", return_value=4242), \
+            patch.object(parse_worker.os, "killpg") as killpg, \
+            patch.object(parse_worker.os, "_exit"):
+        parse_worker._exit_with_parent(10)
+    killpg.assert_called_once_with(4242, parse_worker.signal.SIGKILL)
+
+
+def test_leaves_a_group_it_does_not_lead_alone() -> None:
+    with patch.object(parse_worker.os, "getppid", side_effect=[10, 1]), \
+            patch.object(parse_worker.time, "sleep"), \
+            patch.object(parse_worker.os, "getpgrp", return_value=1), \
+            patch.object(parse_worker.os, "killpg") as killpg, \
+            patch.object(parse_worker.os, "_exit"):
+        parse_worker._exit_with_parent(10)
+    killpg.assert_not_called()
 
 
 @pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
@@ -78,7 +103,11 @@ def test_a_worker_mid_job_exits_when_its_parent_is_killed() -> None:
         parent.wait()
         parent.stdout.close()
 
-    deadline = time.monotonic() + 10
-    while _alive(worker_pid) and time.monotonic() < deadline:
-        time.sleep(0.1)
-    assert not _alive(worker_pid)
+    try:
+        deadline = time.monotonic() + 10
+        while _alive(worker_pid) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert not _alive(worker_pid)
+    finally:
+        if _alive(worker_pid):  # a regression must not leave it sleeping for ten minutes
+            os.kill(worker_pid, signal.SIGKILL)
