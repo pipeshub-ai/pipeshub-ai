@@ -100,6 +100,21 @@ class TestRefusedToken:
         assert [n["type"] for n in notices] == [NotificationType.CONNECTOR_AUTH_ERROR]
         assert "Bot User OAuth Token" in notices[0]["message"]
 
+    async def test_a_token_refused_while_reading_channels_stops_the_sync_with_one_notice(
+        self, workspace, store, checkpoints,
+    ) -> None:
+        workspace.post(GENERAL, ts_minutes_ago(10), ALICE, "hello")
+        workspace.fail("conversations.history", SlackError("token_revoked"), times=None)
+        connector, _ = await workspace_connector(store, checkpoints)
+        notices = record_notices(connector)
+
+        with pytest.raises(SlackTokenRefusedError):
+            await connector.run_sync()
+
+        assert [n["type"] for n in notices] == [NotificationType.CONNECTOR_AUTH_ERROR]
+        assert not workspace.calls_to("conversations.replies")
+        assert checkpoints.value(f"slack_messages/{GENERAL}") is None
+
     async def test_a_refused_token_fails_setup_with_a_next_step(self, workspace, store, checkpoints) -> None:
         connector, _ = await workspace_connector(store, checkpoints)
         workspace.valid_tokens = set()

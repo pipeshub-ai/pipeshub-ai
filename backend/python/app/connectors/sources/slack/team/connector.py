@@ -496,6 +496,8 @@ class SlackConnector(BaseConnector):
         # Channel names whose messages this run could not read, for one notice per run.
         self._unreadable_channels: list[str] = []
         self._channel_list_failed = False
+        # Set once Slack refuses the token in a run; parallel channel syncs see it too.
+        self._token_refused = False
 
         # Workspace identity (set in init())
         self.workspace_domain: Optional[str] = None
@@ -700,7 +702,7 @@ class SlackConnector(BaseConnector):
         )
 
     async def _fail_if_token_refused(self, resp: object, operation: str) -> None:
-        """Stop the sync and tell the user when Slack refuses the token.
+        """Stop the sync and tell the user, once per run, when Slack refuses the token.
 
         A bot token has no refresh, and token renewal has already had its try, so
         every later call would fail the same way and the run would end as a success
@@ -711,12 +713,14 @@ class SlackConnector(BaseConnector):
             return
         message = self._token_refused_message(error)
         self.logger.error(f"❌ Slack refused the token on {operation}: {error}")
-        await self.notify(
-            type=NotificationType.CONNECTOR_AUTH_ERROR,
-            severity=NotificationSeverity.ERROR,
-            title=f"{self.display_name}: Slack token refused",
-            message=message,
-        )
+        if not self._token_refused:
+            self._token_refused = True
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: Slack token refused",
+                message=message,
+            )
         raise SlackTokenRefusedError(message)
 
     async def _report_unreadable_channels(self) -> None:
@@ -803,6 +807,7 @@ class SlackConnector(BaseConnector):
             self._full_sync_read_failed = False
             self._unreadable_channels = []
             self._channel_list_failed = False
+            self._token_refused = False
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack_workspace", self.connector_id, self.logger
@@ -838,8 +843,12 @@ class SlackConnector(BaseConnector):
                 if not rg.external_group_id:
                     return
                 async with msg_sem:
+                    if self._token_refused:
+                        return
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
+                    except SlackTokenRefusedError:
+                        raise
                     except Exception as exc:
                         self._full_sync_read_failed = True
                         self.logger.error(
@@ -848,7 +857,14 @@ class SlackConnector(BaseConnector):
                             exc_info=True,
                         )
 
-            await asyncio.gather(*(_sync_one(rg) for rg in channels))
+            # Channels already reading finish before a refused token is raised, so
+            # none is left running after the sync has failed.
+            results = await asyncio.gather(
+                *(_sync_one(rg) for rg in channels), return_exceptions=True,
+            )
+            refused = next((r for r in results if isinstance(r, SlackTokenRefusedError)), None)
+            if refused:
+                raise refused
 
             # Phase 5 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()
