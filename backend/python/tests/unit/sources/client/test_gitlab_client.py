@@ -965,6 +965,39 @@ class TestReadTimeoutIsNotRetriedBySdk:
             server.shutdown()
         assert len(hits) == 1
 
+    def test_a_stall_while_reading_the_body_is_raised_after_one_request(self) -> None:
+        hits: list[str] = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self) -> None:
+                hits.append(self.path)
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", "100")
+                self.end_headers()
+                self.wfile.write(b"{")
+                self.wfile.flush()
+                time.sleep(1.0)
+
+            def log_message(self, *args: object) -> None:
+                pass
+
+        server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            gl = gitlab.Gitlab(
+                f"http://127.0.0.1:{server.server_port}",
+                private_token="t",
+                timeout=0.2,
+                retry_transient_errors=True,
+                session=_TokenSafeSession(),
+            )
+            with pytest.raises(GitLabReadTimeout):
+                gl.http_get("/projects/1/issues")
+        finally:
+            server.shutdown()
+        assert len(hits) == 1
+
     def test_connect_failures_are_still_retried_by_the_sdk(self) -> None:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))

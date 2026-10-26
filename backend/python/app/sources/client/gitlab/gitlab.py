@@ -6,6 +6,7 @@ from urllib.parse import urljoin, urlparse
 
 import gitlab
 import requests
+import urllib3
 from gitlab import Gitlab
 from pydantic import BaseModel, Field  # type: ignore
 
@@ -144,6 +145,11 @@ class _TokenSafeSession(requests.Session):
         except requests.exceptions.ReadTimeout as exc:
             # A connect timeout is a ConnectionError and keeps python-gitlab's retry.
             raise GitLabReadTimeout(str(exc), request=request) from exc
+        except requests.exceptions.ConnectionError as exc:
+            # A stall while reading the body comes out of requests as a ConnectionError.
+            if exc.args and isinstance(exc.args[0], urllib3.exceptions.ReadTimeoutError):
+                raise GitLabReadTimeout(str(exc), request=request) from exc
+            raise
 
     def rebuild_auth(self, prepared_request: requests.PreparedRequest, response: requests.Response) -> None:
         if self.should_strip_auth(response.request.url, prepared_request.url):
