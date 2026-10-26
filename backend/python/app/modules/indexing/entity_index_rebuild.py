@@ -424,7 +424,34 @@ class EntityIndexRebuilder:
         )
         if not await self.lock.refresh():
             raise _LostLeadership
+        if run.collection == _APPS and await self._connector_deleted_meanwhile(run):
+            return
         await self._advance(run, phase, rows, failed, limit)
+
+    async def _connector_deleted_meanwhile(self, run: _Pass) -> bool:
+        """Whether the connector went away while this page was being written, and if so remove what it wrote.
+
+        The page was read before the delete and written after the delete's own entity cleanup, which
+        then had nothing of these points to remove and cleared its intent. Checked after the write: an
+        app still there now is deleted later, and that delete's cleanup removes these points too.
+        """
+        # Raised, not None: a failed read must never pass for a gone app.
+        app = await self.graph.get_document(run.key, _APPS, raise_on_error=True)
+        if app and app.get("status") != APP_STATUS_DELETING:
+            return False
+        org_id = _text(run.doc.get("orgId"))
+        self.logger.warning(
+            "entity_index_rebuild: connector deleted during its page; removing the page's points | connector=%s",
+            run.key,
+        )
+        if org_id:
+            await self.store.delete_entities_by_connector(
+                org_id=org_id,
+                connector_id=run.key,
+                record_group_ids=None,
+                membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(refs, org),
+            )
+        return True
 
     async def _advance(
         self, run: _Pass, phase: str, rows: list[dict], failed: int, limit: int,

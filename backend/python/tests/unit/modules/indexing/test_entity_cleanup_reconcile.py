@@ -173,3 +173,58 @@ async def test_without_a_kv_store_nothing_is_reconciled() -> None:
     )
     assert await rebuilder.tick() != "entity_cleanup"
     assert MARKER  # the marker helper is shared with the rebuild tests
+
+
+class _DeletedMidPage(Graph):
+    """The connector is deleted after the page was read and before its points were written."""
+
+    def __init__(self, store: Store) -> None:
+        super().__init__()
+        self.store = store
+        self.delete_while_writing = True
+
+    async def page_entity_index_source(
+        self, source: str, scope_id: str, after_key: str | None, limit: int, transaction: str | None = None,
+    ) -> list[dict]:
+        rows = await super().page_entity_index_source(source, scope_id, after_key, limit)
+        if self.delete_while_writing and rows:
+            self.docs[APPS].pop(scope_id, None)  # the graph delete committed; its entity cleanup already ran
+        return rows
+
+
+async def test_points_written_for_a_connector_that_was_deleted_meanwhile_are_removed() -> None:
+    """The rebuild reads a page, the connector is deleted (its entities removed and its cleanup intent
+    cleared), then the page is written: those points belong to no connector and nothing else would remove them."""
+    store = Store()
+    graph = _DeletedMidPage(store)
+    graph.docs[APPS]["app-1"] = {"_key": "app-1", "name": "app-1", "orgId": "org-1"}
+    graph.docs[ORGS]["org-1"] = _done_org()
+    graph.sources[(CollectionNames.RECORD_GROUPS.value, "app-1")] = [{"_key": "g1", "name": "Eng", "orgId": "org-1"}]
+    rebuilder = EntityIndexRebuilder(
+        logger=logging.getLogger("t"), graph_provider=graph, store=store, lock=FakeLock(),
+        config_service=FakeConfig(), now_ms=lambda: NOW,
+    )
+    graph.get_taxonomy_entity_membership = AsyncMock(return_value={})
+
+    await rebuilder.tick()
+
+    assert store.written() and store.cleanups and store.cleanups[0]["connector"] == "app-1"
+    assert store.cleanups[0]["org"] == "org-1"
+    assert graph.updates == []  # no state is written to a node that is gone
+
+
+async def test_a_connector_that_still_exists_after_its_page_is_not_cleaned() -> None:
+    store = Store()
+    graph = _DeletedMidPage(store)
+    graph.delete_while_writing = False
+    graph.docs[APPS]["app-1"] = {"_key": "app-1", "name": "app-1", "orgId": "org-1"}
+    graph.docs[ORGS]["org-1"] = _done_org()
+    graph.sources[(CollectionNames.RECORD_GROUPS.value, "app-1")] = [{"_key": "g1", "name": "Eng", "orgId": "org-1"}]
+    rebuilder = EntityIndexRebuilder(
+        logger=logging.getLogger("t"), graph_provider=graph, store=store, lock=FakeLock(),
+        config_service=FakeConfig(), now_ms=lambda: NOW,
+    )
+
+    await rebuilder.tick()
+
+    assert store.written() and store.cleanups == []
