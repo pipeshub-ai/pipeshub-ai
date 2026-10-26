@@ -4256,7 +4256,8 @@ function getDocumentationHtml(): string {
         html += '<div class="module-card-title">' + escapeHtml(tag) + '</div>';
         html += '</div>';
         html += '<div class="module-card-meta">';
-        html += '<span>' + tagEndpoints(tag).length + ' endpoints</span>';
+        const endpointCount = tagEndpoints(tag).length;
+        html += '<span>' + endpointCount + (endpointCount === 1 ? ' endpoint' : ' endpoints') + '</span>';
         html += '</div>';
         html += '</div>';
       }
