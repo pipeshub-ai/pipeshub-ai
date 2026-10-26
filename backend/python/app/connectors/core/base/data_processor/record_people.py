@@ -14,7 +14,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityRelations
@@ -29,6 +28,7 @@ from app.models.entities import (
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.models.entities import Record, User
