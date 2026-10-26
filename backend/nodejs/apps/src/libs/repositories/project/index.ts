@@ -1,4 +1,5 @@
 import { MongoProjectRepository } from './mongo';
+import { PgProjectRepository } from './pg';
 import type { ProjectRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: ProjectRepository | undefined;
 
 export const getProjectRepository = (): ProjectRepository =>
   (repo ??= pickStore<ProjectRepository>('project', {
+    postgres: () => new PgProjectRepository(),
     mongo: () => new MongoProjectRepository(),
   }));
 

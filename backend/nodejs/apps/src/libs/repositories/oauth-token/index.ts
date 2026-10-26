@@ -1,4 +1,5 @@
 import { MongoOAuthTokenRepository } from './mongo';
+import { PgOAuthTokenRepository } from './pg';
 import type { OAuthTokenRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: OAuthTokenRepository | undefined;
 
 export const getOAuthTokenRepository = (): OAuthTokenRepository =>
   (repo ??= pickStore<OAuthTokenRepository>('oauth-token', {
+    postgres: () => new PgOAuthTokenRepository(),
     mongo: () => new MongoOAuthTokenRepository(),
   }));
 

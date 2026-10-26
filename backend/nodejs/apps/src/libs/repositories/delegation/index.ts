@@ -1,4 +1,5 @@
 import { MongoDelegationRepository } from './mongo';
+import { PgDelegationRepository } from './pg';
 import type { DelegationRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: DelegationRepository | undefined;
 
 export const getDelegationRepository = (): DelegationRepository =>
   (repo ??= pickStore<DelegationRepository>('delegation', {
+    postgres: () => new PgDelegationRepository(),
     mongo: () => new MongoDelegationRepository(),
   }));
 

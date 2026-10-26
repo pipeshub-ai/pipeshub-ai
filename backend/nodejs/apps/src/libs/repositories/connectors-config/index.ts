@@ -1,4 +1,5 @@
 import { MongoConnectorsConfigRepository } from './mongo';
+import { PgConnectorsConfigRepository } from './pg';
 import type { ConnectorsConfigRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: ConnectorsConfigRepository | undefined;
 
 export const getConnectorsConfigRepository = (): ConnectorsConfigRepository =>
   (repo ??= pickStore<ConnectorsConfigRepository>('connectors-config', {
+    postgres: () => new PgConnectorsConfigRepository(),
     mongo: () => new MongoConnectorsConfigRepository(),
   }));
 

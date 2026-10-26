@@ -115,19 +115,21 @@ describe('DOC_STORE switch', () => {
     it('boot waits for the schema of each repository that is not kept on Mongo', () => {
       const { schemaRequirements } = require('../../../src/libs/repositories/doc-store') as typeof import('../../../src/libs/repositories/doc-store')
       delete process.env.DOC_STORE_MONGO_REPOS
-      const all = ['content', 'conversation', 'identity', 'platform', 'platform_data']
+      const all = ['content', 'conversation', 'identity', 'integrations', 'oauth', 'platform', 'platform_data']
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all)
       process.env.DOC_STORE_MONGO_REPOS = '*'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all)
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // every repository has a PostgreSQL implementation: none is kept
       process.env.DOC_STORE_MONGO_REPOS = 'conversation'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // saved searches still need their tables
-      process.env.DOC_STORE_MONGO_REPOS = 'document'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(['conversation', 'identity', 'platform', 'platform_data'])
-      process.env.DOC_STORE_MONGO_REPOS = 'notification,mail-log,outbox'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(['content', 'conversation', 'identity', 'platform'])
+      process.env.DOC_STORE_MONGO_REPOS = 'document,project'
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'content'))
+      process.env.DOC_STORE_MONGO_REPOS = 'oauth-app,oauth-token,identity-lookup,delegation'
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'oauth'))
+      process.env.DOC_STORE_MONGO_REPOS = 'slack-thread'
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all.filter((b) => b !== 'integrations'))
       process.env.DOC_STORE_MONGO_REPOS = 'identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
-      expect(Object.keys(schemaRequirements())).to.not.include('identity')
-      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,notification,mail-log,outbox,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
+      expect(Object.keys(schemaRequirements())).to.include('identity') // an OAuth app takes its slug number from the identity tables
+      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,project,notification,mail-log,outbox,connectors-config,oauth-app,oauth-token,identity-lookup,delegation,slack-thread,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
       expect(Object.keys(schemaRequirements())).to.deep.equal(['platform'])
     })
 
@@ -176,21 +178,36 @@ describe('DOC_STORE=postgres at boot', () => {
     expect(Object.keys(REPOSITORIES).sort()).to.deep.equal(dirs.sort())
   })
 
-  it('names the repositories that have no PostgreSQL implementation yet; "*" keeps exactly those on Mongo', () => {
-    const { assertAllRepositoriesReady, REPOSITORIES } = require('../../../src/libs/repositories/all') as typeof import('../../../src/libs/repositories/all')
+  it('every repository has a PostgreSQL implementation: the check passes, and "*" keeps none on Mongo', () => {
+    const { assertAllRepositoriesReady } = require('../../../src/libs/repositories/all') as typeof import('../../../src/libs/repositories/all')
     const { mongoFallbacks } = require('../../../src/libs/repositories/store-select') as typeof import('../../../src/libs/repositories/store-select')
-    const ported = ['conversation', 'semantic-search', 'document', 'notification', 'outbox', 'mail-log', 'user', 'group', 'org', 'org-auth-config', 'activity', 'picture', 'reset-link', 'org-metrics-job', 'identity']
     process.env.DOC_STORE = 'postgres'
     forgetRepositories()
     try {
-      expect(() => assertAllRepositoriesReady()).to.throw(/no PostgreSQL implementation yet: .*delegation/)
+      assertAllRepositoriesReady()
       process.env.DOC_STORE_MONGO_REPOS = '*'
       forgetRepositories()
       assertAllRepositoriesReady()
-      expect([...mongoFallbacks].sort()).to.deep.equal(Object.keys(REPOSITORIES).filter((n) => !ported.includes(n) && n !== 'credential').sort())
+      expect([...mongoFallbacks]).to.deep.equal([])
     } finally {
       delete process.env.DOC_STORE_MONGO_REPOS
       mongoFallbacks.clear()
+    }
+  })
+
+  it('refuses a split of the OAuth repositories across the stores', () => {
+    const { assertCoherentSplit } = require('../../../src/libs/repositories/doc-store') as typeof import('../../../src/libs/repositories/doc-store')
+    const saved = process.env.DOC_STORE_MONGO_REPOS
+    try {
+      delete process.env.DOC_STORE_MONGO_REPOS
+      expect(() => assertCoherentSplit()).to.not.throw()
+      process.env.DOC_STORE_MONGO_REPOS = 'oauth-token'
+      expect(() => assertCoherentSplit()).to.throw(/together/)
+      process.env.DOC_STORE_MONGO_REPOS = 'oauth-app,oauth-token,identity-lookup'
+      expect(() => assertCoherentSplit()).to.not.throw()
+    } finally {
+      if (saved === undefined) delete process.env.DOC_STORE_MONGO_REPOS
+      else process.env.DOC_STORE_MONGO_REPOS = saved
     }
   })
 

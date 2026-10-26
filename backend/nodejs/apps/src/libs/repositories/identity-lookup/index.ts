@@ -1,4 +1,5 @@
 import { MongoIdentityLookup } from './mongo';
+import { PgIdentityLookup } from './pg';
 import type { IdentityLookup } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let lookup: IdentityLookup | undefined;
 
 export const getIdentityLookup = (): IdentityLookup =>
   (lookup ??= pickStore<IdentityLookup>('identity-lookup', {
+    postgres: () => new PgIdentityLookup(),
     mongo: () => new MongoIdentityLookup(),
   }));
 
