@@ -5,6 +5,8 @@ import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
 import { getMailLogRepository } from '../../../libs/repositories/mail-log';
+import { forOrg, getCurrentOrgId } from '../../../libs/context/orgContext';
+import { inInstallOrg } from '../../../libs/repositories/identity/install-org';
 import { getEmailContent } from '../utils/email-content';
 import {
   classifyMailError,
@@ -224,16 +226,22 @@ export class MailSenderService {
             : String(persistError),
       });
     try {
-      getMailLogRepository()
-        .record({
+      const write = (): Promise<void> =>
+        getMailLogRepository().record({
           orgId: bodyData.orgId,
           subject: bodyData.subject,
           from: smtpConfig.fromEmail,
           to: bodyData.sendEmailTo,
           cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
           emailTemplateType: bodyData.emailTemplateType,
-        })
-        .catch(logFailure);
+        });
+      // The route is called by a service with only a scoped token, so no org is bound: use the one named on the mail, else (a sign-in code
+      // before any user is known) the install's organisation.
+      const run =
+        getCurrentOrgId() === undefined && bodyData.orgId
+          ? forOrg(bodyData.orgId, 'mail.audit', write)
+          : inInstallOrg('mail.audit', write, undefined);
+      run.catch(logFailure);
     } catch (persistError) {
       logFailure(persistError);
     }
