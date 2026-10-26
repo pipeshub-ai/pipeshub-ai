@@ -68,16 +68,16 @@ def write_probe(tmp_path, second_sql="CREATE TABLE probe.t2 (id int);\nSELECT ke
 
 # the modules besides the kernel: platform (the store fence, background jobs and the runtime tables)
 MODULES = ("platform",)
-HEADS = {"kernel": (14, 11), "platform": (4, 0)}
+HEADS = {"kernel": (15, 11), "platform": (4, 0)}
 # platform depends on the kernel's last revision, so only platform's is a head
-REVISION_HEADS = {"platform_0004"}
+REVISION_HEADS = {"kernel_0015", "platform_0004"}
 
 
 def test_fresh_install(db):
     cluster, name = db
     r = run_migrate(cluster.url(name, MIGRATE))
     assert r.returncode == 0, r.stdout + r.stderr
-    assert "epoch kernel=14 min_code=11" in r.stdout and "epoch platform=4 min_code=0" in r.stdout
+    assert "epoch kernel=15 min_code=11" in r.stdout and "epoch platform=4 min_code=0" in r.stdout
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
         assert {n for (n,) in c.execute("SELECT DISTINCT tableowner FROM pg_tables WHERE schemaname IN ('kernel','platform')")} \
@@ -94,7 +94,7 @@ def test_service_role_grants(db):
     assert run_migrate(cluster.url(name, MIGRATE)).returncode == 0
     with connect(cluster, name, "pipeshub_node_login") as c:
         c.execute("SET ROLE pipeshub_node")
-        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 14
+        assert c.execute("SELECT epoch FROM kernel.schema_epoch WHERE branch = 'kernel'").fetchone()[0] == 15
         c.execute("SELECT kernel.assert_profile_epoch(1)")
         with pytest.raises(psycopg.errors.ObjectNotInPrerequisiteState, match="expects 2"):
             c.execute("SELECT kernel.assert_profile_epoch(2)")
@@ -230,7 +230,7 @@ def test_contract_epochs_and_dev_downgrade(db, tmp_path):
     assert r.returncode == 0, r.stdout
     assert epochs(cluster, name) == {"kernel": (1, 11)}                      # the contract stays
     assert run_migrate(url, **env).returncode == 0                                     # and forward again
-    assert epochs(cluster, name)["kernel"] == (14, 11)
+    assert epochs(cluster, name)["kernel"] == (15, 11)
 
 
 def test_one_module_down_and_up_leaves_a_clean_catalog(db):
