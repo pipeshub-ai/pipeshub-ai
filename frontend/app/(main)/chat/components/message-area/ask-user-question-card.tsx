@@ -467,7 +467,9 @@ export function AskUserQuestionCard({
     initialStep ?? firstUnansweredStep(questions, initialAnswers),
   );
   const settled = status === 'submitted' || status === 'persisted';
-  const allAnswered = settled && !hasUnansweredQuestions(normalized, answers);
+  // A card closed by a typed reply has no selections to wait for, so it is finished too.
+  const allAnswered =
+    settled && (Boolean(normalized.repliedInChat) || !hasUnansweredQuestions(normalized, answers));
   // A finished card opens the way "Show less" leaves it. Collapse once per
   // completion, including a card that was just submitted, and leave a later
   // "Show more" open until another question is still unanswered.

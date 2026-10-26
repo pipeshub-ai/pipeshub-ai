@@ -47,7 +47,7 @@ import { emptyCitationMaps } from './response-tabs/citations';
 import { repairStreamingMarkdown } from '../../utils/repair-streaming-markdown';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import { extractAnswerMarkers, isSignedUrl, isTrustedApiUrl } from '../../utils/parse-download-markers';
-import { isAskUserQuestionTool } from '../../utils/tool-display';
+import { isAskUserQuestionTool, splitPartsAtQuestion } from '../../utils/tool-display';
 import { BELOW_APP_KEYS, hasAnyFilter } from '../../utils/tree-selection';
 import { DownloadTasks } from './download-tasks';
 import {
@@ -630,7 +630,6 @@ export const ChatResponse = React.memo(function ChatResponse({
     () => (effectiveParts ? getVisibleRootParts(effectiveParts, isStreaming) : []),
     [effectiveParts, isStreaming],
   );
-  const hasVisibleActivity = visibleActivityParts.length > 0;
   // Collapse control is offered once narration/answer has started (or for
   // completed messages). While only thinking/tools are streaming, keep the
   // timeline always-visible with no collapse chrome.
@@ -638,6 +637,35 @@ export const ChatResponse = React.memo(function ChatResponse({
     !isStreaming ||
     !!displayContent ||
     visibleActivityParts.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
+
+  // With a question card on the row, the work done after it was answered renders
+  // under the card instead of above it.
+  const showPersistedCard = Boolean(persistedAskUserQuestion) && !askQuestionMatchesRow;
+  const showPendingCard = askQuestionMatchesRow && Boolean(pendingAskUserQuestion);
+  const questionSplit = useMemo(() => {
+    if (!rerunAnswers && !showPersistedCard && !showPendingCard) return null;
+    const split = splitPartsAtQuestion(effectiveParts);
+    // A re-run with changed answers streams only the reply to them, so all of it comes after the card.
+    if (!split && rerunAnswers && effectiveParts) return { before: [], after: effectiveParts };
+    return split;
+  }, [effectiveParts, rerunAnswers, showPersistedCard, showPendingCard]);
+  const partsAboveCard = questionSplit ? questionSplit.before : effectiveParts;
+  const partsBelowCard = questionSplit?.after ?? [];
+  // Once the card is answered the run carries on below it, so the live status goes there too.
+  const activityContinuesBelowCard = Boolean(questionSplit) && !questionPending;
+  const visiblePartsAboveCard = useMemo(
+    () => (questionSplit ? getVisibleRootParts(questionSplit.before, isStreaming) : visibleActivityParts),
+    [questionSplit, isStreaming, visibleActivityParts],
+  );
+  const visiblePartsBelowCard = useMemo(
+    () => (questionSplit ? getVisibleRootParts(questionSplit.after, isStreaming) : []),
+    [questionSplit, isStreaming],
+  );
+  const hasVisibleActivityBelowCard = visiblePartsBelowCard.length > 0;
+  const canCollapseActivityBelowCard =
+    !isStreaming ||
+    !!displayContent ||
+    visiblePartsBelowCard.some((p) => p.type === 'text' && !!p.settled && !p.isFinal);
 
   // Wrap citation callbacks so that onPreview always receives this message's
   // citationMaps — the panel needs all citations for the previewed record.
@@ -662,6 +690,29 @@ export const ChatResponse = React.memo(function ChatResponse({
   const sourcesCount = effectiveCitationMaps.sourcesOrder.length;
   const citationCount = Object.keys(effectiveCitationMaps.citationsOrder).length;
 
+  const renderActivity = (
+    parts: MessagePart[],
+    collapsible: boolean,
+    currentStatus: StatusMessage | null,
+  ) => {
+    const timeline = (
+      <AgentActivityTimeline
+        parts={parts}
+        isStreaming={isStreaming}
+        currentStatus={currentStatus}
+        citationMaps={effectiveCitationMaps}
+        citationCallbacks={wrappedCallbacks}
+      />
+    );
+    return collapsible ? (
+      <CollapsibleActivitySection parts={parts} isStreaming={isStreaming}>
+        {timeline}
+      </CollapsibleActivitySection>
+    ) : (
+      timeline
+    );
+  };
+
   const renderTabContent = () => {
     switch (activeTab) {
       case 'answer':
@@ -679,43 +730,30 @@ export const ChatResponse = React.memo(function ChatResponse({
                 or the answer starts (or the response is complete), wrap in
                 CollapsibleActivitySection so the user can collapse the
                 trace if they want — never auto-collapsed while live.
-                Gated on `hasVisibleActivity` (not raw part count) — a
+                Gated on visible parts (not raw part count) — a
                 completed simple response's `effectiveParts` is just the one
                 `isFinal` text part, which the timeline itself filters out.
                 `isStreaming && multiStep` is OR'd in so the timeline stays
                 reachable while a multi-step run is active but hasn't
                 produced a visible part yet. Shown on ask_user_question
                 rows too — the card is the question UI, not a reason to
-                hide the tools that ran before it. */}
-            {effectiveParts && (hasVisibleActivity || (isStreaming && multiStep)) && (
-              canCollapseActivity ? (
-                <CollapsibleActivitySection parts={effectiveParts} isStreaming={isStreaming}>
-                  <AgentActivityTimeline
-                    parts={effectiveParts}
-                    isStreaming={isStreaming}
-                    // non-multiStep: null prevents duplicate status with StatusMessageComponent below
-                    currentStatus={multiStep ? streamingStatusToShow : null}
-                    citationMaps={effectiveCitationMaps}
-                    citationCallbacks={wrappedCallbacks}
-                  />
-                </CollapsibleActivitySection>
-              ) : (
-                <AgentActivityTimeline
-                  parts={effectiveParts}
-                  isStreaming={isStreaming}
-                  currentStatus={multiStep ? streamingStatusToShow : null}
-                  citationMaps={effectiveCitationMaps}
-                  citationCallbacks={wrappedCallbacks}
-                />
-              )
-            )}
+                hide the tools that ran before it. Only the work up to the
+                question renders here; what ran after it was answered renders
+                under the card. */}
+            {partsAboveCard && (visiblePartsAboveCard.length > 0 || (isStreaming && multiStep && !activityContinuesBelowCard)) &&
+              renderActivity(
+                partsAboveCard,
+                canCollapseActivity || activityContinuesBelowCard,
+                // non-multiStep: null prevents duplicate status with StatusMessageComponent below
+                multiStep && !activityContinuesBelowCard ? streamingStatusToShow : null,
+              )}
 
             {/* Separator marking the handoff from "here's the work" to
                 "here's the answer" — only when there's activity actually
                 visible above (not just a lone isFinal part that the
                 timeline itself filtered out) and content to show below
                 (answer text or the ask_user_question card). */}
-            {hasVisibleActivity && (answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
+            {visiblePartsAboveCard.length > 0 && (questionSplit || answerShown || questionPending || persistedAskUserQuestion || toolApproval || approvalReceipts.length > 0) && (
               <Box
                 className="agent-activity-enter"
                 style={{
@@ -775,6 +813,27 @@ export const ChatResponse = React.memo(function ChatResponse({
               />
             ) : null}
 
+            {/* Work done after the question was answered — under the card, Claude-style. */}
+            {questionSplit && (hasVisibleActivityBelowCard || (isStreaming && multiStep && activityContinuesBelowCard)) && (
+              <Box data-testid="activity-below-question-card" style={{ marginTop: 'var(--space-4)' }}>
+                {renderActivity(
+                  partsBelowCard,
+                  canCollapseActivityBelowCard && hasVisibleActivityBelowCard,
+                  multiStep ? streamingStatusToShow : null,
+                )}
+              </Box>
+            )}
+            {hasVisibleActivityBelowCard && (answerShown || toolApproval || approvalReceipts.length > 0) && (
+              <Box
+                className="agent-activity-enter"
+                style={{
+                  borderTop: '1px solid var(--slate-4)',
+                  marginTop: 'var(--space-1)',
+                  marginBottom: 'var(--space-3)',
+                }}
+              />
+            )}
+
             {/* A reply that failed because an MCP server isn't set up shows how to set it up instead. */}
             {mcpConnectDetails && (
               <McpConnectRequiredCard details={mcpConnectDetails} question={question} />
@@ -793,7 +852,7 @@ export const ChatResponse = React.memo(function ChatResponse({
               <Box
                 style={{
                   marginTop:
-                    persistedAskUserQuestion || askQuestionMatchesRow
+                    (persistedAskUserQuestion || askQuestionMatchesRow) && !hasVisibleActivityBelowCard
                       ? 'var(--space-4)'
                       : undefined,
                 }}
