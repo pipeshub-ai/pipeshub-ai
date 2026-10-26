@@ -59,3 +59,12 @@ def test_a_record_stored_without_a_rule_loads_open(
     type_doc, record_doc = _stored(cls, record_type, extra)
     del record_doc["accessRule"]
     assert cls.from_arango_record(type_doc, record_doc).access_rule == AccessRule.OPEN
+
+
+@pytest.mark.parametrize(("cls", "record_type", "extra"), _TYPED, ids=_IDS)
+def test_an_unrecognised_rule_loads_restricted(
+    cls: type[E.Record], record_type: E.RecordType, extra: dict[str, Any]
+) -> None:
+    type_doc, record_doc = _stored(cls, record_type, extra)
+    record_doc["accessRule"] = "PUBLIC_TO_ALL"
+    assert cls.from_arango_record(type_doc, record_doc).access_rule == AccessRule.RESTRICTED
