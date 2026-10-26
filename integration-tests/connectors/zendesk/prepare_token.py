@@ -71,6 +71,9 @@ def main() -> int:
         load_dotenv(INTEGRATION_DIR / ".env.local", override=False)
     missing = [name for name in REQUIRED if not os.getenv(name)]
     if missing:
+        # No mint either: an older token in the file must not stand in for this run's.
+        if os.getenv("ZENDESK_TEST_ACCESS_TOKEN_FILE"):
+            Path(os.environ["ZENDESK_TEST_ACCESS_TOKEN_FILE"]).unlink(missing_ok=True)
         print(f"Missing Zendesk test settings: {', '.join(missing)}", file=sys.stderr)
         return 2
 
