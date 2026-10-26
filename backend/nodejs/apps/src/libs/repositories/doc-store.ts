@@ -31,6 +31,19 @@ export function unitsAreAtomic(rsAvailable: boolean): boolean {
 const CONVERSATION_EPOCH = 2;
 const CONTENT_EPOCH = 2;
 const PLATFORM_DATA_EPOCH = 1;
+const IDENTITY_EPOCH = 3;
+const IDENTITY_REPOSITORIES = [
+  'identity',
+  'credential',
+  'user',
+  'group',
+  'org',
+  'org-auth-config',
+  'activity',
+  'picture',
+  'reset-link',
+  'org-metrics-job',
+];
 
 /** The schema a process needs under `DOC_STORE=postgres`: the fence, and the tables of each repository that is not kept on Mongo. */
 export function schemaRequirements(): SchemaRequirements {
@@ -48,6 +61,9 @@ export function schemaRequirements(): SchemaRequirements {
             code: PLATFORM_DATA_EPOCH,
           },
         }
+      : {}),
+    ...(IDENTITY_REPOSITORIES.some(onPg)
+      ? { identity: { requires: IDENTITY_EPOCH, code: IDENTITY_EPOCH } }
       : {}),
     ...(onPg('conversation') || onPg('semantic-search')
       ? {

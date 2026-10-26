@@ -1,4 +1,5 @@
 import { MongoGroupRepository } from './mongo';
+import { PgGroupRepository } from './pg';
 import type { GroupRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: GroupRepository | undefined;
 
 export const getGroupRepository = (): GroupRepository =>
   (repo ??= pickStore<GroupRepository>('group', {
+    postgres: () => new PgGroupRepository(),
     mongo: () => new MongoGroupRepository(),
   }));
 

@@ -1,4 +1,5 @@
 import { MongoPictureRepository } from './mongo';
+import { PgPictureRepository } from './pg';
 import type { PictureRepository } from './types';
 import { pickStore } from '../store-select';
 
@@ -8,6 +9,7 @@ let repo: PictureRepository | undefined;
 
 export const getPictureRepository = (): PictureRepository =>
   (repo ??= pickStore<PictureRepository>('picture', {
+    postgres: () => new PgPictureRepository(),
     mongo: () => new MongoPictureRepository(),
   }));
 

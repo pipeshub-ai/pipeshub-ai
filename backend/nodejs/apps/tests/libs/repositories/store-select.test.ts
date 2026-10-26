@@ -115,17 +115,19 @@ describe('DOC_STORE switch', () => {
     it('boot waits for the schema of each repository that is not kept on Mongo', () => {
       const { schemaRequirements } = require('../../../src/libs/repositories/doc-store') as typeof import('../../../src/libs/repositories/doc-store')
       delete process.env.DOC_STORE_MONGO_REPOS
-      const all = ['content', 'conversation', 'platform', 'platform_data']
+      const all = ['content', 'conversation', 'identity', 'platform', 'platform_data']
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all)
       process.env.DOC_STORE_MONGO_REPOS = '*'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all)
       process.env.DOC_STORE_MONGO_REPOS = 'conversation'
       expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(all) // saved searches still need their tables
       process.env.DOC_STORE_MONGO_REPOS = 'document'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(['conversation', 'platform', 'platform_data'])
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(['conversation', 'identity', 'platform', 'platform_data'])
       process.env.DOC_STORE_MONGO_REPOS = 'notification,mail-log,outbox'
-      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(['content', 'conversation', 'platform'])
-      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,notification,mail-log,outbox'
+      expect(Object.keys(schemaRequirements()).sort()).to.deep.equal(['content', 'conversation', 'identity', 'platform'])
+      process.env.DOC_STORE_MONGO_REPOS = 'identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
+      expect(Object.keys(schemaRequirements())).to.not.include('identity')
+      process.env.DOC_STORE_MONGO_REPOS = 'conversation,semantic-search,document,notification,mail-log,outbox,identity,credential,user,group,org,org-auth-config,activity,picture,reset-link,org-metrics-job'
       expect(Object.keys(schemaRequirements())).to.deep.equal(['platform'])
     })
 
@@ -177,11 +179,11 @@ describe('DOC_STORE=postgres at boot', () => {
   it('names the repositories that have no PostgreSQL implementation yet; "*" keeps exactly those on Mongo', () => {
     const { assertAllRepositoriesReady, REPOSITORIES } = require('../../../src/libs/repositories/all') as typeof import('../../../src/libs/repositories/all')
     const { mongoFallbacks } = require('../../../src/libs/repositories/store-select') as typeof import('../../../src/libs/repositories/store-select')
-    const ported = ['conversation', 'semantic-search', 'document', 'notification', 'outbox', 'mail-log']
+    const ported = ['conversation', 'semantic-search', 'document', 'notification', 'outbox', 'mail-log', 'user', 'group', 'org', 'org-auth-config', 'activity', 'picture', 'reset-link', 'org-metrics-job', 'identity']
     process.env.DOC_STORE = 'postgres'
     forgetRepositories()
     try {
-      expect(() => assertAllRepositoriesReady()).to.throw(/no PostgreSQL implementation yet: .*user/)
+      expect(() => assertAllRepositoriesReady()).to.throw(/no PostgreSQL implementation yet: .*delegation/)
       process.env.DOC_STORE_MONGO_REPOS = '*'
       forgetRepositories()
       assertAllRepositoriesReady()
