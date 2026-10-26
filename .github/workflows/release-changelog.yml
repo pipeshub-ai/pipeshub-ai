@@ -232,7 +232,7 @@ jobs:
     steps:
       # The converter comes from main (the changelog branch can be older).
       - name: Checkout the converter from main
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: main
           path: main
@@ -240,14 +240,14 @@ jobs:
           persist-credentials: false
 
       - name: Checkout the base the patch was made on
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.generate.outputs.base_sha }}
           path: work
           persist-credentials: false
 
       - name: Download the patch
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: changelog-patch
           path: ${{ runner.temp }}/patch
@@ -273,7 +273,7 @@ jobs:
           python3 -I "$GITHUB_WORKSPACE/main/.github/scripts/changelog-to-mdx.py" "changelog/${VERSION}.md" "$RUNNER_TEMP/docs-changelog"
 
       - name: Upload the docs file
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: docs-changelog
           path: ${{ runner.temp }}/docs-changelog/${{ needs.generate.outputs.version }}.mdx
@@ -385,13 +385,13 @@ jobs:
       contents: read
     steps:
       - name: Download the docs file
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: docs-changelog
           path: ${{ runner.temp }}/file
 
       - name: Checkout the docs repo
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: ${{ env.DOCS_REPO }}
           ref: main
