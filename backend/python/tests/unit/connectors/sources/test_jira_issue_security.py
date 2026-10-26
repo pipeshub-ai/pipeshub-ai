@@ -2,6 +2,7 @@
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_AUTH,
     UNREADABLE_OTHER,
     UNREADABLE_PERMISSION,
     UNREADABLE_ROLES,
@@ -13,6 +14,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    refuses_a_scope,
     resolve_scheme_knowledge,
     scheme_has_no_levels,
     unreadable_reason,
@@ -451,8 +453,12 @@ class TestUnreadableReason:
 
     def test_a_401_is_the_token_scope_and_a_403_the_account_permission(self) -> None:
         """A site admin's token without the issue security scope gets 401, not 403."""
-        members_401 = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=401)
+        members_401 = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=401, scope_refused=True)
         assert unreadable_reason(members_401) == UNREADABLE_SCOPE
+        # A 401 that names no scope is a token Jira no longer accepts.
+        expired = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=401)
+        assert unreadable_reason(expired) == UNREADABLE_AUTH
         members_403 = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=403)
         assert unreadable_reason(members_403) == UNREADABLE_PERMISSION
         scheme_403 = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True, read_status=403)
@@ -465,6 +471,13 @@ class TestUnreadableReason:
     def test_any_other_failure(self) -> None:
         assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=503)) == UNREADABLE_OTHER
         assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN)) == UNREADABLE_OTHER
+
+
+class TestRefusesAScope:
+    def test_only_jiras_scope_message_counts(self) -> None:
+        assert refuses_a_scope({"code": 401, "message": "Unauthorized; scope does not match"})
+        assert not refuses_a_scope({"code": 401, "message": "Unauthorized"})
+        assert not refuses_a_scope(None)
 
 
 class TestSchemeHasNoLevels:

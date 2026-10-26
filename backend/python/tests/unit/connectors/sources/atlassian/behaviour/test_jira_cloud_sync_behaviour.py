@@ -92,6 +92,15 @@ class IssueSearch:
         self.bodies.append(body)
         self.tokens.append(bearer(request))
         key = body["jql"].split('project = "')[1].split('"')[0]
+        if "parent in (" in body["jql"]:
+            # As Jira does: only the children of the named issues, without using up the
+            # pages queued for the project's own search.
+            ids = {i.strip() for i in body["jql"].split("parent in (")[1].split(")")[0].split(",")}
+            pool = self.pages.get((key, None), {"issues": []})
+            pool = pool[0] if isinstance(pool, list) else pool
+            issues = pool.get("issues", []) if isinstance(pool, dict) else []
+            return json_response({"issues": [
+                i for i in issues if str(((i.get("fields") or {}).get("parent") or {}).get("id")) in ids]})
         answer = self.pages.get((key, body.get("nextPageToken")), {"issues": []})
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
@@ -174,8 +183,11 @@ class TestIssuePagination:
 
         assert set(tickets(db)) == {"1", "2", "3"}
         assert stats["total_synced"] >= 3 and stats["failed_project_keys"] == []
-        assert [b.get("nextPageToken") for b in search.bodies] == [None, "T2"]
+        assert [b.get("nextPageToken") for b in search.bodies if "parent in (" not in b["jql"]] == [None, "T2"]
         assert search.bodies[0]["jql"] == 'project = "ENG" ORDER BY updated ASC, id ASC'
+        # Their sub-tasks are read again: Jira moves a sub-task's level without its `updated`.
+        assert [b["jql"] for b in search.bodies if "parent in (" in b["jql"]] == [
+            'project = "ENG" AND parent in (1, 2, 3) ORDER BY updated ASC, id ASC']
         attachment = db.records["attachment_900"]
         assert isinstance(attachment, FileRecord) and attachment.parent_external_record_id == "3"
         assert db.records["1"].weburl == f"{SITE}/browse/ENG-1"

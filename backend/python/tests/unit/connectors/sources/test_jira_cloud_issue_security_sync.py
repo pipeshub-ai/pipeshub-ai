@@ -13,6 +13,7 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
     UNREADABLE_SCOPE,
     IssueSecurityContext,
@@ -258,24 +259,50 @@ class TestLoadIssueSecurity:
         assert ctx.members_readable is False and ctx.read_status == 401
         assert unreadable_reason(ctx) == UNREADABLE_SCOPE
 
+    @pytest.mark.asyncio
+    async def test_a_401_that_names_no_scope_is_a_token_jira_no_longer_accepts(self) -> None:
+        """Reconnecting fixes an expired or revoked token; adding scopes would not."""
+        c = _connector()
+        c._call_with_retry = AsyncMock(side_effect=[
+            _resp(200, SCHEME), _resp(401, {"code": 401, "message": "Unauthorized"})])
+        ctx = await c._load_issue_security("PROJ")
+        assert ctx.read_status == 401 and ctx.scope_refused is False
+        assert unreadable_reason(ctx) == UNREADABLE_AUTH
+
 
 class TestUnreadableSecurityWarning:
-    def test_one_warning_per_reason_lists_its_projects(self, caplog: pytest.LogCaptureFixture) -> None:
+    @pytest.mark.asyncio
+    async def test_one_warning_per_reason_lists_its_projects(self, caplog: pytest.LogCaptureFixture) -> None:
         c = _connector()
+        c.notify = AsyncMock()
         c._unreadable_security = {"PWEBSITE": UNREADABLE_SCOPE, "PST": UNREADABLE_SCOPE, "QA": UNREADABLE_PERMISSION}
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
-            c._warn_unreadable_security()
+            await c._warn_unreadable_security()
         messages = sorted(r.getMessage() for r in caplog.records)
         assert len(messages) == 2
         scope, permission = (m for m in messages if "HTTP 401" in m), (m for m in messages if "HTTP 403" in m)
         assert next(scope).endswith("PST, PWEBSITE")
         assert next(permission).endswith("QA")
 
-    def test_nothing_unreadable_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+    @pytest.mark.asyncio
+    async def test_the_owner_is_notified_once_with_every_project_and_its_fix(self) -> None:
         c = _connector()
+        c.notify = AsyncMock()
+        c._unreadable_security = {"PWEBSITE": UNREADABLE_SCOPE, "PST": UNREADABLE_SCOPE, "QA": UNREADABLE_PERMISSION}
+        await c._warn_unreadable_security()
+        c.notify.assert_awaited_once()
+        message = c.notify.await_args.kwargs["message"]
+        assert "PST, PWEBSITE" in message and "read:issue-security-level:jira" in message
+        assert "QA" in message and "Administer Jira" in message
+
+    @pytest.mark.asyncio
+    async def test_nothing_unreadable_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        c = _connector()
+        c.notify = AsyncMock()
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
-            c._warn_unreadable_security()
+            await c._warn_unreadable_security()
         assert not caplog.records
+        c.notify.assert_not_awaited()
 
 
 class TestMemberChangeRereadsOnlyTheAffectedLevels:
@@ -362,7 +389,8 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
         ctx = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True)
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
             c, _, calls, _ = await self._sync(stored_levels=None, ctx=ctx)
-            c._warn_unreadable_security()
+            c.notify = AsyncMock()
+            await c._warn_unreadable_security()
         assert calls[1]["leveled_only"] is True
         assert len([r for r in caplog.records if "Administer Jira" in r.getMessage()]) == 1
         saved = c.issues_sync_point.update_sync_point.await_args.args[1]
@@ -617,6 +645,40 @@ class TestReindexAppliesTheLevel:
         assert c._scheme_members["10002"][1]["10102"][0]["value"] == "removed-group"  # sync cache untouched
 
 
+class TestSubtasksFollowTheirParent:
+    """Jira copies a parent's level onto its sub-tasks without moving their `updated`."""
+
+    @pytest.mark.asyncio
+    async def test_the_subtasks_of_issues_read_again_are_read_again(self) -> None:
+        c = _connector()
+        parent, perms, changed = await _build(c, _issue(None, key="PROJ-1", issue_id="1001"), _present())
+        sub_issue = _issue(None, key="PROJ-2", issue_id="1002")
+        sub_issue["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub_issue["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        sub, sub_perms, sub_changed = await _build(c, sub_issue, _present())
+        assert sub.parent_external_record_id == "1001"
+        c.issues_sync_point = MagicMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(return_value={
+            "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
+            "security_levels": json.dumps(_present().level_fingerprints())})
+        c.issues_sync_point.update_sync_point = AsyncMock()
+        c._load_issue_security = AsyncMock(return_value=_present())
+        c._process_new_records = AsyncMock()
+        calls = []
+
+        async def fetch(key, pid, users, last_sync, resume, *, is_new_project=False, level_ids=None,
+                        leveled_only=False, stored_only=False, parent_ids=None) -> AsyncIterator:
+            calls.append({"stored_only": stored_only, "parent_ids": parent_ids, "is_new_project": is_new_project})
+            if len(calls) == 1:
+                yield [(parent, perms, changed), (sub, sub_perms, sub_changed)], False, 1_700_000_100_000
+
+        c._fetch_issues_batched = fetch
+        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+
+        # Only the issue that is not itself a sub-task names its children.
+        assert calls[1:] == [{"stored_only": True, "parent_ids": ["1001"], "is_new_project": True}]
+
+
 class TestIssuePlacementPass:
     """A project synced while stories hung off their epics has every stored issue read
     once, so they move to the project; the marker then stops the pass."""
@@ -648,6 +710,18 @@ class TestIssuePlacementPass:
             await self._sync(
                 stored_levels=_present().level_fingerprints(), placement=None, fetch_fn=fail_second, connector=c)
         assert not any("issue_placement" in call.args[1] and call.args[1]["issue_placement"] == ISSUE_PLACEMENT
+                       for call in c.issues_sync_point.update_sync_point.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_an_issue_the_pass_skipped_leaves_the_marker_unsaved(self) -> None:
+        """A skipped issue may still hang off its epic, and nothing else would read it again."""
+        async def skip_one(c: JiraConnector, calls: list) -> None:
+            if len(calls) == 2:
+                c._issue_build_failures += 1
+
+        c, _, _, _ = await self._sync(
+            stored_levels=_present().level_fingerprints(), placement=None, fetch_fn=skip_one)
+        assert not any(call.args[1].get("issue_placement") == ISSUE_PLACEMENT
                        for call in c.issues_sync_point.update_sync_point.await_args_list)
 
 

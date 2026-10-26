@@ -89,6 +89,8 @@ class IssueSecurityContext:
     # The HTTP status of the scheme or members read that failed, so the warning can tell
     # a token without the scope (401) from an account without the permission (403).
     read_status: int | None = None
+    # Jira said the token lacks a scope. Any other 401 is a token Jira no longer accepts.
+    scope_refused: bool = False
 
     def level_fingerprints(
         self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
@@ -200,6 +202,11 @@ async def collect_paged_values(
             return status, None
 
 
+def refuses_a_scope(body: object) -> bool:
+    """Whether a Jira 401 body says the token lacks a scope ("Unauthorized; scope does not match")."""
+    return isinstance(body, dict) and "scope does not match" in str(body.get("message") or "").lower()
+
+
 def scheme_has_no_levels(body: object) -> bool:
     """A scheme body that lists no level. No issue can carry one, so its members need not
     be read. The "Simplified" schemes of team-managed projects are like this."""
@@ -207,6 +214,7 @@ def scheme_has_no_levels(body: object) -> bool:
 
 
 UNREADABLE_SCOPE = "scope"
+UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
 UNREADABLE_OTHER = "other"
@@ -216,6 +224,7 @@ UNREADABLE_REASONS = {
         "Jira refused the connector's authorisation (HTTP 401). Add read:issue-security-level:jira "
         "and read:issue-security-scheme:jira to the Atlassian app, then reconnect the connector"
     ),
+    UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
     UNREADABLE_OTHER: "the read failed this sync",
@@ -230,7 +239,7 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
     if context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
         return None
     if context.read_status == 401:
-        return UNREADABLE_SCOPE
+        return UNREADABLE_SCOPE if context.scope_refused else UNREADABLE_AUTH
     if context.read_status == 403 or context.scheme_forbidden:
         return UNREADABLE_PERMISSION
     if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:

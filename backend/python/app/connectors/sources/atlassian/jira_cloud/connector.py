@@ -88,6 +88,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     custom_field_ids_from_members,
     http_status_is_transient,
     index_members,
+    refuses_a_scope,
     scheme_has_no_levels,
     unreadable_reason,
 )
@@ -255,6 +256,8 @@ INCREMENTAL_OVERLAP_MS: int = 2 * 60 * 1000
 # files them. A project without it was synced with stories under their epics, and has
 # every stored issue re-read once so they move.
 ISSUE_PLACEMENT: str = "subtasks-under-parent"
+# Parents named in one ``parent in (...)`` clause when their sub-tasks are re-read.
+SUBTASK_REREAD_CHUNK: int = 50
 # When the account's timezone is unknown, a JQL date written in UTC is read by Jira in that
 # unknown zone. Lower bounds are moved this far back (UTC-12 is the furthest west) and upper
 # bounds this far forward (UTC+14 the furthest east), so nothing is cut off.
@@ -3972,7 +3975,7 @@ class JiraConnector(BaseConnector):
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
 
-        self._warn_unreadable_security()
+        await self._warn_unreadable_security()
 
         return {
             "total_synced": total_synced,
@@ -4010,6 +4013,7 @@ class JiraConnector(BaseConnector):
             scheme_forbidden=response.status == HttpStatusCode.FORBIDDEN.value,
             defer_checkpoint=http_status_is_transient(response.status),
             read_status=response.status if knowledge == SchemeKnowledge.UNKNOWN else None,
+            scope_refused=knowledge == SchemeKnowledge.UNKNOWN and refuses_a_scope(body),
         )
         if knowledge != SchemeKnowledge.PRESENT or scheme_id is None:
             return context
@@ -4018,6 +4022,8 @@ class JiraConnector(BaseConnector):
             return context
         members = self._scheme_members.get(scheme_id) if cached else None
         if members is None:
+            refused: list[bool] = []
+
             async def fetch_page(start_at: int) -> tuple[int, dict[str, Any] | None]:
                 resp = await self._call_with_retry(
                     lambda ds: ds.get_security_level_members(
@@ -4026,12 +4032,15 @@ class JiraConnector(BaseConnector):
                     ),
                     ctx=f"reading issue security level members of scheme {scheme_id}",
                 )
-                return resp.status, self._safe_json_parse(resp, "issue security level members")
+                page = self._safe_json_parse(resp, "issue security level members")
+                refused.append(refuses_a_scope(page))
+                return resp.status, page
 
             status, values = await collect_paged_values(fetch_page)
             if values is None:
                 context.defer_checkpoint = http_status_is_transient(status)
                 context.read_status = status
+                context.scope_refused = bool(refused and refused[-1])
                 return context  # members_readable stays False: leveled issues are closed
             members = (True, index_members(values))
             if cached:
@@ -4108,6 +4117,7 @@ class JiraConnector(BaseConnector):
         # Fetch and process issues in batches
         total_issues_processed = 0
         batch_number = 0
+        reread_parent_ids: list[str] = []
         last_issue_updated_in_batch = None
         stats = {"new_count": 0, "updated_count": 0}
 
@@ -4140,6 +4150,10 @@ class JiraConnector(BaseConnector):
                 continue
 
             self.logger.info(f"📦 Processing batch {batch_number} for project {project_key}: {batch_size} records")
+            reread_parent_ids.extend(
+                item[0].external_record_id for item in issues_batch
+                if isinstance(item[0], TicketRecord) and not item[0].parent_external_record_id
+            )
 
             # Process this batch
             await self._process_new_records(issues_batch, project_key, stats)
@@ -4163,6 +4177,8 @@ class JiraConnector(BaseConnector):
                 last_issue_updated=last_issue_updated_in_batch
             )
 
+        await self._reread_subtasks(project_key, project_id, jira_users, stats, reread_parent_ids)
+
         if reread:
             self.logger.info(
                 f"🔐 Issue security of project {project_key} changed: re-reading "
@@ -4185,6 +4201,7 @@ class JiraConnector(BaseConnector):
             )
         placement_reread = False
         if (project_sync_data or {}).get("issue_placement") != ISSUE_PLACEMENT:
+            failures_before = self._issue_build_failures
             if not is_new_project and reread != "project":
                 self.logger.info(
                     f"Re-reading every stored issue of {project_key} once, to file stories "
@@ -4192,7 +4209,13 @@ class JiraConnector(BaseConnector):
                 )
                 await self._reread_leveled_issues(project_key, project_id, jira_users, stats, None, every_issue=True)
                 placement_reread = True
-            await self._update_project_sync_checkpoint(project_key, issue_placement=ISSUE_PLACEMENT)
+            if self._issue_build_failures == failures_before:
+                await self._update_project_sync_checkpoint(project_key, issue_placement=ISSUE_PLACEMENT)
+            else:
+                # An issue the pass skipped may still hang off its epic; the next sync re-reads.
+                self.logger.warning(
+                    f"Some issues of {project_key} could not be read again; re-reading them next sync"
+                )
 
         if total_issues_processed == 0:
             self.logger.info(f"ℹ️ No new/updated issues for project {project_key}")
@@ -4235,17 +4258,29 @@ class JiraConnector(BaseConnector):
             conditions.append(f'created <= "{self._jql_datetime(created_before, upper_bound=True)}"')
         return conditions
 
-    def _warn_unreadable_security(self) -> None:
+    async def _warn_unreadable_security(self) -> None:
         """One warning per reason for the projects whose issue security levels could not be
-        applied this sync."""
+        applied this sync, and one notification for the connector's owner."""
         by_reason: dict[str, list[str]] = {}
         for project_key, reason in self._unreadable_security.items():
             by_reason.setdefault(reason, []).append(project_key)
+        lines: list[str] = []
         for reason, project_keys in by_reason.items():
             self.logger.warning(
                 "Issues with a security level in %s project(s) are closed to everyone until their "
                 "levels can be read; %s: %s",
                 len(project_keys), UNREADABLE_REASONS[reason], ", ".join(sorted(project_keys)),
+            )
+            lines.append(f"{', '.join(sorted(project_keys))}: {UNREADABLE_REASONS[reason]}.")
+        if lines:
+            await self.notify(
+                type=NotificationType.CONNECTOR_WARNING,
+                severity=NotificationSeverity.WARNING,
+                title=self._notification_title("can't read issue security levels"),
+                message=(
+                    "Issues with a security level are hidden from everyone in PipesHub until their "
+                    "levels can be read. " + " ".join(lines)
+                ),
             )
 
     def _hold_levels_naming_unread_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
@@ -4309,6 +4344,26 @@ class JiraConnector(BaseConnector):
                 project_key, security_levels=json.dumps(levels, sort_keys=True)
             )
 
+    async def _reread_subtasks(
+        self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
+        parent_ids: list[str],
+    ) -> None:
+        """Rebuild the stored sub-tasks of issues this sync wrote again.
+
+        Jira copies a parent's security level onto its sub-tasks without moving their
+        ``updated``, so an incremental read never sees a sub-task's level change with its
+        parent's. Left alone, a sub-task would stay closed after its parent opened, and
+        open after its parent closed.
+        """
+        ids = list(dict.fromkeys(i for i in parent_ids if i and str(i).isdigit()))
+        for start in range(0, len(ids), SUBTASK_REREAD_CHUNK):
+            async for batch, _more, _ts in self._fetch_issues_batched(
+                project_key, project_id, users, None, None, is_new_project=True,
+                stored_only=True, parent_ids=ids[start:start + SUBTASK_REREAD_CHUNK],
+            ):
+                if batch:
+                    await self._process_new_records(batch, project_key, stats)
+
     async def _reread_leveled_issues(
         self, project_key: str, project_id: str, users: list[AppUser], stats: dict[str, int],
         level_ids: list[str] | None, *, every_issue: bool = False,
@@ -4334,6 +4389,7 @@ class JiraConnector(BaseConnector):
         *,
         leveled_only: bool = False,
         stored_only: bool = False,
+        parent_ids: list[str] | None = None,
     ) -> AsyncGenerator[tuple[list[tuple[Record, list[Permission], bool]], bool, Optional[int]], None]:
         """
         Fetch issues for a project in batches, yielding processed records.
@@ -4377,6 +4433,9 @@ class JiraConnector(BaseConnector):
         elif level_ids:
             # Only the issues in these security levels (ids are numeric, from the scheme).
             jql_conditions.append(f'level in ({", ".join(str(int(i)) for i in level_ids)})')
+        if parent_ids:
+            # Only the children of these issues (ids are numeric).
+            jql_conditions.append(f'parent in ({", ".join(str(int(i)) for i in parent_ids)})')
 
         # Build final JQL (ORDER BY required for consistent pagination)
         # Add id ASC as secondary sort for stable ordering when timestamps are equal
