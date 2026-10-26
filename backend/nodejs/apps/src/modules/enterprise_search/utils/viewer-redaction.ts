@@ -94,13 +94,13 @@ interface AttachmentEntry {
 interface PartEntry {
   type?: string;
   content?: string;
-  parts?: PartEntry[];
+  parts?: Array<PartEntry | null>;
 }
 /** The message fields redaction reads; the rest is dropped unless allow-listed. */
 export interface ViewerMessage {
   citations?: Array<CitationEntry | null>;
   attachments?: Array<AttachmentEntry | null>;
-  parts?: PartEntry[];
+  parts?: Array<PartEntry | null>;
 }
 export interface ViewerSearch {
   userId?: unknown;
@@ -143,7 +143,8 @@ const pick = (source: object, fields: string[]): Record<string, unknown> => {
   );
 };
 
-const viewerParts = (parts: PartEntry[]): PartEntry[] =>
+// Stored transcripts can hold a null part; it must not fail the viewer's request.
+const viewerParts = (parts: Array<PartEntry | null>): PartEntry[] =>
   parts.flatMap((part): PartEntry[] => {
     if (!part) return [];
     if (part.type === 'text') {
