@@ -1,4 +1,6 @@
 const STORAGE_KEY = 'signupSource';
+// The server's channel format: a tag it would drop must not hide a usable one.
+const CHANNEL_TAG = /^[a-z0-9][a-z0-9-]{0,39}$/;
 
 export interface SignupSource {
   ref?: string;
@@ -16,7 +18,9 @@ export function rememberSignupSource(): void {
     if (sessionStorage.getItem(STORAGE_KEY) !== null) return;
     const params = new URLSearchParams(window.location.search);
     const source: SignupSource = {};
-    const ref = params.get('ref') || params.get('utm_source');
+    const ref = [params.get('ref'), params.get('utm_source')].find(
+      (tag) => tag !== null && CHANNEL_TAG.test(tag),
+    );
     if (ref) source.ref = ref;
     if (document.referrer) {
       const host = new URL(document.referrer).hostname;

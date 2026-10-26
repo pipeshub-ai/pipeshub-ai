@@ -22,6 +22,12 @@ describe('signup source', () => {
     expect(getSignupSource()).toEqual({ ref: 'newsletter' });
   });
 
+  it('skips a malformed ref for a valid utm_source', () => {
+    visit('/?ref=Not%20A%20Tag&utm_source=newsletter', '');
+    rememberSignupSource();
+    expect(getSignupSource()).toEqual({ ref: 'newsletter' });
+  });
+
   it('keeps the first page the tab saw', () => {
     visit('/?ref=claude-code-plugin', '');
     rememberSignupSource();
