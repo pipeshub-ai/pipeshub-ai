@@ -179,6 +179,32 @@ test('a launcher left running by an earlier app run is adopted, not restarted', 
   fs.rmSync(first.dataDir, { recursive: true, force: true });
 });
 
+test('already_running (another instance still starting): waits for it and adopts it', async () => {
+  const other = setup();
+  const running = await other.client.start();
+  // The second app instance sees "not running" once, tries to start, is told it is running, and adopts.
+  const second = new LauncherClient({
+    command: process.execPath,
+    args: [STUB],
+    dataDir: other.dataDir,
+    healthIntervalMs: 50,
+    extraEnv: { STUB_MODE: 'already_running' },
+  });
+  const adopted = await second.start();
+  assert.equal(adopted.state, 'running');
+  assert.equal(adopted.url, running.url);
+  assert.equal((other.log().match(/^start$/gm) ?? []).length, 2); // its own start was refused, not run twice
+  await other.cleanup();
+});
+
+test('a service death is named in the message (launcher exit 3)', async () => {
+  const t = setup('crash_after_ready');
+  await t.client.start();
+  await new Promise<void>((resolve) => t.client.on('status', (s: LocalServerStatus) => s.state === 'failed' && resolve()));
+  assert.match(t.client.status.error?.message as string, /connectors/);
+  fs.rmSync(t.dataDir, { recursive: true, force: true });
+});
+
 test('concurrent start calls share one launch', async () => {
   const t = setup();
   const [a, b] = await Promise.all([t.client.start(), t.client.start()]);

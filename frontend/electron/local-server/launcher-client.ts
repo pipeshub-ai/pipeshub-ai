@@ -3,23 +3,29 @@ import { EventEmitter } from 'events';
 
 /**
  * Client for the native launcher (`pipeshub-native`), the executable that runs
- * a whole PipesHub on this computer.
+ * a whole PipesHub on this computer. This header is the contract the app codes
+ * against; the launcher's own documentation is the source of truth.
  *
- * Contract this code is written against (the launcher is built separately; if
- * the real one differs, only `parseLauncherLine` and `LauncherClient.adopt`
- * need to change):
- *
- *   pipeshub-native start  --json --data-dir <dir>   long-running; prints JSON lines on stdout.
- *       A line with a string `url` (loopback http) means "healthy, serving here".
- *       Optional progress lines: {"event":"progress","phase":"...","message":"..."}.
- *       Optional error line: {"event":"error","code":"port_in_use"|...,"message":"..."}.
- *       Exits non-zero when any service dies; SIGTERM stops everything.
- *   pipeshub-native stop   --json --data-dir <dir>   stops a running instance of that data dir.
- *   pipeshub-native status --json --data-dir <dir>   prints {"running":bool,"url":"..."}.
+ *   pipeshub-native start  --json --data-dir <dir>   foreground, until TERM/INT or a service dies.
+ *       JSON lines on stdout, each with an `event`:
+ *         progress {stage, message}                 shown while starting
+ *         ready    {url, ports, pid, data_dir}      the ONLY line with `url`: healthy, serving there
+ *         service_exited {service, code, signal}    a service died (the launcher then exits 3)
+ *         error    {code: already_running|start_failed|not_healthy, message, phase?}
+ *         stopping / stopped
+ *       Exit: 0 stopped on request, 1 start-up failed, 3 a service died.
+ *   pipeshub-native stop   --json --data-dir <dir>   ends that data dir's instance; blocks until gone (usually
+ *       5-11 s, up to ~35 s); exit 0 also when none runs.
+ *   pipeshub-native status --json --data-dir <dir>   {running, phase: starting|ready|stopping, url?}; exit 3 when not running.
  *   pipeshub-native health --json --data-dir <dir>   exit 0 when healthy.
  *
- * Ports are chosen by the launcher at start time, so the URL is only ever
- * taken from its output.
+ * Ports are chosen free at start, so the URL is only ever taken from `ready`.
+ * A port conflict cannot happen at launch; a bind race shows up as
+ * `service_exited` plus exit 3 and the service's error output, which is why
+ * port conflicts are recognised from output text, not from an error code.
+ * `already_running` means another instance owns the data dir (possibly still
+ * starting): the app waits for it to become healthy and adopts it.
+ * Cold start measured 22-96 s on a loaded host; stop up to ~35 s.
  */
 
 export type LocalServerState = 'idle' | 'starting' | 'running' | 'stopping' | 'failed';
@@ -57,7 +63,7 @@ export interface LauncherClientOptions {
   dataDir: string;
   spawn?: SpawnFn;
   fetchFn?: typeof fetch;
-  /** Whole start, from spawn to healthy. A cold first start takes ~25 s to a minute on a loaded machine. */
+  /** Whole start, from spawn to healthy: 22-96 s measured cold on a loaded host. */
   startTimeoutMs?: number;
   stopTimeoutMs?: number;
   healthIntervalMs?: number;
@@ -84,6 +90,8 @@ export interface ParsedLauncherLine {
   phase?: string;
   errorCode?: string;
   errorMessage?: string;
+  /** `service_exited`: which service died. */
+  exitedService?: string;
 }
 
 /** Lines that are not JSON objects are log output, not protocol. */
@@ -104,6 +112,7 @@ export function parseLauncherLine(line: string): ParsedLauncherLine | null {
   }
   const phase = obj.message ?? obj.phase;
   if (typeof phase === 'string') out.phase = phase;
+  if (obj.event === 'service_exited' && typeof obj.service === 'string') out.exitedService = obj.service;
   if (obj.event === 'error' || obj.error) {
     const err = (typeof obj.error === 'object' && obj.error ? obj.error : obj) as Record<string, unknown>;
     out.errorCode = typeof err.code === 'string' ? err.code : 'error';
@@ -126,8 +135,8 @@ export class LauncherClient extends EventEmitter {
       args: [],
       spawn: nodeSpawn as SpawnFn,
       fetchFn: fetch,
-      startTimeoutMs: 120_000,
-      stopTimeoutMs: 20_000,
+      startTimeoutMs: 180_000,
+      stopTimeoutMs: 45_000,
       healthIntervalMs: 500,
       extraEnv: {},
       ...options,
@@ -198,6 +207,7 @@ export class LauncherClient extends EventEmitter {
       let settled = false;
       let ready = false;
       let reportedError: { code: string; message?: string } | null = null;
+      let exitedService: string | null = null;
       let child: ChildProcess;
       let timer: NodeJS.Timeout | undefined;
       const finish = (status: LocalServerStatus): void => {
@@ -234,6 +244,7 @@ export class LauncherClient extends EventEmitter {
         this.pushLog(line);
         const parsed = parseLauncherLine(line);
         if (!parsed) return;
+        if (parsed.exitedService) exitedService = parsed.exitedService;
         if (parsed.errorCode) reportedError = { code: parsed.errorCode, message: parsed.errorMessage };
         if (parsed.phase && !ready && this.current.state === 'starting') {
           this.set({ state: 'starting', phase: parsed.phase });
@@ -267,12 +278,29 @@ export class LauncherClient extends EventEmitter {
           finish({ state: 'idle' });
           return;
         }
-        const failure = classifyExit(code, signal, reportedError, this.logTail);
+        if (!ready && reportedError?.code === 'already_running') {
+          // Another instance owns the data dir, maybe still starting: wait for it and use it.
+          void this.adoptWhenHealthy().then((adopted) => {
+            finish(adopted ?? this.fail('crashed', 'Another PipesHub on this computer is using the same data folder and did not become healthy.'));
+          });
+          return;
+        }
+        const failure = classifyExit(code, signal, reportedError, this.logTail, exitedService);
         // After start succeeded this is a crash of a running server; before, a failed start.
         const status = this.fail(failure.code, failure.message);
         finish(status);
       });
     });
+  }
+
+  private async adoptWhenHealthy(): Promise<LocalServerStatus | null> {
+    const deadline = Date.now() + this.opts.startTimeoutMs;
+    while (Date.now() < deadline && !this.stopRequested) {
+      const adopted = await this.adopt();
+      if (adopted) return adopted;
+      await delay(Math.max(this.opts.healthIntervalMs, 500));
+    }
+    return null;
   }
 
   private async adopt(): Promise<LocalServerStatus | null> {
@@ -363,14 +391,20 @@ function classifyExit(
   signal: NodeJS.Signals | null,
   reported: { code: string; message?: string } | null,
   logTail: string[],
+  exitedService: string | null = null,
 ): { code: LocalServerErrorCode; message: string } {
   const tail = logTail.join('\n');
+  // `port_in_use` is not a code the launcher emits today; kept so a future one still maps.
   if (reported?.code === 'port_in_use' || PORT_IN_USE.test(tail)) {
     return { code: 'port_in_use', message: reported?.message ?? 'A network port PipesHub needs is already in use.' };
   }
   return {
     code: 'crashed',
-    message: reported?.message ?? `PipesHub stopped unexpectedly (${signal ?? `exit code ${code}`}).`,
+    message:
+      reported?.message ??
+      (exitedService
+        ? `The ${exitedService} service of PipesHub stopped unexpectedly.`
+        : `PipesHub stopped unexpectedly (${signal ?? `exit code ${code}`}).`),
   };
 }
 

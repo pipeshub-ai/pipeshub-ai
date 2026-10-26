@@ -4,7 +4,9 @@
  * neither needs the multi-GB real bundle.
  *
  * STUB_MODE: ok (default) | slow | unhealthy | crash_before_ready |
- *            crash_after_ready | port_in_use | bad_url | hang
+ *            crash_after_ready | port_in_use | bad_url | hang |
+ *            already_running (start reports it and exits 1; the first `status` says "not running" so the
+ *            app takes the start path, later ones report the other instance)
  * Every event is appended to <data-dir>/stub.log; the pid is in <data-dir>/stub.pid.
  */
 import * as fs from 'fs';
@@ -41,6 +43,10 @@ const readPid = (): number | null => {
 async function start(): Promise<void> {
   fs.mkdirSync(dataDir, { recursive: true });
   log('start');
+  if (mode === 'already_running') {
+    emit({ event: 'error', code: 'already_running', message: 'PipesHub is already running for this data folder', phase: 'starting' });
+    process.exit(1);
+  }
   if (mode === 'port_in_use') {
     emit({ event: 'error', code: 'port_in_use', message: 'port 5432 is already in use' });
     process.stderr.write('Error: listen EADDRINUSE: address already in use 127.0.0.1:5432\n');
@@ -87,8 +93,9 @@ async function start(): Promise<void> {
   emit({ event: 'ready', url: mode === 'bad_url' ? 'http://example.com:80' : url, healthy_after_s: 1 });
   if (mode === 'crash_after_ready') {
     setTimeout(() => {
+      emit({ event: 'service_exited', service: 'connectors', code: 1, signal: null });
       process.stderr.write('connectors: exited with code 1\n');
-      process.exit(4);
+      process.exit(3);
     }, 1500);
   }
 }
@@ -100,11 +107,16 @@ function main(): void {
     if (pid && alive(pid)) process.kill(pid, 'SIGTERM');
     emit({ stopped: Boolean(pid) });
   } else if (sub === 'status' || sub === 'health') {
+    if (mode === 'already_running' && sub === 'status' && !fs.existsSync(path.join(dataDir, 'status-seen'))) {
+      fs.writeFileSync(path.join(dataDir, 'status-seen'), '1');
+      process.exit(3);
+    }
     const pid = readPid();
     const running = Boolean(pid && alive(pid));
     const url = running ? fs.readFileSync(urlFile, 'utf8') : undefined;
     emit({ running, healthy: running, url });
-    process.exit(sub === 'health' && !running ? 1 : 0);
+    // Like the real launcher: status exits 3 when not running, health exits 1 when not healthy.
+    process.exit(running ? 0 : sub === 'health' ? 1 : 3);
   } else process.exit(2);
 }
 

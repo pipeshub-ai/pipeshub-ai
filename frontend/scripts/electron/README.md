@@ -46,11 +46,12 @@ First launch asks "Run PipesHub on this computer" or "Connect to a PipesHub serv
 | Stub launcher for tests | `electron/__tests__/stub-launcher.ts` |
 | Stage the real bundle into the package | `npm run electron:stage-launcher` with `PIPESHUB_NATIVE_BUNDLE=<dir>` or `PIPESHUB_NATIVE_BUNDLE_URL=<.tar.gz>`; with neither, the app is built without local mode |
 | e2e (Linux needs `xvfb-run`) | `npm run test:electron:e2e` after `build:electron` + `electron:prepare` |
+| e2e against the real bundle (first run, adopt, service death + Retry) | `PIPESHUB_E2E_BUNDLE=<bundle> npm run test:electron:e2e` (add `PIPESHUB_E2E_PACKAGED=<built app executable>` to run the packaged app) |
 | One architecture / another output folder | `ELECTRON_ARCH=arm64 ELECTRON_OUT_DIR=/path npm run electron:build:mac` |
 
 ## Signing
 
-Builds are unsigned by default. CI signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Bun, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). Whether electron-builder signs every Mach-O under `extraResources` is unverified; check on a Mac. For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
+Builds are unsigned by default. CI signs when `CSC_LINK` and `CSC_KEY_PASSWORD` are set, and notarises when `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD` and `APPLE_TEAM_ID` are also set (`build.mjs` turns on `mac.notarize`). The bundled Bun, Python and PostgreSQL binaries use `entitlements.mac.plist` (hardened runtime). `after-pack.cjs` lists every Mach-O file under `Resources/pipeshub-native` as an extra binary for electron-builder to sign (unit-tested, but the signing itself is unverified: check on a Mac). For Apple / Windows code signing in production, install certificates and run with `CSC_IDENTITY_AUTO_DISCOVERY=true` (and the usual `CSC_LINK`, `WIN_CSC_LINK`, etc.) as required by [electron-builder code signing](https://www.electron.build/code-signing).
 
 ## Host notes
 
