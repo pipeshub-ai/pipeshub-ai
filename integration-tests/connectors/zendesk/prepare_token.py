@@ -74,19 +74,21 @@ def main() -> int:
         print(f"Missing Zendesk test settings: {', '.join(missing)}", file=sys.stderr)
         return 2
 
+    token_file = Path(os.environ["ZENDESK_TEST_ACCESS_TOKEN_FILE"])
     try:
         access_token = mint_token(
             os.environ["ZENDESK_TEST_SUBDOMAIN"],
             os.environ["ZENDESK_TEST_CLIENT_ID"],
             os.environ["ZENDESK_TEST_CLIENT_SECRET"],
         )
-        token_file = Path(os.environ["ZENDESK_TEST_ACCESS_TOKEN_FILE"])
         token_file.parent.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, "w") as output:
             output.write(access_token)
         token_file.chmod(0o600)
     except (RuntimeError, ValueError, OSError) as exc:
+        # The tests read whatever token the file holds; an older one must not stand in for this failure.
+        token_file.unlink(missing_ok=True)
         print(str(exc), file=sys.stderr)
         return 1
     print("Zendesk access token minted")
