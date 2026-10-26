@@ -815,7 +815,6 @@ export class PgDocumentRepository implements DocumentRepository {
     { now, staleMs }: ArtifactFence,
   ): Promise<DocumentRow | null> {
     assertOrg(k, String(input.orgId));
-    const where = `org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3`;
     const key = [
       k.orgId,
       input.artifactSet?.virtualRecordId,
@@ -825,7 +824,8 @@ export class PgDocumentRepository implements DocumentRepository {
       fill(
         `/* pipeshub:content.document_artifact_touch */ UPDATE content.documents
         SET updated_at = $4, artifact_set = artifact_set - 'retiringAt'
-        WHERE ${where} AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
+        WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3
+          AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
         RETURNING @{COLS}`,
         { COLS },
       ),
@@ -833,7 +833,8 @@ export class PgDocumentRepository implements DocumentRepository {
     );
     if (rows[0]) return docOf(rows[0]);
     const { rowCount } = await k.query(
-      `/* pipeshub:content.document_artifact_present */ SELECT 1 FROM content.documents WHERE ${where}`,
+      `/* pipeshub:content.document_artifact_present */ SELECT 1 FROM content.documents
+      WHERE org_id = $1 AND artifact_set->>'virtualRecordId' = $2 AND artifact_set->>'rev' = $3`,
       key,
     );
     if ((rowCount ?? 0) > 0)
@@ -856,32 +857,30 @@ export class PgDocumentRepository implements DocumentRepository {
     if (!oid) return null;
     return inUnit(undefined, { write: true }, async (k) => {
       assertOrg(k, orgId);
-      const p = new Params();
-      const where = [
-        `org_id = ${p.add(k.orgId)}`,
-        `id = ${p.add(oid)}`,
-        'artifact_set IS NOT NULL',
-      ];
-      // Without a stamp the delete is unfenced: it claims whatever is there.
-      const fenced =
-        ifUnchangedSince === undefined
-          ? []
-          : [
-              `updated_at <= ${p.add(new Date(ifUnchangedSince))}`,
-              `(NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < ${p.add(now - staleMs)})`,
-            ];
       // updated_at is left alone: the claim is not a write of the revision, and a delete retried after a crash must still match the
-      // listed stamp.
-      const { rows } = await k.query<Row>(
-        fill(
-          `/* pipeshub:content.document_artifact_claim */ UPDATE content.documents
-          SET artifact_set = jsonb_set(artifact_set, '{retiringAt}', to_jsonb(${p.add(now)}::bigint))
-          WHERE ${[...where, ...fenced].join(' AND ')}
-          RETURNING @{COLS}`,
-          { COLS },
-        ),
-        p.values,
-      );
+      // listed stamp. Without a stamp the delete is unfenced: it claims whatever is there.
+      const { rows } = await (ifUnchangedSince === undefined
+        ? k.query<Row>(
+            fill(
+              `/* pipeshub:content.document_artifact_claim */ UPDATE content.documents
+              SET artifact_set = jsonb_set(artifact_set, '{retiringAt}', to_jsonb($3::bigint))
+              WHERE org_id = $1 AND id = $2 AND artifact_set IS NOT NULL
+              RETURNING @{COLS}`,
+              { COLS },
+            ),
+            [k.orgId, oid, now],
+          )
+        : k.query<Row>(
+            fill(
+              `/* pipeshub:content.document_artifact_claim_fenced */ UPDATE content.documents
+              SET artifact_set = jsonb_set(artifact_set, '{retiringAt}', to_jsonb($3::bigint))
+              WHERE org_id = $1 AND id = $2 AND artifact_set IS NOT NULL AND updated_at <= $4
+                AND (NOT artifact_set ? 'retiringAt' OR (artifact_set->>'retiringAt')::bigint < $5)
+              RETURNING @{COLS}`,
+              { COLS },
+            ),
+            [k.orgId, oid, now, new Date(ifUnchangedSince), now - staleMs],
+          ));
       if (rows[0]) return docOf(rows[0]);
       if (ifUnchangedSince === undefined) return null;
       const present = await k.query(
