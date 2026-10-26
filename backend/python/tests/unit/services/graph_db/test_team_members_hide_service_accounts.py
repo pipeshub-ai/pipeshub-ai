@@ -15,7 +15,6 @@ the caller was actually given.
 from __future__ import annotations
 
 import re
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest

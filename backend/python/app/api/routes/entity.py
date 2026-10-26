@@ -14,9 +14,9 @@ from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_user_or_503
-from app.utils.logger import create_logger
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
