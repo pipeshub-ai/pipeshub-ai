@@ -163,9 +163,14 @@ def operation_response_json_pointer(operation_id: str, status_code: str) -> str:
                 raise KeyError(
                     f"No response {want_status} for operationId={operation_id!r}"
                 )
-            content = (responses[want_status].get("content") or {}).get(
-                "application/json"
-            ) or {}
+            response = responses[want_status]
+            ref = response.get("$ref") if isinstance(response, dict) else None
+            if isinstance(ref, str) and ref.startswith("#/components/responses/"):
+                # A shared response (XssRejected, InsufficientScope, ...) keeps its schema there.
+                name = ref.rsplit("/", 1)[-1]
+                response = (doc.get("components") or {}).get("responses", {}).get(name) or {}
+                ptr = f"{ref}/content/application~1json/schema"
+            content = (response.get("content") or {}).get("application/json") or {}
             if content.get("schema") is None:
                 raise KeyError(
                     f"No application/json schema for operationId={operation_id!r} "
