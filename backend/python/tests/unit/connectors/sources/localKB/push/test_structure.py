@@ -410,8 +410,9 @@ def test_the_old_lexer_is_quadratic_on_the_same_body() -> None:
             runs.append(time.process_time() - start)
         return min(runs)
 
-    assert timed(4000) > 10 * timed(500) / 4, "expected superlinear growth"
-    assert timed(4000) > 0.5
+    # Eight times the input: linear growth is about 8x, quadratic about 64x. A ratio, not a
+    # number of seconds, so the runner's speed does not matter.
+    assert timed(4000) > 16 * timed(500), "expected superlinear growth"
 
 
 def test_escaped_key_and_gap_behaviour_survive_the_new_lexer() -> None:
