@@ -217,6 +217,7 @@ UNREADABLE_SCOPE = "scope"
 UNREADABLE_AUTH = "auth"
 UNREADABLE_PERMISSION = "permission"
 UNREADABLE_ROLES = "roles"
+UNREADABLE_TRANSIENT = "transient"
 UNREADABLE_OTHER = "other"
 
 UNREADABLE_REASONS = {
@@ -227,8 +228,13 @@ UNREADABLE_REASONS = {
     UNREADABLE_AUTH: "Jira refused the connector's authorisation (HTTP 401). Reconnect the connector",
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
-    UNREADABLE_OTHER: "the read failed this sync",
+    UNREADABLE_TRANSIENT: "Jira did not answer this sync (rate limit, server or network error)",
+    UNREADABLE_OTHER: "the read failed",
 }
+
+# Reasons after which issues keep the grants they were stored with, until a sync reads the
+# levels; after any other reason an issue that carries a level is closed to everyone.
+UNREADABLE_KEEPS_STORED_ACCESS = frozenset({UNREADABLE_ROLES, UNREADABLE_TRANSIENT})
 
 
 def unreadable_reason(context: IssueSecurityContext) -> str | None:
@@ -244,6 +250,8 @@ def unreadable_reason(context: IssueSecurityContext) -> str | None:
         return UNREADABLE_PERMISSION
     if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
         return UNREADABLE_ROLES
+    if context.defer_checkpoint:
+        return UNREADABLE_TRANSIENT
     return UNREADABLE_OTHER
 
 

@@ -3,10 +3,12 @@
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_AUTH,
+    UNREADABLE_KEEPS_STORED_ACCESS,
     UNREADABLE_OTHER,
     UNREADABLE_PERMISSION,
     UNREADABLE_ROLES,
     UNREADABLE_SCOPE,
+    UNREADABLE_TRANSIENT,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_attachment_access,
@@ -467,6 +469,13 @@ class TestUnreadableReason:
     def test_members_read_but_held_for_unread_roles(self) -> None:
         held = _present(members={"10": [{"type": "applicationRole", "parameter": "jira-software"}]}, readable=False)
         assert unreadable_reason(held) == UNREADABLE_ROLES
+
+    def test_a_transient_failure_is_told_apart(self) -> None:
+        """It keeps the stored grants, so the warning must not say the issues are hidden."""
+        transient = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=503, defer_checkpoint=True)
+        assert unreadable_reason(transient) == UNREADABLE_TRANSIENT
+        assert UNREADABLE_TRANSIENT in UNREADABLE_KEEPS_STORED_ACCESS and UNREADABLE_ROLES in UNREADABLE_KEEPS_STORED_ACCESS
+        assert UNREADABLE_SCOPE not in UNREADABLE_KEEPS_STORED_ACCESS
 
     def test_any_other_failure(self) -> None:
         assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=503)) == UNREADABLE_OTHER

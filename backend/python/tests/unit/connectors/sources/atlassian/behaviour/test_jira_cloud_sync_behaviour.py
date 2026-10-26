@@ -185,9 +185,8 @@ class TestIssuePagination:
         assert stats["total_synced"] >= 3 and stats["failed_project_keys"] == []
         assert [b.get("nextPageToken") for b in search.bodies if "parent in (" not in b["jql"]] == [None, "T2"]
         assert search.bodies[0]["jql"] == 'project = "ENG" ORDER BY updated ASC, id ASC'
-        # Their sub-tasks are read again: Jira moves a sub-task's level without its `updated`.
-        assert [b["jql"] for b in search.bodies if "parent in (" in b["jql"]] == [
-            'project = "ENG" AND parent in (1, 2, 3) ORDER BY updated ASC, id ASC']
+        # A project's first read reaches every sub-task itself, so none is read a second time.
+        assert not [b for b in search.bodies if "parent in (" in b["jql"]]
         attachment = db.records["attachment_900"]
         assert isinstance(attachment, FileRecord) and attachment.parent_external_record_id == "3"
         assert db.records["1"].weburl == f"{SITE}/browse/ENG-1"

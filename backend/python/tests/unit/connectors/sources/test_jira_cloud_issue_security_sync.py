@@ -4,6 +4,7 @@ Fixtures are shaped like Jira Cloud's answers (project/{key}/issuesecuritylevels
 issuesecurityschemes/level/member, issue.fields.security); the same shapes come from the connector simulator.
 """
 
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -16,6 +17,7 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     UNREADABLE_AUTH,
     UNREADABLE_PERMISSION,
     UNREADABLE_SCOPE,
+    UNREADABLE_TRANSIENT,
     IssueSecurityContext,
     SchemeKnowledge,
     unreadable_reason,
@@ -294,6 +296,18 @@ class TestUnreadableSecurityWarning:
         message = c.notify.await_args.kwargs["message"]
         assert "PST, PWEBSITE" in message and "read:issue-security-level:jira" in message
         assert "QA" in message and "Administer Jira" in message
+
+    @pytest.mark.asyncio
+    async def test_the_notification_says_which_issues_are_hidden_and_which_keep_their_access(self) -> None:
+        """After a transient failure the stored grants are kept; after a missing scope the issues close."""
+        c = _connector()
+        c.notify = AsyncMock()
+        c._unreadable_security = {"PST": UNREADABLE_SCOPE, "QA": UNREADABLE_TRANSIENT}
+        await c._warn_unreadable_security()
+        message = c.notify.await_args.kwargs["message"]
+        hidden, kept = message.split("QA:")
+        assert "PST" in hidden and "are hidden from everyone" in hidden
+        assert "keep the access they had" in kept and "hidden" not in kept
 
     @pytest.mark.asyncio
     async def test_nothing_unreadable_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
@@ -646,37 +660,68 @@ class TestReindexAppliesTheLevel:
 
 
 class TestSubtasksFollowTheirParent:
-    """Jira copies a parent's level onto its sub-tasks without moving their `updated`."""
+    """Jira copies a parent's level onto its sub-tasks without moving their `updated`, so the
+    sub-tasks of every issue read again are read again too."""
 
-    @pytest.mark.asyncio
-    async def test_the_subtasks_of_issues_read_again_are_read_again(self) -> None:
+    async def _run(self, *, stored: dict, batch_issues: list[dict] | None = None, fail_subtasks: bool = False,
+                   is_new_project: bool = False) -> tuple[JiraConnector, list, dict]:
         c = _connector()
-        parent, perms, changed = await _build(c, _issue(None, key="PROJ-1", issue_id="1001"), _present())
-        sub_issue = _issue(None, key="PROJ-2", issue_id="1002")
-        sub_issue["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
-        sub_issue["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
-        sub, sub_perms, sub_changed = await _build(c, sub_issue, _present())
-        assert sub.parent_external_record_id == "1001"
+        records = [await _build(c, issue, _present()) for issue in batch_issues or []]
+        point = {"issue_placement": ISSUE_PLACEMENT,
+                 "security_levels": json.dumps(_present().level_fingerprints()), **stored}
+        if not is_new_project:  # a project is new when its checkpoint has neither timestamp
+            point.update(last_sync_time=5, last_issue_updated=1_700_000_000_000)
         c.issues_sync_point = MagicMock()
-        c.issues_sync_point.read_sync_point = AsyncMock(return_value={
-            "last_sync_time": 5, "last_issue_updated": 1_700_000_000_000, "issue_placement": ISSUE_PLACEMENT,
-            "security_levels": json.dumps(_present().level_fingerprints())})
-        c.issues_sync_point.update_sync_point = AsyncMock()
+        c.issues_sync_point.read_sync_point = AsyncMock(side_effect=lambda _key: dict(point))
+        c.issues_sync_point.update_sync_point = AsyncMock(side_effect=lambda _key, data: point.update(data))
         c._load_issue_security = AsyncMock(return_value=_present())
         c._process_new_records = AsyncMock()
         calls = []
 
         async def fetch(key, pid, users, last_sync, resume, *, is_new_project=False, level_ids=None,
                         leveled_only=False, stored_only=False, parent_ids=None) -> AsyncIterator:
-            calls.append({"stored_only": stored_only, "parent_ids": parent_ids, "is_new_project": is_new_project})
-            if len(calls) == 1:
-                yield [(parent, perms, changed), (sub, sub_perms, sub_changed)], False, 1_700_000_100_000
+            calls.append({"stored_only": stored_only, "parent_ids": parent_ids})
+            if parent_ids and fail_subtasks:
+                raise JiraReadError(503, "unavailable")
+            if len(calls) == 1 and records:
+                yield records, False, 1_700_000_100_000
 
         c._fetch_issues_batched = fetch
-        await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        with contextlib.suppress(JiraReadError):
+            await c._sync_project_issues(MagicMock(short_name="PROJ", external_group_id=PROJECT_ID), [], 1)
+        return c, calls, point
 
+    @staticmethod
+    def _parent_and_subtask() -> list[dict]:
+        sub = _issue(None, key="PROJ-2", issue_id="1002")
+        sub["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        sub["fields"]["parent"] = {"id": "1001", "key": "PROJ-1"}
+        return [_issue(None, key="PROJ-1", issue_id="1001"), sub]
+
+    @pytest.mark.asyncio
+    async def test_the_subtasks_of_issues_read_again_are_read_again(self) -> None:
+        _, calls, point = await self._run(stored={}, batch_issues=self._parent_and_subtask())
         # Only the issue that is not itself a sub-task names its children.
-        assert calls[1:] == [{"stored_only": True, "parent_ids": ["1001"], "is_new_project": True}]
+        assert calls[1:] == [{"stored_only": True, "parent_ids": ["1001"]}]
+        assert json.loads(point["subtask_parents"]) == []
+
+    @pytest.mark.asyncio
+    async def test_a_failed_subtask_read_keeps_the_parents_for_the_next_sync(self) -> None:
+        """The cursor has already passed the parent, so only the checkpoint brings it back."""
+        _, _, point = await self._run(stored={}, batch_issues=self._parent_and_subtask(), fail_subtasks=True)
+        assert json.loads(point["subtask_parents"]) == ["1001"]
+        assert point["last_issue_updated"] == 1_700_000_100_000
+
+    @pytest.mark.asyncio
+    async def test_parents_left_by_a_failed_sync_are_read_again_with_nothing_new(self) -> None:
+        _, calls, point = await self._run(stored={"subtask_parents": json.dumps(["1001"])})
+        assert calls[1:] == [{"stored_only": True, "parent_ids": ["1001"]}]
+        assert json.loads(point["subtask_parents"]) == []
+
+    @pytest.mark.asyncio
+    async def test_a_project_read_from_the_start_reads_no_subtask_twice(self) -> None:
+        _, calls, _ = await self._run(stored={}, batch_issues=self._parent_and_subtask(), is_new_project=True)
+        assert all(call["parent_ids"] is None for call in calls)
 
 
 class TestIssuePlacementPass:

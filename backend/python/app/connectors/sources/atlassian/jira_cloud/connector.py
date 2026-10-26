@@ -78,6 +78,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_KEEPS_STORED_ACCESS,
     UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
@@ -1504,6 +1505,7 @@ class JiraConnector(BaseConnector):
         last_issue_updated: Optional[int] = None,
         security_levels: str | None = None,
         issue_placement: str | None = None,
+        subtask_parents: str | None = None,
     ) -> None:
         """
         Update project-specific sync checkpoint.
@@ -1523,6 +1525,7 @@ class JiraConnector(BaseConnector):
             "last_issue_updated": last_issue_updated if last_issue_updated is not None else existing.get("last_issue_updated"),
             "security_levels": security_levels if security_levels is not None else existing.get("security_levels"),
             "issue_placement": issue_placement if issue_placement is not None else existing.get("issue_placement"),
+            "subtask_parents": subtask_parents if subtask_parents is not None else existing.get("subtask_parents"),
         }
 
         await self.issues_sync_point.update_sync_point(sync_point_key, sync_point_data)
@@ -4117,7 +4120,11 @@ class JiraConnector(BaseConnector):
         # Fetch and process issues in batches
         total_issues_processed = 0
         batch_number = 0
-        reread_parent_ids: list[str] = []
+        # Issues whose sub-tasks are still to be read again, left by a sync that failed first.
+        try:
+            reread_parent_ids: list[str] = list(json.loads((project_sync_data or {}).get("subtask_parents") or "[]"))
+        except (TypeError, ValueError):
+            reread_parent_ids = []
         last_issue_updated_in_batch = None
         stats = {"new_count": 0, "updated_count": 0}
 
@@ -4150,10 +4157,17 @@ class JiraConnector(BaseConnector):
                 continue
 
             self.logger.info(f"📦 Processing batch {batch_number} for project {project_key}: {batch_size} records")
-            reread_parent_ids.extend(
-                item[0].external_record_id for item in issues_batch
-                if isinstance(item[0], TicketRecord) and not item[0].parent_external_record_id
-            )
+            if not is_new_project:  # a full read reaches every sub-task itself
+                parents = [
+                    item[0].external_record_id for item in issues_batch
+                    if isinstance(item[0], TicketRecord) and not item[0].parent_external_record_id
+                ]
+                if parents:
+                    # Saved before the cursor passes these parents: the cursor alone would not
+                    # bring them back if their sub-tasks then failed to be read.
+                    reread_parent_ids = list(dict.fromkeys([*reread_parent_ids, *parents]))
+                    await self._update_project_sync_checkpoint(
+                        project_key, subtask_parents=json.dumps(reread_parent_ids))
 
             # Process this batch
             await self._process_new_records(issues_batch, project_key, stats)
@@ -4177,7 +4191,15 @@ class JiraConnector(BaseConnector):
                 last_issue_updated=last_issue_updated_in_batch
             )
 
-        await self._reread_subtasks(project_key, project_id, jira_users, stats, reread_parent_ids)
+        if reread_parent_ids:
+            failures_before = self._issue_build_failures
+            await self._reread_subtasks(project_key, project_id, jira_users, stats, reread_parent_ids)
+            if self._issue_build_failures == failures_before:
+                await self._update_project_sync_checkpoint(project_key, subtask_parents="[]")
+            else:
+                self.logger.warning(
+                    f"Some sub-tasks of {project_key} could not be read again; re-reading them next sync"
+                )
 
         if reread:
             self.logger.info(
@@ -4266,21 +4288,24 @@ class JiraConnector(BaseConnector):
             by_reason.setdefault(reason, []).append(project_key)
         lines: list[str] = []
         for reason, project_keys in by_reason.items():
-            self.logger.warning(
-                "Issues with a security level in %s project(s) are closed to everyone until their "
-                "levels can be read; %s: %s",
-                len(project_keys), UNREADABLE_REASONS[reason], ", ".join(sorted(project_keys)),
+            effect = (
+                "keep the access they had" if reason in UNREADABLE_KEEPS_STORED_ACCESS
+                else "are hidden from everyone"
             )
-            lines.append(f"{', '.join(sorted(project_keys))}: {UNREADABLE_REASONS[reason]}.")
+            self.logger.warning(
+                "Issues with a security level in %s project(s) %s until their levels can be read; %s: %s",
+                len(project_keys), effect, UNREADABLE_REASONS[reason], ", ".join(sorted(project_keys)),
+            )
+            lines.append(
+                f"{', '.join(sorted(project_keys))}: {UNREADABLE_REASONS[reason]}. Issues with a "
+                f"security level there {effect} until their levels can be read."
+            )
         if lines:
             await self.notify(
                 type=NotificationType.CONNECTOR_WARNING,
                 severity=NotificationSeverity.WARNING,
                 title=self._notification_title("can't read issue security levels"),
-                message=(
-                    "Issues with a security level are hidden from everyone in PipesHub until their "
-                    "levels can be read. " + " ".join(lines)
-                ),
+                message=" ".join(lines),
             )
 
     def _hold_levels_naming_unread_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
