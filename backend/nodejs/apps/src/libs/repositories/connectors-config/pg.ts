@@ -53,9 +53,7 @@ async function read(
   return rows[0] ? dto(rows[0]) : null;
 }
 
-export class PgConnectorsConfigRepository
-  implements ConnectorsConfigRepository
-{
+export class PgConnectorsConfigRepository implements ConnectorsConfigRepository {
   async find(orgId: string, name: string): Promise<ConnectorsConfigDto | null> {
     return inUnit(undefined, { write: false }, (k) => {
       assertOrg(k, orgId);
