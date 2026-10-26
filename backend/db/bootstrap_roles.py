@@ -35,7 +35,7 @@ LARGE_OBJECTS_SQL = """DO $$ DECLARE f regprocedure; BEGIN
            AND p.proname ~ '^(lo_|lo(read|write)$)' LOOP
     EXECUTE format('REVOKE EXECUTE ON FUNCTION %s FROM PUBLIC', f);
   END LOOP; END $$"""
-SHIPPED_VETTED = ("kernel", "platform")      # schemas of the shipped revisions that own SECURITY DEFINER functions
+SHIPPED_VETTED = ("kernel", "platform", "identity")      # schemas of the shipped revisions that own SECURITY DEFINER functions
 _SCHEMA = re.compile(r"^[a-z][a-z0-9_]*$")
 
 

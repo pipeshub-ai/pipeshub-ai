@@ -95,6 +95,23 @@ export class AuthMiddleware {
   }
 
   /**
+   * The token is verified, so its organisation and user are the ones the account reads that follow run as. (They are
+   * bound for the rest of the request once authentication has finished.)
+   */
+  private asVerified<T>(
+    orgId: string | undefined,
+    userId: string | undefined,
+    source: string,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    if (!orgId) return fn();
+    return runWithOrgContext(
+      makeOrgContext({ orgId, userId: userId || null, kind: 'user', source }),
+      fn,
+    );
+  }
+
+  /**
    * Authenticate using a regular token.
    */
   private async authenticateRegularToken(
@@ -200,7 +217,9 @@ export class AuthMiddleware {
 
     let email: string | undefined;
     let role: 'admin' | 'member' | undefined;
-    const user = await getUserRepository().getAuthSnapshot(orgId, userId);
+    const user = await this.asVerified(orgId, userId, 'oauth', () =>
+      getUserRepository().getAuthSnapshot(orgId, userId),
+    );
 
     // Unlike session auth, OAuth/PAT tokens can outlive the user by
     // months or years — a removed employee's token must stop working
@@ -234,7 +253,9 @@ export class AuthMiddleware {
     if (delegatedBy !== undefined) {
       // The rules live in one place because OAuthAuthMiddleware needs the
       // same ones for the OIDC endpoints; see delegation-guard.ts.
-      await assertDelegationStillHolds(delegatedBy, userId, orgId, user);
+      await this.asVerified(orgId, userId, 'oauth', () =>
+        assertDelegationStillHolds(delegatedBy, userId, orgId, user),
+      );
     }
 
     email = user.email;
@@ -254,7 +275,9 @@ export class AuthMiddleware {
 
     if (!accountType && isClientCredentials) {
       try {
-        const org = await getOrgRepository().getAccountType(orgId);
+        const org = await this.asVerified(orgId, userId, 'oauth', () =>
+          getOrgRepository().getAccountType(orgId),
+        );
         if (org) {
           accountType = org.accountType;
         }
@@ -324,9 +347,11 @@ export class AuthMiddleware {
         ) {
           let userActivity: Pick<ActivityDto, 'createdAt'> | null = null;
           try {
-            userActivity = await getActivityRepository().latestPasswordChange(
-              userId,
+            userActivity = await this.asVerified(
               orgId,
+              userId,
+              'scoped_jwt',
+              () => getActivityRepository().latestPasswordChange(userId, orgId),
             );
           } catch (activityError) {
             this.logger.error('Failed to fetch user activity', activityError);

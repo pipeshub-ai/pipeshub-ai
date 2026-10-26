@@ -155,6 +155,113 @@ column conversation.semantic_searches.share_link type=text notnull=false identit
 column conversation.semantic_searches.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column conversation.semantic_searches.user_id type=conversation.oid24 notnull=true identity= generated= default=-
 column conversation.semantic_searches.version type=integer notnull=true identity= generated= default=0
+column identity.org_auth_config.auth_steps type=jsonb notnull=true identity= generated= default=-
+column identity.org_auth_config.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.org_auth_config.domain type=text notnull=false identity= generated= default=-
+column identity.org_auth_config.id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.org_auth_config.is_deleted type=boolean notnull=true identity= generated= default=false
+column identity.org_auth_config.org_id type=text notnull=true identity= generated= default=-
+column identity.org_auth_config.removed_sign_in_methods type=text[] notnull=true identity= generated= default='{}'::text[]
+column identity.org_auth_config.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.org_auth_config.version type=integer notnull=true identity= generated= default=0
+column identity.org_logos.id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.org_logos.logo type=text notnull=false identity= generated= default=-
+column identity.org_logos.logo_url type=text notnull=false identity= generated= default=-
+column identity.org_logos.mime_type type=text notnull=false identity= generated= default=-
+column identity.org_logos.org_id type=text notnull=true identity= generated= default=-
+column identity.org_logos.version type=integer notnull=true identity= generated= default=0
+column identity.orgs.account_type type=text notnull=true identity= generated= default=-
+column identity.orgs.admin_role_guard_at type=timestamp with time zone notnull=false identity= generated= default=-
+column identity.orgs.contact_email type=text notnull=true identity= generated= default=-
+column identity.orgs.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.orgs.deleted_by_user type=text notnull=false identity= generated= default=-
+column identity.orgs.domain type=text notnull=true identity= generated= default=-
+column identity.orgs.is_deleted type=boolean notnull=true identity= generated= default=false
+column identity.orgs.on_boarding_status type=text notnull=false identity= generated= default=-
+column identity.orgs.org_id type=text notnull=true identity= generated= default=-
+column identity.orgs.permanent_address type=jsonb notnull=false identity= generated= default=-
+column identity.orgs.phone_number type=text notnull=false identity= generated= default=-
+column identity.orgs.registered_name type=text notnull=false identity= generated= default=-
+column identity.orgs.short_name type=text notnull=false identity= generated= default=-
+column identity.orgs.signup_channel type=text notnull=false identity= generated= default=-
+column identity.orgs.signup_referrer_domain type=text notnull=false identity= generated= default=-
+column identity.orgs.slug type=text notnull=true identity= generated= default=('org-'::text || nextval('identity.org_slug_seq'::regclass))
+column identity.orgs.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.orgs.version type=integer notnull=true identity= generated= default=0
+column identity.slug_counters.kind type=text notnull=true identity= generated= default=-
+column identity.slug_counters.next_value type=integer notnull=true identity= generated= default=-
+column identity.slug_counters.org_id type=text notnull=true identity= generated= default=-
+column identity.used_reset_links.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.used_reset_links.expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.used_reset_links.link_hash type=text notnull=true identity= generated= default=-
+column identity.used_reset_links.org_id type=text notnull=true identity= generated= default=-
+column identity.used_reset_links.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.used_reset_links.user_id type=text notnull=true identity= generated= default=-
+column identity.user_activities.activity_type type=text notnull=true identity= generated= default=-
+column identity.user_activities.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.user_activities.email type=text notnull=false identity= generated= default=-
+column identity.user_activities.id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_activities.ip_address type=text notnull=true identity= generated= default=-
+column identity.user_activities.is_deleted type=boolean notnull=true identity= generated= default=false
+column identity.user_activities.login_mode type=text notnull=false identity= generated= default=-
+column identity.user_activities.org_id type=text notnull=true identity= generated= default=-
+column identity.user_activities.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.user_activities.user_id type=identity.oid24 notnull=false identity= generated= default=-
+column identity.user_credentials.block_expires_at type=timestamp with time zone notnull=false identity= generated= default=-
+column identity.user_credentials.created_at type=timestamp with time zone notnull=true identity= generated= default=date_trunc('milliseconds'::text, now())
+column identity.user_credentials.force_new_password type=boolean notnull=true identity= generated= default=false
+column identity.user_credentials.ip_address type=text notnull=false identity= generated= default=-
+column identity.user_credentials.is_blocked type=boolean notnull=true identity= generated= default=false
+column identity.user_credentials.org_id type=text notnull=true identity= generated= default=-
+column identity.user_credentials.otp_hash type=text notnull=false identity= generated= default=-
+column identity.user_credentials.otp_valid_until type=bigint notnull=false identity= generated= default=-
+column identity.user_credentials.password_hash type=text notnull=false identity= generated= default=-
+column identity.user_credentials.updated_at type=timestamp with time zone notnull=true identity= generated= default=date_trunc('milliseconds'::text, now())
+column identity.user_credentials.user_id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_credentials.wrong_count type=integer notnull=true identity= generated= default=0
+column identity.user_group_members.group_id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_group_members.org_id type=text notnull=true identity= generated= default=-
+column identity.user_group_members.pos type=integer notnull=true identity= generated= default=-
+column identity.user_group_members.user_id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_groups.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.user_groups.deleted_by type=identity.oid24 notnull=false identity= generated= default=-
+column identity.user_groups.id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_groups.is_deleted type=boolean notnull=true identity= generated= default=false
+column identity.user_groups.name type=text notnull=true identity= generated= default=-
+column identity.user_groups.org_id type=text notnull=true identity= generated= default=-
+column identity.user_groups.slug type=text notnull=true identity= generated= default=-
+column identity.user_groups.type type=text notnull=true identity= generated= default=-
+column identity.user_groups.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.user_groups.version type=integer notnull=true identity= generated= default=0
+column identity.user_pictures.id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_pictures.mime_type type=text notnull=false identity= generated= default=-
+column identity.user_pictures.org_id type=text notnull=true identity= generated= default=-
+column identity.user_pictures.pic type=text notnull=false identity= generated= default=-
+column identity.user_pictures.pic_url type=text notnull=false identity= generated= default=-
+column identity.user_pictures.user_id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.user_pictures.version type=integer notnull=true identity= generated= default=0
+column identity.users.address type=jsonb notnull=false identity= generated= default=-
+column identity.users.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.users.deleted_by type=text notnull=false identity= generated= default=-
+column identity.users.description type=text notnull=false identity= generated= default=-
+column identity.users.designation type=text notnull=false identity= generated= default=-
+column identity.users.email type=text notnull=true identity= generated= default=-
+column identity.users.first_name type=text notnull=false identity= generated= default=-
+column identity.users.full_name type=text notnull=false identity= generated= default=-
+column identity.users.has_logged_in type=boolean notnull=true identity= generated= default=false
+column identity.users.id type=identity.oid24 notnull=true identity= generated= default=-
+column identity.users.is_deleted type=boolean notnull=true identity= generated= default=false
+column identity.users.is_disabled type=boolean notnull=true identity= generated= default=false
+column identity.users.kind type=text notnull=true identity= generated= default='human'::text
+column identity.users.last_name type=text notnull=false identity= generated= default=-
+column identity.users.middle_name type=text notnull=false identity= generated= default=-
+column identity.users.mobile type=text notnull=false identity= generated= default=-
+column identity.users.org_id type=text notnull=true identity= generated= default=-
+column identity.users.restore_op_id type=text notnull=false identity= generated= default=-
+column identity.users.role type=text notnull=true identity= generated= default='member'::text
+column identity.users.slug type=text notnull=true identity= generated= default=-
+column identity.users.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column identity.users.version type=integer notnull=true identity= generated= default=0
 column kernel.alembic_version.version_num type=character varying(32) notnull=true identity= generated= default=-
 column kernel.completed_jobs.finished_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column kernel.completed_jobs.name type=text notnull=true identity= generated= default=-
@@ -401,6 +508,54 @@ constraint conversation.semantic_search_members semantic_search_members_pkey p d
 constraint conversation.semantic_searches org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint conversation.semantic_searches org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint conversation.semantic_searches semantic_searches_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint identity.org_auth_config org_auth_config_auth_steps_check c def=3d1ca2c84e37a363e9764721b059dd6e
+constraint identity.org_auth_config org_auth_config_pkey p def=23790d7e3b152b2426b0cd980c7b2821
+constraint identity.org_auth_config org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.org_auth_config org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.org_logos org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.org_logos org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.org_logos org_logos_logo_check c def=9edc969b98b761bdd0b4b3ab71f35cc9
+constraint identity.org_logos org_logos_pkey p def=23790d7e3b152b2426b0cd980c7b2821
+constraint identity.orgs org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.orgs org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.orgs orgs_account_type_check c def=698f4d4d852e6bdd049f1379017366e2
+constraint identity.orgs orgs_on_boarding_status_check c def=1bd8cb6abd102b0f74809b575fdc2337
+constraint identity.orgs orgs_pkey p def=23790d7e3b152b2426b0cd980c7b2821
+constraint identity.slug_counters org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.slug_counters org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.slug_counters slug_counters_pkey p def=af247f7f6e4bafe320949974aee849e2
+constraint identity.used_reset_links org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.used_reset_links org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.used_reset_links used_reset_links_pkey p def=54e529f13faca60a1ee5530d7807d072
+constraint identity.user_activities org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.user_activities org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.user_activities user_activities_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint identity.user_credentials org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.user_credentials org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.user_credentials user_credentials_org_id_user_id_fkey f def=c6e3737c16c9e59dc06be179625eeb63
+constraint identity.user_credentials user_credentials_pkey p def=7af4d2e7a783879e0f508502b33dbd8a
+constraint identity.user_group_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.user_group_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.user_group_members user_group_members_org_id_group_id_fkey f def=8e161ae79d575f99e697699304829b4d
+constraint identity.user_group_members user_group_members_pkey p def=c910a73a6d43728273a3c52fe6998c8a
+constraint identity.user_groups org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.user_groups org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.user_groups user_groups_org_id_slug_key u def=604326b322daba494e39338ca6eeb282
+constraint identity.user_groups user_groups_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint identity.user_groups user_groups_type_check c def=a729988b6f26fbd056a27e2a15ec8db9
+constraint identity.user_pictures org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.user_pictures org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.user_pictures user_pictures_pic_check c def=a80869385fd1b26be8a88eb8a6111eda
+constraint identity.user_pictures user_pictures_pkey p def=7af4d2e7a783879e0f508502b33dbd8a
+constraint identity.users org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint identity.users org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint identity.users users_email_check c def=a4e0e6241499324c1ed3ffcb91520b98
+constraint identity.users users_kind_check c def=dd855886a277093cbfffdd00d35b9e6b
+constraint identity.users users_org_id_email_key u def=34636ff68b9df4aa453cde31c49e7ebc
+constraint identity.users users_org_id_slug_key u def=604326b322daba494e39338ca6eeb282
+constraint identity.users users_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint identity.users users_role_check c def=530fa89e9e34a78c5b46fd2dce6f13ed
+constraint identity.users users_service_is_not_admin c def=006f4640951535757575c70cc4d37108
 constraint kernel.alembic_version alembic_version_pkc p def=9ff9b7a06b20441038321e312af2b931
 constraint kernel.completed_jobs completed_jobs_pkey p def=c302dc585e3d60f2f29aa138474141ea
 constraint kernel.extension_schemas extension_schemas_pkey p def=ad15a3f885884f639b9ce12e76a1d0b6
@@ -468,6 +623,8 @@ databaseacl pipeshub_owner CREATE grantable=false
 extension btree_gin schema=ext owner=pipeshub_owner
 extension pg_trgm schema=ext owner=<bootstrap-superuser>
 extension plpgsql schema=pg_catalog owner=<bootstrap-superuser>
+func identity.oldest_org() owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=7b7fd3d718eb548a5a207136e23c8290 ext=-
+func identity.org_count(boolean) owner=pipeshub_vetted_identity secdef=true leakproof=false volatility=s language=plpgsql config=search_path=pg_catalog, identity, pg_temp;standard_conforming_strings=on body=892c38309b38ba7ac2fb88a0d1f3aaea ext=-
 func kernel._import_policy(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=e487fa418a1422d72efe0653ec0fc640 ext=-
 func kernel._secure_rel(regclass,regclass,text,boolean,boolean,boolean) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=c9880dc715481f2736fa8b6daa39a99e ext=-
 func kernel.allow_vetted_delete(regclass) owner=pipeshub_owner secdef=false leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, kernel, pg_temp body=b8b4486fa5fdd2cbc37ea306db8250f9 ext=-
@@ -499,6 +656,8 @@ func kernel.waive_sequence(regclass,regclass,name,text,text) owner=pipeshub_owne
 func platform.job_checkpoint(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=cf7661f94594d8ec819c0366b33552c3 ext=-
 func platform.job_finish(bigint,text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=3d09739831c3da55ece8c82d25d49989 ext=-
 func platform.job_start(text) owner=pipeshub_vetted_platform secdef=true leakproof=false volatility=v language=plpgsql config=search_path=pg_catalog, platform, pg_temp;standard_conforming_strings=on body=decc34a34ab24b2019d64f57cbcc241e ext=-
+funcacl identity.oldest_org() pipeshub_node EXECUTE
+funcacl identity.org_count(boolean) pipeshub_node EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_connectors_login EXECUTE
 funcacl kernel.assert_profile_epoch(integer) pipeshub_indexing EXECUTE
@@ -555,6 +714,28 @@ index conversation.semantic_search_members_by_user on conversation.semantic_sear
 index conversation.semantic_search_members_pkey on conversation.semantic_search_members unique=true exclusion=false valid=true def=47fc089f0ad23e20b90919c90e7671f4
 index conversation.semantic_searches_by_user on conversation.semantic_searches unique=false exclusion=false valid=true def=9a480d28e67f5fb38dde0e7f96244463
 index conversation.semantic_searches_pkey on conversation.semantic_searches unique=true exclusion=false valid=true def=5afcff0ea8f2d669186c57738eb82fd3
+index identity.org_auth_config_pkey on identity.org_auth_config unique=true exclusion=false valid=true def=e69b8d3e8cc5a807296a9f0ad4388780
+index identity.org_logos_pkey on identity.org_logos unique=true exclusion=false valid=true def=12e487b6867b2ce725f022f849f4ae7f
+index identity.orgs_pkey on identity.orgs unique=true exclusion=false valid=true def=c5b9d956eb272cd5dc1422305510520a
+index identity.slug_counters_pkey on identity.slug_counters unique=true exclusion=false valid=true def=cde15c0dd71b69e615ca7f2f2422e847
+index identity.used_reset_links_expiry on identity.used_reset_links unique=false exclusion=false valid=true def=3a8aa36ad32c804d612392ea94e607c3
+index identity.used_reset_links_pkey on identity.used_reset_links unique=true exclusion=false valid=true def=07974ad46820d7504c4b25595ee02ccd
+index identity.user_activities_by_user on identity.user_activities unique=false exclusion=false valid=true def=32e411dcd5212b6c486a8220423443d8
+index identity.user_activities_pkey on identity.user_activities unique=true exclusion=false valid=true def=a4e3da7e49a6ddbd3c0f6d6ce1746761
+index identity.user_credentials_blocked on identity.user_credentials unique=false exclusion=false valid=true def=36bee922d485263a8336bcd0068b64a2
+index identity.user_credentials_pkey on identity.user_credentials unique=true exclusion=false valid=true def=a49d8d64dc71398ca4bd161eeac67fa7
+index identity.user_group_members_by_user on identity.user_group_members unique=false exclusion=false valid=true def=790cdb2efa37679f7fac4c051a692508
+index identity.user_group_members_pkey on identity.user_group_members unique=true exclusion=false valid=true def=d0e68ab034be14622e3ca4516ce49455
+index identity.user_groups_by_type on identity.user_groups unique=false exclusion=false valid=true def=686627a18567e0bfbdbe1a82165eff03
+index identity.user_groups_live_name on identity.user_groups unique=true exclusion=false valid=true def=025165577da02fe530959419e7c9da82
+index identity.user_groups_org_id_slug_key on identity.user_groups unique=true exclusion=false valid=true def=d7c9eba910b45cac32fb21369d18d361
+index identity.user_groups_pkey on identity.user_groups unique=true exclusion=false valid=true def=7353eefbbefead78855a3ed9b7b454c5
+index identity.user_pictures_pkey on identity.user_pictures unique=true exclusion=false valid=true def=c67675abf9a85b6d594e2e7c55d27b97
+index identity.users_by_created on identity.users unique=false exclusion=false valid=true def=fe2019a308ac66fe9ef4a4991c20c244
+index identity.users_by_kind on identity.users unique=false exclusion=false valid=true def=4a7978f0f559bc1bbc96bcac8bda1251
+index identity.users_org_id_email_key on identity.users unique=true exclusion=false valid=true def=c5018e3e96b3e1d8f69c9dcaec17494a
+index identity.users_org_id_slug_key on identity.users unique=true exclusion=false valid=true def=56898807ee2b6fc8735919970641f96f
+index identity.users_pkey on identity.users unique=true exclusion=false valid=true def=de515c6449b4090672c06a0b8d8ce9fb
 index kernel.alembic_version_pkc on kernel.alembic_version unique=true exclusion=false valid=true def=c141328fa649632bd48c615b4bb672db
 index kernel.completed_jobs_pkey on kernel.completed_jobs unique=true exclusion=false valid=true def=15027330d42fe41c06bc07732df27c9c
 index kernel.extension_schemas_pkey on kernel.extension_schemas unique=true exclusion=false valid=true def=542ab4475729ca447b06e65f4bccc85c
@@ -620,6 +801,7 @@ member pipeshub_kv_login -> pipeshub_kv inherit=false set=true admin=false
 member pipeshub_migrate -> pipeshub_owner inherit=true set=true admin=false
 member pipeshub_node -> pipeshub_app inherit=true set=false admin=false
 member pipeshub_node_login -> pipeshub_node inherit=false set=true admin=false
+member pipeshub_owner -> pipeshub_vetted_identity inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_kernel inherit=false set=false admin=true
 member pipeshub_owner -> pipeshub_vetted_platform inherit=false set=false admin=true
 member pipeshub_query -> pipeshub_app inherit=true set=false admin=false
@@ -668,6 +850,51 @@ policy conversation.semantic_searches backup_read cmd=r permissive=true roles=pi
 policy conversation.semantic_searches jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy conversation.semantic_searches org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy conversation.semantic_searches restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.org_auth_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.org_auth_config jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.org_auth_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.org_auth_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.org_logos backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.org_logos jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.org_logos org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.org_logos restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.orgs backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.orgs jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.orgs org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.orgs restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.orgs vetted_read cmd=r permissive=true roles=pipeshub_vetted_identity using=true check=-
+policy identity.slug_counters backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.slug_counters jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.slug_counters org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.slug_counters restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.used_reset_links backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.used_reset_links jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.used_reset_links org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.used_reset_links restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.user_activities backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_activities jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.user_activities org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.user_activities restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.user_credentials backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_credentials jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.user_credentials org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.user_credentials restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.user_group_members backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_group_members jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.user_group_members org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.user_group_members restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.user_groups backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_groups jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.user_groups org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.user_groups restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.user_pictures backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.user_pictures jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.user_pictures org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.user_pictures restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy identity.users backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy identity.users jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy identity.users org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy identity.users restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.connectors_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.connectors_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.connectors_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
@@ -695,6 +922,18 @@ rel conversation.chat_sessions kind=r owner=pipeshub_owner rls=true force=true o
 rel conversation.citations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel conversation.semantic_search_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel conversation.semantic_searches kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.org_auth_config kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.org_logos kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.org_slug_seq kind=S owner=pipeshub_owner rls=false force=false options=- ext=-
+rel identity.orgs kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.slug_counters kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.used_reset_links kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.user_activities kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.user_credentials kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.user_group_members kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.user_groups kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.user_pictures kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel identity.users kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel kernel.alembic_version kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.completed_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.extension_schemas kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -811,6 +1050,118 @@ relacl conversation.semantic_searches pipeshub_node INSERT grantable=false
 relacl conversation.semantic_searches pipeshub_node SELECT grantable=false
 relacl conversation.semantic_searches pipeshub_node UPDATE grantable=false
 relacl conversation.semantic_searches pipeshub_restore INSERT grantable=false
+relacl identity.org_auth_config pipeshub_backup SELECT grantable=false
+relacl identity.org_auth_config pipeshub_jobs DELETE grantable=false
+relacl identity.org_auth_config pipeshub_jobs INSERT grantable=false
+relacl identity.org_auth_config pipeshub_jobs SELECT grantable=false
+relacl identity.org_auth_config pipeshub_jobs UPDATE grantable=false
+relacl identity.org_auth_config pipeshub_node DELETE grantable=false
+relacl identity.org_auth_config pipeshub_node INSERT grantable=false
+relacl identity.org_auth_config pipeshub_node SELECT grantable=false
+relacl identity.org_auth_config pipeshub_node UPDATE grantable=false
+relacl identity.org_auth_config pipeshub_restore INSERT grantable=false
+relacl identity.org_logos pipeshub_backup SELECT grantable=false
+relacl identity.org_logos pipeshub_jobs DELETE grantable=false
+relacl identity.org_logos pipeshub_jobs INSERT grantable=false
+relacl identity.org_logos pipeshub_jobs SELECT grantable=false
+relacl identity.org_logos pipeshub_jobs UPDATE grantable=false
+relacl identity.org_logos pipeshub_node DELETE grantable=false
+relacl identity.org_logos pipeshub_node INSERT grantable=false
+relacl identity.org_logos pipeshub_node SELECT grantable=false
+relacl identity.org_logos pipeshub_node UPDATE grantable=false
+relacl identity.org_logos pipeshub_restore INSERT grantable=false
+relacl identity.org_slug_seq pipeshub_node USAGE grantable=false
+relacl identity.orgs pipeshub_backup SELECT grantable=false
+relacl identity.orgs pipeshub_jobs DELETE grantable=false
+relacl identity.orgs pipeshub_jobs INSERT grantable=false
+relacl identity.orgs pipeshub_jobs SELECT grantable=false
+relacl identity.orgs pipeshub_jobs UPDATE grantable=false
+relacl identity.orgs pipeshub_node DELETE grantable=false
+relacl identity.orgs pipeshub_node INSERT grantable=false
+relacl identity.orgs pipeshub_node SELECT grantable=false
+relacl identity.orgs pipeshub_node UPDATE grantable=false
+relacl identity.orgs pipeshub_restore INSERT grantable=false
+relacl identity.orgs pipeshub_vetted_identity SELECT grantable=false
+relacl identity.slug_counters pipeshub_backup SELECT grantable=false
+relacl identity.slug_counters pipeshub_jobs DELETE grantable=false
+relacl identity.slug_counters pipeshub_jobs INSERT grantable=false
+relacl identity.slug_counters pipeshub_jobs SELECT grantable=false
+relacl identity.slug_counters pipeshub_jobs UPDATE grantable=false
+relacl identity.slug_counters pipeshub_node DELETE grantable=false
+relacl identity.slug_counters pipeshub_node INSERT grantable=false
+relacl identity.slug_counters pipeshub_node SELECT grantable=false
+relacl identity.slug_counters pipeshub_node UPDATE grantable=false
+relacl identity.slug_counters pipeshub_restore INSERT grantable=false
+relacl identity.used_reset_links pipeshub_backup SELECT grantable=false
+relacl identity.used_reset_links pipeshub_jobs DELETE grantable=false
+relacl identity.used_reset_links pipeshub_jobs INSERT grantable=false
+relacl identity.used_reset_links pipeshub_jobs SELECT grantable=false
+relacl identity.used_reset_links pipeshub_jobs UPDATE grantable=false
+relacl identity.used_reset_links pipeshub_node DELETE grantable=false
+relacl identity.used_reset_links pipeshub_node INSERT grantable=false
+relacl identity.used_reset_links pipeshub_node SELECT grantable=false
+relacl identity.used_reset_links pipeshub_node UPDATE grantable=false
+relacl identity.used_reset_links pipeshub_restore INSERT grantable=false
+relacl identity.user_activities pipeshub_backup SELECT grantable=false
+relacl identity.user_activities pipeshub_jobs DELETE grantable=false
+relacl identity.user_activities pipeshub_jobs INSERT grantable=false
+relacl identity.user_activities pipeshub_jobs SELECT grantable=false
+relacl identity.user_activities pipeshub_jobs UPDATE grantable=false
+relacl identity.user_activities pipeshub_node DELETE grantable=false
+relacl identity.user_activities pipeshub_node INSERT grantable=false
+relacl identity.user_activities pipeshub_node SELECT grantable=false
+relacl identity.user_activities pipeshub_node UPDATE grantable=false
+relacl identity.user_activities pipeshub_restore INSERT grantable=false
+relacl identity.user_credentials pipeshub_backup SELECT grantable=false
+relacl identity.user_credentials pipeshub_jobs DELETE grantable=false
+relacl identity.user_credentials pipeshub_jobs INSERT grantable=false
+relacl identity.user_credentials pipeshub_jobs SELECT grantable=false
+relacl identity.user_credentials pipeshub_jobs UPDATE grantable=false
+relacl identity.user_credentials pipeshub_node DELETE grantable=false
+relacl identity.user_credentials pipeshub_node INSERT grantable=false
+relacl identity.user_credentials pipeshub_node SELECT grantable=false
+relacl identity.user_credentials pipeshub_node UPDATE grantable=false
+relacl identity.user_credentials pipeshub_restore INSERT grantable=false
+relacl identity.user_group_members pipeshub_backup SELECT grantable=false
+relacl identity.user_group_members pipeshub_jobs DELETE grantable=false
+relacl identity.user_group_members pipeshub_jobs INSERT grantable=false
+relacl identity.user_group_members pipeshub_jobs SELECT grantable=false
+relacl identity.user_group_members pipeshub_jobs UPDATE grantable=false
+relacl identity.user_group_members pipeshub_node DELETE grantable=false
+relacl identity.user_group_members pipeshub_node INSERT grantable=false
+relacl identity.user_group_members pipeshub_node SELECT grantable=false
+relacl identity.user_group_members pipeshub_node UPDATE grantable=false
+relacl identity.user_group_members pipeshub_restore INSERT grantable=false
+relacl identity.user_groups pipeshub_backup SELECT grantable=false
+relacl identity.user_groups pipeshub_jobs DELETE grantable=false
+relacl identity.user_groups pipeshub_jobs INSERT grantable=false
+relacl identity.user_groups pipeshub_jobs SELECT grantable=false
+relacl identity.user_groups pipeshub_jobs UPDATE grantable=false
+relacl identity.user_groups pipeshub_node DELETE grantable=false
+relacl identity.user_groups pipeshub_node INSERT grantable=false
+relacl identity.user_groups pipeshub_node SELECT grantable=false
+relacl identity.user_groups pipeshub_node UPDATE grantable=false
+relacl identity.user_groups pipeshub_restore INSERT grantable=false
+relacl identity.user_pictures pipeshub_backup SELECT grantable=false
+relacl identity.user_pictures pipeshub_jobs DELETE grantable=false
+relacl identity.user_pictures pipeshub_jobs INSERT grantable=false
+relacl identity.user_pictures pipeshub_jobs SELECT grantable=false
+relacl identity.user_pictures pipeshub_jobs UPDATE grantable=false
+relacl identity.user_pictures pipeshub_node DELETE grantable=false
+relacl identity.user_pictures pipeshub_node INSERT grantable=false
+relacl identity.user_pictures pipeshub_node SELECT grantable=false
+relacl identity.user_pictures pipeshub_node UPDATE grantable=false
+relacl identity.user_pictures pipeshub_restore INSERT grantable=false
+relacl identity.users pipeshub_backup SELECT grantable=false
+relacl identity.users pipeshub_jobs DELETE grantable=false
+relacl identity.users pipeshub_jobs INSERT grantable=false
+relacl identity.users pipeshub_jobs SELECT grantable=false
+relacl identity.users pipeshub_jobs UPDATE grantable=false
+relacl identity.users pipeshub_node DELETE grantable=false
+relacl identity.users pipeshub_node INSERT grantable=false
+relacl identity.users pipeshub_node SELECT grantable=false
+relacl identity.users pipeshub_node UPDATE grantable=false
+relacl identity.users pipeshub_restore INSERT grantable=false
 relacl kernel.restore_window pipeshub_restore SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_connectors SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_indexing SELECT grantable=false
@@ -951,11 +1302,13 @@ role pipeshub_query login=false super=false inherit=true createrole=false create
 role pipeshub_query_login login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_restore login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_ro login=true super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
+role pipeshub_vetted_identity login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_kernel login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 role pipeshub_vetted_platform login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-
 schema content owner=pipeshub_owner
 schema conversation owner=pipeshub_owner
 schema ext owner=pipeshub_owner
+schema identity owner=pipeshub_owner
 schema kernel owner=pipeshub_owner
 schema platform owner=pipeshub_owner
 schema public owner=pg_database_owner
@@ -967,6 +1320,11 @@ schemaacl conversation pipeshub_jobs USAGE grantable=false
 schemaacl conversation pipeshub_node USAGE grantable=false
 schemaacl conversation pipeshub_restore USAGE grantable=false
 schemaacl ext pipeshub_app USAGE grantable=false
+schemaacl identity pipeshub_backup USAGE grantable=false
+schemaacl identity pipeshub_jobs USAGE grantable=false
+schemaacl identity pipeshub_node USAGE grantable=false
+schemaacl identity pipeshub_restore USAGE grantable=false
+schemaacl identity pipeshub_vetted_identity USAGE grantable=false
 schemaacl kernel pipeshub_app USAGE grantable=false
 schemaacl kernel pipeshub_connectors_login USAGE grantable=false
 schemaacl kernel pipeshub_indexing_login USAGE grantable=false
@@ -1057,4 +1415,5 @@ tablespace pg_default owner=<bootstrap-superuser>
 tablespace pg_global owner=<bootstrap-superuser>
 type content.oid24 kind=d owner=pipeshub_owner
 type conversation.oid24 kind=d owner=pipeshub_owner
+type identity.oid24 kind=d owner=pipeshub_owner
 type platform.oid24 kind=d owner=pipeshub_owner
