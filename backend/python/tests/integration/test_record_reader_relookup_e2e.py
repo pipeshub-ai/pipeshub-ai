@@ -391,10 +391,12 @@ async def test_bypass_relookup_to_another_orgs_document_is_not_served(world: Wor
     )
     await world.map(vrid, foreign, size)
     await world.blob.purge_document(ORG_ID, old[0])
-    served = None
-    with contextlib.suppress(Exception):
+    # The first read finds the purged document and the re-lookup names the other org's one; the
+    # org-scoped gateway answers 404 for it, which the reader raises. Anything else (a transport
+    # error, a failed auth or graph lookup) is not this test's outcome and must fail it.
+    with pytest.raises(StorageDocumentNotFoundError):
         served = await world.blob.get_record_from_storage(vrid, ORG_ID, lookup_result=held)
-    assert not served or served.get("record_name") != "other-org-secret", "over-admit across orgs"
+        assert served.get("record_name") != "other-org-secret", "over-admit across orgs"
 
 
 # ---------------------------------------------------------------- concurrency
