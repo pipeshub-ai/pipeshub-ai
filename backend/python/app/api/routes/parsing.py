@@ -31,6 +31,8 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
+from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
 from app.services.parsing.interface import (
@@ -237,7 +239,25 @@ async def parse_file(
                 fallback_service="parsing",
                 config_service=_config_service(request),
             ):
+                raise_if_password_protected_office(
+                    content, extension=extension, mime_type=mime_type
+                )
                 result = await parser.parse(content, record_name, config)
+        except PasswordProtectedError as exc:
+            logger.warning(
+                "Parse refused: record='%s' provider=%s code=%s",
+                record_name, provider_enum.value, ParseErrorCode.PASSWORD_REQUIRED.value,
+            )
+            # A fact about the file, like every ParseError: 422, never retried.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": ParseError(
+                        ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
+                    ).to_dict(),
+                },
+            )
         except ParseError as exc:
             parse_ms = (time.monotonic() - parse_start) * 1000
             logger.warning(

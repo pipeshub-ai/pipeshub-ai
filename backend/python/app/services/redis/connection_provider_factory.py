@@ -26,6 +26,22 @@ logger = create_logger("redis_provider_factory")
 _ENTRY_POINT_GROUP = "pipeshub.redis_providers"
 
 
+def default_redis_mode() -> str:
+    """``REDIS_MODE``, or ``postgres`` when the key-value store and the broker are both PostgreSQL (nothing then needs a Redis server)."""
+    explicit = os.getenv("REDIS_MODE")
+    if explicit:
+        return explicit
+    if os.getenv("KV_STORE_TYPE", "").lower() == "postgres" and os.getenv("MESSAGE_BROKER", "").lower() == "postgres":
+        return "postgres"
+    return "standalone"
+
+
+def uses_pg_state() -> bool:
+    """True when leader keys, capacity leases and counters live in PostgreSQL (``REDIS_MODE=postgres``): the mode for several
+    PipesHub processes without a Redis server. ``inprocess`` keeps them in this process's memory, which is only right for one."""
+    return default_redis_mode() == "postgres"
+
+
 class RedisConnectionProviderFactory:
     _registry: dict[str, Callable[[RedisConnectionConfig], IRedisConnectionProvider]] = {}
     _discovered_modules: set[str] = set()
@@ -47,7 +63,7 @@ class RedisConnectionProviderFactory:
         cls, config: RedisConnectionConfig | None = None, mode: str | None = None
     ) -> IRedisConnectionProvider:
         config = config or RedisConnectionConfig.from_env()
-        resolved_mode = mode or os.getenv("REDIS_MODE", "standalone")
+        resolved_mode = mode or default_redis_mode()
 
         provider_factory = cls._registry.get(resolved_mode)
         if provider_factory is None:
@@ -165,7 +181,7 @@ def get_redis_provider(
 ) -> IRedisConnectionProvider:
     """Return the shared provider for this config, creating it on first use."""
     config = config or RedisConnectionConfig.from_env()
-    resolved_mode = mode or os.getenv("REDIS_MODE", "standalone")
+    resolved_mode = mode or default_redis_mode()
     fingerprint = _fingerprint(config, resolved_mode)
 
     with _provider_lock:
@@ -206,8 +222,26 @@ def reset_redis_provider_registry() -> None:
 
 
 # Self-registration: importing this factory module is enough for both OSS modes.
-from app.services.redis.cluster_provider import ClusterRedisProvider  # noqa: E402
-from app.services.redis.standalone_provider import StandaloneRedisProvider  # noqa: E402
+# The two Redis-backed providers import the redis client, which a PostgreSQL-only install does not carry: load them on first use.
+def _standalone(config: RedisConnectionConfig) -> IRedisConnectionProvider:
+    from app.services.redis.standalone_provider import StandaloneRedisProvider
 
-RedisConnectionProviderFactory.register("standalone", StandaloneRedisProvider)
-RedisConnectionProviderFactory.register("cluster", ClusterRedisProvider)
+    return StandaloneRedisProvider(config)
+
+
+def _cluster(config: RedisConnectionConfig) -> IRedisConnectionProvider:
+    from app.services.redis.cluster_provider import ClusterRedisProvider
+
+    return ClusterRedisProvider(config)
+
+
+RedisConnectionProviderFactory.register("standalone", _standalone)
+RedisConnectionProviderFactory.register("cluster", _cluster)
+
+from app.services.redis.inprocess_provider import (  # noqa: E402
+    InProcessRedisProvider,
+    PgStateRedisProvider,
+)
+
+RedisConnectionProviderFactory.register("inprocess", InProcessRedisProvider)
+RedisConnectionProviderFactory.register("postgres", PgStateRedisProvider)

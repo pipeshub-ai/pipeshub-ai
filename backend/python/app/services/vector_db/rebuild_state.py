@@ -86,7 +86,20 @@ class RebuildJobLock:
         self.token = token or str(uuid4())
         self.key = key
 
+    def _pg(self):  # noqa: ANN202
+        """The database lock in ``REDIS_MODE=postgres`` (``None`` otherwise): the same single-flight job lock, visible to every process."""
+        from app.services.redis.connection_provider_factory import uses_pg_state
+
+        if not uses_pg_state():
+            return None
+        from app.services.pg_state import PgState
+
+        return PgState()
+
     async def try_acquire(self) -> bool:
+        pg = self._pg()
+        if pg is not None:
+            return await pg.lock_acquire(self.key, self.token, self._ttl_seconds)
         return bool(
             await self._redis.set(
                 self.key,
@@ -102,6 +115,9 @@ class RebuildJobLock:
         Compare-and-expire in one Lua step. SET XX GET would overwrite a new
         owner's token before returning the previous holder.
         """
+        pg = self._pg()
+        if pg is not None:
+            return await pg.lock_renew(self.key, self.token, self._ttl_seconds)
         return bool(
             await self._redis.eval(
                 _REFRESH_IF_OWNER_LUA,
@@ -113,10 +129,17 @@ class RebuildJobLock:
         )
 
     async def release(self) -> None:
+        pg = self._pg()
+        if pg is not None:
+            await pg.lock_release(self.key, self.token)
+            return
         await self._redis.eval(_RELEASE_IF_OWNER_LUA, 1, self.key, self.token)
 
 
 async def get_cleanup_phase(redis: Redis) -> str | None:
+    pg = RebuildJobLock(redis)._pg()
+    if pg is not None:
+        return await pg.get_flag(CLEANUP_PHASE_KEY)
     value = await redis.get(CLEANUP_PHASE_KEY)
     if value is None:
         return None
@@ -124,6 +147,10 @@ async def get_cleanup_phase(redis: Redis) -> str | None:
 
 
 async def set_cleanup_phase(redis: Redis, phase: str) -> None:
+    pg = RebuildJobLock(redis)._pg()
+    if pg is not None:
+        await pg.set_flag(CLEANUP_PHASE_KEY, phase, CLEANUP_PHASE_TTL_SECONDS)
+        return
     await redis.set(CLEANUP_PHASE_KEY, phase, ex=CLEANUP_PHASE_TTL_SECONDS)
 
 

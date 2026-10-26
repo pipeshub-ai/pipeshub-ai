@@ -15,6 +15,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
+from app.core.envelope import ctx_of
+from app.core.org_context import bind_optional
+
 if TYPE_CHECKING:
     from logging import Logger
 
@@ -65,7 +68,9 @@ async def notify_abandoned(
     if sink is None:
         return
     try:
-        await sink.on_message_abandoned(message, reason=reason, attempts=attempts)
+        # The handler that failed ran under the message's org, which is gone by now: the sink reads the record, so it needs it again.
+        with bind_optional(ctx_of(message) if message is not None else None):
+            await sink.on_message_abandoned(message, reason=reason, attempts=attempts)
     except Exception as e:
         logger.error(
             "Failed to record abandonment of a message (%s): %s",

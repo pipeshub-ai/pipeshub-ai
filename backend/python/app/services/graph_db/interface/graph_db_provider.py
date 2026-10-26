@@ -239,6 +239,8 @@ def promoted_duplicate_extraction_status(
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
+    if new_indexing_status == ProgressStatus.PASSWORD_PROTECTED.value:
+        return ProgressStatus.SKIPPED.value
     return ProgressStatus.FAILED.value
 
 

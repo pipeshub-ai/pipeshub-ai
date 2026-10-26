@@ -14,6 +14,8 @@ import {
   MAX_SIGNED_URL_TTL_SECONDS,
   CONNECTOR_VRID_PAGE_DEFAULT,
   ARTIFACT_URL_TTL_SECONDS,
+  ARTIFACT_RETIRING_STALE_MS,
+  ARTIFACT_RETIRING_HEARTBEAT_MS,
 } from '../constants/constants';
 import {
   AzureBlobStorageConfig,
@@ -781,6 +783,7 @@ export class StorageController {
     documents: DocumentModel[],
     orgId: mongoose.Types.ObjectId,
     req: AuthenticatedServiceRequest,
+    deleteFence: Record<string, unknown> = {},
   ): Promise<void> {
     if (documents.length === 0) {
       return;
@@ -820,7 +823,11 @@ export class StorageController {
           );
         }
       }
-      await DocumentModel.deleteOne({ _id: document._id, orgId });
+      await DocumentModel.deleteOne({
+        ...deleteFence,
+        _id: document._id,
+        orgId,
+      });
     }
   }
 
@@ -1025,7 +1032,18 @@ export class StorageController {
     stream.pipe(res);
   }
 
-  /** Removes a revision's whole tree, then its document. Safe to repeat. */
+  /**
+   * Removes a revision's whole tree, then its document. Safe to repeat.
+   *
+   * The document is claimed (`artifactSet.retiringAt`) before any file goes,
+   * so a presign of the same revision from then on is refused rather than
+   * handed URLs into a tree being deleted. With `ifUnchangedSince` the claim
+   * also requires the write stamp to be no newer than it, so a revision
+   * presigned again after the caller listed it is kept (409, reason
+   * `changed`). A delete that dies after its claim leaves the revision
+   * unwritable until the stale bound passes; then a later delete may claim it
+   * again, or a presign may take it back.
+   */
   async purgeArtifactSet(
     req: AuthenticatedServiceRequest,
     res: Response,
@@ -1034,23 +1052,102 @@ export class StorageController {
     try {
       const orgIdText = extractOrgId(req);
       const orgId = toObjectId(orgIdText, 'organization');
+      const { ifUnchangedSince } = req.query as { ifUnchangedSince?: number };
       // Under the lock, as every purge: a local move running now must not
       // interleave with the tree delete.
-      const purged = await this.withLocalStorageLock(
+      const outcome = await this.withLocalStorageLock(
         req,
         orgIdText,
-        async () => {
-          const document = await DocumentModel.findOne({
+        async (): Promise<number | 'changed' | 'lost'> => {
+          const filter = {
             _id: { $eq: String(req.params.documentId) },
             orgId,
             artifactSet: { $exists: true },
-          });
-          const documents = document ? [document] : [];
-          await this.purgeDocuments(documents, orgId, req);
-          return documents.length;
+          };
+          const now = Date.now();
+          const guarded =
+            ifUnchangedSince === undefined
+              ? filter
+              : {
+                  ...filter,
+                  updatedAt: { $lte: ifUnchangedSince },
+                  $or: [
+                    { 'artifactSet.retiringAt': { $exists: false } },
+                    {
+                      'artifactSet.retiringAt': {
+                        $lt: now - ARTIFACT_RETIRING_STALE_MS,
+                      },
+                    },
+                  ],
+                };
+          // timestamps off: the claim is not a write of the revision, and a
+          // delete retried after a crash must still match the listed stamp.
+          const document = await DocumentModel.findOneAndUpdate(
+            guarded,
+            { $set: { 'artifactSet.retiringAt': now } },
+            { new: true, timestamps: false },
+          );
+          if (!document) {
+            const present =
+              ifUnchangedSince !== undefined &&
+              (await DocumentModel.findOne(filter)) !== null;
+            return present ? 'changed' : 0;
+          }
+          // The claim is renewed while the files go, so "stale" means a delete
+          // that died and not one that is slow. Every value this delete has
+          // written is its own, and the final document delete is fenced on
+          // them: a writer that took the claim back (it unsets the field)
+          // keeps its document.
+          const claims = [now];
+          let renewing: Promise<void> = Promise.resolve();
+          const heartbeat = setInterval(() => {
+            const next = Date.now();
+            const known = [...claims];
+            claims.push(next);
+            renewing = renewing.then(async () => {
+              try {
+                await DocumentModel.updateOne(
+                  {
+                    _id: document._id,
+                    orgId,
+                    'artifactSet.retiringAt': { $in: known },
+                  },
+                  { $set: { 'artifactSet.retiringAt': next } },
+                  { timestamps: false },
+                );
+              } catch (error) {
+                this.logger.warn('Could not renew an artifact delete claim', {
+                  documentId: String(document._id),
+                  error: error instanceof Error ? error.message : String(error),
+                });
+              }
+            });
+          }, ARTIFACT_RETIRING_HEARTBEAT_MS);
+          try {
+            await this.purgeDocuments([document], orgId, req, {
+              'artifactSet.retiringAt': { $in: claims },
+            });
+          } finally {
+            clearInterval(heartbeat);
+            await renewing;
+          }
+          if ((await DocumentModel.findOne(filter)) === null) {
+            return 1;
+          }
+          // The claim was taken back while the files were going: they may be
+          // gone although the document stays. Not "nothing was removed".
+          return 'lost';
         },
       );
-      res.status(HTTP_STATUS.OK).json({ purged });
+      if (outcome === 'lost') {
+        res.status(HTTP_STATUS.CONFLICT).json({ purged: 0, reason: 'lost' });
+        return;
+      }
+      if (outcome === 'changed') {
+        res.status(HTTP_STATUS.CONFLICT).json({ purged: 0, reason: 'changed' });
+        return;
+      }
+      res.status(HTTP_STATUS.OK).json({ purged: outcome });
     } catch (error) {
       next(error);
     }
@@ -1077,7 +1174,7 @@ export class StorageController {
         .lean<
           {
             _id: unknown;
-            artifactSet: { rev: string };
+            artifactSet: { rev: string; retiringAt?: number };
             storageVendor: string;
             createdAt?: number;
             updatedAt?: number;
@@ -1091,6 +1188,12 @@ export class StorageController {
           storageVendor: d.storageVendor,
           createdAt: d.createdAt,
           updatedAt: d.updatedAt,
+          // Tells a client this server fences `ifUnchangedSince`; one that
+          // does not send it must not delete with a stamp.
+          deleteFence: true,
+          ...(d.artifactSet.retiringAt !== undefined && {
+            retiringAt: d.artifactSet.retiringAt,
+          }),
         })),
       });
     } catch (error) {
@@ -1167,7 +1270,7 @@ export class StorageController {
       'artifactSet.virtualRecordId': { $eq: virtualRecordId },
       'artifactSet.rev': { $eq: rev },
     };
-    const existing = await DocumentModel.findOne(filter);
+    const existing = await this.touchArtifactSet(filter);
     if (existing) {
       return existing;
     }
@@ -1191,12 +1294,56 @@ export class StorageController {
       if ((error as { code?: unknown } | null)?.code !== MONGO_DUPLICATE_KEY) {
         throw error;
       }
-      const winner = await DocumentModel.findOne(filter);
+      const winner = await this.touchArtifactSet(filter);
       if (!winner) {
         throw error;
       }
       return winner;
     }
+  }
+
+  /**
+   * Moves the revision's write stamp (`updatedAt`) and returns it, or null when
+   * there is no such revision. A rev is a hash of the source bytes, so a record
+   * whose source went back to earlier bytes writes an old revision again; the
+   * stamp is how a delete that listed the revision earlier sees that write.
+   * Refuses a revision a delete has claimed: its files may already be going.
+   * A claim past the stale bound is from a delete that died, and nothing else
+   * would ever clear it once a record is back on the revision (the sweep keeps
+   * held revisions), so it is dropped. The writer uploads every file again,
+   * manifest last, which repairs a tree the dead delete left half removed.
+   */
+  private async touchArtifactSet(
+    filter: Record<string, unknown>,
+  ): Promise<DocumentModel | null> {
+    const now = Date.now();
+    const touched = await DocumentModel.findOneAndUpdate(
+      {
+        ...filter,
+        $or: [
+          { 'artifactSet.retiringAt': { $exists: false } },
+          {
+            'artifactSet.retiringAt': {
+              $lt: now - ARTIFACT_RETIRING_STALE_MS,
+            },
+          },
+        ],
+      },
+      {
+        $set: { updatedAt: now },
+        $unset: { 'artifactSet.retiringAt': 1 },
+      },
+      { new: true, timestamps: false },
+    );
+    if (touched) {
+      return touched;
+    }
+    if (await DocumentModel.findOne(filter)) {
+      throw new ConflictError(
+        'This revision is being deleted; write it again once the delete has finished',
+      );
+    }
+    return null;
   }
 
   private async remoteArtifactAdapter(
