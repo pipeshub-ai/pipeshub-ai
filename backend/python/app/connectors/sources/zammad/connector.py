@@ -21,7 +21,7 @@ from uuid import uuid4
 from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
+from app.utils.html_markdown import html_to_markdown
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
