@@ -52,6 +52,9 @@ const READER_WRITTEN_MESSAGES: ReadonlySet<string> = new Set([
   // when the vector store timed out or could not be reached, after a retry.
   'The search index took too long to respond, so no results are shown. Please try again in a minute.',
   "We couldn't reach the search index just now, so no results are shown. Please try again in a minute.",
+  // backend/python/app/api/routes/search.py (SEARCH_TIMED_OUT_MESSAGE) — the
+  // 503 when a search runs past SEARCH_DEADLINE_SECONDS and is stopped.
+  'This search took too long, so it was stopped and no results are shown. Try again, or narrow it with filters or a shorter date range.',
   // backend/python/app/utils/user_messages.py (DATABASE_UNREACHABLE) — the 503
   // when a route cannot read the calling user's record.
   "We couldn't reach PipesHub's database just now. Please try again in a few seconds.",

@@ -65,7 +65,7 @@ async def test_a_search_past_its_deadline_answers_with_why(monkeypatch: pytest.M
     assert time.monotonic() - started < 5
     assert status == 503
     assert body["status"] == "search_timed_out"
-    assert body["message"] == SEARCH_TIMED_OUT_MESSAGE.format(seconds=0.2)
+    assert body["message"] == SEARCH_TIMED_OUT_MESSAGE
     assert body["searchResults"] == []
     assert "timed_out=0.2s" in _timing_line(logger)
 
@@ -133,3 +133,12 @@ async def test_the_timing_line_says_what_retrieval_was_made_of(monkeypatch: pyte
     assert "retrieval=" in line
     assert "(embed=" in line
     assert "vector=" in line and "ms/2" in line
+
+
+def test_the_timed_out_sentence_is_one_node_passes_on() -> None:
+    # Node keeps a 503's message only when READER_WRITTEN_MESSAGES lists it word
+    # for word; otherwise the caller is told something generic instead.
+    from pathlib import Path
+
+    allowlist = Path(__file__).resolve().parents[5] / "nodejs/apps/src/libs/errors/reader-friendly.ts"
+    assert SEARCH_TIMED_OUT_MESSAGE in allowlist.read_text(encoding="utf-8")

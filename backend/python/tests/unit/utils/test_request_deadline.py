@@ -46,7 +46,8 @@ async def test_tasks_started_inside_share_it() -> None:
 
 @pytest.mark.parametrize(
     ("raw", "expected"),
-    [(None, 50.0), ("", 50.0), ("45", 45.0), ("2.5", 2.5), ("0", None), ("-3", None), ("soon", 50.0)],
+    [(None, 50.0), ("", 50.0), ("45", 45.0), ("2.5", 2.5), ("0", None), ("-3", None), ("soon", 50.0),
+     ("nan", 50.0), ("inf", 50.0), ("-inf", 50.0)],
 )
 def test_the_search_deadline_setting(monkeypatch: pytest.MonkeyPatch, raw: str | None, expected: float | None) -> None:
     if raw is None:

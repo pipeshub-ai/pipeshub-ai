@@ -428,10 +428,13 @@ async def _timeline_search(
 
 
 # Said when a search is stopped at SEARCH_DEADLINE_SECONDS. A vector store that
-# timed out answers SEARCH_INDEX_UNAVAILABLE before this, from retrieval.
+# timed out answers SEARCH_INDEX_UNAVAILABLE before this, from retrieval. One
+# fixed sentence: Node passes a 503's message on only when it is listed word for
+# word in READER_WRITTEN_MESSAGES (backend/nodejs/apps/src/libs/errors/
+# reader-friendly.ts), so the deadline itself is logged, not said.
 SEARCH_TIMED_OUT_MESSAGE = (
-    "This search took longer than {seconds:g} seconds, so it was stopped and no "
-    "results are shown. Try again, or narrow it with filters or a shorter date range."
+    "This search took too long, so it was stopped and no results are shown. "
+    "Try again, or narrow it with filters or a shorter date range."
 )
 
 
@@ -441,7 +444,7 @@ def _timed_out_response(seconds: float) -> dict[str, Any]:
         "records": [],
         "status": Status.SEARCH_TIMED_OUT.value,
         "status_code": 503,
-        "message": SEARCH_TIMED_OUT_MESSAGE.format(seconds=seconds),
+        "message": SEARCH_TIMED_OUT_MESSAGE,
     }
 
 

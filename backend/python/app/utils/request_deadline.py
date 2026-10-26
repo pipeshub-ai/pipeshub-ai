@@ -16,6 +16,7 @@ caller that sets none (the chat path, indexing) keeps every limit as it was.
 from __future__ import annotations
 
 import contextlib
+import math
 import os
 import time
 from contextvars import ContextVar
@@ -35,13 +36,16 @@ _DEFAULT_SEARCH_DEADLINE_SECONDS = 50.0
 
 def search_deadline_seconds() -> float | None:
     """How long a search may take, from ``SEARCH_DEADLINE_SECONDS``; ``None``
-    when it is ``0`` (no deadline) or unreadable as a positive number of seconds."""
+    (no deadline) when it is ``0`` or less. A value that isn't a finite number
+    (unreadable, ``nan``, ``inf``) gives the default."""
     raw = os.getenv("SEARCH_DEADLINE_SECONDS", "").strip()
     if not raw:
         return _DEFAULT_SEARCH_DEADLINE_SECONDS
     try:
         value = float(raw)
     except ValueError:
+        return _DEFAULT_SEARCH_DEADLINE_SECONDS
+    if not math.isfinite(value):
         return _DEFAULT_SEARCH_DEADLINE_SECONDS
     return value if value > 0 else None
 
