@@ -616,6 +616,15 @@ def test_pool_sizes_idle_time_and_minimum_come_from_the_environment(monkeypatch)
         DbConfig.from_env("indexing")
 
 
+def test_an_empty_pooler_setting_means_the_default(monkeypatch) -> None:
+    # Compose passes unset variables as "${VAR:-}", so an empty value must behave like an absent one.
+    monkeypatch.setenv("PG_CORE_URL", "postgresql://x@h/db")
+    monkeypatch.setenv("PG_POOLER", "")
+    assert DbConfig.from_env("indexing").pooler == "pgbouncer_txn"
+    monkeypatch.setenv("PG_POOLER", " none ")
+    assert DbConfig.from_env("indexing").pooler == "none"
+
+
 def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
     import time
 

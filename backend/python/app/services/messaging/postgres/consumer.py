@@ -48,11 +48,12 @@ from app.services.pg_runtime import QUEUE_CHANNEL, PgListener, listen_dsn
 from app.utils.request_context import context_from_envelope, reset_context, set_context
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Coroutine
 
     from app.services.distributed.interface import IDistributedLeaseManager
     from app.services.messaging.consumer_concurrency import StageAdmission
     from app.services.messaging.disposition import AbandonedMessageSink
+    from app.services.messaging.worker_loop import WorkerLoop
 
 _SWEEP_EVERY_S = 60.0
 _INDEX_POOL = "pg-queue-indexing"
@@ -95,7 +96,9 @@ class PgMessagingConsumer(IMessagingConsumer):
         queue: PgQueue | None = None,
         concurrency_manager: "IDistributedLeaseManager | None" = None,
         stage_admission: "StageAdmission | None" = None,
+        worker: "WorkerLoop | None" = None,
     ) -> None:
+        self._worker = worker  # the loop the indexing handler runs on; claims, heartbeats and settling stay on this one
         self.stage_admission = stage_admission  # a pipeline-stage consumer: its own permits and lease pool, no record lease
         self.concurrency_manager = concurrency_manager  # cluster-wide cap on records indexing at once, across worker processes
         self._leases: set[tuple[str, str]] = set()
@@ -492,6 +495,13 @@ class PgMessagingConsumer(IMessagingConsumer):
         finally:
             reset_context(token)
 
+    async def _on_worker[T](self, make: "Callable[[], Coroutine[Any, Any, T]]") -> T:
+        """Run a handler on the shared worker loop, as the other indexing consumers do: parsing that blocks that loop cannot then stall
+        the claim heartbeat, which stays on this one. Cancelling the wait cancels the handler."""
+        if self._worker is None:
+            return await make()
+        return await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(make(), self._worker.start()))
+
     async def _drive_indexing(self, parsed: StreamMessage, fallback_key: str) -> None:
         """Run the record handler's event stream to the end; it must reach INDEXING_COMPLETE."""
         timeout = messaging_env.record_processing_timeout_for(
@@ -503,7 +513,7 @@ class PgMessagingConsumer(IMessagingConsumer):
         try:
             record_slot = await self._take_record_lease(parsed, fallback_key)
             slot = await self._take_slot(parsed)
-            async with asyncio.timeout(timeout):
+            async def drain() -> bool:
                 gen = self.message_handler(parsed)  # type: ignore[misc]
                 complete = False
                 try:
@@ -512,6 +522,10 @@ class PgMessagingConsumer(IMessagingConsumer):
                             complete = True
                 finally:
                     await gen.aclose()
+                return complete
+
+            async with asyncio.timeout(timeout):
+                complete = await self._on_worker(drain)
             if not complete:
                 raise RuntimeError("handler ended without INDEXING_COMPLETE")
         finally:
