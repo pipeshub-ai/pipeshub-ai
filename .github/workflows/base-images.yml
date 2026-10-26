@@ -4,7 +4,8 @@ name: Base images
 # Tags are content hashes from scripts/docker/base_tag.sh:
 #   python-deps-<hash>  runtime-<hash>  models-bge-<hash>
 # Floating tags (python-deps, runtime, models-bge) move only from main.
-# A release calls this workflow when the hash tags it needs are not published yet.
+# Publishing is a hand-run step, as it is on main: nothing here runs on a push. A
+# release calls this workflow when the hash tags it needs are not published yet.
 #
 # The daily mirror of main's earlier setup is kept: it copies the Docker Hub
 # floating tags to GHCR as they are, so GHCR follows a base that was published to
@@ -14,15 +15,6 @@ name: Base images
 on:
   schedule:
     - cron: '17 4 * * *'
-  push:
-    branches:
-      - main
-    paths:
-      - 'Dockerfile.base'
-      - 'backend/python/uv.lock'
-      - 'backend/python/pyproject.toml'
-      - '.github/workflows/base-images.yml'
-      - 'scripts/docker/base_tag.sh'
   workflow_call:
   workflow_dispatch:
     inputs:

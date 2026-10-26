@@ -89,7 +89,7 @@ jobs:
 
   # ---------------------------------------------------------------------------
   # Hash tags of the bases this commit's lockfile needs. Built here only when
-  # they are not already on Docker Hub (a push to main publishes them).
+  # they are not already on Docker Hub (a manual run of Base images on main publishes them).
   base-hash:
     name: Resolve base images
     needs: resolve
