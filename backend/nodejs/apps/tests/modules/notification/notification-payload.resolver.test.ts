@@ -48,7 +48,7 @@ describe('notification/notification-payload.resolver', () => {
       expect(event).to.not.be.null;
       const doc = buildNotificationDocForUser(event!, userOid.toString());
       expect(doc).to.not.have.keys('recipientUserIds', 'recipientRoles');
-      expect(String(doc.assignedTo)).to.equal(userOid.toString());
+      expect(doc.assignedTo).to.equal(userOid.toString());
       expect(doc.title).to.equal('T');
       expect(doc.status).to.equal('unread');
       expect(doc.isDeleted).to.equal(false);
@@ -92,7 +92,7 @@ describe('notification/notification-payload.resolver', () => {
         assignedTo: [user1, 'bad-id', user2],
       });
       const ids = getLegacyAssignedToUserIds(event!);
-      expect(ids.map((id) => id.toString())).to.have.members([user1, user2]);
+      expect(ids.map((id) => id)).to.have.members([user1, user2]);
     });
   });
 });

@@ -29,7 +29,7 @@ describe('Mongo repository seam', () => {
       let caught: unknown
       try {
         await new MongoUnitOfWork(false).run(async () => {
-          throw { code: 11000, keyPattern: { email: 1 } }
+          throw Object.assign(new Error('E11000 duplicate key'), { code: 11000, keyPattern: { email: 1 } })
         })
       } catch (e) {
         caught = e
