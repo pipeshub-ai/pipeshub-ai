@@ -1,4 +1,4 @@
-"""Links from a record to the organisation members it names (KG-13, slice 1).
+"""Links from a record to the organisation members it names.
 
 Connectors store the people a record involves as strings on its type
 document: a mail's sender and recipients, a ticket's assignee, a pull
@@ -6,7 +6,7 @@ request's reviewers. This module turns them into ``entityRelations`` edges
 from the record to the matching ``users`` node, so a person can be reached
 from the records they appear in.
 
-Only existing members are linked (decision D-31): an address or source id
+Only existing members are linked: an address or source id
 with no matching user gets no edge and creates no node. Bcc recipients are
 never linked, since they are hidden from the other recipients.
 """
@@ -64,8 +64,10 @@ class PersonLink:
 
 
 class PeopleStore(Protocol):
-    async def get_user_by_email(self, email: str) -> User | None: ...
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None: ...
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None: ...
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> User | None: ...
     async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None: ...
     async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
 
@@ -146,22 +148,27 @@ def person_links(record: Record) -> list[PersonLink]:
     return []
 
 
-async def link_record_people(record: Record, store: PeopleStore, logger: Logger) -> int:
+async def link_record_people(
+    record: Record,
+    store: PeopleStore,
+    logger: Logger,
+    must_propagate: Callable[[Exception], bool] | None = None,
+) -> int:
     """Replace ``record``'s person edges with the members it names now.
 
     Idempotent: the record's existing ``entityRelations`` edges are removed
     and the current ones written, so a re-sync that drops an assignee drops
-    the edge. Returns the number of edges written. A lookup failure skips
-    that person (logged by record id, never by address); the others are
-    still linked.
+    the edge. Returns the number of edges written. Every person is resolved
+    before anything is deleted. A failed lookup is not "no such user": the
+    record keeps the edges it has and gets none written this time (logged by
+    record id, never by address), and a later sync or the backfill retries.
+    ``must_propagate`` names the failures a caller has to see (a conflict it
+    retries, a failure that ended its transaction); those are raised instead
+    of logged.
     """
+    propagate = must_propagate or (lambda _exc: False)
     if not isinstance(record, LINKED_RECORD_TYPES):
         return 0
-    try:
-        await store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
-    except Exception as exc:  # stale edges are rewritten below
-        logger.warning("Could not clear person edges of record %s: %s", record.id, exc)
-
     users_by_identity: dict[tuple[str, str], User | None] = {}
     seen: set[tuple[str, str]] = set()
     edges: list[dict] = []
@@ -180,10 +187,12 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
                 break
             try:
                 users_by_identity[identity] = (
-                    await store.get_user_by_email(identity[1]) if identity[0] == "email"
-                    else await store.get_user_by_source_id(identity[1], record.connector_id)
+                    await store.get_user_by_email(identity[1], raise_on_error=True) if identity[0] == "email"
+                    else await store.get_user_by_source_id(identity[1], record.connector_id, raise_on_error=True)
                 )
-            except Exception:  # one unresolved person must not drop the others
+            except Exception as exc:  # see the docstring: the existing edges stay
+                if propagate(exc):
+                    raise
                 failed += 1
                 users_by_identity[identity] = None
         user = users_by_identity[identity]
@@ -191,7 +200,7 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
             continue
         user_org = getattr(user, "org_id", None)
         if user_org is not None and user_org != record.org_id:
-            # Email lookups are not org-scoped; another tenant's member
+            # Email lookups are not org-scoped; another org's member
             # sharing an address is not this record's person.
             continue
         seen.add((user.id, link.edge_type.value))
@@ -207,7 +216,14 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
         edges.append(edge)
 
     if failed:
-        logger.warning("Record %s: %d person lookups failed", record.id, failed)
+        logger.warning("Record %s: %d person lookups failed; keeping its existing person edges", record.id, failed)
+        return 0
+    try:
+        await store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
+    except Exception as exc:  # stale edges are rewritten below
+        if propagate(exc):
+            raise
+        logger.warning("Could not clear person edges of record %s: %s", record.id, exc)
     established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
     added = [e for e in edges if e["edgeType"] in _NEW_EDGE_TYPES]
     if established:
@@ -216,6 +232,8 @@ async def link_record_people(record: Record, store: PeopleStore, logger: Logger)
         try:
             await store.batch_create_entity_relations(added)
         except Exception as exc:  # see _NEW_EDGE_TYPES
+            if propagate(exc):
+                raise
             logger.warning("Record %s: %d person edges not written: %s", record.id, len(added), type(exc).__name__)
             return len(established)
     return len(edges)
