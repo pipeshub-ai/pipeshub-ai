@@ -44,7 +44,7 @@
     "@typescript-eslint/eslint-plugin": "^8.72.0",
     "@typescript-eslint/parser": "^8.72.0",
     "c8": "^11.0.0",
-    "chai": "^4.5.0",
+    "chai": "^6.3.0",
     "cluster-key-slot": "^1.1.2",
     "cross-env": "^10.1.0",
     "eslint": "^10.13.0",
