@@ -1532,7 +1532,6 @@ describe('OAuthTokenService - branch coverage', () => {
         sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
         sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
         const accessRevoke = sinon.stub(OAuthAccessToken, 'updateOne').resolves({} as any)
-        sinon.stub(OAuthRefreshToken, 'updateOne').resolves({} as any)
         ;(OAuthApp.findOne as sinon.SinonStub).restore()
         stubCurrentApp({ allowedScopes: ['user:read', 'offline_access'], knowledgeLimit: narrowed })
 
