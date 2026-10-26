@@ -1,8 +1,7 @@
 # ruff: noqa
-# ruff: noqa
-"""QA round 2, real storage: a guarded sweep delete racing a re-index's write of the same revision,
+"""Real storage: a guarded sweep delete racing a re-index's write of the same revision,
 many rounds with a fresh seed. Invariant: a write that returned a set has every file readable.
-Copy into tests/integration of a copy; uses the fixtures of test_revision_retention_storage_e2e."""
+Uses the fixtures of test_revision_retention_storage_e2e."""
 from __future__ import annotations
 
 import asyncio
@@ -23,8 +22,8 @@ pytestmark = [
     pytest.mark.asyncio,
     pytest.mark.skipif(not TARGETS, reason="set RETENTION_IT_TARGETS or ARTIFACTS_IT_STORAGE_URL to a running storage service"),
 ]
-SEED = int(os.environ.get("QA_SEED", str(time.time_ns() % 2**31)))
-ROUNDS = int(os.environ.get("QA_RACE_ROUNDS", "40"))
+SEED = int(os.environ.get("RETENTION_TEST_SEED", str(time.time_ns() % 2**31)))
+ROUNDS = int(os.environ.get("RETENTION_RACE_ROUNDS", "40"))
 
 
 async def test_guarded_delete_racing_a_rewrite_never_strands_a_written_set(life: _Lifecycle) -> None:
@@ -63,5 +62,5 @@ async def test_guarded_delete_racing_a_rewrite_never_strands_a_written_set(life:
             assert manifest["rev"] == rev, f"seed {SEED} round {round_}"
             await life.flip(record, written)
             await life.assert_pointer_resolves(vrid)
-    logger.warning("QA race seed=%s outcomes (written, purged): %s", SEED, dict(outcomes))
+    logger.warning("race seed=%s outcomes (written, purged): %s", SEED, dict(outcomes))
     print(f"RACE seed={SEED} {life.target.type} outcomes={dict(outcomes)} refusals={dict(refusals)}")

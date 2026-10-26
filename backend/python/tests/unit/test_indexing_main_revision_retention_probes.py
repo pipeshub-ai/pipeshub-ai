@@ -1,8 +1,6 @@
 # ruff: noqa
-"""QA probes for the #4613 follow-up (tick budget, gone). Each asserts the property that should hold;
-a failure is a defect. Run from backend/python of a copy:
-  venv/bin/python -m pytest -c pytest.ini --rootdir . -p no:cacheprovider <this file>
-"""
+"""Properties the retention tick must keep against a real HTTP storage stand-in: it stays inside its
+time budget, a delete is fenced on the listed stamp, and the cursor only moves forward."""
 
 from __future__ import annotations
 
@@ -29,7 +27,7 @@ from tests.unit.test_indexing_main_revision_retention_budget import _blob
 
 pytestmark = pytest.mark.timeout(300)
 ORG = "64d000000000000000000e01"
-SEED = int(os.environ.get("QA_SEED", str(time.time_ns() % 2**31)))
+SEED = int(os.environ.get("RETENTION_TEST_SEED", str(time.time_ns() % 2**31)))
 
 
 class TtlLeases:

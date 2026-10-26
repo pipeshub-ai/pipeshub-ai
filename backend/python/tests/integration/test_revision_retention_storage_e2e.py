@@ -321,7 +321,7 @@ async def test_trash_keeps_everything_and_restore_resumes_retention(life: _Lifec
 
 
 class _TtlLeases:
-    """Record leases that expire, as Redis ones do (QA, adapted to main's lease design)."""
+    """Record leases that expire, as Redis ones do."""
 
     def __init__(self) -> None:
         self.held: dict[str, tuple[str, float]] = {}
@@ -384,7 +384,7 @@ async def test_reindex_to_old_bytes_during_the_delete_waits_for_the_lease(life: 
 async def test_reindex_after_the_sweeps_lease_lapsed_mid_delete_keeps_a_resolvable_pointer(
     life: _Lifecycle, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """QA-4613b-1 on real storage: the sweep's lease (term scaled 120 s -> 1 s) lapses while its delete
+    """On real storage: the sweep's lease (term scaled 120 s -> 1 s) lapses while its delete
     is in flight (a slow tree delete, or a retry after a 120 s read timeout); the re-index that then
     takes the lease re-files the old revision and flips the pointer onto it; the delete lands after."""
     monkeypatch.setenv("INDEXING_CONCURRENCY_LEASE_SECONDS", "1.0")

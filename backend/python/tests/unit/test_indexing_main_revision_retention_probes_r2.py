@@ -1,9 +1,5 @@
 # ruff: noqa
-# ruff: noqa
-"""QA round-2 probes for the #4613 follow-up: shipped-settings ticks with slow and hung deletes,
-and the metric outcomes over real HTTP. Copy next to tests/unit in a copy and run from backend/python:
-  venv/bin/python -m pytest -c pytest.ini --rootdir . -p no:cacheprovider -s tests/unit/qa4613d_probe_r2.py
-"""
+"""Ticks with slow and hung deletes at the shipped settings, and the metric outcomes over real HTTP."""
 from __future__ import annotations
 
 import asyncio

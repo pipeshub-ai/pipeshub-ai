@@ -353,7 +353,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     s.release()
     const d = await s.pending
     const doc = await DocumentModel.findById(documentId).lean<any>()
-    // The documented residual (QA-4613b-10): the claim was taken back, so the delete
+    // The documented residual: the claim was taken back, so the delete
     // says lost, and a writer's re-uploaded files are gone with the tree.
     expect(p.status).to.equal(200)
     expect(d).to.deep.equal({ status: 409, body: { purged: 0, reason: 'lost' } })
