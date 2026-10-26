@@ -472,6 +472,7 @@ class EventService:
 
     async def _build_init_connector(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Build and store the connector. Caller must hold ``connector_init_lock``."""
+        connector: BaseConnector | None = None
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
@@ -522,16 +523,29 @@ class EventService:
 
             if not is_initialized:
                 self.logger.error(f"❌ Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
+                await self._dispose_unstored(connector_name, connector)
                 return False
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
-            await self._store_connector(connector_id, connector)
+            # Cleared first: once it is in the cache, a failure must not close it.
+            stored, connector = connector, None
+            await self._store_connector(connector_id, stored)
 
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
+            if connector is not None:
+                await self._dispose_unstored(connector_name, connector)
             return False
+
+    async def _dispose_unstored(self, connector_name: str, connector: BaseConnector) -> None:
+        """Close a connector that failed init() and is never stored. The factory
+        handed it an open processor, and a redelivered init event builds another."""
+        try:
+            await dispose_connector(connector)
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up {connector_name} after a failed init: {e}")
 
     async def _handle_start_sync(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""

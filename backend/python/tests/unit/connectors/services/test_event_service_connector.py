@@ -542,6 +542,44 @@ class TestHandleInit:
             result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("init", [
+        AsyncMock(return_value=False),
+        AsyncMock(side_effect=OSError("share unreachable")),
+    ], ids=["returns_false", "raises"])
+    async def test_failed_init_disposes_the_connector(self, service, init) -> None:
+        """The factory hands the connector an open processor; a redelivered init
+        event builds another, so each failure must close its own."""
+        mock_conn = AsyncMock()
+        mock_conn.init = init
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is False
+        dispose.assert_awaited_once_with(mock_conn)
+
+    @pytest.mark.asyncio
+    async def test_a_store_failure_does_not_dispose_the_connector(self, service) -> None:
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch.object(service, "_store_connector", new_callable=AsyncMock,
+                          side_effect=RuntimeError("cache")), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is False
+        dispose.assert_not_awaited()
+
 
 def _close_then_raise(key, coro):
     """start_if_idle owns the coroutine, so a raising stub must still close it
