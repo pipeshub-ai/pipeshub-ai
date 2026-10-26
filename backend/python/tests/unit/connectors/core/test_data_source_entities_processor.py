@@ -128,6 +128,7 @@ def _make_tx_store():
     tx_store.get_all_orgs = AsyncMock(return_value=[{"_key": "org-1", "id": "org-1"}])
     tx_store.delete_edges_to = AsyncMock(return_value=0)
     tx_store.delete_edges_from = AsyncMock(return_value=0)
+    tx_store.delete_edges_between_collections = AsyncMock(return_value=0)
     tx_store.delete_parent_child_edge_to_record = AsyncMock()
     tx_store.delete_edge = AsyncMock(return_value=True)
     tx_store.get_edge = AsyncMock(return_value=None)
@@ -3543,8 +3544,8 @@ class TestProcessRecordTicket:
         assert result is not None
         # Should have called delete_edges_by_relationship_types (from _handle_related_external_records)
         tx_store.delete_edges_by_relationship_types.assert_awaited()
-        # Should have called delete_edges_from (from the person edges)
-        tx_store.delete_edges_from.assert_awaited()
+        # The person edges are replaced
+        tx_store.delete_edges_between_collections.assert_awaited()
 
 
 # ===========================================================================
@@ -5676,8 +5677,8 @@ class TestProcessRecordRevisionMatch:
         result, _ = await proc._process_record(project, [], tx_store)
 
         assert result is not None
-        # delete_edges_from is called by the person edges
-        tx_store.delete_edges_from.assert_awaited()
+        # The person edges are replaced
+        tx_store.delete_edges_between_collections.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_mail_record_links_its_sender_and_recipients(self):
@@ -8731,7 +8732,7 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("failing_call", [
-        "delete_edges_by_relationship_types", "delete_edges_from", "delete_edges_to", "get_user_by_email",
+        "delete_edges_by_relationship_types", "delete_edges_between_collections", "delete_edges_to", "get_user_by_email",
     ])
     async def test_a_deadlock_in_an_optional_edge_write_reaches_the_caller(self, failing_call: str) -> None:
         proc, tx_store = _make_processor(), _make_tx_store()
@@ -8749,7 +8750,7 @@ class TestAConflictInsideARecordSliceIsNotSwallowed:
         ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="a@x.com", **record_fields)
         handlers = {
             "delete_edges_by_relationship_types": lambda: proc._handle_related_external_records(record, [], tx_store),
-            "delete_edges_from": lambda: proc._handle_record_people(project, tx_store),
+            "delete_edges_between_collections": lambda: proc._handle_record_people(project, tx_store),
             "delete_edges_to": lambda: proc._handle_message_entity_edges(record, tx_store),
             "get_user_by_email": lambda: proc._handle_record_people(ticket, tx_store),
         }

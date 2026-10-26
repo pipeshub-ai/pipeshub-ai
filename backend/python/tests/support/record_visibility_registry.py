@@ -126,6 +126,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     # The people a record names; returns no record.
     "get_record_people": (Rule.ALL, _STRUCTURE),
+    # The CRM accounts a record belongs to (KG-13); returns no record.
+    "get_record_organizations": (Rule.ALL, _STRUCTURE),
     "get_record_parent_adjacency": (
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),

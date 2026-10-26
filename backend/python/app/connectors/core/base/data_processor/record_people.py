@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
 from typing import TYPE_CHECKING, Protocol
 
-from app.config.constants.arangodb import CollectionNames, EntityRelations
+from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations
 from app.models.entities import (
     CommentRecord,
     DealRecord,
@@ -68,7 +68,9 @@ class PeopleStore(Protocol):
     async def get_user_by_source_id(
         self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
     ) -> User | None: ...
-    async def delete_edges_from(self, from_id: str, from_collection: str, collection: str) -> None: ...
+    async def delete_edges_between_collections(
+        self, from_id: str, from_collection: str, edge_collection: str, to_collection: str,
+    ) -> None: ...
     async def batch_create_entity_relations(self, edges: list[dict]) -> None: ...
 
 
@@ -156,15 +158,16 @@ async def link_record_people(
 ) -> int:
     """Replace ``record``'s person edges with the members it names now.
 
-    Idempotent: the record's existing ``entityRelations`` edges are removed
-    and the current ones written, so a re-sync that drops an assignee drops
-    the edge. Returns the number of edges written. Every person is resolved
-    before anything is deleted. A failed lookup is not "no such user": the
-    record keeps the edges it has and gets none written this time (logged by
-    record id, never by address), and a later sync or the backfill retries.
-    ``must_propagate`` names the failures a caller has to see (a conflict it
-    retries, a failure that ended its transaction); those are raised instead
-    of logged.
+    Idempotent: the record's existing edges to members are removed and the
+    current ones written, so a re-sync that drops an assignee drops the
+    edge. Its other ``entityRelations`` edges (organisations) are left to
+    their own writers. Returns the number of edges written. Every person is
+    resolved before anything is deleted. A failed lookup is not "no such
+    user": the record keeps the edges it has and gets none written this time
+    (logged by record id, never by address), and a later sync or the backfill
+    retries. ``must_propagate`` names the failures a caller has to see (a
+    conflict it retries, a failure that ended its transaction); those are
+    raised instead of logged.
     """
     propagate = must_propagate or (lambda _exc: False)
     if not isinstance(record, LINKED_RECORD_TYPES):
@@ -208,6 +211,8 @@ async def link_record_people(
             "_from": f"{CollectionNames.RECORDS.value}/{record.id}",
             "_to": f"{CollectionNames.USERS.value}/{user.id}",
             "edgeType": link.edge_type.value,
+            "origin": EntityOrigin.INFERRED.value,
+            "source": record.connector_id,
             "createdAtTimestamp": now,
             "updatedAtTimestamp": now,
         }
@@ -219,7 +224,10 @@ async def link_record_people(
         logger.warning("Record %s: %d person lookups failed; keeping its existing person edges", record.id, failed)
         return 0
     try:
-        await store.delete_edges_from(record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value)
+        await store.delete_edges_between_collections(
+            record.id, CollectionNames.RECORDS.value,
+            CollectionNames.ENTITY_RELATIONS.value, CollectionNames.USERS.value,
+        )
     except Exception as exc:  # stale edges are rewritten below
         if propagate(exc):
             raise

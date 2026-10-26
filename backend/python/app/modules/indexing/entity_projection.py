@@ -21,12 +21,18 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 
+# Written as the index path writes them (EntityRecord.for_linked).
+_LINKED_TYPES = frozenset({EntityType.PERSON, EntityType.ORGANIZATION})
+
+
 def taxonomy_entity_type(collection: str) -> tuple[EntityType, str | None]:
     """The entity type and subcategory level of points from ``collection``."""
     if collection == CollectionNames.DEPARTMENTS.value:
         return EntityType.DEPARTMENT, None
     if collection == CollectionNames.USERS.value:
         return EntityType.PERSON, None
+    if collection == CollectionNames.ORGS.value:
+        return EntityType.ORGANIZATION, None
     kind = KINDS_BY_COLLECTION.get(collection)
     if kind is None:
         raise ValueError(f"{collection!r} is not a taxonomy collection")
@@ -78,9 +84,9 @@ async def project_taxonomy_nodes(
             unreached.append(key)
             continue
         record_group_ids = [g for g in reach.get("recordGroupIds") or [] if g]
-        if entity_type == EntityType.PERSON:
-            person = EntityRecord.for_person(key, row["name"], org_id, None, None)
-            entities.append(person.model_copy(update={
+        if entity_type in _LINKED_TYPES:
+            linked = EntityRecord.for_linked(entity_type, key, row["name"], org_id, None, None)
+            entities.append(linked.model_copy(update={
                 "connector_ids": connector_ids, "record_group_ids": record_group_ids,
             }))
             continue
