@@ -3774,7 +3774,7 @@ describe('UserController', () => {
       });
       sinon.stub(UserGroups, 'updateOne').resolves({} as any);
 
-      await controller.provisionJitUser(
+      const result = await controller.provisionJitUser(
         'jit@test.com',
         { firstName: 'JIT', lastName: 'User', fullName: 'JIT User' },
         '507f1f77bcf86cd799439012',
@@ -5660,7 +5660,7 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateOne').resolves();
       mockEventService.publishEvent.rejects(new Error('Kafka down'));
 
-      const result = await controller.provisionJitUser(
+      await controller.provisionJitUser(
         'jit@test.com',
         { fullName: 'JIT User' },
         '507f1f77bcf86cd799439012',

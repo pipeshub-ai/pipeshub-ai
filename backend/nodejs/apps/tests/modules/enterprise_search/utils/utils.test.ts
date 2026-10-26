@@ -1548,7 +1548,7 @@ describe('Enterprise Search Utils', () => {
       const chunk = Buffer.from('event: token\ndata: {"token":"hello"}\n\n')
       let capturedData: any = null
 
-      handleRegenerationStreamData(
+      const newBuffer = handleRegenerationStreamData(
         chunk,
         '',
         null,
@@ -1631,7 +1631,7 @@ describe('Enterprise Search Utils', () => {
       const errorData = JSON.stringify({ error: 'Something failed', message: 'Details here' })
       const chunk = Buffer.from(`event: error\ndata: ${errorData}\n\n`)
 
-      const newBuffer = handleRegenerationStreamData(
+      handleRegenerationStreamData(
         chunk,
         '',
         null,
