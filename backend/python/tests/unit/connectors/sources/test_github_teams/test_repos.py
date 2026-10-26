@@ -371,7 +371,7 @@ class TestCommitDateFailures:
 
         dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", paths)
 
-        assert dates == {path: (1704412800000, 1704412800000) for path in paths}
+        assert dates == dict.fromkeys(paths, (1704412800000, 1704412800000))
         assert rest_paths == []
         assert [len(b) for b in batches] == [40, 20, 20]
 
