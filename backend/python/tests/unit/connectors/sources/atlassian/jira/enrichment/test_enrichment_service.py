@@ -114,10 +114,18 @@ class TestCrossIssueReferences:
         for hidden in ("SEC-1", "Foo Corp", "SEC-2", "PUB-3", "SEC-4", "PUB-5"):
             assert hidden not in merged
 
-    @pytest.mark.asyncio
-    async def test_epic_link_custom_field_is_never_rendered(self) -> None:
+    async def _epic(self, lookup, readable) -> tuple[str, AsyncMock]:
+        """Enrich a ticket whose epic link is the key PROJ-1 (own key PROJ-12)."""
         issue = {"id": "10324", "fields": {"customfield_9": "PROJ-1"}}
         base = "Record: PROJ-12\nTicket Information:\n* Status: Open\n"
+
+        async def fetch(*_a: object, by_key: bool = False, **_k: object) -> dict:
+            if by_key:
+                if isinstance(lookup, Exception):
+                    raise lookup
+                return lookup
+            return {"10324": issue}
+
         with patch(
             "app.connectors.sources.atlassian.jira.enrichment.service._get_data_source",
             new=AsyncMock(return_value=MagicMock()),
@@ -126,9 +134,42 @@ class TestCrossIssueReferences:
             new=AsyncMock(return_value={"epic_link": "customfield_9"}),
         ), patch(
             "app.connectors.sources.atlassian.jira.enrichment.service.batch_fetch_issues",
-            new=AsyncMock(return_value={"10324": issue}),
-        ):
-            merged = await enrich_ticket_llm_context(base, _ticket_record(), AsyncMock(), AsyncMock(return_value={"1"}))
+            new=AsyncMock(side_effect=fetch),
+        ) as batch:
+            merged = await enrich_ticket_llm_context(base, _ticket_record(), AsyncMock(), readable)
+        return merged, batch
+
+    @pytest.mark.asyncio
+    async def test_readable_epic_link_is_shown_after_one_key_lookup_and_one_check(self) -> None:
+        check = AsyncMock(return_value={"501"})
+        merged, batch = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, check)
+        assert "* Epic Link: PROJ-1" in merged
+        check.assert_awaited_once_with("conn-jira-1", {"501"})
+        key_calls = [c for c in batch.await_args_list if c.kwargs.get("by_key")]
+        assert len(key_calls) == 1 and key_calls[0].kwargs["issue_ids"] == ["PROJ-1"]
+
+    @pytest.mark.asyncio
+    async def test_unreadable_epic_link_is_dropped(self) -> None:
+        merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, AsyncMock(return_value=set()))
+        assert "Epic Link" not in merged and "PROJ-1" not in merged.replace("PROJ-12", "")
+
+    @pytest.mark.asyncio
+    async def test_unresolved_epic_key_is_dropped(self) -> None:
+        check = AsyncMock(return_value={"501"})
+        merged, _ = await self._epic({}, check)
+        assert "Epic Link" not in merged
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", ["lookup_raises", "check_raises"])
+    async def test_failed_lookup_or_check_drops_epic_link(self, failure: str) -> None:
+        lookup = RuntimeError("down") if failure == "lookup_raises" else {"501": {"id": "501", "key": "PROJ-1"}}
+        check = AsyncMock(side_effect=RuntimeError("down")) if failure == "check_raises" else AsyncMock(return_value={"501"})
+        merged, _ = await self._epic(lookup, check)
+        assert "Epic Link" not in merged
+
+    @pytest.mark.asyncio
+    async def test_no_check_drops_epic_link(self) -> None:
+        merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, None)
         assert "Epic Link" not in merged
 
 

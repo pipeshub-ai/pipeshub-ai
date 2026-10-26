@@ -16,6 +16,7 @@ from app.connectors.sources.atlassian.jira.enrichment.issue_fetcher import (
 )
 from app.connectors.sources.atlassian.jira.enrichment.value_formatter import (
     enrich_from_issue,
+    key_only_refs,
     referenced_issue_ids,
     restrict_cross_issue_refs,
 )
@@ -187,7 +188,24 @@ async def enrich_ticket_llm_context(
 
     try:
         readable: set[str] = set()
-        refs = referenced_issue_ids(issue) | ({parent_id} if parent_id else set())
+        # Resolve key-only references (epic link, parent link) to ids in one lookup,
+        # so one access check below covers every issue this ticket names.
+        key_ids: dict[str, str] = {}
+        keys = set(key_only_refs(issue, custom_ids).values())
+        if keys:
+            try:
+                found = await batch_fetch_issues(
+                    ds, is_cloud=is_cloud, issue_ids=sorted(keys),
+                    discovered_custom_ids={}, by_key=True,
+                )
+                key_ids = {str(i["key"]): str(i["id"]) for i in found.values() if i.get("key")}
+            except Exception as exc:
+                logger.warning("Jira key lookup failed; naming no key-only references: %s", exc)
+        refs = (
+            referenced_issue_ids(issue)
+            | ({parent_id} if parent_id else set())
+            | set(key_ids.values())
+        )
         if refs and readable_issue_ids is not None:
             try:
                 readable = set(await readable_issue_ids(connector_id, refs))
@@ -195,7 +213,7 @@ async def enrich_ticket_llm_context(
                 logger.warning("Jira issue access check failed; naming no other issues: %s", exc)
         if parent_id in readable:
             base_context = full_base
-        issue = restrict_cross_issue_refs(issue, readable, custom_ids)
+        issue = restrict_cross_issue_refs(issue, readable, custom_ids, key_ids)
         return enrich_from_issue(base_context, issue, custom_ids)
     except Exception as exc:
         logger.warning(
