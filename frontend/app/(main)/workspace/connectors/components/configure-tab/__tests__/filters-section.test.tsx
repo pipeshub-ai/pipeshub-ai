@@ -207,6 +207,57 @@ describe('FiltersSection — adding and clearing a sync filter', () => {
   });
 });
 
+describe('FiltersSection — a sync filter with a fallback when it is not set', () => {
+  // Shaped like Slack's "Sync Messages From": when it is not set the connector still
+  // syncs only the last 30 days, which the schema states as `fallbackOperator`.
+  const syncWindow: FilterSchemaField = {
+    name: 'sync_window',
+    displayName: 'Sync Messages From',
+    description: 'If this filter is not set, only the last 30 days are synced.',
+    filterType: 'datetime',
+    operators: ['is_after', 'is_before', 'is_between', 'last_30_days'],
+    defaultOperator: 'last_30_days',
+    fallbackOperator: 'last_30_days',
+  };
+  const fallbackLine = 'Sync Messages From: Last 30 days (default)';
+
+  it('keeps the window and its help text on screen after the filter is cleared', () => {
+    setup({ sync: [syncWindow] });
+    // Seeded from the schema default, so the filter's own card shows the window.
+    expect(screen.getByText('Sync Messages From: Last 30 days')).toBeTruthy();
+    expect(screen.queryByText(fallbackLine)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear/i }));
+
+    expect(syncValue('sync_window')).toBeNull();
+    expect(screen.getByText(fallbackLine)).toBeTruthy();
+    expect(screen.getByText('If this filter is not set, only the last 30 days are synced.')).toBeTruthy();
+    // "No filters yet" would read as "no limit", the misreading the fallback line fixes.
+    expect(screen.queryByText(/No filters yet/)).toBeNull();
+  });
+
+  it('shows the window when the filter was already cleared before the panel opened', () => {
+    setup({ sync: [syncWindow], syncValues: { sync_window: null } });
+    expect(screen.getByText(fallbackLine)).toBeTruthy();
+    expect(screen.queryByText(/No filters yet/)).toBeNull();
+  });
+
+  it('drops the fallback line once the admin sets the filter again', async () => {
+    setup({ sync: [syncWindow], syncValues: { sync_window: null } });
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /add filter/i }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Sync Messages From' }));
+
+    expect(screen.queryByText(fallbackLine)).toBeNull();
+  });
+
+  it('says nothing extra for a cleared filter that has no fallback', () => {
+    setup({ sync: [{ ...spaces, defaultOperator: 'in' }], syncValues: { space_keys: null } });
+    expect(screen.queryByText(/\(default\)/)).toBeNull();
+    expect(screen.getByText(/No filters yet/)).toBeTruthy();
+  });
+});
+
 describe('FiltersSection — dynamic options', () => {
   const repos: FilterSchemaField = {
     name: 'repo_ids',
@@ -301,6 +352,87 @@ describe('FiltersSection — dynamic options', () => {
     expect(getFilterFieldOptions).toHaveBeenLastCalledWith('conn-1', 'repo_ids', { limit: 20, search: 'web', page: 1 });
     expect(await screen.findByText('acme/web')).toBeTruthy();
     expect(screen.queryByText('acme/api')).toBeNull();
+  });
+});
+
+describe('FiltersSection — branch picker', () => {
+  const selectField = (name: string, displayName: string, required = false): FilterSchemaField => ({
+    name,
+    displayName,
+    filterType: 'select',
+    operators: ['in'],
+    optionSourceType: 'dynamic',
+    required,
+  });
+  const branch = selectField('branch', 'Branch');
+
+  it.each([
+    ['GitHub', 'repo_ids', 'acme/api'],
+    ['GitLab', 'project_ids', 'acme/platform/api'],
+  ])('asks %s for the branches of the selected repository', async (_name, parent, repoId) => {
+    getFilterFieldOptions.mockResolvedValue(page([{ id: 'main', label: 'main (default)' }]));
+    setup({
+      sync: [selectField(parent, 'Repository', true), branch],
+      syncValues: {
+        [parent]: { operator: 'in', value: [{ id: repoId, label: repoId }] },
+      },
+    });
+    fireEvent.keyDown(screen.getByRole('button', { name: /add filter/i }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Branch' }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Select branch' }));
+
+    await waitFor(() =>
+      expect(getFilterFieldOptions).toHaveBeenCalledWith('conn-1', 'branch', {
+        limit: 20,
+        page: 1,
+        contextGroupPath: [repoId],
+      }),
+    );
+  });
+
+  it('clears the branch when another repository is picked', async () => {
+    getFilterFieldOptions.mockImplementation(async (_id, key) =>
+      key === 'repo_ids'
+        ? page([
+            { id: 'acme/api', label: 'acme/api' },
+            { id: 'acme/web', label: 'acme/web' },
+          ])
+        : page([]),
+    );
+    setup({
+      sync: [selectField('repo_ids', 'Repository', true), branch],
+      syncValues: {
+        repo_ids: { operator: 'in', value: [{ id: 'acme/api', label: 'acme/api' }] },
+        branch: { operator: 'in', value: [{ id: 'release/1.x', label: 'release/1.x' }] },
+      },
+    });
+    expect(screen.getByRole('button', { name: 'release/1.x' })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'acme/api' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'acme/web' }));
+
+    expect(syncValue('repo_ids')).toMatchObject({ value: [{ id: 'acme/web', label: 'acme/web' }] });
+    expect(syncValue('branch')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'release/1.x' })).toBeNull();
+  });
+
+  it('keeps the branch when the same repository is picked again', async () => {
+    getFilterFieldOptions.mockImplementation(async (_id, key) =>
+      key === 'repo_ids' ? page([{ id: 'acme/api', label: 'acme/api' }]) : page([]),
+    );
+    setup({
+      sync: [selectField('repo_ids', 'Repository', true), branch],
+      syncValues: {
+        repo_ids: { operator: 'in', value: [{ id: 'acme/api', label: 'acme/api' }] },
+        branch: { operator: 'in', value: [{ id: 'release/1.x', label: 'release/1.x' }] },
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'acme/api' }));
+    fireEvent.click(await screen.findByRole('option', { name: 'acme/api' }));
+
+    expect(syncValue('branch')).toMatchObject({ value: [{ id: 'release/1.x', label: 'release/1.x' }] });
   });
 });
 
@@ -514,7 +646,7 @@ describe('FiltersSection — dates', () => {
   it('explains that a rolling window has no dates to pick', () => {
     setup({ sync: [modified], syncValues: { modified: { operator: 'last_7_days', value: null } } });
     expect(screen.getByText('This operator uses a rolling window — no fixed dates to set.')).toBeTruthy();
-    expect(screen.getByText('Modified: Last 7 Days')).toBeTruthy();
+    expect(screen.getByText('Modified: Last 7 days')).toBeTruthy();
   });
 
   it('saves a picked date range as timestamps and shows it back', () => {
@@ -531,7 +663,7 @@ describe('FiltersSection — dates', () => {
       type: 'datetime',
     });
     expect(screen.getByTestId('picker-range').textContent).toBe('2026-01-02T10:00|2026-01-05T18:30');
-    expect(screen.getByText('Modified: Is Between · date range')).toBeTruthy();
+    expect(screen.getByText('Modified: Is between · date range')).toBeTruthy();
 
     fireEvent.click(screen.getByText('Clear dates'));
     expect(syncValue('modified')).toEqual({ operator: 'is_between', value: { start: null, end: null }, type: 'datetime' });

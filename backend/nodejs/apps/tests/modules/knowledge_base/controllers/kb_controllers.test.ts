@@ -140,16 +140,9 @@ function createMockAppConfig(): any {
 
 function createMockRecordRelationService(): any {
   return {
-    publishRecordEvents: sinon.stub().resolves(),
-    createNewRecordEventPayload: sinon.stub().resolves({}),
     createUpdateRecordEventPayload: sinon.stub().resolves({}),
     createDeleteRecordEvent: sinon.stub().resolves(),
     resyncConnectorRecords: sinon.stub().resolves({ success: true }),
-    eventProducer: {
-      start: sinon.stub().resolves(),
-      publishEvent: sinon.stub().resolves(),
-      stop: sinon.stub().resolves(),
-    },
     syncEventProducer: {
       start: sinon.stub().resolves(),
       publishEvent: sinon.stub().resolves(),
@@ -978,6 +971,152 @@ describe('Knowledge Base Controller', () => {
     })
   })
 
+  // The request validators let a caller leave out either userIds or teamIds
+  // (both are optional arrays). These handlers must treat a missing list as
+  // empty instead of reading `.length` of undefined and answering 500.
+  describe('KB permission handlers with userIds or teamIds omitted', () => {
+    function stubConnector(data: Record<string, unknown>): sinon.SinonStub {
+      return sinon
+        .stub(ConnectorServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data } as any)
+    }
+
+    // The command keeps the forwarded body as a JSON string.
+    function sentBody(executeStub: sinon.SinonStub): unknown {
+      return JSON.parse(executeStub.firstCall.thisValue.body)
+    }
+
+    it('createKBPermission shares with users when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'], role: 'READER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+        role: 'READER',
+      })
+    })
+
+    it('createKBPermission shares with teams when userIds is omitted', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await createKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(201)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+      })
+    })
+
+    it('updateKBPermission changes a user role when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [], newRole: 'WRITER' })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'], role: 'WRITER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+        role: 'WRITER',
+      })
+    })
+
+    it('updateKBPermission changes a team role when userIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: [], teamIds: ['team-1'], newRole: 'WRITER' })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'], role: 'WRITER' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await updateKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+        role: 'WRITER',
+      })
+    })
+
+    it('removeKBPermission removes a user when teamIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: ['user-2'], teamIds: [] })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { userIds: ['user-2'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: ['user-2'],
+        teamIds: [],
+      })
+    })
+
+    it('removeKBPermission removes a team when userIds is omitted', async () => {
+      const executeStub = stubConnector({ userIds: [], teamIds: ['team-1'] })
+      const req = createMockRequest({
+        params: { kbId: 'kb-1' },
+        body: { teamIds: ['team-1'] },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.called, String(next.firstCall?.args[0]?.message)).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      expect(sentBody(executeStub)).to.deep.equal({
+        userIds: [],
+        teamIds: ['team-1'],
+      })
+    })
+
+    it('still rejects a request that names neither users nor teams', async () => {
+      const executeStub = stubConnector({ success: true })
+      const req = createMockRequest({ params: { kbId: 'kb-1' }, body: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await removeKBPermission(createMockAppConfig())(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(executeStub.called).to.be.false
+    })
+  })
+
   // -----------------------------------------------------------------------
   // Connector Stats
   // -----------------------------------------------------------------------
@@ -1126,6 +1265,90 @@ describe('Knowledge Base Controller', () => {
   // -----------------------------------------------------------------------
   // Happy-path tests that exercise the actual handler logic
   // -----------------------------------------------------------------------
+
+  describe('getKnowledgeHubNodes search query', () => {
+    it('rejects whitespace and a one-character query with the minimum-length error', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      for (const q of ['   ', '\t\n', 'a']) {
+        const req = createMockRequest({ query: { q }, params: {} })
+        const res = createMockResponse()
+        const next = createMockNext()
+        await handler(req, res, next)
+        expect(next.calledOnce, q).to.be.true
+        const err = next.firstCall.args[0]
+        expect(err).to.be.instanceOf(BadRequestError)
+        expect(err.message).to.equal('Search query must be at least 2 characters')
+      }
+    })
+
+    it('checks a repeated query as one string', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const next = createMockNext()
+      await handler(
+        createMockRequest({ query: { q: ['a'] }, params: {} }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0].message).to.equal(
+        'Search query must be at least 2 characters',
+      )
+
+      let uri = ''
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').callsFake(async function (this: { uri: string }) {
+        uri = this.uri
+        return { statusCode: 200, data: { nodes: [] } }
+      })
+      const forwarded = createMockNext()
+      await handler(
+        createMockRequest({ query: { q: ['ab', 'cd'] }, params: {} }),
+        createMockResponse(),
+        forwarded,
+      )
+      expect(forwarded.called).to.be.false
+      expect(uri).to.include('q=ab%2Ccd')
+    })
+
+    it('rejects a query that is not text', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const next = createMockNext()
+      await handler(
+        createMockRequest({ query: { q: { bad: '1' } }, params: {} }),
+        createMockResponse(),
+        next,
+      )
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal('Search query must be text')
+    })
+
+    it('rejects a query longer than 500 characters', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      const req = createMockRequest({ query: { q: 'x'.repeat(501) }, params: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError)
+      expect(next.firstCall.args[0].message).to.equal(
+        'Search query too long (max: 500 characters)',
+      )
+    })
+
+    it('forwards a trimmed query of 500 characters', async () => {
+      const handler = getKnowledgeHubNodes(createMockAppConfig())
+      let uri = ''
+      sinon.stub(ConnectorServiceCommand.prototype, 'execute').callsFake(async function (this: { uri: string }) {
+        uri = this.uri
+        return { statusCode: 200, data: { nodes: [] } }
+      })
+      const req = createMockRequest({ query: { q: `  ${'ab'.repeat(250)}  ` }, params: {} })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+      expect(next.called, next.firstCall?.args?.[0]?.message).to.be.false
+      expect(uri).to.include(`q=${'ab'.repeat(250)}`)
+      expect(uri).to.not.include('q=%20')
+    })
+  })
 
   describe('getKnowledgeHubNodes (happy path)', () => {
     it('should return nodes from connector backend', async () => {
@@ -2872,6 +3095,32 @@ describe('Knowledge Base Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response.message).to.equal('Record updated with new file version')
       expect(response.fileUploaded).to.be.true
+    })
+
+    it('tells Python when the new version arrived, read before a slow storage upload', async () => {
+      const clock = sinon.useFakeTimers({ now: 1_000_000, toFake: ['Date'] })
+      const connectorStub = stubUpdateRecordFileUploadConnectorCalls()
+      sinon.stub(kbUtils, 'uploadNextVersionToStorage').callsFake(async () => {
+        clock.tick(10 * 60 * 1000)
+        return {} as Awaited<ReturnType<typeof kbUtils.uploadNextVersionToStorage>>
+      })
+
+      const handler = updateRecord(
+        createMockKeyValueStore(),
+        createMockAppConfig(),
+      )
+      const req = createMockRequest({
+        params: { recordId: 'r1' },
+        body: UPDATE_RECORD_FILE_BUFFER,
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const sent = JSON.parse(connectorStub.thirdCall.thisValue.body as string)
+      expect(sent.fileMetadata.receivedAt).to.equal(1_000_000)
+      expect(sent.fileMetadata.lastModified).to.equal(
+        UPDATE_RECORD_FILE_BUFFER.fileBuffer.lastModified,
+      )
     })
 
     it('should use originalname when recordName is not provided', async () => {

@@ -148,7 +148,7 @@ export function buildAllRecordsQueryParams(
   searchQuery?: string
 ): KnowledgeHubQueryParams {
   const params: KnowledgeHubQueryParams = {
-    page: pagination.page,
+    ...(pagination.cursor ? { cursor: pagination.cursor } : {}),
     limit: pagination.limit,
     sortBy: sort.field, // Note: 'source' is not a valid sort field (use 'origin' or 'name')
     sortOrder: sort.order,
@@ -159,9 +159,10 @@ export function buildAllRecordsQueryParams(
     params.q = sq;
   }
 
-  // Sidebar selection drives primary filtering
+  // Sidebar selection drives primary filtering. A collection is an App, so it
+  // scopes through connectorIds; no route accepts `kbIds`.
   if (sidebarSelection.type === 'collection') {
-    params.kbIds = sidebarSelection.id;
+    params.connectorIds = sidebarSelection.id;
   } else if (sidebarSelection.type === 'connector') {
     if (sidebarSelection.itemId) {
       // Specific connector item selected - filter by connector ID
@@ -183,8 +184,16 @@ export function buildAllRecordsQueryParams(
     params.indexingStatus = filter.indexingStatus.join(',');
   }
 
+  // The sidebar scope and the filter bar share one parameter, so the filter
+  // *narrows* the scope rather than replacing it. An empty intersection is left
+  // as the scope alone: sending an empty list would read as "no filter", which
+  // is the widest result rather than the emptiest.
   if (filter.connectorIds && filter.connectorIds.length > 0) {
-    params.connectorIds = filter.connectorIds.join(',');
+    const scoped = params.connectorIds ? params.connectorIds.split(',') : [];
+    const narrowed = scoped.length
+      ? filter.connectorIds.filter((id) => scoped.includes(id))
+      : filter.connectorIds;
+    if (narrowed.length > 0) params.connectorIds = narrowed.join(',');
   }
 
   // Note: Size and date filters will be applied client-side for now

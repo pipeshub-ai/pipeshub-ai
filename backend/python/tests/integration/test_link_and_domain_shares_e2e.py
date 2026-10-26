@@ -1,18 +1,18 @@
 """Domain, "anyone" and "anyone with the link" shares grant nobody access.
 
 Sources such as Google Drive report shares to a whole domain, to anyone, or to
-anyone holding the link. PipesHub deliberately does not honour them: the sync
-writes no permission for them (the branches in
-``DataSourceEntitiesProcessor._handle_record_permissions`` are switched off), so
-a colleague who was not named on a file cannot find or open it. That is a
-product decision, and this test keeps it from changing by accident, for
-example by someone restoring those branches. Search does not read ``anyone``
-documents, so one written anyway (by older data or a stray writer) grants nothing;
-the last test pins that too.
+anyone holding the link. PipesHub deliberately does not honour them: the Drive
+connector hands the sync no grant for them (the permission model has no such
+grantee), so a colleague who was not named on a file cannot find or open it.
+That is a product decision, and this test keeps it from changing by accident,
+for example by someone mapping one of them to an organization grant. Search
+does not read ``anyone`` documents, so one left by older data or a stray writer
+grants nothing; the last test pins that too.
 
-It drives the production path on a real graph: the processor stores a record
-shared with the owner plus a domain, an anyone and an anyone-with-link grant,
-and a control record shared with the colleague by name. Then it checks:
+It drives the production path on a real graph: the Drive connector reads a
+file shared with the owner plus a domain, an anyone and an anyone-with-link
+share, the processor stores it, and stores a control record shared with the
+colleague by name. Then it checks:
 
 * whether the sync wrote any grant for them: a permission edge, or an ``anyone``
   document; and
@@ -47,6 +47,7 @@ from app.connectors.core.base.data_processor.data_source_entities_processor impo
     DataSourceEntitiesProcessor,
 )
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
 from app.models.entities import FileRecord, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
@@ -78,6 +79,7 @@ class _Env:
     connector_id: str
     owner: dict
     colleague: dict
+    anyone_ids: list[str]
 
 
 def _user(run: str, name: str, org_id: str) -> dict:
@@ -98,7 +100,10 @@ async def _remove(graph: IGraphDBProvider, env_ids: dict) -> None:
     if isinstance(graph, Neo4jProvider):
         await graph.client.execute_query(
             "MATCH (n) WHERE n.connectorId = $c OR n.id IN $ids DETACH DELETE n",
-            parameters={"c": env_ids["connector_id"], "ids": env_ids["node_ids"]},
+            parameters={
+                "c": env_ids["connector_id"],
+                "ids": [*env_ids["node_ids"], *env_ids["keys_by_collection"][CollectionNames.ANYONE.value]],
+            },
         )
         return
     for collection, field, value in (
@@ -112,7 +117,9 @@ async def _remove(graph: IGraphDBProvider, env_ids: dict) -> None:
         await graph.http_client.execute_aql(
             f"FOR k IN @keys REMOVE k IN {collection} OPTIONS {{ignoreErrors: true}}", {"keys": keys}
         )
-    for edge in (CollectionNames.PERMISSION.value, CollectionNames.USER_APP_RELATION.value):
+    for edge in (
+        CollectionNames.PERMISSION.value, CollectionNames.USER_APP_RELATION.value, CollectionNames.BELONGS_TO.value,
+    ):
         await graph.http_client.execute_aql(
             f"FOR e IN {edge} FILTER e._from IN @h OR e._to IN @h REMOVE e IN {edge}",
             {"h": env_ids["handles"]},
@@ -140,24 +147,45 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         now = get_epoch_timestamp_in_ms()
         ids = {
             "connector_id": connector_id,
-            "node_ids": [connector_id, owner["id"], colleague["id"]],
+            "node_ids": [connector_id, owner["id"], colleague["id"], org_id],
             "keys_by_collection": {
+                CollectionNames.ORGS.value: [org_id],
                 CollectionNames.APPS.value: [connector_id],
                 CollectionNames.USERS.value: [owner["id"], colleague["id"]],
+                CollectionNames.ANYONE.value: [],
             },
-            "handles": [f"users/{owner['id']}", f"users/{colleague['id']}", f"apps/{connector_id}"],
+            "handles": [
+                f"users/{owner['id']}", f"users/{colleague['id']}", f"apps/{connector_id}",
+                f"{CollectionNames.ORGS.value}/{org_id}",
+            ],
         }
         cleanup.push_async_callback(_remove, graph, ids)
 
         assert await graph.batch_upsert_nodes(
             [{
                 "id": connector_id, "name": "Google Drive", "type": Connectors.GOOGLE_DRIVE.value,
-                "appGroup": "Google Workspace", "scope": "team", "isActive": True,
+                "appGroup": "Google Workspace", "scope": "team", "isActive": True, "orgId": org_id,
                 "createdAtTimestamp": now, "updatedAtTimestamp": now,
             }],
             collection=CollectionNames.APPS.value,
         )
         assert await graph.batch_upsert_nodes([owner, colleague], collection=CollectionNames.USERS.value)
+        # Both belong to the organization, so a share stored as a grant to it would reach the colleague.
+        assert await graph.batch_upsert_nodes(
+            [{"id": org_id, "name": "Falconry", "accountType": "enterprise", "isActive": True}],
+            collection=CollectionNames.ORGS.value,
+        )
+        assert await graph.batch_create_edges(
+            [
+                {
+                    "from_id": user["id"], "from_collection": CollectionNames.USERS.value,
+                    "to_id": org_id, "to_collection": CollectionNames.ORGS.value,
+                    "entityType": "ORGANIZATION", "createdAtTimestamp": now, "updatedAtTimestamp": now,
+                }
+                for user in (owner, colleague)
+            ],
+            collection=CollectionNames.BELONGS_TO.value,
+        )
         assert await graph.batch_create_edges(
             [
                 {
@@ -175,7 +203,10 @@ async def env(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -
         processor.org_id = org_id
         processor.messaging_producer = AsyncMock()
         processor.messaging_producer.send_messages.side_effect = lambda _topic, messages: [True] * len(messages)
-        yield _Env(graph, processor, org_id, connector_id, owner, colleague)
+        yield _Env(
+            graph, processor, org_id, connector_id, owner, colleague,
+            ids["keys_by_collection"][CollectionNames.ANYONE.value],
+        )
 
 
 def _file(env: _Env, name: str) -> FileRecord:
@@ -199,15 +230,28 @@ def _file(env: _Env, name: str) -> FileRecord:
     )
 
 
+async def _drive_permissions(env: _Env, shares: list[dict]) -> list[Permission]:
+    """What the Drive connector hands the sync for a file shared this way at the source."""
+    connector = object.__new__(GoogleDriveTeamConnector)
+    connector.logger = logger
+    connector.synced_user_emails = set()
+    connector._external_emails = set()
+    connector.drive_data_source = MagicMock()
+    connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": shares})
+    permissions, is_fallback, _ = await connector._fetch_permissions("file", user_email=env.owner["email"])
+    assert not is_fallback, permissions
+    return permissions
+
+
 async def _sync_the_two_files(env: _Env) -> tuple[FileRecord, FileRecord]:
     widely_shared = _file(env, "widely-shared.txt")
     named_share = _file(env, "shared-with-colleague.txt")
-    link_style = [
-        Permission(type=PermissionType.OWNER, entity_type=EntityType.USER, email=env.owner["email"]),
-        Permission(type=PermissionType.READ, entity_type=EntityType.DOMAIN, external_id=DOMAIN),
-        Permission(type=PermissionType.READ, entity_type=EntityType.ANYONE),
-        Permission(type=PermissionType.READ, entity_type=EntityType.ANYONE_WITH_LINK),
-    ]
+    link_style = await _drive_permissions(env, [
+        {"id": "p-owner", "type": "user", "role": "owner", "emailAddress": env.owner["email"]},
+        {"id": "p-domain", "type": "domain", "role": "reader", "domain": DOMAIN},
+        {"id": "p-anyone", "type": "anyone", "role": "reader"},
+        {"id": "p-link", "type": "anyoneWithLink", "role": "reader"},
+    ])
     named = [Permission(type=PermissionType.READ, entity_type=EntityType.USER, email=env.colleague["email"])]
     await env.processor.on_new_records([(widely_shared, link_style), (named_share, named)])
 
@@ -281,11 +325,15 @@ async def test_search_does_not_return_the_widely_shared_file_to_the_colleague(en
 
 
 async def test_an_anyone_document_grants_no_search_access(env: _Env) -> None:
-    """An "anyone" document, even one written today by the permission writer, makes nothing searchable."""
+    """An "anyone" document left by older data makes nothing searchable."""
     widely_shared, named_share = await _sync_the_two_files(env)
-    # Written the way the production writer does: {file_key, organization, active}.
-    await env.graph.process_file_permissions(
-        env.org_id, widely_shared.id, [{"id": "anyone-perm", "type": "anyone", "role": "reader"}]
+    # As the old permission writer stored it: {file_key, organization, active}.
+    anyone_id = f"anyone_{widely_shared.id}"
+    env.anyone_ids.append(anyone_id)
+    assert await env.graph.batch_upsert_nodes(
+        [{"id": anyone_id, "type": "anyone", "file_key": widely_shared.id,
+          "organization": env.org_id, "role": "READER", "active": True}],
+        collection=CollectionNames.ANYONE.value,
     )
     assert await _anyone_documents_for(env.graph, widely_shared.id) == 1, "the anyone document was not written"
 

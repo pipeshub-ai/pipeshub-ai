@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import threading
 from typing import List, Optional
 
 from app.services.vector_db.models import SparseVector, to_generic_sparse_vector
@@ -30,11 +29,6 @@ from app.utils.logger import create_logger
 logger = create_logger("sparse_embeddings")
 
 _MODEL_NAME = "Qdrant/bm25"
-# SparseTextEmbedding in fastembed 0.5.1 pops local_files_only before forwarding
-# it to Bm25, so cache-only loads have to go through HF_HUB_OFFLINE. That env
-# var is process-global; serialize mutations so concurrent embedders cannot
-# leak "1" into other threads or leave it set after restore.
-_HF_OFFLINE_ENV_LOCK = threading.Lock()
 
 
 def _hf_hub_offline_enabled() -> bool:
@@ -82,29 +76,18 @@ class SparseEmbedder:
         """
         from fastembed import SparseTextEmbedding  # type: ignore
 
-        def _construct_from_cache():
-            old = os.environ.get("HF_HUB_OFFLINE")
-            os.environ["HF_HUB_OFFLINE"] = "1"
-            try:
-                return SparseTextEmbedding(model_name=self._model_name)
-            finally:
-                if old is None:
-                    os.environ.pop("HF_HUB_OFFLINE", None)
-                else:
-                    os.environ["HF_HUB_OFFLINE"] = old
-
-        with _HF_OFFLINE_ENV_LOCK:
-            explicitly_offline = _hf_hub_offline_enabled()
-            try:
-                return _construct_from_cache()
-            except Exception:
-                if explicitly_offline:
-                    raise
-                logger.info(
-                    "Sparse model '%s' not in local cache; downloading from Hub",
-                    self._model_name,
-                )
-                return SparseTextEmbedding(model_name=self._model_name)
+        # fastembed passes local_files_only through to Bm25 since 0.7. Toggling
+        # HF_HUB_OFFLINE here would not work: huggingface_hub reads it once, at import.
+        try:
+            return SparseTextEmbedding(model_name=self._model_name, local_files_only=True)
+        except Exception:
+            if _hf_hub_offline_enabled():
+                raise
+            logger.info(
+                "Sparse model '%s' not in local cache; downloading from Hub",
+                self._model_name,
+            )
+            return SparseTextEmbedding(model_name=self._model_name)
 
     async def _ensure_initialized(self) -> object:
         """Ensure the model is loaded; return it."""

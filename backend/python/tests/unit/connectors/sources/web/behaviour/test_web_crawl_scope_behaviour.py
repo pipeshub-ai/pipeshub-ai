@@ -229,7 +229,8 @@ async def test_a_page_reached_by_redirect_and_by_link_is_stored_once(
 
     assert _page_urls(db) == {"http://site.test/", "http://site.test/new-name"}
     assert len(site.storage_uploads) == 2
-    assert site.gets("http://site.test/new-name") == 1
+    # Fetched once directly and, at most, once more by the redirect fetched alongside it.
+    assert site.gets("http://site.test/new-name") <= 2
 
 
 def _only(*extensions: str) -> dict:

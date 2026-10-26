@@ -39,10 +39,14 @@ from app.agent_loop_lib.core.messages import (
     ToolCall,
     ToolMessage,
     UserMessage,
+    as_sent,
 )
 from app.agent_loop_lib.core.responses import TokenUsage
+from app.agent_loop_lib.transport.tool_images import relocated_tool_images
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from app.agent_loop_lib.core.messages import Message, Part
     from app.agent_loop_lib.core.tool_schema import ToolSchema
 
@@ -184,16 +188,14 @@ def convert_message_to_langchain(
     OpenAI-family models on Chat Completions — see
     `LangChainTransport._supports_multipart_tool_result`). Providers that
     do accept multipart tool results (Anthropic, Gemini, Bedrock, ...) keep
-    images inline here; the stripped images are recovered from
-    `context.tool_state["pending_tool_images"]` and re-injected into a
-    `UserMessage` by the `shape_retrieved_image_injection` PRE_MODEL
-    fallback hook (`attachment_resolver.py`).
+    images inline here; `convert_messages_to_langchain`'s
+    `relocate_tool_images` sends the stripped images in a user message.
     """
     if message.role == MessageRole.SYSTEM:
         return LCSystemMessage(content=message.content)
 
     if message.role == MessageRole.USER:
-        content = message.content
+        content = as_sent(message).content
         if isinstance(content, str):
             return HumanMessage(content=content)
         return HumanMessage(content=[_part_to_block(p) for p in content])
@@ -236,11 +238,6 @@ def convert_message_to_langchain(
     raise ValueError(f"Unsupported agent-loop message role: {message.role!r}")
 
 
-# Prefix for the user message `relocate_tool_images` parks tool-sourced images
-# under, so the model can tell them apart from what the user itself attached.
-_RELOCATED_IMAGES_PREFIX = "Images returned by the tool results above:"
-
-
 def convert_messages_to_langchain(
     messages: list[Message],
     system: str | None = None,
@@ -253,14 +250,11 @@ def convert_messages_to_langchain(
     contract: `system` arrives as a separate kwarg, not inside `messages`).
 
     `relocate_tool_images`: strip images out of tool results (as
-    `strip_tool_images` does) but re-attach them to a trailing `HumanMessage`
-    instead of dropping them. Used by `LangChainTransport`'s runtime recovery
-    from a provider that rejects images in a tool-result message
-    (`is_tool_result_image_conflict`) — that path has no
-    `shape_retrieved_image_injection` hook registered to recover the images
-    from `pending_tool_images`, since the factory registers that hook only for
-    providers `_supports_multipart_tool_result` rejects up front, so without
-    re-attaching them here the retry would answer about images it never saw.
+    `strip_tool_images` does) but send them once in a loop-added user message
+    after the results (`agent_loop_lib/transport/tool_images.py`), the one
+    delivery path for providers that reject images in a tool result: always
+    on for those, and `LangChainTransport`'s recovery when a provider rejects
+    one at runtime.
     """
     converted = [
         convert_message_to_langchain(
@@ -269,31 +263,12 @@ def convert_messages_to_langchain(
         for m in messages
     ]
     if relocate_tool_images:
-        blocks = [
-            _image_part_to_block(part)
-            for m in messages
-            if m.role == MessageRole.TOOL and isinstance(m.content, list)
-            for part in m.content
-            if isinstance(part, ImagePart)
-        ]
-        if blocks:
-            converted.append(HumanMessage(
-                content=[{"type": "text", "text": _RELOCATED_IMAGES_PREFIX}, *blocks],
-            ))
+        relocated = relocated_tool_images(messages)
+        if relocated is not None:
+            converted.append(convert_message_to_langchain(relocated))
     if system:
         return [LCSystemMessage(content=system), *converted]
     return converted
-
-
-def has_tool_result_images(messages: list[Message]) -> bool:
-    """Whether any tool result carries an `ImagePart` — i.e. whether
-    `relocate_tool_images` has anything to move."""
-    return any(
-        m.role == MessageRole.TOOL
-        and isinstance(m.content, list)
-        and any(isinstance(part, ImagePart) for part in m.content)
-        for m in messages
-    )
 
 
 # OpenAI's Chat Completions/Responses APIs hard-reject any tool/function
@@ -459,22 +434,48 @@ def convert_assistant_message_from_langchain(ai_message: AIMessage) -> Assistant
     )
 
 
-def token_usage_from_ai_message(ai_message: AIMessage) -> TokenUsage:
+# Cache counters under the service-tier prefixes langchain-openai uses
+# ("priority_cache_read", "flex_cache_read", ...) as well as the plain names.
+_TIER_PREFIXES = ("", "priority_", "flex_")
+
+
+def token_usage_from_ai_message(ai_message: AIMessage, *, input_excludes_cached: bool = False) -> TokenUsage:
     """Best-effort `TokenUsage` extraction from `AIMessage.usage_metadata`.
     Not every provider integration populates every sub-field (or even
     `usage_metadata` itself), so every access defaults to 0 rather than
-    raising — a missing usage field should never crash the turn loop."""
+    raising — a missing usage field should never crash the turn loop.
+
+    ``input_tokens`` always includes cached tokens, the convention cost math
+    relies on. Integrations that report input without them (Bedrock Converse)
+    pass ``input_excludes_cached``. Cache writes come from the TTL counters when
+    the integration reports them (langchain-anthropic then zeroes
+    ``cache_creation`` so they are not counted twice), else from
+    ``cache_creation``."""
     usage = ai_message.usage_metadata
     if not usage:
         return TokenUsage()
 
-    input_details = usage.get("input_token_details") or {}
+    details = usage.get("input_token_details") or {}
+    cache_read = _detail(details, "cache_read")
+    by_ttl = _int(details.get("ephemeral_5m_input_tokens")) + _int(details.get("ephemeral_1h_input_tokens"))
+    cache_write = by_ttl or _detail(details, "cache_creation")
+    input_tokens = _int(usage.get("input_tokens"))
+    if input_excludes_cached:
+        input_tokens += cache_read + cache_write
     return TokenUsage(
-        input_tokens=usage.get("input_tokens", 0) or 0,
-        output_tokens=usage.get("output_tokens", 0) or 0,
-        cache_read_tokens=input_details.get("cache_read", 0) or 0,
-        cache_write_tokens=input_details.get("cache_creation", 0) or 0,
+        input_tokens=input_tokens,
+        output_tokens=_int(usage.get("output_tokens")),
+        cache_read_tokens=cache_read,
+        cache_write_tokens=cache_write,
     )
+
+
+def _detail(details: Mapping[str, Any], name: str) -> int:
+    return sum(_int(details.get(f"{prefix}{name}")) for prefix in _TIER_PREFIXES)
+
+
+def _int(value: Any) -> int:  # noqa: ANN401 - provider usage values
+    return value if isinstance(value, int) and not isinstance(value, bool) else 0
 
 
 # ---------------------------------------------------------------------------

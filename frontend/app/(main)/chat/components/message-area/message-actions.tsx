@@ -1,6 +1,7 @@
 'use client';
 
 import React, { useState, useCallback, useRef } from 'react';
+import { useRouter } from 'next/navigation';
 import { Flex, Box, Text, IconButton, Popover, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -12,9 +13,14 @@ import {
 import type { ModelInfo, AppliedFilters } from '@/chat/types';
 import type { CitationMaps } from './response-tabs/citations';
 import { useCommandStore } from '@/lib/store/command-store';
+import { ChatMessageExtras } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 import { useChatSpeechSynthesis } from '@/lib/hooks/use-chat-speech-synthesis';
+import { AgentsApi } from '@/app/(main)/agents/api';
 import { ChatApi, type FeedbackPayload } from '../../api';
+import { buildChatHref } from '../../build-chat-url';
 import { useChatStore } from '../../store';
 
 // ========================================
@@ -65,6 +71,8 @@ interface MessageActionsProps {
   appliedFilters?: AppliedFilters;
   /** Persisted feedback value — initialises the like/dislike button state on load */
   feedbackInfo?: { value?: 'like' | 'dislike' };
+  /** False for a reply that ran an action a person approved: regenerating could run it again. */
+  canRegenerate?: boolean;
 }
 
 /**
@@ -117,14 +125,25 @@ export function MessageActions({
   isLastMessage = false,
   appliedFilters,
   feedbackInfo,
+  canRegenerate = true,
 }: MessageActionsProps) {
+  const isMobile = useIsMobile();
   const [feedbackGiven, setFeedbackGiven] = useState<FeedbackValue | null>(feedbackInfo?.value ?? null);
   const [copyPopoverOpen, setCopyPopoverOpen] = useState(false);
   const [copiedTooltipOpen, setCopiedTooltipOpen] = useState(false);
   const [copiedMessage, setCopiedMessage] = useState('');
   const copiedTooltipTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [readAloudHovered, setReadAloudHovered] = useState(false);
+  const [isForking, setIsForking] = useState(false);
   const { t, i18n } = useTranslation();
+  const router = useRouter();
+  const bumpConversationsVersion = useChatStore((s) => s.bumpConversationsVersion);
+  const forkLabel = isLastMessage ? t('chat.fork') : t('chat.forkFromHere');
+  const canFork = useChatStore((s) => (s.activeSlotId ? s.slots?.[s.activeSlotId]?.isOwner : undefined) !== false);
+  // Only the owner may rate or regenerate an agent chat (the server refuses a recipient with 404),
+  // so a recipient of a shared agent chat is not offered those buttons.
+  const isAgentThread = useChatStore((s) => Boolean(s.activeSlotId && s.slots?.[s.activeSlotId]?.threadAgentId));
+  const canGiveFeedback = canFork || !isAgentThread;
 
   // ── Like popover state ──
   const [likeOpen, setLikeOpen] = useState(false);
@@ -279,6 +298,35 @@ export function MessageActions({
     useCommandStore.getState().dispatch('showRegenBar', { messageId, text: question, appliedFilters });
   }, [messageId, question, appliedFilters]);
 
+  const handleFork = useCallback(async () => {
+    if (!messageId || isForking) return;
+    const state = useChatStore.getState();
+    const slot = state.activeSlotId ? state.slots[state.activeSlotId] : null;
+    const convId = slot?.convId;
+    if (!convId) return;
+
+    setIsForking(true);
+    try {
+      const agentId = slot.threadAgentId;
+      const result = agentId
+        ? await AgentsApi.forkAgentConversation(agentId, convId, messageId)
+        : await ChatApi.forkConversation(convId, messageId);
+      bumpConversationsVersion();
+      router.push(
+        buildChatHref({
+          agentId,
+          conversationId: result.id,
+          projectId: result.projectId,
+        }),
+      );
+      toast.success(t('chat.toasts.forkSuccess'));
+    } catch {
+      toast.error(t('chat.toasts.forkError'));
+    } finally {
+      setIsForking(false);
+    }
+  }, [messageId, isForking, bumpConversationsVersion, router, t]);
+
   const copyToClipboard = useCallback(
     async (text: string, message: string) => {
       try {
@@ -331,7 +379,7 @@ export function MessageActions({
       {/* ── Left: Action buttons ── */}
       <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
         {/* ── Thumbs up with optional comment popover ── */}
-        {messageId && (
+        {messageId && canGiveFeedback && (
           <Popover.Root open={likeOpen} onOpenChange={(open) => { if (!open) handleLikePopoverClose(); }}>
             <Tooltip content={t('chat.like', 'Helpful')} side="top">
               <Popover.Trigger>
@@ -341,6 +389,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleLikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -470,7 +519,7 @@ export function MessageActions({
         )}
 
         {/* ── Thumbs down with category chips + optional text ── */}
-        {messageId && (
+        {messageId && canGiveFeedback && (
           <Popover.Root open={dislikeOpen} onOpenChange={(open) => { if (!open) handleDislikePopoverClose(); }}>
             <Tooltip content={t('chat.dislike', 'Not helpful')} side="top">
               <Popover.Trigger>
@@ -480,6 +529,7 @@ export function MessageActions({
                   size="2"
                   onClick={handleDislikeClick}
                   style={{
+                    ...touchTarget(isMobile),
                     borderRadius: 'var(--radius-1)',
                     margin: 0,
                     cursor: 'pointer',
@@ -627,6 +677,7 @@ export function MessageActions({
                   color="gray"
                   size="2"
                   style={{
+                    ...touchTarget(isMobile),
                     margin: 0,
                     cursor: 'pointer',
                     color: 'var(--slate-9)',
@@ -693,16 +744,44 @@ export function MessageActions({
           </Box>
         </Tooltip>
 
+        {messageId && canFork && (
+          <Tooltip content={forkLabel} side="top">
+            <IconButton
+              variant="ghost"
+              color="gray"
+              size="2"
+              disabled={isForking}
+              onClick={handleFork}
+              aria-label={forkLabel}
+              style={{
+                ...touchTarget(isMobile),
+                margin: 0,
+                cursor: isForking ? 'default' : 'pointer',
+                color: 'var(--slate-9)',
+                borderRadius: 'var(--radius-1)',
+              }}
+            >
+              <MaterialIcon
+                name="call_split"
+                size={ICON_SIZES.PRIMARY}
+                color="var(--slate-11)"
+              />
+            </IconButton>
+          </Tooltip>
+        )}
+
         {/* Regenerate - only show for the last message */}
-        {isLastMessage && messageId &&(
+        {isLastMessage && messageId && canRegenerate && canFork && (
           <Tooltip content={t('chat.regenerate')} side="top">
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
               disabled={!messageId}
+              aria-label={t('chat.regenerate')}
               onClick={handleRegenerate}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: messageId ? 'pointer' : 'default',
                 color: 'var(--slate-9)',
@@ -725,6 +804,7 @@ export function MessageActions({
               onMouseEnter={() => setReadAloudHovered(true)}
               onMouseLeave={() => setReadAloudHovered(false)}
               style={{
+                ...touchTarget(isMobile),
                 margin: 0,
                 cursor: 'pointer',
                 borderRadius: 'var(--radius-1)',
@@ -748,6 +828,8 @@ export function MessageActions({
            a lone item to the start of its row), which reads cleanly under the
            action buttons. ── */}
       <Flex align="center" style={{ flexShrink: 0 }}>
+        <ChatMessageExtras messageId={messageId} />
+
         {/* Chat mode label */}
         {chatModeLabel && (
           <Flex

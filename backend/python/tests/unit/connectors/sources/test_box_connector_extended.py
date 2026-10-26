@@ -317,7 +317,8 @@ class TestGetPermissions:
             return_value=_make_box_response(success=False, error="404 Not Found")
         )
         perms = await connector._get_permissions("f1", "file")
-        assert perms == []
+        assert perms is None
+        assert connector._read_complete is True
 
     @pytest.mark.asyncio
     async def test_skip_no_id(self):
@@ -427,9 +428,7 @@ class TestProcessBoxEntry:
         entry = _make_box_entry(shared_link={"access": "company"})
         result = await connector._process_box_entry(entry, "user1", "user@test.com", "rg-1")
         assert result is not None
-        # Check that org-level permission was added
-        has_group_perm = any(p.entity_type == EntityType.GROUP for p in result.new_permissions)
-        assert has_group_perm
+        assert [(p.external_id, p.entity_type) for p in result.new_permissions] == [("org-box-1", EntityType.ORG)]
 
     @pytest.mark.asyncio
     async def test_shared_link_open(self):
@@ -444,10 +443,7 @@ class TestProcessBoxEntry:
         entry = _make_box_entry(shared_link={"access": "open"})
         result = await connector._process_box_entry(entry, "user1", "user@test.com", "rg-1")
         assert result is not None
-        has_public_perm = any(
-            p.external_id == "PUBLIC" for p in result.new_permissions
-        )
-        assert has_public_perm
+        assert result.new_permissions == []
 
     @pytest.mark.asyncio
     async def test_existing_record_marks_updated(self):

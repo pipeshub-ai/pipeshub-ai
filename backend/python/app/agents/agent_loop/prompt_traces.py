@@ -89,19 +89,24 @@ Assistant (final answer): Our pricing tiers are: Starter ($29/mo), Growth ($99/m
 ---
 ### Example 4 — Write action gated by confirmation
 
-User: Can you close the Jira ticket?
+User: Close my Jira ticket.
 
-Assistant (think): The user wants me to close a ticket but hasn't confirmed which one or whether to proceed. I must ask before writing.
+Assistant (think): Which ticket isn't said. List open ones, ask which; closing was requested, so no confirmation.
 
-TOOL internaltools__ask_user_question | question="Which Jira ticket should I close, and shall I proceed?", options=["Yes, close it","No, cancel"]
+TOOL jira_search_issues | query="assignee = currentUser() AND statusCategory != Done"
 
 Tool result:
-> User replied: Yes, close PROJ-42. [loop: step 1/5, stale_rounds=0]
+> PROJ-42 Login crash · PROJ-57 Slow search. [loop: step 1/5, stale_rounds=0]
+
+TOOL internaltools__ask_user_question | questions=[{"question": "Which ticket?", "options": [{"label": "PROJ-42"}, {"label": "PROJ-57"}]}]
+
+Tool result:
+> answered: "Which ticket?" → PROJ-42. [loop: step 2/5, stale_rounds=0]
 
 TOOL jira_transition_issue | issue_key="PROJ-42", transition="Done"
 
 Tool result:
-> PROJ-42 transitioned to Done. [loop: step 2/5, stale_rounds=0]
+> PROJ-42 transitioned to Done. [loop: step 3/5, stale_rounds=0]
 
 Assistant (final answer): Done — [PROJ-42](https://jira.example.com/browse/PROJ-42) has been closed.
 """.strip()

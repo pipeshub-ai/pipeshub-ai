@@ -151,10 +151,16 @@ export function createGlobalRateLimiter(
   return rateLimit(config);
 }
 
+export function slackEventsRateLimitPerMinute(): number {
+  const parsed = Number(process.env.SLACK_EVENTS_RATE_LIMIT_PER_MINUTE);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
+}
+
 export interface KeyedRateLimiterOptions {
   prefix: string;
   maxRequestsPerMinute: number;
   message: string;
+  countOnlyFailures?: boolean;
 }
 
 /**
@@ -167,7 +173,12 @@ export function createKeyedRateLimiter(
   logger: Logger,
   options: KeyedRateLimiterOptions,
 ): RequestHandler {
-  const { prefix, maxRequestsPerMinute, message } = options;
+  const {
+    prefix,
+    maxRequestsPerMinute,
+    message,
+    countOnlyFailures = false,
+  } = options;
 
   const keyFor = (req: Request): string => {
     const authenticatedUserReq = req as AuthenticatedUserRequest;
@@ -182,6 +193,7 @@ export function createKeyedRateLimiter(
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
+    skipSuccessfulRequests: countOnlyFailures,
     keyGenerator: keyFor,
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
@@ -252,5 +264,28 @@ export function createAuthRateLimiter(
     prefix: 'auth',
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
+  });
+}
+
+/**
+ * Public /slack/events entry. Slack deliveries are anonymous, so this keys on
+ * the client IP. Mount it on the Express gateway only: the bot process behind
+ * it sees every org's traffic from the gateway's address, so a limiter there
+ * would be one bucket shared by all orgs.
+ *
+ * Only responses of 400 or above count. Every org's real deliveries arrive from
+ * Slack's few egress addresses, so counting them would let one busy workspace
+ * throttle all the others, and a 429 makes Slack redeliver and add more load.
+ * Bad signatures (the bot's 401) still fill the bucket.
+ */
+export function createSlackEventsRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute = slackEventsRateLimitPerMinute(),
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'slack-events',
+    maxRequestsPerMinute,
+    message: 'Too many Slack event deliveries.',
+    countOnlyFailures: true,
   });
 }

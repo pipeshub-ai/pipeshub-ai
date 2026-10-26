@@ -114,6 +114,7 @@ async def test_one_project_that_cannot_be_read_does_not_stop_the_others(harness,
     gitlab.add_issue(API, 1, "Api issue", "2026-09-01T10:00:00Z")
     gitlab.fail("GET", rf"^/api/v4/projects/{WEB}/issues$", 403)
 
+    # A 403 is GitLab's answer (issues switched off, say), not a failure to read.
     await harness.sync()
 
     assert "12001" in db.records
@@ -139,10 +140,11 @@ async def test_an_insecure_instance_url_is_refused_before_any_token_is_sent(harn
 async def test_the_token_is_not_forwarded_when_gitlab_redirects_to_another_host(harness, gitlab, db) -> None:
     build_acme(gitlab)
     harness.use_personal_access_token()
-    gitlab.fail("GET", rf"^/api/v4/projects/{WEB}$", 302, times=1,
-                headers={"Location": f"https://elsewhere.example.net/api/v4/projects/{WEB}"})
+    gitlab.fail("GET", rf"^/api/v4/projects/{WEB}/issues$", 302, times=1,
+                headers={"Location": f"https://elsewhere.example.net/api/v4/projects/{WEB}/issues"})
 
-    await harness.sync()
+    # The other host, sent no token, answers 401: that listing fails, and so does the sync.
+    await harness.sync_incomplete()
 
     offsite = [r for r in gitlab.requests if r.host == "elsewhere.example.net"]
     assert offsite, "the redirect was never followed"

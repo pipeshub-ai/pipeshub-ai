@@ -57,13 +57,13 @@ def _teams_meeting_label(meeting: dict) -> str:
 
 
 _GRAPH_STATUS_RE = re.compile(r"\(status (\d{3})\)\s*$")
-_RECONNECT_TEAMS = "Reconnect the Teams toolset in Settings > Toolsets and try again."
+_RECONNECT_TEAMS = "Reconnect Teams under Your actions, then try again."
 _GRAPH_STATUS_HINTS = {
     HTTPStatus.TOO_MANY_REQUESTS: "Microsoft Teams is limiting how fast requests can be made. Wait a minute and try again.",
     HTTPStatus.UNAUTHORIZED: f"Microsoft did not accept the saved sign-in. {_RECONNECT_TEAMS}",
     HTTPStatus.FORBIDDEN: (
-        "The signed-in account does not have permission to do this. If it should, reconnect the Teams "
-        "toolset in Settings > Toolsets and approve the requested permissions."
+        "The signed-in account does not have permission to do this. If it should, reconnect Teams "
+        "under Your actions and approve the requested permissions."
     ),
     HTTPStatus.NOT_FOUND: "Check the id, or look it up first with get_teams, get_channels or get_users_list.",
 }
@@ -901,7 +901,7 @@ class Teams:
                     "error": (
                         "Teams toolset is not authenticated. "
                         "Please complete the OAuth flow first. "
-                        "Go to Settings > Toolsets to authenticate your Teams account."
+                        "Authenticate your Teams account under Your actions."
                     )
                 })
 
@@ -922,7 +922,7 @@ class Teams:
                 "error": (
                     "Teams toolset is not authenticated. "
                     "Please complete the OAuth flow first. "
-                    "Go to Settings > Toolsets to authenticate your Teams account."
+                    "Authenticate your Teams account under Your actions."
                 )
             })
 
@@ -3043,7 +3043,7 @@ class Teams:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="ID of the Teams message", required=True),
             ToolParameter(name="reaction_type", type=ParameterType.STRING, description="Reaction type to remove", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def remove_reaction(
         self,

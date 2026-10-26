@@ -13,6 +13,7 @@ from typing import Any, Dict, Optional
 
 HEADER_REQUEST_ID = "x-request-id"
 ENVELOPE_REQUEST_ID = "requestId"
+HEADER_ADMITTED_IN = "x-pipeshub-admitted-in"
 NO_CONTEXT = "-"
 
 # `<objectId:24>-<nanoid:21>`
@@ -34,6 +35,12 @@ class RequestContext:
 
 _ctx: contextvars.ContextVar[Optional[RequestContext]] = contextvars.ContextVar(
     "request_ctx", default=None
+)
+
+# The memory domain whose governor admitted the parse this request carries
+# (resource_governor.memory_domain), so a service sharing that memory does not brake it again.
+_admitted_in: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "admitted_in", default=None
 )
 
 _service_suffix: str = ""
@@ -69,6 +76,26 @@ def reset_context(token: Optional[CtxToken]) -> None:
         _ctx.set(None)
 
 
+AdmittedToken = contextvars.Token["str | None"]
+
+
+def set_admitted_in(domain: str | None) -> AdmittedToken:
+    return _admitted_in.set(domain)
+
+
+def get_admitted_in() -> str | None:
+    return _admitted_in.get()
+
+
+def reset_admitted_in(token: AdmittedToken | None) -> None:
+    if token is None:
+        return
+    try:
+        _admitted_in.reset(token)
+    except (ValueError, LookupError):
+        _admitted_in.set(None)
+
+
 def new_system_root() -> str:
     """Root id for a system/automation-initiated unit of work.
 
@@ -99,6 +126,9 @@ def inject_request_headers(
     ctx = _ctx.get()
     if ctx is not None:
         out.setdefault(HEADER_REQUEST_ID, ctx.root_id)
+    admitted_in = _admitted_in.get()
+    if admitted_in is not None:
+        out.setdefault(HEADER_ADMITTED_IN, admitted_in)
     return out
 
 

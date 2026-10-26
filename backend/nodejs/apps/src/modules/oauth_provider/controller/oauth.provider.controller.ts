@@ -1,40 +1,57 @@
-import { injectable, inject } from 'inversify'
-import { Request, Response, NextFunction } from 'express'
-import { Logger } from '../../../libs/services/logger.service'
-import { OAuthAppService } from '../services/oauth.app.service'
-import { OAuthTokenService } from '../services/oauth_token.service'
-import { AuthorizationCodeService } from '../services/authorization_code.service'
-import { ScopeValidatorService } from '../services/scope.validator.service'
+import { injectable, inject } from 'inversify';
+import { Request, Response, NextFunction } from 'express';
+import { Logger } from '../../../libs/services/logger.service';
+import {
+  OAuthAppService,
+  APP_WORKSPACE_MISMATCH_MESSAGE,
+  getWorkspaceMismatchDetails,
+  isAppUsableInOrg,
+} from '../services/oauth.app.service';
+import { OAuthTokenService } from '../services/oauth_token.service';
+import { AuthorizationCodeService } from '../services/authorization_code.service';
+import { ScopeValidatorService } from '../services/scope.validator.service';
 import {
   InvalidGrantError,
   InvalidClientError,
   UnsupportedGrantTypeError,
+  TokenExchangeError,
   InvalidScopeError,
   AccessDeniedError,
   InvalidRedirectUriError,
   DeviceGrantError,
-} from '../../../libs/errors/oauth.errors'
-import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors'
+} from '../../../libs/errors/oauth.errors';
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
 import {
   AuthorizeRequest,
   TokenRequest,
   TokenResponse,
   ConsentData,
   OAuthErrorResponse,
-} from '../types/oauth.types'
-import { Users } from '../../user_management/schema/users.schema'
-import { Org } from '../../user_management/schema/org.schema'
-import { OAuthDcrService } from '../services/oauth.dcr.service'
-import { OAuthDeviceService } from '../services/oauth.device.service'
+} from '../types/oauth.types';
+import { Users } from '../../user_management/schema/users.schema';
+import {
+  isKnowledgeLimitWithin,
+  toKnowledgeLimit,
+} from '../schema/knowledge_limit.schema';
+import { Org } from '../../user_management/schema/org.schema';
+import { OAuthDcrService } from '../services/oauth.dcr.service';
+import { OAuthDeviceService } from '../services/oauth.device.service';
+import { TokenExchangeService } from '../services/token-exchange.service';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { clientTags } from '../../../libs/services/telemetry/identity';
 
 interface AuthenticatedRequest extends Request {
   user?: {
-    userId: string
-    orgId: string
-    email: string
-    fullName?: string
-    accountType?: string
-  }
+    userId: string;
+    orgId: string;
+    email: string;
+    fullName?: string;
+    accountType?: string;
+  };
 }
 
 @injectable()
@@ -48,7 +65,10 @@ export class OAuthProviderController {
     @inject('ScopeValidatorService')
     private scopeValidatorService: ScopeValidatorService,
     @inject('OAuthDcrService') private oauthDcrService: OAuthDcrService,
-    @inject('OAuthDeviceService') private oauthDeviceService: OAuthDeviceService,
+    @inject('OAuthDeviceService')
+    private oauthDeviceService: OAuthDeviceService,
+    @inject('TokenExchangeService')
+    private tokenExchangeService: TokenExchangeService,
   ) {}
 
   /**
@@ -61,20 +81,30 @@ export class OAuthProviderController {
     res: Response,
     next: NextFunction,
   ): Promise<void> {
-    const query = req.query as unknown as AuthorizeRequest
+    const query = req.query as unknown as AuthorizeRequest;
 
     // RFC 6749 Section 4.1.2.1: MUST validate client_id and redirect_uri
     // BEFORE redirecting any error. If invalid, show error directly.
-    let app
-    let validatedRedirectUri: string | null = null
+    let app;
+    let validatedRedirectUri: string | null = null;
 
     try {
       // Validate client first
-      app = await this.oauthAppService.getAppByClientId(query.client_id)
+      app = await this.oauthAppService.getAppByClientId(query.client_id);
 
       // Validate redirect URI - MUST be done before any error redirect
-      this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri)
-      validatedRedirectUri = query.redirect_uri
+      this.oauthAppService.validateRedirectUriForApp(app, query.redirect_uri);
+      validatedRedirectUri = query.redirect_uri;
+
+      // Answered here, not by redirect, so the person reads it on the consent page.
+      if (!req.user || !isAppUsableInOrg(app, req.user.orgId)) {
+        res.status(403).json({
+          error: 'access_denied',
+          error_description: APP_WORKSPACE_MISMATCH_MESSAGE,
+          ...getWorkspaceMismatchDetails(app),
+        });
+        return;
+      }
     } catch (error) {
       // RFC 6749 Section 4.1.2.1: If redirect_uri is invalid/missing or client_id is invalid,
       // MUST NOT redirect. Display error directly to user.
@@ -83,42 +113,57 @@ export class OAuthProviderController {
         error instanceof InvalidRedirectUriError
       ) {
         res.status(400).json({
-          error: error instanceof InvalidClientError ? 'invalid_client' : 'invalid_request',
+          error:
+            error instanceof InvalidClientError
+              ? 'invalid_client'
+              : 'invalid_request',
           error_description: error.message,
-        })
-        return
+        });
+        return;
       }
-      next(error)
-      return
+      next(error);
+      return;
     }
 
     try {
       // Parse and validate scopes
-      const requestedScopes = this.scopeValidatorService.parseScopes(query.scope)
-      this.scopeValidatorService.validateScopesForApp(
-        requestedScopes,
-        app.allowedScopes,
-      )
+      const requestedScopes = this.scopeValidatorService.parseScopes(
+        query.scope,
+      );
+      const { granted, notGranted } =
+        this.scopeValidatorService.resolveGrantedScopes(
+          requestedScopes,
+          app.allowedScopes,
+        );
 
       // RFC 9700: PKCE is REQUIRED for public clients
       if (!app.isConfidential && !query.code_challenge) {
-        const redirectUrl = new URL(validatedRedirectUri)
-        redirectUrl.searchParams.set('error', 'invalid_request')
+        const redirectUrl = new URL(validatedRedirectUri);
+        redirectUrl.searchParams.set('error', 'invalid_request');
         redirectUrl.searchParams.set(
           'error_description',
           'PKCE code_challenge is required for public clients',
-        )
+        );
         if (query.state) {
-          redirectUrl.searchParams.set('state', query.state)
+          redirectUrl.searchParams.set('state', query.state);
         }
-        res.json({ redirectUrl: redirectUrl.toString() })
-        return
+        res.json({ redirectUrl: redirectUrl.toString() });
+        return;
       }
 
       // Build consent data
-      const user = req.user!
-      const scopeDefinitions =
-        this.scopeValidatorService.getScopeDefinitions(requestedScopes)
+      const user = req.user;
+      const toScopeInfo = (scopes: string[]): ConsentData['scopes'] =>
+        this.scopeValidatorService.getScopeDefinitions(scopes).map((s) => ({
+          name: s.name,
+          description: s.description,
+          category: s.category,
+        }));
+      const org = await Org.findOne({ _id: user.orgId, isDeleted: false })
+        .select('registeredName shortName')
+        .lean()
+        .exec();
+      const workspaceName = org?.shortName || org?.registeredName;
 
       const consentData: ConsentData = {
         app: {
@@ -128,19 +173,18 @@ export class OAuthProviderController {
           homepageUrl: app.homepageUrl,
           privacyPolicyUrl: app.privacyPolicyUrl,
           isDynamic: app.isDynamic === true,
+          knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
         },
-        scopes: scopeDefinitions.map((s) => ({
-          name: s.name,
-          description: s.description,
-          category: s.category,
-        })),
+        scopes: toScopeInfo(granted),
+        notGrantedScopes: toScopeInfo(notGranted),
         user: {
           email: user.email,
           name: user.fullName,
         },
+        workspace: workspaceName ? { name: workspaceName } : undefined,
         redirectUri: query.redirect_uri,
         state: query.state,
-      }
+      };
 
       // Return consent data for frontend to display
       // The frontend will show a consent page and POST back to /authorize
@@ -150,22 +194,25 @@ export class OAuthProviderController {
         // Include PKCE params for the POST request
         codeChallenge: query.code_challenge,
         codeChallengeMethod: query.code_challenge_method,
-      })
+      });
     } catch (error) {
       // Now we can safely redirect errors since redirect_uri is validated
-      const errorResponse = this.buildErrorResponse(error as Error, query.state)
-      const redirectUrl = new URL(validatedRedirectUri)
-      redirectUrl.searchParams.set('error', errorResponse.error)
+      const errorResponse = this.buildErrorResponse(
+        error as Error,
+        query.state,
+      );
+      const redirectUrl = new URL(validatedRedirectUri);
+      redirectUrl.searchParams.set('error', errorResponse.error);
       if (errorResponse.error_description) {
         redirectUrl.searchParams.set(
           'error_description',
           errorResponse.error_description,
-        )
+        );
       }
       if (errorResponse.state) {
-        redirectUrl.searchParams.set('state', errorResponse.state)
+        redirectUrl.searchParams.set('state', errorResponse.state);
       }
-      res.json({ redirectUrl: redirectUrl.toString() })
+      res.json({ redirectUrl: redirectUrl.toString() });
     }
   }
 
@@ -186,49 +233,57 @@ export class OAuthProviderController {
         code_challenge,
         code_challenge_method,
         consent, // 'granted' or 'denied'
-      } = req.body
+      } = req.body;
 
       // Validate client
-      const app = await this.oauthAppService.getAppByClientId(client_id)
+      const app = await this.oauthAppService.getAppByClientId(client_id);
 
       // Validate redirect URI
-      this.oauthAppService.validateRedirectUriForApp(app, redirect_uri)
+      this.oauthAppService.validateRedirectUriForApp(app, redirect_uri);
+
+      if (!req.user || !isAppUsableInOrg(app, req.user.orgId)) {
+        res.status(403).json({
+          error: 'access_denied',
+          error_description: APP_WORKSPACE_MISMATCH_MESSAGE,
+        });
+        return;
+      }
 
       // Check consent
       if (consent !== 'granted') {
-        const redirectUrl = new URL(redirect_uri)
-        redirectUrl.searchParams.set('error', 'access_denied')
+        const redirectUrl = new URL(redirect_uri);
+        redirectUrl.searchParams.set('error', 'access_denied');
         redirectUrl.searchParams.set(
           'error_description',
           'The user denied the authorization request',
-        )
-        redirectUrl.searchParams.set('state', state)
-        res.json({ redirectUrl: redirectUrl.toString() })
-        return
+        );
+        redirectUrl.searchParams.set('state', state);
+        res.json({ redirectUrl: redirectUrl.toString() });
+        return;
       }
 
-      const user = req.user!
+      const user = req.user;
 
       // The GET step already rejects this, but the POST is what issues the
       // code, so a caller that skips the GET must be stopped here too.
       if (!app.isConfidential && !code_challenge) {
-        const redirectUrl = new URL(redirect_uri)
-        redirectUrl.searchParams.set('error', 'invalid_request')
+        const redirectUrl = new URL(redirect_uri);
+        redirectUrl.searchParams.set('error', 'invalid_request');
         redirectUrl.searchParams.set(
           'error_description',
           'PKCE code_challenge is required for public clients',
-        )
-        redirectUrl.searchParams.set('state', state)
-        res.json({ redirectUrl: redirectUrl.toString() })
-        return
+        );
+        redirectUrl.searchParams.set('state', state);
+        res.json({ redirectUrl: redirectUrl.toString() });
+        return;
       }
 
       // Parse and validate scopes
-      const requestedScopes = this.scopeValidatorService.parseScopes(scope)
-      this.scopeValidatorService.validateScopesForApp(
+      const requestedScopes = this.scopeValidatorService.parseScopes(scope);
+      const { granted } = this.scopeValidatorService.resolveGrantedScopes(
         requestedScopes,
         app.allowedScopes,
-      )
+      );
 
       // Generate authorization code
       const code = await this.authorizationCodeService.generateCode(
@@ -236,61 +291,81 @@ export class OAuthProviderController {
         user.userId,
         user.orgId,
         redirect_uri,
-        requestedScopes,
+        granted,
         code_challenge,
         code_challenge_method,
-      )
+        toKnowledgeLimit(app.knowledgeLimit),
+      );
 
       // Build redirect URL with code
-      const redirectUrl = new URL(redirect_uri)
-      redirectUrl.searchParams.set('code', code)
-      redirectUrl.searchParams.set('state', state)
+      const redirectUrl = new URL(redirect_uri);
+      redirectUrl.searchParams.set('code', code);
+      redirectUrl.searchParams.set('state', state);
 
       this.logger.info('Authorization code issued', {
         clientId: client_id,
         userId: user.userId,
-        scopes: requestedScopes,
-      })
+        scopes: granted,
+      });
 
-      res.json({ redirectUrl: redirectUrl.toString() })
+      res.json({ redirectUrl: redirectUrl.toString() });
     } catch (error) {
-      next(error)
+      next(error);
     }
   }
 
   /**
    * Token endpoint - POST /oauth/token
    */
-  async token(
-    req: Request,
-    res: Response,
-    _next: NextFunction,
-  ): Promise<void> {
+  async token(req: Request, res: Response, _next: NextFunction): Promise<void> {
     try {
-      const tokenRequest: TokenRequest = req.body
+      const tokenRequest: TokenRequest = req.body;
 
       // Extract client credentials from Authorization header or body
-      let clientId = tokenRequest.client_id
-      let clientSecret = tokenRequest.client_secret
+      let clientId = tokenRequest.client_id;
+      let clientSecret = tokenRequest.client_secret;
 
-      const authHeader = req.headers.authorization
-      if (authHeader && authHeader.startsWith('Basic ')) {
+      const authHeader = req.headers.authorization;
+      if (authHeader?.startsWith('Basic ')) {
         const credentials = Buffer.from(
           authHeader.substring(6),
           'base64',
-        ).toString('utf-8')
-        const colonIndex = credentials.indexOf(':')
+        ).toString('utf-8');
+        const colonIndex = credentials.indexOf(':');
         if (colonIndex !== -1) {
-          clientId = credentials.substring(0, colonIndex)
-          clientSecret = credentials.substring(colonIndex + 1)
+          clientId = credentials.substring(0, colonIndex);
+          clientSecret = credentials.substring(colonIndex + 1);
         }
       }
 
-      if (!clientId) {
-        throw new InvalidClientError('client_id is required')
+      // Token exchange is handled before the client_id requirement, and that
+      // is not an oversight. Every other grant here is a registered client
+      // proving who it is; this one authenticates with the service token it
+      // presents, which already carries a verified identity and the scopes
+      // that bound it. Demanding a client_id as well would mean handing the
+      // service-token app's secret to every integration, which would be a
+      // second credential with more reach than the first.
+      if (
+        tokenRequest.grant_type ===
+        'urn:ietf:params:oauth:grant-type:token-exchange'
+      ) {
+        const exchanged = await this.tokenExchangeService.exchange({
+          subjectToken: tokenRequest.subject_token ?? '',
+          subjectTokenType: tokenRequest.subject_token_type,
+          requestedSubject: tokenRequest.requested_subject,
+          scope: tokenRequest.scope,
+        });
+        res.setHeader('Cache-Control', 'no-store');
+        res.setHeader('Pragma', 'no-cache');
+        res.json(exchanged);
+        return;
       }
 
-      let tokenResponse: TokenResponse
+      if (!clientId) {
+        throw new InvalidClientError('client_id is required');
+      }
+
+      let tokenResponse: TokenResponse;
 
       switch (tokenRequest.grant_type) {
         case 'authorization_code':
@@ -298,48 +373,57 @@ export class OAuthProviderController {
             clientId,
             clientSecret,
             tokenRequest,
-          )
-          break
+          );
+          break;
 
         case 'client_credentials':
           tokenResponse = await this.handleClientCredentialsGrant(
             clientId,
             clientSecret!,
             tokenRequest,
-          )
-          break
+          );
+          break;
 
         case 'refresh_token':
           tokenResponse = await this.handleRefreshTokenGrant(
             clientId,
             clientSecret,
             tokenRequest,
-          )
-          break
+          );
+          break;
 
         case 'urn:ietf:params:oauth:grant-type:device_code':
           tokenResponse = await this.oauthDeviceService.poll(
             clientId,
             clientSecret,
             tokenRequest.device_code || '',
-          )
-          break
+          );
+          break;
 
         default:
           throw new UnsupportedGrantTypeError(
             `Unsupported grant_type: ${tokenRequest.grant_type}`,
-          )
+          );
       }
 
       // Set cache headers as per RFC 6749
-      res.setHeader('Cache-Control', 'no-store')
-      res.setHeader('Pragma', 'no-cache')
+      res.setHeader('Cache-Control', 'no-store');
+      res.setHeader('Pragma', 'no-cache');
 
-      res.json(tokenResponse)
+      res.json(tokenResponse);
+
+      // A refresh renews a grant already counted, so only first issuance is recorded.
+      if (tokenRequest.grant_type !== 'refresh_token') {
+        recordEvent('oauth_token_issued', {
+          grant_type: tokenRequest.grant_type,
+          client_id: clientId,
+          ...clientTags(req.headers),
+        });
+      }
     } catch (error) {
       // OAuth errors should return 400 with JSON body
-      const oauthError = this.buildErrorResponse(error as Error)
-      res.status(this.getErrorStatusCode(error as Error)).json(oauthError)
+      const oauthError = this.buildErrorResponse(error as Error);
+      res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
     }
   }
 
@@ -353,25 +437,49 @@ export class OAuthProviderController {
     _next: NextFunction,
   ): Promise<void> {
     try {
-      const { token, token_type_hint, client_id, client_secret } = req.body
+      const { token, token_type_hint, client_id, client_secret } = req.body as {
+        token: string;
+        token_type_hint?: 'refresh_token' | 'access_token';
+        client_id: string;
+        // A JSON body can carry any type here, null included.
+        client_secret?: unknown;
+      };
 
-      // RFC 7009: Verify client credentials
-      await this.oauthAppService.verifyClientCredentials(client_id, client_secret)
+      // RFC 7009: authenticate the client. A public client (the first-party
+      // device app) has no secret and is identified by client_id alone, as the
+      // token and refresh grants do; hashing its absent secret used to throw,
+      // and the catch below answered 200 without revoking anything.
+      const app = await this.oauthAppService.getAppByClientId(client_id);
+      if (app.isConfidential) {
+        if (typeof client_secret !== 'string' || client_secret === '') {
+          throw new InvalidClientError(
+            'client_secret required for confidential clients',
+          );
+        }
+        await this.oauthAppService.verifyClientCredentials(
+          client_id,
+          client_secret,
+        );
+      }
 
       // RFC 7009: Revoke token with ownership verification
       // The revokeToken method now validates the token was issued to this client
-      await this.oauthTokenService.revokeToken(token, client_id, token_type_hint)
+      await this.oauthTokenService.revokeToken(
+        token,
+        client_id,
+        token_type_hint,
+      );
 
       // RFC 7009: Always return 200 OK, even if token was invalid/already revoked
-      res.status(200).send()
+      res.status(200).send();
     } catch (error) {
       // Even on error, RFC 7009 recommends returning 200 for security
       // Only return error if client authentication fails
       if (error instanceof InvalidClientError) {
-        res.status(401).json(this.buildErrorResponse(error))
-        return
+        res.status(401).json(this.buildErrorResponse(error));
+        return;
       }
-      res.status(200).send()
+      res.status(200).send();
     }
   }
 
@@ -385,23 +493,29 @@ export class OAuthProviderController {
     _next: NextFunction,
   ): Promise<void> {
     try {
-      const { token, client_id, client_secret } = req.body
+      const { token, client_id, client_secret } = req.body;
 
       // RFC 7662: Verify client credentials
-      await this.oauthAppService.verifyClientCredentials(client_id, client_secret)
+      await this.oauthAppService.verifyClientCredentials(
+        client_id,
+        client_secret,
+      );
 
       // RFC 7662: Introspect token with ownership verification
       // The introspectToken method now validates the token was issued to this client
-      const result = await this.oauthTokenService.introspectToken(token, client_id)
+      const result = await this.oauthTokenService.introspectToken(
+        token,
+        client_id,
+      );
 
-      res.json(result)
+      res.json(result);
     } catch (error) {
       if (error instanceof InvalidClientError) {
-        res.status(401).json(this.buildErrorResponse(error))
-        return
+        res.status(401).json(this.buildErrorResponse(error));
+        return;
       }
       // RFC 7662: For other errors, return inactive token to prevent information disclosure
-      res.json({ active: false })
+      res.json({ active: false });
     }
   }
 
@@ -414,15 +528,15 @@ export class OAuthProviderController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const created = await this.oauthDcrService.register(req.body)
-      res.status(201).json(created)
+      const created = await this.oauthDcrService.register(req.body);
+      res.status(201).json(created);
     } catch (error) {
       if (error instanceof ForbiddenError) {
         res.status(403).json({
           error: 'access_denied',
           error_description: error.message,
-        })
-        return
+        });
+        return;
       }
       if (
         error instanceof BadRequestError ||
@@ -432,10 +546,10 @@ export class OAuthProviderController {
         res.status(400).json({
           error: 'invalid_client_metadata',
           error_description: error.message,
-        })
-        return
+        });
+        return;
       }
-      next(error)
+      next(error);
     }
   }
 
@@ -448,21 +562,21 @@ export class OAuthProviderController {
     _next: NextFunction,
   ): Promise<void> {
     try {
-      const { client_id, scope } = req.body
+      const { client_id, scope } = req.body;
       const frontendUrl = (req as Request & { oauthFrontendUrl?: string })
-        .oauthFrontendUrl
+        .oauthFrontendUrl;
       if (!frontendUrl) {
-        throw new Error('frontendUrl is not configured')
+        throw new Error('frontendUrl is not configured');
       }
       const result = await this.oauthDeviceService.createAuthorization(
         client_id,
         scope,
         frontendUrl,
-      )
-      res.status(200).json(result)
+      );
+      res.status(200).json(result);
     } catch (error) {
-      const oauthError = this.buildErrorResponse(error as Error)
-      res.status(this.getErrorStatusCode(error as Error)).json(oauthError)
+      const oauthError = this.buildErrorResponse(error as Error);
+      res.status(this.getErrorStatusCode(error as Error)).json(oauthError);
     }
   }
 
@@ -475,28 +589,28 @@ export class OAuthProviderController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const user = req.user!
+      const user = req.user!;
       const consentData = await this.oauthDeviceService.getConsentData(
         req.body.user_code,
-      )
+      );
       consentData.user = {
         email: user.email,
         name: user.fullName,
-      }
-      res.json({ requiresConsent: true, consentData })
+      };
+      res.json({ requiresConsent: true, consentData });
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof BadRequestError) {
         res.status(400).json({
           error: 'invalid_request',
           error_description: error.message,
-        })
-        return
+        });
+        return;
       }
       if (error instanceof DeviceGrantError) {
-        res.status(400).json(this.buildErrorResponse(error))
-        return
+        res.status(400).json(this.buildErrorResponse(error));
+        return;
       }
-      next(error)
+      next(error);
     }
   }
 
@@ -506,31 +620,31 @@ export class OAuthProviderController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const user = req.user!
+      const user = req.user!;
       if (req.body.consent !== 'granted' && req.body.consent !== 'denied') {
-        throw new BadRequestError('consent must be granted or denied')
+        throw new BadRequestError('consent must be granted or denied');
       }
-      const consent = req.body.consent
+      const consent = req.body.consent;
       await this.oauthDeviceService.approve(
         req.body.user_code,
         user.userId,
         user.orgId,
         consent,
-      )
-      res.json({ ok: true, consent })
+      );
+      res.json({ ok: true, consent });
     } catch (error) {
       if (error instanceof NotFoundError || error instanceof BadRequestError) {
         res.status(400).json({
           error: 'invalid_request',
           error_description: error.message,
-        })
-        return
+        });
+        return;
       }
       if (error instanceof DeviceGrantError) {
-        res.status(400).json(this.buildErrorResponse(error))
-        return
+        res.status(400).json(this.buildErrorResponse(error));
+        return;
       }
-      next(error)
+      next(error);
     }
   }
 
@@ -542,28 +656,33 @@ export class OAuthProviderController {
     request: TokenRequest,
   ): Promise<TokenResponse> {
     if (!request.code) {
-      throw new InvalidGrantError('code is required')
+      throw new InvalidGrantError('code is required');
     }
     if (!request.redirect_uri) {
-      throw new InvalidGrantError('redirect_uri is required')
+      throw new InvalidGrantError('redirect_uri is required');
     }
 
     // Get app
-    const app = await this.oauthAppService.getAppByClientId(clientId)
+    const app = await this.oauthAppService.getAppByClientId(clientId);
 
     // Verify grant type is allowed
     if (!this.oauthAppService.isGrantTypeAllowed(app, 'authorization_code')) {
       throw new UnsupportedGrantTypeError(
         'authorization_code grant not allowed for this app',
-      )
+      );
     }
 
     // Confidential clients must provide client_secret
     if (app.isConfidential) {
       if (!clientSecret) {
-        throw new InvalidClientError('client_secret required for confidential clients')
+        throw new InvalidClientError(
+          'client_secret required for confidential clients',
+        );
       }
-      await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
+      await this.oauthAppService.verifyClientCredentials(
+        clientId,
+        clientSecret,
+      );
     }
 
     // Exchange code for tokens
@@ -573,11 +692,26 @@ export class OAuthProviderController {
       request.redirect_uri,
       request.code_verifier,
       app.isConfidential,
-    )
+    );
+
+    if (!isAppUsableInOrg(app, codeResult.orgId)) {
+      throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
+    }
+
+    // The user agreed to the limit the code was issued under, and its tokens
+    // carry that limit. The app may have widened since; a narrowing revokes
+    // tokens but cannot reach a code, so it is refused here.
+    if (
+      !isKnowledgeLimitWithin(codeResult.knowledgeLimit, app.knowledgeLimit)
+    ) {
+      throw new InvalidGrantError(
+        "The application's permissions changed after you allowed it. Sign in again.",
+      );
+    }
 
     // Look up user details to embed in token
-    let fullName: string | undefined
-    let accountType: string | undefined
+    let fullName: string | undefined;
+    let accountType: string | undefined;
     if (codeResult.userId) {
       const user = await Users.findOne({
         _id: codeResult.userId,
@@ -586,9 +720,9 @@ export class OAuthProviderController {
       })
         .select('fullName')
         .lean()
-        .exec()
+        .exec();
       if (user) {
-        fullName = user.fullName
+        fullName = user.fullName;
       }
 
       const org = await Org.findOne({
@@ -597,27 +731,55 @@ export class OAuthProviderController {
       })
         .select('accountType')
         .lean()
-        .exec()
+        .exec();
       if (org) {
-        accountType = (org as any).accountType
+        accountType = (org as any).accountType;
       }
     }
 
-    // Generate tokens
+    // The code may predate an edit that removed scopes from the app; the
+    // revocation that edit triggers cannot reach a token minted after it.
     const tokens = await this.oauthTokenService.generateTokens(
       app,
       codeResult.userId,
       codeResult.orgId,
-      codeResult.scopes,
+      this.scopeValidatorService.getGrantedScopes(
+        codeResult.scopes,
+        app.allowedScopes,
+      ),
       true,
       fullName,
       accountType,
-    )
+      {
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: codeResult.knowledgeLimit ?? null,
+      },
+    );
+
+    // A replay of this code that ran while the tokens were being minted could
+    // not revoke them yet; it left a flag, so the winner takes its own pair back.
+    if (
+      await this.authorizationCodeService.wasReplayed(request.code, clientId)
+    ) {
+      await this.oauthTokenService.revokeToken(
+        tokens.accessToken,
+        clientId,
+        'access_token',
+      );
+      if (tokens.refreshToken) {
+        await this.oauthTokenService.revokeToken(
+          tokens.refreshToken,
+          clientId,
+          'refresh_token',
+        );
+      }
+      throw new InvalidGrantError('Authorization code has already been used');
+    }
 
     this.logger.info('Authorization code grant completed', {
       clientId,
       userId: codeResult.userId,
-    })
+    });
 
     return {
       access_token: tokens.accessToken,
@@ -625,7 +787,7 @@ export class OAuthProviderController {
       expires_in: tokens.expiresIn,
       refresh_token: tokens.refreshToken,
       scope: tokens.scope,
-    }
+    };
   }
 
   private async handleClientCredentialsGrant(
@@ -637,40 +799,41 @@ export class OAuthProviderController {
     const app = await this.oauthAppService.verifyClientCredentials(
       clientId,
       clientSecret,
-    )
+    );
 
     // Verify grant type is allowed
     if (!this.oauthAppService.isGrantTypeAllowed(app, 'client_credentials')) {
       throw new UnsupportedGrantTypeError(
         'client_credentials grant not allowed for this app',
-      )
+      );
     }
 
     // Parse requested scopes
-    let scopes = app.allowedScopes
+    let scopes = app.allowedScopes;
     if (request.scope) {
-      const requestedScopes = this.scopeValidatorService.parseScopes(request.scope)
+      const requestedScopes = this.scopeValidatorService.parseScopes(
+        request.scope,
+      );
       this.scopeValidatorService.validateScopesForApp(
         requestedScopes,
         app.allowedScopes,
-      )
-      scopes = requestedScopes
+      );
+      scopes = requestedScopes;
     }
 
     // Filter out user-specific scopes (openid, profile, email, offline_access)
     const filteredScopes = scopes.filter(
-      (s) =>
-        !['openid', 'profile', 'email', 'offline_access'].includes(s),
-    )
+      (s) => !['openid', 'profile', 'email', 'offline_access'].includes(s),
+    );
 
-    let fullName: string | undefined
-    let accountType: string | undefined
+    let fullName: string | undefined;
+    let accountType: string | undefined;
 
     // The identity these tokens will act as: the application's chosen service
     // account where one is set, its creator otherwise. Checked here rather
     // than only at mint time, because this grant hands out a bearer that
     // authenticates as that identity for as long as it lives.
-    const identityId = app.tokenIdentityUserId ?? app.createdBy
+    const identityId = app.tokenIdentityUserId ?? app.createdBy;
     if (identityId) {
       const identity = await Users.findOne({
         _id: identityId,
@@ -679,7 +842,7 @@ export class OAuthProviderController {
       })
         .select('fullName isDisabled restoreOpId')
         .lean()
-        .exec()
+        .exec();
 
       // Refused rather than issued against an identity that cannot be used.
       // A client_credentials token is stored without a userId, so it is not
@@ -689,19 +852,19 @@ export class OAuthProviderController {
       if (!identity) {
         throw new BadRequestError(
           'The identity this application acts as no longer exists',
-        )
+        );
       }
       if (identity.isDisabled === true) {
         throw new BadRequestError(
           'The identity this application acts as is disabled',
-        )
+        );
       }
       if (identity.restoreOpId !== undefined && identity.restoreOpId !== null) {
         throw new BadRequestError(
           'The identity this application acts as is being restored. Try again once that has finished.',
-        )
+        );
       }
-      fullName = identity.fullName
+      fullName = identity.fullName;
     }
 
     const org = await Org.findOne({
@@ -710,9 +873,9 @@ export class OAuthProviderController {
     })
       .select('accountType')
       .lean()
-      .exec()
+      .exec();
     if (org) {
-      accountType = (org as any).accountType
+      accountType = (org as any).accountType;
     }
 
     // Generate tokens (no refresh token for client_credentials)
@@ -724,16 +887,17 @@ export class OAuthProviderController {
       false, // No refresh token
       fullName,
       accountType,
-    )
+      { recheckAppScopes: true },
+    );
 
-    this.logger.info('Client credentials grant completed', { clientId })
+    this.logger.info('Client credentials grant completed', { clientId });
 
     return {
       access_token: tokens.accessToken,
       token_type: tokens.tokenType,
       expires_in: tokens.expiresIn,
       scope: tokens.scope,
-    }
+    };
   }
 
   private async handleRefreshTokenGrant(
@@ -742,25 +906,30 @@ export class OAuthProviderController {
     request: TokenRequest,
   ): Promise<TokenResponse> {
     if (!request.refresh_token) {
-      throw new InvalidGrantError('refresh_token is required')
+      throw new InvalidGrantError('refresh_token is required');
     }
 
     // Get app
-    const app = await this.oauthAppService.getAppByClientId(clientId)
+    const app = await this.oauthAppService.getAppByClientId(clientId);
 
     // Verify grant type is allowed
     if (!this.oauthAppService.isGrantTypeAllowed(app, 'refresh_token')) {
       throw new UnsupportedGrantTypeError(
         'refresh_token grant not allowed for this app',
-      )
+      );
     }
 
     // RFC 6749 Section 6: Confidential clients MUST authenticate
     if (app.isConfidential) {
       if (!clientSecret) {
-        throw new InvalidClientError('client_secret required for confidential clients')
+        throw new InvalidClientError(
+          'client_secret required for confidential clients',
+        );
       }
-      await this.oauthAppService.verifyClientCredentials(clientId, clientSecret)
+      await this.oauthAppService.verifyClientCredentials(
+        clientId,
+        clientSecret,
+      );
     }
 
     // RFC 9700: For public clients, refresh tokens MUST be sender-constrained
@@ -770,16 +939,16 @@ export class OAuthProviderController {
     // Parse requested scopes (can only reduce, not expand)
     const requestedScopes = request.scope
       ? this.scopeValidatorService.parseScopes(request.scope)
-      : undefined
+      : undefined;
 
     // Refresh tokens (implements token rotation per RFC 9700)
     const tokens = await this.oauthTokenService.refreshTokens(
       app,
       request.refresh_token,
       requestedScopes,
-    )
+    );
 
-    this.logger.info('Refresh token grant completed', { clientId })
+    this.logger.info('Refresh token grant completed', { clientId });
 
     return {
       access_token: tokens.accessToken,
@@ -787,45 +956,44 @@ export class OAuthProviderController {
       expires_in: tokens.expiresIn,
       refresh_token: tokens.refreshToken,
       scope: tokens.scope,
-    }
+    };
   }
 
-  private buildErrorResponse(
-    error: Error,
-    state?: string,
-  ): OAuthErrorResponse {
-    let errorCode = 'server_error'
-    let description = error.message
+  private buildErrorResponse(error: Error, state?: string): OAuthErrorResponse {
+    let errorCode = 'server_error';
+    const description = error.message;
 
     if (error instanceof InvalidGrantError) {
-      errorCode = 'invalid_grant'
+      errorCode = 'invalid_grant';
     } else if (error instanceof DeviceGrantError) {
-      errorCode = error.oauthError
+      errorCode = error.oauthError;
+    } else if (error instanceof TokenExchangeError) {
+      errorCode = error.oauthError;
     } else if (error instanceof InvalidClientError) {
-      errorCode = 'invalid_client'
+      errorCode = 'invalid_client';
     } else if (error instanceof UnsupportedGrantTypeError) {
-      errorCode = 'unsupported_grant_type'
+      errorCode = 'unsupported_grant_type';
     } else if (error instanceof InvalidScopeError) {
-      errorCode = 'invalid_scope'
+      errorCode = 'invalid_scope';
     } else if (error instanceof AccessDeniedError) {
-      errorCode = 'access_denied'
+      errorCode = 'access_denied';
     }
 
     const response: OAuthErrorResponse = {
       error: errorCode,
       error_description: description,
-    }
+    };
 
     if (state) {
-      response.state = state
+      response.state = state;
     }
 
-    return response
+    return response;
   }
 
   private getErrorStatusCode(error: Error): number {
-    if (error instanceof InvalidClientError) return 401
-    if (error instanceof AccessDeniedError) return 403
-    return 400
+    if (error instanceof InvalidClientError) return 401;
+    if (error instanceof AccessDeniedError) return 403;
+    return 400;
   }
 }

@@ -767,7 +767,7 @@ records:
       ## Direction for 2026
       Move Enterprise from per-seat pricing to a platform fee plus usage bands.
       Target: a $48,000 annual platform fee covering up to 250 seats, with usage
-      bands at 250, 1,000, and 5,000 seats. Existing customers are grandfathered
+      bands at 250 seats, 1,000 seats and 5,000 seats. Existing customers are grandfathered
       through their current term and offered a 12% discount to migrate early.
 
       ## Rationale
@@ -1623,12 +1623,27 @@ questions:
     ask: "What is the enterprise pricing strategy for 2026?"
     must_cite: [drive-pricing-2026]
     must_not_cite: [gh-pr-482]
-    answer_must_mention: ["platform fee", "48"]
+    # "$48", not "48": a bare "48" matches PR #482, the distractor above.
+    answer_must_mention: ["$48"]
+    # Facts, not phrases: on 2026-10-19 Bob's agent answered "Shift from per-seat pricing to a
+    # platform-plus-usage model. Base price: $48,000 annually, covering up to 250 seats. Usage
+    # bands: pricing tiers are structured around 250, 1,000, and 5,000 seats." and failed only
+    # for not saying "platform fee". The amount is judged too: "$48" alone also matches "$480".
+    # Worded as the record is: a strategy (a "direction"), so an answer that also says existing
+    # customers are grandfathered does not contradict it; and the fee as the strategy's target, as
+    # the record says "Target", so "platform fee", "base price" and "a target fee" all state it. On 2026-10-21 "moves from per-seat pricing" was judged
+    # contradicted by the grandfathering line, and "starts at $48,000" missing for "$48,000
+    # annual platform fee".
+    answer_must_state:
+      - "The 2026 strategy is to move Enterprise from per-seat pricing to a platform fee plus usage bands."
+      - "The 2026 strategy targets a $48,000 annual fee for Enterprise."
     # For Alice, "none" means: no restricted record cited and the answer says it found nothing.
     # Citing an unrestricted near-miss (the release notes) while saying so is correct behaviour.
     restricted: [drive-pricing-2026, slack-pricing-0402]
     # Phrases only the restricted records contain; an answer that repeats one has leaked.
-    restricted_facts: ["platform fee", "usage band", "$48,000", "$48k", "early-migration"]
+    # Not "usage band": it is ordinary pricing vocabulary, and on 2026-10-17 Alice's answer
+    # listed "seat or usage bands" among what it could not find, with nothing restricted read.
+    restricted_facts: ["platform fee", "1,000 seats", "5,000 seats", "12%", "$48,000", "$48k", "early-migration"]
     personas: { alice: none, bob: cites }
 
 # Golden questions for the vertical Build Packs (pipeshub-ai/examples, packs/).
@@ -1642,8 +1657,12 @@ pack_questions:
       # #deals thread is the at-risk moment, so it can't stand in for the call notes.
       must_cite: [drive-sales-northwind-plan, drive-sales-northwind-call-0416]
       answer_must_mention: ["Northwind"]
+      # "On track" is the account plan's own word. "No longer at risk" was failed
+      # as contradicted whenever a right answer added that the renewal still has
+      # to be signed (the call notes' target is 31 May), because any risk at all
+      # conflicts with "no longer at risk"; it does not conflict with "on track".
       answer_must_state:
-        - "The Northwind Traders renewal is no longer at risk."
+        - "The Northwind Traders renewal is now on track."
       must_not_cite: [drive-pricing-2026, drive-billing-resilience]
       personas: { alice: cites, bob: cites }
     - id: s2
@@ -1702,11 +1721,13 @@ pack_questions:
       ask: "How much can I spend on a purchase without my manager's approval?"
       must_cite: [drive-fin-expense-policy]
       # The band includes $250 itself ("under $250" is wrong at the edge), and it
-      # needs no approval ("up to $250 needs your manager" names the amount but is wrong).
+      # needs no manager approval ("up to $250 needs your manager" names the amount
+      # but is wrong). "No approval at all" would be wrong too: a software
+      # subscription needs finance's approval whatever it costs.
       answer_must_state:
-        - "A purchase of up to and including $250 needs no approval."
+        - "A purchase of up to and including $250 needs no manager approval."
       answer_must_not_state:
-        - "Purchases above $250 need no approval."
+        - "Purchases above $250 need no manager approval."
       personas: { alice: cites, bob: cites }
     - id: f3
       ask: "What rate do we pay for card processing?"

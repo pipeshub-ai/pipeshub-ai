@@ -984,3 +984,6 @@ prod-docker-hard-clean: ## Stop, remove containers and clean volumes
 	@echo "$(YELLOW)Stopping and removing production containers with volumes...$(NC)"
 	@cd $(ROOT_DIR)/deployment/docker-compose && docker compose -f docker-compose.prod.yml -p pipeshub-ai down -v
 	@echo "$(GREEN)Production deployment and volumes cleaned!$(NC)"
+
+# Makefiles in subfolders of scripts/ add their own targets.
+-include $(wildcard $(dir $(THIS_MAKEFILE))*/Makefile)

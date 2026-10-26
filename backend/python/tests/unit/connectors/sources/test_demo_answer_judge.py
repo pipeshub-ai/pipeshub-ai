@@ -278,6 +278,28 @@ def test_the_prompt_keeps_stating_a_claim_apart_from_conflicting_with_it() -> No
     assert '"conflicting_sentence_ids": []' in prompt
 
 
+def test_the_prompt_tells_a_step_still_ahead_from_a_condition_that_takes_the_claim_back() -> None:
+    prompt = " ".join(aj.SYSTEM_PROMPT.split())
+    # "On track, but the signature is still due" failed s1 on 2026-10-09 as a conflict.
+    assert "A step still ahead on the way to an outcome does not take back a claim about where it stands now" in prompt
+    assert 'but only if the board reverses its cancellation" does conflict' in prompt
+    # The takeback example stays a conflict, and a step still ahead is never a step done.
+    assert 'but every refund waits for the monthly payment run." is "supported" by sentence 1 with sentence 1 also conflicting' in prompt
+    assert "never makes a claim that the step has already happened true" in prompt
+
+
+def test_the_prompt_says_the_receipt_duty_is_not_a_conflict() -> None:
+    prompt = " ".join(aj.SYSTEM_PROMPT.split())
+    # f2 failed on every persona on 2026-10-17: "…without manager approval, as long as you
+    # submit the receipt within 30 days" was read as a condition on the approval.
+    assert "is \"supported\" and does not conflict, so its sentence is not listed in conflicting_sentence_ids" in prompt
+    assert "submitting a receipt does not change whether a manager has to approve" in prompt
+    # The rule stays narrow: takebacks the prompt names are still conflicts.
+    assert "A requirement about something the claim doesn't speak of" not in prompt
+    assert 'but only if the board reverses its cancellation" does conflict' in prompt
+    assert 'sentence 1 also conflicting' in prompt
+
+
 def test_a_must_state_claim_with_a_conflicting_sentence_is_contradicted_whatever_the_verdict() -> None:
     judge, _ = judge_with(reply_with_conflicts("supported", [2], [1]))
     claim = judge.judge(CONTRADICTS_ITSELF, [NO_APPROVAL]).claims[0]

@@ -19,12 +19,35 @@ export type SlackCitationLike = {
   };
 };
 
+const FRAGMENT_DIRECTIVE_DELIMITER = ":~:";
+
+/**
+ * Drop a text-fragment directive (`:~:text=...`) and keep any anchor before it.
+ * Mirrors `strip_fragment_directive` in
+ * backend/python/app/utils/text_fragments/url.py: the directive is appended
+ * after an existing anchor, so the split is on the first `:~:` in the fragment
+ * and not on `#:~:text=`. `:~:` is legal in a path or query, so those are left alone.
+ */
+export function stripFragmentDirective(url: string): string {
+  const fragmentStart = url.indexOf('#');
+  const index =
+    fragmentStart < 0
+      ? -1
+      : url.indexOf(FRAGMENT_DIRECTIVE_DELIMITER, fragmentStart + 1);
+  if (index < 0) {
+    return url;
+  }
+  const page = url.slice(0, index);
+  return page.endsWith("#") ? page.slice(0, -1) : page;
+}
+
 /** `[label](refN)` or `[label](https://refN.xyz[/...])` */
 const TINY_REF_CITATION_LINK_PATTERN =
   /\[[^\]]*\]\s*\(\s*(?:https?:\/\/)?ref\d+(?:\.xyz)?(?:\/[^)]*)?\s*\)/gi;
 
-/** Any `[N](target)` markdown link */
-const NUMBERED_MARKDOWN_LINK_PATTERN = /\[(\d+)\]\(([^)]+)\)/g;
+/** Any `[N](target)` markdown link; the target may hold balanced parentheses (`/wiki/Python_(language)`). */
+const NUMBERED_MARKDOWN_LINK_PATTERN =
+  /\[(\d+)\]\(((?:[^()\n]|\([^()\n]*\))+)\)/g;
 
 function parseCitationNumber(rawValue: unknown): number | null {
   if (typeof rawValue === "number" && Number.isInteger(rawValue) && rawValue > 0) {
@@ -136,7 +159,8 @@ export function rewriteCitationsForSlack(
           webUrlToDisplayNumber.set(mappedUrl, citationCount);
           citationCount += 1;
         }
-        return `[${displayNumber}](${mappedUrl})`;
+        // Encoded so the mrkdwn link conversion, which ends a URL at the first ')', keeps it whole.
+        return `[${displayNumber}](${mappedUrl.replace(/\(/g, '%28').replace(/\)/g, '%29')})`;
       }
 
       // Unmapped tiny refs become broken Slack links — drop them.

@@ -156,16 +156,16 @@ def _is_user_id(value: Any) -> bool:
     )
 
 
-_RECONNECT_SLACK = "Reconnect the Slack toolset in Settings > Toolsets and try again."
+_RECONNECT_SLACK = "Reconnect Slack under Your actions, then try again."
 _SLACK_SIGN_IN_REJECTED = f"Slack did not accept the saved sign-in. {_RECONNECT_SLACK}"
 # Only apps with token rotation get token_expired, and those are renewed on a schedule.
 _SLACK_SIGN_IN_EXPIRED = (
     "The Slack sign-in has expired. PipesHub renews it automatically, so try again in a few "
-    "minutes. If this keeps happening, reconnect the Slack toolset in Settings > Toolsets."
+    "minutes. If this keeps happening, reconnect Slack under Your actions."
 )
 _SLACK_PERMISSION_MISSING = (
-    "The connected Slack account has not given permission for this. Reconnect the Slack "
-    "toolset in Settings > Toolsets and approve the requested permissions."
+    "The connected Slack account has not given permission for this. Reconnect Slack "
+    "under Your actions and approve the requested permissions."
 )
 # Worded for the agent's user token: the datasource's own texts talk about bots and xoxb tokens.
 _SLACK_ERROR_EXPLANATIONS: Dict[str, str] = {
@@ -3014,7 +3014,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to delete", required=True),
             ToolParameter(name="as_user", type=ParameterType.BOOLEAN, description="Delete the message as the authenticated user", required=False),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def delete_message(self, channel: str, timestamp: str, as_user: Optional[bool] = None) -> Tuple[bool, str]:
         """Delete a message from a channel"""
@@ -3214,7 +3214,7 @@ class Slack:
             ToolParameter(name="timestamp", type=ParameterType.STRING, description="Timestamp of the message to remove reaction from", required=True),
             ToolParameter(name="name", type=ParameterType.STRING, description="Name of the emoji reaction to remove", required=True),
         ],
-        tags=[Tag(key="category", value="communication"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="communication"), Tag(key="type", value="destructive")],
     )
     async def remove_reaction(self, channel: str, timestamp: str, name: str) -> Tuple[bool, str]:
         """Remove a reaction from a message"""

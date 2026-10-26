@@ -24,6 +24,8 @@ from connectors.jira.jira_block_utils import (  # type: ignore[import-not-found]
 )
 
 _FIXTURES = Path(__file__).with_name("fixtures")
+# Uploaded with the job's reports, so a CI mismatch can be reviewed and committed.
+_MISMATCH_DIR = Path(__file__).resolve().parents[2] / "reports" / "snapshots"
 
 ISSUE_BLOCKS_PATH = _FIXTURES / "github_issue_blocks.expected.json"
 PR_BLOCKS_PATH = _FIXTURES / "github_pr_blocks.expected.json"
@@ -50,3 +52,11 @@ def bootstrap_expected(path: Path, actual: dict[str, Any]) -> None:
     path.write_text(
         json.dumps(actual, indent=2, sort_keys=True) + "\n", encoding="utf-8",
     )
+
+
+def keep_actual_if_different(
+    path: Path, actual: dict[str, Any], expected: dict[str, Any],
+) -> None:
+    """Save what the run produced next to the reports when it differs from the snapshot."""
+    if actual != expected:
+        bootstrap_expected(_MISMATCH_DIR / path.name.replace(".expected.", ".actual."), actual)

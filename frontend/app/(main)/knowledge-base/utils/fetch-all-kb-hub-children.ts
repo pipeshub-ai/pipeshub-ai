@@ -18,10 +18,11 @@ const KB_HUB_BULK_FETCH_LIMIT = 100;
  */
 export async function fetchAllKbAppContainerChildren(appId: string): Promise<KnowledgeHubNode[]> {
   const mergedItems: KnowledgeHubNode[] = [];
-  let page = 1;
-  let hasNext = true;
-  while (hasNext) {
-    if (page > MAX_KB_HUB_CHILD_PAGES) {
+  let cursor: string | undefined;
+  let pages = 0;
+  for (;;) {
+    pages += 1;
+    if (pages > MAX_KB_HUB_CHILD_PAGES) {
       console.error('[fetchAllKbAppContainerChildren] stopped at max pages', {
         appId,
         maxPages: MAX_KB_HUB_CHILD_PAGES,
@@ -34,18 +35,22 @@ export async function fetchAllKbAppContainerChildren(appId: string): Promise<Kno
     }
     const response = await KnowledgeHubApi.getNodeChildren('app', appId, {
       onlyContainers: true,
-      page,
+      cursor,
       limit: KB_HUB_BULK_FETCH_LIMIT,
       sortBy: 'name',
       sortOrder: 'asc',
     });
     mergedItems.push(...response.items);
-    hasNext = response.pagination?.hasNext ?? false;
-    if (hasNext && response.items.length === 0) {
-      console.error('[fetchAllKbAppContainerChildren] hasNext with empty page; stopping', { appId, page });
+
+    // The cursor, not the flag, decides: `hasNext` without one leaves nothing
+    // to ask with, and looping on the flag alone would spin forever.
+    const nextCursor = response.pagination?.nextCursor;
+    if (!nextCursor) break;
+    if (response.items.length === 0) {
+      console.error('[fetchAllKbAppContainerChildren] empty page with a next cursor; stopping', { appId, pages });
       break;
     }
-    page += 1;
+    cursor = nextCursor;
   }
   return mergedItems;
 }

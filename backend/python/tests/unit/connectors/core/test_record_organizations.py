@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.config.constants.arangodb import Connectors, OriginTypes
 from app.connectors.core.base.data_processor.record_organizations import (
     link_record_organization,
@@ -71,3 +73,15 @@ async def test_a_rejected_write_does_not_fail_the_record() -> None:
     store = _store()
     store.batch_create_entity_relations.side_effect = RuntimeError("Document does not match the entity relations schema")
     assert await link_record_organization(_deal(), store, logging.getLogger("t")) == 0
+
+
+@pytest.mark.parametrize("failing", [
+    "get_record_group_organization", "delete_edges_between_collections", "batch_create_entity_relations",
+])
+async def test_a_failure_the_caller_must_see_is_raised(failing: str) -> None:
+    """A conflict the caller retries, or a failure that ended its transaction,
+    is not logged and passed over."""
+    store = _store()
+    getattr(store, failing).side_effect = RuntimeError("deadlock")
+    with pytest.raises(RuntimeError, match="deadlock"):
+        await link_record_organization(_deal(), store, logging.getLogger("t"), lambda exc: True)

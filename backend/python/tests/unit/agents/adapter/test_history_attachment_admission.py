@@ -75,15 +75,26 @@ class TestTheCallSiteMatches:
 
 class TestReplayedImagesAreAdmitted:
     def test_the_model_cap_applies_not_just_the_conversation_cap(self) -> None:
-        """Ollama takes one image per request; the 50-image conversation
-        budget would have let fifty through."""
+        """OpenAI's cap is 8 and history gets half of it; the 50-image
+        conversation budget would have let twelve through."""
+        record = _record(*[_uri(60 + i, 60) for i in range(12)])
+
+        blocks = _extract_image_urls_from_record(
+            record, ImageBudget(), image_admission=_admission("openai"),
+        )
+
+        assert len(blocks) == 4
+
+    def test_a_one_image_model_keeps_its_slot_for_the_current_turn(self) -> None:
+        """Ollama takes one image per request; replaying an old one would
+        leave nothing for the record the user asks about now."""
         record = _record(*[_uri(60 + i, 60) for i in range(5)])
 
         blocks = _extract_image_urls_from_record(
             record, ImageBudget(), image_admission=_admission("ollama"),
         )
 
-        assert len(blocks) == 1
+        assert blocks == []
 
     def test_the_same_image_twice_takes_one_slot(self) -> None:
         uri = _uri()
@@ -163,14 +174,14 @@ class TestHistoryDoesNotStarveTheCurrentTurn:
         admission = _admission("openai")  # cap 8
         record = _record(*[_uri(60 + i, 60) for i in range(12)])
 
-        _extract_image_urls_from_record(record, admission.budget, image_admission=admission)
+        replayed = _extract_image_urls_from_record(record, admission.budget, image_admission=admission)
 
-        # The cap is what stops it, not the 50-image conversation budget.
-        assert admission.remaining == 0
+        assert len(replayed) == 4
+        assert admission.remaining == 4
         fresh = admission.admit([ImageCandidate(
             ref="r", data_uri=_uri(500, 500), origin=ImageOrigin.FETCHED_RECORD,
         )])
-        assert fresh.degraded, "a fetched record should be told it lost, not silently dropped"
+        assert len(fresh.admitted) == 1
 
 
 @pytest.mark.parametrize("origin_name", ["HISTORY"])
@@ -245,11 +256,11 @@ class TestBlocksWithoutAnIndex:
 
     def test_the_cap_still_applies_without_indices(self) -> None:
         blocks = _extract_image_urls_from_record(
-            {"block_containers": {"blocks": self._blocks(*[_uri(60 + i, 60) for i in range(5)])}},
-            ImageBudget(), image_admission=_admission("ollama"),
+            {"block_containers": {"blocks": self._blocks(*[_uri(60 + i, 60) for i in range(6)])}},
+            ImageBudget(), image_admission=_admission("openai"),
         )
 
-        assert len(blocks) == 1
+        assert len(blocks) == 4
 
     def test_indexed_blocks_are_unaffected(self) -> None:
         a, b = _uri(61, 61), _uri(62, 62)

@@ -60,7 +60,7 @@ BASELINE = {
     # str(e)}. Callers must not pass that on — see _browse_failure in kb_service —
     # but the text starts here, so the counts are held at today's numbers.
     "services/graph_db/arango/arango_http_provider.py": 28,
-    "services/graph_db/neo4j/neo4j_provider.py": 19,
+    "services/graph_db/neo4j/neo4j_provider.py": 18,
     "connectors/api/router.py": 0,
     "api/routes/agent.py": 0,
     "api/routes/toolsets.py": 0,

@@ -28,6 +28,11 @@ class SyncSpec:
     connector_name: str
     org_id: str
     full_sync: bool = False
+    #: Published only because a restart cut this MANUAL connector's full sync
+    #: short. Nobody asked for it after the restart, so the start handler checks
+    #: it is still owed before it deletes anything (a stop may have landed while
+    #: the event waited for the consumers to start).
+    boot_resume: bool = False
 
 
 class SubmitResult(Enum):
@@ -74,6 +79,7 @@ class SyncEventDispatcher:
                         "createdAtTimestamp": now,
                         "updatedAtTimestamp": now,
                         "sourceCreatedAtTimestamp": now,
+                        **({"bootResume": True} if spec.boot_resume else {}),
                     },
                     "timestamp": get_epoch_timestamp_in_ms(),
                 },

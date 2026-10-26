@@ -3,13 +3,25 @@ from __future__ import annotations
 import logging
 from collections.abc import Awaitable, Callable
 
+from app.agent_loop_lib.context.compaction_memo import (
+    RunPlan,
+    assemble,
+    compacted_before,
+    held_elsewhere,
+    plan_runs,
+)
+from app.agent_loop_lib.context.protection import protected_indices
+from app.agent_loop_lib.context.watermark import Watermarks, watermarks
 from app.agent_loop_lib.core.tokens import count_message_tokens, count_tokens
 from app.agent_loop_lib.core.types import Message, MessageRole, UserMessage
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.hooks.middleware.context import ModelCallContext
 
 Summarizer = Callable[[list[Message]], Awaitable[str]]
 
 logger = logging.getLogger(__name__)
+
+LAYER = "auto_compact"
 
 _TOOL_RESULT_CHARS = 4_000
 _TEXT_MSG_CHARS = 2_000
@@ -148,13 +160,14 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
         joined = _SEPARATOR.join(parts)
 
         try:
-            response = await transport.complete(
-                messages=[UserMessage(
-                    content=f"{_SUMMARIZER_PROMPT}\n{joined}",
-                )],
-                system=_SUMMARIZER_SYSTEM,
-                model=model,
-            )
+            with llm_usage_source("auto_compact"):
+                response = await transport.complete(
+                    messages=[UserMessage(
+                        content=f"{_SUMMARIZER_PROMPT}\n{joined}",
+                    )],
+                    system=_SUMMARIZER_SYSTEM,
+                    model=model,
+                )
             text = response.message.text
             if not text or not text.strip():
                 return _naive_summary(messages)
@@ -173,7 +186,7 @@ def make_llm_summarizer(transport_registry, provider: str, model: str) -> Summar
 # Atomic message groups
 # ---------------------------------------------------------------------------
 
-def _build_groups(messages: list[Message], pin_first_n: int) -> list[list[int]]:
+def _build_groups(messages: list[Message]) -> list[list[int]]:
     """Partition *messages* into atomic groups that must stay together.
 
     A group is one of:
@@ -185,8 +198,7 @@ def _build_groups(messages: list[Message], pin_first_n: int) -> list[list[int]]:
       earlier shapers, but handled defensively).
 
     Returns a list of groups where each group is a list of message
-    indices.  Pinned messages (indices < pin_first_n) each form their own
-    single-element group at the front.
+    indices, in message order.
     """
     groups: list[list[int]] = []
     i = 0
@@ -227,25 +239,30 @@ def shape_auto_compact(
     summarizer: Summarizer | None = None,
     trigger_ratio: float = 0.85,
     max_tail_ratio: float = 0.6,
-    pin_first_n: int = 1,
+    protected_tools: frozenset[str] = frozenset(),
 ):
     """PRE_MODEL middleware: budget-aware context compaction.
 
-    Fires when total tokens exceed ``trigger_ratio × budget``.  Splits
-    messages into three regions:
+    Fires when total tokens exceed ``budget.trigger_tokens(trigger_ratio)``.
 
-    1. **Head** (pinned, never compacted) — first ``pin_first_n`` messages.
-    2. **Tail** (protected recent context) — determined by walking
-       backwards from the end, accumulating atomic message groups until
-       adding the next group would exceed ``max_tail_ratio × budget``
-       tokens.  Groups are never split: an ``AssistantMessage`` and its
-       ``ToolMessage``s move together.
-    3. **Middle** (everything between head and tail) — replaced with a
-       single summary message.
+    1. **Tail** (recent context, kept verbatim): walking back from the end,
+       atomic message groups are added until the next group would exceed
+       ``max_tail_ratio × budget`` tokens. Groups are never split: an
+       ``AssistantMessage`` and its ``ToolMessage``s move together.
+    2. **Protected** messages before the tail (the current request, pinned
+       messages, tool groups that called one of ``protected_tools``, see
+       ``context/protection.py``) and summaries another layer already wrote
+       stay verbatim, in place.
+    3. Every run of other groups before the tail is replaced by one
+       injected summary message.
 
-    This approach adapts to any message-size distribution: a conversation
-    with 50 small turns keeps most of them; a conversation with 3 huge
-    retrieve results protects only what fits the budget.
+    A run summarised on an earlier call of the run is sent as the same
+    summary on every later call (``context/compaction_memo.py``); the
+    summariser is called only for messages no earlier call summarised, only
+    while the context is over the trigger, and only once there are enough
+    of them to be worth one batch (``context/watermark.py``). Two instances (a
+    gentle and an aggressive tail) share the memo and never summarise each
+    other's summaries, so no run is summarised twice.
 
     Parameters
     ----------
@@ -253,89 +270,111 @@ def shape_auto_compact(
         Async callable that produces a summary string from a message
         list.  Defaults to a naive local join (no model call).
     trigger_ratio:
-        Only fires when context exceeds this fraction of effective budget.
+        Only fires when context exceeds ``budget.trigger_tokens(trigger_ratio)``.
     max_tail_ratio:
         Maximum fraction of the budget the tail may consume.
-    pin_first_n:
-        Number of leading messages (goal/system) to never compact.
+    protected_tools:
+        Tool groups that called one of these are kept verbatim.
     """
 
     async def _middleware(ctx: ModelCallContext, next_fn) -> None:
         messages = ctx.messages
         budget = ctx.budget.effective_max_tokens
         total = count_tokens(messages)
-
-        if total <= budget * trigger_ratio:
+        trigger = ctx.budget.trigger_tokens(trigger_ratio)
+        if total <= trigger and not compacted_before(ctx.compaction_memo, LAYER):
             await next_fn()
             return
 
-        if len(messages) <= pin_first_n + 1:
-            await next_fn()
-            return
-
-        groups = _build_groups(messages, pin_first_n)
+        groups = _build_groups(messages)
         if len(groups) <= 1:
             await next_fn()
             return
 
-        tail_start_group = _find_tail_start(
-            messages, groups, pin_first_n, budget, max_tail_ratio,
-        )
-
-        # Flatten group indices into head / middle / tail message slices
-        head_indices: list[int] = []
-        middle_indices: list[int] = []
-        tail_indices: list[int] = []
-
-        for gi, group in enumerate(groups):
-            if all(idx < pin_first_n for idx in group):
-                head_indices.extend(group)
-            elif gi >= tail_start_group:
-                tail_indices.extend(group)
-            else:
-                middle_indices.extend(group)
-
-        if not middle_indices:
+        tail_start_group = _find_tail_start(messages, groups, budget, max_tail_ratio)
+        memo = ctx.compaction_memo
+        held = protected_indices(messages, protected_tools=protected_tools) | held_elsewhere(memo, LAYER, messages)
+        runs = _summarisable_runs(messages, groups[:tail_start_group], held)
+        if not runs:
             await next_fn()
             return
 
-        head = [messages[i] for i in sorted(head_indices)]
-        middle = [messages[i] for i in sorted(middle_indices)]
-        tail = [messages[i] for i in sorted(tail_indices)]
+        plans = plan_runs(memo, LAYER, messages, runs)
+        reused = sum(len(plan.hits) for plan in plans)
+        shaped = assemble(messages, plans)
 
-        summary_text = (
-            await summarizer(middle) if summarizer is not None else _naive_summary(middle)
-        )
-        summary_msg = UserMessage(
-            content=f"[Auto-compacted summary of {len(middle)} earlier message(s)]\n{summary_text}",
-        )
+        marks = watermarks(ctx.budget, trigger)
+        new_summaries: dict[int, list[Message]] = {}
+        summarised = 0
+        replayed_total = count_tokens(shaped)
+        if replayed_total > trigger:
+            for plan in _batch(messages, plans, marks, replayed_total):
+                piece = list(messages[plan.rest.start:plan.rest.stop])
+                summary_text = await summarizer(piece) if summarizer is not None else _naive_summary(piece)
+                summary = UserMessage(
+                    content=f"[Auto-compacted summary of {len(piece)} earlier message(s)]\n{summary_text}",
+                    injected=True,
+                    compacted_by=LAYER,
+                )
+                new_summaries[plan.rest.start] = [summary]
+                summarised += len(piece)
+                if memo is not None:
+                    memo.remember(LAYER, piece, [summary])
+            shaped = assemble(messages, plans, new_summaries)
 
-        ctx.messages = [*head, summary_msg, *tail]
+        if memo is not None:
+            memo.log_stats(LAYER, ctx.run_id, ctx.turn_index)
+        if not new_summaries and not reused:
+            await next_fn()
+            return
+        ctx.messages = shaped
         logger.info(
-            "auto_compact: summarized %d middle messages (%d groups), "
-            "tail=%d messages, budget_used=%.0f%%",
-            len(middle),
-            tail_start_group - _first_non_pinned_group(groups, pin_first_n),
-            len(tail),
-            count_tokens(ctx.messages) / budget * 100,
+            "auto_compact: summarized %d messages into %d new summaries (%d reused from earlier calls, "
+            "tail=%d groups), %d→%d tokens (low_water=%d, run=%s, turn=%d, budget=%d)",
+            summarised, len(new_summaries), reused, len(groups) - tail_start_group,
+            total, count_tokens(shaped), marks.low_water, ctx.run_id, ctx.turn_index, budget,
         )
         await next_fn()
 
     return _middleware
 
 
-def _first_non_pinned_group(groups: list[list[int]], pin_first_n: int) -> int:
-    """Index of the first group that contains non-pinned messages."""
-    for gi, group in enumerate(groups):
-        if any(idx >= pin_first_n for idx in group):
-            return gi
-    return len(groups)
+def _batch(messages: list[Message], plans: list[RunPlan], marks: Watermarks, total: int) -> list[RunPlan]:
+    """The runs whose unsummarised rest to summarise on this call: all of
+    them, or none when that would not be worth a batch. A summary's size is
+    not known before the summariser runs, so the estimate counts what it
+    replaces as freed."""
+    rests = [plan for plan in plans if plan.rest]
+    saving = sum(count_tokens(messages[plan.rest.start:plan.rest.stop]) for plan in rests)
+    return rests if marks.worth_compacting(total, saving) else []
+
+
+def _summarisable_runs(
+    messages: list[Message], groups: list[list[int]], protected: frozenset[int],
+) -> list[range]:
+    """Index ranges of consecutive groups that hold no protected message and
+    no summary another compaction layer wrote."""
+    runs: list[range] = []
+    current: list[int] = []
+    for group in groups:
+        first = messages[group[0]]
+        keep = any(idx in protected for idx in group) or (
+            isinstance(first, UserMessage) and first.compacted_by is not None
+        )
+        if keep:
+            if current:
+                runs.append(range(current[0], current[-1] + 1))
+            current = []
+        else:
+            current.extend(group)
+    if current:
+        runs.append(range(current[0], current[-1] + 1))
+    return runs
 
 
 def _find_tail_start(
     messages: list[Message],
     groups: list[list[int]],
-    pin_first_n: int,
     budget: int,
     max_tail_ratio: float,
 ) -> int:
@@ -347,20 +386,13 @@ def _find_tail_start(
     - The tail never exceeds ``max_tail_ratio × budget`` tokens unless
       a single atomic group exceeds that limit (unavoidable — we never
       split a group).
-    - Pinned groups are never included in the tail calculation.
     """
     max_tail_tokens = int(budget * max_tail_ratio)
     tail_tokens = 0
     tail_start = len(groups)
 
     for gi in range(len(groups) - 1, -1, -1):
-        group = groups[gi]
-
-        # Never include pinned messages in the tail — they're always head.
-        if all(idx < pin_first_n for idx in group):
-            break
-
-        group_cost = _group_tokens(messages, group)
+        group_cost = _group_tokens(messages, groups[gi])
 
         # Always include at least one group in the tail.
         if tail_start == len(groups):

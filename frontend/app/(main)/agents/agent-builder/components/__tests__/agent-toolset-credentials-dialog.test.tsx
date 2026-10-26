@@ -198,7 +198,7 @@ describe('AgentToolsetCredentialsDialog — OAuth toolsets', () => {
   const oauthToolset = () => toolset({ authType: 'OAUTH', isAuthenticated: false });
 
   function fakePopup() {
-    return { closed: false, close: vi.fn(), focus: vi.fn() } as unknown as Window;
+    return { closed: false, close: vi.fn(), focus: vi.fn(), location: { href: 'about:blank' } } as unknown as Window;
   }
 
   it('signs in through a popup and closes once the agent shows as connected', async () => {
@@ -211,7 +211,9 @@ describe('AgentToolsetCredentialsDialog — OAuth toolsets', () => {
     const dialog = await credentialsDialog();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Authenticate with OAuth' }));
-    await waitFor(() => expect(open).toHaveBeenCalledWith('https://auth.example.com/authorize', 'oauth_agent_toolset', expect.any(String)));
+    // Opened on the click, before the sign-in address arrives, so strict popup blockers allow it.
+    expect(open).toHaveBeenCalledWith('about:blank', 'oauth_agent_toolset', expect.any(String));
+    await waitFor(() => expect(popup.location.href).toBe('https://auth.example.com/authorize'));
     expect(within(dialog).getByRole('button', { name: 'Waiting for OAuth…' })).toHaveProperty('disabled', true);
 
     await act(async () => {
@@ -249,12 +251,15 @@ describe('AgentToolsetCredentialsDialog — OAuth toolsets', () => {
     toolsetsApi.getAgentToolsetOAuthUrl.mockRejectedValue(
       apiFailure(404, { message: 'No OAuth app is set up for Jira. Ask an admin to add one under Actions.' }),
     );
+    const popup = fakePopup();
+    vi.spyOn(window, 'open').mockReturnValue(popup);
     renderDialog(oauthToolset());
     const dialog = await credentialsDialog();
 
     fireEvent.click(within(dialog).getByRole('button', { name: 'Authenticate with OAuth' }));
 
     expect(await within(dialog).findByText('No OAuth app is set up for Jira. Ask an admin to add one under Actions.')).toBeTruthy();
+    expect(popup.close).toHaveBeenCalled();
   });
 
   it('tells the person to allow popups when the browser blocks the sign-in window', async () => {

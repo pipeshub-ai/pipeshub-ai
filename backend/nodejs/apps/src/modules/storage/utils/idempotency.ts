@@ -1,3 +1,4 @@
+import type { Types } from 'mongoose';
 import { createHash } from 'crypto';
 import { IncomingHttpHeaders } from 'http';
 import {
@@ -121,7 +122,7 @@ export async function createDocumentOnce(
     initiatorUserId: documentInfo.initiatorUserId ?? null,
     // $type repeats the index's partial filter: without it the planner cannot
     // tell the query stays inside that index, and scans the org instead.
-    idempotencyKey: { $eq: idempotency.key, $type: 'string' },
+    idempotencyKey: { $eq: idempotency.key, $type: 'string' as const },
   };
   const existing = await DocumentModel.findOne(scope);
   if (existing) {
@@ -174,7 +175,7 @@ export async function claimUpload(
         uploadLeaseExpiresAt: now + UPLOAD_LEASE_MS,
       },
     },
-    { new: true },
+    { returnDocument: 'after' },
   );
 }
 
@@ -184,7 +185,7 @@ export async function releaseUpload(
   leaseToken: string,
 ): Promise<void> {
   await DocumentModel.updateOne(
-    { _id: documentId, uploadLeaseToken: leaseToken },
+    { _id: documentId as Types.ObjectId, uploadLeaseToken: leaseToken },
     { $unset: { uploadLeaseToken: '', uploadLeaseExpiresAt: '' } },
   );
 }

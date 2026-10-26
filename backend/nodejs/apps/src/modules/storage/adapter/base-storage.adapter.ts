@@ -1,7 +1,10 @@
+import type { FileHandle } from 'fs/promises';
 import { StorageServiceInterface } from '../services/storage.service';
 import {
   Document,
   FilePayload,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
   StorageServiceResponse,
 } from '../types/storage.service.types';
 
@@ -218,10 +221,52 @@ export class StorageServiceAdapter {
       : Promise.reject(new Error('renameObject not implemented for this storage provider'));
   }
 
+  locateDocuments(
+    prefix: string,
+    documentIds: string[],
+  ): Promise<Map<string, string>> {
+    return this.adapter.locateDocuments
+      ? this.adapter.locateDocuments(prefix, documentIds)
+      : Promise.reject(
+          new Error(
+            'locateDocuments not implemented for this storage provider',
+          ),
+        );
+  }
+
   getObjectUrl(storageKey: string): string {
     if (!this.adapter.getObjectUrl) {
       throw new Error('getObjectUrl not implemented for this storage provider');
     }
     return this.adapter.getObjectUrl(storageKey);
+  }
+
+  signObjectUrl(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl> {
+    return this.adapter.signObjectUrl
+      ? this.adapter.signObjectUrl(storageKey, options)
+      : Promise.reject(
+          new Error('signObjectUrl not implemented for this storage provider'),
+        );
+  }
+
+  writeObject(storageKey: string, data: Buffer): Promise<void> {
+    return this.adapter.writeObject
+      ? this.adapter.writeObject(storageKey, data)
+      : Promise.reject(
+          new Error('writeObject not implemented for this storage provider'),
+        );
+  }
+
+  openObject(
+    storageKey: string,
+  ): Promise<{ handle: FileHandle; size: number } | null> {
+    return this.adapter.openObject
+      ? this.adapter.openObject(storageKey)
+      : Promise.reject(
+          new Error('openObject not implemented for this storage provider'),
+        );
   }
 }

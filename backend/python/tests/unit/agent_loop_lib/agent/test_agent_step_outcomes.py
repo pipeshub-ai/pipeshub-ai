@@ -353,7 +353,7 @@ class TestPerCallModelOptions:
 
         class _SplitPrompt:
             def build(self, spec, runtime, goal, todos, extra_sections) -> str:
-                return "stable\nvolatile"
+                return "stable\n\nvolatile"
 
             def build_blocks(self, spec, runtime, goal, todos, extra_sections):  # noqa: ANN202
                 return "stable", "volatile"
@@ -372,7 +372,7 @@ class TestPerCallModelOptions:
         await agent.run(_GOAL)
 
         assert transport.options == [{"thinking_budget": 2048, "effort": "high", "system_blocks": ["stable", "volatile"]}]
-        assert transport.calls[0]["system"] == "stable\nvolatile"
+        assert transport.calls[0]["system"] == "stable\n\nvolatile"
 
     async def test_token_usage_is_recorded_against_the_budget(self) -> None:
         budget = BudgetTracker(max_input_tokens=10_000)

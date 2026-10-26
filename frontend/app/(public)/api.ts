@@ -5,6 +5,7 @@ import {
   postUserAccountAuthenticate,
 } from '@/lib/api/post-user-account-authenticate';
 import { UserAccountLoginApi } from '@/app/(main)/workspace/authentication/api';
+import { getSignupSource } from '@/lib/utils/signup-source';
 
 export type { AuthMethod, SignInResponse } from '@/lib/api/auth-public-types';
 
@@ -24,31 +25,12 @@ export interface ResetPasswordResponse {
   accessToken?: string;
 }
 
-export interface OAuthCodeExchangePayload {
-  code: string;
-  provider: 'oauth' | 'google' | 'microsoft' | 'azureAd';
-  redirectUri: string;
-}
-
 // ─── Auth API ─────────────────────────────────────────────────────────────────
-
-export interface SignUpResponse {
-  accessToken: string;
-  refreshToken: string;
-  user?: {
-    id: string;
-    name?: string;
-    email?: string;
-    phone?: string;
-    created_at?: string;
-    updated_at?: string;
-  };
-}
 
 export const AuthApi = {
   /**
-   * Register a new user account.
-   * Returns an accessToken on success.
+   * Create the organization and its first admin. The response carries no
+   * session; sign in afterwards with the same email and password.
    */
   async signUp(payload: {
     email: string;
@@ -56,8 +38,8 @@ export const AuthApi = {
     firstName: string;
     lastName: string;
     registeredName: string;
-  }): Promise<SignUpResponse> {
-    const { data } = await publicAuthClient.post<SignUpResponse>(
+  }): Promise<void> {
+    await publicAuthClient.post(
       '/api/v1/org',
       {
         contactEmail: payload.email,
@@ -65,9 +47,9 @@ export const AuthApi = {
         adminFullName: `${payload.firstName} ${payload.lastName}`.trim(),
         password: payload.password,
         accountType: 'business',
+        ...getSignupSource(),
       },
     );
-    return data;
   },
 
   /**
@@ -190,69 +172,16 @@ export const AuthApi = {
   },
 
   /**
-   * Authenticate using Microsoft / Azure AD tokens obtained client-side
-   * (e.g. via MSAL). Sends both `accessToken` and `idToken` to the backend.
-   * Use `method: 'azureAd'` for Azure AD enterprise tenants.
+   * Authenticate using Microsoft tokens obtained client-side (e.g. via MSAL).
+   * Sends both `accessToken` and `idToken` to the backend.
    */
   async signInWithMicrosoft(
     credentials: { accessToken: string; idToken: string },
-    method: 'microsoft' | 'azureAd' = 'microsoft',
   ): Promise<SignInResponse> {
     return postUserAccountAuthenticate(
-      { credentials, method },
+      { credentials, method: 'microsoft' },
       getAuthSessionRequestConfig(),
     );
-  },
-
-  /**
-   * Authenticate using a generic OAuth provider's access token.
-   * The token is obtained after the callback page exchanges the authorization
-   * code via /oauth/exchange. This method sends it to /authenticate with
-   * method: 'oauth' so the backend can resolve the user and issue app JWTs.
-   */
-  async signInWithOAuth(accessToken: string): Promise<SignInResponse> {
-    return postUserAccountAuthenticate(
-      { method: 'oauth', credentials: { accessToken } },
-      getAuthSessionRequestConfig(),
-    );
-  },
-
-  /** Redeem the single-use code a desktop SAML sign-in hands back by deep link. */
-  async exchangeSamlDesktopCode(code: string, codeVerifier: string): Promise<SignInResponse> {
-    const { data } = await publicAuthClient.post<SignInResponse>(
-      '/api/v1/saml/desktop/exchange',
-      { code, codeVerifier },
-    );
-    return data;
-  },
-
-  /**
-   * Exchange OAuth authorization code for application tokens.
-   */
-  async exchangeOAuthCode(
-    payload: OAuthCodeExchangePayload,
-  ): Promise<SignInResponse> {
-    const sessionToken =
-      typeof window !== 'undefined'
-        ? sessionStorage.getItem('auth_session_token')
-        : null;
-
-    const { data } = await publicAuthClient.post<SignInResponse & {
-      access_token?: string;
-      refresh_token?: string;
-    }>(
-      '/api/v1/userAccount/oauth/exchange',
-      payload,
-      sessionToken
-        ? { headers: { 'x-session-token': sessionToken } }
-        : undefined,
-    );
-
-    return {
-      ...data,
-      accessToken: data.accessToken ?? data.access_token,
-      refreshToken: data.refreshToken ?? data.refresh_token,
-    };
   },
 };
 

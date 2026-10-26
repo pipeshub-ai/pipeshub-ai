@@ -70,9 +70,11 @@ English happens to use:
 | en-US, de-DE, en-IN, hi-IN | `_one`, `_other` |
 | es-ES | `_one`, `_many`, `_other` |
 | ko-KR, zh-CN, zh-TW | `_other` |
+| cs-CZ | `_one`, `_few`, `_many`, `_other` |
 
-So a counted message needs `_many` in Spanish, and needs only `_other` in Chinese
-and Korean. A `_zero` override is always optional. The parity check works this
+So a counted message needs `_many` in Spanish, needs only `_other` in Chinese
+and Korean, and needs all four forms in Czech (`_few` for 2–4, `_many` for
+fractional counts). A `_zero` override is always optional. The parity check works this
 out per language; do not copy English's set.
 
 ### Regional variants

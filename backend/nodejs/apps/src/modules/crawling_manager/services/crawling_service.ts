@@ -4,6 +4,7 @@ import {
   Job,
   JobsOptions,
   RepeatOptions,
+  RepeatableJob,
   JobType,
   getNextMillis,
 } from 'bullmq';
@@ -15,6 +16,7 @@ import {
 import { CrawlingScheduleType } from '../schema/enums';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
+import { IRedisConnectionProvider } from '../../../libs/services/redis/connectionProvider.interface';
 import { crawlingQueuePrefix, crawlingRedisProvider } from './crawling_queue';
 import {
   CrawlingJobData,
@@ -58,17 +60,25 @@ interface PausedJobInfo {
   pausedAt: Date;
 }
 
+const CLEAR_IF_UNCHANGED =
+  "if redis.call('HGET', KEYS[1], ARGV[1]) == ARGV[2] then return redis.call('HDEL', KEYS[1], ARGV[1]) end return 0";
+
 @injectable()
 export class CrawlingSchedulerService {
   private queue: Queue;
   private readonly logger: Logger;
   private repeatableJobMap: Map<string, string> = new Map(); // customJobId -> repeatableJobKey
   private pausedJobs: Map<string, PausedJobInfo> = new Map(); // jobId -> PausedJobInfo
+  private readonly provider: IRedisConnectionProvider;
+  // One hash, so it lives in one Redis Cluster slot: connector id -> {orgId, at}.
+  private readonly reconcilePendingKey: string;
 
   constructor(@inject('RedisConfig') redisConfig: RedisConfig) {
     this.logger = Logger.getInstance({ service: 'CrawlingSchedulerService' });
 
     const provider = crawlingRedisProvider(redisConfig);
+    this.provider = provider;
+    this.reconcilePendingKey = `${crawlingQueuePrefix(provider)}:schedule-reconcile-pending`;
 
     const queueOptions: QueueOptions = {
       // A dedicated blocking-capable client (never the provider's shared
@@ -89,6 +99,53 @@ export class CrawlingSchedulerService {
 
     this.queue = new Queue('crawling-scheduler', queueOptions);
     this.logger.info('CrawlingSchedulerService initialized');
+  }
+
+  /**
+   * Records that a connector's saved settings may not have reached its schedule (the read after
+   * the save failed). Kept in Redis, not in memory, so a restart before the hourly repair keeps it.
+   */
+  async markReconcilePending(
+    connectorId: string,
+    orgId: string,
+  ): Promise<void> {
+    await this.provider
+      .getClient()
+      .hset(
+        this.reconcilePendingKey,
+        connectorId,
+        JSON.stringify({ orgId, at: Date.now() }),
+      );
+  }
+
+  /** Clears the mark, unless a save after `since` set it again: that save's change is still owed. */
+  async clearReconcilePending(
+    connectorId: string,
+    since: number,
+  ): Promise<void> {
+    const client = this.provider.getClient();
+    const raw = await client.hget(this.reconcilePendingKey, connectorId);
+    if (raw === null || (JSON.parse(raw) as { at: number }).at > since) return;
+    // Deleted only if still the mark just read: a save may set a newer one in between.
+    await client.eval(
+      CLEAR_IF_UNCHANGED,
+      1,
+      this.reconcilePendingKey,
+      connectorId,
+      raw,
+    );
+  }
+
+  async listReconcilesPending(): Promise<
+    { connectorId: string; orgId: string; at: number }[]
+  > {
+    const all = await this.provider
+      .getClient()
+      .hgetall(this.reconcilePendingKey);
+    return Object.entries(all).map(([connectorId, raw]) => ({
+      connectorId,
+      ...(JSON.parse(raw) as { orgId: string; at: number }),
+    }));
   }
 
   /**
@@ -498,6 +555,86 @@ export class CrawlingSchedulerService {
   }
 
   /**
+   * Make this connector's repeating schedule match `scheduleConfig`. An
+   * identical schedule is left alone; otherwise the new one is added before
+   * the old ones are removed, so a failed add never leaves the connector with
+   * no schedule at all.
+   */
+  async upsertRepeatingSchedule(
+    connector: string,
+    connectorId: string,
+    scheduleConfig: ICrawlingSchedule,
+    orgId: string,
+    userId: string,
+  ): Promise<'scheduled' | 'unchanged'> {
+    const repeatOptions = this.transformScheduleConfig(scheduleConfig);
+    if (!scheduleConfig.isEnabled || !repeatOptions) {
+      throw new BadRequestError(
+        'Only an enabled repeating schedule can be upserted',
+      );
+    }
+    this.assertSchedulable(repeatOptions);
+
+    const jobId = this.buildJobId(connector, connectorId, orgId);
+    const jobName = this.buildJobName(connector, connectorId);
+    const existing = (await this.listRepeatableSchedules()).filter(
+      (r) => r.name === jobName,
+    );
+    const matching = existing.filter((r) =>
+      this.repeatOptsMatch(r, repeatOptions),
+    );
+    const stale = existing.filter((r) => !matching.includes(r));
+
+    if (matching.length === 0) {
+      const jobData: CrawlingJobData = {
+        connector,
+        connectorId,
+        scheduleConfig,
+        orgId,
+        userId,
+        timestamp: new Date(),
+      };
+      await this.queue.add(jobName, jobData, {
+        priority: 5,
+        attempts: 3,
+        removeOnComplete: 10,
+        removeOnFail: 10,
+        repeat: repeatOptions,
+      });
+    }
+    for (const r of stale) {
+      await this.removeRepeatableByKey(r.key);
+    }
+    this.pausedJobs.delete(jobId);
+
+    return matching.length === 0 ? 'scheduled' : 'unchanged';
+  }
+
+  /**
+   * Remove every repeating schedule and queued run for this connector.
+   * Repeatables are found by name, so one without a queued run is still
+   * removed. Returns whether anything was scheduled.
+   */
+  async removeConnectorSchedules(
+    connector: string,
+    connectorId: string,
+    orgId: string,
+  ): Promise<boolean> {
+    const jobName = this.buildJobName(connector, connectorId);
+    const repeatables = (await this.listRepeatableSchedules()).filter(
+      (r) => r.name === jobName,
+    );
+    for (const r of repeatables) {
+      await this.removeRepeatableByKey(r.key);
+    }
+    await this.removeJobInternal(connector, connectorId, orgId);
+    const wasPaused = this.pausedJobs.delete(
+      this.buildJobId(connector, connectorId, orgId),
+    );
+    return repeatables.length > 0 || wasPaused;
+  }
+
+  /**
    * Remove a job (public method)
    */
   async removeJob(
@@ -646,7 +783,11 @@ export class CrawlingSchedulerService {
           job.data.orgId === orgId,
       );
 
-      if (matchingJobs.length === 0) {
+      const mostRecentJob = matchingJobs.sort(
+        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
+      )[0];
+
+      if (!mostRecentJob) {
         this.logger.debug('No jobs found', {
           jobId,
           connector,
@@ -655,11 +796,6 @@ export class CrawlingSchedulerService {
         });
         return null;
       }
-
-      // Get the most recent job
-      const mostRecentJob = matchingJobs.sort(
-        (a, b) => (b.timestamp || 0) - (a.timestamp || 0),
-      )[0];
 
       const jobState = await mostRecentJob.getState();
 
@@ -800,7 +936,7 @@ export class CrawlingSchedulerService {
   /**
    * Get repeatable jobs, optionally filtered by organization
    */
-  async getRepeatableJobs(orgId?: string): Promise<any[]> {
+  async getRepeatableJobs(orgId?: string): Promise<RepeatableJob[]> {
     this.logger.debug('Getting repeatable jobs', { orgId });
 
     try {
@@ -808,7 +944,7 @@ export class CrawlingSchedulerService {
 
       if (orgId) {
         // We need to check the actual job data to filter by orgId
-        const filteredJobs = [];
+        const filteredJobs: RepeatableJob[] = [];
 
         for (const repeatableJob of repeatableJobs) {
           // Get a sample job to check the data
@@ -1162,6 +1298,23 @@ export class CrawlingSchedulerService {
       });
       throw error;
     }
+  }
+
+  /** Name every repeatable job for this connector is registered under. */
+  jobNameFor(connector: string, connectorId: string): string {
+    return this.buildJobName(connector, connectorId);
+  }
+
+  /** Every repeatable schedule on the crawling queue, across all orgs. */
+  async listRepeatableSchedules(): Promise<RepeatableJob[]> {
+    return this.getRepeatableJobs();
+  }
+
+  /** Remove one repeatable schedule and its next queued run. */
+  async removeRepeatableByKey(key: string): Promise<boolean> {
+    // Schedules are added with `repeat`, which job-scheduler methods cannot see or remove.
+    // eslint-disable-next-line @typescript-eslint/no-deprecated
+    return this.queue.removeRepeatableByKey(key);
   }
 
   /**

@@ -301,6 +301,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 perms = []
                 yield record, perms, update
@@ -326,6 +327,7 @@ class TestPerformFullSync:
             update_del = MagicMock()
             update_del.is_deleted = True
             update_del.is_updated = False
+            update_del.content_changed = False
             yield MagicMock(), [], update_del
 
             update_upd = MagicMock()
@@ -379,6 +381,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -408,6 +411,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -460,6 +464,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 yield record, [], update
 
@@ -516,6 +521,7 @@ class TestPerformIncrementalSync:
             upd = MagicMock()
             upd.is_deleted = True
             upd.is_updated = False
+            upd.content_changed = False
             upd.record = MagicMock()
             yield upd.record, [], upd
 
@@ -548,6 +554,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -602,6 +609,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -975,10 +983,8 @@ class TestStreamRecord:
         ) as mock_stream, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
 
             mock_dl_inst = MagicMock()
             status_mock = MagicMock()
@@ -1041,7 +1047,7 @@ class TestStreamRecord:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector):
+    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -1061,10 +1067,8 @@ class TestStreamRecord:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -1076,7 +1080,7 @@ class TestStreamRecord:
             assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_other(self, connector):
+    async def test_pdf_download_http_error_other(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -1094,10 +1098,8 @@ class TestStreamRecord:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -1337,6 +1339,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = True
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -1351,6 +1354,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = False
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -1956,6 +1960,7 @@ class TestPerformFullSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 perms = []
                 yield record, perms, update
@@ -1981,6 +1986,7 @@ class TestPerformFullSyncFullCoverage:
             update_del = MagicMock()
             update_del.is_deleted = True
             update_del.is_updated = False
+            update_del.content_changed = False
             yield MagicMock(), [], update_del
 
             update_upd = MagicMock()
@@ -2034,6 +2040,7 @@ class TestPerformFullSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2063,6 +2070,7 @@ class TestPerformFullSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2115,6 +2123,7 @@ class TestPerformIncrementalSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 record = MagicMock()
                 yield record, [], update
 
@@ -2171,6 +2180,7 @@ class TestPerformIncrementalSyncFullCoverage:
             upd = MagicMock()
             upd.is_deleted = True
             upd.is_updated = False
+            upd.content_changed = False
             upd.record = MagicMock()
             yield upd.record, [], upd
 
@@ -2203,6 +2213,7 @@ class TestPerformIncrementalSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2257,6 +2268,7 @@ class TestPerformIncrementalSyncFullCoverage:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -2628,10 +2640,8 @@ class TestStreamRecordFullCoverage:
         ) as mock_stream, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
 
             mock_dl_inst = MagicMock()
             status_mock = MagicMock()
@@ -2691,7 +2701,7 @@ class TestStreamRecordFullCoverage:
         assert exc_info.value.status_code == 500
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector):
+    async def test_pdf_download_http_error_forbidden_not_downloadable(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -2711,10 +2721,8 @@ class TestStreamRecordFullCoverage:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -2726,7 +2734,7 @@ class TestStreamRecordFullCoverage:
             assert exc_info.value.status_code == 422
 
     @pytest.mark.asyncio
-    async def test_pdf_download_http_error_other(self, connector):
+    async def test_pdf_download_http_error_other(self, connector, tmp_path):
         record = _make_record()
         connector._get_file_metadata_from_drive = AsyncMock(
             return_value={"mimeType": "text/plain"}
@@ -2744,10 +2752,8 @@ class TestStreamRecordFullCoverage:
         ) as MockDL, patch(
             "builtins.open", MagicMock()
         ), patch(
-            "tempfile.TemporaryDirectory"
-        ) as MockTmpDir:
-            MockTmpDir.return_value.__enter__ = MagicMock(return_value="/tmp/test_dir")
-            MockTmpDir.return_value.__exit__ = MagicMock(return_value=False)
+            "tempfile.mkdtemp", return_value=str(tmp_path / "convert")
+        ):
             mock_dl = MagicMock()
             mock_dl.next_chunk.side_effect = http_err
             MockDL.return_value = mock_dl
@@ -2987,6 +2993,7 @@ class TestCheckAndFetchUpdatedRecordFullCoverage:
         update = MagicMock()
         update.is_deleted = True
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -3001,6 +3008,7 @@ class TestCheckAndFetchUpdatedRecordFullCoverage:
         update = MagicMock()
         update.is_deleted = False
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None

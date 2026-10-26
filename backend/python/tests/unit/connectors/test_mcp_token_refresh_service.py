@@ -1,6 +1,7 @@
 """Unit tests for app.connectors.core.base.token_service.mcp_token_refresh_service."""
 import asyncio
 from datetime import datetime, timedelta, timezone
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -12,6 +13,23 @@ from app.connectors.core.base.token_service.mcp_token_refresh_service import (
     PROACTIVE_REFRESH_WINDOW_SECONDS,
     MCPTokenRefreshService,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator, Iterator
+
+
+@pytest.fixture(autouse=True)
+def _no_cluster_lock() -> "Iterator[None]":
+    """The shared-store refresh lock has its own tests; here the config service is a bare mock."""
+    from contextlib import asynccontextmanager
+
+    @asynccontextmanager
+    async def _held(*_args: object, **_kwargs: object) -> "AsyncIterator[None]":
+        yield
+
+    with patch("app.agents.mcp.token_refresh._cluster_refresh_lock", _held):
+        yield
+
 
 CONFIG_PATH = "/services/mcp/credentials/inst-1/user-1"
 
@@ -343,6 +361,27 @@ class TestRefreshAllTokensInternal:
         refresh.assert_awaited_once_with(CONFIG_PATH)
 
     @pytest.mark.asyncio
+    async def test_already_scheduled_credentials_are_not_re_read(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.list_keys_in_directory = AsyncMock(
+            return_value=[CONFIG_PATH, "/services/mcp/credentials/inst-2/user-1"]
+        )
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": _oauth_token_dict()}
+        )
+        scheduled = asyncio.get_running_loop().create_future()
+        service._refresh_tasks[CONFIG_PATH] = scheduled
+
+        with patch.object(service, "_refresh_credential", new=AsyncMock()) as refresh:
+            await service._refresh_all_tokens_internal()
+
+        refresh.assert_awaited_once_with("/services/mcp/credentials/inst-2/user-1")
+        read_paths = [c.args[0] for c in mock_config_service.get_config.await_args_list]
+        assert CONFIG_PATH not in read_paths
+        scheduled.cancel()
+
+    @pytest.mark.asyncio
     async def test_per_credential_errors_do_not_abort_scan(
         self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
     ) -> None:
@@ -398,6 +437,8 @@ class TestRefreshCredential:
             await service._refresh_credential(CONFIG_PATH)
 
         perform.assert_awaited_once()
+        # Another replica may already have rotated this token; the shared refresh checks.
+        assert perform.await_args.kwargs["stale_access_token"] == "access-1"
         schedule.assert_awaited_once_with(CONFIG_PATH, new_token)
 
     @pytest.mark.asyncio
@@ -416,6 +457,24 @@ class TestRefreshCredential:
 
         perform.assert_not_awaited()
         schedule.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_token_without_an_expiry_is_left_alone(
+        self, service: MCPTokenRefreshService, mock_config_service: MagicMock,
+    ) -> None:
+        mock_config_service.get_config = AsyncMock(
+            return_value={"isAuthenticated": True, "oauthTokens": _oauth_token_dict(expires_in=0)}
+        )
+
+        with (
+            patch.object(service, "_perform_token_refresh", new=AsyncMock()) as perform,
+            patch.object(service, "schedule_token_refresh", new=AsyncMock()) as schedule,
+        ):
+            await service._refresh_credential(CONFIG_PATH)
+
+        # Refreshing on every pass would spend refresh tokens; a 401 refreshes it when needed.
+        perform.assert_not_awaited()
+        schedule.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_invalid_refresh_token_is_handled(

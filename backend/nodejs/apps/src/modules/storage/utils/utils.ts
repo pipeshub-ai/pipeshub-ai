@@ -119,7 +119,9 @@ async function getDocumentInfoFromDb(
     const document = lean ? await query.lean<Document>().exec() : await query;
 
     if (!document) {
-      throw new NotFoundError('Document not found');
+      // Callers probe for documents that may be gone (deduplicated content
+      // removed with another connector); that is not a server fault.
+      throw new NotFoundError('Document not found', { logLevel: 'warn' });
     }
     return { document };
   } catch (error) {
@@ -239,6 +241,33 @@ export function getFullDocumentPath(
   return documentPath
     ? `${orgId}/PipesHub/${documentPath}`
     : `${orgId}/PipesHub`;
+}
+
+/**
+ * The folder holding a virtual record's content revisions.
+ * e.g. 'org1/PipesHub/record-revisions/vr-1'
+ *
+ * Not under `records/`: older records are filed flat at `records/{id}`, and a
+ * move of one of them into its folder path (move-tree) would carry or collide
+ * with revisions stored beneath the same folder.
+ */
+export function getArtifactSetFolder(
+  orgId: string,
+  virtualRecordId: string,
+): string {
+  return getFullDocumentPath(orgId, `record-revisions/${virtualRecordId}`);
+}
+
+/**
+ * Where one content revision of a virtual record keeps its files.
+ * e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd'
+ */
+export function getArtifactSetRoot(
+  orgId: string,
+  virtualRecordId: string,
+  rev: string,
+): string {
+  return `${getArtifactSetFolder(orgId, virtualRecordId)}/${rev}`;
 }
 
 /**

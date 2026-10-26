@@ -201,8 +201,6 @@ class TestNotionPersonalPermissions:
         connector = _make_connector()
         connector.workspace_id = "ws-1"
         connector.workspace_name = "My Workspace"
-        group_permission = MagicMock()
-        connector._connector_group_permission = group_permission
 
         await connector._apply_creator_workspace_permission()
 
@@ -210,7 +208,8 @@ class TestNotionPersonalPermissions:
         record_group, perms = (
             connector.data_entities_processor.on_new_record_groups.call_args[0][0][0]
         )
-        assert perms == [group_permission]
+        assert perms == []
+        assert record_group.inherit_permissions is True
         assert record_group.connector_name == Connectors.NOTION_PERSONAL
 
     @pytest.mark.asyncio
@@ -234,7 +233,7 @@ class TestNotionPersonalPermissions:
         calls = []
 
         connector.creator_email = "creator@example.com"
-        connector.ensure_connector_group_permission = AsyncMock(
+        connector.ensure_creator_user_app_relation = AsyncMock(
             side_effect=lambda: calls.append("ensure_group")
         )
         connector._sync_users = AsyncMock(side_effect=lambda: calls.append("sync_users"))
@@ -266,12 +265,12 @@ class TestNotionPersonalPermissions:
         connector._load_creator_email = AsyncMock()
         connector._get_fresh_datasource = AsyncMock()
         connector._assert_required_capabilities = AsyncMock()
-        connector.ensure_connector_group_permission = AsyncMock()
+        connector.ensure_creator_user_app_relation = AsyncMock()
         connector._sync_users = AsyncMock()
         connector._sync_objects_by_type = AsyncMock()
 
         with patch(_FILTERS, new=AsyncMock(return_value=(MagicMock(), MagicMock()))):
             await connector.run_sync()
 
-        connector.ensure_connector_group_permission.assert_not_awaited()
+        connector.ensure_creator_user_app_relation.assert_not_awaited()
         connector.logger.warning.assert_called()

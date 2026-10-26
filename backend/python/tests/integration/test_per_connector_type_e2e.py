@@ -235,7 +235,7 @@ class TestRebuild:
         registry = await _two_connectors(vdb)
         vdb.created.clear()
 
-        recreated = await registry.recreate_all_collections(2048)
+        recreated = await registry.recreate_records_collections(2048)
 
         assert set(recreated) == {DRIVE, SLACK}
 

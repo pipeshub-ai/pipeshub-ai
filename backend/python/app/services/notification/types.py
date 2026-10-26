@@ -31,6 +31,7 @@ class NotificationType(str, Enum):
     OAUTH_APP_DELETED = "OAUTH_APP_DELETED"
     # Agent toolsets ("Actions") — distinct from connectors.
     TOOLSET_AUTH_ERROR = "TOOLSET_AUTH_ERROR"
+    ARTIFACT_SHARED = "ARTIFACT_SHARED"
 
 class NotificationStatus(str, Enum):
     UNREAD = "unread"

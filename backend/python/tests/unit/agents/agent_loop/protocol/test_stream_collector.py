@@ -196,6 +196,8 @@ class TestErrorResponse:
             ("model_not_found", 424),
             ("rate_limit", 429),
             ("content_filter", 422),
+            ("selection_too_large", 422),
+            ("selection_not_ready", 422),
             ("request_too_large", 413),
             ("invalid_request", 400),
             ("server_error", 502),

@@ -8,6 +8,7 @@ from .common_fields import (
     DEPLOYMENT_NAME,
     EMBEDDING_COMMON_TAIL,
     ENDPOINT,
+    FRIENDLY_NAME,
     LLM_COMMON_TAIL,
     model_field,
 )
@@ -92,24 +93,29 @@ _AZURE_OPENAI_ENDPOINT = AIModelField(
 
 @AIModelProviderBuilder("Azure OpenAI", "azureOpenAI") \
     .with_description("Enterprise-grade OpenAI models") \
-    .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING]) \
+    .with_capabilities([ModelCapability.TEXT_GENERATION, ModelCapability.EMBEDDING, ModelCapability.DECISION]) \
     .with_icon("/icons/ai-models/azure-color.svg") \
     .with_color("#0078D4") \
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.TEXT_GENERATION) \
     .add_field(API_KEY, ModelCapability.TEXT_GENERATION) \
+    .add_field(model_field("e.g. gpt-6-luna"), ModelCapability.TEXT_GENERATION) \
     .add_field(DEPLOYMENT_NAME, ModelCapability.TEXT_GENERATION) \
-    .add_field(model_field("e.g. gpt-5-nano"), ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[0], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[1], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[2], ModelCapability.TEXT_GENERATION) \
     .add_field(LLM_COMMON_TAIL[3], ModelCapability.TEXT_GENERATION) \
     .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.EMBEDDING) \
     .add_field(API_KEY, ModelCapability.EMBEDDING) \
-    .add_field(DEPLOYMENT_NAME, ModelCapability.EMBEDDING) \
     .add_field(model_field("e.g., text-embedding-3-small"), ModelCapability.EMBEDDING) \
+    .add_field(DEPLOYMENT_NAME, ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[0], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[1], ModelCapability.EMBEDDING) \
     .add_field(EMBEDDING_COMMON_TAIL[2], ModelCapability.EMBEDDING) \
+    .add_field(_AZURE_OPENAI_ENDPOINT, ModelCapability.DECISION) \
+    .add_field(API_KEY, ModelCapability.DECISION) \
+    .add_field(model_field("e.g., Microsoft-Decision-1"), ModelCapability.DECISION) \
+    .add_field(DEPLOYMENT_NAME, ModelCapability.DECISION) \
+    .add_field(FRIENDLY_NAME, ModelCapability.DECISION) \
     .build_decorator()
 class AzureOpenAIProvider:
     pass

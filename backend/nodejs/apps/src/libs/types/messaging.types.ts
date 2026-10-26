@@ -8,6 +8,7 @@ export enum MessageBrokerType {
  */
 export enum BrokerTopic {
   RECORD_EVENTS = 'record-events',
+  CODE_GRAPH_EVENTS = 'code-graph-events',
   ENTITY_EVENTS = 'entity-events',
   AI_CONFIG_EVENTS = 'ai-config-events',
   SYNC_EVENTS = 'sync-events',
@@ -25,6 +26,7 @@ export enum BrokerTopic {
  */
 export interface BrokerTopicPayloadMap {
   [BrokerTopic.RECORD_EVENTS]: string;
+  [BrokerTopic.CODE_GRAPH_EVENTS]: string;
   [BrokerTopic.ENTITY_EVENTS]: string;
   [BrokerTopic.AI_CONFIG_EVENTS]: string;
   [BrokerTopic.SYNC_EVENTS]: string;
@@ -90,8 +92,11 @@ export type StreamMessageForTopic<TTopic extends BrokerTopic> = StreamMessage<
 
 export interface TopicDefinition {
   topic: string;
+  /** Partitions to create the topic with. */
   numPartitions?: number;
   replicationFactor?: number;
+  /** Also raise an existing topic to numPartitions (never lowers it). */
+  growExisting?: boolean;
 }
 
 export interface IMessageProducer {

@@ -6,6 +6,7 @@ from collections.abc import Callable
 
 from httpx import URL
 
+from app.utils.log_redaction import redact_secrets_in_text, refresh_env_secrets
 from app.utils.request_context import NO_CONTEXT, current_display_id, get_context
 from app.utils.url_redaction import redact_sensitive_query_params, redact_url
 
@@ -63,7 +64,53 @@ if not getattr(_existing_factory, "_pipeshub_trace", False):
     logging.setLogRecordFactory(_record_factory)
 
 
-class ColoredFormatter(logging.Formatter):
+class RedactingFormatter(logging.Formatter):
+    """Masks credentials in the finished line (see app/utils/log_redaction.py).
+
+    Redacting the formatted string, not ``record.msg``, covers f-strings,
+    ``%``-args, ``exc_info`` tracebacks and ``stack_info`` alike.
+    """
+
+    # Checked by attribute, not isinstance, so a reload of this module does
+    # not wrap the formatters it already installed a second time.
+    _pipeshub_redacting = True
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets_in_text(super().format(record))
+
+
+class _RedactingWrapper(logging.Formatter):
+    """Redacts what another formatter produced, for handlers this module did
+    not create (uvicorn's), whose own formatting is kept."""
+
+    _pipeshub_redacting = True
+
+    def __init__(self, inner: logging.Formatter) -> None:
+        super().__init__()
+        self.inner = inner
+
+    def format(self, record: logging.LogRecord) -> str:
+        return redact_secrets_in_text(self.inner.format(record))
+
+
+def install_log_redaction() -> None:
+    """Make every handler in the process redact its output.
+
+    ``create_logger`` handlers already do. This covers the root handler and
+    the ones uvicorn installs when it configures logging, which happens after
+    this module is imported, so each service calls it again at startup. It
+    also re-reads the secret env values, which may have been loaded since.
+    """
+    refresh_env_secrets()
+    loggers = [logging.getLogger()]
+    loggers += [lg for lg in logging.Logger.manager.loggerDict.values() if isinstance(lg, logging.Logger)]
+    for lg in loggers:
+        for handler in lg.handlers:
+            if not getattr(handler.formatter, "_pipeshub_redacting", False):
+                handler.setFormatter(_RedactingWrapper(handler.formatter or logging.Formatter()))
+
+
+class ColoredFormatter(RedactingFormatter):
     """Formatter that adds colors for WARNING (yellow) and ERROR (red) in console output."""
 
     YELLOW = "\033[33m"
@@ -176,6 +223,8 @@ logging.basicConfig(
     encoding="utf-8",
 )
 
+install_log_redaction()
+
 # Suppress Neo4j notification warnings (missing labels, etc.)
 data_store = os.getenv("DATA_STORE", "arangodb").lower()
 if data_store == "neo4j":
@@ -216,7 +265,7 @@ def create_logger(service_name: str) -> logging.Logger:
             os.path.join(log_dir, f"{service_name}.log"),
             encoding="utf-8",  # Explicitly set encoding here too
         )
-        file_handler.setFormatter(logging.Formatter(log_format))
+        file_handler.setFormatter(RedactingFormatter(log_format))
 
         # Console handler with colored format
         console_handler = logging.StreamHandler(sys.stdout)

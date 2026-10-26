@@ -14,11 +14,18 @@ import statistics as st
 import sys
 
 LINE = re.compile(r"kind=(\w+) n=(\d+) qps=([\d.]+) p50=(\d+) p95=(\d+) max=(\d+)")
+OP = re.compile(r"BACKENDOP .*?kind=(\w+) op=(\S+) n=(\d+) ms=(\d+)")
 
 
 def main() -> int:
     windows: dict[str, list[tuple[int, float, float, float, float]]] = collections.defaultdict(list)
+    ops: dict[tuple[str, str], list[int]] = collections.defaultdict(lambda: [0, 0])
     for line in sys.stdin:
+        o = OP.search(line)
+        if o:
+            ops[(o.group(1), o.group(2))][0] += int(o.group(3))
+            ops[(o.group(1), o.group(2))][1] += int(o.group(4))
+            continue
         m = LINE.search(line)
         if m:
             windows[m.group(1)].append((
@@ -42,6 +49,13 @@ def main() -> int:
             f"{max(r[3] for r in rows):>11.0f}ms"
             f"{max(r[4] for r in rows):>8.0f}ms"
         )
+    if ops:
+        turns = int(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else 0
+        print()
+        print(f"  {'neo4j calls by provider method <- caller':<70}{'calls':>8}{'/turn':>8}{'total s':>9}")
+        for (_kind, op), (n, ms) in sorted(ops.items(), key=lambda kv: -kv[1][0])[:15]:
+            per = f"{n / turns:.1f}" if turns else "-"
+            print(f"  {op[:70]:<70}{n:>8}{per:>8}{ms / 1000:>9.1f}")
     return 0
 
 

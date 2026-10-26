@@ -7,23 +7,16 @@ import re
 from datetime import datetime, time
 from typing import Any
 
-from app.services.parsing.interface import ParseResult
-from app.utils.llm import get_llm_for_role
-from app.config.configuration_service import ConfigurationService
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
-from tenacity import (
-    retry,
-    stop_after_attempt,
-    wait_exponential,
-)
 
+from app.config.configuration_service import ConfigurationService
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-
+from app.exceptions.non_retryable import NonRetryableError
 from app.models.blocks import (
     Block,
     BlockGroup,
@@ -44,12 +37,62 @@ from app.modules.parsers.excel.prompt_template import (
     sheet_summary_prompt,
     table_summary_prompt,
 )
+from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
+from app.services.parsing.interface import ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
+from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
+from app.utils.llm import get_llm_for_role
+from app.utils.opik import get_llm_invoke_config
 from app.utils.streaming import (
     invoke_with_row_descriptions_and_reflection,
     invoke_with_structured_output_and_reflection,
 )
+from app.utils.table_enrichment import fallback_table_summary
+
+
+def _color_to_str(color: object) -> str | None:
+    """Return a colour's ``rgb`` only when it is a real string.
+
+    Theme and indexed colours expose ``rgb`` as an error descriptor rather than
+    a string, so anything that is not a ``str`` is treated as "no colour".
+    """
+    rgb = getattr(color, "rgb", None)
+    return rgb if isinstance(rgb, str) else None
+
+
+def get_cell_background_color(cell: object) -> str | None:
+    """Background colour of a cell as a string, or None.
+
+    Handles ``PatternFill`` (foreground colour) and ``GradientFill`` (first
+    colour stop). Styling is decorative, so a failure reading it yields None
+    instead of failing the cell.
+    """
+    try:
+        # cell.fill is a StyleProxy, so isinstance() against the fill classes
+        # is always False; tell the two kinds apart by their attributes.
+        fill = getattr(cell, "fill", None)
+        if fill is None:
+            return None
+        start_color = getattr(fill, "start_color", None)
+        if start_color is not None:  # PatternFill
+            return _color_to_str(start_color)
+        stops = getattr(fill, "stop", None)  # GradientFill: colour stops
+        if not stops:
+            return None
+        first = stops[0]
+        return _color_to_str(getattr(first, "color", first))
+    except Exception:
+        return None
+
+
+def get_cell_font_color(cell: object) -> str | None:
+    """Font colour of a cell as a string, or None (theme/indexed give None)."""
+    try:
+        return _color_to_str(cell.font.color)
+    except Exception:
+        return None
+
 
 # Module-level constants for Excel processing (mirror CSV parser)
 NUM_SAMPLE_ROWS = 5  # Number of representative sample rows to select for header generation
@@ -378,16 +421,26 @@ class ExcelParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
+            document_parser = self.new_document_parser()
             llm, _ = await get_llm_for_role(self.config_service, "indexing", reasoning_effort="low")
             # openpyxl's load is synchronous and can take seconds on large
             # workbooks; keep it off the event loop.
-            await asyncio.to_thread(self.load_workbook_from_binary, content)
-            blocks_containers = await self.create_blocks(llm)
+            await asyncio.to_thread(document_parser.load_workbook_from_binary, content)
+            blocks_containers = await document_parser.create_blocks(llm)
 
             return ParseResult(
                 block_container=blocks_containers,
                 metadata={"record_name": record_name},
             )
+
+    def new_document_parser(self) -> "ExcelParser":
+        """A parser for one document.
+
+        The loaded workbook is instance state, and callers hold one shared
+        ExcelParser while block creation awaits LLM calls; parsing on the shared
+        instance lets a concurrent document replace the workbook mid-parse.
+        """
+        return ExcelParser(self.logger, self.config_service)
 
     def load_workbook_from_binary(self, file_binary: bytes) -> None:
         """Load workbook from binary (no LLM calls).
@@ -620,16 +673,10 @@ class ExcelParser:
                                     "bold": cell.font.bold,
                                     "italic": cell.font.italic,
                                     "size": cell.font.size,
-                                    "color": (
-                                        cell.font.color.rgb if cell.font.color else None
-                                    ),
+                                    "color": get_cell_font_color(cell),
                                 },
                                 "fill": {
-                                    "background_color": (
-                                        cell.fill.start_color.rgb
-                                        if cell.fill.start_color
-                                        else None
-                                    )
+                                    "background_color": get_cell_background_color(cell),
                                 },
                                 "alignment": {
                                     "horizontal": cell.alignment.horizontal,
@@ -960,12 +1007,10 @@ class ExcelParser:
                         "bold": cell.font.bold,
                         "italic": cell.font.italic,
                         "size": cell.font.size,
-                        "color": cell.font.color.rgb if cell.font.color else None,
+                        "color": get_cell_font_color(cell),
                     },
                     "fill": {
-                        "background_color": (
-                            cell.fill.start_color.rgb if cell.fill.start_color else None
-                        )
+                        "background_color": get_cell_background_color(cell),
                     },
                     "alignment": {
                         "horizontal": cell.alignment.horizontal,
@@ -1111,6 +1156,8 @@ class ExcelParser:
                 reasoning="LLM call failed, defaulting to no headers"
             )
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.warning(f"Error in Excel header detection: {e}, defaulting to no headers")
             return ExcelHeaderDetection(
@@ -1227,6 +1274,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.warning(f"Using generic fallback headers for {column_count} columns")
             return [f"Column_{i}" for i in range(1, column_count + 1)]
 
+        except NonRetryableError:
+            raise
         except Exception as e:
             self.logger.error(f"Error in Excel header generation: {e}", exc_info=True)
             self.logger.warning(f"Using generic fallback headers for {column_count} columns")
@@ -1271,16 +1320,15 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         return consolidated
 
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=1, max=10),
-        before_sleep=lambda retry_state: retry_state.args[0].logger.warning(
-            f"Retrying LLM call after error. Attempt {retry_state.attempt_number}"
-        ),
-    )
     async def _call_llm(self, messages: list[Any]) -> AIMessage:
-        """Wrapper for LLM calls with retry logic"""
-        return await self.llm.ainvoke(messages)  # type: ignore[return-value]
+        """Through the LLM gateway: its cap, the provider's breaker and its 429 retries."""
+        return await get_llm_gateway().invoke(  # type: ignore[no-any-return]
+            self.llm,
+            messages,
+            provider=provider_key(self.llm),
+            call_site="table_summary",
+            config=get_llm_invoke_config(self.llm),
+        )
 
     async def get_tables_in_sheet(self, sheet_name: str, llm: BaseChatModel) -> list[dict[str, Any]]:
         """Get all tables in a specific sheet with LLM-based header detection/generation
@@ -1340,9 +1388,11 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             self.logger.info("Table summary generated")
             return summary
 
-        except Exception as e:
-            self.logger.error(f"Error getting table summary: {e}", exc_info=True)
+        except NonRetryableError:
             raise
+        except Exception as e:
+            self.logger.warning("Table summary unavailable (%s); using a plain one", e)
+            return fallback_table_summary(table["headers"], len(table["data"]))
 
     async def get_rows_text(
         self, rows: list[list[dict[str, Any]]], table_summary: str
@@ -1411,7 +1461,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             return None
 
         # Get threshold from environment variable (default: 1000)
-        threshold = int(os.getenv("MAX_TABLE_ROWS_FOR_LLM", "1000"))
+        threshold = max_table_rows_for_llm()
         self.logger.info(f"Using LLM threshold for row processing: {threshold} (cumulative count: {cumulative_row_count[0]})")
 
         # Get tables in the sheet

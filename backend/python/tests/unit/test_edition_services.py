@@ -1,8 +1,25 @@
-"""Tests for app.edition_services — OSS edition service registry and lazy imports."""
+"""Tests for app.edition_services — the base service registry and lazy imports.
+
+A build can replace these services with subclasses, so class checks use issubclass,
+and checks of the base return values run only when the base is what is installed.
+"""
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+
+def _base_installed() -> bool:
+    from app.connectors.core.registry.connector_registry import ConnectorRegistry
+    from app.edition_services import get_connector_registry_cls
+
+    return get_connector_registry_cls() is ConnectorRegistry
+
+
+base_only = pytest.mark.skipif(
+    not _base_installed(),
+    reason="this build replaces the base implementation",
+)
 
 
 # ---------------------------------------------------------------------------
@@ -30,7 +47,7 @@ class TestReExports:
 
 
 class TestGetattr:
-    """The module's __getattr__ returns concrete classes by name."""
+    """The module's __getattr__ returns the edition's classes by name."""
 
     def test_event_service(self) -> None:
         import app.edition_services as mod
@@ -38,7 +55,7 @@ class TestGetattr:
         cls = getattr(mod, "EventService")
         from app.connectors.services.event_service import EventService
 
-        assert cls is EventService
+        assert issubclass(cls, EventService)
 
     def test_entity_event_service(self) -> None:
         import app.edition_services as mod
@@ -46,7 +63,7 @@ class TestGetattr:
         cls = getattr(mod, "EntityEventService")
         from app.services.messaging.kafka.handlers.entity import EntityEventService
 
-        assert cls is EntityEventService
+        assert issubclass(cls, EntityEventService)
 
     def test_record_event_handler(self) -> None:
         import app.edition_services as mod
@@ -54,7 +71,7 @@ class TestGetattr:
         cls = getattr(mod, "RecordEventHandler")
         from app.services.messaging.kafka.handlers.record import RecordEventHandler
 
-        assert cls is RecordEventHandler
+        assert issubclass(cls, RecordEventHandler)
 
     def test_unknown_name_raises_attribute_error(self) -> None:
         import app.edition_services as mod
@@ -74,7 +91,7 @@ class TestGetConnectorRegistryCls:
         from app.connectors.core.registry.connector_registry import ConnectorRegistry
 
         result = get_connector_registry_cls()
-        assert result is ConnectorRegistry
+        assert issubclass(result, ConnectorRegistry)
 
 
 # ---------------------------------------------------------------------------
@@ -94,6 +111,7 @@ class TestScopeOrgResources:
         assert isinstance(result, tuple)
         assert len(result) == 2
 
+    @base_only
     async def test_returns_config_service_and_data_store(self) -> None:
         from app.edition_services import scope_org_resources
 
@@ -124,6 +142,7 @@ class TestRegisterExtraConnectors:
 
 
 class TestGetStartupExtraKwargs:
+    @base_only
     def test_returns_empty_dict(self) -> None:
         from app.edition_services import get_startup_extra_kwargs
 
@@ -158,4 +177,4 @@ class TestGetDataEntitiesProcessorCls:
         )
 
         result = get_data_entities_processor_cls()
-        assert result is DataSourceEntitiesProcessor
+        assert issubclass(result, DataSourceEntitiesProcessor)

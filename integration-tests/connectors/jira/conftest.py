@@ -34,6 +34,7 @@ from helper.assertions import ConnectorAssertions  # type: ignore[import-not-fou
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
 from connectors.jira.constants import (  # type: ignore[import-not-found]
+    connector_base_url,
     JIRA_BLOCKS_ISSUE_KEY,
     JIRA_IT_RUN_ID,
     JIRA_LINK_SOURCE_ISSUE_KEY,
@@ -125,7 +126,6 @@ async def jira_connector(
     keys, pinned constant keys (validated), and ``expected_*`` snapshot counts. Setup is
     read-only against Jira; teardown removes the connector + graph only (never the project).
     """
-    base_url = os.getenv("JIRA_TEST_BASE_URL")
     email = os.getenv("JIRA_TEST_EMAIL")
     api_token = os.getenv("JIRA_TEST_API_TOKEN")
 
@@ -277,7 +277,7 @@ async def jira_connector(
     config: dict[str, Any] = {
         "auth": {
             "authType": "API_TOKEN",
-            "baseUrl": base_url,
+            "baseUrl": connector_base_url(),
             "email": email,
             "apiToken": api_token,
         },

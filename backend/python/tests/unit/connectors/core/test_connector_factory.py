@@ -435,6 +435,7 @@ class TestInitializeConnector:
         )
 
         assert result is None
+        mock_connector.on_background_init_failed.assert_awaited_once_with(None)
 
     @pytest.mark.asyncio
     async def test_init_exception_returns_none(self):
@@ -465,6 +466,8 @@ class TestInitializeConnector:
         )
 
         assert result is None
+        (error,) = mock_connector.on_background_init_failed.await_args.args
+        assert str(error) == "init boom", "the connector hears why it could not start"
 
     @pytest.mark.asyncio
     async def test_create_returns_none_skips_init(self):
@@ -670,3 +673,16 @@ class TestCreateAndStartSync:
                 data_entities_processor_cls=mock_processor_cls,
             )
         assert result is mock_connector
+
+
+class TestEveryConnectorIsDecorated:
+    def test_every_registered_connector_carries_its_builder_metadata(self) -> None:
+        """A class without ``_connector_metadata`` never reaches the registry, so the
+        connector disappears from the Connectors page with no error. A helper placed
+        between ``@ConnectorBuilder(...).build_decorator()`` and the class takes the
+        decorator instead of the class."""
+        undecorated = sorted(
+            key for key, connector in ConnectorFactory._connector_registry.items()
+            if not getattr(connector, "_connector_metadata", None)
+        )
+        assert undecorated == []

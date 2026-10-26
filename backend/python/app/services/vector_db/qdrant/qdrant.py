@@ -5,8 +5,10 @@ Supports: sparse + dense named vectors, RRF prefetch/fusion.
 """
 
 import asyncio
+import os
 import threading
 import time
+from urllib.parse import quote
 from typing import Dict, List, NamedTuple, Optional, Union
 
 from qdrant_client import AsyncQdrantClient  # type: ignore
@@ -51,18 +53,31 @@ from app.services.vector_db.models import (
     MRLConfig,
     QuantizationType,
     ScrollResult,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
+    VectorDBMemoryReport,
     VectorPoint,
 )
 from app.services.vector_db.qdrant.config import QdrantConfig
-from app.services.vector_db.qdrant.utils import QdrantUtils
+from app.services.vector_db.qdrant.errors import classify_qdrant_search_error
+from app.services.vector_db.qdrant.memory_sizing import assess_memory, parse_memory_size
+from app.services.vector_db.qdrant.utils import MAX_HNSW_EF_CONSTRUCT, QdrantUtils, env_number
 from app.utils.logger import create_logger
 from app.services.resource_governor.feedback import get_default_downstream_feedback
 
 logger = create_logger("qdrant_service")
+
+# Qdrant cannot see its own container limit (its telemetry reports host RAM), so
+# the deployment states it here; compose and Helm set it from the same value
+# they give Qdrant's memory limit.
+QDRANT_MEMORY_LIMIT_ENV = "QDRANT_MEMORY_LIMIT"
+# Applies to collections created after it is set; an existing graph keeps the value it was built with.
+QDRANT_HNSW_EF_CONSTRUCT_ENV = "QDRANT_HNSW_EF_CONSTRUCT"
+DEFAULT_HNSW_EF_CONSTRUCT = 256
+_MEMORY_REPORT_CONCURRENCY = 8
 
 
 def _report_upsert_failure(error: BaseException) -> None:
@@ -356,6 +371,7 @@ class QdrantService(IVectorDBService):
             client_kwargs: dict = dict(
                 host=cfg.host,
                 port=cfg.port,
+                grpc_port=cfg.grpc_port,
                 # api_key may be empty string — only pass it when truthy
                 api_key=cfg.api_key or None,
                 prefer_grpc=cfg.prefer_grpc,
@@ -426,6 +442,9 @@ class QdrantService(IVectorDBService):
     def get_capabilities(self) -> VectorDBCapabilities:
         return _QDRANT_CAPABILITIES
 
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        return classify_qdrant_search_error(error)
+
     async def health_check(self) -> VectorDBHealth:
         start = time.monotonic()
         if self.client is None:
@@ -455,6 +474,57 @@ class QdrantService(IVectorDBService):
                 latency_ms=round(latency_ms, 2),
                 message=str(e),
             )
+
+    async def _rest_get(self, url: str, **kwargs: object) -> dict:
+        # Raw JSON rather than the client's typed models: those are generated
+        # for one server version, and the telemetry model of the pinned client
+        # already fails to parse a newer server's response.
+        response = await self.client.http.client.request(  # type: ignore[union-attr]
+            type_=dict, method="GET", url=url, **kwargs
+        )
+        return (response or {}).get("result") or {}
+
+    async def memory_report(self) -> VectorDBMemoryReport | None:
+        self._assert_connected()
+        listing = await self.client.get_collections()  # type: ignore[union-attr]
+        names = [c.name for c in listing.collections]
+        gate = asyncio.Semaphore(_MEMORY_REPORT_CONCURRENCY)
+
+        async def _info(name: str) -> dict:
+            async with gate:
+                return await self._rest_get(f"/collections/{quote(name, safe='')}")
+
+        infos = dict(zip(names, await asyncio.gather(*(_info(n) for n in names))))
+
+        host_ram_bytes = None
+        try:
+            telemetry = await self._rest_get("/telemetry", params={"details_level": 1})
+            ram_kib = ((telemetry.get("app") or {}).get("system") or {}).get("ram_size")
+            host_ram_bytes = int(ram_kib) * 1024 if ram_kib else None
+        except Exception as e:
+            logger.debug("Qdrant telemetry unavailable for the memory report: %s", e)
+
+        nodes = 1
+        try:
+            cluster = await self._rest_get("/cluster")
+            nodes = max(len(cluster.get("peers") or {}), 1)
+        except Exception as e:
+            logger.debug("Qdrant cluster status unavailable for the memory report: %s", e)
+
+        raw_limit = os.getenv(QDRANT_MEMORY_LIMIT_ENV)
+        configured = parse_memory_size(raw_limit)
+        if raw_limit and configured is None:
+            logger.warning(
+                "%s=%r is not a memory size (for example 6G or 8Gi); ignoring it",
+                QDRANT_MEMORY_LIMIT_ENV,
+                raw_limit,
+            )
+        return assess_memory(
+            infos,
+            configured_limit_bytes=configured,
+            host_ram_bytes=host_ram_bytes,
+            nodes=nodes,
+        )
 
     # ------------------------------------------------------------------
     # Collection management
@@ -495,7 +565,10 @@ class QdrantService(IVectorDBService):
         )
         optimizers_config = OptimizersConfigDiff(default_segment_number=8)
 
-        hnsw_kwargs: dict = {"on_disk": config.on_disk_hnsw}
+        hnsw_kwargs: dict = {
+            "on_disk": config.on_disk_hnsw,
+            "ef_construct": int(env_number(QDRANT_HNSW_EF_CONSTRUCT_ENV, DEFAULT_HNSW_EF_CONSTRUCT, 4, MAX_HNSW_EF_CONSTRUCT, int)),
+        }
         if config.hnsw is not None:
             if config.hnsw.m is not None:
                 hnsw_kwargs["m"] = config.hnsw.m
@@ -751,11 +824,11 @@ class QdrantService(IVectorDBService):
             requests=qdrant_requests,
         )
         results: List[List[SearchResult]] = []
-        for batch_result in raw_results:
+        for req, batch_result in zip(requests, raw_results):
             results.append(
                 [
                     QdrantUtils.qdrant_result_to_search_result(p)
-                    for p in batch_result.points
+                    for p in QdrantUtils.stable_top(batch_result.points, req.limit)
                 ]
             )
         return results
@@ -767,29 +840,32 @@ class QdrantService(IVectorDBService):
         batch_size: int = 500,
     ) -> None:
         self._assert_connected()
-        qdrant_points = [QdrantUtils.vector_point_to_qdrant(p) for p in points]
 
         start = time.perf_counter()
         logger.debug(
-            f"Upserting {len(qdrant_points)} points into '{collection_name}' "
+            f"Upserting {len(points)} points into '{collection_name}' "
             f"(batch_size={batch_size})"
         )
 
-        for i in range(0, len(qdrant_points), batch_size):
-            batch = qdrant_points[i : i + batch_size]
-            try:
-                await self.client.upsert(  # type: ignore
-                    collection_name=collection_name,
-                    points=batch,
-                )
-            except Exception as e:
-                _report_upsert_failure(e)
-                raise
+        for i in range(0, len(points), batch_size):
+            # Batch, not a list of PointStruct: the client's per-point
+            # inference check is CPU on the indexing event loop, and at
+            # ~100 ms per 50-point upsert it was the largest single cost on
+            # that loop while large records were being embedded.
+            for batch in QdrantUtils.vector_points_to_batches(points[i : i + batch_size]):
+                try:
+                    await self.client.upsert(  # type: ignore
+                        collection_name=collection_name,
+                        points=batch,
+                    )
+                except Exception as e:
+                    _report_upsert_failure(e)
+                    raise
 
         elapsed = time.perf_counter() - start
         logger.debug(
-            f"Upsert complete: {len(qdrant_points)} points in {elapsed:.2f}s "
-            f"({len(qdrant_points)/elapsed:.0f} pts/s)"
+            f"Upsert complete: {len(points)} points in {elapsed:.2f}s "
+            f"({len(points)/elapsed:.0f} pts/s)"
         )
 
     async def delete_points(

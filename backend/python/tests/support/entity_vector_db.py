@@ -14,6 +14,8 @@ from contextlib import contextmanager
 from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
+import fakeredis.aioredis
+
 from app.services.vector_db.models import (
     CollectionConfig,
     HybridSearchRequest,
@@ -50,6 +52,19 @@ def embedding_models(models: dict[str, FakeEmbeddingModel]) -> Iterator[None]:
         yield
 
 
+@contextmanager
+def recreate_lock_redis(server: fakeredis.FakeServer | None = None) -> Iterator[fakeredis.FakeServer]:
+    """The Redis that ``EntityVectorStore`` takes its recreate lock in: one
+    in-process server, a new client per call, as each call opens its own."""
+    server = server or fakeredis.FakeServer()
+
+    async def _client(config_service: object) -> fakeredis.aioredis.FakeRedis:
+        return fakeredis.aioredis.FakeRedis(server=server, decode_responses=True)
+
+    with patch("app.modules.transformers.entity_vectorstore.redis_from_config_service", side_effect=_client):
+        yield server
+
+
 def _field(payload: dict[str, Any], path: str) -> object:
     value: object = payload
     for part in path.split("."):
@@ -74,6 +89,23 @@ class FakeEntityVectorDB:
 
     def get_capabilities(self) -> VectorDBCapabilities:
         return VectorDBCapabilities()
+
+    @property
+    def entity_points(self) -> dict[str, VectorPoint]:
+        """The points that are entities: all but the collection's stamp."""
+        return {
+            point_id: point for point_id, point in self.points.items()
+            if (point.payload.get("metadata") or {}).get("entityId")
+        }
+
+    @property
+    def stamp(self) -> str | None:
+        """What ``EntityVectorStore.collection_stamp`` wrote, if it is still here."""
+        stamps = [
+            stamp for point in self.points.values()
+            if (stamp := (point.payload.get("metadata") or {}).get("indexStamp"))
+        ]
+        return stamps[0] if stamps else None
 
     def _require(self, collection_name: str) -> None:
         if self.dimension is None:

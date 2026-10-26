@@ -13,10 +13,12 @@ from web_behaviour_fakes import (
     FakeWeb,
     MakeConnector,
     Page,
+    assert_crash_left_no_checkpoint,
     html_page,
 )
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.sources.web.budget import RunOutcome
 from app.connectors.sources.web.connector import WebConnector
 
 GUIDE = "http://site.test/guide"
@@ -167,10 +169,8 @@ async def test_a_page_gone_on_two_syncs_in_a_row_is_removed_with_its_stored_copy
 
     assert db.deleted == [first.id]
     assert site.storage_deletes == [first.storage_document_id]
-    # Still linked from the site, so it stays listed as a failed page with nothing indexed.
-    remains = db.pages()[GUIDE]
-    assert remains.id != first.id and remains.storage_document_id is None
-    assert remains.indexing_status == ProgressStatus.FAILED.value
+    # A link to a missing page is reported by the run, not listed as a page.
+    assert GUIDE not in db.pages()
     assert START_URL in db.pages()
 
 
@@ -232,7 +232,7 @@ async def test_the_sync_checkpoint_is_not_written_when_the_crawl_crashes(
     with pytest.raises(RuntimeError, match="records database unavailable"):
         await connector.run_sync()
 
-    assert checkpoints.sync_points == {}
+    assert_crash_left_no_checkpoint(checkpoints)
 
 
 async def test_pages_that_failed_are_fetched_again_on_the_next_sync(
@@ -328,9 +328,7 @@ async def test_a_stored_page_gone_twice_is_removed_whatever_key_it_was_stored_un
     await connector.run_sync()
 
     assert db.deleted == [stored.id]
-    # Still linked from the site, so it stays listed as one failed page with nothing indexed.
-    [remains] = [r for r in db.records.values() if r.weburl != START_URL]
-    assert remains.indexing_status == ProgressStatus.FAILED.value and remains.storage_document_id is None
+    assert [r for r in db.records.values() if r.weburl != START_URL] == []
 
 
 async def test_a_page_gone_behind_a_redirect_is_removed_where_it_is_stored(
@@ -372,17 +370,18 @@ async def test_a_record_under_a_url_that_now_redirects_to_a_gone_page_is_removed
     assert site.storage_deletes == [stale.storage_document_id]
 
 
-async def test_a_redirect_onto_a_gone_page_leaves_one_failed_page_only(
+async def test_a_redirect_onto_a_gone_page_stores_no_page(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
     site.html(START_URL, "Home", "/old")
     site.redirect("http://site.test/old", "/new", status=301)
     site.add("http://site.test/new", Page(status=404))
 
-    await (await make_connector()).run_sync()
+    connector = await make_connector()
+    await connector.run_sync()
 
-    failed = [r for r in db.pages().values() if r.indexing_status == ProgressStatus.FAILED.value]
-    assert [r.weburl for r in failed] == ["http://site.test/new"]
+    assert list(db.pages()) == [START_URL]
+    assert connector.retry_urls["http://site.test/new"].status_code == 404
 
 
 async def test_every_url_that_redirects_to_a_gone_page_has_its_record_removed(
@@ -469,3 +468,36 @@ async def test_a_file_that_now_redirects_to_a_page_the_crawl_drops_is_kept(
     await connector.run_sync()
 
     assert stored not in db.deleted
+
+
+async def test_a_short_database_blip_does_not_lose_a_changed_page(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """RS-16 for updates: a failed re-index write is tried again, like a new page's."""
+    monkeypatch.setattr("app.connectors.sources.web.connector.STORE_RETRY_WAITS", (0.0,))
+    connector = await _first_sync(site, db, make_connector)
+    write, failures = db.on_record_content_update, [1]
+
+    async def flaky(record: object) -> None:
+        if failures[0]:
+            failures[0] -= 1
+            raise RuntimeError("records database unavailable")
+        await write(record)
+
+    db.on_record_content_update = flaky
+    site.html(GUIDE, "Guide", text="Install with uv instead")
+    await connector.run_sync()
+
+    assert [r.weburl for r in db.content_updates] == [GUIDE]
+
+
+async def test_a_partial_crawl_keeps_the_gone_marks_of_pages_it_did_not_get_to(make_connector: MakeConnector) -> None:
+    """Review finding: a partial run saved only its own marks, so on a site that keeps resuming a page
+    gone on one sync lost its mark whenever the next run didn't reach it, and was never removed."""
+    connector = await make_connector()
+    connector._gone_last_sync = {"not-reached", "back-again"}
+    connector._gone_this_sync = {"new"}
+    connector._reached_record_ids = {"back-again"}
+
+    assert connector._gone_marks(RunOutcome.PARTIAL) == {"new", "not-reached"}
+    assert connector._gone_marks(RunOutcome.COMPLETED) == {"new"}

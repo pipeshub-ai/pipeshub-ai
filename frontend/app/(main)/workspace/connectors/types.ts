@@ -42,6 +42,14 @@ export interface Connector {
   pendingFullSync?: boolean;
   createdAtTimestamp?: number;
   updatedAtTimestamp?: number;
+  /** When the last sync run started and ended, and how it ended. Absent until a run finishes. */
+  lastSyncStartedAtTimestamp?: number | null;
+  lastSyncFinishedAtTimestamp?: number | null;
+  lastSyncOutcome?: 'succeeded' | 'failed' | 'stopped' | 'skipped' | null;
+  /** What the last run did, in the connector's own terms (see LastSyncSummary for the web connector's). */
+  lastSyncSummary?: LastSyncSummary | null;
+  /** What the connector's admin has to do; shown as an action-needed badge until it is done. */
+  actionItems?: ConnectorActionItem[];
   createdBy?: string;
   updatedBy?: string;
   authType?: string;
@@ -136,6 +144,9 @@ export interface ValidationRule {
 export interface FieldValidation {
   minLength?: number;
   maxLength?: number;
+  /** Allowed whole-number range for NUMBER fields (minLength/maxLength are text lengths and ignored there). */
+  min?: number;
+  max?: number;
   pattern?: string;
   format?: string;
   /** Present when `fieldType === 'FILE'` (wire schema from Python). */
@@ -173,6 +184,26 @@ export interface AuthSchemaField {
    * carry all the variants a user may need (e.g. Azure AI endpoints).
    */
   examples?: { label: string; value: string }[];
+  /**
+   * Shown only on an instance that already has a value saved for this field, never on a new one:
+   * a way of signing in kept for instances set up with it (see `authSchemaForInstance`).
+   */
+  savedOnly?: boolean;
+  /** Required, except on an instance that has a value saved for this other field. */
+  requiredUnlessSaved?: string;
+}
+
+/** Something a connector's admin has to do, reported by the connector (backend `ActionItem`). */
+export interface ConnectorActionItem {
+  code: string;
+  severity: 'warning' | 'error';
+  /** Shown as written; the connector words it. */
+  title: string;
+  message: string;
+  /** Where in the panel it is done: `authenticate` opens the Authenticate tab. */
+  action?: 'authenticate' | null;
+  /** The steps, on the docs site. */
+  docsUrl?: string | null;
 }
 
 export interface SyncCustomField {
@@ -200,6 +231,23 @@ export interface SyncCustomField {
   validation?: FieldValidation;
   isSecret?: boolean;
   nonEditable?: boolean;
+  placeholder?: string;
+  /** Display label per SELECT option value. */
+  optionLabels?: Record<string, string>;
+  /** Unit shown after a NUMBER input, such as "pages". */
+  unit?: string;
+  /** Name of a group in `ConnectorSyncConfig.customFieldGroups`. */
+  group?: string;
+  /** Shown only while, for every key, that field's current value is one of the listed values. */
+  showWhen?: Record<string, unknown[]>;
+}
+
+export interface SyncCustomFieldGroup {
+  name: string;
+  displayName: string;
+  description?: string;
+  /** Starts closed, with a summary of its changed settings. */
+  collapsed?: boolean;
 }
 
 export interface FilterSchemaField {
@@ -222,6 +270,11 @@ export interface FilterSchemaField {
   defaultOperator?: string;
   /** When true, empty operator row stays empty (no fallback to operators[0]). */
   noImplicitOperatorDefault?: boolean;
+  /**
+   * The window the connector applies when this filter is not set at all (e.g. a
+   * sync filter that falls back to the last 30 days). Shown while the filter is cleared.
+   */
+  fallbackOperator?: string;
   operators?: string[];
   optionSourceType?: 'manual' | 'static' | 'dynamic';
   options?: { id: string; label: string }[];
@@ -309,6 +362,8 @@ export interface ConnectorSyncConfig {
   scheduledConfig?: ScheduledConfig;
   realtimeConfig?: RealtimeConfig;
   customFields: SyncCustomField[];
+  /** Render order of grouped custom fields; fields without a group stay in the shared block. */
+  customFieldGroups?: SyncCustomFieldGroup[];
   customValues: Record<string, unknown>;
   values?: Record<string, unknown>;
 }
@@ -338,10 +393,18 @@ export interface ConnectorSchemaResponse {
     hideConnector: boolean;
     isAdminAccessRequired?: boolean;
     personalConnectorType?: string | null;
+    /** The credentials can be tried with `testConnection` before they are saved. */
+    supportsConnectionCheck?: boolean;
     auth: ConnectorAuthConfig;
     sync: ConnectorSyncConfig;
     filters: ConnectorFiltersConfig;
   };
+}
+
+/** Body of `POST /registry/:connectorType/test-connection`; a failed check is `success: false`. */
+export interface ConnectionCheckResponse {
+  success: boolean;
+  message: string;
 }
 
 // ========================================
@@ -411,6 +474,14 @@ export interface PanelFormData {
 export type PanelTab = 'authenticate' | 'authorize' | 'configure';
 export type PanelView = 'tabs' | 'select-records';
 export type AuthCardState = 'empty' | 'success' | 'failed';
+
+/** Connection check run by the Authenticate tab's Next button. */
+export interface ConnectionCheckState {
+  status: 'idle' | 'checking' | 'failed';
+  message: string | null;
+  /** Set while checking; a reset (panel opened or closed, auth type changed) drops it, voiding the result. */
+  id?: number;
+}
 
 // ========================================
 // Instance page types
@@ -489,12 +560,46 @@ export interface IndexingStatus {
   PAUSED: number;
 }
 
+/**
+ * Record counts keyed by a pipeline stage's status: classify (`extractionStatus`)
+ * or named-entity extraction (`entitiesStatus`).
+ */
+export type ExtractionStatusCounts = Partial<Record<string, number>>;
+
+/** Pipeline stages that can be re-run on their own via the reindex endpoint. */
+export type ReindexStage = 'classify' | 'entities';
+
 /** Stats breakdown by record type */
 export interface RecordTypeStats {
   recordType: string;
   total: number;
   indexingStatus: IndexingStatus;
+  /** Absent on backends that predate pipeline stages. */
+  extractionStatus?: ExtractionStatusCounts;
+  /** Absent on backends that predate the entities stage. */
+  entitiesStatus?: ExtractionStatusCounts;
 }
+
+/** One entry of GET /api/v1/code-graph/repos */
+export interface CodeGraphRepo {
+  repo: string;
+  source: string;
+  connector_id: string;
+  graph_status: CodeGraphStatus;
+  last_built_at?: number;
+  last_error?: string;
+}
+
+export type CodeGraphStatus =
+  | 'never_built'
+  | 'building'
+  | 'ready'
+  | 'stale'
+  | 'waiting_on_indexing'
+  | 'retrying'
+  | 'failed'
+  | 'too_large'
+  | 'unknown';
 
 /** Response from GET /api/v1/connectors/{connectorId}/stats */
 export interface ConnectorStatsResponse {
@@ -506,6 +611,10 @@ export interface ConnectorStatsResponse {
     stats: {
       total: number;
       indexingStatus: IndexingStatus;
+      /** Absent on backends that predate pipeline stages. */
+      extractionStatus?: ExtractionStatusCounts;
+      /** Absent on backends that predate the entities stage. */
+      entitiesStatus?: ExtractionStatusCounts;
     };
     byRecordType: RecordTypeStats[];
   };
@@ -535,4 +644,22 @@ export interface InstanceOverview {
   recordsStatus: RecordsStatus;
   indexedRecords: IndexedRecord[];
   totalSelected: number;
+}
+
+/** Counts a connector reports for its last run. Every field is optional: connectors fill what applies. */
+export interface LastSyncSummary {
+  pagesSaved?: number;
+  /** Pages the connector keeps after the run; what Maximum pages caps. */
+  pagesStored?: number | null;
+  pagesVisited?: number;
+  failed?: number;
+  failedByStatus?: Record<string, number>;
+  robotsSkipped?: number;
+  noindexSkipped?: number;
+  skippedMaxPages?: number;
+  deferred?: number;
+  pruned?: number;
+  sitemapUrls?: number;
+  stopReason?: 'max_pages' | 'time_limit' | 'stalled' | 'rate_limited' | null;
+  resumed?: boolean;
 }

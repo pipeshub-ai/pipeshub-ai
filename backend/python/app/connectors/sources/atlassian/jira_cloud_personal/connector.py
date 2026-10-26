@@ -6,12 +6,19 @@ plumbing so the personal variant:
   * Never lists Jira users, groups, application roles, or project permission
     schemes (no ``/rest/api/3/users``, ``/group``, ``/applicationrole``,
     ``/project/{key}/permissionscheme`` calls).
-  * Routes every project ``RecordGroup`` ACL through the shared internal
-    ``ConnectorGroup`` (see ``BaseConnector.ensure_connector_group_permission``)
-    so the connector creator — and only the creator — has read access.
+  * Gives every project an inherit edge to the app and no grant of its own.
+    The creator passes the connector gate (the user-app link written by
+    ``ensure_connector_group_permission``), and issues and attachments
+    already inherit from the project.
 
 All issue fetching / ADF parsing / attachment handling / streaming / reindexing
 logic is inherited unchanged from the workspace connector.
+
+A personal account has no audit log, so every sync finds deleted issues with the
+workspace connector's id comparison (``_remove_issues_gone_from_jira``). Jira
+answers 404 for an issue or project this account can no longer see just as for
+a deleted one, and both are removed, a project that left the account's view
+included (``_remove_projects_out_of_view``).
 """
 
 from logging import Logger
@@ -19,7 +26,12 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from app.config.configuration_service import ConfigurationService
-from app.config.constants.arangodb import AppGroups, Connectors, PermissionModel
+from app.config.constants.arangodb import (
+    AppGroups,
+    Connectors,
+    PermissionModel,
+)
+from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
@@ -59,6 +71,18 @@ from app.connectors.sources.atlassian.jira_cloud.connector import (
 from app.models.entities import AppUser, RecordGroup, RecordGroupType
 from app.models.permission import Permission
 from app.services.notification.types import NotificationSeverity, NotificationType
+
+
+def _excludes(project_keys_operator: FilterOperatorType | None) -> bool:
+    """Whether the project filter's operator leaves the listed keys out instead of keeping only them."""
+    if not project_keys_operator:
+        return False
+    value = (
+        project_keys_operator.value
+        if hasattr(project_keys_operator, "value")
+        else str(project_keys_operator)
+    )
+    return value == "not_in"
 
 
 @(
@@ -212,6 +236,8 @@ from app.services.notification.types import NotificationSeverity, NotificationTy
 class JiraCloudPersonalConnector(JiraConnector):
     """Personal Jira Cloud: creator-only permissions, no user/group/role/scheme API calls."""
 
+    _enforces_issue_security = False
+
     def __init__(
         self,
         logger: Logger,
@@ -241,6 +267,8 @@ class JiraCloudPersonalConnector(JiraConnector):
 
     async def run_sync(self) -> None:
         """Sync projects and issues visible to the configured user; no permission APIs."""
+        self._kept_unread_access = False
+        self._kept_after_refusal = []
         try:
             # Init is done by event_service / setup before run_sync is scheduled
             # (same as Confluence Cloud). Do not re-init here.
@@ -280,11 +308,9 @@ class JiraCloudPersonalConnector(JiraConnector):
                     self.connector_id,
                 )
 
-            # Upsert the pseudo ConnectorGroup (creator becomes a member) and cache
-            # the GROUP permission for use on every project record group below.
-            # Routing access via this internal group lets new users be added later
-            # without rewriting per-project ACLs.
-            await self.ensure_connector_group_permission()
+            # The creator's user-app link is the gate. Projects inherit from the
+            # app, so this does not stamp a grant on them.
+            await self.ensure_creator_user_app_relation()
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service,
@@ -301,14 +327,7 @@ class JiraCloudPersonalConnector(JiraConnector):
                     allowed_keys = project_keys_filter.get_value(default=[])
                     project_keys_operator = project_keys_filter.get_operator()
                     if allowed_keys:
-                        operator_value = (
-                            project_keys_operator.value
-                            if hasattr(project_keys_operator, "value")
-                            else str(project_keys_operator)
-                            if project_keys_operator
-                            else "in"
-                        )
-                        action = "Excluding" if operator_value == "not_in" else "Including"
+                        action = "Excluding" if _excludes(project_keys_operator) else "Including"
                         self.logger.info(
                             "Project keys filter: %s projects: %s", action, allowed_keys
                         )
@@ -321,13 +340,26 @@ class JiraCloudPersonalConnector(JiraConnector):
             projects, _raw_projects = await self._fetch_projects(
                 allowed_keys, project_keys_operator, []
             )
+            self._synced_project_keys = {group.short_name for group, _ in projects if group.short_name}
 
             await self.data_entities_processor.on_new_record_groups(projects)
 
             last_sync_time = await self._get_issues_sync_checkpoint()
             sync_stats = await self._sync_all_project_issues(projects, [], last_sync_time)
+            failed_statuses = sync_stats.get("failed_project_statuses") or {}
+            for key in sync_stats.get("failed_project_keys") or []:
+                # Issues not read would look gone to a full sync's unlink.
+                self._note_unread(failed_statuses.get(key), ("project_issues", key))
+            await self._note_kept_after_refusal(projects)
 
             await self._update_issues_sync_checkpoint(sync_stats, len(projects))
+
+            await self._remove_issues_no_longer_visible(
+                [group for group, _ in projects],
+                set(sync_stats.get("failed_project_keys") or []),
+                allowed_keys,
+                project_keys_operator,
+            )
 
             # Backfill placeholder ancestors that out-of-scope sync filters left
             # unreconciled (metadata only; they remain non-indexed stubs).
@@ -381,6 +413,113 @@ class JiraCloudPersonalConnector(JiraConnector):
                     ),
                 )
             raise
+        finally:
+            self._synced_project_keys = None
+
+    async def _remove_issues_no_longer_visible(
+        self,
+        projects: list[RecordGroup],
+        failed_project_keys: set[str],
+        project_keys: list[str] | None,
+        project_keys_operator: FilterOperatorType | None,
+    ) -> None:
+        """Remove the stored issues this account can no longer see in Jira, deleted or hidden alike.
+
+        ``projects`` are the ones Jira listed in this sync. Those whose issues synced
+        are compared by id; a stored project Jira no longer lists is handled by
+        ``_remove_projects_out_of_view``. Jira answers an expired or revoked token
+        as an anonymous visitor, to whom every project and issue looks gone, so
+        nothing is removed unless Jira first confirms the account.
+        """
+        if not await self._signed_in_to_jira():
+            self.logger.warning(
+                "Jira did not confirm this connector's account, so no issue is removed in this sync. "
+                "If this keeps happening, reconnect the connector."
+            )
+            return
+        try:
+            await self._remove_projects_out_of_view(
+                {project.external_group_id for project in projects}, project_keys, project_keys_operator
+            )
+        except Exception as e:
+            self.logger.warning(
+                "Could not check for projects that left this account's view; retrying next sync: %s", e
+            )
+        await self._remove_issues_gone_from_jira(
+            [project for project in projects if project.short_name not in failed_project_keys]
+        )
+
+    async def _signed_in_to_jira(self) -> bool:
+        """Whether Jira still recognises the account (``GET /myself`` answers 401 to an anonymous visitor)."""
+        try:
+            response = await self._call_with_retry(
+                lambda ds: ds.get_current_user(), ctx="checking the Jira account"
+            )
+        except Exception as e:
+            self.logger.warning("Could not ask Jira which account this connector uses: %s", e)
+            return False
+        if response.status != HttpStatusCode.OK.value:
+            return False
+        profile = self._safe_json_parse(response, "GET /myself")
+        return isinstance(profile, dict) and bool(profile.get("accountId"))
+
+    async def _remove_projects_out_of_view(
+        self,
+        listed_project_ids: set[str],
+        project_keys: list[str] | None,
+        project_keys_operator: FilterOperatorType | None,
+    ) -> None:
+        """Remove the issues of stored projects Jira no longer lists for this account.
+
+        Such a project was deleted, archived, or the account lost access to it. Its
+        issues can't be compared by id (Jira refuses to search a project the account
+        can't see, which would read as a failed listing on every sync), so each one
+        is checked on its own once Jira confirms the project is gone, placeholder
+        ancestors included. A project the project filter leaves out is never touched.
+        """
+        for project_id, project_key in await self._stored_projects():
+            if project_id in listed_project_ids:
+                continue
+            if project_keys and (project_key in project_keys) == _excludes(project_keys_operator):
+                continue
+            try:
+                await self._remove_project_out_of_view(project_id, project_key)
+            except Exception as e:
+                self.logger.warning(
+                    "Could not finish removing project %s, which left this account's view; "
+                    "retrying next sync: %s",
+                    project_key, e,
+                )
+
+    async def _remove_project_out_of_view(self, project_id: str, project_key: str) -> None:
+        response = await self._call_with_retry(
+            lambda ds: ds.get_project(projectIdOrKey=project_id),
+            ctx=f"checking project {project_key}",
+        )
+        if response.status not in (HttpStatusCode.NOT_FOUND.value, HttpStatusCode.GONE.value):
+            self.logger.info(
+                "Project %s is not in Jira's project list, but Jira did not say it is gone (HTTP %s); "
+                "nothing removed",
+                project_key, response.status,
+            )
+            return
+
+        # Cleared before its issues go, so a project that comes back into view is read in full.
+        await self.issues_sync_point.delete_sync_point(f"project_{project_key}")
+        # Placeholders too: no later sync of this project would ever clear them, and one left
+        # behind would keep the project for good.
+        stored = await self._stored_issues(project_id, with_placeholders=True)
+        removed = await self._remove_unlisted_issues(project_key, stored, set())
+        self.logger.info(
+            "Project %s is no longer visible to this account in Jira: removed %d of its %d stored issue(s)",
+            project_key, removed, len(stored),
+        )
+
+        # Anything still stored (an issue Jira still answers for, a delete that failed) keeps the project.
+        if await self.data_entities_processor.get_records_in_record_group(self.connector_id, project_id, 1):
+            return
+        if not await self.data_entities_processor.on_record_group_deleted(project_id, self.connector_id):
+            self.logger.warning("Could not remove the emptied project %s; retrying next sync", project_key)
 
     async def _fetch_projects(
         self,
@@ -388,7 +527,7 @@ class JiraCloudPersonalConnector(JiraConnector):
         project_keys_operator: Optional[FilterOperatorType] = None,
         jira_users: Optional[list[AppUser]] = None,
     ) -> tuple[list[tuple[RecordGroup, list[Permission]]], list[dict[str, Any]]]:
-        """List projects via paginated ``search_projects``; grant ConnectorGroup READ only.
+        """List projects. Each one inherits from the app and carries no grant.
 
         Reuses the parent's ``_list_projects_with_filter`` helper for the actual
         listing + pagination + client-side exclusion. Skips
@@ -402,13 +541,10 @@ class JiraCloudPersonalConnector(JiraConnector):
             project_keys, project_keys_operator
         )
 
-        group_permission = self._connector_group_permission
-        if group_permission is None:
-            # Idempotent — returns the cached permission if already created upstream.
-            group_permission = await self.ensure_connector_group_permission()
-        project_permissions: list[Permission] = (
-            [group_permission] if group_permission else []
-        )
+        # Keeps the creator's user-app link. The returned group permission is
+        # not written on the project: an empty list clears one an older sync stored.
+        if self.creator_email:
+            await self.ensure_creator_user_app_relation()
 
         record_groups: list[tuple[RecordGroup, list[Permission]]] = []
         for project in projects:
@@ -426,15 +562,10 @@ class JiraCloudPersonalConnector(JiraConnector):
                 short_name=project_key,
                 group_type=RecordGroupType.PROJECT,
                 web_url=project.get("url"),
+                inherit_permissions=True,
             )
 
-            record_groups.append((record_group, list(project_permissions)))
-
-            if project_permissions:
-                self.logger.debug(
-                    "Project %s: granted access via ConnectorGroup",
-                    project_key,
-                )
+            record_groups.append((record_group, []))
 
         return record_groups, projects
 

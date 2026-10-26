@@ -568,37 +568,6 @@ class TestCreateNestedFolder:
         assert exc_info.value.status_code == 400
 
 
-class TestGetFolderContents:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": True, "folders": [], "records": []
-        }
-        request = _make_request()
-        result = await get_folder_contents(
-            kb_id="kb-1", folder_id="fold-1",
-            request=request, kb_service=kb_svc
-        )
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": False, "code": 404, "reason": "Not found"
-        }
-        request = _make_request()
-        with pytest.raises(HTTPException) as exc_info:
-            await get_folder_contents(
-                kb_id="kb-1", folder_id="fold-bad",
-                request=request, kb_service=kb_svc
-            )
-        assert exc_info.value.status_code == 404
-
-
 class TestUpdateFolder:
     @pytest.mark.asyncio
     async def test_success(self):
@@ -1480,37 +1449,6 @@ class TestCreateNestedFolderCoverage:
                 request=request, kb_service=kb_svc
             )
         assert exc_info.value.status_code == 400
-
-
-class TestGetFolderContentsCoverage:
-    @pytest.mark.asyncio
-    async def test_success(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": True, "folders": [], "records": []
-        }
-        request = _make_request()
-        result = await get_folder_contents(
-            kb_id="kb-1", folder_id="fold-1",
-            request=request, kb_service=kb_svc
-        )
-        assert result["success"] is True
-
-    @pytest.mark.asyncio
-    async def test_failure(self):
-        from app.connectors.sources.localKB.api.kb_router import get_folder_contents
-        kb_svc = _mock_kb_service()
-        kb_svc.get_folder_contents.return_value = {
-            "success": False, "code": 404, "reason": "Not found"
-        }
-        request = _make_request()
-        with pytest.raises(HTTPException) as exc_info:
-            await get_folder_contents(
-                kb_id="kb-1", folder_id="fold-bad",
-                request=request, kb_service=kb_svc
-            )
-        assert exc_info.value.status_code == 404
 
 
 class TestUpdateFolderCoverage:

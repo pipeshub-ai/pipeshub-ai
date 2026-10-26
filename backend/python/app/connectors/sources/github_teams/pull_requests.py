@@ -26,6 +26,7 @@ from app.sources.external.github.github_async import GhObject
 
 from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.data_processor.record_links import mentions_in
 from app.connectors.core.base.error.stream_errors import raise_for_stream_fetch
 from app.connectors.core.registry.filters import IndexingFilterKey
 from app.models.blocks import (
@@ -36,6 +37,7 @@ from app.models.blocks import (
     GroupType,
     wire_block_group_parent_children,
 )
+from app.utils.time_conversion import datetime_to_epoch_ms
 from app.models.entities import (
     PullRequestRecord,
     Record,
@@ -44,7 +46,7 @@ from app.models.entities import (
     Status,
 )
 
-from .common.utils import epoch_ms_or_now, listing_payload
+from .common.utils import epoch_ms_or_now, listing_payload, listing_since, sync_window_start
 from .constants import PR_PAGE_SIZE
 from .models import GitHubLiterals, RecordUpdate
 
@@ -82,7 +84,7 @@ class PullRequestsSync:
     # PR stub -> PullRequestRecord (invoked from IssuesSync's shared batch)
     # ------------------------------------------------------------------
 
-    async def fetch_prs_batched(self, repo: GhObject) -> None:
+    async def fetch_prs_batched(self, repo: GhObject) -> bool:
         """Sync a repo's pull requests from the PR listing, one page at a time.
 
         PRs used to ride the shared ``/issues`` listing and then pay one
@@ -92,17 +94,25 @@ class PullRequestsSync:
         ``merged_by``, so paging it costs one call per 100 PRs instead.
 
         ``/pulls`` has no ``since`` parameter, hence ``sort=updated`` +
-        ``direction=desc`` with an early break at the checkpoint: the first PR
-        older than the watermark means every later one is too.
+        ``direction=desc`` with an early break at the checkpoint, or at the
+        "updated since" window when that starts later: the first PR older than
+        the bound means every later one is too. A PR outside the window is
+        never stored, so its commits, reviews and files are never fetched.
 
         The fetched page IS the batch — no re-chunking. The checkpoint is
         committed once after the sweep; any page or batch failure returns
-        before that write so already-done pages are retried next sync.
+        False before that write so already-done pages are retried next sync.
+
+        The checkpoint itself is read again (``>=``): timestamps have one-second
+        resolution, so a PR changed in the same second as the newest one seen,
+        after the listing was read, carries the checkpoint's exact value.
         """
         c = self.c
         owner, repo_name = repo.owner.login, repo.name
         group_id = f"{repo.id}-pull-requests"
-        since_dt = await self._checkpoint_datetime(group_id)
+        checkpoint_dt = await self._checkpoint_datetime(group_id)
+        window_dt = sync_window_start(c.sync_filters)
+        since_dt = listing_since(checkpoint_dt, window_dt)
 
         page = 1
         watermark = 0
@@ -119,7 +129,7 @@ class PullRequestsSync:
                     "checkpoint so this page is retried next sync.",
                     repo.full_name, page, res.error,
                 )
-                return
+                return False
             prs = res.data or []
             if not prs:
                 break
@@ -133,13 +143,14 @@ class PullRequestsSync:
                         "checkpoint stays behind the failure rather than skipping past it.",
                         repo.full_name, page,
                     )
-                    return
+                    return False
                 processed += len(fresh)
                 watermark = max(watermark, *(epoch_ms_or_now(p.updated_at) for p in fresh))
 
             # Two independent stop conditions: a filtered-out PR means we
-            # crossed the checkpoint (descending order, so everything after is
-            # older too), and a short page means the listing is exhausted.
+            # crossed the checkpoint or the window start (descending order, so
+            # everything after is older too), and a short page means the
+            # listing is exhausted.
             if len(fresh) < len(prs) or len(prs) < PR_PAGE_SIZE:
                 break
             page += 1
@@ -149,6 +160,7 @@ class PullRequestsSync:
                 "Synced %s pull request(s) for %s across %s page(s)", processed, repo.full_name, page,
             )
             await c.issues._update_sync_checkpoint(group_id, watermark)
+        return True
 
     def _is_after(self, pr: Any, since_dt: datetime | None) -> bool:
         if since_dt is None:
@@ -158,7 +170,7 @@ class PullRequestsSync:
             return True
         if updated_at.tzinfo is None:
             updated_at = updated_at.replace(tzinfo=timezone.utc)
-        return updated_at > since_dt
+        return updated_at >= since_dt
 
     async def _checkpoint_datetime(self, group_id: str) -> datetime | None:
         last_ms = await self.c.issues._get_sync_checkpoint(group_id)
@@ -261,7 +273,13 @@ class PullRequestsSync:
                 review_name=reviewer_logins,
                 review_email=reviewer_emails,
                 last_commit_sha=getattr(pr.head, "sha", None) if getattr(pr, "head", None) else None,
+                # Both are on the listing payload, unlike `merged_by`.
+                merged_at=datetime_to_epoch_ms(getattr(pr, "merged_at", None)),
+                closed_at=datetime_to_epoch_ms(getattr(pr, "closed_at", None)),
                 inherit_permissions=True,
+                # Jira keys and addresses in the title and description join the PR
+                # to those records, in whichever connector holds them.
+                related_external_records=mentions_in(pr.title or "", getattr(pr, "body", "") or ""),
             )
             if not self._prs_indexing_enabled():
                 pr_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
@@ -295,13 +313,14 @@ class PullRequestsSync:
         repo_id = int(external_group_id.split("-")[0])
         pr_number = int(str(record.external_record_id).rsplit("/", 1)[-1])
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             raise_for_stream_fetch(
                 success=repo_res.success,
                 has_payload=bool(repo_res.data),
                 connector=c.display_name,
                 status=repo_res.status_code,
+                retry_after=repo_res.retry_after_seconds,
                 message=repo_res.error,
             )
         owner, repo_name = repo_res.data.owner.login, repo_res.data.name
@@ -313,13 +332,15 @@ class PullRequestsSync:
                 has_payload=bool(pr_res.data),
                 connector=c.display_name,
                 status=pr_res.status_code,
+                retry_after=pr_res.retry_after_seconds,
                 message=pr_res.error,
             )
         pull_request = pr_res.data
 
         markdown_raw: str = getattr(pull_request, "body", "") or ""
         body_with_images = await c.comments.embed_images_as_base64(markdown_raw)
-        child_records, remaining = await c.comments.make_child_records_of_attachments(markdown_raw, record)
+        linked: set[str] = set()
+        child_records, remaining = await c.comments.make_child_records_of_attachments(markdown_raw, record, linked)
 
         bg_0 = BlockGroup(
             index=0,
@@ -349,12 +370,13 @@ class PullRequestsSync:
         # with the commits BlockGroup allocated above.
         comment_bgs, comment_remaining = await c.comments.build_pr_comment_and_diff_blocks(
             owner, repo_name, pr_number, pull_request, parent_index=0, record=record,
-            start_index=next_index,
+            start_index=next_index, seen_keys=linked,
         )
         block_groups.extend(comment_bgs)
         remaining.extend(comment_remaining)
 
         await c.issues.process_new_records(remaining)
+        await c.comments.remove_unlinked_attachments(record, linked)
         wire_block_group_parent_children(block_groups)
         blocks_container = BlocksContainer(blocks=blocks, block_groups=block_groups)
         return blocks_container.model_dump_json(indent=2).encode(GitHubLiterals.UTF_8.value)
@@ -377,7 +399,7 @@ class PullRequestsSync:
             self.logger.warning("Cannot reindex-check GitHub PR %s: malformed external ids", record.id)
             return None
 
-        repo_res = await c.runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+        repo_res = await c.runtime.get_repo_by_id(repo_id)
         if not repo_res.success or not repo_res.data:
             self.logger.error("Failed to resolve repo id=%s for reindex %s: %s", repo_id, record.id, repo_res.error)
             return None

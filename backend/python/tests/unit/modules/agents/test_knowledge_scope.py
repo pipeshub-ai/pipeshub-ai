@@ -17,7 +17,9 @@ from app.modules.agents.knowledge_scope import (
     MAX_CALLER_COLLECTIONS,
     MAX_COLLECTION_CANDIDATES,
     AgentScope,
+    UnreadableSourceLimitError,
     admit_caller_project_collections,
+    read_source_limit,
     resolve_agent_filters,
 )
 
@@ -87,13 +89,21 @@ class TestForeignIdsAreDropped:
         assert scope.dropped_app_ids == ("slack-9",)
         assert scope.dropped_kb_ids == ("kb-9",)
 
-    def test_buckets_are_typed(self) -> None:
-        """A KB id in the apps bucket, or an app id in the kb bucket, is not
-        one of the agent's sources of that type."""
-        scope = _resolve({"apps": ["kb-1"], "kb": ["jira-1"]})
+    def test_an_app_id_in_the_kb_bucket_is_not_a_collection(self) -> None:
+        scope = _resolve({"apps": [], "kb": ["jira-1"]})
         assert scope.filters == {"apps": [], "kb": []}
-        assert scope.dropped_app_ids == ("kb-1",)
         assert scope.dropped_kb_ids == ("jira-1",)
+
+    def test_a_collection_sent_under_apps_is_one_of_the_agents_collections(self) -> None:
+        """The picker sends a collection like any other app."""
+        scope = _resolve({"apps": ["jira-1", "kb-1"], "kb": []})
+        assert scope.filters == {"apps": ["jira-1"], "kb": ["kb-1"]}
+        assert scope.dropped_app_ids == () and scope.dropped_kb_ids == ()
+
+    def test_a_foreign_collection_under_apps_is_still_dropped(self) -> None:
+        scope = _resolve({"apps": ["kb-9"], "kb": []})
+        assert scope.filters == {"apps": [], "kb": []}
+        assert scope.dropped_app_ids == ("kb-9",)
 
     def test_agent_without_knowledge_gets_nothing(self) -> None:
         scope = _resolve({"apps": ["jira-1"], "kb": ["kb-1"]}, knowledge=[])
@@ -250,3 +260,120 @@ class TestAdmitCallerProjectCollections:
         graph = _graph(apps={}, roles={})
         assert await _admit(graph, []) == []
         graph.get_user_by_user_id.assert_not_called()
+
+
+
+class TestSelectionBelowAppLevel:
+    """A selection of record groups, folders or records is the whole scope of
+    the turn, for a saved agent and for the universal one."""
+
+    @pytest.mark.parametrize("universal", [False, True])
+    def test_a_bucket_that_was_not_given_means_none_not_all(self, universal) -> None:
+        scope = _resolve({"records": ["r1"]}, universal=universal)
+        assert scope.filters == {"records": ["r1"], "apps": [], "kb": []}
+
+    def test_whole_apps_beside_a_selection_are_still_bounded_by_the_agent(self) -> None:
+        scope = _resolve({"apps": ["jira-1", "slack-9"], "recordGroups": ["g1"]})
+        assert scope.filters == {"apps": ["jira-1"], "kb": [], "recordGroups": ["g1"]}
+
+    def test_a_universal_agent_keeps_its_collection_sent_under_apps(self) -> None:
+        scope = _resolve({"apps": ["jira-1", "kb-1"], "kb": []}, universal=True)
+        assert scope.filters == {"apps": ["jira-1"], "kb": ["kb-1"]}
+
+    @pytest.mark.parametrize("universal", [False, True])
+    def test_server_set_keys_from_a_client_are_dropped(self, universal) -> None:
+        scope = _resolve(
+            {"apps": ["jira-1"], "kb": [], "allowedApps": ["x"], "allowedRecords": ["y"], "selectionApps": ["z"]},
+            universal=universal,
+        )
+        assert scope.filters == {"apps": ["jira-1"], "kb": []}
+
+
+LIMITED_KNOWLEDGE = [
+    {"connectorId": "jira-1", "type": "JIRA", "filtersParsed": {"recordGroups": ["proj-a"], "records": []}},
+    {"connectorId": "drive-1", "type": "DRIVE", "filters": '{"records": ["folder-x"]}'},
+    {"connectorId": "kb-1", "type": "KB", "filtersParsed": {}},
+    {"connectorId": "kb-2", "type": "KB", "filtersParsed": {"records": ["kb2-folder"]}},
+]
+
+
+class TestSourcesLimitedToSomeNodes:
+    """A source limited to record groups, folders or records is never searched whole."""
+
+    def test_an_enabled_limited_source_is_searched_as_its_nodes(self) -> None:
+        scope = _resolve(None, knowledge=LIMITED_KNOWLEDGE)
+        assert scope.filters == {
+            "apps": [], "kb": ["kb-1"], "recordGroups": ["proj-a"], "records": ["folder-x", "kb2-folder"],
+        }
+
+    def test_a_source_the_turn_leaves_out_contributes_nothing(self) -> None:
+        scope = _resolve({"apps": ["jira-1"], "kb": []}, knowledge=LIMITED_KNOWLEDGE)
+        assert scope.filters == {"apps": [], "kb": [], "recordGroups": ["proj-a"]}
+
+    def test_the_agents_bound_lists_whole_sources_and_the_nodes_of_limited_ones(self) -> None:
+        assert _resolve(None, knowledge=LIMITED_KNOWLEDGE).sources == {
+            "apps": ["kb-1"], "recordGroups": ["proj-a"], "records": ["folder-x", "kb2-folder"],
+        }
+
+    def test_the_callers_own_selection_stands_beside_the_sources_it_enables(self) -> None:
+        scope = _resolve({"apps": ["drive-1"], "kb": [], "records": ["picked"]}, knowledge=LIMITED_KNOWLEDGE)
+        assert scope.filters == {"apps": [], "kb": [], "records": ["picked", "folder-x"]}
+
+    def test_a_selection_alone_enables_no_source(self) -> None:
+        scope = _resolve({"records": ["picked"]}, knowledge=LIMITED_KNOWLEDGE)
+        assert scope.filters == {"apps": [], "kb": [], "records": ["picked"]}
+
+    def test_an_agent_of_whole_sources_is_unchanged(self) -> None:
+        scope = _resolve(None)
+        assert scope.filters == {"apps": ["jira-1", "drive-1"], "kb": ["kb-1", "kb-2"]}
+        assert scope.sources == {
+            "apps": ["jira-1", "drive-1", "kb-1", "kb-2"], "recordGroups": [], "records": [],
+        }
+
+    def test_a_list_naming_a_source_itself_is_not_a_limit(self) -> None:
+        """Agents saved before each collection became its own source listed it there."""
+        knowledge = [{"connectorId": "kb-1", "type": "KB", "filtersParsed": {"recordGroups": ["kb-1"]}}]
+        scope = _resolve(None, knowledge=knowledge)
+        assert scope.filters == {"apps": [], "kb": ["kb-1"]}
+
+    @pytest.mark.parametrize("stored", [
+        "{bad", "[1, 2]", 7, {"records": "folder-x"}, {"records": [123, None]}, {"recordGroups": ["g", ""]},
+    ])
+    def test_a_stored_limit_that_cannot_be_read_searches_nothing_of_that_source(self, stored) -> None:
+        """Never the whole source: the owner meant to limit it."""
+        knowledge = [
+            {"connectorId": "drive-1", "type": "DRIVE", "filters": stored},
+            {"connectorId": "kb-1", "type": "KB"},
+        ]
+        scope = _resolve(None, knowledge=knowledge)
+        assert scope.filters == {"apps": [], "kb": ["kb-1"]}
+        assert scope.sources == {"apps": ["kb-1"], "recordGroups": [], "records": []}
+        assert scope.unreadable_source_ids == ("drive-1",)
+
+    def test_the_stored_text_wins_over_a_parsed_copy_that_hides_it(self) -> None:
+        """The graph reads text it cannot parse as an empty object."""
+        knowledge = [{"connectorId": "drive-1", "type": "DRIVE", "filters": "{bad", "filtersParsed": {}}]
+        assert _resolve(None, knowledge=knowledge).filters == {"apps": [], "kb": []}
+
+    @pytest.mark.parametrize("stored", [None, "", "  ", "{}", {}, [], {"sync": {"x": 1}}, {"records": []}])
+    def test_nothing_stored_is_a_whole_source(self, stored) -> None:
+        knowledge = [{"connectorId": "drive-1", "type": "DRIVE", "filters": stored}]
+        scope = _resolve(None, knowledge=knowledge)
+        assert scope.filters == {"apps": ["drive-1"], "kb": []} and scope.unreadable_source_ids == ()
+
+
+class TestReadSourceLimit:
+    def test_lists_come_back_trimmed_and_without_repeats(self) -> None:
+        assert read_source_limit('{"recordGroups": ["g1", " g1 "], "records": ["r1"]}') == {
+            "recordGroups": ["g1"], "records": ["r1"],
+        }
+
+    @pytest.mark.parametrize("stored", ["{bad", "[1]", [1, 2], 7, {"records": "x"}, {"records": [1]}, {"records": [""]}])
+    def test_anything_else_is_refused(self, stored) -> None:
+        with pytest.raises(UnreadableSourceLimitError):
+            read_source_limit(stored)
+
+    def test_the_universal_agent_has_no_bound_of_its_own(self) -> None:
+        scope = _resolve(None, knowledge=LIMITED_KNOWLEDGE, universal=True)
+        assert scope.sources == {}
+        assert scope.filters == {"apps": ["jira-1", "drive-1"], "kb": ["kb-1", "kb-2"]}

@@ -148,6 +148,21 @@ describe('OAuthScopeNames', () => {
     });
   });
 
+  // Toolsets
+  describe('Toolsets scopes', () => {
+    it('should have TOOLSET_READ as "toolset:read"', () => {
+      expect(OAuthScopeNames.TOOLSET_READ).to.equal('toolset:read');
+    });
+
+    it('should have TOOLSET_WRITE as "toolset:write"', () => {
+      expect(OAuthScopeNames.TOOLSET_WRITE).to.equal('toolset:write');
+    });
+
+    it('should have TOOLSET_DELETE as "toolset:delete"', () => {
+      expect(OAuthScopeNames.TOOLSET_DELETE).to.equal('toolset:delete');
+    });
+  });
+
   // Projects
   describe('Projects scopes', () => {
     it('should have PROJECT_READ as "project:read"', () => {
@@ -179,6 +194,13 @@ describe('OAuthScopeNames', () => {
 
     it('should have CONNECTOR_DELETE as "connector:delete"', () => {
       expect(OAuthScopeNames.CONNECTOR_DELETE).to.equal('connector:delete');
+    });
+  });
+
+  // Code graph
+  describe('Code graph scopes', () => {
+    it('should have CODE_READ as "code:read"', () => {
+      expect(OAuthScopeNames.CODE_READ).to.equal('code:read');
     });
   });
 
@@ -229,8 +251,8 @@ describe('OAuthScopeNames', () => {
 
   // Structural tests
   describe('structural checks', () => {
-    it('should have exactly 45 scope entries', () => {
-      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(45);
+    it('should have exactly 49 scope entries', () => {
+      expect(Object.keys(OAuthScopeNames)).to.have.lengthOf(49);
     });
 
     it('should contain only the expected keys', () => {
@@ -274,6 +296,10 @@ describe('OAuthScopeNames', () => {
         'MCP_READ',
         'MCP_WRITE',
         'MCP_DELETE',
+        // Toolsets
+        'TOOLSET_READ',
+        'TOOLSET_WRITE',
+        'TOOLSET_DELETE',
         // Projects
         'PROJECT_READ',
         'PROJECT_WRITE',
@@ -283,6 +309,8 @@ describe('OAuthScopeNames', () => {
         'CONNECTOR_WRITE',
         'CONNECTOR_SYNC',
         'CONNECTOR_DELETE',
+        // Code graph
+        'CODE_READ',
         // Configuration
         'CONFIG_READ',
         'CONFIG_WRITE',

@@ -11,6 +11,7 @@ from app.connectors.core.registry.filters import FilterCollection, FilterOperato
 from app.connectors.sources.google.common.connector_google_exceptions import GoogleDriveError
 from app.models.entities import FileRecord, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -125,8 +126,8 @@ class TestIndividualInit:
             "auth": {},
             "credentials": {"access_token": "t"},
         })
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
     async def test_init_returns_false_when_oauth_config_not_found(self, mock_fetch, connector):
@@ -319,6 +320,7 @@ class TestHandleRecordUpdates:
         update.is_deleted = True
         update.is_new = False
         update.is_updated = False
+        update.content_changed = False
         update.external_record_id = "ext-1"
         await connector._handle_record_updates(update)
         connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
@@ -330,6 +332,7 @@ class TestHandleRecordUpdates:
         update.is_deleted = False
         update.is_new = True
         update.is_updated = False
+        update.content_changed = False
         update.record = MagicMock(record_name="new.txt")
         await connector._handle_record_updates(update)
 
@@ -374,6 +377,7 @@ class TestHandleRecordUpdates:
         existing = MagicMock(spec=FileRecord)
         existing.id = "record-1"
         existing.record_name = "deleted.txt"
+        existing.mime_type = "text/plain"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         update = MagicMock()
         update.is_deleted = True
@@ -449,6 +453,8 @@ class TestRunSync:
         connector._create_app_user = AsyncMock()
         connector._create_personal_record_group = AsyncMock(return_value=MagicMock())
         connector._sync_user_personal_drive = AsyncMock()
+        # A listing that is not a drive list makes the run incomplete, so the mock lists none.
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
         await connector.run_sync()
         connector._sync_user_personal_drive.assert_awaited_once()
 
@@ -475,6 +481,7 @@ class TestTestConnectionAndAccess:
         assert result is False
 
     async def test_success(self, connector):
+        connector._get_fresh_datasource = AsyncMock()
         connector.drive_data_source.about_get = AsyncMock(return_value={
             "user": {"emailAddress": "user@example.com"}
         })

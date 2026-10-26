@@ -1,7 +1,8 @@
+import json
 from collections.abc import Awaitable, Callable
 from enum import Enum
 from inspect import isawaitable, isclass
-from typing import Any
+from typing import Any, cast
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
@@ -16,8 +17,12 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.containers.connector import ConnectorAppContainer
 from app.models.entities import RecordType
-from app.services.graph_db.common.utils import ROOT_SCOPED_CONNECTOR_TYPES
+from app.services.graph_db.common.utils import (
+    ROOT_SCOPED_CONNECTOR_TYPES,
+    org_id_from_app_edge,
+)
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.messaging.lanes.lifecycle import assign_lane_to_new_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 
@@ -26,6 +31,30 @@ from app.utils.time_conversion import get_epoch_timestamp_in_ms
 # app/connectors/sources/localKB/connector.py, KB_CONNECTOR_NAME) — so registry
 # lookups keyed directly on doc "type" miss KB instances entirely.
 _KB_REGISTRY_KEY = "Collections"
+
+
+
+def _parsed_summary(raw: object) -> dict[str, Any] | None:
+    """The last run's summary, stored as JSON text on the app doc."""
+    if not isinstance(raw, str) or not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return None
+    return value if isinstance(value, dict) else None
+
+def _parsed_action_items(raw: object) -> list[dict[str, Any]]:
+    """What the admin has to do, stored as JSON text on the app doc; [] when nothing or unreadable."""
+    if not isinstance(raw, str) or not raw:
+        return []
+    try:
+        value = json.loads(raw)
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    return [cast(dict[str, Any], item) for item in cast(list[object], value) if isinstance(item, dict)]
 
 
 class Origin(str, Enum):
@@ -294,19 +323,7 @@ class ConnectorRegistry:
         connector_id = connector_instance.get("_key") or connector_instance.get("id")
         if not connector_id:
             return None
-        graph_provider = await self._get_graph_provider()
-        edges = await graph_provider.get_edges_to_node(
-            f"{CollectionNames.APPS.value}/{connector_id}",
-            CollectionNames.ORG_APP_RELATION.value,
-        )
-        for edge in edges or []:
-            if not isinstance(edge, dict):
-                continue
-            # Neo4j returns a bare id in from_id; Arango a handle in _from.
-            source = edge.get("from_id") or edge.get("_from")
-            if source:
-                return str(source).rsplit("/", 1)[-1]
-        return None
+        return await org_id_from_app_edge(await self._get_graph_provider(), connector_id)
 
     async def _can_delete_connector(
         self,
@@ -613,6 +630,13 @@ class ConnectorRegistry:
                 f"Created connector instance '{instance_name}' of type {connector_type} "
                 f"with scope {scope} for user {created_by}"
             )
+            await assign_lane_to_new_connector(
+                self.logger,
+                instance_key,
+                connector_type=connector_type,
+                scope=scope,
+                org_id=org_id,
+            )
             return instance_document
 
         except ValueError:
@@ -852,6 +876,11 @@ class ConnectorRegistry:
                 'status': instance_data.get('status'),
                 'createdAtTimestamp': instance_data.get('createdAtTimestamp'),
                 'updatedAtTimestamp': instance_data.get('updatedAtTimestamp'),
+                'lastSyncStartedAtTimestamp': instance_data.get('lastSyncStartedAtTimestamp'),
+                'lastSyncFinishedAtTimestamp': instance_data.get('lastSyncFinishedAtTimestamp'),
+                'lastSyncOutcome': instance_data.get('lastSyncOutcome'),
+                'lastSyncSummary': _parsed_summary(instance_data.get('lastSyncSummary')),
+                'actionItems': _parsed_action_items(instance_data.get('actionItems')),
                 '_key': instance_data.get('_key') or instance_data.get('id'),
                 'name': instance_data.get('name'),
                 'scope': instance_data.get('scope', ConnectorScope.PERSONAL.value),
@@ -873,36 +902,32 @@ class ConnectorRegistry:
             - All team connectors in the organization (regardless of creator)
         """
         connectors = []
-        try:
-            graph_provider = await self._get_graph_provider()
+        graph_provider = await self._get_graph_provider()
 
-            # Use graph provider method to get user's connector instances
-            documents = await graph_provider.get_user_connector_instances(
-                collection=self._collection_name,
-                user_id=user_id,
-                org_id=org_id,
-                team_scope=ConnectorScope.TEAM.value,
-                personal_scope=ConnectorScope.PERSONAL.value,
+        # Use graph provider method to get user's connector instances
+        documents = await graph_provider.get_user_connector_instances(
+            collection=self._collection_name,
+            user_id=user_id,
+            org_id=org_id,
+            team_scope=ConnectorScope.TEAM.value,
+            personal_scope=ConnectorScope.PERSONAL.value,
+        )
+
+        for document in documents:
+            doc_type = document.get('type')
+            registry_key = (
+                _KB_REGISTRY_KEY if doc_type == Connectors.KNOWLEDGE_BASE.value else doc_type
             )
-
-            for document in documents:
-                doc_type = document.get('type')
-                registry_key = (
-                    _KB_REGISTRY_KEY if doc_type == Connectors.KNOWLEDGE_BASE.value else doc_type
-                )
-                if registry_key in self._connectors:
-                    connectors.append(
-                        self._build_connector_info(
-                            doc_type,
-                            self._connectors[registry_key],
-                            document,
-                            include_config=False,
-                        )
+            if registry_key in self._connectors:
+                connectors.append(
+                    self._build_connector_info(
+                        doc_type,
+                        self._connectors[registry_key],
+                        document,
+                        include_config=False,
                     )
-            return connectors
-        except Exception as e:
-            self.logger.error(f"Error getting all connector instances: {e}")
-            return []
+                )
+        return connectors
 
     async def get_all_registered_connectors(
         self,
@@ -1084,84 +1109,67 @@ class ConnectorRegistry:
         Returns:
             Dictionary with connector instances and pagination info
         """
-        try:
-            graph_provider = await self._get_graph_provider()
+        graph_provider = await self._get_graph_provider()
 
-            # Use graph provider method for filtered query with pagination
-            documents, total_count = await graph_provider.get_filtered_connector_instances(
-                collection=self._collection_name,
-                edge_collection=CollectionNames.ORG_APP_RELATION.value,
-                org_id=org_id,
-                user_id=user_id,
-                scope=scope,
-                search=search,
-                skip=(page - 1) * limit,
-                limit=limit,
-                exclude_kb=True,
-                kb_connector_type=Connectors.KNOWLEDGE_BASE.value,
-                is_admin=is_admin,
-                is_authenticated=is_authenticated,
-                is_active=is_active,
-                connector_type_filter=connector_type,
-                is_configured=is_configured,
-                is_agent_active=is_agent_active,
-                allowed_connector_types=list(self._connectors),
-            )
+        # Use graph provider method for filtered query with pagination
+        documents, total_count = await graph_provider.get_filtered_connector_instances(
+            collection=self._collection_name,
+            edge_collection=CollectionNames.ORG_APP_RELATION.value,
+            org_id=org_id,
+            user_id=user_id,
+            scope=scope,
+            search=search,
+            skip=(page - 1) * limit,
+            limit=limit,
+            exclude_kb=True,
+            kb_connector_type=Connectors.KNOWLEDGE_BASE.value,
+            is_admin=is_admin,
+            is_authenticated=is_authenticated,
+            is_active=is_active,
+            connector_type_filter=connector_type,
+            is_configured=is_configured,
+            is_agent_active=is_agent_active,
+            allowed_connector_types=list(self._connectors),
+        )
 
-            connector_instances = []
+        connector_instances = []
 
-            for document in documents:
-                doc_type = document['type']
+        for document in documents:
+            doc_type = document['type']
 
-                if doc_type not in self._connectors:
-                    self.logger.warning(
-                        f"Connector type {doc_type} not found in registry"
-                    )
-                    continue
-
-                metadata = self._connectors[doc_type]
-                connector_info = self._build_connector_info(
-                    doc_type,
-                    metadata,
-                    document,
-                    include_config=False,
+            if doc_type not in self._connectors:
+                self.logger.warning(
+                    f"Connector type {doc_type} not found in registry"
                 )
-                connector_instances.append(connector_info)
+                continue
 
-            total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
-            has_prev = page > 1
-            start_idx = (page - 1) * limit
-            end_idx = start_idx + limit
-            has_next = end_idx < total_count
-            return {
-                "connectors": connector_instances,
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": total_count,
-                    "totalPages": total_pages,
-                    "hasPrev": has_prev,
-                    "hasNext": has_next,
-                    "prevPage": page - 1 if has_prev else None,
-                    "nextPage": page + 1 if has_next else None,
-                },
-            }
+            metadata = self._connectors[doc_type]
+            connector_info = self._build_connector_info(
+                doc_type,
+                metadata,
+                document,
+                include_config=False,
+            )
+            connector_instances.append(connector_info)
 
-        except Exception as e:
-            self.logger.error(f"Error getting all connector instances: {e}")
-            return {
-                "connectors": [],
-                "pagination": {
-                    "page": page,
-                    "limit": limit,
-                    "totalCount": 0,
-                    "totalPages": 0,
-                    "hasPrev": False,
-                    "hasNext": False,
-                    "prevPage": None,
-                    "nextPage": None,
-                },
-            }
+        total_pages = (total_count + limit - 1) // limit if total_count > 0 else 0
+        has_prev = page > 1
+        start_idx = (page - 1) * limit
+        end_idx = start_idx + limit
+        has_next = end_idx < total_count
+        return {
+            "connectors": connector_instances,
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "totalCount": total_count,
+                "totalPages": total_pages,
+                "hasPrev": has_prev,
+                "hasNext": has_next,
+                "prevPage": page - 1 if has_prev else None,
+                "nextPage": page + 1 if has_next else None,
+            },
+        }
 
     async def get_active_connector_instances(
         self,
@@ -1313,6 +1321,21 @@ class ConnectorRegistry:
                 document, user_id, org_id, is_admin=is_admin
             ),
             user_id=user_id,
+        )
+
+    async def get_connector_instance_for_view(
+        self,
+        connector_id: str,
+        user_id: str,
+        org_id: str,
+        *,
+        is_admin: bool,
+    ) -> dict[str, Any] | None:
+        """The read a connector's detail page makes. An edition may let more
+        users view a connector than manage it; every route that acts on the
+        connector loads it with `get_connector_instance` instead."""
+        return await self.get_connector_instance(
+            connector_id, user_id, org_id, is_admin=is_admin
         )
 
     async def get_connector_instance_for_deletion(

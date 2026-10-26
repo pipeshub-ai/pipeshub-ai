@@ -28,7 +28,13 @@ interface SlackRequestContext {
 
 const slackRequestContext = new AsyncLocalStorage<SlackRequestContext>();
 let slackBotsCache: SlackBotConfig[] = [];
+let slackBotsCacheLoadedAt = 0;
 let inFlightRefresh: Promise<SlackBotConfig[]> | null = null;
+
+function registryTtlMs(): number {
+  const parsed = Number(process.env.SLACK_BOT_REGISTRY_TTL_MS);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000;
+}
 
 const SLACK_BOTS_API_URL = "/api/v1/configurationManager/internal/slack-bot"
 
@@ -112,10 +118,21 @@ async function fetchAvailableSlackBots(): Promise<SlackBotConfig[]> {
   return bots;
 }
 
+export function resetSlackBotRegistryCache(): void {
+  slackBotsCache = [];
+  slackBotsCacheLoadedAt = 0;
+  inFlightRefresh = null;
+}
+
 export async function refreshSlackBotRegistry(
   options?: { force?: boolean },
 ): Promise<SlackBotConfig[]> {
-  if (!options?.force && slackBotsCache.length > 0) {
+  // An empty list is a valid result: with no bot configured, caching it is
+  // what stops every unsigned request from fetching the registry.
+  const isFresh =
+    slackBotsCacheLoadedAt > 0 &&
+    Date.now() - slackBotsCacheLoadedAt < registryTtlMs();
+  if (!options?.force && isFresh) {
     return slackBotsCache;
   }
 
@@ -127,6 +144,7 @@ export async function refreshSlackBotRegistry(
     try {
       const bots = await fetchAvailableSlackBots();
       slackBotsCache = bots;
+      slackBotsCacheLoadedAt = Date.now();
       return slackBotsCache;
     } catch (error) {
       throw error;

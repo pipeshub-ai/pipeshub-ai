@@ -93,6 +93,28 @@ export default tseslint.config(
     },
   },
 
+  // sharp's loader allowlist is applied when image.utils is imported.
+  // Every other file must go through that module so a new decode site
+  // cannot skip it.
+  {
+    files: ['src/**/*.ts'],
+    ignores: ['src/libs/utils/image.utils.ts'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          paths: [
+            {
+              name: 'sharp',
+              message:
+                'Import sharp from src/libs/utils/image.utils so decoding stays limited to JPEG, PNG, WebP and GIF.',
+            },
+          ],
+        },
+      ],
+    },
+  },
+
   // Ignore patterns
   {
     ignores: ['dist/**', 'node_modules/**', '**/*.js', '**/*.mjs'],

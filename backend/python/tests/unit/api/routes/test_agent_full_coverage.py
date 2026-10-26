@@ -14,11 +14,11 @@ class TestParseKnowledgeSourcesEdgeCases:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_filters_as_invalid_json_string(self):
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_filters_as_invalid_json_string_are_refused(self):
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_missing_connector_id(self):
         from app.api.routes.agent import _parse_knowledge_sources
@@ -420,125 +420,10 @@ class TestIsWebSearchEnabled:
         from app.api.routes.agent import _is_web_search_enabled
         assert _is_web_search_enabled([]) is False
 
-
-# ============================================================================
-# _resolve_default_web_search_config — lines 926-958
-# ============================================================================
-
-
-class TestResolveDefaultWebSearchConfig:
-    @pytest.mark.asyncio
-    async def test_config_exception_returns_none(self):
-        from app.api.routes.agent import _resolve_default_web_search_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=RuntimeError("fail"))
-        result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_no_providers_falls_back_to_duckduckgo(self):
-        """A brand-new org with an empty `providers` list must still default
-        to DuckDuckGo, matching the Node.js layer's implicit-default
-        behavior -- not silently disable web_search."""
-        from app.api.routes.agent import _resolve_default_web_search_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={"providers": []})
-        result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result == {"provider": "duckduckgo", "configuration": {}}
-
-    @pytest.mark.asyncio
-    async def test_no_default_falls_back_duckduckgo(self):
-        from app.api.routes.agent import _resolve_default_web_search_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "serper", "isDefault": False}]
-        })
-        result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result == {"provider": "duckduckgo", "configuration": {}}
-
-    @pytest.mark.asyncio
-    async def test_valid_default_provider(self):
-        from app.api.routes.agent import _resolve_default_web_search_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "serper", "isDefault": True, "configuration": {"apiKey": "k"}}]
-        })
-        result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result["provider"] == "serper"
-        assert result["configuration"]["apiKey"] == "k"
-
-    @pytest.mark.asyncio
-    async def test_invalid_default_provider_returns_none(self):
-        from app.api.routes.agent import _resolve_default_web_search_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "unknown_provider", "isDefault": True}]
-        })
-        result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_non_dict_configuration_coerced(self):
-        from app.api.routes.agent import _resolve_default_web_search_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "tavily", "isDefault": True, "configuration": "bad"}]
-        })
-        result = await _resolve_default_web_search_config(cs, MagicMock())
-        assert result["provider"] == "tavily"
-        assert result["configuration"] == {}
-
-
-# ============================================================================
-# _resolve_web_search_tool_config — lines 970-1009
-# ============================================================================
-
-
-class TestResolveWebSearchToolConfig:
-    @pytest.mark.asyncio
-    async def test_no_provider_returns_none(self):
-        from app.api.routes.agent import _resolve_web_search_tool_config
-        result = await _resolve_web_search_tool_config(None, AsyncMock(), MagicMock())
-        assert result is None
-
-    @pytest.mark.asyncio
-    async def test_config_exception_returns_fallback(self):
-        from app.api.routes.agent import _resolve_web_search_tool_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(side_effect=RuntimeError("fail"))
-        result = await _resolve_web_search_tool_config("serper", cs, MagicMock())
-        assert result == {"provider": "serper", "configuration": {}}
-
-    @pytest.mark.asyncio
-    async def test_provider_not_in_list(self):
-        from app.api.routes.agent import _resolve_web_search_tool_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "tavily", "configuration": {"key": "v"}}]
-        })
-        result = await _resolve_web_search_tool_config("serper", cs, MagicMock())
-        assert result == {"provider": "serper", "configuration": {}}
-
-    @pytest.mark.asyncio
-    async def test_provider_found_with_config(self):
-        from app.api.routes.agent import _resolve_web_search_tool_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "serper", "configuration": {"apiKey": "k1"}}]
-        })
-        result = await _resolve_web_search_tool_config("serper", cs, MagicMock())
-        assert result["provider"] == "serper"
-        assert result["configuration"]["apiKey"] == "k1"
-
-    @pytest.mark.asyncio
-    async def test_non_dict_configuration_coerced(self):
-        from app.api.routes.agent import _resolve_web_search_tool_config
-        cs = AsyncMock()
-        cs.get_config = AsyncMock(return_value={
-            "providers": [{"provider": "exa", "configuration": "bad"}]
-        })
-        result = await _resolve_web_search_tool_config("exa", cs, MagicMock())
-        assert result == {"provider": "exa", "configuration": {}}
+    def test_universal_agent_ignores_tool_list(self) -> None:
+        from app.api.routes.agent import _is_web_search_enabled
+        assert _is_web_search_enabled(["jira.search"], is_universal_agent=True) is True
+        assert _is_web_search_enabled([], is_universal_agent=True) is True
 
 
 # ============================================================================
@@ -1156,7 +1041,8 @@ class TestBuildPriorRoutingMessages:
         mock_mod = MagicMock(resolve_attachment_blocks_simple=MagicMock(return_value=[{"type": "text", "text": "pdf content"}]))
         with patch.dict("sys.modules", {"app.utils.attachment_utils": mock_mod}):
             result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_user_query_attachment_no_vrid_skipped(self):
@@ -1172,7 +1058,8 @@ class TestBuildPriorRoutingMessages:
             ]
         }
         result = await _build_prior_routing_messages(query_info, AsyncMock(), "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_user_query_image_attachment_multimodal(self):
@@ -1200,7 +1087,8 @@ class TestBuildPriorRoutingMessages:
             "app.utils.attachment_utils": mock_attachment_utils,
         }):
             result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
     @pytest.mark.asyncio
     async def test_attachment_exception_swallowed(self):
@@ -1218,7 +1106,8 @@ class TestBuildPriorRoutingMessages:
             ]
         }
         result = await _build_prior_routing_messages(query_info, blob_store, "o1", True)
-        assert len(result) == 1
+        # The open question, then the placeholder that closes it before the current request.
+        assert len(result) == 2
 
 
 
@@ -1307,7 +1196,8 @@ class TestCreateAgentInstanceFields:
 
         services = {
             "graph_provider": AsyncMock(),
-            "config_service": AsyncMock(),
+            # The instance the agent attaches, in the org list the save checks against.
+            "config_service": AsyncMock(get_config=AsyncMock(return_value=[{"_id": "inst1", "orgId": "o1"}])),
             "logger": MagicMock(),
         }
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn1")

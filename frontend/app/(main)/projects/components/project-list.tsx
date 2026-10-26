@@ -21,6 +21,8 @@ import { CreateProjectDialog } from '@/chat/sidebar/dialogs';
 import { toast } from '@/lib/store/toast-store';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { MOBILE_PAGE_PADDING_TOP, pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 const PROJECT_LIST_PAGE_SIZE = 30;
 type ProjectListTab = 'active' | 'archived';
@@ -199,9 +201,12 @@ function ProjectCard({
  * `/projects` (no `projectId`) — grid of the user's projects (owned + shared),
  * with search and create. Clicking a card navigates to `/projects?projectId=…`.
  */
+const PROJECTS_MAX_WIDTH = 1100;
+
 export function ProjectList() {
   const router = useRouter();
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
 
   const upsertProjectInList = useChatStore((s) => s.upsertProjectInList);
   const bumpProjectsVersion = useChatStore((s) => s.bumpProjectsVersion);
@@ -292,7 +297,17 @@ export function ProjectList() {
   });
 
   return (
-    <Flex direction="column" gap="5" style={{ width: '100%', maxWidth: 1100, margin: '0 auto', padding: 'var(--space-6)' }}>
+    <Flex
+      direction="column"
+      gap="5"
+      style={{
+        width: '100%',
+        // Phones: the page gutter and room under the fixed menu button.
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 'var(--space-6)',
+        paddingBottom: 'var(--space-6)',
+        paddingInline: pageInlinePadding(PROJECTS_MAX_WIDTH),
+      }}
+    >
       <Flex align="center" justify="between" wrap="wrap" gap="3">
         <Flex align="center" gap="3" style={{ minWidth: 0 }}>
           <SidebarExpandButton placement="inline" />
@@ -300,7 +315,7 @@ export function ProjectList() {
             {t('projects.pageTitle')}
           </Text>
         </Flex>
-        <LoadingButton color="jade" onClick={() => setCreateOpen(true)}>
+        <LoadingButton color="jade" className="touch-hit" onClick={() => setCreateOpen(true)}>
           <Flex align="center" gap="2">
             <MaterialIcon name="add" size={16} />
             {t('chat.projects.newProject')}

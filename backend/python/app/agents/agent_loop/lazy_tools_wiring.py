@@ -30,9 +30,8 @@ unchanged.
   the highest-value case, since that's where an org with many attached
   connectors accumulates the most tool schemas.
 - `domain`: each domain child (`register_domain_agents()`) goes lazy over
-  its OWN claimed tools independently — mainly relevant for
-  `internal_exploration_agent`, whose claim grows with every attached
-  knowledge connector (`app_names={"retrieval", "knowledgehub"}`).
+  its OWN claimed tools independently — relevant for a domain that claims
+  many tools.
 - `both`: both, independently (each side's threshold check runs against
   its own tool count).
 
@@ -61,6 +60,8 @@ from app.agent_loop_lib.tools.builtin.lazy_toolsets import (
     SearchToolsTool,
 )
 from app.agent_loop_lib.tools.errors import DuplicateToolNameError, DuplicateToolPathError
+from app.agent_loop_lib.tools.index import ToolsetAwareToolIndex
+from app.utils.user_messages import where_to_authenticate
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -226,24 +227,6 @@ def group_connector_toolsets(
     return True
 
 
-def _mcp_group_name_from_server_name(server_name: str) -> str:
-    """Same normalization as `mcp_tool_loader.py::_mcp_group_name`, duplicated
-    (not imported) to avoid a cycle — that module imports `MCP_PARENT` from
-    this one. Takes the plain string since the only caller here
-    (`PipesHubGlobalCatalogFallback._mcp_hits`) has no `ResolvedMCPServer` to
-    read `.name` off of — discovery already failed for these instances, so
-    nothing built one this request.
-
-    Must be fed the instance's `name`, never its `displayName`: the loader
-    normalizes `ResolvedMCPServer.name`, so an instance named `RovoMCP` with
-    display name `Atlassian Rovo` registers under `mcp_rovomcp`. Reporting
-    `mcp_atlassian_rovo` here would name a group no `fetch_tools` call can
-    resolve once the server is reachable again.
-    """
-    normalized = server_name.lower().strip().replace(" ", "_").replace("-", "_")
-    return f"mcp_{normalized}"
-
-
 class PipesHubGlobalCatalogFallback:
     """Adapts PipesHub's process-wide toolset catalog (`ToolsetRegistry` —
     every toolset the app knows how to build, across every org, whether or
@@ -323,8 +306,8 @@ class PipesHubGlobalCatalogFallback:
                     toolset=group_name,
                     description=(
                         f"{description} — configured but not authenticated; "
-                        "tell the user to authenticate this toolset in "
-                        "Settings > Toolsets."
+                        "tell the user to authenticate this toolset under "
+                        f"{where_to_authenticate(is_service_account=getattr(self._context, 'is_service_account', False))}."
                         if reason == "not_authenticated" else description
                     ),
                     reason=reason,
@@ -344,7 +327,8 @@ class PipesHubGlobalCatalogFallback:
         request, so there is nothing live left to read.
         """
         from app.agent_loop_lib.tools.global_fallback import GlobalToolHit
-        from app.agents.mcp.discovery import build_namespaced_tool_name
+        from app.agents.agent_loop.mcp_tool_loader import MCP_NAMES_STATE_KEY
+        from app.agents.mcp.naming import build_namespaced_tool_name, namespace_key
 
         if self._context is None:
             return []
@@ -357,17 +341,16 @@ class PipesHubGlobalCatalogFallback:
             instance_id = server.get("instanceId")
             if instance_id not in failed_ids:
                 continue
-            # `displayName` is for prose only — see
-            # `_mcp_group_name_from_server_name` on why the group key has to
-            # come from `name`.
             server_name = server.get("name") or instance_id
             display_name = server.get("displayName") or server_name
-            group_name = _mcp_group_name_from_server_name(server_name)
-            # Same discriminator `MCPToolProvider._attached_full_names` uses,
-            # so the fallback name below matches what the tool registers under
-            # once discovery succeeds.
+            # The names `MCPToolProvider` assigned this request, so a hit names the group
+            # and tool the server registers under once it is reachable again.
             instance = (self._context.mcp_server_configs.get(instance_id) or {}).get("instance") or {}
-            server_type = instance.get("typeId") or server_name
+            names = self._context.tool_state.get(MCP_NAMES_STATE_KEY, {}).get(instance_id) or {
+                "namespace": namespace_key(instance.get("typeId") or server.get("typeId"), server_name),
+                "group": f"mcp_{namespace_key(None, server_name)}",
+            }
+            group_name = names["group"]
 
             for tool in server.get("tools") or []:
                 tool_name = tool.get("name") or ""
@@ -378,7 +361,7 @@ class PipesHubGlobalCatalogFallback:
                 if query_terms and not any(term in haystack for term in query_terms):
                     continue
                 hits.append(GlobalToolHit(
-                    name=tool.get("fullName") or build_namespaced_tool_name(server_type, tool_name),
+                    name=build_namespaced_tool_name(names["namespace"], tool_name),
                     toolset=group_name,
                     description=(
                         f"{description} — {display_name} is attached but "
@@ -410,15 +393,29 @@ def register_lazy_tool_meta_tools(
     when a matching tool exists but isn't attached/authenticated — see
     `SearchToolsTool`'s docstring and `EventType.TOOL_UNAVAILABLE`.
     """
+    from app.agents.agent_loop.hooks.progressive_tools import (
+        PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
+        SEARCH_ENTITIES_TOOL_NAME,
+    )
+
+    # hooks/progressive_tools.py grants it only when the search remembered an
+    # entity; a failed or empty search leaves it withheld.
+    tool_registry.defer_tool(
+        PROGRESSIVE_FIND_RECORDS_TOOL_NAME,
+        unlocked_by=SEARCH_ENTITIES_TOOL_NAME,
+        condition="returns at least one entity",
+    )
     for tool_cls in (ListToolsetsTool, FetchToolsTool):
         try:
             tool_registry.register_tool(tool_cls(tool_registry))
         except (DuplicateToolNameError, DuplicateToolPathError):
             continue
     try:
-        tool_registry.register_tool(
-            SearchToolsTool(tool_registry, global_fallback=PipesHubGlobalCatalogFallback(context))
-        )
+        # The model names the app as often as the action ("search ClickUp tasks"); preloading keeps
+        # the plain index its thresholds are tuned to.
+        tool_registry.register_tool(SearchToolsTool(
+            tool_registry, index=ToolsetAwareToolIndex(), global_fallback=PipesHubGlobalCatalogFallback(context),
+        ))
     except (DuplicateToolNameError, DuplicateToolPathError):
         pass
 
@@ -441,6 +438,7 @@ def make_lazy_tools_decider(
     apply: bool,
     essential_names: frozenset[str] = frozenset(),
     context: "AgentContext | None" = None,
+    uncounted_names: frozenset[str] = frozenset(),
 ) -> "Callable[[ToolRegistry, list[str]], tuple[list[str], str]]":
     """Builds the `(tool_names, tool_disclosure)` decision function used at
     BOTH the top-level `AgentSpec` construction site (`factory.py`, called
@@ -455,7 +453,9 @@ def make_lazy_tools_decider(
     "essential" set, e.g. `factory.py`'s `essential_toolset_names`
     (retrieval/knowledgehub/artifacts when attached, plus `"skills"`).
     `context` is threaded into `PipesHubGlobalCatalogFallback` for
-    auth-aware `search_tools` reasons.
+    auth-aware `search_tools` reasons. `uncounted_names` are left out of the
+    threshold count (still granted): a tool a deployment switch adds must not
+    by itself move a request from eager to lazy disclosure.
 
     `apply=False` (this scope wasn't selected, or the env flag is off)
     always returns `(tool_names, "eager")` unchanged — zero behavior
@@ -463,7 +463,8 @@ def make_lazy_tools_decider(
     """
 
     def _decide(tool_registry: "ToolRegistry", tool_names: list[str]) -> tuple[list[str], str]:
-        if not apply or not should_apply_lazy_tools(len(tool_names)):
+        counted = sum(1 for name in tool_names if name not in uncounted_names)
+        if not apply or not should_apply_lazy_tools(counted):
             return tool_names, "eager"
         if not group_connector_toolsets(tool_registry, tool_names, exclude=essential_names):
             return tool_names, "eager"

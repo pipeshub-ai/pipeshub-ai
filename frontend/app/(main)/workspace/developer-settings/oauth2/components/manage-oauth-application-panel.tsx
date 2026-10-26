@@ -8,6 +8,7 @@ import {
   Checkbox,
   Flex,
   IconButton,
+  Select,
   Tabs,
   Text,
   TextArea,
@@ -16,6 +17,13 @@ import {
 import { useTranslation } from 'react-i18next';
 import type { CheckedState } from '@radix-ui/react-checkbox';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import {
+  KnowledgeLimitChoice,
+  isKnowledgeLimitValid,
+  knowledgeLimitForApi,
+  selectionFromLimit,
+  type KnowledgeLimitValue,
+} from '@/app/components/knowledge-limit';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import {
   DestructiveTypedConfirmationDialog,
@@ -23,7 +31,9 @@ import {
   WorkspaceRightPanel,
 } from '../../../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { Oauth2Api } from '../api';
+import { ServiceAccountsApi } from '../../../service-accounts/api';
 import type { OAuthClient, OAuthGrantTypeValue, OAuthScopeItem } from '../types';
 import {
   isValidHttpUrl,
@@ -110,6 +120,7 @@ interface FormSnapshot {
   homepageUrl: string;
   privacyPolicyUrl: string;
   termsOfServiceUrl: string;
+  limitKey: string;
 }
 
 function buildSnapshot(params: {
@@ -121,7 +132,9 @@ function buildSnapshot(params: {
   homepageUrl: string;
   privacyPolicyUrl: string;
   termsOfServiceUrl: string;
+  knowledgeLimit: KnowledgeLimitValue;
 }): FormSnapshot {
+  const limit = knowledgeLimitForApi(params.knowledgeLimit);
   const useAuthCode = params.grantTypes.has('authorization_code');
   const redirectForKey = useAuthCode
     ? params.redirectUris.map((u) => u.trim()).filter(Boolean)
@@ -135,6 +148,9 @@ function buildSnapshot(params: {
     homepageUrl: params.homepageUrl.trim(),
     privacyPolicyUrl: params.privacyPolicyUrl.trim(),
     termsOfServiceUrl: params.termsOfServiceUrl.trim(),
+    limitKey: limit
+      ? JSON.stringify([limit.apps, limit.recordGroups, limit.records].map((ids) => [...ids].sort()))
+      : '',
   };
 }
 
@@ -147,7 +163,8 @@ function snapshotsEqual(a: FormSnapshot, b: FormSnapshot): boolean {
     a.scopesKey === b.scopesKey &&
     a.homepageUrl === b.homepageUrl &&
     a.privacyPolicyUrl === b.privacyPolicyUrl &&
-    a.termsOfServiceUrl === b.termsOfServiceUrl
+    a.termsOfServiceUrl === b.termsOfServiceUrl &&
+    a.limitKey === b.limitKey
   );
 }
 
@@ -199,10 +216,12 @@ export function ManageOAuthApplicationPanel({
 }: ManageOAuthApplicationPanelProps) {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const isAdmin = useUserStore(selectIsAdmin);
 
-  const [activeTab, setActiveTab] = useState<'general' | 'scopes' | 'advanced'>(
-    'general'
-  );
+  const [activeTab, setActiveTab] = useState<
+    'general' | 'scopes' | 'granular' | 'advanced'
+  >('general');
+  const [knowledgeLimit, setKnowledgeLimit] = useState<KnowledgeLimitValue>(null);
   const [detail, setDetail] = useState<OAuthClient | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailError, setDetailError] = useState<string | null>(null);
@@ -211,6 +230,17 @@ export function ManageOAuthApplicationPanel({
 
   const [name, setName] = useState('');
   const [description, setDescription] = useState('');
+  // The service account this app's tokens act as, as last loaded. Empty means
+  // it has none and they act as whoever created it.
+  const [tokenIdentityUserId, setTokenIdentityUserId] = useState<string>('');
+  const [serviceAccounts, setServiceAccounts] = useState<
+    { id: string; fullName: string; email: string }[] | null
+  >(null);
+  const [serviceAccountsError, setServiceAccountsError] = useState<string | null>(
+    null
+  );
+  const [chosenServiceAccountId, setChosenServiceAccountId] = useState<string>('');
+  const [bindingIdentity, setBindingIdentity] = useState(false);
   const [grantTypes, setGrantTypes] = useState<Set<OAuthGrantTypeValue>>(
     () => new Set()
   );
@@ -288,6 +318,73 @@ export function ManageOAuthApplicationPanel({
   const OAUTH_SUSPEND_CONFIRMATION_KEYWORD = typedConfirmKeywordFromAppName ?? 'SUSPEND';
 
 
+  const needsServiceAccount =
+    grantTypes.has('client_credentials') && !tokenIdentityUserId;
+  // Listing service accounts and binding one are both administrator-only, and
+  // `setTokenIdentity` additionally filters on `createdBy` — which this panel
+  // already satisfies, since Developer Settings lists only what you created.
+  // So asking for the list as a member earns a 403 and nothing else.
+  const canBindServiceAccount = needsServiceAccount && isAdmin === true;
+
+  useEffect(() => {
+    if (!open || !canBindServiceAccount) return;
+    if (serviceAccounts !== null) return;
+    if (serviceAccountsError !== null) return;
+
+    let cancelled = false;
+    void (async () => {
+      try {
+        const { serviceAccounts: list } = await ServiceAccountsApi.list();
+        if (cancelled) return;
+        setServiceAccounts(
+          list
+            .filter((a) => !a.isDisabled)
+            .map((a) => ({ id: a.id, fullName: a.fullName, email: a.email }))
+        );
+      } catch {
+        if (cancelled) return;
+        setServiceAccountsError(
+          t('workspace.oauth2.create.serviceAccountLoadError')
+        );
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open, canBindServiceAccount, serviceAccounts, serviceAccountsError, t]);
+
+  const retryServiceAccounts = useCallback(() => {
+    setServiceAccountsError(null);
+    setServiceAccounts(null);
+  }, []);
+
+  const bindServiceAccount = useCallback(async () => {
+    if (!clientId || !chosenServiceAccountId) return;
+    setBindingIdentity(true);
+    try {
+      const updated = await Oauth2Api.setOAuthClientTokenIdentity(
+        clientId,
+        chosenServiceAccountId
+      );
+      // Read from the response, not from what we sent: the server is what
+      // decides, and a fallback here would hide it failing to come back.
+      setTokenIdentityUserId(updated.tokenIdentityUserId ?? '');
+      setChosenServiceAccountId('');
+      addToast({
+        variant: 'success',
+        title: t('workspace.oauth2.manageApplication.identityBound'),
+      });
+      onSaved?.();
+    } catch {
+      addToast({
+        variant: 'error',
+        title: t('workspace.oauth2.manageApplication.identityBindFailed'),
+      });
+    } finally {
+      setBindingIdentity(false);
+    }
+  }, [clientId, chosenServiceAccountId, addToast, t, onSaved]);
+
   const applyDetailToForm = useCallback((d: OAuthClient) => {
     setName(d.name ?? '');
     setDescription(String(d.description ?? ''));
@@ -298,6 +395,8 @@ export function ManageOAuthApplicationPanel({
     setHomepageUrl(oauthUrlFromDetail(d.homepageUrl));
     setPrivacyPolicyUrl(oauthUrlFromDetail(d.privacyPolicyUrl));
     setTermsOfServiceUrl(oauthUrlFromDetail(d.termsOfServiceUrl));
+    setKnowledgeLimit(selectionFromLimit(d.knowledgeLimit));
+    setTokenIdentityUserId(d.tokenIdentityUserId ?? '');
   }, []);
 
   useEffect(() => {
@@ -310,6 +409,11 @@ export function ManageOAuthApplicationPanel({
       setName('');
       setDescription('');
       setGrantTypes(new Set());
+      setTokenIdentityUserId('');
+      setServiceAccounts(null);
+      setServiceAccountsError(null);
+      setChosenServiceAccountId('');
+      setBindingIdentity(false);
       setRedirectUris(['']);
       setHomepageUrl('');
       setPrivacyPolicyUrl('');
@@ -361,6 +465,7 @@ export function ManageOAuthApplicationPanel({
             homepageUrl: oauthUrlFromDetail(d.homepageUrl),
             privacyPolicyUrl: oauthUrlFromDetail(d.privacyPolicyUrl),
             termsOfServiceUrl: oauthUrlFromDetail(d.termsOfServiceUrl),
+            knowledgeLimit: selectionFromLimit(d.knowledgeLimit),
           })
         );
         setScopesByCategory(scopesData.scopes ?? {});
@@ -427,6 +532,7 @@ export function ManageOAuthApplicationPanel({
         homepageUrl,
         privacyPolicyUrl,
         termsOfServiceUrl,
+        knowledgeLimit,
       }),
     [
       name,
@@ -437,6 +543,7 @@ export function ManageOAuthApplicationPanel({
       homepageUrl,
       privacyPolicyUrl,
       termsOfServiceUrl,
+      knowledgeLimit,
     ]
   );
 
@@ -524,7 +631,9 @@ export function ManageOAuthApplicationPanel({
   const scopesRequirementMet =
     totalScopeCount === 0 || selectedScopes.size > 0;
 
-  const formStructurallyValid = baseGeneralValid && scopesRequirementMet;
+  const limitValid = isKnowledgeLimitValid(knowledgeLimit);
+
+  const formStructurallyValid = baseGeneralValid && scopesRequirementMet && limitValid;
 
   const primaryDisabled =
     detailLoading ||
@@ -540,6 +649,9 @@ export function ManageOAuthApplicationPanel({
       if (baseGeneralValid && !scopesRequirementMet) {
         return t('workspace.oauth2.create.errorScopeRequired');
       }
+      if (baseGeneralValid && !limitValid) {
+        return t('knowledgeLimit.pickOne');
+      }
       return t('workspace.oauth2.manageApplication.saveDisabledInvalid');
     }
     if (!isDirty) {
@@ -554,6 +666,7 @@ export function ManageOAuthApplicationPanel({
     formStructurallyValid,
     baseGeneralValid,
     scopesRequirementMet,
+    limitValid,
     isDirty,
     t,
   ]);
@@ -584,6 +697,7 @@ export function ManageOAuthApplicationPanel({
         privacyPolicyUrl: optionalUrlOrEmpty(privacyPolicyUrl),
         termsOfServiceUrl: optionalUrlOrEmpty(termsOfServiceUrl),
         isConfidential: detail.isConfidential ?? true,
+        knowledgeLimit: knowledgeLimitForApi(knowledgeLimit) ?? null,
       };
 
       await Oauth2Api.updateOAuthClient(clientId, payload);
@@ -604,6 +718,7 @@ export function ManageOAuthApplicationPanel({
           homepageUrl: oauthUrlFromDetail(next.homepageUrl),
           privacyPolicyUrl: oauthUrlFromDetail(next.privacyPolicyUrl),
           termsOfServiceUrl: oauthUrlFromDetail(next.termsOfServiceUrl),
+          knowledgeLimit: selectionFromLimit(next.knowledgeLimit),
         })
       );
 
@@ -643,6 +758,7 @@ export function ManageOAuthApplicationPanel({
     onOpenChange,
     usesAuthorizationCode,
     totalScopeCount,
+    knowledgeLimit,
   ]);
 
   const handleRegenerateSecret = useCallback(async () => {
@@ -872,6 +988,7 @@ export function ManageOAuthApplicationPanel({
                         homepageUrl: oauthUrlFromDetail(d.homepageUrl),
                         privacyPolicyUrl: oauthUrlFromDetail(d.privacyPolicyUrl),
                         termsOfServiceUrl: oauthUrlFromDetail(d.termsOfServiceUrl),
+                        knowledgeLimit: selectionFromLimit(d.knowledgeLimit),
                       })
                     );
                     setScopesByCategory(scopesData.scopes ?? {});
@@ -891,7 +1008,7 @@ export function ManageOAuthApplicationPanel({
           <Tabs.Root
             value={activeTab}
             onValueChange={(v) =>
-              setActiveTab(v as 'general' | 'scopes' | 'advanced')
+              setActiveTab(v as 'general' | 'scopes' | 'granular' | 'advanced')
             }
           >
             <Tabs.List
@@ -905,6 +1022,9 @@ export function ManageOAuthApplicationPanel({
               </Tabs.Trigger>
               <Tabs.Trigger value="scopes">
                 {t('workspace.oauth2.create.tabPermissions')}
+              </Tabs.Trigger>
+              <Tabs.Trigger value="granular">
+                {t('workspace.oauth2.create.tabGranular')}
               </Tabs.Trigger>
               <Tabs.Trigger value="advanced">
                 {t('workspace.oauth2.manageApplication.tabAdvanced')}
@@ -1046,7 +1166,22 @@ export function ManageOAuthApplicationPanel({
                       </Flex>
                     ))}
                   </Flex>
-                  {grantTypes.has('client_credentials') && (
+                  {grantTypes.has('client_credentials') && !needsServiceAccount && (
+                    <Box
+                      style={{
+                        marginTop: 'var(--space-3)',
+                        backgroundColor: 'var(--slate-2)',
+                        border: '1px solid var(--slate-6)',
+                        borderRadius: 'var(--radius-2)',
+                        padding: 'var(--space-3)',
+                      }}
+                    >
+                      <Text size="2" style={{ color: 'var(--slate-11)' }}>
+                        {t('workspace.oauth2.manageApplication.identityBoundNote')}
+                      </Text>
+                    </Box>
+                  )}
+                  {needsServiceAccount && (
                     <Box
                       style={{
                         marginTop: 'var(--space-3)',
@@ -1056,9 +1191,73 @@ export function ManageOAuthApplicationPanel({
                         padding: 'var(--space-3)',
                       }}
                     >
-                      <Text size="2" style={{ color: 'var(--amber-11)' }}>
-                        {t('workspace.oauth2.create.clientCredentialsWarning')}
+                      <Text
+                        size="2"
+                        style={{ color: 'var(--amber-11)', display: 'block' }}
+                      >
+                        {t('workspace.oauth2.manageApplication.identityUnboundNote')}
                       </Text>
+                      {!canBindServiceAccount ? (
+                        <Text size="2" style={{ color: 'var(--amber-11)' }} mt="2" as="p">
+                          {t('workspace.oauth2.manageApplication.identityAdminOnly')}
+                        </Text>
+                      ) : serviceAccountsError !== null ? (
+                        <Flex align="center" gap="2" mt="2">
+                          <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                            {serviceAccountsError}
+                          </Text>
+                          <Button
+                            size="1"
+                            variant="soft"
+                            type="button"
+                            onClick={retryServiceAccounts}
+                          >
+                            {t('workspace.oauth2.create.serviceAccountRetry')}
+                          </Button>
+                        </Flex>
+                      ) : serviceAccounts === null ? (
+                        <Text size="1" style={{ color: 'var(--slate-11)' }} mt="2">
+                          {t('workspace.oauth2.create.serviceAccountLoading')}
+                        </Text>
+                      ) : serviceAccounts.length === 0 ? (
+                        <Text size="2" style={{ color: 'var(--amber-11)' }} mt="2">
+                          {t('workspace.oauth2.create.serviceAccountNone')}
+                        </Text>
+                      ) : (
+                        <Flex align="center" gap="2" mt="2" wrap="wrap">
+                          <Select.Root
+                            value={chosenServiceAccountId}
+                            onValueChange={setChosenServiceAccountId}
+                          >
+                            <Select.Trigger
+                              placeholder={t(
+                                'workspace.oauth2.create.serviceAccountPlaceholder'
+                              )}
+                            />
+                            <Select.Content>
+                              {serviceAccounts.map((a) => (
+                                <Select.Item key={a.id} value={a.id}>
+                                  {a.fullName} ({a.email})
+                                </Select.Item>
+                              ))}
+                            </Select.Content>
+                          </Select.Root>
+                          <LoadingButton
+                            size="2"
+                            type="button"
+                            loading={bindingIdentity}
+                            disabled={!chosenServiceAccountId}
+                            onClick={() => void bindServiceAccount()}
+                          >
+                            {t('workspace.oauth2.manageApplication.identityBindAction')}
+                          </LoadingButton>
+                        </Flex>
+                      )}
+                      {canBindServiceAccount && (
+                        <Text size="1" style={{ color: 'var(--amber-11)' }} mt="2" as="p">
+                          {t('workspace.oauth2.manageApplication.identityBindRevokes')}
+                        </Text>
+                      )}
                     </Box>
                   )}
                 </Box>
@@ -1361,6 +1560,18 @@ export function ManageOAuthApplicationPanel({
                     );
                   })}
               </Flex>
+            </Tabs.Content>
+
+            <Tabs.Content value="granular">
+              <Box style={CARD_STYLE}>
+                <KnowledgeLimitChoice
+                  appName={name.trim() || t('knowledgeLimit.app.thisApp')}
+                  value={knowledgeLimit}
+                  onChange={setKnowledgeLimit}
+                  idPrefix="oauth-app-manage"
+                  forApp
+                />
+              </Box>
             </Tabs.Content>
 
             <Tabs.Content value="advanced">
