@@ -128,6 +128,7 @@ from local_auth import (  # noqa: E402
     obtain_user_session_token,
 )
 from pipeshub_client import PipeshubClient  # noqa: E402
+from helper.simulator_addresses import allow_the_simulators  # noqa: E402
 from helper.clients.agents_client import AgentsClient  # noqa: E402
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
 from helper.clients.auth_client import AuthClient, UserAccountClient  # noqa: E402
@@ -763,6 +764,7 @@ def pytest_configure(config: pytest.Config) -> None:
     global _IS_XDIST_WORKER
     # Before any session fixture or pytest_sessionstart makes its first call.
     install_requests_hook()
+    allow_the_simulators()
     _IS_XDIST_WORKER = hasattr(config, "workerinput")
     _integration_test_reports_by_nodeid = {}
     _integration_test_report_order = []
