@@ -969,9 +969,14 @@ class TestJiraHierarchy:
         child_id = jira_connector.get("epic_child_id")
         if epic_id and child_id:
             child = await graph_provider.get_record_by_external_id(connector_id, child_id)
-            assert child is not None and str(child.parent_external_record_id or "") != str(epic_id)
+            assert child is not None and not child.parent_external_record_id, (
+                f"{child_id} must not be filed under an issue (parent={child.parent_external_record_id!r})"
+            )
+            # The project's record group holds it through the same edge; it has no record id, so only a
+            # record parent shows up here.
             incoming = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
-            assert str(epic_id) not in incoming, f"epic {epic_id} must not be the PARENT_CHILD parent of {child_id} ({incoming!r})"
+            record_parents = [parent for parent in incoming if parent]
+            assert not record_parents, f"{child_id} must have no record parent, got {record_parents!r} (epic {epic_id})"
             checked += 1
 
         # Task ↔ sub-task
