@@ -1578,6 +1578,64 @@ class TestConfigServiceFor:
         assert written[:2] == ["/services/entityCleanup/pending/c1", "/services/storageRelease/pending/c1"]
 
 
+class TestConnectorClassComesFromStoredType:
+    """The event name can come from a request body; the instance's stored type picks the class."""
+
+    _APP_DOC = {
+        "_key": "c1", "isActive": True, "orgId": "org1", "scope": "team",
+        "createdBy": "user-1", "type": "Google Drive",
+    }
+
+    @pytest.mark.asyncio
+    async def test_init_event_with_another_name_builds_the_stored_type(self, service) -> None:
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            await service._handle_init("slack", {"orgId": "org1", "connectorId": "c1"})
+
+        assert mock_factory.create_connector.await_args.kwargs["name"] == "googledrive"
+        service.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_init_with_another_name_builds_the_stored_type(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("slack", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "googledrive"
+
+    @pytest.mark.asyncio
+    async def test_matching_name_builds_without_a_warning(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("googledrive", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "googledrive"
+        service.logger.warning.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_instance_without_a_stored_type_keeps_the_event_name(self, service) -> None:
+        doc = {k: v for k, v in self._APP_DOC.items() if k != "type"}
+        service.graph_provider.get_document = AsyncMock(return_value=doc)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("gmail", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "gmail"
+
+
 # ===========================================================================
 # Lease acquisition in the start path
 # ===========================================================================

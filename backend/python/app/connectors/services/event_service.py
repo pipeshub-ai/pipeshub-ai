@@ -362,6 +362,25 @@ class EventService:
         """Live connector instance for HTTP callers, built from its app doc if missing."""
         return await self._ensure_connector(connector_name, connector_id)
 
+    def _stored_connector_name(
+        self, connector_doc: dict[str, Any], event_name: str, connector_id: str
+    ) -> str:
+        """The registry name of the instance's stored type, which picks its class.
+
+        The event name is not trusted for this: the resync route takes it from the
+        request body, so it could build one connector's class over another
+        instance's config and credentials.
+        """
+        stored = (connector_doc.get("type") or "").replace(" ", "").lower()
+        if not stored:
+            return event_name
+        if stored != event_name:
+            self.logger.warning(
+                f"Event for connector {connector_id} names '{event_name}' but the "
+                f"instance is '{stored}'; using '{stored}'"
+            )
+        return stored
+
     async def _auto_initialize_connector(
         self, connector_name: str, connector_id: str
     ) -> BaseConnector | None:
@@ -392,7 +411,7 @@ class EventService:
             data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
-                name=connector_name,
+                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
@@ -502,7 +521,7 @@ class EventService:
             
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
-                name=connector_name,
+                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,

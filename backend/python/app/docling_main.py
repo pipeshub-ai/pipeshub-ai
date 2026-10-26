@@ -35,6 +35,7 @@ from app.telemetry.setup import setup_telemetry
 from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
 from app.utils.logger import install_log_redaction
+from app.utils.memory_release import limit_malloc_arenas
 from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -66,6 +67,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
     mark_process_non_dumpable()
     install_log_redaction()
+    # Before the first conversion starts the threads that would take arenas.
+    limit_malloc_arenas(2)
 
     # Initialize container and Docling service
     logger = None

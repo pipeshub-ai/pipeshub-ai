@@ -355,7 +355,8 @@ class ConnectorFactory:
             return connector
         except Exception as e:
             logger.error(
-                f"❌ Failed to create {name} {connector_id} connector: {str(e)}"
+                f"❌ Failed to create {name} {connector_id} connector: {str(e)}",
+                exc_info=True,
             )
             if owned_processor is not None:
                 await cls._close_processor(owned_processor, logger)
@@ -407,7 +408,8 @@ class ConnectorFactory:
                 return connector
             except Exception as e:
                 logger.error(
-                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}"
+                    f"❌ Failed to initialize {name} {connector_id} connector: {str(e)}",
+                    exc_info=True,
                 )
                 await connector.on_background_init_failed(e)
                 await cls._dispose_failed(connector, name, connector_id, logger)

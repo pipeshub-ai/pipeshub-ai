@@ -6767,7 +6767,9 @@ class TestKbUploadProcessRecord:
         tx_store.create_record_relation.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_preserves_explicit_org_id(self):
+    async def test_an_upload_naming_another_org_is_written_to_the_processors_org(self) -> None:
+        # The knowledge-base route hands out a processor only for the request's
+        # own org, so a different org on the record can only be a mistake.
         proc = _make_processor()
         proc.org_id = "org-default"
         tx_store = _make_tx_store()
@@ -6778,7 +6780,7 @@ class TestKbUploadProcessRecord:
         ):
             await proc._process_record(record, [], tx_store)
 
-        assert record.org_id == "org-explicit"
+        assert record.org_id == "org-default"
 
     @pytest.mark.asyncio
     async def test_existing_upload_does_not_requeue_completed(self):

@@ -301,7 +301,7 @@ class BaseConnector(ABC):
 
     @abstractmethod
     def test_connection_and_access(self) -> bool:
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod
     async def check_connection(
@@ -344,19 +344,19 @@ class BaseConnector(ABC):
 
     @abstractmethod
     def get_signed_url(self, record: Record) -> Optional[str]:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     @abstractmethod
     def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
-        NotImplementedError("This method is not supported by the subclass")
+        raise NotImplementedError("This method is not supported by the subclass")
 
     @abstractmethod
     def run_sync(self) -> None:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     @abstractmethod
     def run_incremental_sync(self) -> None:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     def full_sync_coverage(self) -> FullSyncCoverage:
         """How much of the source the full sync that just returned read.
@@ -371,7 +371,7 @@ class BaseConnector(ABC):
 
     @abstractmethod
     def handle_webhook_notification(self, notification: Dict) -> None:
-        NotImplementedError("This method is not supported")
+        raise NotImplementedError("This method is not supported")
 
     # Names of the zero-argument steps of this connector's own sync that create the user,
     # group and app edges. Empty: the connector is not linked after a user is added (see
@@ -400,16 +400,16 @@ class BaseConnector(ABC):
 
     @abstractmethod
     async def cleanup(self) -> None:
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
     async def reindex_records(self, record_results: List[Record]) -> None:
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @classmethod
     @abstractmethod
     async def create_connector(cls, logger, data_store_provider: DataStoreProvider, config_service: ConfigurationService, connector_id: str, data_entities_processor: "DataSourceEntitiesProcessor", **kwargs) -> "BaseConnector":
-        NotImplementedError("This method should be implemented by the subclass")
+        raise NotImplementedError("This method should be implemented by the subclass")
 
     @abstractmethod
     async def get_filter_options(
