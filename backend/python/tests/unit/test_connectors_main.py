@@ -1008,6 +1008,41 @@ class TestLifespan:
         assert calls == ["registry", "repair"]
         assert mock_repair.call_args.args[0] is mock_container.config_service.return_value
 
+    async def test_toolset_registry_is_loaded_before_token_refresh_starts(self) -> None:
+        """The first refresh scan runs in the background as soon as startup services start,
+        and a personal action's token URL comes only from the toolset registry."""
+        from app.connectors_main import lifespan
+
+        mock_container = _make_container()
+        mock_container.data_store = AsyncMock(return_value=_make_data_store())
+        mock_app = MagicMock()
+        mock_registry = MagicMock()
+        mock_registry._connectors = {}
+        calls: list[str] = []
+
+        mock_toolset_registry = MagicMock()
+        mock_toolset_registry.list_toolsets.return_value = []
+        mock_toolset_registry.auto_discover_toolsets.side_effect = lambda: calls.append("toolsets")
+
+        async def _startup(*_args: object, **_kwargs: object) -> None:
+            calls.append("refresh services")
+
+        with (
+            patch("app.connectors_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.connectors_main.initialize_connector_registry", new_callable=AsyncMock, return_value=mock_registry),
+            patch("app.connectors_main.get_toolset_registry", return_value=mock_toolset_registry),
+            patch("app.connectors_main.startup_service.initialize", side_effect=_startup),
+            patch("app.connectors_main.start_messaging_producer", new_callable=AsyncMock),
+            patch("app.connectors_main.resume_sync_services", new_callable=AsyncMock),
+            patch("app.connectors_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.connectors_main.shutdown_container_resources", new_callable=AsyncMock),
+            patch("os.getenv", side_effect=_mock_os_getenv("neo4j")),
+        ):
+            async with lifespan(mock_app):
+                assert mock_app.state.toolset_registry is mock_toolset_registry
+
+        assert calls == ["toolsets", "refresh services"]
+
     async def test_startup_service_init_failure_continues(self):
         """Startup service init failure does not prevent startup."""
         from app.connectors_main import lifespan

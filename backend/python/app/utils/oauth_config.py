@@ -241,6 +241,25 @@ def _apply_salesforce_login_host(url: str, login_url: str) -> str:
     return urlparse(url)._replace(scheme="https", netloc=urlparse(login_url).netloc).geturl()
 
 
+_MICROSOFT_TENANT_SEGMENT = re.compile(r"(https://login\.microsoftonline\.com/)[^/]+(/)")
+
+
+def apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
+    """Put *tenant_id* in place of the tenant segment of a Microsoft login URL.
+
+    A single-tenant Azure AD app cannot use the /common endpoints, so sign-in and every
+    refresh of its tokens must use its own tenant's. A blank or "common" tenant, or a URL
+    that is not Microsoft's, is returned unchanged.
+    """
+    if not url or "login.microsoftonline.com" not in url:
+        return url
+    tenant = str(tenant_id or "").strip()
+    if not tenant or tenant.lower() == "common":
+        return url
+    # A function, not a template: the tenant is user input, and a backslash in it must stay text.
+    return _MICROSOFT_TENANT_SEGMENT.sub(lambda m: f"{m.group(1)}{tenant}{m.group(2)}", url, count=1)
+
+
 def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, Any] | None) -> None:
     """Raise ValueError when a Salesforce OAuth app's Login URL is not a Salesforce host.
 

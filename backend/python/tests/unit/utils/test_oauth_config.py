@@ -6,6 +6,7 @@ import pytest
 
 from app.utils.oauth_config import (
     _override_oauth_host_with_instance,
+    apply_tenant_to_microsoft_oauth_url,
     extract_oauth_error_message,
     fetch_oauth_config_by_id,
     fetch_toolset_oauth_config_by_id,
@@ -1114,3 +1115,44 @@ class TestFetchToolsetOAuthConfigById:
             logger=None,
         )
         assert result is None
+
+
+# ===================================================================
+# apply_tenant_to_microsoft_oauth_url
+# ===================================================================
+class TestApplyTenantToMicrosoftOAuthUrl:
+    COMMON_TOKEN = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+    def test_replaces_the_tenant_segment(self):
+        assert (
+            apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "contoso")
+            == "https://login.microsoftonline.com/contoso/oauth2/v2.0/token"
+        )
+
+    @pytest.mark.parametrize("tenant", [None, "", "   ", "common", "COMMON"])
+    def test_no_tenant_keeps_the_url(self, tenant):
+        assert apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant) == self.COMMON_TOKEN
+
+    def test_is_idempotent(self):
+        once = apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "contoso")
+        assert apply_tenant_to_microsoft_oauth_url(once, "contoso") == once
+
+    @pytest.mark.parametrize("tenant", [r"a\1b", r"\g<0>", "a\\"])
+    def test_backslashes_in_the_tenant_stay_text(self, tenant):
+        """Any user can now enter a tenant on a personal action; it must not act as a regex template."""
+        assert (
+            apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, tenant)
+            == f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
+        )
+
+    def test_strips_surrounding_whitespace(self):
+        assert "/contoso/" in apply_tenant_to_microsoft_oauth_url(self.COMMON_TOKEN, "  contoso  ")
+
+    @pytest.mark.parametrize("url", ["https://oauth2.googleapis.com/token", "", None])
+    def test_other_urls_untouched(self, url):
+        assert apply_tenant_to_microsoft_oauth_url(url, "contoso") == url
+
+    def test_toolset_routes_use_the_same_helper(self):
+        from app.api.routes.toolsets import _apply_tenant_to_microsoft_oauth_url
+
+        assert _apply_tenant_to_microsoft_oauth_url is apply_tenant_to_microsoft_oauth_url

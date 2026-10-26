@@ -942,6 +942,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_container.connector_thread_pool.max_workers,
     )
 
+    # Before the refresh services: their first scan starts in the background right away, and a
+    # personal action's OAuth endpoints come only from this registry.
+    logger.info("🔄 Initializing in-memory toolset registry...")
+    toolset_registry = get_toolset_registry()
+    toolset_registry.auto_discover_toolsets()
+    app.state.toolset_registry = toolset_registry
+    logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
+
     # Start token refresh service at app startup (database-agnostic)
     try:
         await startup_service.initialize(
@@ -957,13 +965,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
-
-    # Initialize toolset registry (in-memory, fast tool lookup)
-    logger.info("🔄 Initializing in-memory toolset registry...")
-    toolset_registry = get_toolset_registry()
-    toolset_registry.auto_discover_toolsets()
-    app.state.toolset_registry = toolset_registry
-    logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
     # Initialize MCP server catalog registry (in-memory, mirrors the toolset registry)
     logger.info("🔄 Initializing in-memory MCP server registry...")

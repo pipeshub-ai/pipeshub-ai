@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.base.token_service.oauth_service import OAuthToken
+from app.connectors.core.registry.auth_builder import OAuthScopeType
 from app.connectors.core.base.token_service.toolset_token_refresh_service import (
     INITIAL_RETRY_DELAY,
     LOCK_TIMEOUT,
@@ -20,6 +21,7 @@ from app.connectors.core.base.token_service.toolset_token_refresh_service import
     TOKEN_REFRESH_MAX_RETRIES,
     ToolsetTokenRefreshService,
 )
+from app.utils.oauth_config import get_oauth_config
 
 
 # ---------------------------------------------------------------------------
@@ -2302,3 +2304,259 @@ class TestConstants:
         assert PROACTIVE_REFRESH_WINDOW_SECONDS == 600
         assert MIN_SHORT_LIVED_REFRESH_WINDOW_SECONDS == 60
         assert SHORT_LIVED_TOKEN_BUFFER_RATIO == 0.2
+
+
+# ---------------------------------------------------------------------------
+# Registry fallback against the real toolset registry
+# ---------------------------------------------------------------------------
+
+
+def _real_registry():
+    from app.agents.registry.toolset_registry import get_toolset_registry
+
+    registry = get_toolset_registry()
+    registry.auto_discover_toolsets()
+    return registry
+
+
+def _registry_oauth(toolset_type):
+    meta = _real_registry().get_toolset_metadata(toolset_type, serialize=False)
+    return meta["config"]["_oauth_configs"]["OAUTH"]
+
+
+def _oauth_toolset_types():
+    registry = _real_registry()
+    return sorted(
+        name for name in registry.list_toolsets()
+        if (registry.get_toolset_metadata(name, serialize=False)["config"].get("_oauth_configs") or {}).get("OAUTH")
+    )
+
+
+PERSONAL_PATH = "/services/toolsets/personal-inst/user1"
+
+
+def _personal_sign_in(toolset_type):
+    """A personal action's stored sign-in, shaped as in the store: no oauthConfigId and no
+    auth of its own; the client lives on the personal instance."""
+    return {"toolsetType": toolset_type, "instanceId": "personal-inst", "orgId": "org1", "isAuthenticated": True}
+
+
+async def _build_for(toolset_type, **settings):
+    user_config = _personal_sign_in(toolset_type)
+    own_app = {"clientId": "cid", "clientSecret": "csecret", **settings}
+    cs = AsyncMock()
+
+    async def _get_config(key, default=None, use_cache=True, **_kwargs):
+        if key == "/services/toolset-instances":
+            return []
+        if key.startswith("/services/toolsets/"):
+            return user_config
+        return default
+
+    cs.get_config = AsyncMock(side_effect=_get_config)
+    svc = _make_service(cs)
+    with patch("app.api.routes.toolset_resolvers.find_personal_instance", new_callable=AsyncMock,
+               return_value={"auth": own_app}):
+        return await svc._build_complete_oauth_config(PERSONAL_PATH, toolset_type, {})
+
+
+class TestRegistryFallbackRealRegistry:
+    """The serialized registry turns OAuthConfig into a dict, which every hasattr check rejected,
+    so personal actions (whose stored config holds only the client) refreshed with no token URL."""
+
+    def test_returns_the_registry_oauth_config_object(self):
+        _real_registry()
+        oauth = _make_service()._get_toolset_oauth_config_from_registry("gmail")
+        assert oauth is not None
+        assert oauth.token_url == "https://oauth2.googleapis.com/token"
+
+    def test_reads_the_unserialized_registry(self):
+        oauth_cfg = MagicMock()
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {"config": {"_oauth_configs": {"OAUTH": oauth_cfg}}}
+        with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=registry):
+            assert _make_service()._get_toolset_oauth_config_from_registry("gmail") is oauth_cfg
+        registry.get_toolset_metadata.assert_called_once_with("gmail", serialize=False)
+
+    def test_a_serialized_dict_is_not_mistaken_for_a_config(self):
+        registry = MagicMock()
+        registry.get_toolset_metadata.return_value = {
+            "config": {"_oauth_configs": {"OAUTH": {"authorize_url": "a", "token_url": "t", "redirect_uri": "r"}}}
+        }
+        with patch("app.agents.registry.toolset_registry.get_toolset_registry", return_value=registry):
+            assert _make_service()._get_toolset_oauth_config_from_registry("gmail") is None
+
+    @pytest.mark.parametrize("toolset_type", ["gmail", "calendar", "drive", "docs", "sheets"])
+    async def test_personal_google_action_gets_google_token_url(self, toolset_type):
+        flow = await _build_for(toolset_type)
+        assert flow["tokenUrl"] == "https://oauth2.googleapis.com/token"
+        assert flow["clientId"] == "cid"
+        assert flow["clientSecret"] == "csecret"
+
+    @pytest.mark.parametrize("toolset_type", ["jira", "confluence"])
+    async def test_personal_atlassian_action_gets_atlassian_token_url(self, toolset_type):
+        flow = await _build_for(toolset_type)
+        assert flow["tokenUrl"] == "https://auth.atlassian.com/oauth/token"
+
+    async def test_every_oauth_toolset_gets_its_registry_token_url(self):
+        types = _oauth_toolset_types()
+        assert types, "registry discovered no OAuth toolsets"
+        for toolset_type in types:
+            flow = await _build_for(toolset_type)
+            assert flow["tokenUrl"] == _registry_oauth(toolset_type).token_url, toolset_type
+            assert flow["tokenUrl"], toolset_type
+
+    async def test_personal_slack_action_keeps_its_nested_token_response(self):
+        flow = await _build_for("slack")
+        assert flow["tokenResponsePath"] == "authed_user"
+        assert flow["scopeParameterName"] == "user_scope"
+
+    async def test_refresh_request_goes_to_the_registry_token_url(self):
+        flow = await _build_for("gmail")
+        oauth = get_oauth_config(flow)
+        assert oauth.token_url == "https://oauth2.googleapis.com/token"
+        assert oauth.client_id == "cid"
+
+    async def test_unknown_toolset_still_fails_with_missing_token_url(self):
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value=_personal_sign_in("nosuchtoolset"))
+        svc = _make_service(cs)
+        with (
+            patch("app.api.routes.toolset_resolvers.find_personal_instance", new_callable=AsyncMock,
+                  return_value={"auth": {"clientId": "cid", "clientSecret": "csecret"}}),
+            pytest.raises(ValueError, match="Missing tokenUrl"),
+        ):
+            await svc._perform_token_refresh(PERSONAL_PATH, "nosuchtoolset", "rt")
+
+
+class TestOrgLinkedConfigUnchanged:
+    async def test_stored_endpoints_win_over_the_registry(self):
+        stored = {
+            "clientId": "org-cid",
+            "clientSecret": "org-secret",
+            "authorizeUrl": "https://auth.custom.example/authorize",
+            "tokenUrl": "https://auth.custom.example/token",
+            "redirectUri": "https://app.example/toolsets/oauth/callback/jira",
+            "scopes": ["read:jira-work"],
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"toolsetType": "jira", "oauthConfigId": "cfg1", "orgId": "org1"})
+        svc = _make_service(cs)
+        with patch("app.api.routes.toolsets.get_oauth_credentials_for_toolset", new_callable=AsyncMock, return_value=stored):
+            flow = await svc._build_complete_oauth_config("/services/toolsets/inst/user", "jira", {})
+        for key, value in stored.items():
+            assert flow[key] == value, key
+
+    async def test_stored_google_config_produces_the_same_refresh_request(self):
+        stored = {
+            "clientId": "org-cid",
+            "clientSecret": "org-secret",
+            "authorizeUrl": "https://accounts.google.com/o/oauth2/v2/auth",
+            "tokenUrl": "https://oauth2.googleapis.com/token",
+            "redirectUri": "https://app.example/toolsets/oauth/callback/gmail",
+            "scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
+            "tokenAccessType": "offline",
+            "additionalParams": {"access_type": "offline", "prompt": "consent"},
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"toolsetType": "gmail", "oauthConfigId": "cfg1", "orgId": "org1"})
+        svc = _make_service(cs)
+        _real_registry()
+        with patch("app.api.routes.toolsets.get_oauth_credentials_for_toolset", new_callable=AsyncMock, return_value=stored):
+            flow = await svc._build_complete_oauth_config("/services/toolsets/inst/user", "gmail", {})
+        assert flow == stored
+
+
+class TestMicrosoftTenantOnRefresh:
+    """Sign-in sends a single-tenant app to its tenant's endpoints, so its refresh must go there too."""
+
+    @pytest.mark.parametrize("toolset_type", ["outlook", "onedrive", "sharepoint", "teams"])
+    async def test_personal_action_with_tenant_refreshes_at_its_tenant(self, toolset_type):
+        flow = await _build_for(toolset_type, tenantId="contoso-tenant")
+        assert flow["tokenUrl"] == "https://login.microsoftonline.com/contoso-tenant/oauth2/v2.0/token"
+        assert flow["authorizeUrl"] == "https://login.microsoftonline.com/contoso-tenant/oauth2/v2.0/authorize"
+
+    @pytest.mark.parametrize("tenant", [None, "", "common"])
+    async def test_no_tenant_stays_on_common(self, tenant):
+        auth = {} if tenant is None else {"tenantId": tenant}
+        flow = await _build_for("outlook", **auth)
+        assert flow["tokenUrl"] == "https://login.microsoftonline.com/common/oauth2/v2.0/token"
+
+    async def test_org_config_already_on_its_tenant_is_unchanged(self):
+        stored = {
+            "clientId": "org-cid",
+            "clientSecret": "org-secret",
+            "tenantId": "contoso-tenant",
+            "authorizeUrl": "https://login.microsoftonline.com/contoso-tenant/oauth2/v2.0/authorize",
+            "tokenUrl": "https://login.microsoftonline.com/contoso-tenant/oauth2/v2.0/token",
+        }
+        cs = AsyncMock()
+        cs.get_config = AsyncMock(return_value={"toolsetType": "outlook", "oauthConfigId": "cfg1", "orgId": "org1"})
+        svc = _make_service(cs)
+        with patch("app.api.routes.toolsets.get_oauth_credentials_for_toolset", new_callable=AsyncMock, return_value=stored):
+            flow = await svc._build_complete_oauth_config("/services/toolsets/inst/user", "outlook", {})
+        assert flow["tokenUrl"] == stored["tokenUrl"]
+        assert flow["authorizeUrl"] == stored["authorizeUrl"]
+
+    async def test_tenant_does_not_touch_other_hosts(self):
+        flow = await _build_for("gmail", tenantId="contoso-tenant")
+        assert flow["tokenUrl"] == "https://oauth2.googleapis.com/token"
+
+
+class TestRegistryNotMutatedByRefresh:
+    """The registry's OAuthConfig is shared by every sign-in and refresh in the process."""
+
+    async def test_refresh_config_does_not_share_registry_containers(self):
+        registry_oauth = _registry_oauth("gmail")
+        flow = await _build_for("gmail")
+        assert flow["additionalParams"] == registry_oauth.additional_params
+        assert flow["additionalParams"] is not registry_oauth.additional_params
+        flow["additionalParams"]["prompt"] = "mutated"
+        flow["scopes"].append("mutated")
+        assert registry_oauth.additional_params.get("prompt") != "mutated"
+        assert "mutated" not in _registry_oauth("gmail").scopes.get_scopes_for_type(OAuthScopeType.AGENT)
+
+    async def test_notion_style_token_url_does_not_write_into_the_registry(self):
+        registry_oauth = _registry_oauth("gmail")
+        before = dict(registry_oauth.additional_params)
+        flow = await _build_for("gmail")
+        flow["tokenUrl"] = "https://api.notion.com/v1/oauth/token"
+        get_oauth_config(flow)
+        assert registry_oauth.additional_params == before
+
+
+class TestPersonalRefreshEndToEnd:
+    async def test_one_token_request_and_credentials_saved(self):
+        user_config = {**_personal_sign_in("gmail"), "credentials": {"refresh_token": "rt"}}
+        own_app = {"clientId": "cid", "clientSecret": "csecret"}
+        cs = AsyncMock()
+        store = {PERSONAL_PATH: user_config}
+
+        async def _get_config(key, default=None, use_cache=True, **_kwargs):
+            if key == "/services/toolset-instances":
+                return []
+            return store.get(key, default)
+
+        async def _set_config(key, value, *args, **kwargs):
+            store[key] = value
+            return True
+
+        cs.get_config = AsyncMock(side_effect=_get_config)
+        cs.set_config = AsyncMock(side_effect=_set_config)
+        svc = _make_service(cs)
+        new_token = _make_token(access_token="new_at", refresh_token="rt")
+
+        with (
+            patch("app.api.routes.toolset_resolvers.find_personal_instance", new_callable=AsyncMock,
+                  return_value={"auth": own_app}),
+            patch("app.connectors.core.base.token_service.oauth_service.OAuthProvider.refresh_access_token",
+                  new_callable=AsyncMock, return_value=new_token) as refresh,
+            patch("app.connectors.core.base.token_service.oauth_service.OAuthProvider.close", new_callable=AsyncMock),
+        ):
+            result = await svc._perform_token_refresh(PERSONAL_PATH, "gmail", "rt")
+
+        refresh.assert_awaited_once_with("rt")
+        assert result.access_token == "new_at"
+        saved = store[PERSONAL_PATH]
+        assert saved["credentials"]["access_token"] == "new_at"
+        assert "auth" not in saved
