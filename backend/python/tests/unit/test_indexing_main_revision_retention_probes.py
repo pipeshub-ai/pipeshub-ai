@@ -116,7 +116,7 @@ async def test_a_revision_refiled_after_the_sweeps_lease_lapsed_is_not_deleted(m
     async def delete(request: web.Request) -> web.Response:
         attempts.append(time.monotonic() - t0)
         if len(attempts) == 1:
-            await asyncio.sleep(1.6)  # a slow tree delete; the client gives up at 1.0 s and retries
+            await asyncio.sleep(1.6)  # a slow tree delete; the single client attempt times out at 1.0 s
         rev = request.match_info["doc"].removeprefix("doc-")
         since = request.query.get("ifUnchangedSince")
         if since is not None and stamps.get(rev, 0) > int(since):
