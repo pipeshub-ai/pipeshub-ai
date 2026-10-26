@@ -204,6 +204,7 @@ class World:
         self.connector: GitLabConnector | None = None
         self.sleeps: list[float] = []
         self.scope: int | None = None  # the selected project id
+        self.branch: str | None = None  # the branch filter; None = the project's default branch
         self.synced_once = False
         self.pending_full_sync = False
         self.absent_reads: list[str] = []
@@ -296,6 +297,7 @@ class World:
         if self.synced_once:
             self.pending_full_sync = True
         self.scope = project.id
+        self.branch = None
         self.config.clear()
         # The product's default per-request timeout; a busy test machine needs all of it.
         auth: dict[str, Any] = {"authType": "API_TOKEN", "token": token.value, "instanceUrl": self.gl.base_url,
@@ -313,6 +315,17 @@ class World:
         self.config["filters"]["sync"]["values"][key] = {"operator": operator, "type": type_, "value": value}
         if self.synced_once:
             self.pending_full_sync = True
+
+    def set_branch(self, name: str | None) -> None:
+        """The admin picks the branch to index (None clears it): a filter change, so the next sync is a full one."""
+        values = self.config["filters"]["sync"]["values"]
+        if name is None:
+            values.pop("branch", None)
+            if self.synced_once:
+                self.pending_full_sync = True
+        else:
+            self.set_sync_filter("branch", [name], type_="select")
+        self.branch = name
 
     def select(self, project: Project, path: str | None = None) -> None:
         """The admin picks a different repository: the next sync is a full one."""
@@ -456,6 +469,10 @@ class World:
         p = self.gl.projects.get(self.scope) if self.scope else None
         return p if p and not p.deleted else None
 
+    def code_tree(self, p: Project) -> dict[str, bytes]:
+        """The files GitLab has on the synced branch: the chosen one, else the default."""
+        return p.tree(self.branch)
+
     def _items(self, p: Project) -> list[Any]:
         return [*p.issues.values(), *p.mrs.values()]
 
@@ -503,7 +520,7 @@ class World:
             pwn, kind, path = m.groups()
             if pwn != p.path_with_namespace:
                 return None
-            tree = p.tree()
+            tree = self.code_tree(p)
             exists = path in tree if kind == "blob" else any(f.startswith(path + "/") for f in tree)
             return self.gl.can_read_code(viewer, p) if exists else None
         return None
@@ -521,7 +538,7 @@ class World:
                 if not m.deleted and self.gl.can_read_mr(token_user, m) and str(m.id) not in docs:
                     out.missing.append(f"mr !{m.iid} {m.title}")
             policy = PathPolicy()
-            for path in p.tree():
+            for path in self.code_tree(p):
                 name = path.rsplit("/", 1)[-1]
                 if name.startswith(".") or not policy.keeps_file(path, name):
                     continue
@@ -587,6 +604,21 @@ class World:
         assert self.connector is not None
         key = generate_record_sync_point_key(Connectors.GITLAB.value, group, "")
         return await self.connector.record_sync_point.read_sync_point(key) or {}
+
+    async def filter_options(self, key: str, *, context: list[str] | None = None, **kwargs: Any) -> Any:  # noqa: ANN401
+        """``get_filter_options`` as the router calls it: ``contextGroupPath`` set on the
+        connector for the call and removed afterwards."""
+        if self.connector is None:
+            await self.start()
+        assert self.connector is not None
+        if context:
+            self.connector._request_filter_context_group_paths = context
+        try:
+            return await self.connector.get_filter_options(key, **kwargs)
+        finally:
+            if context:
+                with contextlib.suppress(AttributeError):
+                    del self.connector._request_filter_context_group_paths
 
     def api_calls(self, *, since: int = 0, resource: str | None = None) -> list[Any]:
         return [c for c in self.gl.calls[since:] if resource is None or c.resource == resource]

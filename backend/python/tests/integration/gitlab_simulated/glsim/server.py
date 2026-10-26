@@ -222,6 +222,21 @@ def tree_diff(gl: World, a: dict[str, bytes], b: dict[str, bytes]) -> list[dict[
     return out
 
 
+def branch_search(names: list[str], term: str) -> list[str]:
+    """GitLab's branch ``search`` (``GitRefsFinder#by_search``): a case-insensitive substring
+    match with the exact match first, or, when the term has ``^``, ``$`` or ``*``, an anchored
+    pattern with ``*`` as a wildcard and no reordering."""
+    if not term:
+        return names
+    needle = term.lower()
+    if any(op in term for op in "^$*"):
+        pattern = re.escape(needle).replace(r"\^", "^", 1).replace(r"\*", ".*?").replace(r"\$", "$", 1)
+        return [n for n in names if re.search(pattern, n.lower())]
+    hits = [n for n in names if needle in n.lower()]
+    exact = next((n for n in hits if n.lower() == needle), None)
+    return [exact, *(n for n in hits if n != exact)] if exact else hits
+
+
 # ---------------------------------------------------------------- the API
 
 
@@ -256,6 +271,7 @@ class Api:
             {"page", "per_page", "sort", "order_by"})
         add("GET", rf"/api/v4/projects/{P}/merge_requests/(?P<iid>\d+)/changes", self.mr_changes, {"access_raw_diffs"})
         add("GET", rf"/api/v4/projects/{P}/merge_requests/(?P<iid>\d+)/commits", self.mr_commits, {"page", "per_page"})
+        add("GET", rf"/api/v4/projects/{P}/repository/branches", self.branches, {"search", "page", "per_page"})
         add("GET", rf"/api/v4/projects/{P}/repository/branches/(?P<branch>[^/]+)", self.branch, set())
         add("GET", rf"/api/v4/projects/{P}/repository/compare", self.compare, {"from", "to", "straight"})
         add("GET", rf"/api/v4/projects/{P}/repository/tree", self.tree, {"path", "ref", "recursive", "page", "per_page"})
@@ -508,14 +524,31 @@ class Api:
             return ref
         raise not_found("404 Commit Not Found")
 
+    def _branch(self, p: Project, name: str) -> dict[str, Any]:
+        sha, default_head = p.branches[name], p.branches.get(p.default_branch)
+        reachable = set()
+        # A garbage-collected parent (after a force push) ends the walk.
+        while default_head in p.commits and default_head not in reachable:
+            reachable.add(default_head)
+            parents = p.commits[default_head].parents
+            default_head = parents[0] if parents else None
+        return spec.make("API_Entities_Branch", name=name, commit=self.r.commit(p, sha),
+                         merged=name != p.default_branch and sha in reachable, protected=False,
+                         developers_can_push=False, developers_can_merge=False, can_push=True,
+                         default=name == p.default_branch, web_url=f"{self.r.base}/{p.path_with_namespace}/-/tree/{name}")
+
+    def branches(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
+        p = self.code_project(me, id)
+        names = branch_search(sorted(p.branches), q.get("search") or "")
+        chunk, h = self.paginate(names, q, f"/api/v4/projects/{id}/repository/branches")
+        raise Reply(200, [self._branch(p, n) for n in chunk], h)
+
     def branch(self, me: User, q: dict[str, str], id: str, branch: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)
         name = unquote(branch)
         if name not in p.branches:
             raise not_found("404 Branch Not Found")
-        return spec.make("API_Entities_Branch", name=name, commit=self.r.commit(p, p.branches[name]), merged=False,
-                         protected=False, developers_can_push=False, developers_can_merge=False, can_push=True,
-                         default=name == p.default_branch, web_url=f"{self.r.base}/{p.path_with_namespace}/-/tree/{name}")
+        return self._branch(p, name)
 
     def compare(self, me: User, q: dict[str, str], id: str) -> Any:  # noqa: A002, ANN401
         p = self.code_project(me, id)

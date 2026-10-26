@@ -7,9 +7,14 @@ other field records a gap instead of quietly answering null.
 Modelled:
 - ``user(login:) { organizationVerifiedDomainEmails(login:) }`` — answered only for an
   owner of that organisation and only when it has a verified domain (GitHub docs).
-- ``repository(owner:, name:) { defaultBranchRef { target { ... on Commit {
+- ``repository(owner:, name:) { defaultBranchRef { name target { ... on Commit {
   history(first:, path:, after:) { totalCount nodes { authoredDate } pageInfo { endCursor } } } } } }``
-  with GitHub's ``"<oid> <offset>"`` history cursors.
+  with GitHub's ``"<oid> <offset>"`` history cursors. ``object(expression:)`` answers the
+  same Commit for ``HEAD``, a branch name or a full commit sha, and null for anything
+  else (live, 2026-10-26).
+- ``repository { refs(refPrefix: "refs/heads/", first:, after:, query:, orderBy: ALPHABETICAL)
+  { nodes { name } pageInfo { hasNextPage endCursor } } }``. ``query`` matches anywhere in
+  the name, ignoring case (live, 2026-10-26: "ix" and "FIX" both match ``fix/...``).
 - ``repository { issues(first:, after:) { totalCount nodes { number updatedAt } pageInfo { hasNextPage endCursor } } }``
   (keyset cursors; GitHub's default order is CREATED_AT ASC).
 """
@@ -100,13 +105,36 @@ def _repository(ws: World, viewer: User | None, owner: str, name: str) -> dict[s
                            extensions={"type": "NOT_FOUND"})
     head = repo.head()
 
-    def history(first: int = 1, path: str | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:  # noqa: ANN401
-        commits = ws.path_history(repo, path) if path else [repo.commits[c] for c in ws.ancestors(repo, head.sha)]
-        offset = int(after.split(" ")[1]) + 1 if after else 0
-        page = commits[offset:offset + first]
-        end = f"{head.sha} {offset + len(page) - 1}" if page else None
-        return {"totalCount": len(commits), "nodes": [{"authoredDate": iso(c.date), "oid": c.sha} for c in page],
-                "pageInfo": {"endCursor": end, "hasNextPage": offset + len(page) < len(commits)}}
+    def commit(sha: str) -> dict[str, Any]:
+        def history(first: int = 1, path: str | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:  # noqa: ANN401
+            commits = ws.path_history(repo, path, sha) if path else [repo.commits[c] for c in ws.ancestors(repo, sha)]
+            offset = int(after.split(" ")[1]) + 1 if after else 0
+            page = commits[offset:offset + first]
+            end = f"{sha} {offset + len(page) - 1}" if page else None
+            return {"totalCount": len(commits), "nodes": [{"authoredDate": iso(c.date), "oid": c.sha} for c in page],
+                    "pageInfo": {"endCursor": end, "hasNextPage": offset + len(page) < len(commits)}}
+        return {"__typename": "Commit", "oid": sha, "history": history}
+
+    def git_object(expression: str) -> dict[str, Any] | None:
+        sha = ws.resolve(repo, expression)
+        return commit(sha) if sha else None
+
+    def refs(refPrefix: str, first: int | None = None, after: str | None = None,
+             query: str | None = None, orderBy: dict[str, Any] | None = None, **_: Any) -> dict[str, Any]:  # noqa: ANN401
+        if refPrefix != "refs/heads/" or str((orderBy or {}).get("field", "ALPHABETICAL")) != "ALPHABETICAL":
+            ws.gaps.append(f"GraphQL refs(refPrefix: {refPrefix!r}, orderBy: {orderBy!r}) is not modelled by the simulator")
+            raise NotModelled("Repository.refs")
+        if first is None:
+            raise GraphQLError("You must provide a `first` or `last` value to properly paginate the `refs` connection.")
+        descending = str((orderBy or {}).get("direction", "ASC")) == "DESC"
+        names = sorted((n for n in repo.branches if not query or query.lower() in n.lower()), reverse=descending)
+        # Keyset cursors: a branch created or deleted between pages cannot shift another.
+        last = after[2:] if after else None
+        rest = [n for n in names if last is None or (n < last if descending else n > last)]
+        page = rest[:first]
+        return {"totalCount": len(names), "nodes": [{"name": n} for n in page],
+                "pageInfo": {"hasNextPage": len(rest) > len(page),
+                             "endCursor": f"r:{page[-1]}" if page else after}}
 
     def issues(first: int | None = None, after: str | None = None, **_: Any) -> dict[str, Any]:  # noqa: ANN401
         """Default order CREATED_AT ASC; cursors are keysets (the last number seen), so
@@ -125,7 +153,9 @@ def _repository(ws: World, viewer: User | None, owner: str, name: str) -> dict[s
 
     return {
         "__typename": "Repository",
-        "defaultBranchRef": {"target": {"__typename": "Commit", "oid": head.sha, "history": history}} if head else None,
+        "defaultBranchRef": {"name": repo.default_branch, "target": commit(head.sha)} if head else None,
+        "object": git_object,
+        "refs": refs,
         "issues": issues,
         "pullRequests": pulls,
     }

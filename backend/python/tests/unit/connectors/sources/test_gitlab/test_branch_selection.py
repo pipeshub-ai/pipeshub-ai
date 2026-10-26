@@ -343,3 +343,22 @@ class TestBranchPicker:
 
         assert [o.id for o in resp.options] == ["release/2.x"]
         assert c.runtime.ds_call.await_args_list[0].kwargs["search"] == "rel"
+
+    async def test_pattern_search_keeps_the_default_branch_gitlab_matched(self) -> None:
+        # GitLab reads ^, $ and * as a pattern, so "^ma" matches main although the
+        # text "^ma" is not in it: what GitLab returned decides, not a substring test.
+        c = self._connector([SimpleNamespace(name="main", default=True), SimpleNamespace(name="maint", default=False)])
+
+        resp = await FiltersHelper(c).get_filter_options(SyncFilterKey.BRANCH.value, search="^ma")
+
+        assert [(o.id, o.label) for o in resp.options] == [("main", "main (default)"), ("maint", "maint")]
+
+    async def test_search_keeps_gitlab_order_and_a_default_branch_on_a_later_page(self) -> None:
+        # A search does not move the default branch to page 1, so a later page must
+        # not drop it either: each match is listed once, where GitLab put it.
+        c = self._connector([SimpleNamespace(name="main", default=True), SimpleNamespace(name="mainline", default=False)])
+
+        resp = await FiltersHelper(c).get_filter_options(SyncFilterKey.BRANCH.value, page=2, search="main")
+
+        assert [o.id for o in resp.options] == ["main", "mainline"]
+        assert all(call.args[0] != c.data_source.get_project for call in c.runtime.ds_call.await_args_list)

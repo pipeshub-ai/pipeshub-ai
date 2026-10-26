@@ -326,7 +326,8 @@ class FiltersHelper:
     async def _branch_filter_options(
         self, page: int, limit: int, search: str | None
     ) -> FilterOptionsResponse:
-        """Branches of the project being picked, the default branch first.
+        """Branches of the project being picked, the default branch first unless
+        searching (a search lists GitLab's matches in GitLab's order).
 
         The project comes from the picker's ``contextGroupPath`` (the project
         row as it stands in the form, saved or not).
@@ -356,14 +357,18 @@ class FiltersHelper:
             )
         rows = list(res.data or [])
         default_branch = next((str(b.name) for b in rows if getattr(b, "default", False)), None)
-        if default_branch is None:
-            project_res = await c.runtime.ds_call(c.data_source.get_project, project_path)
-            if project_res.success and project_res.data is not None:
-                default_branch = getattr(project_res.data, "default_branch", None)
-        names = [str(b.name) for b in rows if getattr(b, "name", None) and str(b.name) != default_branch]
-        # Only the first page leads with the default branch; every page skips it otherwise.
-        if default_branch and page_n == 1 and needle.casefold() in default_branch.casefold():
-            names.insert(0, default_branch)
+        names = [str(b.name) for b in rows if getattr(b, "name", None)]
+        # A search keeps GitLab's own matches and order: GitLab reads ^, $ and * as a
+        # pattern, so only its answer says whether the default branch matched.
+        if not needle:
+            if default_branch is None:
+                project_res = await c.runtime.ds_call(c.data_source.get_project, project_path)
+                if project_res.success and project_res.data is not None:
+                    default_branch = getattr(project_res.data, "default_branch", None)
+            # Only the first page leads with the default branch; every page skips it otherwise.
+            names = [n for n in names if n != default_branch]
+            if default_branch and page_n == 1:
+                names.insert(0, default_branch)
         opts = [
             FilterOption(id=n, label=f"{n} (default)" if n == default_branch else n)
             for n in names
