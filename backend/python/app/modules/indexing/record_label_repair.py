@@ -20,6 +20,16 @@ record the spelling (an edge copied onto a deduplicated record before copies
 carried it) is counted and left for a reindex, which writes the record's
 spellings onto its existing edges.
 
+The write holds the record's lease (``record:<id>``, the one its indexing and
+its pipeline stages hold), with the record re-read under it: it lands only
+while the record is still settled, on the content revision the repair planned
+against, and the stored copy it patches is the one read under the lease. It
+is bounded as a named-entity persist retry is, under the time a delivery
+waits for that lease. A record whose lease is held is counted as a failure, so its connector is swept
+again (bounded by ``MAX_ATTEMPTS``). With artifact writes on, the revision's
+classification sidecar is rewritten with the repaired labels under the same
+lease.
+
 Mechanics are ``connector_sweep``'s: one Redis leader, one page of one
 connector per tick, a resumable cursor on the app document, bounded attempts.
 The repaired, skipped, missing and failure counters describe the latest pass. The loop
@@ -33,6 +43,12 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
+from app.models.blocks import SemanticMetadata
+from app.modules.artifacts.sidecars import (
+    CLASSIFICATION,
+    ArtifactSidecars,
+    classification_payload,
+)
 from app.modules.entity_resolution.normalizer import normalize_name, spelling_key
 from app.modules.indexing.connector_sweep import (
     ConnectorSweep,
@@ -41,10 +57,12 @@ from app.modules.indexing.connector_sweep import (
     key_of,
     run_connector_sweep_loop,
 )
+from app.modules.indexing.named_entity_persist_retry import _BUSY, _under_record_lease
 from app.modules.indexing.vector_membership_backfill import (
     LeaderLock,
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.pipeline.stages.classify import ClassifyStage
 from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
 from app.services.graph_db.taxonomy import TaxonomyLink, taxonomy_links
 from app.services.messaging.utils import MessagingUtils
@@ -52,6 +70,7 @@ from app.utils.loop_share import LoopShare
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from logging import Logger
 
     from app.modules.transformers.blob_storage import BlobStorage
@@ -101,6 +120,10 @@ class RecordLabelRepairState:
     FAILURES = "recordLabelRepairFailures"
     ATTEMPTS = "recordLabelRepairAttempts"
     EXHAUSTED = "recordLabelRepairExhausted"
+
+
+class _RecordBusy(Exception):
+    """The record's lease is held: it is being indexed or a stage is writing it."""
 
 
 class _MissingStoredCopy(Exception):
@@ -228,10 +251,16 @@ class RecordLabelRepair(ConnectorSweep):
         cutoff_ms: int,
         page_size: int = PAGE_SIZE,
         pacer: LoopShare | None = None,
+        lease_manager: Callable[[], Any] | None = None,
+        sidecars: ArtifactSidecars | None = None,
     ) -> None:
         super().__init__(logger=logger, graph_provider=graph_provider, lock=lock, page_size=page_size)
         self.blob_store = blob_store
         self.cutoff_ms = cutoff_ms
+        # Resolved per record: the record consumers, which own the lease manager, start
+        # after this sweep is built. None (a single instance) leaves only the re-checks.
+        self.lease_manager = lease_manager or (lambda: None)
+        self.sidecars = sidecars
         # Runs on the indexing worker loop on Neo4j; a page of repairs back to
         # back held it for nearly half its time while records were indexing.
         self.pacer = pacer or LoopShare(max_pause_seconds=MAX_RECORD_PAUSE_SECONDS)
@@ -245,7 +274,7 @@ class RecordLabelRepair(ConnectorSweep):
             for link in taxonomy_links(await self.graph.get_record_taxonomy_links(keys)):
                 links_by_record.setdefault(link.record_id, []).append(link)
 
-        repaired = skipped = missing = failed = 0
+        repaired = skipped = missing = failed = busy = 0
         self.pacer.begin()
         for processed, row in enumerate(rows, start=1):
             key = key_of(row)
@@ -264,6 +293,8 @@ class RecordLabelRepair(ConnectorSweep):
                 raise
             except _MissingStoredCopy:
                 missing += 1
+            except _RecordBusy:
+                busy += 1
             except Exception:
                 failed += 1
                 self.logger.warning(
@@ -278,6 +309,11 @@ class RecordLabelRepair(ConnectorSweep):
                 "record_label_repair: %d record(s) of connector %s have an edge without its "
                 "spelling; left for a reindex", skipped, app_key,
             )
+        if busy:
+            self.logger.info(
+                "record_label_repair: %d record(s) of connector %s were busy; the connector is "
+                "swept again", busy, app_key,
+            )
         if missing:
             self.logger.info(
                 "record_label_repair: %d record(s) of connector %s have no stored copy (removed "
@@ -287,7 +323,7 @@ class RecordLabelRepair(ConnectorSweep):
             RecordLabelRepairState.REPAIRED: repaired,
             RecordLabelRepairState.SKIPPED: skipped,
             RecordLabelRepairState.MISSING: missing,
-            RecordLabelRepairState.FAILURES: failed,
+            RecordLabelRepairState.FAILURES: failed + busy,
         })
 
     def _settled(self, record: dict[str, Any]) -> bool:
@@ -311,6 +347,21 @@ class RecordLabelRepair(ConnectorSweep):
         lookup = await self.blob_store.get_document_id_by_virtual_record_id(vrid)
         if not lookup or not lookup.get("record_doc_id"):
             return False
+        # Planned without the lease, so a record with nothing to repair never takes it.
+        if await self._patch(key, vrid, org_id, lookup, links) is None:
+            return False
+        outcome = await _under_record_lease(
+            self.lease_manager(), key,
+            lambda: self._write_under_lease(key, record, vrid, org_id, lookup, links),
+        )
+        if outcome is _BUSY:
+            raise _RecordBusy(key)
+        return bool(outcome)
+
+    async def _patch(
+        self, key: str, vrid: str, org_id: str, lookup: dict[str, Any], links: list[TaxonomyLink],
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """The stored copy and its repaired ``semantic_metadata``; None when there is nothing to write."""
         try:
             stored = await self.blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookup)
         except StorageDocumentNotFoundError as exc:
@@ -318,23 +369,45 @@ class RecordLabelRepair(ConnectorSweep):
         # A virtual record id can be shared; its copy is repaired with the
         # record that wrote it.
         if not isinstance(stored, dict) or str(stored.get("id") or "") != key:
-            return False
+            return None
         semantic = stored.get("semantic_metadata")
         if not isinstance(semantic, dict) or semantic.get(OWN_LABELS) is True:
-            return False
+            return None
         fields = own_label_fields(semantic, links)
         if fields is None:
-            return False
+            return None
         patched = _patched(semantic, fields)
         if {**patched, OWN_LABELS: None} == {**semantic, OWN_LABELS: None}:
-            return False
+            return None
+        return stored, patched
+
+    async def _write_under_lease(
+        self,
+        key: str,
+        planned: dict[str, Any],
+        vrid: str,
+        org_id: str,
+        lookup: dict[str, Any],
+        links: list[TaxonomyLink],
+    ) -> bool:
         latest = await self.graph.get_document(key, _RECORDS, raise_on_error=True)
         if (
             not latest
             or not self._settled(latest)
-            or latest.get("lastExtractionTimestamp") != record.get("lastExtractionTimestamp")
+            or latest.get("lastExtractionTimestamp") != planned.get("lastExtractionTimestamp")
+            or latest.get("contentRev") != planned.get("contentRev")
         ):
             return False
+        # Read again under the lease: a stage may have rewritten it since the plan.
+        patch = await self._patch(key, vrid, org_id, lookup, links)
+        if patch is None:
+            return False
+        stored, patched = patch
+        # Sidecar first: the stored write marks the labels repaired, so a pass cut short
+        # between the two must leave it unmarked for the next pass to finish both.
+        rev = latest.get("contentRev")
+        if isinstance(rev, str) and rev:
+            await self._write_sidecar(key, org_id, vrid, rev, patched)
         try:
             await self.blob_store.update_record_buffer(
                 org_id, lookup["record_doc_id"], {**stored, "semantic_metadata": patched}, vrid,
@@ -343,11 +416,25 @@ class RecordLabelRepair(ConnectorSweep):
             raise _MissingStoredCopy from exc
         return True
 
+    async def _write_sidecar(self, key: str, org_id: str, vrid: str, rev: str, patched: dict[str, Any]) -> None:
+        if self.sidecars is None:
+            return
+        try:
+            payload = classification_payload(SemanticMetadata.model_validate(patched))
+        except ValueError:
+            self.logger.warning(
+                "record_label_repair: record %s has a stored classification its sidecar cannot hold", key,
+            )
+            return
+        _ = await self.sidecars.write(org_id, vrid, rev, CLASSIFICATION, ClassifyStage.version, payload)
+
 
 async def run_record_label_repair_loop(
     app_container: Any,  # noqa: ANN401
     graph_provider: IGraphDBProvider,
 ) -> None:
+    from app.modules.artifacts.store import NodeArtifactStore
+    from app.modules.indexing.named_entity_completion import _record_lease_manager
     from app.modules.transformers.blob_storage import BlobStorage
 
     logger = app_container.logger()
@@ -359,12 +446,16 @@ async def run_record_label_repair_loop(
         return VectorMembershipBackfillLeaderLock(logger, redis_config, owner, key=LEADER_KEY)
 
     async def make_sweep(lock: LeaderLock) -> RecordLabelRepair:
+        config_service = app_container.config_service()
+        blob_store = BlobStorage(logger, config_service, graph_provider)
         return RecordLabelRepair(
             logger=logger,
             graph_provider=graph_provider,
-            blob_store=BlobStorage(logger, app_container.config_service(), graph_provider),
+            blob_store=blob_store,
             lock=lock,
             cutoff_ms=cutoff_ms,
+            lease_manager=lambda: _record_lease_manager(app_container),
+            sidecars=ArtifactSidecars(NodeArtifactStore(blob_store, logger), config_service, logger),
         )
 
     await run_connector_sweep_loop(

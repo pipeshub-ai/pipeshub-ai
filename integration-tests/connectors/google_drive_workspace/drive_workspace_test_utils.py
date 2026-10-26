@@ -201,13 +201,20 @@ async def create_drive_google_file(
     name: str,
     parent_id: str,
     mime_type: str,
+    content: Optional[str] = None,
 ) -> str:
-    """Create a native Google Doc/Sheet/Slide (empty stub) under parent_id."""
-    created = await drive.files_create(
-        body={"name": name, "mimeType": mime_type, "parents": [parent_id]},
-        supportsAllDrives=True,
-        fields="id,name,mimeType",
-    )
+    """Create a native Google Doc/Sheet/Slide under parent_id, empty unless ``content`` is given.
+
+    An empty Doc indexes as EMPTY, never COMPLETED, so a test that waits for indexing needs ``content``.
+    Drive converts the uploaded plain text into the native type.
+    """
+    body = {"name": name, "mimeType": mime_type, "parents": [parent_id]}
+    if content is None:
+        created = await drive.files_create(body=body, supportsAllDrives=True, fields="id,name,mimeType")
+    else:
+        created = await drive.files_create_with_media(
+            file_metadata=body, content=content.encode("utf-8"), mime_type="text/plain", supportsAllDrives=True,
+        )
     file_id = created.get("id")
     if not file_id:
         raise RuntimeError(f"files_create returned no id for {name!r}: {created}")

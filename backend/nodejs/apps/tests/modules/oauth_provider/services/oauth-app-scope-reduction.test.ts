@@ -1,9 +1,10 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
-import { Types } from 'mongoose';
+import mongoose, { Types } from 'mongoose';
 import { OAuthAppService } from '../../../../src/modules/oauth_provider/services/oauth.app.service';
 import { OAuthApp } from '../../../../src/modules/oauth_provider/schema/oauth.app.schema';
+import { ConflictError } from '../../../../src/libs/errors/http.errors';
 
 function makeService() {
   const logger = {
@@ -12,7 +13,10 @@ function makeService() {
     warn: sinon.stub(),
     error: sinon.stub(),
   };
-  const tokens = { revokeAllTokensForApp: sinon.stub().resolves() };
+  const tokens = {
+    revokeAllTokensForApp: sinon.stub().resolves(),
+    revokeRefreshTokensWithoutKnowledgeLimit: sinon.stub().resolves(),
+  };
   const service = new OAuthAppService(
     logger as any,
     { encrypt: sinon.stub().returns('enc'), decrypt: sinon.stub() } as any,
@@ -132,6 +136,7 @@ describe('updating what an OAuth app can see', () => {
     await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: limit });
 
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.called).to.equal(false);
   });
 
   it('revokes nothing when the same ids are saved in another order', async () => {
@@ -145,7 +150,7 @@ describe('updating what an OAuth app can see', () => {
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
-  it('lifts the limit on null and revokes: users agreed to less, so they connect again', async () => {
+  it('lifts the limit on null and keeps the tokens, which stay at the limit users agreed to', async () => {
     const { service, tokens } = makeService();
     app.knowledgeLimit = { ...limit };
 
@@ -153,6 +158,81 @@ describe('updating what an OAuth app can see', () => {
 
     expect(app.knowledgeLimit).to.equal(undefined);
     expect(result.knowledgeLimit).to.equal(undefined);
+    expect(tokens.revokeAllTokensForApp.called).to.equal(false);
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledOnceWith('client123')).to.equal(true);
+  });
+
+  it('keeps the tokens when a connector is added: users get it once they connect again', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, {
+      knowledgeLimit: { ...limit, apps: ['app-1', 'app-2'] },
+    });
+
+    expect(tokens.revokeAllTokensForApp.called).to.equal(false);
+    // Only refresh tokens stored before they kept their own limit would
+    // take the wider one on their next refresh.
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledOnceWith('client123')).to.equal(true);
+  });
+
+  it('revokes every token when a connector is removed', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit, apps: ['app-1', 'app-2'] };
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: limit });
+
+    expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.called).to.equal(false);
+  });
+
+  it('revokes every token when one connector is swapped for another', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, {
+      knowledgeLimit: { ...limit, apps: ['app-2'] },
+    });
+
+    expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
+  });
+
+  it('revokes the old refresh tokens before it saves a widened limit', async () => {
+    // After the save, a refresh of one of them could read the wider limit
+    // and mint with it before the revocation reached it.
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: null });
+
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledBefore(app.save)).to.equal(true);
+  });
+
+  it('saves nothing and fails when widening cannot revoke the old refresh tokens', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+    tokens.revokeRefreshTokensWithoutKnowledgeLimit.rejects(new Error('mongo down'));
+
+    try {
+      await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: null });
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect((error as Error).message).to.equal('mongo down');
+    }
+
+    expect(app.save.called).to.equal(false);
+  });
+
+  it('revokes the old refresh tokens before the save and every token after it when scopes go as the limit widens', async () => {
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, {
+      allowedScopes: [],
+      knowledgeLimit: null,
+    });
+
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledBefore(app.save)).to.equal(true);
     expect(tokens.revokeAllTokensForApp.calledOnceWith('client123')).to.equal(true);
   });
 
@@ -164,6 +244,48 @@ describe('updating what an OAuth app can see', () => {
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
+  it('saves a new limit only over the limit it read', async () => {
+    const { service } = makeService();
+    app.knowledgeLimit = { ...limit };
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: null });
+
+    expect(app.$where).to.deep.equal({
+      'knowledgeLimit.apps': ['app-1'],
+      'knowledgeLimit.recordGroups': [],
+      'knowledgeLimit.records': ['folder-1'],
+    });
+  });
+
+  it('saves a first limit only over none', async () => {
+    const { service } = makeService();
+
+    await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: limit });
+
+    expect(app.$where).to.deep.equal({ knowledgeLimit: null });
+  });
+
+  it('refuses with a conflict, and revokes nothing more, when the limit changed since it was read', async () => {
+    // Another edit from the same snapshot landed first; judged against the
+    // stale limit, this one could pass as a widening while dropping what that
+    // edit added.
+    const { service, tokens } = makeService();
+    app.knowledgeLimit = { ...limit };
+    app.save.rejects(new mongoose.Error.DocumentNotFoundError({}, 'oauthApp', 0, {}));
+
+    try {
+      await service.updateApp(appId, orgId, userId, true, {
+        knowledgeLimit: { ...limit, apps: ['app-1', 'app-2'] },
+      });
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect(error).to.be.instanceOf(ConflictError);
+    }
+
+    expect(tokens.revokeAllTokensForApp.called).to.equal(false);
+    expect(tokens.revokeRefreshTokensWithoutKnowledgeLimit.calledOnceWith('client123')).to.equal(true);
+  });
+
   it('keeps the limit when the update does not name it', async () => {
     const { service, tokens } = makeService();
     app.knowledgeLimit = { ...limit };
@@ -171,6 +293,7 @@ describe('updating what an OAuth app can see', () => {
     await service.updateApp(appId, orgId, userId, true, { name: 'Renamed' });
 
     expect(app.knowledgeLimit).to.deep.equal(limit);
+    expect(app.$where).to.equal(undefined);
     expect(tokens.revokeAllTokensForApp.called).to.equal(false);
   });
 
@@ -187,6 +310,47 @@ describe('updating what an OAuth app can see', () => {
 
     expect(app.knowledgeLimit).to.equal(undefined);
     expect(app.save.calledTwice).to.equal(true);
+  });
+
+  it('puts the old limit back only over the limit it saved', async () => {
+    const { service, tokens } = makeService();
+    tokens.revokeAllTokensForApp.rejects(new Error('mongo down'));
+    const filters: unknown[] = [];
+    app.save.callsFake(async () => {
+      filters.push(app.$where);
+      return app;
+    });
+
+    try {
+      await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: limit });
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect((error as Error).message).to.equal('mongo down');
+    }
+
+    expect(filters).to.deep.equal([
+      { knowledgeLimit: null },
+      {
+        'knowledgeLimit.apps': ['app-1'],
+        'knowledgeLimit.recordGroups': [],
+        'knowledgeLimit.records': ['folder-1'],
+      },
+    ]);
+  });
+
+  it('leaves a newer edit in place and still fails when the rollback finds the limit changed', async () => {
+    const { service, tokens } = makeService();
+    tokens.revokeAllTokensForApp.rejects(new Error('mongo down'));
+    app.save
+      .onFirstCall().resolves(app)
+      .onSecondCall().rejects(new mongoose.Error.DocumentNotFoundError({}, 'oauthApp', 0, {}));
+
+    try {
+      await service.updateApp(appId, orgId, userId, true, { knowledgeLimit: limit });
+      expect.fail('should have thrown');
+    } catch (error) {
+      expect((error as Error).message).to.equal('mongo down');
+    }
   });
 
   it('stores the limit picked when the app is created', async () => {

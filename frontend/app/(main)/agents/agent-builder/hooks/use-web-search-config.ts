@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { WebSearchApi } from '../../../workspace/web-search/api';
 import type { ConfiguredWebSearchProvider } from '../../../workspace/web-search/types';
 
-interface UseWebSearchConfigResult {
+export interface UseWebSearchConfigResult {
   configuredProviders: ConfiguredWebSearchProvider[];
   loading: boolean;
   error: string | null;

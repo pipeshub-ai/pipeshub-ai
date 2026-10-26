@@ -1,13 +1,32 @@
-# Stores behind the storage service for tests/integration/test_artifact_store_contract.py.
+# Stores behind the storage service for the integration tests that read
+# ARTIFACTS_IT_STORAGE_URL (test_artifact_store_contract.py and the others;
+# .github/workflows/backend-matrix.yml finds them by that name and runs them on
+# local disk, S3 and Azure Blob).
 #
 #   docker compose -f tests/integration/compose/storage.yml up -d --wait
 #
 # Then run the Node API's storage routes against MongoDB here and one of the
-# file stores (local disk, MinIO as S3, Azurite as Azure Blob), and point the
-# test at it:
+# file stores (local disk, MinIO as S3, Azurite as Azure Blob):
+#
+#   cd backend/nodejs/apps && STORAGE_TYPE=s3 SCOPED_SECRET=... PORT=3000 \
+#     MONGO_URL=mongodb://127.0.0.1:19117/storage_it S3_ENDPOINT=http://127.0.0.1:19100 \
+#     S3_KEY=storage-it S3_SECRET=storage-it-secret \
+#     npx ts-node --transpile-only -r reflect-metadata tests/support/storage-it-server.ts
+#
+# and point the tests at it:
 #
 #   ARTIFACTS_IT_STORAGE_URL=http://127.0.0.1:3000 ARTIFACTS_IT_SCOPED_SECRET=... \
 #   ARTIFACTS_IT_STORAGE_TYPE=s3 pytest tests/integration/test_artifact_store_contract.py -m integration
+#
+# That is path-style S3. The S3 adapter reads and deletes a stored record only
+# through <bucket>.s3.us-east-1.amazonaws.com URLs, which path-style never
+# produces, so CI runs the virtual-hosted service below instead (profile "vhost"):
+# MinIO answering those host names over TLS with a throwaway CA. Generate the
+# certificates with ./vhost-certs.sh <dir>, set STORAGE_IT_CERTS=<dir>, start the
+# service, then run both sides with STORAGE_IT_S3_VHOST=1 (server) and
+# STORAGE_IT_S3_VHOST_ADDR=127.0.0.1:19143 (server via tests/support/vhost-pin.js
+# with `node -r`, tests via tests/integration/vhost_pin.py), NODE_EXTRA_CA_CERTS and
+# SSL_CERT_FILE set to <dir>/ca.crt. Nothing resolves to or reaches AWS.
 #
 # Published on the loopback interface only: the credentials below are
 # throwaway (MinIO) or Azurite's published development key.
@@ -44,3 +63,24 @@ services:
     command: azurite-blob --blobHost 0.0.0.0 --loose --skipApiVersionCheck
     ports:
       - "127.0.0.1:${AZURITE_STORAGE_IT_PORT:-19101}:10000"
+
+  minio-vhost-storage-it:
+    profiles: ["vhost"]
+    image: cgr.dev/chainguard/minio:latest-dev@sha256:4b862594d23cb20ae0fbeb93311ed312a5b566ecba2293220b204c89ef3c1fe2
+    command: server /data --certs-dir /certs
+    environment:
+      MINIO_ROOT_USER: storage-it
+      MINIO_ROOT_PASSWORD: storage-it-secret
+      # Serves <bucket>.s3.us-east-1.amazonaws.com as a virtual-hosted bucket.
+      MINIO_DOMAIN: s3.us-east-1.amazonaws.com
+      # mc's built-in "local" alias is plain http; this one is the TLS endpoint.
+      MC_HOST_vhost: https://storage-it:storage-it-secret@127.0.0.1:9000
+    volumes:
+      - ${STORAGE_IT_CERTS:-./certs}:/certs:ro
+    ports:
+      - "127.0.0.1:${MINIO_VHOST_STORAGE_IT_PORT:-19143}:9000"
+    healthcheck:
+      test: ["CMD", "mc", "--insecure", "ready", "vhost"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

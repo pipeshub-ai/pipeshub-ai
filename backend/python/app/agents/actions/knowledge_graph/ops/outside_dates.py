@@ -37,6 +37,11 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
 
+from app.models.source_dates import (
+    SOURCE_TIMESTAMP_ORIGIN_FIELD,
+    RecordDates,
+    upload_times_undated,
+)
 from app.modules.agents.qna.chat_state import remember_record_ids
 from app.utils.env_utils import enabled_unless_off
 
@@ -60,6 +65,9 @@ _BOUNDED_FIELDS = (
     ("source_created_after_ms", "source_created_before_ms", "sourceCreatedAtTimestamp"),
     ("source_updated_after_ms", "source_updated_before_ms", "sourceLastModifiedTimestamp"),
 )
+
+# A knowledge-base upload's listing date (RecordDates.listing_date) in a sentence.
+_UPLOAD_DATE_WORDS = {"fileModified": "file last modified"}
 
 OUTSIDE_DATES_API_NOTE = (
     "Also matching, but written outside your dates, so the date filter left "
@@ -97,8 +105,10 @@ def outside_bounds(record: dict[str, Any], time_range: dict[str, int]) -> bool:
     """Whether the date filter ``time_range`` leaves ``record`` out.
 
     A record with no date on a bounded field is left out too: the graph
-    filter never matches a missing date.
+    filter never matches a missing date. Like the filter, an upload dated only
+    by its upload is left out only by an after-bound (upload_times_undated).
     """
+    undated = record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD) == "upload" and upload_times_undated()
     for after_key, before_key, date_field in _BOUNDED_FIELDS:
         after, before = time_range.get(after_key), time_range.get(before_key)
         if after is None and before is None:
@@ -106,7 +116,7 @@ def outside_bounds(record: dict[str, Any], time_range: dict[str, int]) -> bool:
         value = _timestamp_ms(record.get(date_field))
         if value is None:
             return True
-        if (after is not None and value < after) or (before is not None and value > before):
+        if (after is not None and value < after) or (before is not None and value > before and not undated):
             return True
     return False
 
@@ -227,7 +237,18 @@ def _day(ms: int | None) -> str | None:
 
 
 def record_dates_label(record: dict[str, Any]) -> str:
-    """``created 2026-05-21, last changed 2026-06-02``, or that it has no date."""
+    """``created 2026-05-21, last changed 2026-06-02``, or that it has no date.
+
+    A knowledge-base upload's dates are what the upload gave it, so it names
+    which: ``uploaded 2026-10-15`` or ``file last modified 2025-03-03``.
+    """
+    dates = RecordDates.from_graph(record)
+    if dates.origin is not None:
+        listed = dates.listing_date()
+        if listed is None:
+            return "no source date"
+        key, ms = listed
+        return f"{_UPLOAD_DATE_WORDS.get(key, key)} {_day(ms)}"
     created = _day(_timestamp_ms(record.get("sourceCreatedAtTimestamp")))
     changed = _day(_timestamp_ms(record.get("sourceLastModifiedTimestamp")))
     parts: list[str] = []

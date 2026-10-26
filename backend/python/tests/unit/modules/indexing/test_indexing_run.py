@@ -164,6 +164,53 @@ class TestIndexingPipelineProcessMetadata:
         assert result["blockNum"] == [0]
 
 
+class TestVectorDeletesAreScopedToTheOrg:
+    """A delete by virtual record id alone reaches every org's points that carry the id."""
+
+    @pytest.mark.asyncio
+    async def test_a_re_embed_delete_pins_the_org(self) -> None:
+        from app.services.vector_db.strategy import RecordContext
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        await pipeline.delete_points_for_virtual_record("vr-1", RecordContext(org_id="org-1"))
+
+        assert pipeline.vector_db_service.filter_collection.await_args.kwargs["must"] == {
+            "orgId": "org-1",
+            "virtualRecordId": "vr-1",
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_re_embed_delete_without_an_org_deletes_nothing(self) -> None:
+        from app.exceptions.indexing_exceptions import EmbeddingDeletionError
+        from app.services.vector_db.strategy import RecordContext
+
+        pipeline = _make_indexing_pipeline()
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        with pytest.raises(EmbeddingDeletionError):
+            await pipeline.delete_points_for_virtual_record("vr-1", RecordContext(org_id=""))
+
+        pipeline.vector_db_service.delete_points.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_bulk_delete_pins_the_org_it_is_given(self) -> None:
+        pipeline = _make_indexing_pipeline()
+        pipeline.graph_provider.get_records_by_virtual_record_id = AsyncMock(return_value=[])
+        pipeline.graph_provider.delete_nodes = AsyncMock()
+        pipeline.vector_db_service.filter_collection = AsyncMock(return_value={})
+        pipeline.vector_db_service.delete_points = AsyncMock()
+
+        await pipeline.bulk_delete_embeddings(["vr-1"], "org-1")
+
+        assert pipeline.vector_db_service.filter_collection.await_args.kwargs["must"] == {
+            "orgId": "org-1",
+            "virtualRecordId": ["vr-1"],
+        }
+
+
 class TestIndexingPipelineBulkDelete:
     """Tests for IndexingPipeline.bulk_delete_embeddings."""
 

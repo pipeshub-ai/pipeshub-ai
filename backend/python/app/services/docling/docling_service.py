@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -17,6 +17,7 @@ from app.services.resource_governor import (
 )
 from app.services.resource_governor.memory_domain import parse_admission_cap
 from app.utils.logger import create_logger
+from app.utils.memory_release import release_freed_memory
 
 logger = logging.getLogger(__name__)
 
@@ -220,12 +221,15 @@ def serialize_docling_doc(doc: DoclingDocument) -> str:
 
 @app.post("/parse-pdf", response_model=ParseResponse)
 async def parse_pdf_endpoint(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     record_name: str = Form(...),
     start_page: int | None = Form(default=None),
     end_page: int | None = Form(default=None),
 ) -> ParseResponse | JSONResponse:
     """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
+    # After the response is sent: until then the serialized document is still held.
+    background_tasks.add_task(release_freed_memory)
     cost = 0
     try:
         pdf_binary = await file.read()

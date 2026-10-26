@@ -42,8 +42,12 @@ from app.services.cache.interface import (
     Loader,
     NoopAccessibleRecordsCache,
 )
+from app.services.cache.pg_invalidation import PgCacheBus
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
-from app.services.redis.connection_provider_factory import get_redis_provider
+from app.services.redis.connection_provider_factory import (
+    get_redis_provider,
+    uses_pg_state,
+)
 from app.services.redis.loop_clients import LoopBoundClients
 from app.utils.loop_local import LoopLocal
 
@@ -83,6 +87,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     ENV_ENABLED = "PIPESHUB_ACCESSIBLE_RECORDS_CACHE"
     ENV_TTL = "PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL"
     DEFAULT_TTL_SECONDS = 300
+    PG_STATE_TTL_SECONDS = 60   # REDIS_MODE=postgres: the longest an entry can outlive a lost notification
     OP_TIMEOUT_SECONDS = 2.0
     DOWN_BACKOFF_SECONDS = 30.0
     # Striped locks, not one per key. A per-key table could only be trimmed of
@@ -105,6 +110,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         ttl_seconds: int,
         enabled: bool,  # noqa: FBT001 - positional keeps the test fakes terse
         key_namespace: str = "",
+        bus: "PgCacheBus | None" = None,
     ) -> None:
         """``redis_client`` is either one client, used from a single loop, or
         the per-loop holder `create()` builds: the indexing service invalidates
@@ -117,6 +123,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             self._loop_clients = None
             self._redis = redis_client
         self._ttl = ttl_seconds
+        self._bus = bus      # REDIS_MODE=postgres: invalidations reach the other processes through it
         self._enabled = enabled and redis_client is not None
         self._down_until = 0.0
         # Keys whose delete failed, with the monotonic time they expire anyway.
@@ -181,6 +188,30 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
                 await clients.aclose()
             return NoopAccessibleRecordsCache()
 
+        bus = None
+        if uses_pg_state():
+            # Each process has its own cache here, so an invalidation must reach the others or a revoked record is served until the TTL
+            # ends. No way to deliver one (no direct address to LISTEN on) means no cache; a short TTL bounds what a lost one can cost.
+            ttl = min(ttl, cls.PG_STATE_TTL_SECONDS)
+            cache = cls(logger, clients, ttl, enabled=True, key_namespace=provider.key_namespace)
+            try:
+                bus = PgCacheBus(cache._apply_remote, cache._flush_local)
+                if not bus.available:
+                    logger.warning(
+                        "Accessible-records cache off: REDIS_MODE=postgres needs a direct PostgreSQL address "
+                        "(PG_LISTEN_URL, or PG_POOLER=none) to invalidate it across processes"
+                    )
+                    await clients.aclose()
+                    return NoopAccessibleRecordsCache()
+                cache._bus = bus
+                bus.start()
+            except Exception as e:  # create() never raises: no cache is the safe answer
+                logger.warning("Accessible-records cache off: the invalidation channel could not be set up (%s)", e)
+                await clients.aclose()
+                return NoopAccessibleRecordsCache()
+            logger.info("Accessible-records cache ready (ttl=%ss, invalidated across processes by NOTIFY)", ttl)
+            return cache
+
         logger.info("Accessible-records cache ready (ttl=%ss)", ttl)
         return cls(logger, clients, ttl, enabled=True, key_namespace=provider.key_namespace)
 
@@ -189,6 +220,8 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         """False while disabled, unconfigured, or inside the post-failure backoff."""
         if not self._enabled:
             return False
+        if self._bus is not None and not self._bus.healthy():
+            return False       # fail closed: a notification may not arrive, so every read goes to the graph
         return time.monotonic() >= self._down_until
 
     @property
@@ -196,6 +229,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         return self._ttl
 
     async def close(self) -> None:
+        bus, self._bus = self._bus, None
+        if bus is not None:
+            await bus.stop()
         client, self._redis = self._redis, None
         loop_clients, self._loop_clients = self._loop_clients, None
         self._enabled = False
@@ -385,14 +421,63 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             self._app_connector_key(org_id, connector_id),
             self._user_connector_key(org_id, connector_id),
         )
+        await self._publish("c", org_id, connector_id)
 
     async def mark_connector_changed(self, org_id: str, connector_id: str) -> None:
         """Reject every fill of this connector already in flight, without deleting
         what is cached. The caller owes a delete after it."""
         await self._delete(self._connector_epoch_key(org_id, connector_id))
+        await self._publish("m", org_id, connector_id)
 
     async def invalidate_kb(self, org_id: str, kb_id: str) -> None:
         await self._delete(self._kb_key(org_id, kb_id))
+        await self._publish("k", org_id, kb_id)
+
+    # ---- across processes (REDIS_MODE=postgres) -----------------------
+
+    async def _publish(self, kind: str, org_id: str, scope_id: str) -> None:
+        """Tell the other processes. Never fails the caller (a sync, a delete, the indexing pipeline); if the notice cannot be sent the
+        error is logged, and the other processes' entries age out within the short TTL."""
+        bus = self._bus
+        if bus is None:
+            return
+        try:
+            await bus.publish(kind, org_id, scope_id)
+        except Exception as e:
+            self.logger.error(
+                "Could not tell the other processes to drop accessible-records cache entries (%s %s): %s; "
+                "they expire within %ss",
+                kind, scope_id, e, self._ttl,
+            )
+
+    async def _apply_remote(self, kind: str, org_id: str, scope_id: str) -> None:
+        """A change made by another process: drop the same entries here, without publishing it again."""
+        try:
+            if kind == "k":
+                await self._delete(self._kb_key(org_id, scope_id))
+            elif kind == "m":
+                await self._delete(self._connector_epoch_key(org_id, scope_id))
+            else:
+                await self._delete(
+                    self._connector_epoch_key(org_id, scope_id),
+                    self._app_connector_key(org_id, scope_id),
+                    self._user_connector_key(org_id, scope_id),
+                )
+        except Exception as e:
+            self.logger.error("Could not apply a cache invalidation from another process: %s", e)
+            await self._flush_local()
+
+    async def _flush_local(self) -> None:
+        """Drop everything this cache holds (after a notification that could not be read, or a LISTEN reconnect, when some may have been
+        missed). Epoch keys are bumped, not deleted, like any other invalidation."""
+        try:
+            client = self._client()
+            keys = [k async for k in client.scan_iter(match=f"{self._namespaced_prefix()}:*", count=500)]
+            keys = [k.decode() if isinstance(k, bytes) else k for k in keys]
+            if keys:
+                await self._delete_now(keys)
+        except Exception as e:
+            self._mark_down("flush", e)
 
     async def _delete(self, *keys: str) -> None:
         """Delete every key. Pipelined, one command per key (R5): a single

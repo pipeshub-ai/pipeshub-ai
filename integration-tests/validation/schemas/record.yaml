@@ -185,6 +185,9 @@ fields:
   source_created_at:
     required: false
     type: integer
+  source_timestamp_origin:
+    required: false
+    type: string
   source_updated_at:
     required: false
     type: integer

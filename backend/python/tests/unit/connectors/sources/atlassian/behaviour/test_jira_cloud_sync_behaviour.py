@@ -92,6 +92,15 @@ class IssueSearch:
         self.bodies.append(body)
         self.tokens.append(bearer(request))
         key = body["jql"].split('project = "')[1].split('"')[0]
+        if "parent in (" in body["jql"]:
+            # As Jira does: only the children of the named issues, without using up the
+            # pages queued for the project's own search.
+            ids = {i.strip() for i in body["jql"].split("parent in (")[1].split(")")[0].split(",")}
+            pool = self.pages.get((key, None), {"issues": []})
+            pool = pool[0] if isinstance(pool, list) else pool
+            issues = pool.get("issues", []) if isinstance(pool, dict) else []
+            return json_response({"issues": [
+                i for i in issues if str(((i.get("fields") or {}).get("parent") or {}).get("id")) in ids]})
         answer = self.pages.get((key, body.get("nextPageToken")), {"issues": []})
         if isinstance(answer, list):
             answer = answer.pop(0) if len(answer) > 1 else answer[0]
@@ -164,18 +173,25 @@ class TestOAuthClient:
 
 class TestIssuePagination:
     async def test_all_pages_are_read_and_the_next_run_starts_after_the_last_issue(self, api, db, checkpoints, search) -> None:
+        subtask = issue(4, "2024-05-02T09:00:00.000+0000")
+        subtask["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True, "hierarchyLevel": -1}
+        subtask["fields"]["parent"] = {"id": "1", "key": "ENG-1"}
         search.add("ENG", None, {"issues": [issue(1, "2024-05-01T10:00:00.000+0000"), issue(2, "2024-05-01T11:00:00.000+0000")], "nextPageToken": "T2"})
-        search.add("ENG", "T2", {"issues": [issue(3, "2024-05-02T15:30:00.000+0000", attachments=[
+        search.add("ENG", "T2", {"issues": [subtask, issue(3, "2024-05-02T15:30:00.000+0000", attachments=[
             {"id": "900", "filename": "log.txt", "mimeType": "text/plain", "size": 12, "created": "2024-05-02T15:00:00.000+0000"},
         ])]})
         connector, _ = await ready_connector(db, checkpoints)
 
         stats = await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert set(tickets(db)) == {"1", "2", "3"}
-        assert stats["total_synced"] >= 3 and stats["failed_project_keys"] == []
-        assert [b.get("nextPageToken") for b in search.bodies] == [None, "T2"]
+        assert set(tickets(db)) == {"1", "2", "3", "4"}
+        assert stats["total_synced"] >= 4 and stats["failed_project_keys"] == []
+        assert [b.get("nextPageToken") for b in search.bodies if "parent in (" not in b["jql"]] == [None, "T2"]
         assert search.bodies[0]["jql"] == 'project = "ENG" ORDER BY updated ASC, id ASC'
+        # A project's first read reaches every sub-task itself, so none is read a second time.
+        assert not [b for b in search.bodies if "parent in (" in b["jql"]]
+        assert tickets(db)["4"].parent_external_record_id == "1"
+        assert sum(r.external_record_id == "4" for batch in db.record_batches for r in batch) == 1
         attachment = db.records["attachment_900"]
         assert isinstance(attachment, FileRecord) and attachment.parent_external_record_id == "3"
         assert db.records["1"].weburl == f"{SITE}/browse/ENG-1"
@@ -2455,10 +2471,23 @@ class TestPlaceholderParents:
         await connector.run_sync()
         assert connector._synced_project_keys is None, "a reindex afterwards goes by what is stored, not a stale project set"
 
+    async def test_a_sub_task_stays_under_its_parent(self, api, db, checkpoints, search) -> None:
+        child = issue(1, "2024-05-01T10:00:00.000+0000")
+        child["fields"]["issuetype"] = {"name": "Sub-task", "subtask": True}
+        child["fields"]["parent"] = {"id": "77", "key": "ENG-77", "fields": {"summary": "Roadmap"}}
+        search.add("ENG", None, {"issues": [child]})
+        connector, _ = await ready_connector(db, checkpoints)
+        connector._synced_project_keys = {"ENG"}
+
+        await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
+
+        assert db.records["1"].parent_external_record_id == "77"
+
     @pytest.mark.parametrize("parent_key", ["ENG-77", "OPS-77"])
-    async def test_a_parent_in_its_own_or_another_synced_project_stays_its_parent(
+    async def test_a_story_under_an_epic_in_any_synced_project_hangs_off_its_own_project(
         self, api, db, checkpoints, search, parent_key,
     ) -> None:
+        """Jira does not give a story its epic's level, so it is not filed under the epic."""
         child = issue(1, "2024-05-01T10:00:00.000+0000")
         child["fields"]["parent"] = {"id": "77", "key": parent_key, "fields": {"summary": "Roadmap"}}
         search.add("ENG", None, {"issues": [child]})
@@ -2467,4 +2496,4 @@ class TestPlaceholderParents:
 
         await connector._sync_all_project_issues([project("ENG", "10000")], [], None)
 
-        assert db.records["1"].parent_external_record_id == "77"
+        assert db.records["1"].parent_external_record_id is None

@@ -1007,6 +1007,22 @@ describe('XSS Sanitization Middleware', () => {
       expect(body.received.query).to.equal(question)
     })
 
+    it('accepts <id> in the query of POST /api/v1/retrieve, unchanged', async () => {
+      const { status, body } = await post('/api/v1/retrieve', { query: question, limit: 5 })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+    })
+
+    it('still refuses a script tag in the filters of POST /api/v1/retrieve', async () => {
+      const { status } = await post('/api/v1/retrieve', {
+        query: question,
+        filters: { apps: ['<script>alert(1)</script>'] },
+      })
+
+      expect(status).to.equal(400)
+    })
+
     it('still refuses a script tag in another argument of an MCP chat call', async () => {
       const { status, body } = await post(
         '/mcp',

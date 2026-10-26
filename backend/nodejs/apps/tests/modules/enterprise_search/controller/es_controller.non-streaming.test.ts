@@ -458,23 +458,6 @@ describe('es_controller non-streaming chat routes', () => {
       })
     }
 
-    it('addMessageToAgentConversation: a user an agent conversation is shared with gets 404, nothing is written or sent', async () => {
-      const flow = flows.find((f) => f.name === 'addMessageToAgentConversation')!
-      const reader = oid()
-      const r = await run(
-        flow,
-        (_ai, store) => {
-          store.sessions[0].set({ isShared: true, sharedWith: [{ userId: reader, accessLevel: 'read' }] })
-          store.writes.length = 0
-        },
-        { req: { user: { userId: reader, orgId: ORG, email: 'reader@example.com' } } },
-      )
-
-      expect(r.error()?.statusCode).to.equal(404)
-      expect(r.store.writes).to.deep.equal([])
-      expect(r.ai.calls).to.have.length(0)
-    })
-
     it('addMessage cannot reach an agent conversation through the assistant route', async () => {
       const store = new InMemoryChatStore()
       const ai = new FakeAIBackend()

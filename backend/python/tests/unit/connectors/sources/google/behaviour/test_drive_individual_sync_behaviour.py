@@ -12,7 +12,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock
 
 import pytest
-from drive_world import GDOC, DriveWorld
+from drive_world import GDOC, GSHEET, GSLIDES, DriveWorld
 from fastapi.responses import StreamingResponse
 from google_behaviour_fakes import (
     ApiRequest,
@@ -23,7 +23,7 @@ from google_behaviour_fakes import (
 )
 from googleapiclient.errors import HttpError
 
-from app.config.constants.arangodb import MimeTypes
+from app.config.constants.arangodb import MimeTypes, ProgressStatus
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.google.common import datasource_refresh
 from app.connectors.sources.google.common.connector_google_exceptions import (
@@ -516,6 +516,23 @@ async def test_folder_filter_syncs_only_the_selected_subtree(drive: Harness) -> 
     assert drive.names() == {"Picked", "Picked sub", "in-1.txt", "in-2.txt"}
 
 
+
+async def test_a_selected_folder_id_that_does_not_exist_is_reported_to_the_user(drive: Harness) -> None:
+    drive.world.folder("pick", "Picked", parent=ROOT, owner=ME)
+    my_file(drive.world, "in-1", "in-1.txt", parent="pick")
+    drive.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await drive.connector_()).notify = notify
+    await drive.sync()
+
+    assert drive.names() == {"Picked", "in-1.txt"}
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
+
 async def test_a_selected_folders_parent_shared_later_is_linked_on_the_next_sync(drive: Harness) -> None:
     drive.world.hide_unreadable_parents = True
     drive.world.add_user("owner@example.com")
@@ -566,6 +583,42 @@ async def test_a_full_resync_keeps_the_folders_above_a_selected_folder(drive: Ha
     assert drive.records.deleted == []
     assert drive.records.records["pick"].parent_external_record_id == "nested"
     assert drive.records.records["nested"].parent_external_record_id == "new"
+
+
+@pytest.mark.parametrize("mime", [GDOC, GSHEET, GSLIDES])
+async def test_a_full_resync_writes_an_indexed_google_file_shared_since_as_a_metadata_update(
+    drive: Harness, mime: str
+) -> None:
+    # The full sync removes the links of every record it does not write, so a file whose
+    # version moved with no new content must still be written, without being re-indexed.
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=mime, content=b"doc body")
+    await drive.sync()
+    drive.records.records["doc"].indexing_status = ProgressStatus.COMPLETED.value
+    drive.world.share("doc", {"type": "user", "role": "reader", "emailAddress": "friend@example.com"})
+    batches_before = len(drive.records.new_record_batches)
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert "doc" in {r.external_record_id for r in drive.records.metadata_updates}
+    assert drive.records.content_updates == [], "a sharing change is not new content"
+    assert all("doc" not in batch for batch in drive.records.new_record_batches[batches_before:])
+    assert drive.records.records["doc"].indexing_status == ProgressStatus.COMPLETED.value
+    assert drive.records.records["doc"].external_revision_id == drive.world.files["doc"].meta["version"]
+
+
+async def test_a_full_resync_writes_an_edited_google_doc_as_new_content(drive: Harness) -> None:
+    drive.world.folder("dir", "Docs", parent=ROOT, owner=ME)
+    drive.world.add_item("doc", "Notes", parent="dir", owner=ME, mime=GDOC, content=b"doc body")
+    await drive.sync()
+    drive.world.edit("doc", b"new body")
+
+    drive.sync_points.sync_points.clear()
+    await drive.sync()
+
+    assert [r.external_record_id for r in drive.records.content_updates] == ["doc"]
+    assert "doc" not in {r.external_record_id for r in drive.records.metadata_updates}
 
 
 async def test_a_selected_folder_that_cannot_be_listed_keeps_its_subtree_records(drive: Harness) -> None:

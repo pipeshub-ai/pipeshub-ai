@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from functools import partial
@@ -22,8 +23,12 @@ from app.config.constants.arangodb import (
     ProgressStatus,
 )
 from app.containers.indexing import initialize_container
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached
 from app.edition_containers import IndexingAppContainer
 from app.edition_services import configure_app
+from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
+from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.indexing.duplicate_reconcile import (
     DuplicateReconciler,
     retry_pending_duplicate_reconciles,
@@ -84,6 +89,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
@@ -712,7 +718,17 @@ async def recover_in_progress_records(
             )
         except Exception as exc:
             logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
-        total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
+        try:
+            total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
+        except Exception as exc:
+            logger.warning(f"Pipeline stage sweep skipped this pass: {exc}")
+        total_records += await _sweep_retired_revisions(
+            app_container=app_container,
+            graph_provider=graph_provider,
+            logger=logger,
+            lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
+            concurrency_manager=concurrency_manager,
+        )
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -864,6 +880,86 @@ async def _sweep_pipeline_stages(
             report.republished, report.reclaimed, report.scanned,
         )
     return report.republished + report.reclaimed
+
+# Pages of virtualRecordToDocIdMapping one recovery tick retires revisions over.
+# Nothing here is urgent (the grace alone is a day), so a pass is spread over
+# many ticks; the cursor carries it forward and restarts at the top at the end.
+RETENTION_MAX_PAGES_PER_TICK = 4
+_retention_cursor: str | None = None
+
+
+async def _sweep_retired_revisions(
+    *,
+    app_container: IndexingAppContainer,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    lease_held: Callable[[], bool],
+    concurrency_manager: IDistributedLeaseManager | None = None,
+) -> int:
+    """Retire artifact sets and stage states of revisions nothing reads any more.
+
+    Under the recovery lease: stops at the next page or delete once it is lost,
+    leaving the cursor on the page it had not finished. Each virtual record is
+    retired under its holders' record leases, which a re-index holds.
+    """
+    global _retention_cursor  # noqa: PLW0603 - the cursor is per process by design
+
+    grace_seconds = messaging_env.revision_retention_grace_seconds
+    if grace_seconds <= 0:
+        return 0
+    try:
+        blob_storage = app_container.blob_storage()
+        if inspect.isawaitable(blob_storage):
+            blob_storage = await blob_storage
+    except Exception as exc:
+        logger.warning("Blob storage unavailable for revision retention: %s", exc)
+        return 0
+    sweep = RevisionRetentionSweep(
+        graph_provider,
+        NodeArtifactStore(blob_storage, logger),
+        logger,
+        grace_ms=int(grace_seconds * 1000),
+        leases=concurrency_manager,
+    )
+    total = RetentionReport()
+    budget = messaging_env.revision_retention_tick_budget_seconds
+    deadline = time.monotonic() + budget if budget > 0 else None
+    pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
+    for _ in range(RETENTION_MAX_PAGES_PER_TICK):
+        if not lease_held() or (deadline is not None and time.monotonic() >= deadline):
+            break
+        try:
+            next_key, report = await sweep.run_page(
+                _retention_cursor, still_leader=lease_held, deadline=deadline
+            )
+        except Exception as exc:
+            logger.warning("Revision retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
+            break
+        total.add(report)
+        if report.interrupted:
+            break
+        _retention_cursor = next_key
+        if next_key is None or report.cut_short:
+            break
+        # A pause can last ORPHAN_SCAN_MAX_PAUSE_SECONDS; do not sleep through the deadline.
+        if deadline is not None and deadline - time.monotonic() <= ORPHAN_SCAN_MAX_PAUSE_SECONDS:
+            break
+        await pacer.pause()
+    if total.cut_short:
+        logger.info(
+            "Revision retention stopped early this pass (time budget or failures in a row); "
+            "the next pass goes on from there"
+        )
+    if total.removed or total.failed:
+        logger.info(
+            "Revision retention: %d revision(s) and %d stage state(s) removed, %d revision(s) kept, "
+            "%d virtual record(s) left whole for the trash, %d left for the next pass while a record "
+            "was busy, %d failure(s), of %d scanned",
+            total.revisions_deleted, total.stage_states_deleted, total.revisions_kept,
+            total.skipped_trashed, total.skipped_busy, total.failed, total.scanned,
+        )
+    return total.removed
+
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
@@ -1714,6 +1810,12 @@ def _indexing_worker_count() -> int:
     return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
 
 
+def _distributed_leases_wanted() -> bool:
+    """On PostgreSQL state the leases are rows in the database, so they are always kept: a stage and a re-index of one record
+    exclude each other (``record:<id>``) whatever the capacity switch says."""
+    return messaging_env.distributed_concurrency_enabled or uses_pg_state()
+
+
 async def _start_stages_when_topics_exist(
     admin: IMessageAdmin,
     topics: list[str],
@@ -1764,16 +1866,8 @@ async def start_kafka_consumers(
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
 
-        if messaging_env.distributed_concurrency_enabled:
-            concurrency_manager = DistributedConcurrencyManager(
-                logger,
-                redis_config,
-                key_prefix=messaging_env.concurrency_key_prefix,
-                operation_timeout_seconds=(
-                    messaging_env.concurrency_redis_timeout_seconds
-                ),
-                max_connections=messaging_env.concurrency_redis_max_connections,
-            )
+        if _distributed_leases_wanted():
+            concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
             # Fails the startup, like the RetryManager ping above: Redis is a
             # hard requirement for this service on either broker, so degrading
             # here would only mask a Redis that the line above already proved
@@ -1846,6 +1940,7 @@ async def start_kafka_consumers(
         pipeline_runtime = await _resolve_pipeline_runtime(app_container)
         # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
         pipeline_runtime.record_leases.bind(concurrency_manager)
+        record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
         registry = pipeline_runtime.registry
         stage_topics = [registry.topic_for(name) for name in registry.names()]
         stage_producer = retry_producer
@@ -1916,7 +2011,7 @@ async def start_kafka_consumers(
             setattr(
                 app_container,
                 "stage_startup_task",
-                asyncio.create_task(
+                spawn_detached(
                     _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
                 ),
             )
@@ -1986,6 +2081,8 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container
     logger = app.container.logger()
     logger.info("🚀 Starting application")
+
+    await configure_envelope(app_container.config_service())
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
@@ -2089,19 +2186,19 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             worker_loop,
         )
     else:
-        app.state.recovery_task = asyncio.create_task(
+        app.state.recovery_task = spawn_detached(
             run_stale_recovery_loop(app_container, graph_provider)
         )
-        app.state.backfill_task = asyncio.create_task(
+        app.state.backfill_task = spawn_detached(
             run_vector_membership_backfill_loop(app_container, graph_provider)
         )
-        app.state.entity_index_task = asyncio.create_task(
+        app.state.entity_index_task = spawn_detached(
             run_entity_index_rebuild_loop(app_container, graph_provider)
         )
-        app.state.label_repair_task = asyncio.create_task(
+        app.state.label_repair_task = spawn_detached(
             run_record_label_repair_loop(app_container, graph_provider)
         )
-        app.state.named_entity_sweep_task = asyncio.create_task(
+        app.state.named_entity_sweep_task = spawn_detached(
             run_named_entity_sweep_loop(app_container, graph_provider)
         )
 
@@ -2114,7 +2211,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             completion_loop,
         )
     else:
-        app.state.named_entity_completion_task = asyncio.create_task(
+        app.state.named_entity_completion_task = spawn_detached(
             run_named_entity_completion_loop(app_container, graph_provider)
         )
 

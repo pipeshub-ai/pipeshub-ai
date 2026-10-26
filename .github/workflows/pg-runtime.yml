@@ -1,0 +1,185 @@
+name: pg-runtime
+
+# The PostgreSQL runtime (unit of work, key-value store, work queue, job scheduler, shared state) against real PostgreSQL 17 and 18
+# and PgBouncer. The Python job runs tests/integration/db (throwaway clusters it starts itself) and tests/integration/pg_runtime
+# (a migrated database on the packaged server, Redis Streams for the cross-broker contract cases). The Node job runs test:pg-services
+# against the same kind of database; test:pg (the Node unit of work) runs in node-pg-runtime.yml. A skip is a failure here: the
+# suites skip only when a service is missing, which in CI means the workflow is broken.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/db/**'
+      - 'backend/python/app/core/**'
+      - 'backend/python/app/services/pg_*.py'
+      - 'backend/python/app/services/messaging/**'
+      - 'backend/python/app/services/redis/**'
+      - 'backend/python/app/services/cache/**'
+      - 'backend/python/app/config/**'
+      - 'backend/python/tests/integration/db/**'
+      - 'backend/python/tests/integration/pg_runtime/**'
+      - 'backend/python/pyproject.toml'
+      - 'backend/nodejs/apps/src/libs/db/**'
+      - 'backend/nodejs/apps/src/libs/services/pg-*.ts'
+      - 'backend/nodejs/apps/src/libs/keyValueStore/**'
+      - 'backend/nodejs/apps/src/modules/crawling_manager/services/crawling_pg.ts'
+      - 'backend/nodejs/apps/src/modules/crawling_manager/services/connector_schedule_sweep.ts'
+      - 'backend/nodejs/apps/tests/modules/crawling_manager/services/crawling_pg.test.ts'
+      - 'backend/nodejs/apps/tests/libs/services/pg-*'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'scripts/prepare_pg_test_db.sh'
+      - 'scripts/ensure_pg_cluster.sh'
+      - 'scripts/assert_no_skips.py'
+      - '.github/workflows/pg-runtime.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pg-runtime-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+    services:
+      redis:
+        image: redis:7.4-bookworm
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      PG_BIN: /usr/lib/postgresql/${{ matrix.pg }}/bin
+      CI: 'true'
+      KERNEL_TEST_PORT_BASE: '62500'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install PostgreSQL ${{ matrix.pg }} and PgBouncer
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}" pgbouncer
+          sudo systemctl stop postgresql || true
+
+      - name: Install the migration tool and the Python dependencies
+        run: |
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+          pip install uv
+          cd backend/python
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          uv pip install --system -e ".[dev]"
+
+      - name: Python database runtime (tests/integration/db)
+        working-directory: backend/python
+        env:
+          KERNEL_TEST_PG_BINS: ${{ env.PG_BIN }}
+          KERNEL_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+          KERNEL_TEST_MIGRATE_PYTHON: ${{ runner.temp }}/migrate-venv/bin/python
+          TMPDIR: ${{ runner.temp }}
+        run: python -m pytest tests/integration/db -m integration --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-db-junit.xml"
+
+      - name: Python runtime stores (tests/integration/pg_runtime)
+        working-directory: backend/python
+        run: |
+          # the package does not always create "main" (the runner image already has PostgreSQL 16 configured), and the cluster that
+          # exists is on another port than 5432
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
+          export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
+          python -m pytest tests/integration/pg_runtime -m "not chaos" --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
+
+      - name: PostgreSQL clusters (on failure)
+        if: ${{ failure() }}
+        run: |
+          pg_lsclusters || true
+          ls -la /etc/postgresql /etc/postgresql/*/ 2>&1 || true
+          cat /etc/postgresql-common/createcluster.conf 2>&1 | grep -v '^#' | grep . || true
+
+      - name: No unexpected skips
+        if: ${{ always() }}
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/py-db-junit.xml" "$RUNNER_TEMP/py-runtime-junit.xml"
+
+  node:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+    env:
+      CI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install PostgreSQL ${{ matrix.pg }} and the migration tool
+        run: |
+          sudo install -d /usr/share/postgresql-common/pgdg
+          sudo curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc
+          echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq "postgresql-${{ matrix.pg }}"
+          python -m venv "$RUNNER_TEMP/migrate-venv"
+          "$RUNNER_TEMP/migrate-venv/bin/pip" install -r backend/db/requirements.txt
+
+      - name: Install Node dependencies
+        working-directory: backend/nodejs/apps
+        run: npm ci
+
+      - name: Node job queue, LISTEN and runtime stores (test:pg-services)
+        working-directory: backend/nodejs/apps
+        run: |
+          # the package does not always create "main" (the runner image already has PostgreSQL 16 configured), and the cluster that
+          # exists is on another port than 5432
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
+          eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_RUNTIME_ROLE=node "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
+          npm run test:pg-services -- --reporter xunit --reporter-option output="$RUNNER_TEMP/node-services-junit.xml"
+
+      - name: PostgreSQL clusters (on failure)
+        if: ${{ failure() }}
+        run: |
+          pg_lsclusters || true
+          ls -la /etc/postgresql /etc/postgresql/*/ 2>&1 || true
+          cat /etc/postgresql-common/createcluster.conf 2>&1 | grep -v '^#' | grep . || true
+
+      - name: No unexpected skips
+        if: ${{ always() }}
+        run: python3 scripts/assert_no_skips.py "$RUNNER_TEMP/node-services-junit.xml"

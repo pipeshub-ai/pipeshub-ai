@@ -365,11 +365,16 @@ describe('service agents', () => {
     fireEvent.click(confirm);
 
     await waitFor(() => expect(agentsApi.createAgent).toHaveBeenCalledTimes(1));
-    expect(lastSavedPayload(agentsApi.createAgent)).toMatchObject({
+    const saPayload = lastSavedPayload(agentsApi.createAgent);
+    expect(saPayload).toMatchObject({
       name: 'Ops bot',
       isServiceAccount: true,
       shareWithOrg: true,
     });
+    // This is the call that sent null and was refused: create takes a string,
+    // not a nullable one. toMatchObject alone stays green with null present,
+    // so the field has to be checked for absence explicitly.
+    expect('serviceAccountUserId' in saPayload).toBe(false);
     expect(router.replace).toHaveBeenCalledWith('/agents/edit?agentKey=new-agent&sa=1');
   });
 
@@ -444,6 +449,25 @@ describe('editing an agent', () => {
     expect(await screen.findByText('Priya Owner')).toBeTruthy();
     expect(canvas().queryByText('Using organization default model')).toBeNull();
     expect(canvas().getAllByText('GPT-4o').length).toBeGreaterThan(0);
+  });
+
+  it('leaves an untouched binding off an ordinary edit', async () => {
+    // The server re-resolves any id it is sent and refuses one whose account
+    // has been switched off, so re-sending an unchanged binding would make a
+    // rename fail — and fail saying the account was not found.
+    await renderExistingAgent({
+      isServiceAccount: true,
+      shareWithOrg: true,
+      serviceAccountUserId: 'sa-live',
+    });
+
+    fireEvent.change(nameField(), { target: { value: 'Ops bot v2' } });
+    fireEvent.click(saveButton(/save changes/i));
+
+    await waitFor(() => expect(agentsApi.updateAgent).toHaveBeenCalledTimes(1));
+    const payload = lastSavedPayload(agentsApi.updateAgent);
+    expect(payload.name).toBe('Ops bot v2');
+    expect('serviceAccountUserId' in payload).toBe(false);
   });
 
   it('only allows saving once something has changed, then confirms the update', async () => {

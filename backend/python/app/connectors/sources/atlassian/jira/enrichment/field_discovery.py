@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from app.connectors.sources.atlassian.jira.enrichment.field_registry import (
@@ -12,7 +13,10 @@ from app.utils.logger import create_logger
 
 logger = create_logger("jira_field_discovery")
 
-_discovery_cache: dict[str, dict[str, str]] = {}
+# connector_id -> (monotonic time stored, ids). Entries expire so renamed or
+# recreated fields are picked up without a restart.
+_discovery_cache: dict[str, tuple[float, dict[str, str]]] = {}
+DISCOVERY_TTL_S = 24 * 3600.0
 
 
 def _field_schema_custom(field_def: dict[str, Any]) -> str | None:
@@ -48,8 +52,8 @@ async def discover_custom_field_ids(
 ) -> dict[str, str]:
     """Map CUSTOM_FIELD_SCHEMAS keys to ``customfield_XXXXX`` ids for this connector."""
     cached = _discovery_cache.get(connector_id)
-    if cached is not None:
-        return cached
+    if cached is not None and time.monotonic() - cached[0] < DISCOVERY_TTL_S:
+        return cached[1]
 
     if is_cloud:
         response = await data_source.get_fields()
@@ -62,7 +66,8 @@ async def discover_custom_field_ids(
             connector_id,
             response.status,
         )
-        return {}
+        # Keep the stale mapping (timestamp untouched, so the next call retries).
+        return cached[1] if cached is not None else {}
 
     fields_list = _parse_fields_response(response.json())
     discovered: dict[str, str] = {}
@@ -79,5 +84,5 @@ async def discover_custom_field_ids(
                     discovered[registry_key] = str(field_id)
                     break
 
-    _discovery_cache[connector_id] = discovered
+    _discovery_cache[connector_id] = (time.monotonic(), discovered)
     return discovered

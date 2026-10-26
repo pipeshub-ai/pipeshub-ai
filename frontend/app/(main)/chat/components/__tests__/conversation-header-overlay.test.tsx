@@ -27,17 +27,18 @@ describe('ConversationHeaderOverlay', () => {
     expect(screen.getByTestId('share')).toBeTruthy();
   });
 
-  it('keeps the agent chip left of the share group, both pinned top-right', () => {
+  it('puts the chip right before the share group in one row pinned top-right', () => {
     render(<ConversationHeaderOverlay conversationId="c1" agentChip={chip} shareGroup={share} />);
 
-    expect(box('chip').style.position).toBe('absolute');
-    expect(box('chip').style.top).toBe('10px');
-    expect(box('chip').style.right).toBe('200px');
-    expect(box('share').style.top).toBe('12px');
-    expect(box('share').style.right).toBe('16px');
+    const row = box('chip');
+    expect(box('share')).toBe(row);
+    expect(row.style.position).toBe('absolute');
+    expect(row.style.top).toBe('12px');
+    expect(row.style.right).toBe('16px');
+    expect(row.lastElementChild).toBe(screen.getByTestId('share'));
   });
 
-  it('moves the chip to the corner when there is no share group', () => {
+  it('pins the chip to the corner when there is no share group', () => {
     render(<ConversationHeaderOverlay conversationId="c1" agentChip={chip} shareGroup={null} />);
 
     expect(box('chip').style.right).toBe('16px');

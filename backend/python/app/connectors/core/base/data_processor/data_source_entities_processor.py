@@ -228,6 +228,23 @@ class ParentPlacement(NamedTuple):
     parent_outside_group: bool
 
 
+
+def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
+    """Whether a stored record (document or ``Record``) belongs to another org, or to
+    another connector when ``connector_id`` is given. A field it lacks proves nothing.
+
+    ``orgId`` here is the owner stamped on the stored row, compared with ``org_id`` (the org the processor is bound to). It is data
+    being checked, not the source of the acting org, so it is recorded in the org-context baseline rather than read from the context."""
+    if isinstance(doc, Record):
+        doc = {"orgId": doc.org_id, "connectorId": doc.connector_id}
+    if not isinstance(doc, dict):
+        return False
+    doc_org = doc.get("orgId")
+    if isinstance(org_id, str) and org_id and doc_org and doc_org != org_id:
+        return True
+    doc_connector = doc.get("connectorId")
+    return bool(connector_id and doc_connector and doc_connector != connector_id)
+
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
         RecordType.MAIL,
@@ -564,6 +581,16 @@ class DataSourceEntitiesProcessor:
                 "Stored content of vrid %s was not moved from %s to %s: %s",
                 vrid, actual, new_path, result,
             )
+
+    async def cleanup(self) -> None:
+        """Close the messaging producer initialize() opened. Safe to call twice.
+
+        Each producer holds its own broker connection, so a processor dropped
+        without this leaks one socket for the life of the process.
+        """
+        producer = getattr(self, "messaging_producer", None)
+        if producer is not None:
+            await producer.cleanup()
 
     async def initialize(self, org_id: Optional[str] = None, *, org_agnostic: bool = False) -> None:
         config = await MessagingUtils.create_producer_config_from_service(
@@ -2315,6 +2342,15 @@ class DataSourceEntitiesProcessor:
         unlisted_group_ids: set[str] = set()
         try:
             async with self._sync_transaction() as tx_store:
+                # Every write below goes to record.id, whoever stored it.
+                if _owned_elsewhere(
+                    await tx_store.get_record_by_key(record.id, raise_on_error=True), self.org_id, record.connector_id
+                ):
+                    self.logger.error(
+                        "Not updating permissions of %s (%s): it is a record of another connector or org",
+                        record.record_name, record.id,
+                    )
+                    return
                 # If BELONGS_TO was removed (e.g. full sync deletes sync edges), restore structural
                 # edges only; permissions are still applied in this method below.
                 record_node_id = f"{CollectionNames.RECORDS.value}/{record.id}"
@@ -2504,6 +2540,12 @@ class DataSourceEntitiesProcessor:
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
+        if _owned_elsewhere(existing_record, self.org_id):
+            self.logger.error(
+                "Skipping %s (%s): its external id resolves to a record of another org",
+                record.record_name, existing_record.id,
+            )
+            return None, []
         stored_under_its_id = False
         same_id: dict | None = None
         if existing_record is None:
@@ -2512,6 +2554,13 @@ class DataSourceEntitiesProcessor:
             # bring it back live.
             same_id = await tx_store.get_record_by_key(record.id, raise_on_error=True)
             stored_under_its_id = same_id is not None
+            if same_id is not None and _owned_elsewhere(same_id, self.org_id, record.connector_id):
+                # Upserting would overwrite another connector's or org's record.
+                self.logger.error(
+                    "Skipping %s (%s): its id belongs to a record of another connector or org",
+                    record.record_name, record.id,
+                )
+                return None, []
             if same_id is not None and not is_live_record(same_id):
                 self.logger.info(
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
@@ -2559,9 +2608,14 @@ class DataSourceEntitiesProcessor:
                 "Restoring %s (%s) from the trash: the source has it again", record.record_name, existing_record.id
             )
 
-        # Set org_id only when the caller didn't supply one. KB and cross-org
-        # callers pass an explicit request org that must win over self.org_id.
-        if not record.org_id:
+        # A record is written into the org this processor serves, whatever the
+        # caller set; a processor with no org (reindex only) keeps the caller's.
+        if self.org_id:
+            if record.org_id and record.org_id != self.org_id:
+                self.logger.warning(
+                    "Record %s (%s) named org %s; writing it to %s",
+                    record.record_name, record.id, record.org_id, self.org_id,
+                )
             record.org_id = self.org_id
 
         old_path: str | None = None
@@ -2605,6 +2659,10 @@ class DataSourceEntitiesProcessor:
             # COMPLETED for KB folders, ...) is kept.
             if record.indexing_status == ProgressStatus.QUEUED.value:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
+            if not stored_under_its_id and record.origin != OriginTypes.UPLOAD:
+                # A new record's vectors are its own: a virtualRecordId chosen by the
+                # caller would serve another record's indexed content under this one.
+                record.virtual_record_id = None
             if (
                 isinstance(same_id, dict)
                 and record.origin != OriginTypes.UPLOAD
@@ -2673,6 +2731,15 @@ class DataSourceEntitiesProcessor:
                         # whose status decides the skip. A reindexed restore starts clean.
                         if not reindex_restored:
                             self._preserve_indexing_state(record, existing_record)
+                elif (
+                    existing_record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+                    and record.external_revision_id == existing_record.external_revision_id
+                    and not reindex_restored
+                ):
+                    # The same bytes need the same password: queuing the record again
+                    # on every full sync would only repeat the verdict. A changed
+                    # revision takes the normal path and is indexed again.
+                    self._preserve_indexing_state(record, existing_record)
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
@@ -2953,9 +3020,13 @@ class DataSourceEntitiesProcessor:
             # Already indexed and unchanged — the COMPLETED status was carried
             # forward from the stored record precisely so this publish can be
             # skipped; there is nothing for the indexing consumer to redo.
-            if record.indexing_status == ProgressStatus.COMPLETED.value:
+            if record.indexing_status in (
+                ProgressStatus.COMPLETED.value,
+                ProgressStatus.PASSWORD_PROTECTED.value,
+            ):
                 self.logger.debug(
-                    f"Skipping indexing event for already-completed record {record.id}"
+                    f"Skipping indexing event for already-settled record {record.id} "
+                    f"({record.indexing_status})"
                 )
                 continue
 
@@ -3254,13 +3325,18 @@ class DataSourceEntitiesProcessor:
                             )
 
                 for old_external_id, new_record, permissions in moves:
-                    if not new_record.org_id:
-                        new_record.org_id = self.org_id
+                    new_record.org_id = self.org_id or new_record.org_id
 
                     old_record = await tx_store.get_record_by_external_id(
                         connector_id=new_record.connector_id,
                         external_id=old_external_id,
                     )
+
+                    if _owned_elsewhere(old_record, self.org_id):
+                        self.logger.error(
+                            "Skipping move of %s: record %s belongs to another org", old_external_id, old_record.id
+                        )
+                        continue
 
                     if old_record is not None and not is_live_record(old_record):
                         # A move of a record in the trash leaves it where it is.
@@ -3292,6 +3368,14 @@ class DataSourceEntitiesProcessor:
                         external_id=new_record.external_record_id,
                         visibility=RecordVisibility.LIVE,
                     )
+                    if duplicate is not None and duplicate.id != old_record.id and _owned_elsewhere(
+                        duplicate, self.org_id
+                    ):
+                        self.logger.error(
+                            "Skipping move of %s: the record holding its new external id (%s) belongs to another org",
+                            old_external_id, duplicate.id,
+                        )
+                        continue
                     if duplicate is not None and duplicate.id != old_record.id:
                         self.logger.warning(
                             "Retiring duplicate record %s: external id %s is already "
@@ -3759,6 +3843,9 @@ class DataSourceEntitiesProcessor:
                 # A failed read must raise: None would read as "already gone"
                 # and the caller does not deliver this delete again.
                 existing = await tx_store.get_record_by_key(record_id, raise_on_error=True)
+            if existing and _owned_elsewhere(existing, self.org_id):
+                self.logger.error("Not deleting record %s: it belongs to another org", record_id)
+                return False
             connector_id = (existing or {}).get("connectorId")
             if not connector_id:
                 return False
@@ -3781,6 +3868,9 @@ class DataSourceEntitiesProcessor:
             # the caller does not deliver this delete again. The value is the
             # stored document; Record attributes have no virtualRecordId.
             existing = await tx_store.get_record_by_key(record_id, raise_on_error=True) or {}
+            if existing and _owned_elsewhere(existing, self.org_id):
+                self.logger.error("Not deleting record %s: it belongs to another org", record_id)
+                return False
             trashed = bool(existing) and not is_live_record(existing)
             if not trashed:
                 orphans = await self._collect_orphans(tx_store, existing, record_id)
@@ -4327,6 +4417,22 @@ class DataSourceEntitiesProcessor:
         full sync in progress, if any, so the unlink after that sync keeps their members."""
         for group in groups:
             self._note_full_sync_seen(connector_id, CollectionNames.GROUPS.value, group.id)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        """Note one stored user group whose members could not be read in full, so its stored
+        members stay and the unlink after the full sync in progress, if any, leaves it alone.
+        Every stored copy with that external id is noted, as in finish_full_sync_memberships:
+        older syncs wrote one copy per run, and grants may sit on any of them.
+        A lookup that fails raises."""
+        if self._full_sync_run(connector_id) is None:
+            return
+        groups = CollectionNames.GROUPS.value
+        async with self.data_store_provider.transaction() as tx_store:
+            copies = await tx_store.get_nodes_by_filters(
+                groups, {"connectorId": connector_id, "externalGroupId": external_group_id}, raise_on_error=True
+            )
+        for doc in copies or []:
+            self._note_full_sync_seen(connector_id, groups, doc.get("_key") or doc.get("id"))
 
     async def note_kept_record_group(self, connector_id: str, external_group_id: str) -> None:
         """Note a record group a connector keeps as stored without writing it as seen by the

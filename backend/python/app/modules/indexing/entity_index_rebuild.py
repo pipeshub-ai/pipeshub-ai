@@ -36,6 +36,7 @@ from app.config.constants.arangodb import CollectionNames
 from app.connectors.services.entity_cleanup_intents import (
     clear_pending_entity_cleanup,
     list_pending_entity_cleanups,
+    record_pending_entity_cleanup,
     reschedule_pending_entity_cleanup,
 )
 from app.models.entities import EntityRecord, EntityType
@@ -422,9 +423,76 @@ class EntityIndexRebuilder:
             "entity_index_rebuild: page done | %s=%s phase=%s after=%s rows=%d failed=%d",
             run.collection, run.key, phase, after_key, len(rows), failed,
         )
-        if not await self.lock.refresh():
-            raise _LostLeadership
+        try:
+            if not await self.lock.refresh():
+                raise _LostLeadership
+            if run.collection == _APPS and await self._connector_deleted_meanwhile(run):
+                return
+        except Exception:
+            # The page is written but not checked: a deleted connector is no longer a candidate, so
+            # nothing would look at these points again. The intent has the reconcile pass look; it drops
+            # the intent when the connector is still there.
+            if run.collection == _APPS:
+                try:
+                    await self._record_cleanup_intent(run)
+                except Exception:
+                    self.logger.warning(
+                        "entity_index_rebuild: cleanup intent not recorded | connector=%s", run.key, exc_info=True,
+                    )
+            raise
         await self._advance(run, phase, rows, failed, limit)
+
+    @staticmethod
+    def _owner_org(run: _Pass) -> str:
+        # The app's stored owner, which the cleanup must name; data being cleaned up, not the acting org.
+        return _text(run.doc.get("orgId"))
+
+    async def _record_cleanup_intent(self, run: _Pass) -> None:
+        org_id = self._owner_org(run)
+        if self.config_service is None or not org_id:
+            return
+        await record_pending_entity_cleanup(
+            self.config_service, org_id=org_id, connector_id=run.key,
+            connector_name=_text(run.doc.get("name")) or None, now_ms=self.now_ms(),
+        )
+
+    async def _connector_deleted_meanwhile(self, run: _Pass) -> bool:
+        """Whether the connector is gone or being deleted after this page was written; if gone, remove what it wrote.
+
+        The page was read before the delete and written after the delete's own entity cleanup, which
+        then had nothing of these points to remove and cleared its intent. Checked after the write: an
+        app still there has not had its cleanup yet, and that cleanup, which runs once the graph delete
+        commits, removes these points too. A delete that fails is reverted and keeps the connector, so
+        nothing is removed while it is only deleting; the page is read again from the same cursor.
+        """
+        # Raised, not None: a failed read must never pass for a gone app.
+        app = await self.graph.get_document(run.key, _APPS, raise_on_error=True)
+        if app:
+            return app.get("status") == APP_STATUS_DELETING
+        org_id = self._owner_org(run)
+        self.logger.warning(
+            "entity_index_rebuild: connector deleted during its page; removing the page's points | connector=%s",
+            run.key,
+        )
+        if org_id:
+            try:
+                await self.store.delete_entities_by_connector(
+                    org_id=org_id,
+                    connector_id=run.key,
+                    record_group_ids=None,
+                    membership_lookup=lambda refs, org=org_id: self.graph.get_taxonomy_entity_membership(refs, org),
+                )
+            except Exception:
+                # The delete event cleared its own intent and this app is not a candidate any more, so
+                # without an intent nothing would retry. The reconcile pass runs it, and keeps retrying.
+                if self.config_service is None:
+                    raise
+                self.logger.warning(
+                    "entity_index_rebuild: removal failed; leaving a cleanup intent | connector=%s", run.key,
+                    exc_info=True,
+                )
+                await self._record_cleanup_intent(run)
+        return True
 
     async def _advance(
         self, run: _Pass, phase: str, rows: list[dict], failed: int, limit: int,

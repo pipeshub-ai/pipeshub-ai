@@ -39,6 +39,7 @@ from app.services.vector_db.membership import (
     EMPTY_CONFIRM_DELAY_SECONDS,
     remaining_record_keys,
 )
+from app.telemetry.modules.record_storage_metrics import record_reader_relookup
 from app.utils.jwt import mint_service_token
 from app.utils.request_context import inject_request_headers
 from app.utils.storage_move import post_move_tree
@@ -195,6 +196,30 @@ def _cloud_envelope_size(encoded: _RecordJson, virtual_record_id: str | None) ->
     )
 
 
+def clean_top_level_empty_values(obj: dict[str, Any]) -> dict[str, Any]:
+    """``obj`` without top-level keys whose value is None, "", [] or {}."""
+    return {
+        k: v
+        for k, v in obj.items()
+        if v is not None and v != "" and v != [] and v != {}
+    }
+
+
+def clean_stored_record(data: dict[str, Any]) -> dict[str, Any]:
+    """A record dict as it is stored: empty values dropped at the top level of
+    the record, of each block and of each block group."""
+    cleaned = clean_top_level_empty_values(data)
+    block_containers = cleaned.get("block_containers")
+    if isinstance(block_containers, dict):
+        for key in ("blocks", "block_groups"):
+            if isinstance(block_containers.get(key), list):
+                block_containers[key] = [
+                    clean_top_level_empty_values(item) if isinstance(item, dict) else item
+                    for item in block_containers[key]
+                ]
+    return cleaned
+
+
 def compression_threshold_bytes() -> int:
     """Records whose JSON form exceeds this are stored compressed; 0 compresses everything."""
     raw = os.getenv(_COMPRESSION_THRESHOLD_ENV)
@@ -270,10 +295,24 @@ class TransientStorageError(aiohttp.ClientError):
 
 # What a stored record holds that is the same for every record sharing its vrid;
 # everything else (name, link, ids, connector, statuses) belongs to one record.
-_SHARED_CONTENT_FIELDS = (
+SHARED_CONTENT_FIELDS = (
     "block_containers", "semantic_metadata", "md5_hash", "virtual_record_id",
     "is_vlm_ocr_processed",
 )
+#: ``TransformContext.settings`` key: the stored copy's fields outside
+#: ``SHARED_CONTENT_FIELDS``, as ``apply`` wrote them. They are the owner's when
+#: another record stored the shared content first.
+STORED_RECORD_FIELDS = "stored_record_fields"
+#: ``TransformContext.settings`` key: the ``contentRev`` the record being stored
+#: is of (None when it has none). ``apply`` records it on the vrid's mapping as
+#: ``storedRev`` in the same write, so the artifact reader serves a set only when
+#: it is the revision the stored record holds. Without the key the mapping's
+#: ``storedRev`` is left as it is.
+STORED_REV = "stored_rev"
+
+# Leaves the mapping's ``storedRev`` as it is: a rewrite of the same revision
+# (classification) does not know the revision, and must not clear it.
+_KEEP_STORED_REV: Any = object()
 
 
 class StorageLookupUnavailableError(Exception):
@@ -286,6 +325,27 @@ class StorageDocumentNotFoundError(aiohttp.ClientError):
     Deleted or never created, so repeating the request cannot help. A write
     can replace the document; a read has nothing to return.
     """
+
+
+class SignedUrlReadError(Exception):
+    """A read from a signed URL failed in a way that a retired document explains.
+
+    ``http_status`` is the HTTP status of a single GET (403 or 404), or None for
+    a failed ranged download. It is deliberately not ``status``: the consumers'
+    error classifier reads an int ``status`` as the failure's verdict, and a 403
+    here can be an expired or skewed signature, which a redelivery fixes. Not every instance triggers a re-lookup: see
+    ``may_be_retired``. A plain ``Exception`` subclass, as the readers raised
+    before, so callers matching the message keep working.
+    """
+
+    def __init__(self, message: str, status: int | None = None, *, ranged: bool = False) -> None:
+        super().__init__(message)
+        self.http_status = status
+        self.ranged = ranged
+
+    @property
+    def may_be_retired(self) -> bool:
+        return self.ranged or self.http_status in (403, 404)
 
 
 # Statuses meaning the storage service refused the request's content (too large,
@@ -304,7 +364,7 @@ def _storage_status_error(
         reason = f"{message}: the storage service refused it (HTTP {status})"
         too_large = status == HttpStatusCode.PAYLOAD_TOO_LARGE.value or "larger than" in (detail or "").lower()
         return StorageRequestRejectedError(
-            f"{reason}: {detail}" if detail else reason, status, too_large=too_large
+            f"{reason}: {detail}" if detail else reason, status, too_large=too_large, detail=detail
         )
     return aiohttp.ClientError(message)
 
@@ -724,7 +784,9 @@ class BlobStorage(Transformer):
         async def _single() -> dict:
             async with session.get(URL(signed_url, encoded=True)) as res:
                 if res.status != HttpStatusCode.SUCCESS.value:
-                    raise Exception(f"Failed to retrieve record: status {res.status}")
+                    raise SignedUrlReadError(
+                        f"Failed to retrieve record: status {res.status}", res.status
+                    )
                 return await res.json(content_type=None, loads=_decode_json)
 
         try:
@@ -747,8 +809,10 @@ class BlobStorage(Transformer):
                 data = await _single()
             except Exception as fallback_error:
                 self.logger.error("❌ Fallback download also failed: %s", str(fallback_error))
-                raise Exception(
-                    f"Both parallel and fallback downloads failed: {str(e)}"
+                raise SignedUrlReadError(
+                    f"Both parallel and fallback downloads failed: {str(e)}",
+                    getattr(fallback_error, "http_status", None),
+                    ranged=True,
                 ) from fallback_error
 
         if not data.get("record"):
@@ -1176,43 +1240,10 @@ class BlobStorage(Transformer):
         return file_bytes
 
     def _clean_top_level_empty_values(self, obj: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Remove top-level keys with None, empty strings, empty lists, and empty dicts.
-        Only processes the first level of the given object.
-        """
-        return {
-            k: v
-            for k, v in obj.items()
-            if v is not None and v != "" and v != [] and v != {}
-        }
+        return clean_top_level_empty_values(obj)
 
     def _clean_empty_values(self, data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Clean empty values at the top level of:
-        1. The main record object
-        2. Each block in block_containers.blocks
-        3. Each block group in block_containers.block_groups
-        """
-        # Clean top-level record fields
-        cleaned = self._clean_top_level_empty_values(data)
-
-        # Clean each block's top-level fields
-        if "block_containers" in cleaned and isinstance(cleaned["block_containers"], dict):
-            block_containers = cleaned["block_containers"]
-
-            if "blocks" in block_containers and isinstance(block_containers["blocks"], list):
-                block_containers["blocks"] = [
-                    self._clean_top_level_empty_values(block) if isinstance(block, dict) else block
-                    for block in block_containers["blocks"]
-                ]
-
-            if "block_groups" in block_containers and isinstance(block_containers["block_groups"], list):
-                block_containers["block_groups"] = [
-                    self._clean_top_level_empty_values(bg) if isinstance(bg, dict) else bg
-                    for bg in block_containers["block_groups"]
-                ]
-
-        return cleaned
+        return clean_stored_record(data)
 
     async def _build_hierarchical_storage_path(
         self,
@@ -1365,9 +1396,25 @@ class BlobStorage(Transformer):
             ) from e
         if not existing_lookup or not existing_lookup.get("record_doc_id"):
             return None
-        raw_path = await self._get_current_document_path(
-            org_id, existing_lookup["record_doc_id"], strict=True,
-        )
+        document_id = existing_lookup["record_doc_id"]
+        raw_path = await self._get_current_document_path(org_id, document_id, strict=True)
+        if raw_path is None:
+            # A 404 may be a document replaced since the lookup: one fresh lookup.
+            try:
+                fresh = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+            except Exception as e:
+                record_reader_relookup("lookup_failed", "path_not_found")
+                raise StorageLookupUnavailableError(
+                    f"Could not look up the stored document of vrid {virtual_record_id}: {e}"
+                ) from e
+            fresh_id = (fresh or {}).get("record_doc_id")
+            if not fresh_id:
+                record_reader_relookup("no_mapping", "path_not_found")
+            elif fresh_id == document_id:
+                record_reader_relookup("unchanged", "path_not_found")
+            else:
+                record_reader_relookup("served", "path_not_found")
+                raw_path = await self._get_current_document_path(org_id, fresh_id, strict=True)
         return self._strip_org_prefix(org_id, raw_path) if raw_path else None
 
     async def apply(self, ctx: TransformContext) -> TransformContext:
@@ -1387,14 +1434,23 @@ class BlobStorage(Transformer):
             virtual_record_id, storage_path
         )
 
+        written: dict[str, Any] = {}
         actual_storage_path = await self._store_record_dict(
             org_id, record_id, virtual_record_id, record_dict,
             storage_path=storage_path,
             connector_id=getattr(record, "connector_id", None),
             record_group_id=getattr(record, "record_group_id", None),
+            written=written,
+            stored_rev=ctx.settings.get(STORED_REV) if STORED_REV in ctx.settings else _KEEP_STORED_REV,
         )
 
         ctx.settings["storage_path"] = actual_storage_path
+        if written:
+            ctx.settings[STORED_RECORD_FIELDS] = {
+                k: v for k, v in written.items() if k not in SHARED_CONTENT_FIELDS
+            }
+        else:
+            ctx.settings.pop(STORED_RECORD_FIELDS, None)
         ctx.record = record
         return ctx
 
@@ -1408,13 +1464,18 @@ class BlobStorage(Transformer):
         storage_path: str | None = None,
         connector_id: str | None = None,
         record_group_id: str | None = None,
+        written: dict[str, Any] | None = None,
+        stored_rev: str | None = _KEEP_STORED_REV,
     ) -> str:
         """Upload a record as the next version of its stored document, or as a new one.
 
-        Returns the path the content is stored at. Without *storage_path* (a rewrite of a
+        Returns the path the content is stored at. *written*, when given, is filled
+        with the record dict actually stored: shared content keeps its owner's
+        identity, so it can differ from *record_dict*. Without *storage_path* (a rewrite of a
         record already stored, which has no Record entity to build a path from), a new
         upload goes where the current document is, else to ``records/<vrid>``; the
         connector and record group default to the ones in *record_dict*.
+        *stored_rev* is written on the mapping as ``storedRev`` unless left out.
         """
         if storage_path is None:
             storage_path = (
@@ -1546,10 +1607,16 @@ class BlobStorage(Transformer):
             )
 
         if document_id and self.graph_provider:
-            mapped = await self.store_virtual_record_mapping(org_id, virtual_record_id, document_id, file_size_bytes)
+            revision = {} if stored_rev is _KEEP_STORED_REV else {"stored_rev": stored_rev}
+            mapped = await self.store_virtual_record_mapping(
+                org_id, virtual_record_id, document_id, file_size_bytes, **revision,
+            )
             if mapped and replaced_doc_id and replaced_doc_id != document_id:
                 await self._delete_replaced_document(org_id, replaced_doc_id, virtual_record_id)
 
+        if written is not None and document_id:
+            written.clear()
+            written.update(record_dict)
         return actual_storage_path
 
     async def save_semantic_metadata(
@@ -2151,12 +2218,12 @@ class BlobStorage(Transformer):
         if holders is not None and owner not in holders:
             if min(holders, default=record_id) == record_id:
                 return record_dict
-            stored = {k: v for k, v in stored.items() if k in _SHARED_CONTENT_FIELDS}
+            stored = {k: v for k, v in stored.items() if k in SHARED_CONTENT_FIELDS}
             owner = "a record that no longer holds it"
         elif not owner or owner == record_id:
             return record_dict
         merged = dict(stored)
-        for key in _SHARED_CONTENT_FIELDS:
+        for key in SHARED_CONTENT_FIELDS:
             if key in record_dict:
                 merged[key] = record_dict[key]
             else:
@@ -2254,6 +2321,10 @@ class BlobStorage(Transformer):
         record_metadata_doc_id = doc.get("record_metadata_doc_id")
         if record_metadata_doc_id:
             result["record_metadata_doc_id"] = record_metadata_doc_id
+        # The artifact set of the current content revision, for the artifact reader.
+        for key in ("currentRev", "manifestDocId", "storedRev"):
+            if doc.get(key):
+                result[key] = doc[key]
         return result
 
     async def _records_still_using_vrid(self, virtual_record_id: str) -> list[str]:
@@ -2513,57 +2584,34 @@ class BlobStorage(Transformer):
                 self.logger.debug("No document ID found for virtual record ID: %s", virtual_record_id)
                 return None
 
-            download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
-            session = get_shared_session()
-
-            lease = (
-                _DecodeSlotLease(await _acquire_decode_slot())
-                if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
-                else None
-            )
             try:
-                # A cached signed URL skips the gateway hop entirely. On any failure
-                # reading it back, fall through to the gateway and re-sign.
-                cached_url = await self._cached_signed_url(org_id, document_id)
-                if cached_url:
-                    try:
-                        record = await self._record_from_signed_url(
-                            session, cached_url, file_size_bytes, virtual_record_id, lease
-                        )
-                        if record is not None:
-                            return record
-                    except StoredRecordTooLargeError:
-                        # Refused after the download, not because of the URL: re-signing
-                        # would only download the same record again.
-                        raise
-                    except Exception as e:
-                        self.logger.debug(
-                            "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
-                        )
-
-                data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
-                if data.get("signedUrl"):
-                    await self._store_signed_url(org_id, document_id, data["signedUrl"])
-
-                if data.get("record"):
-                    record = await self._decode_record(data, lease)
-                    record_name = record.get("record_name")
-                    self.logger.debug("✅ Successfully retrieved record %s from storage for virtual_record_id: %s", record_name, virtual_record_id)
-                    return record
-                elif data.get("signedUrl"):
-                    record = await self._record_from_signed_url(
-                        session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
+                return await self._read_stored_document(
+                    org_id, virtual_record_id, document_id, file_size_bytes, headers, nodejs_endpoint
+                )
+            except (StorageDocumentNotFoundError, SignedUrlReadError) as first_error:
+                if isinstance(first_error, SignedUrlReadError) and not first_error.may_be_retired:
+                    raise
+                # The document may have been replaced since the lookup was taken
+                # (a lookup reused across a re-index, a URL signed for a document
+                # purged before it was fetched). One fresh lookup; a document that
+                # is still the mapped one means the error is real.
+                trigger = (
+                    "not_found" if isinstance(first_error, StorageDocumentNotFoundError)
+                    else "ranged" if first_error.ranged else "signed_url"
+                )
+                fresh = await self._relookup_after_failed_read(virtual_record_id, document_id, trigger)
+                if fresh is None:
+                    raise
+                try:
+                    record = await self._read_stored_document(
+                        org_id, virtual_record_id, fresh["record_doc_id"],
+                        fresh.get("fileSizeBytes"), headers, nodejs_endpoint,
                     )
-                    if record is not None:
-                        return record
-                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                    raise Exception("No record found for virtual_record_id")
-                else:
-                    self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
-                    raise Exception("No record found for virtual_record_id")
-            finally:
-                if lease is not None:
-                    lease.release()
+                except Exception:
+                    record_reader_relookup("failed", trigger)
+                    raise
+                record_reader_relookup("served", trigger)
+                return record
         except StorageDocumentNotFoundError:
             self.logger.warning(
                 "Stored document for virtual_record_id %s no longer exists", virtual_record_id
@@ -2580,6 +2628,93 @@ class BlobStorage(Transformer):
             )
             raise e
 
+    async def _relookup_after_failed_read(
+        self, virtual_record_id: str, failed_document_id: str, trigger: str
+    ) -> dict[str, Any] | None:
+        """The mapping's current document when it is not *failed_document_id*, else None.
+
+        None means the caller re-raises the original error: an S3 403 can also be
+        an expired or skewed signature, and a 404 on the mapped document is real.
+        """
+        try:
+            fresh = await self.get_document_id_by_virtual_record_id(virtual_record_id)
+        except Exception as e:
+            self.logger.warning(
+                "Re-lookup of virtual_record_id %s after a failed read failed: %s",
+                virtual_record_id, str(e),
+            )
+            record_reader_relookup("lookup_failed", trigger)
+            return None
+        fresh_id = (fresh or {}).get("record_doc_id")
+        if not fresh_id:
+            record_reader_relookup("no_mapping", trigger)
+            return None
+        if fresh_id == failed_document_id:
+            record_reader_relookup("unchanged", trigger)
+            return None
+        return fresh
+
+    async def _read_stored_document(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        document_id: str,
+        file_size_bytes: int | None,
+        headers: dict,
+        nodejs_endpoint: str,
+    ) -> dict[str, Any]:
+        """Read one stored document: the cached signed URL, else the gateway."""
+        download_url = f"{nodejs_endpoint}{Routes.STORAGE_DOWNLOAD.value.format(documentId=document_id)}"
+        session = get_shared_session()
+
+        lease = (
+            _DecodeSlotLease(await _acquire_decode_slot())
+            if file_size_bytes is not None and file_size_bytes > LARGE_DECODE_BYTES
+            else None
+        )
+        try:
+            # A cached signed URL skips the gateway hop entirely. On any failure
+            # reading it back, fall through to the gateway and re-sign.
+            cached_url = await self._cached_signed_url(org_id, document_id)
+            if cached_url:
+                try:
+                    record = await self._record_from_signed_url(
+                        session, cached_url, file_size_bytes, virtual_record_id, lease
+                    )
+                    if record is not None:
+                        return record
+                except StoredRecordTooLargeError:
+                    # Refused after the download, not because of the URL: re-signing
+                    # would only download the same record again.
+                    raise
+                except Exception as e:
+                    self.logger.debug(
+                        "Cached signed URL failed for %s, re-signing: %s", document_id, str(e)
+                    )
+
+            data = await self._fetch_record_envelope(session, download_url, headers, virtual_record_id)
+            if data.get("signedUrl"):
+                await self._store_signed_url(org_id, document_id, data["signedUrl"])
+
+            if data.get("record"):
+                record = await self._decode_record(data, lease)
+                self.logger.debug(
+                    "✅ Successfully retrieved record %s from storage for virtual_record_id: %s",
+                    record.get("record_name"), virtual_record_id,
+                )
+                return record
+            if data.get("signedUrl"):
+                record = await self._record_from_signed_url(
+                    session, data["signedUrl"], file_size_bytes, virtual_record_id, lease
+                )
+                if record is not None:
+                    return record
+            self.logger.error("❌ No record found for virtual_record_id: %s", virtual_record_id)
+            raise Exception("No record found for virtual_record_id")
+        finally:
+            if lease is not None:
+                lease.release()
+
     async def _fetch_record_envelope(
         self, session: aiohttp.ClientSession, download_url: str, headers: dict, virtual_record_id: str
     ) -> dict:
@@ -2594,7 +2729,15 @@ class BlobStorage(Transformer):
 
         return await self._with_storage_retry(f"record fetch {virtual_record_id}", _attempt)
 
-    async def store_virtual_record_mapping(self, org_id: str, virtual_record_id: str, document_id: str, file_size_bytes: int | None = None) -> bool:
+    async def store_virtual_record_mapping(
+        self,
+        org_id: str,
+        virtual_record_id: str,
+        document_id: str,
+        file_size_bytes: int | None = None,
+        *,
+        stored_rev: str | None = _KEEP_STORED_REV,
+    ) -> bool:
         """
         Stores the mapping between virtual_record_id and document_id in graph database.
         Args:
@@ -2602,6 +2745,8 @@ class BlobStorage(Transformer):
             virtual_record_id: The virtual record ID
             document_id: The document ID
             file_size_bytes: Optional file size in bytes
+            stored_rev: The content revision the stored document now holds, as
+                ``storedRev``; None clears it, leaving it out keeps it
         Returns:
             bool: True if successful, False otherwise.
         """
@@ -2622,6 +2767,8 @@ class BlobStorage(Transformer):
 
             if file_size_bytes is not None:
                 mapping_document["fileSizeBytes"] = file_size_bytes
+            if stored_rev is not _KEEP_STORED_REV:
+                mapping_document["storedRev"] = stored_rev
 
             success = await self.graph_provider.batch_upsert_nodes(
                 [mapping_document],

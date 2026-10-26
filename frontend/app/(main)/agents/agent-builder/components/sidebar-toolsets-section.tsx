@@ -21,7 +21,9 @@ import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import { AgentBuilderWebSearchSection } from './sidebar-web-search-section';
-import { toggleKeyedBoolean } from '../sidebar-expand-utils';
+import type { UseWebSearchConfigResult } from '../hooks/use-web-search-config';
+import { useSearchAwareExpanded } from '../sidebar-expand-utils';
+import { filterToolsetTools } from '../sidebar-utils';
 import { isApiToolsetRow } from '../api-toolset-attachments';
 import { usableByServiceAccount } from '../../../workspace/api-toolsets/toolset-form';
 import type { AgentWebSearchAttachment } from '../types';
@@ -113,6 +115,10 @@ function ToolDragRow(props: {
 
 export function AgentBuilderToolsetsSection(props: {
   toolsets: BuilderSidebarToolset[];
+  /** Palette-wide search query, applied on top of this section's own server-side search. */
+  search?: string;
+  /** Web search config loaded by the sidebar, handed to the web search group. */
+  webSearchConfig: UseWebSearchConfigResult;
   loading: boolean;
   refreshToolsets: (
     agentKey?: string | null,
@@ -139,6 +145,7 @@ export function AgentBuilderToolsetsSection(props: {
 }) {
   const {
     toolsets,
+    search = '',
     loading,
     refreshToolsets,
     activeToolsetTypeKeys,
@@ -156,15 +163,13 @@ export function AgentBuilderToolsetsSection(props: {
 
   const { t } = useTranslation();
   const [searchInput, setSearchInput] = useState('');
-  const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
+  const searching = search.trim() !== '';
+  const { isOpen, toggle: onAppToggle } = useSearchAwareExpanded(searching);
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
-  const [showAllToolsets, setShowAllToolsets] = useState(false);
+  const [showAllToolsetsState, setShowAllToolsets] = useState(false);
+  const showAllToolsets = showAllToolsetsState || searching;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
-    setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
-  }, []);
 
   const handleSearchChange = useCallback(
     (value: string) => {
@@ -283,9 +288,12 @@ export function AgentBuilderToolsetsSection(props: {
   // API toolsets come from their own list, which the server-side search doesn't filter.
   const visibleToolsets = useMemo(() => {
     const query = searchInput.trim().toLowerCase();
-    if (!query) return toolsets;
-    return toolsets.filter((ts) => !isApiToolsetRow(ts) || ts.displayName.toLowerCase().includes(query));
-  }, [toolsets, searchInput]);
+    return toolsets.filter(
+      (ts) =>
+        (!query || !isApiToolsetRow(ts) || ts.displayName.toLowerCase().includes(query)) &&
+        filterToolsetTools(ts, search) !== null
+    );
+  }, [toolsets, searchInput, search]);
 
   const toolsetsByType = useMemo(() => groupToolsetsByType(visibleToolsets), [visibleToolsets]);
 
@@ -362,6 +370,8 @@ export function AgentBuilderToolsetsSection(props: {
 
       <AgentBuilderWebSearchSection
         attached={webSearchAttached}
+        search={search}
+        config={props.webSearchConfig}
         onNotify={onNotify}
         structureLocked={structureLocked}
       />
@@ -373,8 +383,8 @@ export function AgentBuilderToolsetsSection(props: {
       {!loading && visibleToolsets.length === 0 ? (
         <Box pl="3" py="2">
           <Text size="1" style={{ color: 'var(--slate-11)', fontStyle: 'italic' }}>
-            {searchInput.trim()
-            ? t('agentBuilder.noToolsetsMatch', { query: searchInput })
+            {searchInput.trim() || searching
+            ? t('agentBuilder.noToolsetsMatch', { query: searchInput.trim() || search.trim() })
             : t('agentBuilder.noToolsetsAvailable')}
           </Text>
         </Box>
@@ -396,7 +406,7 @@ export function AgentBuilderToolsetsSection(props: {
               {visibleEntries.map(([toolsetType, typeToolsets]) => {
                 const first = typeToolsets[0];
                 const typeKey = `toolset-type-${toolsetType}`;
-                const isTypeExpanded = expandedApps[typeKey] ?? DEFAULT_TOOLSET_TYPE_EXPANDED;
+                const isTypeExpanded = isOpen(typeKey, DEFAULT_TOOLSET_TYPE_EXPANDED);
 
                 return (
                   <Box key={toolsetType} mb="2">
@@ -414,8 +424,8 @@ export function AgentBuilderToolsetsSection(props: {
                     >
                       {typeToolsets.map((ts) => {
                         const instKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
-                        const isInstanceExpanded =
-                          expandedApps[instKey] ?? DEFAULT_TOOLSET_INSTANCE_EXPANDED;
+                        const isInstanceExpanded = isOpen(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED);
+                        const shownTools = filterToolsetTools(ts, search) ?? ts.tools;
                         const ui = buildUiState(ts);
                         // A personal action holds one user's sign-in: others running the agent couldn't use it.
                         const personalBlocked = agentShared && isPersonalToolset(ts);
@@ -466,7 +476,7 @@ export function AgentBuilderToolsetsSection(props: {
                             groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
                             groupConnectorType={ts.toolsetType}
                             groupIcon={ts.iconPath}
-                            itemCount={ts.tools.length}
+                            itemCount={shownTools.length}
                             isExpanded={isInstanceExpanded}
                             onToggle={() => onAppToggle(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED)}
                             dragType={dragType}
@@ -483,7 +493,7 @@ export function AgentBuilderToolsetsSection(props: {
                             configureIconColor={ui.configureIconColor}
                             toolsetStatus={getToolsetSidebarStatus(ts)}
                           >
-                            {ts.tools.map((tool) => (
+                            {shownTools.map((tool) => (
                               <ToolDragRow
                                 key={`${ts.instanceId}-${tool.fullName || tool.name}`}
                                 tool={tool}
@@ -505,7 +515,7 @@ export function AgentBuilderToolsetsSection(props: {
                   </Box>
                 );
               })}
-              {typeEntries.length > TOOLSET_SHOW_MORE_LIMIT && (
+              {!searching && typeEntries.length > TOOLSET_SHOW_MORE_LIMIT && (
                 <button
                   type="button"
                   aria-expanded={showAllToolsets}

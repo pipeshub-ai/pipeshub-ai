@@ -222,6 +222,7 @@ if [[ "${FORCE_FRESH}" != "1" ]] && kubectl get secret "${APP_SECRET_NAME}" -n "
   MONGO_ROOT_PASSWORD="$(read_k8s_secret "${APP_SECRET_NAME}" mongodb-password)"
   REDIS_PASSWORD="$(read_k8s_secret "${APP_SECRET_NAME}" redis-password)"
   NEO4J_PASSWORD="$(read_k8s_secret "${APP_SECRET_NAME}" neo4j-password)"
+  QDRANT_API_KEY="$(read_k8s_secret "${APP_SECRET_NAME}" qdrant-api-key)"
   # Recover the MongoDB app-user password from the Bitnami sub-chart secret.
   # With a single user (the only configuration we install) the comma-separated
   # `mongodb-passwords` blob is exactly that one password. Avoids depending on
@@ -249,7 +250,15 @@ if [[ "${REUSE_SECRETS}" != "1" ]]; then
   NEO4J_PASSWORD="$(generate_hex 24)"
 fi
 
-for _required in SECRET_KEY MONGO_ROOT_PASSWORD MONGO_APP_PASSWORD REDIS_PASSWORD NEO4J_PASSWORD; do
+# Releases created before the chart required a key hold the shared default,
+# which the chart now refuses. Qdrant data is not bound to the key, so rotate.
+case "${QDRANT_API_KEY:-}" in
+  ""|api_key|qdrant|your_qdrant_api_key|your_qdrant_secret_api_key)
+    QDRANT_API_KEY="$(generate_hex 64)"
+    ;;
+esac
+
+for _required in SECRET_KEY MONGO_ROOT_PASSWORD MONGO_APP_PASSWORD REDIS_PASSWORD NEO4J_PASSWORD QDRANT_API_KEY; do
   if [[ -z "${!_required}" ]]; then
     echo "Error: failed to resolve ${_required}; run with FORCE_FRESH=1 for a clean install."
     exit 1
@@ -286,6 +295,7 @@ HELM_BASE_ARGS+=(
   --set "mongodb.auth.databases[0]=pipeshub"
   --set redis.auth.password="${REDIS_PASSWORD}"
   --set neo4j.auth.password="${NEO4J_PASSWORD}"
+  --set qdrant.apiKey="${QDRANT_API_KEY}"
 )
 
 # Allow callers to inject extra --set / -f overrides without editing the script.

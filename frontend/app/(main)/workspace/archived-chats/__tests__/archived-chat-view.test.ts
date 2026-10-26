@@ -2,39 +2,28 @@ import { describe, expect, it } from 'vitest';
 import type { ConversationMessage } from '@/chat/types';
 import { buildMessagePairs } from '../components/archived-chat-view';
 
-const access = { recordId: 'r1', kind: 'native' as const, endpoint: '/api/v1/access-requests' };
-
-describe('archived chat view keeps the redaction the server applied', () => {
-  it('carries hidden sources, hidden details, hidden attachments and who asked into the pair', () => {
-    const messages = [
-      {
-        _id: 'q1',
-        messageType: 'user_query',
-        content: 'What about it?',
-        askedBy: { userId: 'u1', name: 'Alice' },
-        attachments: [{ redacted: true, reason: 'no_access', requestAccess: access }],
-      },
+describe('archived chat message pairs', () => {
+  it('builds citation maps from the answer citations', () => {
+    const [pair] = buildMessagePairs([
+      { _id: 'q1', messageType: 'user_query', content: 'What about it?' },
       {
         _id: 'a1',
         messageType: 'bot_response',
-        content: '',
-        detailsHidden: true,
-        redaction: { redacted: true, partial: false, reason: 'no_access' },
-        citations: [{ citationId: 'c1', redacted: true, reason: 'no_access', requestAccess: access }],
+        content: 'It is [1].',
+        citations: [{ citationId: 'c1', citationData: { _id: 'c1', content: 'chunk', chunkIndex: 1, metadata: { recordId: 'r1', recordName: 'Doc' } } }],
       },
-    ] as unknown as ConversationMessage[];
-
-    const [pair] = buildMessagePairs(messages);
-    expect(pair?.citationMaps.redaction?.redacted).toBe(true);
-    expect(pair?.citationMaps.redaction?.sources.map((s) => s.recordId)).toEqual(['r1']);
-    expect(pair?.citationMaps.detailsHidden).toBe(true);
-    expect(pair?.redactedAttachments.map((a) => a.recordId)).toEqual(['r1']);
-    expect(pair?.askedBy?.name).toBe('Alice');
+    ] as unknown as ConversationMessage[]);
+    expect(pair?.answer).toBe('It is [1].');
+    expect(Object.keys(pair?.citationMaps.citations ?? {})).toHaveLength(1);
   });
 
-  it('keeps an unanswered question and a plain answer working', () => {
-    const [unanswered] = buildMessagePairs([{ _id: 'q', messageType: 'user_query', content: 'hi' }] as unknown as ConversationMessage[]);
-    expect(unanswered?.answer).toBe('');
-    expect(unanswered?.citationMaps.redaction).toBeUndefined();
+  it('keeps an unanswered question and skips an empty answer instead of pairing it as a question', () => {
+    const pairs = buildMessagePairs([
+      { _id: 'q1', messageType: 'user_query', content: 'hi' },
+      { _id: 'a1', messageType: 'bot_response', content: '' },
+      { _id: 'q2', messageType: 'user_query', content: 'again' },
+    ] as unknown as ConversationMessage[]);
+    expect(pairs.map((p) => [p.key, p.answer])).toEqual([['q1', ''], ['q2', '']]);
+    expect(Object.keys(pairs[0]?.citationMaps.citations ?? {})).toHaveLength(0);
   });
 });

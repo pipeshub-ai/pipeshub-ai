@@ -2,7 +2,7 @@
  * chat-web-tools.spec.ts
  *
  * The web tools in chat: the step cards for `web_search` and `fetch_url`, and
- * the deep research toggle in the composer's "+" menu.
+ * the capabilities the composer's "+" menu sends.
  *
  * Every backend call is mocked with page.route(), as in chat-streaming.spec.ts.
  * The stream carries the frames the Python AG-UI emitter sends for a tool call
@@ -264,43 +264,23 @@ test.describe('Chat — web tools (mocked backend)', () => {
       .getByRole('link', { name: 'Quickstart - PipesHub' })).toBeVisible();
   });
 
-  test('deep research is off by default and is sent when turned on', async ({ page }) => {
-    await plusMenuButton(page).click();
-    const deep = page.getByRole('switch', { name: 'Deep research' });
-    await expect(deep).toBeVisible();
-    await expect(deep).not.toBeChecked();
+  test('a deep research choice saved before the toggle was removed is not sent', async ({ page }) => {
+    await page.evaluate(() => localStorage.setItem(
+      'pipeshub-agent-capabilities',
+      JSON.stringify({ internalSearch: true, webSearch: true, deepSearch: true }),
+    ));
+    await page.reload();
+    await page.waitForSelector('textarea', { timeout: 15_000 });
 
-    await deep.click();
-    await expect(deep).toBeChecked();
+    await plusMenuButton(page).click();
+    await expect(page.getByRole('switch', { name: /^Web search$/i })).toBeVisible();
+    await expect(page.getByRole('switch', { name: /deep research/i })).toHaveCount(0);
     await page.keyboard.press('Escape');
-    // The trigger says filters are applied once a capability differs from the default.
-    await expect(page.getByRole('button', { name: /Search filters applied/ }).filter({ visible: true }).first())
-      .toBeVisible();
+    await expect(page.getByRole('button', { name: /Search filters applied/ })).toHaveCount(0);
 
     await send(page, QUESTION);
     await expect(page.locator(`text=${ANSWER}`).first()).toBeVisible({ timeout: 20_000 });
     expect(streamBodies).toHaveLength(1);
-    expect(streamBodies[0].agentCapabilities).toMatchObject({ webSearch: true, deepSearch: true });
-  });
-
-  test('deep research needs web search', async ({ page }) => {
-    await plusMenuButton(page).click();
-    const deep = page.getByRole('switch', { name: 'Deep research' });
-    await deep.click();
-    await expect(deep).toBeChecked();
-
-    await page.getByRole('switch', { name: /^Web search$/i }).click();
-    await expect(deep).toBeDisabled();
-  });
-
-  test('the choice is kept after a reload', async ({ page }) => {
-    await plusMenuButton(page).click();
-    await page.getByRole('switch', { name: 'Deep research' }).click();
-    await page.keyboard.press('Escape');
-
-    await page.reload();
-    await page.waitForSelector('textarea', { timeout: 15_000 });
-    await plusMenuButton(page).click();
-    await expect(page.getByRole('switch', { name: 'Deep research' })).toBeChecked();
+    expect(streamBodies[0].agentCapabilities).toEqual({ internalSearch: true, webSearch: true });
   });
 });

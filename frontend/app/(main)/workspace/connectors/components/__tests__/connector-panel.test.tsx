@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const api = vi.hoisted(() => ({
@@ -366,6 +366,17 @@ describe('ConnectorPanel: members and OAuth apps', () => {
 });
 
 describe('ConnectorPanel: editing saved credentials', () => {
+  const savedJiraConfig = () =>
+    api.getConnectorConfig.mockResolvedValue(
+      makeConfig({
+        config: {
+          auth: { values: { baseUrl: 'https://acme.atlassian.net', email: 'a@b.co', apiToken: 'old' } },
+          sync: {},
+          filters: {},
+        },
+      })
+    );
+
   it('saves changed credentials for an existing instance and moves on to Configure', async () => {
     api.getConnectorConfig.mockResolvedValue(
       makeConfig({
@@ -408,6 +419,149 @@ describe('ConnectorPanel: editing saved credentials', () => {
     await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalled());
     await waitFor(() => expect(nextButton().hasAttribute('disabled')).toBe(false));
     expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+  });
+  describe('on an enabled connector', () => {
+    const savedJira = () =>
+      api.getConnectorConfig.mockResolvedValue(
+        makeConfig({
+          config: {
+            auth: { values: { baseUrl: 'https://acme.atlassian.net', email: 'a@b.co', apiToken: 'old' } },
+            sync: {},
+            filters: {},
+          },
+        })
+      );
+
+    it('offers to disable it, then saves what was entered', async () => {
+      savedJira();
+      await startEdit({ isActive: true, isAuthenticated: false, isConfigured: false });
+      fillCredentials({ token: 'new-token' });
+
+      fireEvent.click(nextButton());
+
+      expect(
+        await screen.findByText(
+          '"Jira (Engineering)" is currently enabled. To save the new credentials, it will be automatically disabled first. Do you want to proceed?'
+        )
+      ).toBeTruthy();
+      expect(api.saveAuthConfig).not.toHaveBeenCalled();
+
+      fireEvent.click(screen.getByRole('button', { name: 'Disable & proceed' }));
+
+      await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledTimes(1));
+      expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync');
+      expect(api.toggleConnector.mock.invocationCallOrder[0]).toBeLessThan(
+        api.saveAuthConfig.mock.invocationCallOrder[0]
+      );
+      expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', {
+        auth: expect.objectContaining({ apiToken: 'new-token' }),
+        baseUrl: window.location.origin,
+      });
+    });
+
+    it('keeps what was entered when the admin cancels', async () => {
+      savedJira();
+      await startEdit({ isActive: true, isAuthenticated: false, isConfigured: false });
+      fillCredentials({ token: 'new-token' });
+      fireEvent.click(nextButton());
+      await screen.findByText('Connector is currently enabled');
+
+      fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+
+      await waitFor(() => expect(screen.queryByText('Connector is currently enabled')).toBeNull());
+      expect(api.toggleConnector).not.toHaveBeenCalled();
+      expect(api.saveAuthConfig).not.toHaveBeenCalled();
+      expect((inputByLabel('API token') as HTMLInputElement).value).toBe('new-token');
+      expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+    });
+
+    it('drops what was entered when the panel moves to another connector before confirming', async () => {
+      savedJira();
+      await startEdit({ isActive: true, isAuthenticated: false, isConfigured: false });
+      fillCredentials({ token: 'new-token' });
+      fireEvent.click(nextButton());
+      await screen.findByText('Connector is currently enabled');
+
+      act(() => {
+        const other = makeInstance({ _key: 'conn-2', name: 'Jira (Sales)', isActive: true });
+        useConnectorsStore.getState().closePanel();
+        useConnectorsStore.getState().openPanel(other, other._key, 'team');
+      });
+
+      await waitFor(() => expect(screen.queryByText('Connector is currently enabled')).toBeNull());
+      expect(api.toggleConnector).not.toHaveBeenCalled();
+      expect(api.saveAuthConfig).not.toHaveBeenCalled();
+    });
+  });
+
+  it('leaves the tab of a connector opened while the save ran', async () => {
+    savedJiraConfig();
+    let finishSave: (value: unknown) => void = () => {};
+    api.saveAuthConfig.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
+    await startEdit({ isAuthenticated: false, isConfigured: false });
+    fillCredentials({ token: 'new-token' });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', expect.anything()));
+
+    act(() => {
+      const other = makeInstance({ _key: 'conn-2', name: 'Jira (Sales)', isAuthenticated: false, isConfigured: false });
+      useConnectorsStore.getState().closePanel();
+      useConnectorsStore.getState().openPanel(other, other._key, 'team');
+    });
+    expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+    await act(async () => finishSave({}));
+
+    await waitFor(() => expect(useConnectorsStore.getState().isSavingAuth).toBe(false));
+    expect(useConnectorsStore.getState().panelConnectorId).toBe('conn-2');
+    expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+  });
+
+  it('leaves a panel reopened for the same connector while the save ran', async () => {
+    savedJiraConfig();
+    let finishSave: (value: unknown) => void = () => {};
+    api.saveAuthConfig.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
+    const instance = makeInstance({ isAuthenticated: false, isConfigured: false });
+    await startEdit({ isAuthenticated: false, isConfigured: false });
+    fillCredentials({ token: 'first-try' });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', expect.anything()));
+
+    act(() => useConnectorsStore.getState().closePanel());
+    act(() => useConnectorsStore.getState().openPanel(instance, instance._key, 'team'));
+    await waitFor(() => expect(screen.queryByText('Loading configuration…')).toBeNull());
+    fillCredentials({ token: 'second-try' });
+    const loadsBefore = api.getConnectorConfig.mock.calls.length;
+    await act(async () => finishSave({}));
+
+    await waitFor(() => expect(useConnectorsStore.getState().isSavingAuth).toBe(false));
+    expect(api.getConnectorConfig.mock.calls.length).toBe(loadsBefore);
+    expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+    expect((inputByLabel('API token') as HTMLInputElement).value).toBe('second-try');
+  });
+
+  it('leaves the loading and error state of a connector opened without closing the panel', async () => {
+    savedJiraConfig();
+    let failSave: (reason: unknown) => void = () => {};
+    api.saveAuthConfig.mockReturnValue(new Promise((_, reject) => (failSave = reject)));
+    await startEdit({ isAuthenticated: false, isConfigured: false });
+    fillCredentials({ token: 'new-token' });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', expect.anything()));
+    const loadsBefore = api.getConnectorConfig.mock.calls.length;
+
+    act(() => {
+      const other = makeInstance({ _key: 'conn-2', name: 'Jira (Sales)', isAuthenticated: false, isConfigured: false });
+      useConnectorsStore.getState().openPanel(other, other._key, 'team');
+    });
+    await waitFor(() => expect(useConnectorsStore.getState().isLoadingConfig).toBe(false));
+    await act(async () => failSave({ type: 'VALIDATION_ERROR', message: 'Token rejected by Jira.' }));
+
+    await waitFor(() => expect(useConnectorsStore.getState().isSavingAuth).toBe(false));
+    const s = useConnectorsStore.getState();
+    expect(s.panelConnectorId).toBe('conn-2');
+    expect(s.saveError).toBeNull();
+    expect(s.isLoadingConfig).toBe(false);
+    expect(api.getConnectorConfig.mock.calls.slice(loadsBefore).map((call) => call[0])).not.toContain('conn-1');
   });
 });
 

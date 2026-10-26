@@ -85,6 +85,12 @@ class FakeRecordsDb:
     async def get_user_group_by_external_id(self, connector_id: str, external_id: str) -> AppUserGroup | None:
         return self.user_groups.get(external_id)
 
+    async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> RecordGroup | None:
+        return self.record_groups.get(external_id)
+
+    async def has_stored_permissions(self, entity: str, connector_id: str, external_id: str, **_: object) -> bool:
+        return bool(self.record_group_permissions.get(external_id))
+
     # ------------------------------------------------------------------ writes
 
     async def on_new_records(self, records_with_permissions: list[tuple[Record, list[Permission]]]) -> None:
@@ -140,6 +146,18 @@ class FakeRecordsDb:
                 self.record_permissions.pop(ext_id, None)
         self.deleted.append(record_id)
 
+    async def on_record_group_deleted(self, external_group_id: str, connector_id: str, **_: object) -> bool:
+        """The group, the groups below it, and every record in any of them."""
+        doomed = {external_group_id}
+        doomed |= {g for g, group in self.record_groups.items() if group.parent_external_group_id == external_group_id}
+        for record in list(self.records.values()):
+            if record.external_record_group_id in doomed:
+                await self.on_record_deleted(record.id)
+        for group_id in doomed:
+            self.record_groups.pop(group_id, None)
+            self.record_group_permissions.pop(group_id, None)
+        return True
+
     async def on_records_moved(self, moves: list[tuple[str, Record, list[Permission]]]) -> None:
         for old_external_id, new_record, permissions in moves:
             existing = self.records.pop(old_external_id, None)
@@ -190,6 +208,9 @@ class FakeCheckpointStore:
         self.writes.append((key, dict(data)))
         self.points[key] = {**self.points.get(key, {}), **data}
 
+    async def delete_sync_point(self, key: str) -> None:
+        self.points.pop(key, None)
+
     def issues_checkpoint(self, project_id: int) -> int | None:
         return (self.points.get(f"GITLAB/{project_id}-work-items/") or {}).get("last_sync_time")
 
@@ -210,17 +231,24 @@ class FakeDataStore:
     async def transaction(self, explicit: bool | None = None) -> AsyncIterator[FakeDataStore]:
         yield self
 
-    async def get_nodes_by_filters(self, collection: str, filters: dict[str, Any]) -> list[dict[str, Any]]:
-        out = []
-        for record in self.db.records.values():
-            if str(getattr(record.record_type, "value", record.record_type)) != filters.get("recordType"):
-                continue
-            if record.external_record_group_id != filters.get("externalGroupId"):
-                continue
-            if record.source_created_at is not None or record.source_updated_at is not None:
-                continue
-            out.append({"id": record.id, "externalRecordId": record.external_record_id, "webUrl": record.weburl})
-        return out
+    async def get_nodes_by_filters(
+        self, collection: str, filters: dict[str, Any], return_fields: list[str] | None = None,
+    ) -> list[dict[str, Any]]:
+        """Every stored node matching all the filters, as the graph stores answer them."""
+        if collection == "recordGroups":
+            nodes = [{"id": g.id, "connectorId": g.connector_id, "externalGroupId": g.external_group_id,
+                      "name": g.name} for g in self.db.record_groups.values()]
+        else:
+            nodes = [{"id": r.id, "connectorId": r.connector_id, "externalRecordId": r.external_record_id,
+                      "externalGroupId": r.external_record_group_id, "webUrl": r.weburl,
+                      "recordType": str(getattr(r.record_type, "value", r.record_type)),
+                      "sourceCreatedAtTimestamp": r.source_created_at,
+                      "sourceLastModifiedTimestamp": r.source_updated_at} for r in self.db.records.values()]
+        found = [n for n in nodes if all(n.get(k) == v for k, v in filters.items())]
+        if return_fields:
+            # `_key` is the node's id, as both graph stores answer it.
+            found = [{f: n.get("id" if f == "_key" else f) for f in return_fields} for n in found]
+        return found
 
     async def batch_update_nodes(self, patches: list[dict[str, Any]], collection: str) -> None:
         for patch in patches:

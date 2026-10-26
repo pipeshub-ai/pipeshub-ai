@@ -1,7 +1,7 @@
 'use client';
 
 import type { ReactNode } from 'react';
-import { Box } from '@radix-ui/themes';
+import { Flex } from '@radix-ui/themes';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 export interface ConversationHeaderOverlayProps {
@@ -12,28 +12,16 @@ export interface ConversationHeaderOverlayProps {
   shareGroup: ReactNode;
 }
 
-/** Top-right items over the conversation. Editions plug in via config.ts. */
+/** Top-right items over the conversation, in one row. Editions plug in via config.ts. */
 export function ConversationHeaderOverlay({ agentChip, shareGroup }: ConversationHeaderOverlayProps) {
   // No room on a phone; the agent header menu shows the creator instead.
   const showChip = !useIsMobile() && !!agentChip;
+  if (!showChip && !shareGroup) return null;
   return (
-    <>
-      {showChip && (
-        <Box
-          style={{
-            position: 'absolute',
-            top: 10,
-            right: shareGroup ? 200 : 16,
-            zIndex: 19,
-          }}
-        >
-          {agentChip}
-        </Box>
-      )}
-
-      {shareGroup && (
-        <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>{shareGroup}</Box>
-      )}
-    </>
+    // gap 4 matches ShareHeaderGroup; the ghost Share button's negative margin eats part of it.
+    <Flex align="center" gap="4" style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
+      {showChip && agentChip}
+      {shareGroup}
+    </Flex>
   );
 }

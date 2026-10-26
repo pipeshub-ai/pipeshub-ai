@@ -15,7 +15,7 @@ import {
 } from '../schema/oauth.device_code.schema'
 import { OAuthGrantType } from '../schema/oauth.app.schema'
 import {
-  sameKnowledgeLimit,
+  isKnowledgeLimitWithin,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import { OAuthAppService } from './oauth.app.service'
@@ -154,9 +154,10 @@ export class OAuthDeviceService {
       })
       return
     }
-    // The consent screen showed the limit stored on the code; an edit since then voids it.
+    // The consent screen showed the limit stored on the code, and the tokens
+    // carry it. A narrowing since then voids it; a widening does not.
     const app = await this.oauthAppService.getAppByClientId(record.clientId);
-    if (!sameKnowledgeLimit(record.knowledgeLimit, app.knowledgeLimit)) {
+    if (!isKnowledgeLimitWithin(record.knowledgeLimit, app.knowledgeLimit)) {
       throw new InvalidGrantError(
         "The application's permissions changed after this login started. Start it again.",
       );
@@ -239,7 +240,7 @@ export class OAuthDeviceService {
       throw new InvalidGrantError('device_code has already been used')
     }
 
-    if (!sameKnowledgeLimit(claimed.knowledgeLimit, app.knowledgeLimit)) {
+    if (!isKnowledgeLimitWithin(claimed.knowledgeLimit, app.knowledgeLimit)) {
       throw new InvalidGrantError(
         "The application's permissions changed after you allowed it. Sign in again.",
       );
@@ -285,7 +286,10 @@ export class OAuthDeviceService {
       true,
       fullName,
       accountType,
-      { recheckAppScopes: true },
+      {
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: toKnowledgeLimit(claimed.knowledgeLimit) ?? null,
+      },
     )
 
     return {

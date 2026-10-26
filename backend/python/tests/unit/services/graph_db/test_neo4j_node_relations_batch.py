@@ -146,6 +146,36 @@ class TestFailure:
         assert call.kwargs["parameters"]["limit"] == 5
 
     @pytest.mark.asyncio
+    async def test_default_batch_caps_queries_in_flight(self) -> None:
+        import asyncio
+
+        from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+        from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY
+
+        in_flight = peak = 0
+
+        async def query(*_args, **_kwargs) -> list:
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return [{"record_id": "x"}]
+
+        p = _provider([])
+        p.get_parent_record_ids_by_relation_type = query
+        p.get_child_record_ids_by_relation_type = query
+        record_ids = [f"r{i}" for i in range(GRAPH_FANOUT_CONCURRENCY * 2)]
+
+        # Call the interface default, not Neo4j's specialised batch query.
+        out = await IGraphDBProvider.get_node_relations_batch(
+            p, record_ids, ["PARENT_CHILD", "ATTACHMENT"]
+        )
+
+        assert all(len(out[rid]["parents"]) == 2 for rid in record_ids)
+        assert peak == GRAPH_FANOUT_CONCURRENCY
+
+    @pytest.mark.asyncio
     async def test_default_batch_skips_non_mapping_rows(self) -> None:
         from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 

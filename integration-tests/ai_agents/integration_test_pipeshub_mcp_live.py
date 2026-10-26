@@ -22,7 +22,7 @@ SEARCH_TOOL = "pipeshub_search"
 
 
 async def _tools_and_search(url: str, token: str, query: str) -> tuple[list[str], str, bool]:
-    async with Client(StreamableHttpTransport(url, auth=token)) as client:
+    async with Client(StreamableHttpTransport(url, auth=token), mode="legacy") as client:
         tools = [tool.name for tool in await client.list_tools()]
         result = await client.call_tool_mcp(SEARCH_TOOL, {"query": query})
         text = "\n".join(getattr(c, "text", "") for c in result.content)

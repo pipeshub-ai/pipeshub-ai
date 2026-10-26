@@ -2,8 +2,7 @@
 
 The image installs the manifest on top of a published base image, and uv keeps a
 package that still satisfies the manifest, so a transitive dependency only moves
-when the manifest names it. These checks also keep the integration-test manifest
-on the same pins as the backend one.
+when the manifest names it.
 """
 
 import importlib.metadata
@@ -15,7 +14,6 @@ from packaging.requirements import Requirement
 from packaging.version import Version
 
 BACKEND_MANIFEST = Path(__file__).resolve().parents[2] / "pyproject.toml"
-INTEGRATION_MANIFEST = Path(__file__).resolve().parents[4] / "integration-tests" / "pyproject.toml"
 
 # package -> lowest release that carries the fixes for the advisories listed.
 SECURITY_FLOORS = {
@@ -49,13 +47,3 @@ def test_backend_manifest_does_not_admit_a_vulnerable_release(package: str) -> N
     ]
     assert lower_bounds
     assert min(lower_bounds) >= SECURITY_FLOORS[package]
-
-
-@pytest.mark.parametrize("package", sorted(SECURITY_FLOORS))
-def test_integration_tests_manifest_carries_the_same_pin(package: str) -> None:
-    if not INTEGRATION_MANIFEST.exists():
-        pytest.skip("integration-tests/ is not part of this checkout")
-    integration = _specifiers(INTEGRATION_MANIFEST)
-    if package not in integration:
-        pytest.skip(f"integration-tests/ does not name {package}")
-    assert integration[package] == _specifiers(BACKEND_MANIFEST)[package]

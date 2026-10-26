@@ -2125,7 +2125,7 @@ class TestSearchWithFilters:
 
     async def _knowledge_search_over_a_thread(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock,
-        *, passages: int, hit: int | list[int] | dict[int, float] | None,
+        *, passages: int, hit: int | list[int] | dict[int, float] | None, group_index: int | None = None,
     ) -> dict:
         """A match inside a long thread: the thread is expanded into every passage."""
         from app.models.blocks import GroupType
@@ -2160,6 +2160,8 @@ class TestSearchWithFilters:
                 for i in range(passages)
             ]),
         }
+        if group_index is not None:
+            unit["block_group_index"] = group_index
         if hit is not None:
             if isinstance(hit, int):
                 hit = [hit]
@@ -2190,6 +2192,18 @@ class TestSearchWithFilters:
         kept = [(hit["block_index"], hit["distanceFromMatch"]) for hit in result["searchResults"]]
         assert kept == [(18, 2), (19, 1), (20, 0), (21, 1)]
         assert result["omittedPassages"] == {"rec1": 36}
+
+    @pytest.mark.asyncio
+    async def test_each_passage_of_an_expanded_section_names_its_section(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Two sections of one record can share an RRF score, so the score cannot say
+        which section a passage came from; the section's block group index can."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=4, hit=2, group_index=7
+        )
+
+        assert [hit.get("block_group_index") for hit in result["searchResults"]] == [7, 7, 7, 7]
 
     @pytest.mark.asyncio
     async def test_the_search_apis_links_keep_to_a_connected_apps_limit(

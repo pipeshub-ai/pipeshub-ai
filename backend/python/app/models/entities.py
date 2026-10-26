@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 import builtins
 import logging
 import os
@@ -28,6 +29,7 @@ from app.models.blocks import (
     BlocksContainer,
     SemanticMetadata,
 )
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, RecordDates
 from app.utils.jinja_templates import compiled_template, one_line
 from app.utils.time_conversion import (
     format_day_for_llm,
@@ -298,7 +300,6 @@ class Record(BaseModel):
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Write-time only. Set when a record's parent is not its permission parent.
-    # Jira does not set this: a story inherits its epic.
     inherit_permissions_from_group: bool = Field(default=False)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)
@@ -317,6 +318,7 @@ class Record(BaseModel):
     updated_at: int = Field(default_factory=get_epoch_timestamp_in_ms, description="Epoch timestamp in milliseconds of the record update")
     source_created_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record creation in the source system")
     source_updated_at: int | None = Field(default=None, description="Epoch timestamp in milliseconds of the record update in the source system")
+    source_timestamp_origin: str | None = Field(default=None, description="Knowledge-base uploads only: what set the source timestamps (app.models.source_dates.SourceTimestampOrigin)")
     processing_started_at: int | None = Field(default=None, description="Epoch ms when parse/index processing began for the current attempt; null when idle")
     queued_at: int | None = Field(default=None, description="Epoch ms the platform last put this record in line for indexing. Platform-owned, unlike updated_at, which connectors may fill with source-system time; the stranded-record sweep ages on it")
 
@@ -380,6 +382,18 @@ class Record(BaseModel):
         # the model otherwise guesses when asked for "Mon, Jul 27, 3:45 PM".
         return format_epoch_ms_for_llm(epoch_ms)
 
+    def source_dates(self) -> RecordDates:
+        return RecordDates.resolve(
+            connector_name=self.connector_name,
+            origin=self.origin,
+            stored_origin=self.source_timestamp_origin,
+            created_ms=self.source_created_at,
+            modified_ms=self.source_updated_at,
+            # A record built without its stored createdAtTimestamp has the
+            # time it was built there, which is no upload time.
+            uploaded_ms=self.created_at if "created_at" in self.model_fields_set else None,
+        )
+
     def _format_person(self, name: str | None, email: str | None) -> str:
         """Helper to format a person with name and/or email"""
         if name and email:
@@ -403,8 +417,7 @@ class Record(BaseModel):
             f"Connector: {self.connector_name.value}",
             f"Type: {self.record_type.value}",
             f"External ID: {self.external_record_id}",
-            f"Created At: {self._format_timestamp(self.source_created_at)}",
-            f"Last Updated At: {self._format_timestamp(self.source_updated_at)}",
+            *self.source_dates().header_lines(self._format_timestamp),
             f"Connector ID: {self.connector_id if self.connector_id else 'N/A'}",
             f"External Parent ID: {self.parent_external_record_id if self.parent_external_record_id else 'N/A'}",
         ]
@@ -490,6 +503,8 @@ class Record(BaseModel):
         base.update({k: v for k, v in delete_state.items() if v is not None})
         if self.uploaded_by:
             base["uploadedBy"] = self.uploaded_by
+        if self.source_timestamp_origin:
+            base[SOURCE_TIMESTAMP_ORIGIN_FIELD] = self.source_timestamp_origin
         return base
 
     @staticmethod
@@ -568,6 +583,7 @@ class Record(BaseModel):
             # narrowing it.
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
+            source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -810,6 +826,7 @@ class FileRecord(Record):
             storage_document_id=arango_base_record.get("storageDocumentId"),
             access_rule=read_access_rule(arango_base_record),
             uploaded_by=arango_base_record.get("uploadedBy"),
+            source_timestamp_origin=arango_base_record.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -965,6 +982,7 @@ class MessageRecord(Record):
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1093,6 +1111,7 @@ class MailRecord(Record):
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
             label_ids=mail_doc.get("labelIds", []),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1155,6 +1174,7 @@ class WebpageRecord(Record):
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
             is_placeholder=record_doc.get("isPlaceholder", False),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1243,6 +1263,8 @@ class LinkRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1262,6 +1284,7 @@ class LinkRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1353,6 +1376,7 @@ class CommentRecord(Record):
             author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1495,8 +1519,12 @@ class TicketRecord(Record):
         self,
         frontend_url: str | None = None,
         config_service: Any = None,
+        readable_issue_ids: Callable[[str, set[str]], Awaitable[set[str]]] | None = None,
     ) -> str:
-        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC."""
+        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC.
+
+        ``readable_issue_ids(connector_id, issue_ids)`` gives the issues the viewer may read.
+        """
         base = self.to_llm_context(frontend_url=frontend_url)
         if not config_service:
             return base
@@ -1507,7 +1535,7 @@ class TicketRecord(Record):
             )
             if not is_jira_connector(self.connector_name):
                 return base
-            return await enrich_ticket_llm_context(base, self, config_service)
+            return await enrich_ticket_llm_context(base, self, config_service, readable_issue_ids)
         except Exception:
             return base
 
@@ -1611,8 +1639,11 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            # With it lost, the email fields (then the source's user ids) read as emails.
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1696,6 +1727,8 @@ class ProjectRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1717,6 +1750,7 @@ class ProjectRecord(Record):
             lead_id=project_doc.get("leadId"),
             lead_name=project_doc.get("leadName"),
             lead_email=project_doc.get("leadEmail"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1799,6 +1833,7 @@ class ProductRecord(Record):
             is_active=product_doc.get("isActive"),
             sku=product_doc.get("sku"),
             list_price=product_doc.get("listPrice"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2123,6 +2158,7 @@ class DealRecord(Record):
             is_closed=deal_doc.get("isClosed"),
             created_date=deal_doc.get("createdDate"),
             close_date=deal_doc.get("closeDate"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2317,6 +2353,7 @@ class SQLViewRecord(Record):
             source_tables=view_doc.get("sourceTables") or [],
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2417,6 +2454,7 @@ class SQLTableRecord(Record):
             primary_keys=table_doc.get("primaryKeys") or [],
             foreign_keys=table_doc.get("foreignKeys") or [],
             comment=table_doc.get("comment"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2625,6 +2663,7 @@ class PullRequestRecord(Record):
             last_commit_sha=pr_doc.get("lastCommitSha"),
             merged_at=pr_doc.get("mergedAtTimestamp"),
             closed_at=pr_doc.get("closedAtTimestamp"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2822,6 +2861,7 @@ class ArtifactRecord(Record):
             content_hash=artifact_doc.get("contentHash"),
             result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -3049,6 +3089,7 @@ class CodeFileRecord(Record):
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
             commit_sha=arango_base_code_file_record.get("commitSha"),
+            access_rule=read_access_rule(arango_base_record),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -3289,6 +3330,7 @@ class AppUser(BaseModel):
     is_active: bool = Field(default=False, description="Whether the user is active")
     title: str | None = Field(default=None, description="Title of the user")
     is_guest: bool = Field(default=False, description="Whether the source directory lists the user as a guest; a synced guest is not made an org member")
+    source_role: str | None = Field(default=None, description="The user's administrative role in the source (e.g. team admin); not a job title and not stored")
 
     def to_arango_base_user(self) -> dict:
         return {
@@ -3300,6 +3342,8 @@ class AppUser(BaseModel):
             "isActive": self.is_active,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            # "designation" is the graph user field the schema already allows; it rejects null.
+            **({"designation": self.title} if self.title else {}),
         }
 
     @staticmethod
@@ -3311,6 +3355,7 @@ class AppUser(BaseModel):
             user_id=data.get("userId"),
             is_active=data.get("isActive", False),
             full_name=data.get("fullName"),
+            title=data.get("designation") or data.get("title"),
             source_user_id=data.get("sourceUserId", ""),
             app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()),
             connector_id=data.get("connectorId", ""),
@@ -3580,6 +3625,7 @@ class MeetingRecord(Record):
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
             recording_url=meeting_doc.get("recordingUrl"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 

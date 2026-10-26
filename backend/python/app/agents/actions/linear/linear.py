@@ -287,13 +287,13 @@ class Linear:
         try:
             # Convert string filter (if provided) to dict expected by data source
             filter_dict = None
-            if filter:
+            if filter is not None:
                 try:
-                    parsed = json.loads(filter)
-                    if isinstance(parsed, dict):
-                        filter_dict = parsed
-                except Exception:
-                    filter_dict = None
+                    filter_dict = json.loads(filter)
+                except (ValueError, TypeError, RecursionError):
+                    return False, json.dumps({"error": "Invalid filter: not valid JSON. Pass a JSON object of Linear issue filter fields."})
+                if not isinstance(filter_dict, dict):
+                    return False, json.dumps({"error": "Invalid filter: must be a JSON object of Linear issue filter fields."})
 
             response = await self.client.issues(first=first, after=after, filter=filter_dict)
 

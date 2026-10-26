@@ -251,6 +251,8 @@ const FUZZY_MATCH_RULES: Array<[string, ConnectorType]> = [
   ['exa', 'exa'], ['discord', 'discord'], ['posthog', 'posthog'],
   ['brave', 'brave'],
   // Broad fallbacks (last — only match if nothing specific matched)
+  // Google toolset slugs are bare (`docs`, `sheets`); check them before the `google` catch-all.
+  ['docs', 'google-docs'], ['sheets', 'google-sheets'],
   ['google', 'google-drive'], ['microsoft', 'sharepoint'], ['365', 'sharepoint'],
   ['azure', 'azure-blob'], ['drive', 'google-drive'],
   ['calendar', 'google-calendar'],

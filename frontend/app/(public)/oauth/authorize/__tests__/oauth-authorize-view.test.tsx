@@ -128,3 +128,24 @@ describe('OAuthAuthorizeView not-granted scopes', () => {
     expect(screen.queryByText(OFFLINE_ACCESS_WARNING)).toBeNull();
   });
 });
+
+describe('OAuthAuthorizeView layout', () => {
+  afterEach(() => {
+    cleanup();
+  });
+
+  // body is overflow: hidden, so a minHeight wrapper grows past the screen and the buttons get clipped.
+  it('makes the page wrapper a fixed-height scroll container', async () => {
+    get.mockResolvedValue(consentResponse([]));
+
+    render(h(Theme, null, h(OAuthAuthorizeView, null)));
+
+    let wrapper: HTMLElement | null = await screen.findByText('Claude');
+    while (wrapper && wrapper.style.overflowY !== 'auto') {
+      wrapper = wrapper.parentElement;
+    }
+    expect(wrapper).toBeTruthy();
+    expect(wrapper.style.height).toBe('100dvh');
+    expect(wrapper.style.minHeight).toBe('');
+  });
+});

@@ -478,6 +478,42 @@ def _affinity_cpu_count() -> int | None:
         return None
 
 
+@functools.cache
+def _resolve_effective_cpus() -> tuple[int, str]:
+    quota = _cgroup_v2_cpu_quota()
+    source = "cgroup_v2"
+    if quota is None:
+        quota = _cgroup_v1_cpu_quota()
+        source = "cgroup_v1"
+    affinity = _affinity_cpu_count()
+    if quota is not None:
+        # A fractional quota rounds down; a smaller affinity mask still wins.
+        count = max(1, int(quota))
+        if affinity and affinity < count:
+            return affinity, "affinity"
+        return count, source
+    if affinity:
+        return affinity, "affinity"
+    return max(1, os.cpu_count() or 1), "os_cpu_count"
+
+
+def effective_cpu_count() -> int:
+    """Whole CPUs this process may use, for sizing workers, threads and pools.
+
+    cgroup v2 ``cpu.max`` -> cgroup v1 CFS quota -> ``sched_getaffinity`` ->
+    ``os.cpu_count()``. A fractional quota rounds down, never below 1, and a
+    smaller affinity mask wins over the quota. Cached for the process lifetime
+    and side-effect free; callers must never use a bare ``os.cpu_count()`` to
+    size anything.
+    """
+    return _resolve_effective_cpus()[0]
+
+
+def effective_cpu_source() -> str:
+    """Where :func:`effective_cpu_count` got its answer (for health output)."""
+    return _resolve_effective_cpus()[1]
+
+
 def _resolve_cpu_quota() -> float:
     quota = _cgroup_v2_cpu_quota()
     if quota is not None:

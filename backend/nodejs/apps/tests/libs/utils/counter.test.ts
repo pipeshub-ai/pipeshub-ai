@@ -71,7 +71,7 @@ describe('counter', () => {
       // Second arg: update
       expect(args[1]).to.deep.equal({ $inc: { seq: 1 } });
       // Third arg: options
-      expect(args[2]).to.deep.include({ new: true, upsert: true });
+      expect(args[2]).to.deep.include({ returnDocument: 'after', upsert: true });
     });
 
     it('should produce URL-friendly slugs', async () => {

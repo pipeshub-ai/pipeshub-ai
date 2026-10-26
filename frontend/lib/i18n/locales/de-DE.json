@@ -312,25 +312,16 @@
     "filterOnlyUnread": "Ungelesen",
     "filterArchived": "Archiviert",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} hat einen Chat mit Ihnen geteilt",
+      "titleAgent": "{{name}} hat einen Agenten-Chat mit Ihnen geteilt",
+      "body": "Sie können „{{chat}}“ jetzt öffnen.",
+      "bodyNoTitle": "Sie können ihn jetzt unter „{{place}}“ öffnen.",
+      "someone": "Ein Kollege"
+    },
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
-    "removeFailed": "Benachrichtigung konnte nicht entfernt werden",
-    "accessRequest": {
-      "approve": "Genehmigen",
-      "deny": "Ablehnen",
-      "approved": "Zugriff gewährt",
-      "denied": "Anfrage abgelehnt",
-      "failed": "Ihre Entscheidung konnte nicht gespeichert werden. Bitte versuchen Sie es erneut.",
-      "approveTitle": "Zugriff genehmigen?",
-      "approveBodyCollection": "Damit erhält {{user}} Lesezugriff auf die gesamte Sammlung „{{name}}“.",
-      "approveBodyRecord": "Damit erhält {{user}} Lesezugriff auf diesen Datensatz.",
-      "cancel": "Abbrechen",
-      "alreadyDecided": "Diese Anfrage wurde bereits entschieden.",
-      "someone": "Jemand",
-      "alreadyApproved": "Bereits genehmigt",
-      "alreadyDeclined": "Bereits abgelehnt",
-      "forwarded": "Der Zugriff auf diesen Datensatz wird im Quellsystem gewährt."
-    }
+    "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
   },
   "action": {
     "find": "Finden",
@@ -431,7 +422,7 @@
     "willBeReindexed": "wird neu indiziert",
     "reindexConfirm": "Diesen {{type}} neu indizieren?",
     "reindexDescription": "Dies aktualisiert den Suchindex für diesen {{type}} und seinen Inhalt.",
-    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht.",
+    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden.",
     "deleteFolderBody": "'{{name}}' und alle Inhalte werden aus dieser Sammlung gelöscht.",
     "deleteFileBody": "'{{name}}' wird aus dieser Sammlung gelöscht."
   },
@@ -654,6 +645,7 @@
       "empty": "Leer",
       "paused": "Pausiert",
       "needsMultimodalModel": "Multimodales Modell erforderlich",
+      "passwordProtected": "Passwortgeschützt",
       "skipped": "Übersprungen",
       "pending": "Ausstehend"
     },
@@ -666,7 +658,9 @@
       "open": "Öffnen",
       "preview": "Vorschau",
       "goToParent": "Zum übergeordneten Ordner",
-      "goToNamed": "Zu {{name}}"
+      "goToNamed": "Zu {{name}}",
+      "moreFor": "Weitere Optionen für {{name}}",
+      "select": "{{name}} auswählen"
     },
     "upload": {
       "title": "Daten hochladen",
@@ -795,8 +789,6 @@
     "sharedChats": "Geteilte Chats",
     "sharedBy": "Geteilt von {{name}}",
     "agentChat": "Agent-Chat",
-    "askedBy": "{{name}} hat gefragt",
-    "askedByUnknown": "Ein anderer Nutzer hat gefragt",
     "noSharedChats": "Keine geteilten Chats",
     "yourChats": "Ihre Chats",
     "noChatsFound": "Keine Chats gefunden",
@@ -887,6 +879,8 @@
     "stoppedMarker": "Gestoppt",
     "toolCard": {
       "arguments": "Argumente",
+      "query": "Abfrage",
+      "queryCutOff": "Nur der Anfang dieser Abfrage wurde gespeichert, daher kann sie nicht kopiert werden.",
       "result": "Ergebnis",
       "error": "Fehler",
       "blocked": "Blockiert",
@@ -1296,9 +1290,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Für diesen Agenten nicht konfiguriert",
       "internalSearch": "Interne Suche",
-      "webSearch": "Websuche",
-      "deepResearch": "Tiefenrecherche",
-      "deepResearchNeedsWebSearch": "Für die Tiefenrecherche die Websuche einschalten"
+      "webSearch": "Websuche"
     },
     "resizePanels": "Größe der Chat- und Vorschau-Panels ändern",
     "demoBanner": "Sie sehen Acme Corp, ein kleines fiktives Unternehmen mit geladenen Demodaten. Probieren Sie eine dieser Fragen aus oder",
@@ -1400,20 +1392,7 @@
       "download": "Artefakt herunterladen",
       "downloading": "Artefakt wird heruntergeladen"
     },
-    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
-    "redaction": {
-      "partial": "Diese Antwort basiert teilweise auf Quellen, auf die Sie keinen Zugriff haben.",
-      "hidden": "Diese Antwort basiert auf Quellen, auf die Sie keinen Zugriff haben.",
-      "sourceLabel": "Quelle ohne Zugriff",
-      "requestAccess": "Zugriff anfragen",
-      "requested": "Zugriff angefragt",
-      "requestFailed": "Die Anfrage konnte nicht gesendet werden. Bitte versuchen Sie es erneut.",
-      "openInSource": "In der Quelle öffnen",
-      "inlineHidden": "Ausgeblendet: kein Zugriff",
-      "alreadyAccessible": "Sie können diese Quelle bereits öffnen. Laden Sie den Chat neu.",
-      "detailsHidden": "Details wie Tool-Ergebnisse und Begründungen sind für geteilte Ansichten ausgeblendet.",
-      "collectionLabel": "Zugriff auf die Sammlung anfragen, die diese Quelle enthält"
-    }
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -2668,7 +2647,8 @@
         "errorFallback": "Konnektor konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
         "actions": {
           "removeInstance": "diese Konnektor-Instanz zu entfernen",
-          "saveConfig": "Konfigurationsänderungen zu speichern"
+          "saveConfig": "Konfigurationsänderungen zu speichern",
+          "saveAuth": "die neuen Anmeldedaten zu speichern"
         }
       },
       "adminAccessDialog": {
@@ -2784,6 +2764,8 @@
         "statFailedSub": "Fehler (API- / Berechtigungsprobleme)",
         "statUnsupported": "Nicht unterstützt",
         "statUnsupportedSub": "Kann nicht verarbeitet werden",
+        "statPasswordProtected": "Passwortgeschützt",
+        "statPasswordProtectedSub": "Ohne Passwort nicht lesbar",
         "statInProgressSub": "Wird noch indexiert",
         "statQueued": "Warteschlange",
         "statQueuedSub": "Warten auf Indizierung",
@@ -2800,7 +2782,22 @@
         "localWatcherLabel": "LOKALER WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} ausstehend · {{failed}} fehlgeschlagen",
         "classification": "Klassifizierung",
-        "classificationSkipped": "Übersprungen",
+        "enrichment": {
+          "title": "Datenextraktion mit KI",
+          "description": "Läuft im Hintergrund, sobald ein Datensatz durchsuchbar ist. Die Suche wartet nicht darauf.",
+          "classificationHint": "Fügt Zusammenfassung, Themen und Kategorien hinzu",
+          "entities": "Entitätenextraktion",
+          "entitiesHint": "Findet Personen, Organisationen und Orte",
+          "progress": "{{completed}} von {{total}}",
+          "waiting": "Wartend",
+          "skipped": "Übersprungen",
+          "notStarted": "Startet, sobald Datensätze durchsuchbar sind",
+          "inProgress": "In Bearbeitung",
+          "done": "Fertig",
+          "failedCount_one": "{{count}} fehlgeschlagen",
+          "failedCount_other": "{{count}} fehlgeschlagen",
+          "retry": "Wiederholen"
+        },
         "retryFailedClassification": "Fehlgeschlagene Klassifizierung wiederholen",
         "retryClassificationSuccess": "Klassifizierung erneut eingeplant",
         "retryClassificationError": "Klassifizierung konnte nicht wiederholt werden",
@@ -2889,7 +2886,9 @@
           "ready": "Abgeschlossen",
           "readyTooltip": "Die Konfiguration ist abgeschlossen und authentifiziert. Die Synchronisierung kann nach der Aktivierung starten.",
           "desktopOffline": "Desktop offline",
-          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren."
+          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren.",
+          "actionNeeded": "Handlung erforderlich",
+          "actionNeededTooltip": "Erfordert Ihre Aufmerksamkeit: {{items}}"
         },
         "sync": {
           "kind": "Synchronisierung",
@@ -3136,6 +3135,12 @@
           "wholeSite": "Ganze Website",
           "onePage": "Eine Seite"
         }
+      },
+      "actionItems": {
+        "badge": "Handlung erforderlich",
+        "title": "Handlung erforderlich",
+        "openAuthentication": "Authentifizierung aktualisieren",
+        "viewSteps": "Einrichtungsschritte ansehen"
       }
     },
     "mcpServers": {
@@ -4309,6 +4314,12 @@
         "scopesHelp": "Wählen Sie aus, was dieses Token tun darf. Es gibt keine Standardauswahl: Eine unbeaufsichtigt verwendete Anmeldeinformation sollte nur die bewusst vergebenen Berechtigungen besitzen.",
         "expiryLabel": "Läuft ab nach",
         "expiryDays": "{{count}} Tagen",
+        "expiryCustom": "Benutzerdefiniert",
+        "expiryCustomLabel": "Tage bis zum Ablauf des Tokens",
+        "expiryCustomUnit": "Tage",
+        "expiryCustomHelp": "Geben Sie eine Anzahl von Tagen zwischen 1 und {{max}} ein.",
+        "expiryCustomInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen 1 und {{max}} ein.",
+        "expiryCustomPreview": "Läuft am {{date}} ab",
         "existing": "Tokens",
         "none": "Dieses Konto besitzt noch keine Tokens.",
         "lastUsed": "Zuletzt verwendet: {{date}}",
@@ -4573,20 +4584,17 @@
     "agentName": "Agentenname",
     "createdBy": "Erstellt von",
     "agentNamePlaceholder": "z.B. Support-Bot, Forschungsassistent",
-    "serviceAccountBadge": "Service-Agent",
-    "serviceAccountBadgeTooltip": "Dieser Service-Agent nutzt eigene Toolset-Anmeldedaten. Er durchsucht Wissen mit dem Zugriff seines Erstellers, sodass alle Nutzer nur Ergebnisse aus dem sehen, was der Ersteller lesen darf.",
-    "convertToServiceAccount": "In Service-Agent umwandeln",
-    "convertToServiceAccountTooltip": "Dauerhaft: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit dem Zugriff des Erstellers. Kann nicht rückgängig gemacht werden.",
-    "convertToServiceAccountTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit Ihrem Zugriff.",
-    "createAsServiceAccount": "Service-Agent",
-    "createAsServiceAccountTooltip": "Mit agentbezogenen Toolsets erstellen, für die gesamte Organisation freigegeben. Die Wissenssuche nutzt Ihren Zugriff.",
+    "serviceAgentBadge": "Service-Agent",
+    "serviceAgentBadgeTooltip": "Dieser Service-Agent nutzt eigene Toolset-Anmeldedaten. Er durchsucht Wissen mit dem Zugriff seines Erstellers, sodass alle Nutzer nur Ergebnisse aus dem sehen, was der Ersteller lesen darf.",
+    "convertToServiceAgentTooltip": "Dauerhaft: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit dem Zugriff des Erstellers. Kann nicht rückgängig gemacht werden.",
+    "convertToServiceAgentTooltipNewAgent": "Erstellt diesen Agenten als Service-Agent: agentbezogene Toolsets, für die gesamte Organisation freigegeben, und Wissenssuche mit Ihrem Zugriff.",
     "agentActionsMenuAria": "Agentenmenü",
     "agentMenuCreateAsServiceAgent": "Als Service-Agent erstellen",
     "agentMenuConvertToServiceAgent": "In Service-Agent umwandeln",
     "share": "Teilen",
     "shareWithOrg": "Mit allen teilen",
     "shareWithOrgTooltip": "Diesen Agenten mit allen in Ihrer Organisation teilen.",
-    "serviceAccountShareTooltip": "Service-Agenten werden immer mit der Organisation geteilt.",
+    "serviceAgentShareTooltip": "Service-Agenten werden immer mit der Organisation geteilt.",
     "saving": "Wird gespeichert…",
     "saveChanges": "Änderungen speichern",
     "createAgent": "Agenten erstellen",
@@ -4596,8 +4604,19 @@
     "userAgentDesc": "Persönlicher Agent mit benutzerspezifischer Toolset-Authentifizierung.",
     "serviceAgent": "Service-Agent",
     "serviceAgentDesc": "Organisationsweiter Agent mit Agent-Level-Toolset-Anmeldedaten. Durchsucht Wissen mit dem Zugriff seines Erstellers.",
+    "identitySearchesAs": "Sucht als {{identity}}",
+    "identityCreator": "Ersteller",
+    "identityBoundUnknown": "ein Dienstkonto",
+    "identityTooltip": "Wählen Sie die Identität, mit der dieser Agent Wissen durchsucht. Alle, die ihn nutzen, sehen Ergebnisse aus dem, was diese Identität lesen darf.",
+    "identityDialogTitle": "Wissen durchsuchen als",
+    "identityDialogBody": "Dieser Agent wird mit Ihrer gesamten Organisation geteilt, daher entscheidet dies, was die Fragen aller erreichen können. Standard ist sein Ersteller. Ein Dienstkonto ist eine Identität, die eine Administratorin oder ein Administrator bewusst vergibt.",
+    "identityChoose": "Auswählen",
+    "identityLoading": "Dienstkonten werden geladen…",
+    "identityLoadError": "Dienstkonten konnten nicht geladen werden.",
+    "identityRetry": "Erneut versuchen",
+    "identityNone": "Noch keine Dienstkonten. Erstellen Sie eines unter Arbeitsbereich → Dienstkonten.",
     "nameRequired": "Name ist erforderlich",
-    "saveAsServiceAccountFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
+    "saveAsServiceAgentFirst": "Speichern Sie den Agenten zuerst als Service-Agent, dann konfigurieren Sie die Toolset-Anmeldedaten.",
     "hidePalette": "Palette ausblenden",
     "showPalette": "Palette einblenden",
     "openInChat": "Im Chat öffnen",
@@ -4615,7 +4634,7 @@
     "agentLoadFailedTitle": "Dieser Agent konnte nicht geladen werden",
     "agentLoadFailedDescription": "Prüfen Sie Ihre Verbindung und versuchen Sie es erneut. Bis der Agent geladen ist, wird nichts gespeichert.",
     "agentLoadRetry": "Erneut versuchen",
-    "paletteViewOnlyServiceAccount": "Nur Ansicht — Palette und Toolset-Einrichtung sind für diesen Organisations-Service-Agenten gesperrt.",
+    "paletteViewOnlyServiceAgent": "Nur Ansicht — Palette und Toolset-Einrichtung sind für diesen Organisations-Service-Agenten gesperrt.",
     "paletteActionBlockedViewOnly": "Nur Ansicht: Dieser Organisations-Service-Agent und seine Toolsets können hier nicht geändert werden.",
     "viewerPaletteDragBlocked": "Nur Ansicht: Den Ablauf können Sie hier nicht ändern. Sie können Toolsets weiter unten bei „Tools“ authentifizieren.",
     "paletteViewerAuthenticateInTools": "Nur Ansicht — Ziehen von Modellen, Wissen und Tools auf die Leinwand ist deaktiviert. Nutzen Sie „Tools“ unten, um sich bei benötigten Toolsets anzumelden.",
@@ -4627,8 +4646,8 @@
     "noCollections": "Keine Sammlungen verfügbar",
     "collapse": "Einklappen",
     "expand": "Ausklappen",
-    "serviceAccountCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schlüssel-Symbol in der Palette.",
-    "serviceAccountConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schlüssel-Symbol in der Palette.",
+    "serviceAgentCreated": "Service-Agent erstellt. Konfigurieren Sie jedes Toolset mit dem Schlüssel-Symbol in der Palette.",
+    "serviceAgentConverted": "Agent in einen Service-Agent umgewandelt. Konfigurieren Sie Toolset-Anmeldedaten mit dem Schlüssel-Symbol in der Palette.",
     "unsavedChangesConfirm": "Sie haben nicht gespeicherte Änderungen. Möchten Sie die Seite wirklich verlassen?",
     "agentUpdated": "Agent aktualisiert",
     "agentUpdatedDesc": "Ihre Änderungen wurden gespeichert.",
@@ -5359,7 +5378,8 @@
     "serverError": "Serverfehler",
     "timedOut": "Zeitüberschreitung der Anfrage",
     "somethingWentWrong": "Etwas ist schiefgelaufen",
-    "tryAgainShortly": "Bitte versuchen Sie es gleich noch einmal"
+    "tryAgainShortly": "Bitte versuchen Sie es gleich noch einmal",
+    "connectedServiceProblem": "Problem mit einem verbundenen Dienst"
   },
   "validation": {
     "password": {
@@ -5420,10 +5440,6 @@
         "label": "Kann ansehen",
         "description": "Nur Lesezugriff"
       }
-    },
-    "chatRoles": {
-      "writer": "Kann ansehen und Nachrichten senden. Antworten nutzen den eigenen Zugriff.",
-      "reader": "Kann den Chat nur ansehen."
     },
     "team": "Team",
     "teamsNoRoles": "Teams haben keine Rollen",

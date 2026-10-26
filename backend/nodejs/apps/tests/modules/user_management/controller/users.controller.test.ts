@@ -725,6 +725,41 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(mockUsersWithGroups)).to.be.true;
     });
+
+    // This route hands back each user's `userId` next to the groups they are
+    // in, and `userId` is exactly what an agent stores when it is bound to a
+    // service account. Open to any member, it is a list of which machine
+    // identities an administrator put in which sensitive groups.
+    it('leaves service accounts out of the groups listing by default', async () => {
+      const aggregate = sinon.stub(Users, 'aggregate').resolves([]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const match = (aggregate.firstCall.args[0] as any[])[0].$match;
+      expect(match.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('includes them for an administrator who asks for them', async () => {
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+      const aggregate = sinon.stub(Users, 'aggregate').resolves([]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const match = (aggregate.firstCall.args[0] as any[])[0].$match;
+      expect(match.kind).to.equal(undefined);
+    });
+
+    it('ignores the flag for someone who does not administer the org', async () => {
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+      const aggregate = sinon.stub(Users, 'aggregate').resolves([]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const match = (aggregate.firstCall.args[0] as any[])[0].$match;
+      expect(match.kind).to.deep.equal({ $ne: 'service' });
+    });
   });
 
   describe('getUserById', () => {
@@ -747,6 +782,46 @@ describe('UserController', () => {
 
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0]).to.deep.equal(mockUser);
+    });
+
+    it('answers not found when a member asks for a service account', async () => {
+      // A service account is a user record, so it would come back here like
+      // anyone else, `userId` and all. The screens that manage these accounts
+      // are administrator-only, and so is knowing one exists.
+      req.params.id = '507f1f77bcf86cd799439011';
+      sinon.stub(Users, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            _id: '507f1f77bcf86cd799439011',
+            userId: 'u-service-1',
+            kind: 'service',
+          }),
+        }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUserById(req, res, next);
+
+      expect(res.json.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('User not found');
+    });
+
+    it('still returns a service account to an administrator', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      const account = {
+        _id: '507f1f77bcf86cd799439011',
+        userId: 'u-service-1',
+        kind: 'service',
+      };
+      sinon.stub(Users, 'findOne').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves(account) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+
+      await controller.getUserById(req, res, next);
+
+      expect(res.json.firstCall.args[0]).to.deep.equal(account);
     });
 
     it('should call next with NotFoundError when user not found', async () => {
@@ -920,6 +995,53 @@ describe('UserController', () => {
       expect(payload).to.have.length(2);
       expect(payload[0].profilePicture).to.equal('data:image/png;base64,abc123');
       expect(payload[1].profilePicture).to.be.undefined;
+    });
+
+    it('drops a service account for a member', async () => {
+      const person = new mongoose.Types.ObjectId().toString();
+      const account = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [person, account] };
+
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { _id: person, fullName: 'User One' },
+            { _id: account, userId: 'u-service-1', kind: 'service' },
+          ]),
+        }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUsersByIds(req, res, next);
+
+      const payload = res.json.firstCall.args[0];
+      expect(payload).to.have.length(1);
+      expect(payload[0]._id).to.equal(person);
+    });
+
+    it('keeps a service account for an administrator', async () => {
+      const account = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [account] };
+
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { _id: account, userId: 'u-service-1', kind: 'service' },
+          ]),
+        }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+
+      await controller.getUsersByIds(req, res, next);
+
+      const payload = res.json.firstCall.args[0];
+      expect(payload).to.have.length(1);
     });
 
     it('should call next with BadRequestError when userIds is empty', async () => {
@@ -5082,6 +5204,37 @@ describe('UserController', () => {
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true;
       }
+    });
+
+    // Each row the connector returns carries the `userId` that binds an agent
+    // to a service account, so the flag is forwarded and the connector decides
+    // it from the caller's live role. The gateway never decides it here.
+    const uriOf = async (query: Record<string, string>): Promise<string> => {
+      req.query = query;
+      let uri = '';
+      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
+      sinon.stub(AISvcCmd.prototype, 'execute').callsFake(function (this: any) {
+        uri = String(this.uri);
+        return Promise.resolve({ statusCode: 200, data: { users: [] } });
+      });
+      await controller.listUsers(req, res, next);
+      return uri;
+    };
+
+    it('does not ask the connector for service accounts by default', async () => {
+      expect(await uriOf({})).to.not.include('includeServiceAccounts');
+    });
+
+    it('forwards the flag when it is asked for', async () => {
+      expect(await uriOf({ includeServiceAccounts: 'true' })).to.include(
+        'includeServiceAccounts=true',
+      );
+    });
+
+    it('forwards nothing for any other value', async () => {
+      expect(await uriOf({ includeServiceAccounts: 'false' })).to.not.include(
+        'includeServiceAccounts',
+      );
     });
 
     it('should throw when orgId is missing', async () => {

@@ -7,6 +7,12 @@ import '@/lib/__tests__/test-i18n';
 const saveTextFile = vi.hoisted(() => vi.fn());
 vi.mock('../../../utils/save-text-file', () => ({ saveTextFile }));
 
+const mockIsMobile = vi.hoisted(() => ({ value: false }));
+vi.mock('@/lib/hooks/use-is-mobile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/hooks/use-is-mobile')>()),
+  useIsMobile: () => mockIsMobile.value,
+}));
+
 import { AnswerContent } from '../answer-content';
 
 // No JSX here, same as answer-content-table-scroll.test.tsx.
@@ -21,7 +27,10 @@ const codeDownloadButtons = () =>
   screen.queryAllByText('Download').map((el) => el.closest('button')).filter((b): b is HTMLButtonElement => b !== null);
 
 beforeEach(() => saveTextFile.mockReset());
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  mockIsMobile.value = false;
+});
 
 const GFM_TABLE = ['| Name | Qty |', '| --- | --- |', '| Apples | 3 |', '| Pears | 5 |'].join('\n');
 
@@ -160,6 +169,21 @@ describe('downloading a code block', () => {
 
     expect(screen.getAllByText('Copy')).toHaveLength(1);
     expect(codeDownloadButtons()).toHaveLength(1);
+  });
+
+  it('gives the download and copy buttons a 44px touch target on mobile only', () => {
+    const block = '```sql\nSELECT 1\n```';
+    renderAnswer(block);
+    expect(codeDownloadButtons()[0].style.minHeight).toBe('');
+    cleanup();
+
+    mockIsMobile.value = true;
+    renderAnswer(block);
+    const copyButton = screen.getByText('Copy').closest('button');
+    for (const button of [codeDownloadButtons()[0], copyButton]) {
+      expect(button?.style.minHeight).toBe('44px');
+      expect(button?.style.minWidth).toBe('44px');
+    }
   });
 
   it('does not download a csv block as code, since it shows as a table', () => {

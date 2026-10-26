@@ -141,6 +141,7 @@ flowchart TD
 ```
 
 - Records are matched across syncs by `(connector_id, external_record_id)`. The external id must be stable for the life of the item in the source.
+- The processor keeps each write inside its own org and connector. A record is always stored under the processor's org, whatever `org_id` the connector set. A new record whose `id` is already another connector's or another org's record is skipped and logged, a `virtual_record_id` set on a brand-new record is dropped (its vectors are its own), and `on_record_deleted` refuses a record of another org.
 - A record changes when its `external_revision_id` changes; only then is it re-sent for indexing.
 - Records and record groups link to their parent by external id (`parent_external_record_id`, `external_record_group_id`, `parent_external_group_id`). The processor turns those into graph edges, creating a restricted placeholder for a parent it has not seen yet.
 - Access is decided by one check over this hierarchy: a direct grant, or an inherit edge from a readable parent, subject to the node's access rule. A readable parent does not open a child that does not inherit. `06-permissions.md` is the full model.

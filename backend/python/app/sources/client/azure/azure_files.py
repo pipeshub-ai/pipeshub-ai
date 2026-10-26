@@ -4,6 +4,7 @@ Azure Files Client
 Client wrapper for Azure File Share operations using the azure-storage-file-share SDK.
 """
 
+import asyncio
 import json
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Optional
@@ -25,6 +26,7 @@ except ImportError:
     )
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.address_guard import check_url_allowed
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import parse_retry_after
 
@@ -351,9 +353,10 @@ class AzureFilesRESTClient:
         """Get or create the AsyncShareServiceClient"""
         if self._async_share_service_client is None:
             try:
-                self._async_share_service_client = (
-                    await self.config.create_async_share_service_client()
-                )
+                client = await self.config.create_async_share_service_client()
+                # Only the async client sends requests; the sync one only names endpoints.
+                await asyncio.to_thread(check_url_allowed, client.url)
+                self._async_share_service_client = client
             except Exception as e:
                 raise AzureFilesConfigurationError(
                     f"Failed to create AsyncShareServiceClient: {str(e)}",

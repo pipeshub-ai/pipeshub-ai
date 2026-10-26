@@ -66,7 +66,7 @@ if TYPE_CHECKING:
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.events.base import AgentEvent
 
-__all__ = ["MessagePart", "TranscriptCollector"]
+__all__ = ["MessagePart", "TranscriptCollector", "serialize_tool_args"]
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +77,7 @@ _MAX_TOOL_ARGS_CHARS = 2000
 _MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 
 # Longest single argument value kept verbatim. Anything longer is shortened
-# in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
+# in place, leaving the surrounding JSON intact — see `serialize_tool_args`.
 _MAX_ARG_VALUE_CHARS = 1200
 
 # A URL that runs to the end of a preview's head: cutting there would leave a shorter URL that can
@@ -95,7 +95,7 @@ def _head_outside_url(text: str, size: int) -> str:
     return head
 
 
-def _serialize_tool_args(args: object) -> str:
+def serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
     inputs were.
 
@@ -113,6 +113,10 @@ def _serialize_tool_args(args: object) -> str:
     other way this goes wrong. The full source of a `run_code` call is
     durable anyway as its CODE artifact — this transcript only has to stay
     honest about being a summary.
+
+    `AGUIEventEmitter` sends it as the live `TOOL_CALL_ARGS` frame's
+    `argsPreview`, so the open session cuts a value where a reload does; the
+    saved copy also stores this request's citation refs as URLs (`_durable_args`).
     """
     if not isinstance(args, dict):
         args = {"value": args}
@@ -325,7 +329,7 @@ class TranscriptCollector(EventEmitter):
 
         rewritten = _walk(args)
         self._log_rewrites(counts[0], counts[1], tool_call_id)
-        return _serialize_tool_args(rewritten)
+        return serialize_tool_args(rewritten)
 
     def _container_for(self, run_id: str) -> list[MessagePart]:
         return self._containers.setdefault(run_id, self.parts)

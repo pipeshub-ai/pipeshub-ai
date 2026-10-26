@@ -126,7 +126,10 @@ class TestResumesSkipTheIntentCall:
         _intent_returns(monkeypatch, BRIEFING, calls)
         context = make_context(llm=FakeChatModel(), previous_conversations=[
             {"role": "user_query", "content": "Create a ticket for the outage"},
-            {"role": "bot_response", "content": ""},
+            {"role": "bot_response", "content": "", "tool_results": [{
+                "tool_id": "call_ask", "tool_name": "internaltools__ask_user_question",
+                "result": '{"questions": [{"question": "Which project?"}]}', "status": "success",
+            }]},
         ])
 
         _agent, _runtime, goal, _clarifying = await PipesHubAgentFactory().create(
