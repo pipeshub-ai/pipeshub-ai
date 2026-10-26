@@ -77,7 +77,6 @@ from app.connectors.sources.google.common.datasource_refresh import (
     refresh_google_datasource_credentials,
 )
 from app.connectors.sources.google.common.drive_file_fields import (
-    DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS,
     DRIVE_DRIVES_LIST_FIELDS,
     DRIVE_PERSONAL_SYNC_CHANGES_LIST_FIELDS,
     DRIVE_PERSONAL_SYNC_FILE_RESOURCE_FIELDS,

@@ -36,9 +36,9 @@ import pytest
 
 from app.models.entities import EntityRecord, EntityType
 from app.modules.indexing.entity_index_rebuild import (
+    ORG_PASS_VERSION,
     EntityIndexRebuilder,
     EntityIndexState,
-    ORG_PASS_VERSION,
     entity_index_marker,
 )
 from app.modules.transformers.entity_vectorstore import EntityVectorStore

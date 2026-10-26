@@ -18,9 +18,9 @@ mail would become a node. Bcc recipients are never linked.
 """
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
-from collections.abc import Callable
 from typing import TYPE_CHECKING, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations

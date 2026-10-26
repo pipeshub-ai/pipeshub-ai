@@ -6,8 +6,8 @@ endpoint and SharePoint's REST API) is answered by an in-memory stub, and our
 databases are in-memory fakes.
 """
 
-import json
 import asyncio
+import json
 import logging
 import sys
 from types import SimpleNamespace
