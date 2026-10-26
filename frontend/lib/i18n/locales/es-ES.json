@@ -429,7 +429,7 @@
     "willBeReindexed": "será reindexado",
     "reindexConfirm": "¿Reindexar este {{type}}?",
     "reindexDescription": "Esto actualizará el índice de búsqueda para este {{type}} y su contenido.",
-    "deleteCollectionBody": "Se eliminará '{{name}}' y todo su contenido.",
+    "deleteCollectionBody": "Se eliminará '{{name}}' y todo su contenido. También se quitará de los agentes que la usen.",
     "deleteFolderBody": "Se eliminará '{{name}}' y todo su contenido de esta colección.",
     "deleteFileBody": "Se eliminará '{{name}}' de esta colección."
   },

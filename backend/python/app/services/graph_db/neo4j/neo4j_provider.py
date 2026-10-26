@@ -11433,6 +11433,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if not stages_success:
                     raise Exception("CRITICAL: Failed to delete pipeline stage states.")
 
+                # An agent names its sources by connectorId, not by a relationship, so
+                # nothing above reaches them; left behind they show as a raw id.
+                _, knowledge_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.AGENT_KNOWLEDGE.value
+                )
+                if not knowledge_success:
+                    raise Exception("CRITICAL: Failed to remove the connector from agents.")
+
                 # User -> User link is not attached to any node deleted above
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
 
