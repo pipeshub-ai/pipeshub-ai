@@ -272,12 +272,6 @@ const plain = (s: ViewerSearch): ViewerSearch =>
   s.toObject ? s.toObject() : s;
 // A saved search keys `records` by the record's `_id` or `_key`.
 const keyToRecordId = (key: string): string => key.split('/').pop() ?? key;
-// A hit stored as a bare id carries no text; any other object is a hit document.
-const isBareId = (h: unknown): boolean =>
-  typeof h === 'string' ||
-  (typeof h === 'object' &&
-    h !== null &&
-    typeof (h as { toHexString?: unknown }).toHexString === 'function');
 const hitRecord = (h: unknown): string | undefined =>
   (h as CitedDoc | null)?.metadata?.recordId;
 const recordEntries = (s: ViewerSearch): Array<[string, string]> =>
@@ -285,7 +279,7 @@ const recordEntries = (s: ViewerSearch): Array<[string, string]> =>
 
 /**
  * Saved searches of other users shared with the viewer: unreadable hits become
- * placeholders (a hit without a record is unreadable) and unreadable entries
+ * placeholders (a hit without a readable record, a bare id included, is unreadable) and unreadable entries
  * leave `records`.
  */
 export const redactSearchesFor = async <S extends ViewerSearch>(
@@ -301,7 +295,7 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
     appConfig,
     viewer,
     others.flatMap((s) => [
-      ...(s.citationIds ?? []).filter((h) => !isBareId(h)).map(hitRecord),
+      ...(s.citationIds ?? []).map(hitRecord),
       ...recordEntries(s).map(([k]) => keyToRecordId(k)),
     ]) as string[],
   );
@@ -311,9 +305,7 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
     const view: Record<string, unknown> = {
       ...o,
       citationIds: (o.citationIds ?? []).map((h) =>
-        isBareId(h) || readable.ids.has(hitRecord(h) ?? '')
-          ? h
-          : { ...REDACTED },
+        readable.ids.has(hitRecord(h) ?? '') ? h : { ...REDACTED },
       ),
       records: Object.fromEntries(
         recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),

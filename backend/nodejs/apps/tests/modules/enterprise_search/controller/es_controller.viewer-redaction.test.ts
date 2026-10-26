@@ -1,7 +1,9 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import { Types } from 'mongoose'
 import {
+  searchArchivedConversations,
   getAgentConversationById,
   getConversationById,
   getSearchById,
@@ -364,6 +366,37 @@ describe('shared chats: per-viewer citations', () => {
     expect(out.citationIds[0]).to.deep.equal({ redacted: true, reason: 'no_access' })
     expect(out.citationIds[1]).to.deep.equal({ redacted: true, reason: 'no_access' })
     expect(out.citationIds[2].content).to.equal('readable text')
+  })
+
+  it('an unpopulated citation id of a shared search is redacted, not passed through', async () => {
+    stubAccess(['rec-ok'])
+    const bare = new Types.ObjectId()
+    const search = { _id: 's1', userId: OWNER, query: 'q', citationIds: [bare, citation(CIT_OK, 'rec-ok', 'readable text')], records: {} }
+    sinon.stub(EnterpriseSemanticSearch, 'find').returns(chain([search]))
+    sinon.stub(EnterpriseSemanticSearch, 'countDocuments').resolves(1)
+    const r = res()
+    await searchHistory(appConfig)(req(VIEWER), r, sinon.stub())
+
+    const [out] = r.json.firstCall.args[0].searchHistory
+    expect(out.citationIds[0]).to.deep.equal({ redacted: true, reason: 'no_access' })
+    expect(out.citationIds[1].content).to.equal('readable text')
+  })
+
+  it('archive search leaves owner-only fields out for a user the chat is shared with', async () => {
+    const owned = { _id: SESSION, userId: OWNER, initiator: OWNER, title: 't', isShared: true, sharedWith: [{ userId: VIEWER, accessLevel: 'read' }], failReason: SECRET, compactedSummary: SECRET, conversationErrors: [{ message: SECRET }], source: 'assistant' }
+    sinon.stub(ChatSessionMessage, 'aggregate').resolves([])
+    sinon.stub(ChatSession, 'aggregate').resolves([owned] as never)
+    sinon.stub(ChatSession, 'countDocuments').resolves(1)
+    sinon.stub(Users, 'find').returns(chain([]))
+    const run = async (userId: string) => {
+      const r = res()
+      const next = sinon.stub()
+      await searchArchivedConversations(appConfig)(req(userId, { query: { search: 't' } }), r, next)
+      expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+      return r.json.firstCall.args[0].conversations[0]
+    }
+    expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)
+    expect((await run(OWNER)).failReason).to.equal(SECRET)
   })
 
   it('the search history lists hide unreadable records of a search shared with the viewer', async () => {
