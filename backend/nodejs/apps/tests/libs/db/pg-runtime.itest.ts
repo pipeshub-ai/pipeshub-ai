@@ -395,7 +395,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       })
     })
 
-    it('jobs units run on the jobs pool and role and read across orgs (the jobs policy), with or without an org', async () => {
+    it('jobs units run on the jobs pool and role and read all rows (the jobs policy), with or without an org', async () => {
       const jobs = rtOn(reset.port, {}, 'pipeshub_jobs')
       const rt = new PgRuntime({ pool: rtOn(reset.port).pool, jobsPool: jobs.pool, defaultService: 'node' })
       const { system, forOrg } = await import('../../../src/libs/context/orgContext')
