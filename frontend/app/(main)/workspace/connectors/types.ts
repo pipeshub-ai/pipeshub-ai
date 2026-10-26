@@ -95,6 +95,8 @@ export type AuthType =
   | 'USERNAME_PASSWORD'
   | 'BEARER_TOKEN'
   | 'CUSTOM'
+  | 'ACCESS_KEY'
+  | 'KEY_PAIR'
   | 'NONE';
 
 // ========================================

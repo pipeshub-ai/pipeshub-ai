@@ -1005,7 +1005,7 @@ def _trim_config_values(
 
     # Fields that should NOT be trimmed (they may contain intentional whitespace)
     skip_trim_fields = {
-        'certificate', 'privatekey', 'private_key', 'credentials', 'oauth',
+        'certificate', 'privatekey', 'private_key', 'privatekeypassphrase', 'credentials', 'oauth',
         'json', 'jsondata', 'client_secret', 'clientsecret', 'secret',
         'token', 'accesstoken', 'refreshtoken'
     }
@@ -8901,6 +8901,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
             status_code=HttpStatusCode.BAD_REQUEST.value,
             detail="auth must be an object"
         )
+    # The form holds only the chosen type's fields; which type was chosen comes beside them.
+    auth_type = body.get("authType")
+    if isinstance(auth_type, str) and auth_type and "authType" not in auth:
+        auth = {**auth, "authType": auth_type}
     auth = _without_masked_secrets(
         _without_server_set_auth_fields(auth),
         await _secret_auth_field_names(connector_registry, connector_type),
@@ -8918,6 +8922,10 @@ async def check_connector_connection(connector_type: str, request: Request) -> d
         config_service = resolve_config_service(container, org_id)
         saved = await config_service.get_config(_get_config_path_for_instance(connector_id)) or {}
         stored_auth = _auth_section(cast(object, saved))
+        # The auth type is fixed once a connector exists: the instance's wins.
+        fixed_type = instance.get("authType") or stored_auth.get("authType")
+        if fixed_type:
+            auth = {**auth, "authType": fixed_type}
     # The save would refuse these settings anyway; the form says why before it tries.
     problem = _auth_save_problem(connector_type, auth, stored_auth)
     if problem:

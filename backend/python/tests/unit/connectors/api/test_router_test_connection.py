@@ -8,9 +8,11 @@ from fastapi import HTTPException
 
 from app.config.redaction import REDACTED_PLACEHOLDER
 from app.connectors.api.router import (
+    check_connector_connection as run_test_connection,
+)
+from app.connectors.api.router import (
     get_connector_egress_ips,
     get_connector_schema,
-    check_connector_connection as run_test_connection,
 )
 from app.connectors.core.base.connector.connector_service import ConnectionCheckResult
 
@@ -49,7 +51,7 @@ def checking_connector():
         yield _CheckingConnector
 
 
-async def test_new_instance_checks_the_trimmed_form_values(checking_connector):
+async def test_new_instance_checks_the_trimmed_form_values(checking_connector) -> None:
     request, _ = _make_request({"auth": {"host": " db.example.com ", "password": "pw", "connectorType": "x"}})
 
     result = await run_test_connection("PostgreSQL", request)
@@ -59,7 +61,7 @@ async def test_new_instance_checks_the_trimmed_form_values(checking_connector):
     assert auth == {"host": "db.example.com", "password": "pw"}
 
 
-async def test_failed_check_is_a_200_with_the_message(checking_connector):
+async def test_failed_check_is_a_200_with_the_message(checking_connector) -> None:
     checking_connector.check_connection.return_value = ConnectionCheckResult(
         success=False, message="Timed out"
     )
@@ -68,7 +70,7 @@ async def test_failed_check_is_a_200_with_the_message(checking_connector):
     assert await run_test_connection("PostgreSQL", request) == {"success": False, "message": "Timed out"}
 
 
-async def test_editing_lays_the_form_over_the_saved_settings(checking_connector):
+async def test_editing_lays_the_form_over_the_saved_settings(checking_connector) -> None:
     saved = {"auth": {"host": "old.example.com", "password": "saved-pw", "database": "shop"}}
     request, config_service = _make_request(
         {"auth": {"host": "new.example.com"}, "connectorId": "c1"}, saved_config=saved
@@ -122,7 +124,44 @@ async def test_a_new_secret_replaces_the_saved_one(checking_connector) -> None:
     assert auth == {"host": "db.example.com", "password": "new-pw"}
 
 
-async def test_editing_refuses_an_instance_of_another_type(checking_connector):
+async def test_a_new_instance_passes_the_chosen_auth_type(checking_connector) -> None:
+    # The form holds only the chosen type's fields; the type comes beside them.
+    request, _ = _make_request({"auth": {"user": "svc"}, "authType": "KEY_PAIR"})
+    await run_test_connection("Snowflake", request)
+    auth, _logger = checking_connector.check_connection.await_args.args
+    assert auth == {"user": "svc", "authType": "KEY_PAIR"}
+
+
+async def test_editing_keeps_the_saved_auth_type(checking_connector) -> None:
+    saved = {"auth": {"authType": "ACCESS_KEY", "patToken": "t"}}
+    request, config_service = _make_request(
+        {"auth": {"warehouse": "WH"}, "authType": "KEY_PAIR", "connectorId": "c1"}, saved_config=saved,
+    )
+    with (
+        patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value={"type": "Snowflake"})),
+        patch(f"{_ROUTER}.resolve_config_service", return_value=config_service),
+    ):
+        await run_test_connection("Snowflake", request)
+    auth, _logger = checking_connector.check_connection.await_args.args
+    assert auth == {"authType": "ACCESS_KEY", "patToken": "t", "warehouse": "WH"}
+
+
+async def test_editing_takes_the_instance_auth_type_when_the_saved_auth_has_none(checking_connector) -> None:
+    saved = {"auth": {"patToken": "t"}}
+    request, config_service = _make_request(
+        {"auth": {"warehouse": "WH"}, "authType": "KEY_PAIR", "connectorId": "c1"}, saved_config=saved,
+    )
+    instance = {"type": "Snowflake", "authType": "ACCESS_KEY"}
+    with (
+        patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value=instance)),
+        patch(f"{_ROUTER}.resolve_config_service", return_value=config_service),
+    ):
+        await run_test_connection("Snowflake", request)
+    auth, _logger = checking_connector.check_connection.await_args.args
+    assert auth == {"authType": "ACCESS_KEY", "patToken": "t", "warehouse": "WH"}
+
+
+async def test_editing_refuses_an_instance_of_another_type(checking_connector) -> None:
     request, _ = _make_request({"auth": {}, "connectorId": "c1"})
     with patch(f"{_ROUTER}.get_validated_connector_instance", AsyncMock(return_value={"type": "Jira"})):
         with pytest.raises(HTTPException) as exc:
@@ -131,7 +170,7 @@ async def test_editing_refuses_an_instance_of_another_type(checking_connector):
     checking_connector.check_connection.assert_not_called()
 
 
-async def test_a_crashing_check_is_reported_as_a_failure(checking_connector):
+async def test_a_crashing_check_is_reported_as_a_failure(checking_connector) -> None:
     checking_connector.check_connection.side_effect = RuntimeError("boom")
     request, _ = _make_request({"auth": {"host": "db"}})
 
@@ -141,7 +180,7 @@ async def test_a_crashing_check_is_reported_as_a_failure(checking_connector):
     assert "boom" not in result["message"]
 
 
-async def test_connector_without_a_check_is_rejected():
+async def test_connector_without_a_check_is_rejected() -> None:
     request, _ = _make_request({"auth": {}})
     with (
         patch(f"{_ROUTER}.check_beta_connector_access", AsyncMock()),
@@ -152,7 +191,7 @@ async def test_connector_without_a_check_is_rejected():
     assert exc.value.status_code == 400
 
 
-async def test_unknown_connector_type_is_404():
+async def test_unknown_connector_type_is_404() -> None:
     request, _ = _make_request({"auth": {}})
     request.app.state.connector_registry.get_connector_metadata = AsyncMock(return_value=None)
     with patch(f"{_ROUTER}.check_beta_connector_access", AsyncMock()):
@@ -162,7 +201,7 @@ async def test_unknown_connector_type_is_404():
 
 
 @pytest.mark.parametrize("body", [{"auth": "host=db"}, {}, ["auth"]])
-async def test_auth_must_be_an_object(checking_connector, body):
+async def test_auth_must_be_an_object(checking_connector, body) -> None:
     request, _ = _make_request(body)
     with pytest.raises(HTTPException) as exc:
         await run_test_connection("PostgreSQL", request)
@@ -170,13 +209,13 @@ async def test_auth_must_be_an_object(checking_connector, body):
 
 
 @pytest.mark.parametrize(("connector_type", "supported"), [("PostgreSQL", True), ("Jira", False)])
-async def test_schema_says_whether_the_check_exists(connector_type, supported):
+async def test_schema_says_whether_the_check_exists(connector_type, supported) -> None:
     request, _ = _make_request({}, metadata={"config": {"auth": {}}})
     with patch(f"{_ROUTER}.check_beta_connector_access", AsyncMock()):
         response = await get_connector_schema(connector_type, request)
     assert response["schema"]["supportsConnectionCheck"] is supported
 
 
-async def test_egress_ips_route():
+async def test_egress_ips_route() -> None:
     with patch(f"{_ROUTER}.get_egress_ips", AsyncMock(return_value=["203.0.113.10"])):
         assert await get_connector_egress_ips() == {"success": True, "egressIps": ["203.0.113.10"]}
