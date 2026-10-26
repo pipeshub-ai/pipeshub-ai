@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Client, Pool } from 'pg'
 import {
-  Bouncer, Cluster, MIGRATE_PY, PG_BINS, createKernelDb, haveStack, startBouncer, startCluster,
+  Bouncer, Cluster, PG_BINS, createKernelDb, haveStack, startBouncer, startCluster,
 } from './pg-harness'
 import {
   ConnectionLost, DbFenced, DbReadOnly, DbTimeout, FailedTransaction, LockNotAvailable, PermissionDenied, PgRuntime,

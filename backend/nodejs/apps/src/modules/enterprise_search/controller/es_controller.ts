@@ -3235,7 +3235,7 @@ function quotedCardQuestions(content: string | undefined | null): Set<string> {
  * the reader typed with the same first words, or that asks anything else, stays its own.
  */
 function repeatsCardAnswers(
-  older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
+  older: Array<IMessage & { _id: string }>,
   i: number,
 ): boolean {
   const quoted = quotedCardQuestions(older[i]?.content);

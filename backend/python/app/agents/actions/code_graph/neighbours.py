@@ -473,7 +473,10 @@ async def get_neighbour_impl(
         "neighbors": neighbors,
         **({"offset": offset} if offset else {}),
         "total": total,
-        **({"hidden_tests": len(hidden_tests)} if hidden_tests else {}),
+        **({"hidden_tests": len(hidden_tests),
+            # A bare count reads as "no test callers worth listing"; say how to see them.
+            "hint": (f"{len(hidden_tests)} neighbour(s) in test code are hidden; "
+                     "pass include_tests=true to list them.")} if hidden_tests else {}),
         # Silence reads as absence: a model that thinks it saw every neighbour
         # will state a wrong conclusion confidently. A walk that hit its
         # traversal cap is truncated even when every fetched row fits the page.
@@ -523,6 +526,9 @@ IMPACT_RELATIONS = [
 ]
 DEFAULT_IMPACT_DEPTH = 2
 _IMPACT_ROWS = 500
+# Reached through these, a symbol builds on the target rather than calling it.
+_BUILT_ON = frozenset({RecordRelations.INHERITS.value, RecordRelations.IMPLEMENTS.value,
+                       RecordRelations.OVERRIDES.value})
 
 
 async def impact_impl(
@@ -536,25 +542,39 @@ async def impact_impl(
     depth: int = DEFAULT_IMPACT_DEPTH,
     include_tests: bool = False,
     repo: str | None = None,
+    edge_types: list[str] | None = None,
 ) -> dict[str, Any]:
     """What reaches a symbol, transitively, grouped by the file it is in (A-9).
 
-    An inbound walk over IMPACT_RELATIONS: each file says which of its symbols
-    are affected and how near they are, so a change's blast radius reads as a
-    list of files to check rather than a flat list of edges.
+    An inbound walk over IMPACT_RELATIONS (or the *edge_types* asked for, e.g.
+    CALLS alone for callers): each file says which of its symbols are affected
+    and how near they are, so a change's blast radius reads as a list of files
+    to check rather than a flat list of edges.
     """
+    unknown = sorted(set(edge_types or ()) - set(IMPACT_RELATIONS))
+    if unknown:
+        return {"error": f"unknown edge_types {unknown}. Valid: {', '.join(IMPACT_RELATIONS)}"}
+
     def walk_with(*, tests: bool) -> Awaitable[dict[str, Any]]:
         return get_neighbour_impl(
             graph_provider=graph_provider, connector_id=connector_id, org_id=org_id,
             user_id=user_id, file_path=file_path, qualified_name=qualified_name,
-            direction="inbound", edge_types=IMPACT_RELATIONS, depth=depth,
+            direction="inbound", edge_types=edge_types or IMPACT_RELATIONS, depth=depth,
             limit=_IMPACT_ROWS, include_tests=tests, repo=repo,
         )
 
     walk = await walk_with(tests=include_tests)
     if "error" in walk or "neighbors" not in walk:
         return walk
-    out = {k: v for k, v in walk.items() if k not in ("neighbors", "chain", "note", "next", "hidden_tests")}
+    if qualified_name and walk.get("symbol") is None:
+        # Read as "nothing depends on it", an unresolved address states a wrong conclusion.
+        # Same words for a missing and an unreadable symbol, as the walk itself keeps them.
+        return {"error": (
+            f"No readable symbol {qualified_name!r} in {file_path!r}. Use the repo-relative "
+            "path and name search_code returns, e.g. `method:Class.name`."
+        )}
+    out = {k: v for k, v in walk.items()
+           if k not in ("neighbors", "chain", "note", "next", "hidden_tests", "hint")}
     files = _by_file(walk["neighbors"])
     out.update({"impacted_files": files, "impacted_symbols": sum(len(f["symbols"]) for f in files)})
     if not include_tests and walk.get("hidden_tests"):
@@ -576,5 +596,8 @@ def _by_file(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         entry = by_file.setdefault(path, {"file_path": path, "symbols": [], "nearest_hop": 9})
         if row.get("qualified_name") not in entry["symbols"]:
             entry["symbols"].append(row.get("qualified_name"))
+        if row.get("relation") in _BUILT_ON and row.get("qualified_name") not in entry.get("built_on", ()):
+            # A subclass, implementation or override: affected, but not a caller.
+            entry.setdefault("built_on", []).append(row.get("qualified_name"))
         entry["nearest_hop"] = min(entry["nearest_hop"], row.get("hop") or 1)
     return sorted(by_file.values(), key=lambda f: (f["nearest_hop"], f["file_path"]))
