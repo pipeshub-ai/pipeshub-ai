@@ -265,6 +265,7 @@ def test_bad_options_are_usage_errors_before_any_connection(tmp_path):
                 ["export", "--org", "--dir", "--dir", d],                              # an option name where the org goes
                 ["export", "--org", "", "--dir", d],                                   # an empty value
                 ["load", "--org", ORG_B, "--dir", d, "--dir", d],
+                ["sequences", "--unknown", "value"], ["close", "--unknown"],
                 ["open", "--org", "--hours", "1"], ["open", "--org", NEW_ORG, "--hours", "soon"]):
         assert code(*bad) == 2, bad
 

@@ -262,7 +262,10 @@ def main(argv: list[str]) -> int:
             return _usage()
         if not (opts and "--org" in opts):
             return _usage()
-    elif cmd not in ("export", "load", "sequences") and not (cmd == "close" and args in ([], ["--abandon"])):
+    elif cmd in ("sequences", "close"):
+        if args not in ([], ["--abandon"] if cmd == "close" else []):
+            return _usage()
+    elif cmd not in ("export", "load"):
         return _usage()
     try:
         if cmd in ("export", "load"):
