@@ -556,7 +556,7 @@ class TestSanitizeSvgContent:
         result = ImageParser._sanitize_svg_content(svg)
         assert b'xmlns="http://www.w3.org/2000/svg"' in result
 
-    def test_resolves_css_var_fallbacks(self):
+    def test_resolves_css_var_fallbacks(self) -> None:
         svg = '<svg xmlns="http://www.w3.org/2000/svg"><rect fill="var(--fill-0, #B4B4B4)"/></svg>'
         result = ImageParser._sanitize_svg_content(svg)
         assert b'fill="#B4B4B4"' in result
@@ -567,44 +567,44 @@ class TestSanitizeSvgContent:
 # _resolve_css_var_fallbacks
 # ---------------------------------------------------------------------------
 class TestResolveCssVarFallbacks:
-    def test_attribute_fallback(self):
+    def test_attribute_fallback(self) -> None:
         assert ImageParser._resolve_css_var_fallbacks('fill="var(--fill-0, #B4B4B4)"') == 'fill="#B4B4B4"'
 
-    def test_style_fallback(self):
+    def test_style_fallback(self) -> None:
         result = ImageParser._resolve_css_var_fallbacks('style="fill: var(--a,#fff); stroke: var(--b, red)"')
         assert result == 'style="fill: #fff; stroke: red"'
 
-    def test_fallback_with_parentheses(self):
+    def test_fallback_with_parentheses(self) -> None:
         result = ImageParser._resolve_css_var_fallbacks('fill="var(--c, rgb(1, 2, 3))"')
         assert result == 'fill="rgb(1, 2, 3)"'
 
-    def test_nested_var_fallback(self):
+    def test_nested_var_fallback(self) -> None:
         result = ImageParser._resolve_css_var_fallbacks('fill="var(--a, var(--b, #123456))"')
         assert result == 'fill="#123456"'
 
-    def test_var_without_fallback_left_as_is(self):
+    def test_var_without_fallback_left_as_is(self) -> None:
         svg = 'fill="var(--a)" stroke="var(--b, #000)"'
         assert ImageParser._resolve_css_var_fallbacks(svg) == 'fill="var(--a)" stroke="#000"'
 
-    def test_unbalanced_var_left_as_is(self):
+    def test_unbalanced_var_left_as_is(self) -> None:
         svg = 'fill="var(--a, #fff"'
         assert ImageParser._resolve_css_var_fallbacks(svg) == svg
 
-    def test_unbalanced_inner_var_keeps_resolved_prefix(self):
+    def test_unbalanced_inner_var_keeps_resolved_prefix(self) -> None:
         svg = 'stroke="var(--a, red)" fill="var(--b, var(--c, #fff)"'
         result = ImageParser._resolve_css_var_fallbacks(svg)
         assert result == 'stroke="red" fill="var(--b, var(--c, #fff)"'
 
-    def test_deep_nesting_does_not_recurse(self):
+    def test_deep_nesting_does_not_recurse(self) -> None:
         depth = 50_000
         svg = 'fill="' + 'var(--a, ' * depth + '#123456' + ')' * depth + '"'
         assert ImageParser._resolve_css_var_fallbacks(svg) == 'fill="#123456"'
 
-    def test_no_var_unchanged(self):
+    def test_no_var_unchanged(self) -> None:
         svg = '<svg><rect fill="#B4B4B4"/></svg>'
         assert ImageParser._resolve_css_var_fallbacks(svg) == svg
 
-    def test_svg_with_css_var_colors_converts(self):
+    def test_svg_with_css_var_colors_converts(self) -> None:
         """The file-icon SVGs that failed to index with "invalid literal for int() with base 16: 'ar'"."""
         # cairosvg imports but cannot load without the native cairo library.
         if image_parser_module.svg2png is None:
