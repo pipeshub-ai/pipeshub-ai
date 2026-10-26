@@ -57,8 +57,9 @@ func newBearerClient(token string) *pipeshub.Pipeshub {
 	)
 }
 
-// newSessionClient is for the OAuth app and personal access token routes, which accept only an
-// interactive session.
+// newSessionClient is the admin's login session. The OAuth app and personal access token routes
+// accept only an interactive session, and the OAuth client acts as a service account, which is
+// never an admin.
 func newSessionClient() *pipeshub.Pipeshub {
 	return newBearerClient(utils.GetEnv("PIPESHUB_SESSION_TOKEN", ""))
 }

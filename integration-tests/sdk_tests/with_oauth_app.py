@@ -4,7 +4,8 @@
 The client secret goes only to the command's environment, never to a file or the log.
 The command also gets a session JWT (PIPESHUB_SESSION_TOKEN) and keeps the admin login:
 the OAuth app and personal access token routes accept only an interactive session, and
-the sign-in tests sign in with the login.
+the sign-in tests sign in with the login. IT_SERVICE_ACCOUNT_ID is the service account the
+OAuth app acts as; a test that creates a client_credentials app names it.
 
 Usage: with_oauth_app.py <command> [arg ...]
 
@@ -22,7 +23,12 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "helper"))
 
-from local_auth import obtain_local_oauth_credentials, obtain_user_session_token
+from local_auth import (
+    SERVICE_ACCOUNT_ENV,
+    obtain_local_oauth_credentials,
+    obtain_user_session_token,
+    session_service_account_id,
+)
 
 
 def main(command: list[str]) -> None:
@@ -38,6 +44,7 @@ def main(command: list[str]) -> None:
         PIPESHUB_CLIENT_SECRET=client_secret,
         PIPESHUB_SESSION_TOKEN=obtain_user_session_token(base_url),
     )
+    env[SERVICE_ACCOUNT_ENV] = session_service_account_id(base_url)
     os.execvpe(command[0], command, env)
 
 

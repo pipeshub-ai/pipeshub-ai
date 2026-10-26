@@ -59,6 +59,10 @@ The three suites run at the same time against one app.
   workflow for them sets `x-speakeasy-test-security` to `bearerAuth: "x-env:
   PIPESHUB_SESSION_TOKEN"` (`with_oauth_app.py` signs in and sets it). A step's own
   `x-speakeasy-test-security` stays in force for the steps after it.
+- The OAuth client acts as a service account, which is never an admin. A test that
+  calls an admin-only route (a team connector, an OAuth configuration) uses the same
+  session JWT; a hand-written test uses the session client. An OAuth app that allows
+  `client_credentials` must set `tokenIdentityUserId` to `x-env: IT_SERVICE_ACCOUNT_ID`.
 - In `tests.arazzo.yaml`: a step whose output a later step uses needs a
   response-body condition; conditions support only `==` and `!=`; a condition value
   cannot contain spaces or refer to a step output; do not read a list item by

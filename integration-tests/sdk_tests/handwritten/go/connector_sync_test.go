@@ -46,7 +46,8 @@ func waitForIdle(t *testing.T, s *pipeshub.Pipeshub, connectorID string) {
 
 func TestHandwritten_ConnectorSync(t *testing.T) {
 	ctx := context.Background()
-	s := newClient()
+	// Creating a team connector is admin-only.
+	s := newSessionClient()
 
 	created, err := s.ConnectorInstances.CreateConnectorInstance(ctx, components.CreateConnectorRequest{
 		ConnectorType: "RSS",

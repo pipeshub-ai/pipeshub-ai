@@ -1,4 +1,4 @@
-"""with_oauth_app.py gives the command the OAuth app, a session JWT and the admin login in its environment."""
+"""with_oauth_app.py gives the command the OAuth app, its service account, a session JWT and the admin login."""
 
 from __future__ import annotations
 
@@ -19,6 +19,9 @@ def test_the_command_gets_the_oauth_app_a_session_and_the_login(monkeypatch):
     monkeypatch.setattr(
         with_oauth_app, "obtain_user_session_token", lambda base_url: "session-jwt"
     )
+    monkeypatch.setattr(
+        with_oauth_app, "session_service_account_id", lambda base_url: "service-account-id"
+    )
     calls = []
     monkeypatch.setattr(with_oauth_app.os, "execvpe", lambda *args: calls.append(args))
 
@@ -36,6 +39,7 @@ def test_the_command_gets_the_oauth_app_a_session_and_the_login(monkeypatch):
         "CLIENT_SECRET": "secret",
         "SESSION_TOKEN": "session-jwt",
     }
+    assert env["IT_SERVICE_ACCOUNT_ID"] == "service-account-id"
 
 
 def test_without_a_command_it_stops():

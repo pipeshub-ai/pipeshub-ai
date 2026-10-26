@@ -9,7 +9,9 @@ from urllib.parse import parse_qs, urlparse
 from pipeshub_sdk import Pipeshub
 
 
-def test_handwritten_connector_o_auth_authorization(pipeshub: Pipeshub):
+def test_handwritten_connector_o_auth_authorization(session: Pipeshub):
+    # Creating an OAuth configuration or a team connector is admin-only.
+    pipeshub = session
     # OAuth app and connector names are unique in an org.
     name = f"sdk-test-jira-{uuid.uuid4()}"
 

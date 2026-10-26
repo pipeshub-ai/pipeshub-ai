@@ -31,7 +31,9 @@ def wait_for_idle(pipeshub: Pipeshub, connector_id: str) -> None:
         time.sleep(2)
 
 
-def test_handwritten_connector_sync(pipeshub: Pipeshub):
+def test_handwritten_connector_sync(session: Pipeshub):
+    # Creating a team connector is admin-only.
+    pipeshub = session
     created = pipeshub.connector_instances.create_connector_instance(
         connector_type="RSS",
         # Connector names are unique in an org.

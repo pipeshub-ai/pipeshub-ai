@@ -14,7 +14,8 @@ import (
 // Completing the flow needs a person to consent in a browser, so this stops at the consent URL.
 func TestHandwritten_ConnectorOAuthAuthorization(t *testing.T) {
 	ctx := context.Background()
-	s := newClient()
+	// Creating an OAuth configuration or a team connector is admin-only.
+	s := newSessionClient()
 	// OAuth app and connector names are unique in an org.
 	name := uniqueName(t, "sdk-test-jira")
 

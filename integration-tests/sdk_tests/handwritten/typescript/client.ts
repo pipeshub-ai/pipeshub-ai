@@ -21,7 +21,10 @@ export function createBearerClient(token: string): Pipeshub {
   return new Pipeshub({ serverURL: SERVER_URL, security: { bearerAuth: token } });
 }
 
-/** The OAuth app and personal access token routes accept only an interactive session. */
+/**
+ * The admin's login session. The OAuth app and personal access token routes accept only an
+ * interactive session, and the OAuth client acts as a service account, which is never an admin.
+ */
 export function createSessionClient(): Pipeshub {
   return createBearerClient(process.env["PIPESHUB_SESSION_TOKEN"] ?? "");
 }
