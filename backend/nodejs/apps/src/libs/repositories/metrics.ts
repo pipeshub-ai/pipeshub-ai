@@ -11,20 +11,9 @@ export const docstoreMetrics = {
     help: 'Writes refused by the store fence',
     labelNames: ['store', 'reason'],
   }),
-  fenceCheck: metricsBackend.createHistogram({
-    name: 'docstore_fence_check_seconds',
-    help: 'Time spent reading the Mongo fence before a write',
-    labelNames: [],
-    buckets: [0.0005, 0.001, 0.005, 0.01, 0.05, 0.2, 1, 2],
-  }),
   rlsViolation: metricsBackend.createCounter({
     name: 'docstore_rls_violation_total',
     help: 'Writes the database refused for privilege or row policy (a wrong-org bug); alert on > 0',
-    labelNames: [],
-  }),
-  searchTruncated: metricsBackend.createCounter({
-    name: 'docstore_chat_search_truncated_total',
-    help: 'Chat content searches cut short (a very large history, or more matches than the limit): older matches may be missing',
     labelNames: [],
   }),
   failedTransaction: metricsBackend.createCounter({
@@ -39,7 +28,7 @@ export const docstoreMetrics = {
   }),
   ttlSwept: metricsBackend.createCounter({
     name: 'docstore_ttl_swept_total',
-    help: 'Rows the TTL sweeper removed (expired tokens and codes, notifications past retention, delivered outbox rows)',
+    help: 'Rows the TTL sweeper removed (notifications past retention, delivered outbox rows)',
     labelNames: ['target'],
   }),
   ttlSweepFailed: metricsBackend.createCounter({

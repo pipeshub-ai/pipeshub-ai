@@ -3,10 +3,6 @@
  * `created_at`, so every statement carries the org and the retention cutoff: both prune partitions and keep an expired or
  * deleted row out of every read and change.
  */
-import type { Importable, ImportStats, NeutralDoc } from '../import';
-import { importNotificationDocs } from './pg-import';
-import { kernelTx } from '../pg';
-import type { Tx } from '../uow';
 import { retentionCutoff } from '../../../modules/notification/utils/notification-api.utils';
 import { stripNul } from '../nul';
 import { assertOrg, inUnit, newObjectId, oidOf } from '../pg-util';
@@ -66,18 +62,7 @@ function toRow(r: Row): NotificationRow {
 /** The conditions every read and change shares; `$1` org, `$2` user, `$3` retention cutoff. */
 const LIVE = `n.org_id = $1 AND n.assigned_to = $2 AND NOT n.is_deleted AND n.created_at >= $3`;
 
-export class PgNotificationRepository
-  implements NotificationRepository, Importable
-{
-  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
-  importBatch(
-    _collection: string,
-    docs: NeutralDoc[],
-    tx: Tx,
-  ): Promise<ImportStats> {
-    return importNotificationDocs(kernelTx(tx), docs);
-  }
-
+export class PgNotificationRepository implements NotificationRepository {
   async insert(row: NewNotification): Promise<NotificationRow> {
     return (await this.insertMany([row]))[0] as NotificationRow;
   }

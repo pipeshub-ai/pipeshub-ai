@@ -2,9 +2,6 @@
  * PostgreSQL implementation of the saved-search repository (`DOC_STORE=postgres`). Same conventions as the conversation
  * repository: the org is `$1` in every statement and equals the unit's org; hits live in `conversation.citations`.
  */
-import type { Importable, ImportStats, NeutralDoc } from '../import';
-import { importSearchDocs } from './pg-import';
-import { kernelTx } from '../pg';
 import { BadRequestError } from '../../errors/http.errors';
 import { insertCitation } from '../conversation/pg';
 import { stripNul } from '../nul';
@@ -140,18 +137,7 @@ async function hitsOf(
   return out;
 }
 
-export class PgSemanticSearchRepository
-  implements SemanticSearchRepository, Importable
-{
-  /** The migration copy (see ./pg-import). */
-  importBatch(
-    collection: string,
-    docs: NeutralDoc[],
-    tx: Tx,
-  ): Promise<ImportStats> {
-    return importSearchDocs(kernelTx(tx), collection, docs);
-  }
-
+export class PgSemanticSearchRepository implements SemanticSearchRepository {
   async create(input: NewSemanticSearch, tx?: Tx): Promise<SemanticSearchDto> {
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, input.orgId);
@@ -188,20 +174,21 @@ export class PgSemanticSearchRepository
     orgId: string,
     viewerId: string,
     id: string,
-    opts: { archived?: boolean; populateCitations?: boolean } = {},
+    opts: {
+      archived?: boolean;
+      populateCitations?: boolean;
+      query?: SearchQuery;
+    } = {},
   ): Promise<SemanticSearchDto | null> {
     const oid = oidOf(id);
     if (!oid) return null;
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);
       const p = new Params();
-      const where = visible(
-        p,
-        orgId,
-        viewerId,
-        {},
-        { id: oid, archived: opts.archived },
-      );
+      const where = visible(p, orgId, viewerId, opts.query ?? {}, {
+        id: oid,
+        archived: opts.archived,
+      });
       const { rows } = await k.query<SearchRow>(
         sql(
           '/* pipeshub:search.find_visible */ SELECT @{COLS} FROM conversation.semantic_searches s WHERE @{WHERE} LIMIT 1',
@@ -339,6 +326,7 @@ export class PgSemanticSearchRepository
     orgId: string,
     viewerId: string,
     id: string,
+    query?: SearchQuery,
     tx?: Tx,
   ): Promise<SemanticSearchDto | null> {
     const oid = oidOf(id);
@@ -346,13 +334,10 @@ export class PgSemanticSearchRepository
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const p = new Params();
-      const where = visible(
-        p,
-        orgId,
-        viewerId,
-        {},
-        { id: oid, archived: true },
-      );
+      const where = visible(p, orgId, viewerId, query ?? {}, {
+        id: oid,
+        archived: true,
+      });
       const prev = await this.before(k, where, p.values);
       if (!prev) return null;
       await k.query(
@@ -383,6 +368,7 @@ export class PgSemanticSearchRepository
     orgId: string,
     viewerId: string,
     id: string,
+    query?: SearchQuery,
     tx?: Tx,
   ): Promise<SemanticSearchDto | null> {
     const oid = oidOf(id);
@@ -390,7 +376,7 @@ export class PgSemanticSearchRepository
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
       const p = new Params();
-      const where = visible(p, orgId, viewerId, {}, { id: oid });
+      const where = visible(p, orgId, viewerId, query ?? {}, { id: oid });
       const prev = await this.before(k, where, p.values);
       if (!prev) return null;
       await this.remove(k, [oid]);

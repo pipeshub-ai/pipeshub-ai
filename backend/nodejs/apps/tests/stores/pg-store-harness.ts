@@ -125,10 +125,7 @@ export class OrgLedger {
 /** Positional index of the `orgId` argument, per method; methods not listed take it from an object argument or an id they were given before. */
 export type OrgArgs = Record<string, number>;
 
-/** Positional index of the argument that names the acting user, per method (the content search reads the user from the unit's context). */
-export const OWN_TURN_USER: OrgArgs = { findIdsByOwnTurnContent: 2 };
-
-export function scoped<T extends object>(repo: T, ledger: OrgLedger, orgArgs: OrgArgs = {}, userArgs: OrgArgs = OWN_TURN_USER): T {
+export function scoped<T extends object>(repo: T, ledger: OrgLedger, orgArgs: OrgArgs = {}): T {
   return new Proxy(repo, {
     get(target, prop, receiver) {
       const v = Reflect.get(target, prop, receiver) as unknown;
@@ -136,8 +133,7 @@ export function scoped<T extends object>(repo: T, ledger: OrgLedger, orgArgs: Or
       return (...args: unknown[]) => {
         const org = ledger.orgFor(args, orgArgs[prop]);
         ledger.learn(args);
-        const user = userArgs[prop] === undefined ? undefined : (args[userArgs[prop]] as string);
-        const out = inOrg(org, () => (v as (...a: unknown[]) => unknown).apply(target, args), user) as Promise<unknown>;
+        const out = inOrg(org, () => (v as (...a: unknown[]) => unknown).apply(target, args)) as Promise<unknown>;
         return out.then((r) => {
           ledger.learn(r);
           return r;

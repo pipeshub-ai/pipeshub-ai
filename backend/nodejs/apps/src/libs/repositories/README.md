@@ -32,3 +32,14 @@ Controllers and services call repositories, not Mongoose models. This directory 
 - `slug/mongo.ts`: the per-name counter behind `generateUniqueSlug` (used by the schema hooks of organisations, users, groups and OAuth apps). The counter is not exposed; slugs come from the create methods.
 - The connection service (`libs/services/mongo.service.ts`) is exempt from the ratchet, which is now empty: new Mongoose use outside the allowed places fails it.
 - `ids.ts` (`isValidId`, `isNativeId`) and `mongo.ts` (`toDriverId`, for typed schema fields that still need a driver id) are the only id helpers non-repository code should use.
+
+## PostgreSQL
+
+`DOC_STORE` picks the store: `mongo` (default) or `postgres`; `shadow` keeps MongoDB as the store and compares a sample of reads with PostgreSQL (`shadow.ts`, `DOC_STORE_SHADOW_SAMPLE`). `<aggregate>/index.ts` calls `pickStore('<aggregate>', { mongo, postgres })` (`store-select.ts`); a repository with no PostgreSQL implementation yet refuses to start under `DOC_STORE=postgres` unless `DOC_STORE_MONGO_REPOS` lists it (`*`: every repository that has none; a testing aid, logged as an error at boot). `doc-store.ts` builds the unit of work (`PgUnitOfWork`, or `MixedUnitOfWork` when some repositories stay on Mongo) and `initDocStore` connects the runtime and waits for the schema each repository needs.
+
+- Ported so far: `conversation/`, `semantic-search/`, `document/`, `notification/`, `outbox/`, `mail-log/` (`<aggregate>/pg.ts`).
+- `pg.ts`: `PgUnitOfWork` over the runtime in `libs/db` (row policies per organisation, the store fence). `pg-util.ts`: `inUnit` (join the caller's transaction or open one), `assertOrg` (the organisation of a call must be the one the unit runs as), id and `LIKE` helpers. `nul.ts` removes U+0000, which PostgreSQL text cannot hold.
+- Rows leave as the plain objects the Mongo repositories return; `json-compare.ts` is the comparison (key set, JSON types, array order) the shadow reads and the differential test use.
+- Schema: `backend/db/versions/{conversation,content,platform_data}`.
+- Tests: the same `tests/stores/contract/*.contract.ts` run against PostgreSQL by `tests/stores/pg-*.itest.ts` (`npm run test:pg-stores`; needs `PG_TEST_BINS`, `PG_TEST_PGBOUNCER`, `PG_TEST_MIGRATE_PYTHON`, and `MONGO_IT_URI` for the comparison suites). `pg-differential.itest.ts` replays one script on both stores and compares every answer.
+- `libs/services/ttl-sweeper.service.ts` removes what Mongo's TTL indexes removed (notifications past retention, delivered outbox rows), as the jobs role.

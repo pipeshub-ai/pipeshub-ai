@@ -2,24 +2,11 @@
  * PostgreSQL implementation of the mail log (`DOC_STORE=postgres`). The row belongs to the org of the unit it is written in:
  * an entry that names another org, or a call with no org at all, is refused (the caller logs that the audit record was not saved).
  */
-import type { Importable, ImportStats, NeutralDoc } from '../import';
-import { importMailDocs } from './pg-import';
-import { kernelTx } from '../pg';
-import type { Tx } from '../uow';
 import { stripNul } from '../nul';
 import { assertOrg, inUnit, newObjectId } from '../pg-util';
 import type { MailLogEntry, MailLogRepository } from './types';
 
-export class PgMailLogRepository implements MailLogRepository, Importable {
-  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
-  importBatch(
-    _collection: string,
-    docs: NeutralDoc[],
-    tx: Tx,
-  ): Promise<ImportStats> {
-    return importMailDocs(kernelTx(tx), docs);
-  }
-
+export class PgMailLogRepository implements MailLogRepository {
   async record(entry: MailLogEntry): Promise<void> {
     const e = stripNul(entry, 'mail-log', 'entry');
     await inUnit(undefined, { write: true }, async (k) => {

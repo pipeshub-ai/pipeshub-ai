@@ -64,7 +64,6 @@ export interface MessageSqlRow {
   id: string;
   session_id: string;
   seq: number;
-  author_user_id: string;
   message_type: MessageDto['messageType'];
   content: string;
   content_format: string | null;
@@ -77,12 +76,10 @@ export interface MessageSqlRow {
   model_info: Record<string, unknown> | null;
   applied_filters: Record<string, unknown> | null;
   attachments: unknown[];
-  reference_data: unknown[] | null;
-  tools: unknown[] | null;
-  reasoning: unknown[] | null;
-  parts: unknown[] | null;
-  has_details: boolean;
-  source_record_ids: string[] | null;
+  reference_data: unknown[];
+  tools: unknown[];
+  reasoning: unknown[];
+  parts: unknown[];
   created_at: Date;
   updated_at: Date;
 }
@@ -222,7 +219,6 @@ export interface StoredMessage {
   tools: unknown[];
   reasoning: unknown[];
   parts: unknown[];
-  hasDetails: boolean;
 }
 
 const each = (
@@ -255,9 +251,6 @@ export function storedMessage(m: NewMessage): StoredMessage {
     tools,
     reasoning,
     parts,
-    hasDetails: [referenceData, tools, reasoning, parts].some(
-      (a) => a.length > 0,
-    ),
   };
 }
 
@@ -271,7 +264,6 @@ export function messageDto(
     sessionId: r.session_id,
     orgId,
     seq: r.seq,
-    authorUserId: r.author_user_id,
     messageType: r.message_type,
     content: r.content,
     citations: r.citations.map((c) => {
@@ -291,26 +283,11 @@ export function messageDto(
   put(o, 'status', r.status);
   put(o, 'confidence', r.confidence);
   put(o, 'metadata', r.metadata);
-  put(o, 'sourceRecordIds', r.source_record_ids);
-  // The four author-only columns arrive NULL for a row the viewer did not write that has any: say only that details exist.
-  if (r.tools !== null) {
-    o.referenceData = r.reference_data;
-    o.tools = r.tools;
-    o.reasoning = r.reasoning;
-    o.parts = r.parts;
-  } else if (r.has_details) o.detailsHidden = true;
-  else {
-    o.referenceData = [];
-    o.tools = [];
-    o.reasoning = [];
-    o.parts = [];
-  }
-  return {
-    dto: o as unknown as MessageDto,
-    authorUserId: r.author_user_id,
-    sourceRecordIds: r.source_record_ids,
-    hasDetails: r.has_details,
-  };
+  o.referenceData = r.reference_data;
+  o.tools = r.tools;
+  o.reasoning = r.reasoning;
+  o.parts = r.parts;
+  return { dto: o as unknown as MessageDto };
 }
 
 export function citationDto(

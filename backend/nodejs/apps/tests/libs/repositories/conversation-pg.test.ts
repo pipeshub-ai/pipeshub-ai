@@ -135,11 +135,9 @@ describe('PostgreSQL conversation row shapes', () => {
 
   it('a message is stored with the defaults the document schema applied', () => {
     const s = storedMessage({ messageType: 'bot_response', content: 'x' })
-    expect(s.hasDetails).to.equal(false)
     expect(s.modelInfo).to.deep.equal({ chatMode: 'quick' })
     expect(s.appliedFilters).to.deep.equal({ apps: [], kb: [], recordGroups: [], records: [], recordsExact: [] })
     expect(s.metadata).to.equal(null)
-    expect(storedMessage({ messageType: 'bot_response', content: 'x', tools: [{ toolName: 't', toolResult: 1 }] }).hasDetails).to.equal(true)
     expect(storedModelInfo({ modelKey: 'k', modelName: null as never })).to.deep.equal({ modelKey: 'k', chatMode: 'quick' })
     const f = storedFeedback({ isHelpful: true })
     expect(f.source).to.equal('user')
@@ -152,21 +150,16 @@ describe('PostgreSQL conversation row shapes', () => {
   })
 
   const msg = (over: Record<string, unknown> = {}) => ({
-    id: P, session_id: O, seq: 1, author_user_id: U, message_type: 'bot_response' as const, content: 'c', content_format: 'MARKDOWN', status: null, confidence: null,
-    citations: [], follow_up_questions: [], feedback: [], metadata: null, model_info: {}, applied_filters: {}, attachments: [], reference_data: null, tools: null,
-    reasoning: null, parts: null, has_details: true, source_record_ids: null, created_at: new Date(), updated_at: new Date(), ...over,
+    id: P, session_id: O, seq: 1, message_type: 'bot_response' as const, content: 'c', content_format: 'MARKDOWN', status: null, confidence: null,
+    citations: [], follow_up_questions: [], feedback: [], metadata: null, model_info: {}, applied_filters: {}, attachments: [], reference_data: [], tools: [],
+    reasoning: [], parts: [], created_at: new Date(), updated_at: new Date(), ...over,
   })
 
-  it('a row whose author-only columns were not selected says only that details exist', () => {
-    const hidden = messageDto(msg(), O)
-    expect(hidden.dto).to.not.have.property('tools')
-    expect(hidden.dto.detailsHidden).to.equal(true)
-    expect(hidden.hasDetails).to.equal(true)
-    const none = messageDto(msg({ has_details: false }), O)
-    expect(none.dto.tools).to.deep.equal([])
-    expect(none.dto).to.not.have.property('detailsHidden')
-    const own = messageDto(msg({ tools: [{ toolName: 't' }], reference_data: [], reasoning: [], parts: [] }), O)
+  it('a message row maps to the document shape, details included', () => {
+    const own = messageDto(msg({ tools: [{ toolName: 't' }] }), O)
     expect(own.dto.tools).to.have.length(1)
+    expect(own.dto.referenceData).to.deep.equal([])
+    expect(own.dto).to.not.have.property('authorUserId')
     expect(own.dto).to.not.have.property('detailsHidden')
   })
 })

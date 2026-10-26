@@ -5,10 +5,6 @@
  */
 import { BadRequestError, InternalServerError } from '../../errors/http.errors';
 import { stripNul } from '../nul';
-import type { Importable, ImportStats, NeutralDoc } from '../import';
-import { importDocumentDocs } from './pg-import';
-import { kernelTx } from '../pg';
-import type { Tx } from '../uow';
 import {
   Params,
   assertOrg,
@@ -365,16 +361,7 @@ async function insert(
   return rows[0] ? docOf(rows[0]) : null;
 }
 
-export class PgDocumentRepository implements DocumentRepository, Importable {
-  /** The migration copy: `documents` as they were stored (see ./pg-import.ts). */
-  importBatch(
-    _collection: string,
-    docs: NeutralDoc[],
-    tx: Tx,
-  ): Promise<ImportStats> {
-    return importDocumentDocs(kernelTx(tx), docs);
-  }
-
+export class PgDocumentRepository implements DocumentRepository {
   async get(orgId: string, id: string): Promise<DocumentRow | null> {
     return this.read(orgId, id, false);
   }

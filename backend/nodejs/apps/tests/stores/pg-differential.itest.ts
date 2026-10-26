@@ -1,12 +1,10 @@
 /**
- * The same scripted use of the conversation, saved-search and access-request repositories on MongoDB and on PostgreSQL,
+ * The same scripted use of the conversation and saved-search repositories on MongoDB and on PostgreSQL,
  * every method more than once, and the JSON-semantic comparator (key set, JSON types, array order) on every answer.
  *
  * Ids the stores make differ, so each store's log is renumbered by first appearance before the comparison; times are
- * masked (the stores stamp their own clocks). Three differences are intended and normalised, nothing else is:
- *  - a message written without an author carries the session's initiator on PostgreSQL (the column is NOT NULL);
- *  - the internal `activeRunId` that two Mongo aggregate reads leak is not returned by PostgreSQL;
- *  - only the author-only fields of another viewer's rows are withheld on PostgreSQL (the script reads rows with details as their author).
+ * masked (the stores stamp their own clocks). One difference is intended and normalised, nothing else is: the internal
+ * `activeRunId` that two Mongo aggregate reads leak is not returned by PostgreSQL.
  *
  *   MONGO_IT_URI=mongodb://127.0.0.1:47201 REPLICA_SET_AVAILABLE=false npm run test:pg-stores
  */
@@ -16,14 +14,11 @@ import { expect } from 'chai';
 import mongoose from 'mongoose';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { jsonDiff } from '../../src/libs/repositories/json-compare';
-import { MongoAccessRequestRepository } from '../../src/libs/repositories/access-request/mongo';
-import { PgAccessRequestRepository } from '../../src/libs/repositories/access-request/pg';
 import { MongoConversationRepository } from '../../src/libs/repositories/conversation/mongo';
 import { PgConversationRepository } from '../../src/libs/repositories/conversation/pg';
 import { MongoSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/mongo';
 import { PgSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/pg';
 import { copySessionUpToMessage } from '../../src/modules/enterprise_search/utils/fork-conversation';
-import type { AccessRequestRepository } from '../../src/libs/repositories/access-request';
 import type { ConversationRepository, NewMessage, SessionListQuery } from '../../src/libs/repositories/conversation';
 import type { SemanticSearchRepository } from '../../src/libs/repositories/semantic-search';
 import { HEX24, OrgLedger, PG_BINS, PgStack, haveStack, newId, scoped, startPgStack } from './pg-store-harness';
@@ -31,7 +26,6 @@ import { HEX24, OrgLedger, PG_BINS, PgStack, haveStack, newId, scoped, startPgSt
 interface Repos {
   conv: ConversationRepository;
   search: SemanticSearchRepository;
-  access: AccessRequestRepository;
 }
 type Log = Array<{ label: string; out: unknown }>;
 
@@ -52,7 +46,7 @@ const botMsg = (content: string, extra: Partial<NewMessage> = {}): NewMessage =>
 
 /** The script. It never looks at which store it runs on; every id it uses came out of an earlier answer. */
 async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promise<T>): Promise<void> {
-  const { conv, search, access } = r;
+  const { conv, search } = r;
   const now = 1_700_000_000_000;
   const open = (over: Record<string, unknown> = {}, first = userMsg('hello world')) =>
     conv.openSession(
@@ -147,15 +141,15 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
       modelInfo: { modelKey: 'k', modelName: 'm', modelProvider: 'p', chatMode: 'quick' } as never,
       appliedFilters: { apps: [{ id: 'a', name: 'n' }] } as never, metadata: { processingTimeMs: 5 },
       tools: [{ toolName: 't', toolResult: { rows: [1, 2] } }], reasoning: [{ content: 'thinking', turnIndex: 0 }],
-      referenceData: [{ name: 'ref', id: '1' }], parts: [{ type: 'text', content: 'part' }], sourceRecordIds: ['rec-1'],
+      referenceData: [{ name: 'ref', id: '1' }], parts: [{ type: 'text', content: 'part' }],
     }),
-  ], undefined, ALICE));
-  await step('append question by bob', conv.appendMessages(s1._id, ORG, [userMsg('and what about q3?', { attachments: [{ recordId: 'att-1', recordName: 'a.pdf' }] })], undefined, BOB));
-  const [bobAnswer] = await step('append answer by bob', conv.appendMessages(s1._id, ORG, [botMsg('q3 is fine', { sourceRecordIds: ['rec-9'] })], undefined, BOB));
+  ]));
+  await step('append question by bob', conv.appendMessages(s1._id, ORG, [userMsg('and what about q3?', { attachments: [{ recordId: 'att-1', recordName: 'a.pdf' }] })]));
+  const [bobAnswer] = await step('append answer by bob', conv.appendMessages(s1._id, ORG, [botMsg('q3 is fine', {})]));
   await step('append a question and answer together', conv.appendMessages(s1._id, ORG, [
-    userMsg('q', { attachments: [{ recordId: 'att-2' }] }), botMsg('a', { sourceRecordIds: ['rec-2'] }),
-  ], undefined, ALICE));
-  await step('append status stopped', conv.appendMessages(s1._id, ORG, [botMsg('partial', { status: 'stopped', contentFormat: 'JSON' })], undefined, ALICE));
+    userMsg('q', { attachments: [{ recordId: 'att-2' }] }), botMsg('a'),
+  ]));
+  await step('append status stopped', conv.appendMessages(s1._id, ORG, [botMsg('partial', { status: 'stopped', contentFormat: 'JSON' })]));
   // fields the schemas do not name are dropped on both stores; defaults are filled on both
   const [rich] = await step('append a message with unknown nested fields', conv.appendMessages(s1._id, ORG, [
     botMsg('rich', {
@@ -163,9 +157,9 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
       metadata: { processingTimeMs: 1, reason: 'dropped' } as never, modelInfo: { modelKey: 'k', junk: 1 } as never,
       attachments: [{ recordId: 'a1', recordName: 'n', junk: 1 } as never], appliedFilters: { apps: [{ id: 'a', junk: 1 }], other: [1] } as never,
       referenceData: [{ name: 'n', id: '1', metadata: { k: 'v' }, junk: 1 } as never], tools: [{ toolName: 't', toolResult: 1, junk: 1 } as never],
-      reasoning: [{ content: 'r', junk: 1 } as never], parts: [{ type: 'text', content: 'x', anything: 1 }], sourceRecordIds: [],
+      reasoning: [{ content: 'r', junk: 1 } as never], parts: [{ type: 'text', content: 'x', anything: 1 } as never],
     }),
-  ], undefined, ALICE));
+  ]));
   await step('feedback with every nested shape', conv.appendFeedback(bobAnswer!._id, ORG, {
     isHelpful: false, ratings: { accuracy: 3, junk: 1 }, categories: ['other'], comments: { positive: 'p', junk: 'x' },
     citationFeedback: [{ citationId: cit1!._id, isRelevant: true, junk: 1 }], followUpQuestionsHelpful: true, unusedFollowUpQuestions: ['u'],
@@ -175,31 +169,40 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   await step('citations with unknown metadata fields', conv.createCitations([
     { content: 'c', chunkIndex: 3, citationType: 'vector', metadata: { ...meta(ORG, 5), junk: 1, score: 0.5, topics: ['t'], bounding_box: [{ x: 1, y: 2, z: 3 }] } as never },
   ]));
-  await step('listMessages rich', conv.listMessages(s1._id, ALICE, { orgId: ORG, order: 'desc', limit: 1 }));
+  await step('listMessages rich', conv.listMessages(s1._id, { orgId: ORG, order: 'desc', limit: 1 }));
   await step('append empty', conv.appendMessages(s1._id, ORG, []));
   await step('append to unknown', conv.appendMessages(newId(), ORG, [userMsg('x')]).catch((e: Error) => `error: ${e.message}`));
-  await step('listMessages alice', conv.listMessages(s1._id, ALICE, { orgId: ORG }));
-  await step('listMessages alice with citations', conv.listMessages(s1._id, ALICE, { orgId: ORG, withCitations: true }));
-  await step('listMessages desc page', conv.listMessages(s1._id, ALICE, { orgId: ORG, order: 'desc', skip: 1, limit: 2 }));
-  await step('listMessagesOfSessions', conv.listMessagesOfSessions([s1._id, s2._id, s3._id], ALICE, { orgId: ORG, withCitations: true }));
+  await step('listMessages alice', conv.listMessages(s1._id, { orgId: ORG }));
+  await step('listMessages alice with citations', conv.listMessages(s1._id, { orgId: ORG, withCitations: true }));
+  await step('listMessages desc page', conv.listMessages(s1._id, { orgId: ORG, order: 'desc', skip: 1, limit: 2 }));
+  await step('listMessagesOfSessions', conv.listMessagesOfSessions([s1._id, s2._id, s3._id], { orgId: ORG, withCitations: true }));
   await step('countMessages', conv.countMessages(s1._id, ORG));
   await step('findMessage', conv.findMessage(s1._id, ORG, bobAnswer!._id));
   await step('findMessage wrong session', conv.findMessage(s2._id, ORG, bobAnswer!._id));
   await step('appendFeedback', conv.appendFeedback(bobAnswer!._id, ORG, { isHelpful: true, ratings: { accuracy: 4 }, comments: { positive: 'good' }, timestamp: 1 }));
   await step('appendFeedback second', conv.appendFeedback(bobAnswer!._id, ORG, { isHelpful: false, categories: ['other'], timestamp: 2, feedbackProvider: BOB }));
-  await step('replaceMessage', conv.replaceMessage(bot1!._id, ORG, botMsg('regenerated', { sourceRecordIds: ['rec-3'], tools: [{ toolName: 't2', toolResult: 2 }] })));
-  await step('listMessages after replace', conv.listMessages(s1._id, ALICE, { orgId: ORG, limit: 3 }));
+  await step('replaceMessage', conv.replaceMessage(bot1!._id, ORG, botMsg('regenerated', { tools: [{ toolName: 't2', toolResult: 2 }] })));
+  await step('listMessages after replace', conv.listMessages(s1._id, { orgId: ORG, limit: 3 }));
   await step('listAttachmentsAndCitedRecords', conv.listAttachmentsAndCitedRecords(s1._id));
   await step('getCitations', conv.getCitations([cit1!._id, cit2!._id], ORG));
   await step('getCitations other org', conv.getCitations([cit1!._id], OTHER_ORG));
-  const doomed = await step('append doomed', conv.appendMessages(s2._id, ORG, [botMsg('delete me')], undefined, ALICE));
+  const doomed = await step('append doomed', conv.appendMessages(s2._id, ORG, [botMsg('delete me')]));
   await step('deleteMessages', conv.deleteMessages([doomed[0]!._id], ORG));
 
   // ---- content search
-  await step('own-turn search alice', sorted(conv.findIdsByOwnTurnContent(ORG, 'hello', ALICE)));
-  await step('own-turn search bob', sorted(conv.findIdsByOwnTurnContent(ORG, 'q3', BOB)));
-  await step('own-turn search bob sees nothing of alice', sorted(conv.findIdsByOwnTurnContent(ORG, 'hello', BOB)));
-  await step('own-turn search escapes', sorted(conv.findIdsByOwnTurnContent(ORG, '100\\%', ALICE)));
+  await step('search content', sorted(conv.findIdsByContent(ORG, 'hello')));
+  await step('search content in an answer', sorted(conv.findIdsByContent(ORG, 'q3')));
+  await step('search content is case blind', sorted(conv.findIdsByContent(ORG, 'QUARTER')));
+  await step('search content escapes', sorted(conv.findIdsByContent(ORG, '100\\%')));
+  await step('search content other org', sorted(conv.findIdsByContent(OTHER_ORG, 'hello')));
+  const marked = await step('append artifact markers', conv.appendMessages(s2._id, ORG, [botMsg('see ::artifact[a1] here'), botMsg('plain'), botMsg('and ::artifact[a2]')]));
+  await step('listArtifactMarkerContents', conv.listArtifactMarkerContents(s2._id, ORG, 100));
+  await step('listArtifactMarkerContents up to', conv.listArtifactMarkerContents(s2._id, ORG, 2));
+  await step('deleteMessages markers', conv.deleteMessages(marked.map((m) => m._id), ORG));
+  const q1 = await step('append question to edit', conv.appendMessages(s3._id, ORG, [userMsg('first words', { attachments: [{ recordId: 'att-7' }] })]));
+  await step('updateUserQueryContent', conv.updateUserQueryContent(q1[0]!._id, ORG, s3._id, 'edited words'));
+  await step('updateUserQueryContent with files', conv.updateUserQueryContent(q1[0]!._id, ORG, s3._id, 'edited again', [{ recordId: 'att-8', recordName: 'b.pdf' }]));
+  await step('updateUserQueryContent unknown', conv.updateUserQueryContent(newId(), ORG, s3._id, 'x'));
 
   // ---- archive, delete, project links
   await step('archive chat', conv.setArchived(CHAT, s2._id, { by: ALICE }));
@@ -235,7 +238,7 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
     sessionType: 'chat', metadata: { forkedFromConversationId: s1._id, forkedFromMessageId: forkId },
   }));
   await step('append to the copy', conv.appendMessages(forkId, ORG, [userMsg('copied question'), botMsg('copied answer')]));
-  await step('read the copy', conv.listMessages(forkId, ALICE, { orgId: ORG }));
+  await step('read the copy', conv.listMessages(forkId, { orgId: ORG }));
   await step('softDelete the copy', conv.softDelete(forkId, actor(ALICE)));
 
   await step('set project link', conv.setProjectLink(CHAT, s1._id, { projectId: PROJECT2, projectVisibility: 'private' }));
@@ -271,32 +274,6 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   await step('search delete', search.delete(ORG, ALICE, m2._id));
   await step('search deleteVisible', search.deleteVisible(ORG, ALICE, { shared: false }));
   await step('search list after', search.listVisible(ORG, ALICE, { skip: 0, limit: 10 }));
-
-  // ---- access requests
-  const r1 = await step('access create', access.create(ORG, { requesterId: CAROL, recordId: 'rec-1', recordName: 'Plan', kind: 'native', ownerUserIds: [ALICE, BOB], status: 'pending' }));
-  await new Promise((r) => setTimeout(r, 5)); // the stores order by creation time: keep the times apart
-  await step('access create collection', access.create(ORG, { requesterId: CAROL, recordId: 'rec-2', collectionId: 'col-1', collectionName: 'Finance', kind: 'native', ownerUserIds: [BOB], status: 'pending' }));
-  await step('access create forwarded', access.create(ORG, { requesterId: CAROL, recordId: 'rec-3', kind: 'connector', ownerUserIds: [], status: 'forwarded' }));
-  await step('access findOpen record', access.findOpen(ORG, CAROL, { recordId: 'rec-1' }));
-  await step('access findOpen collection', access.findOpen(ORG, CAROL, { collectionId: 'col-1' }));
-  await step('access findOpen none', access.findOpen(ORG, DAVE, { recordId: 'rec-1' }));
-  await step('access countSince', access.countSince(ORG, CAROL, new Date(Date.now() - 3600_000)));
-  await step('access listForApprover', access.listForApprover(ORG, BOB));
-  await step('access getForApprover', access.getForApprover(ORG, ALICE, r1._id));
-  await step('access getForApprover stranger', access.getForApprover(ORG, DAVE, r1._id));
-  await step('access get', access.get(ORG, r1._id));
-  await step('access decide', access.decide(ORG, r1._id, { status: 'approved', decidedBy: ALICE }));
-  await step('access decide again', access.decide(ORG, r1._id, { status: 'denied', decidedBy: BOB }));
-  await step('access findOpen after decision', access.findOpen(ORG, CAROL, { recordId: 'rec-1' }));
-  await step('access listForApprover after', access.listForApprover(ORG, ALICE));
-  const v1 = await step('access create void', access.create(ORG, { requesterId: DAVE, recordId: 'rec-9', kind: 'native', ownerUserIds: [], status: 'void' }));
-  await step('access create void again', access.create(ORG, { requesterId: DAVE, recordId: 'rec-9', kind: 'native', ownerUserIds: [], status: 'void' }));
-  await step('access findOpen void', access.findOpen(ORG, DAVE, { recordId: 'rec-9' }, 'void'));
-  await step('access findOpen void is not real', access.findOpen(ORG, DAVE, { recordId: 'rec-9' }));
-  await step('access listForApprover ignores void', access.listForApprover(ORG, BOB));
-  void v1;
-  await step('access release', access.release(ORG, r1._id, ALICE));
-  await step('access findOpen after release', access.findOpen(ORG, CAROL, { recordId: 'rec-1' }));
 }
 
 const sorted = async (p: Promise<{ ids: string[]; truncated: boolean }>) => {
@@ -306,19 +283,9 @@ const sorted = async (p: Promise<{ ids: string[]; truncated: boolean }>) => {
 
 const MASK_NUMBERS = new Set(['createdAt', 'updatedAt', 'decidedAt', 'timestamp', 'lastActivityAt']);
 
-/** Renumber ids by first appearance, mask times, and apply the three documented differences. */
+/** Renumber ids by first appearance, mask times, and apply the one documented difference. */
 function normalise(log: Log): unknown[] {
   const seen = new Map<string, string>();
-  const initiator = new Map<string, string>();
-  const learn = (v: unknown): void => {
-    if (v === null || typeof v !== 'object' || v instanceof Date) return;
-    if (v instanceof Map) return void v.forEach(learn);
-    if (Array.isArray(v)) return void v.forEach(learn);
-    const o = v as Record<string, unknown>;
-    if (typeof o._id === 'string' && typeof o.initiator === 'string') initiator.set(o._id, o.initiator);
-    Object.values(o).forEach(learn);
-  };
-  log.forEach((l) => learn(l.out));
   const walk = (v: unknown, key?: string): unknown => {
     if (v instanceof Date) return '<time>';
     // a map keyed by ids is data (the answer of listMessagesOfSessions); any other map is the document store's Map type, whose JSON form loses its content
@@ -334,12 +301,6 @@ function normalise(log: Log): unknown[] {
     if (v !== null && typeof v === 'object') {
       const o = { ...(v as Record<string, unknown>) };
       delete o.activeRunId;
-      const author = initiator.get(String(o.sessionId ?? ''));
-      if (author && typeof o.messageType === 'string' && o.authorUserId === undefined) o.authorUserId = author;
-      if ('dto' in o && 'hasDetails' in o && o.authorUserId === undefined) {
-        const d = o.dto as Record<string, unknown>;
-        o.authorUserId = d.authorUserId ?? initiator.get(String(d.sessionId ?? ''));
-      }
       return Object.fromEntries(Object.entries(o).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, x]) => [k, walk(x, k)]));
     }
     return v;
@@ -384,12 +345,11 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const ledger = new OrgLedger();
       const pg: Repos = {
         conv: scoped(new PgConversationRepository(), ledger, {
-          findIdsByOwnTurnContent: 0, listVisibleTitles: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1, appendFeedback: 1, findMessage: 1, countMessages: 1, getCitations: 1,
+          findIdsByContent: 0, listArtifactMarkerContents: 1, updateUserQueryContent: 1, listVisibleTitles: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1, appendFeedback: 1, findMessage: 1, countMessages: 1, getCitations: 1,
         }),
         search: scoped(new PgSemanticSearchRepository(), ledger, { findVisible: 0, listVisible: 0, unarchive: 0, delete: 0, deleteVisible: 0, findCitations: 0 }),
-        access: scoped(new PgAccessRequestRepository(), ledger, { create: 0, findOpen: 0, countSince: 0, listForApprover: 0, getForApprover: 0, get: 0, decide: 0, release: 0 }),
       };
-      const mongoLog = normalise(await run({ conv: new MongoConversationRepository(), search: new MongoSemanticSearchRepository(), access: new MongoAccessRequestRepository() })) as Array<{ label: string; out: unknown }>;
+      const mongoLog = normalise(await run({ conv: new MongoConversationRepository(), search: new MongoSemanticSearchRepository() })) as Array<{ label: string; out: unknown }>;
       const pgLog = normalise(await run(pg)) as Array<{ label: string; out: unknown }>;
       expect(pgLog.map((l) => l.label)).to.deep.equal(mongoLog.map((l) => l.label));
       const problems = mongoLog.flatMap((m, i) => jsonDiff(m.out, pgLog[i]?.out).map((d) => `${m.label}: ${d}`));

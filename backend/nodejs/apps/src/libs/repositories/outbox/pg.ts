@@ -4,9 +4,6 @@
  * every org as the jobs role. Claims are `FOR UPDATE SKIP LOCKED`, so several dispatchers never take the same row, and a
  * row is held back while an older one about the same entity (`ordering_key`) is undelivered.
  */
-import type { Importable, ImportStats, NeutralDoc } from '../import';
-import { importOutboxDocs } from './pg-import';
-import { kernelTx } from '../pg';
 import { system, orgContextStorage } from '../../context/orgContext';
 import { Tx as PgKernelTx, withJobsUow } from '../../db';
 import { InternalServerError } from '../../errors/http.errors';
@@ -71,16 +68,7 @@ function inJobs<T>(fn: (k: PgKernelTx) => Promise<T>): Promise<T> {
 const idOf = (id: string): string | undefined =>
   /^\d{1,18}$/.test(id) ? id : undefined;
 
-export class PgOutboxRepository implements OutboxRepository, Importable {
-  /** The migration copy: documents as they were stored (see ./pg-import.ts). */
-  importBatch(
-    _collection: string,
-    docs: NeutralDoc[],
-    tx: Tx,
-  ): Promise<ImportStats> {
-    return importOutboxDocs(kernelTx(tx), docs);
-  }
-
+export class PgOutboxRepository implements OutboxRepository {
   async append(event: NewOutboxEvent, tx?: Tx): Promise<void> {
     await inUnit(tx, { write: true }, async (k) => {
       if (!k.orgId)

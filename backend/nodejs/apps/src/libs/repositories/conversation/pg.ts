@@ -11,11 +11,8 @@
  * parameters. Author-only message columns (tools, reasoning, parts, reference data) are projected per row inside
  * SQL, so another viewer's copy is never read from the table.
  */
-import type { Importable, ImportStats, NeutralDoc } from '../import';
-import { importConversationDocs } from './pg-import';
-import { kernelTx } from '../pg';
 import { randomUUID } from 'crypto';
-import { DbTimeout, pgRuntime } from '../../db';
+import { pgRuntime } from '../../db';
 import type { Tx as PgKernelTx } from '../../db';
 import { CONVERSATION_STATUS } from '../../../modules/enterprise_search/constants/constants';
 import { BadRequestError, InternalServerError } from '../../errors/http.errors';
@@ -24,7 +21,6 @@ import { stripNul } from '../nul';
 import {
   Params,
   assertOrg,
-  assertUser,
   fill,
   inUnit,
   likeEscape,
@@ -62,7 +58,7 @@ import type {
   NewCitation,
   NewMessage,
   NewSession,
-  OwnTurnMatches,
+  ContentMatches,
   RunReservation,
   RunStateChange,
   SessionActor,
@@ -76,8 +72,6 @@ import type {
 const ACTIVE_RUN_WINDOW_MS = 10 * 60 * 1000;
 const ACTIVE_RUN_SETTLE_MS = 15_000;
 const ACTIVE_RUN_POLL_MS = 250;
-/** The own-turn search stops and answers "truncated" when the older-message phase runs past this. */
-const SEARCH_OLDER_BUDGET = '50ms';
 const LIVE = CONVERSATION_STATUS.INPROGRESS;
 
 const SESSION_COLS = `s.id, s.session_type, s.user_id, s.initiator, s.title, s.is_shared, s.share_link, s.is_deleted, s.deleted_by,
@@ -87,18 +81,9 @@ const SESSION_COLS = `s.id, s.session_type, s.user_id, s.initiator, s.title, s.i
 const SHARED_WITH = `COALESCE((SELECT jsonb_agg(jsonb_build_object('userId', m.user_id, 'accessLevel', m.access_level, '_id', m.entry_id) ORDER BY m.pos)
   FROM conversation.chat_session_members m WHERE m.org_id = $1 AND m.session_id = s.id), '[]'::jsonb) AS shared_with`;
 
-const MESSAGE_PLAIN = `m.id, m.session_id, m.seq, m.author_user_id, m.message_type, m.content, m.content_format, m.status, m.confidence,
-  m.citations, m.follow_up_questions, m.feedback, m.metadata, m.model_info, m.applied_filters, m.attachments, m.has_details,
-  m.source_record_ids, m.created_at, m.updated_at`;
-/** The viewer is always `$3`: the four author-only columns come back for the viewer's own rows, and for rows that hold none (empty arrays). */
-const MESSAGE_FOR_VIEWER = `${MESSAGE_PLAIN},
-  CASE WHEN m.author_user_id = $3::text OR NOT m.has_details THEN m.reference_data END AS reference_data,
-  CASE WHEN m.author_user_id = $3::text OR NOT m.has_details THEN m.tools END AS tools,
-  CASE WHEN m.author_user_id = $3::text OR NOT m.has_details THEN m.reasoning END AS reasoning,
-  CASE WHEN m.author_user_id = $3::text OR NOT m.has_details THEN m.parts END AS parts`;
-const MESSAGE_ALL = `${MESSAGE_PLAIN}, m.reference_data, m.tools, m.reasoning, m.parts`;
-/** For reads with no viewer: the four author-only columns are not selected at all. */
-const MESSAGE_PUBLIC = `${MESSAGE_PLAIN}, NULL::jsonb AS reference_data, NULL::jsonb AS tools, NULL::jsonb AS reasoning, NULL::jsonb AS parts`;
+const MESSAGE_COLS = `m.id, m.session_id, m.seq, m.message_type, m.content, m.content_format, m.status, m.confidence,
+  m.citations, m.follow_up_questions, m.feedback, m.metadata, m.model_info, m.applied_filters, m.attachments, m.reference_data,
+  m.tools, m.reasoning, m.parts, m.created_at, m.updated_at`;
 
 const CITATION_COLS = `c.id, c.content, c.chunk_index, c.citation_type, c.metadata, c.version, c.created_at, c.updated_at`;
 
@@ -107,17 +92,20 @@ const IS_WRITER = `EXISTS (SELECT 1 FROM conversation.chat_session_members w
   WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $5::text AND w.access_level = 'write')`;
 const IS_MEMBER = `EXISTS (SELECT 1 FROM conversation.chat_session_members w
   WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $5::text)`;
-/** The owner; on an agent chat also a member shared with for writing. */
-const OWNER_OR_WRITER = `(s.user_id = $5::text OR (s.session_type = 'agent' AND s.is_shared AND ${IS_WRITER}))`;
+/** The owner. A member a chat is shared with can read it but not continue, cancel or regenerate it. */
+const OWNER = `s.user_id = $5::text`;
+/** Who may delete or archive a chat: the person who started it, or a member it was shared with for writing. */
+const INITIATOR_OR_WRITER = `(s.user_id = $5::text AND (s.initiator = $5::text OR ${IS_WRITER}))`;
+/** An agent chat for the owner, or for a member it is shared with (at write level when asked); an archived chat is not shared on. */
+const AGENT_READ = `(s.user_id = $5::text OR (s.is_shared AND NOT s.is_archived AND ${IS_MEMBER}))`;
+const AGENT_WRITE = `(s.user_id = $5::text OR (s.is_shared AND NOT s.is_archived AND ${IS_WRITER}))`;
 
 const MACROS = {
   S: `${SESSION_COLS}, ${SHARED_WITH}`,
   SC: SESSION_COLS,
-  M: MESSAGE_ALL,
-  MP: MESSAGE_PUBLIC,
-  MV: MESSAGE_FOR_VIEWER,
+  M: MESSAGE_COLS,
   C: CITATION_COLS,
-  OW: OWNER_OR_WRITER,
+  OW: OWNER,
   W: IS_WRITER,
   MEM: IS_MEMBER,
 };
@@ -134,19 +122,18 @@ const BY_ID = SQL(
 const find = (predicate: string): string => SQL(FIND, { PRED: predicate });
 
 const FIND_FOR_TURN = find('@{OW}');
+const FIND_AGENT_WRITE = find(AGENT_WRITE);
 const FIND_OWNED_BY_INITIATOR = find(
   's.user_id = $5::text AND s.initiator = $5::text',
 );
 const FIND_OWNED = find('s.user_id = $5::text');
 const FIND_FOR_SHARE = find('s.user_id = $5::text AND s.initiator = $5::text');
 const FIND_FOR_UNSHARE = find('s.initiator = $5::text');
-const FIND_DELETABLE = find('s.user_id = $5::text AND s.initiator = $5::text');
+const FIND_DELETABLE = find(INITIATOR_OR_WRITER);
 const FIND_FOR_FEEDBACK_CHAT = find(
   '(s.initiator = $5::text OR (s.is_shared AND @{MEM}))',
 );
-const FIND_AGENT_READ = find(
-  '(s.user_id = $5::text OR (s.is_shared AND @{MEM}))',
-);
+const FIND_AGENT_READ = find(AGENT_READ);
 
 const LEAN_SHAPE = { doc: false, version: false } as const;
 const DOC_SHAPE = { doc: true, version: true } as const;
@@ -202,7 +189,10 @@ export function planOf(q: SessionListQuery, p: Params): Plan {
   const common = [
     's.org_id = $1',
     'NOT s.is_deleted',
-    q.scope.kind === 'chat' && q.shared && !q.owned && q.sharedIncludesAgentChats
+    q.scope.kind === 'chat' &&
+    q.shared &&
+    !q.owned &&
+    q.sharedIncludesAgentChats
       ? "s.session_type IN ('chat', 'agent')"
       : `s.session_type = ${p.add(q.scope.kind)}`,
   ];
@@ -243,7 +233,7 @@ export function planOf(q: SessionListQuery, p: Params): Plan {
   };
   const access: string[] = [];
   const memberSql = (writeOnly: boolean): string =>
-    `(s.is_shared AND EXISTS (SELECT 1 FROM conversation.chat_session_members w WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = ${user}::text${writeOnly ? " AND w.access_level = 'write'" : ''}))`;
+    `(s.is_shared${chat ? '' : ' AND NOT s.is_archived'} AND EXISTS (SELECT 1 FROM conversation.chat_session_members w WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = ${user}::text${writeOnly ? " AND w.access_level = 'write'" : ''}))`;
   const writeOnly = !chat && q.sharedAccess === 'write';
   if (!chat || q.owned) {
     plan.owned = true;
@@ -256,7 +246,7 @@ export function planOf(q: SessionListQuery, p: Params): Plan {
   if (projects.length && (chat ? q.shared : true)) {
     plan.project = p.add(projects);
     access.push(
-      `(s.project_id = ANY(${plan.project}::text[]) AND s.project_visibility = 'project')`,
+      `(s.project_id = ANY(${plan.project}::text[]) AND s.project_visibility = 'project'${chat ? '' : ' AND NOT s.is_archived'})`,
     );
   }
   plan.access = access.length ? `(${access.join(' OR ')})` : 'FALSE';
@@ -272,15 +262,15 @@ const WAY = {
   },
   member: {
     page: `(SELECT @{COLS} FROM conversation.chat_session_members w JOIN conversation.chat_sessions s ON s.org_id = $1 AND s.id = w.session_id
-       WHERE w.org_id = $1 AND w.user_id = @{USER}::text @{LEVEL} AND s.is_shared AND @{COMMON} ORDER BY @{ORDER_S} LIMIT @{TAKE})`,
+       WHERE w.org_id = $1 AND w.user_id = @{USER}::text @{LEVEL} AND s.is_shared @{ARCH} AND @{COMMON} ORDER BY @{ORDER_S} LIMIT @{TAKE})`,
     count: `/* pipeshub:conversation.count_sessions */ SELECT s.id FROM conversation.chat_session_members w JOIN conversation.chat_sessions s ON s.org_id = $1 AND s.id = w.session_id
-       WHERE w.org_id = $1 AND w.user_id = @{USER}::text @{LEVEL} AND s.is_shared AND @{COMMON}`,
+       WHERE w.org_id = $1 AND w.user_id = @{USER}::text @{LEVEL} AND s.is_shared @{ARCH} AND @{COMMON}`,
   },
   project: {
     page: `(SELECT x.* FROM unnest(@{PROJECTS}::text[]) AS pr(pid), LATERAL (SELECT @{COLS} FROM conversation.chat_sessions s
-       WHERE @{COMMON} AND s.project_id = pr.pid AND s.project_visibility = 'project' ORDER BY @{ORDER_S} LIMIT @{TAKE}) x)`,
+       WHERE @{COMMON} AND s.project_id = pr.pid AND s.project_visibility = 'project' @{ARCH} ORDER BY @{ORDER_S} LIMIT @{TAKE}) x)`,
     count: `/* pipeshub:conversation.count_sessions */ SELECT s.id FROM unnest(@{PROJECTS}::text[]) AS pr(pid) JOIN conversation.chat_sessions s ON s.org_id = $1
-       AND s.project_id = pr.pid AND s.project_visibility = 'project' WHERE @{COMMON}`,
+       AND s.project_id = pr.pid AND s.project_visibility = 'project' @{ARCH} WHERE @{COMMON}`,
   },
 };
 const LIST = `/* pipeshub:conversation.list_sessions */ SELECT * FROM (SELECT DISTINCT ON (c.id) c.* FROM (@{BRANCHES}) c ORDER BY c.id) d
@@ -304,6 +294,8 @@ export function pageStatement(
     COMMON: plan.common,
     USER: plan.user,
     LEVEL: plan.member?.writeOnly ? "AND w.access_level = 'write'" : '',
+    // the owner archiving an agent chat takes it away from the people it was shared with
+    ARCH: q.scope.kind === 'agent' ? 'AND NOT s.is_archived' : '',
     TAKE: p.add(q.skip + q.limit),
     ORDER_S: orderBy(q.sort, 's.'),
     PROJECTS: plan.project ?? '',
@@ -333,6 +325,7 @@ export function countStatement(q: SessionListQuery): {
     COMMON: plan.common,
     USER: plan.user,
     LEVEL: plan.member?.writeOnly ? "AND w.access_level = 'write'" : '',
+    ARCH: q.scope.kind === 'agent' ? 'AND NOT s.is_archived' : '',
     PROJECTS: plan.project ?? '',
   };
   const ways = [
@@ -395,21 +388,7 @@ const citationIdsOf = (rows: MessageSqlRow[]): string[] =>
     ),
   );
 
-export class PgConversationRepository
-  implements ConversationRepository, Importable
-{
-  /** The migration copy (see ./pg-import). */
-  importBatch(
-    collection: string,
-    docs: NeutralDoc[],
-    tx: Tx,
-  ): Promise<ImportStats> {
-    return importConversationDocs(kernelTx(tx), collection, docs);
-  }
-
-  /** `searchBudget`: how long the older-message phase of the content search may run (tests shorten it). */
-  constructor(private readonly searchBudget: string = SEARCH_OLDER_BUDGET) {}
-
+export class PgConversationRepository implements ConversationRepository {
   isConnected(): boolean {
     try {
       pgRuntime();
@@ -533,7 +512,7 @@ export class PgConversationRepository
     level: 'read' | 'write',
   ): Promise<ChatSessionDto | null> {
     return this.lookup(
-      level === 'write' ? FIND_FOR_TURN : FIND_AGENT_READ,
+      level === 'write' ? FIND_AGENT_WRITE : FIND_AGENT_READ,
       { kind: 'agent', agentKey },
       id,
       actor,
@@ -836,74 +815,46 @@ export class PgConversationRepository
     });
   }
 
-  /**
-   * Own turns only. Phase A scans the viewer's newest messages (bounded by their own history, not the org's); only when
-   * that scan could not reach the oldest ones does phase B ask the trigram index, under a 50 ms budget. Past the budget
-   * the answer is what phase A found, marked truncated.
-   */
-  async findIdsByOwnTurnContent(
+  async findIdsByContent(
     orgId: string,
     escapedSearch: string,
-    authorUserId: string,
     limit = 10000,
-  ): Promise<OwnTurnMatches> {
+  ): Promise<ContentMatches> {
     const term = unescapeRegex(escapedSearch);
-    const viewer = oidOf(authorUserId);
-    if (!term || !viewer) return { ids: [], truncated: false };
+    if (!term) return { ids: [], truncated: false };
     const text = stripNul(term, 'conversation', 'search');
     const cap = Math.min(Math.max(limit, 1), 10000);
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);
-      assertUser(viewer); // the search functions read the user from the unit's context
-      const a = await k.query<{
-        session_id: string | null;
-        truncated: boolean;
-        cursor_at: Date | null;
-      }>(
-        '/* pipeshub:conversation.search_recent */ SELECT session_id, truncated, cursor_at FROM conversation.search_recent($1, $2)',
-        [text, cap],
+      const { rows } = await k.query<{ session_id: string }>(
+        `/* pipeshub:conversation.search_content */ SELECT m.session_id FROM conversation.chat_messages m
+          WHERE m.org_id = $1 AND m.content ILIKE $2
+          GROUP BY m.session_id ORDER BY max(m.created_at) DESC, m.session_id DESC LIMIT $3`,
+        [k.orgId, `%${likeEscape(text)}%`, cap + 1],
       );
-      const ids = new Set(
-        a.rows.flatMap((r) => (r.session_id ? [r.session_id] : [])),
+      return {
+        ids: rows.slice(0, cap).map((r) => r.session_id),
+        truncated: rows.length > cap,
+      };
+    });
+  }
+
+  async listArtifactMarkerContents(
+    sessionId: string,
+    orgId: string,
+    lastSeq: number,
+  ): Promise<string[]> {
+    const sid = oidOf(sessionId);
+    if (!sid) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ content: string }>(
+        `/* pipeshub:conversation.artifact_marker_contents */ SELECT m.content FROM conversation.chat_messages m
+          WHERE m.org_id = $1 AND m.session_id = $2::text AND m.seq <= $3 AND strpos(m.content, '::artifact[') > 0
+          ORDER BY m.seq`,
+        [k.orgId, sid, lastSeq],
       );
-      let truncated = a.rows.some((r) => r.truncated);
-      const cursor = a.rows.find((r) => r.cursor_at)?.cursor_at;
-      if (cursor && ids.size < cap) {
-        // a term shorter than three characters has no trigrams: the index cannot answer it
-        if (term.length < 3) return { ids: [...ids], truncated: true };
-        const before = (
-          await k.query<{ v: string }>(
-            "/* pipeshub:conversation.search_budget */ SELECT current_setting('statement_timeout') AS v",
-          )
-        ).rows[0]?.v;
-        try {
-          await k.savepoint('search_older', async () => {
-            await k.query(
-              '/* pipeshub:conversation.search_budget */ SELECT set_config($1, $2, true)',
-              ['statement_timeout', this.searchBudget],
-            );
-            const older = await k.query<{
-              session_id: string;
-              capped: boolean;
-            }>(
-              '/* pipeshub:conversation.search_older */ SELECT session_id, capped FROM conversation.search_older($1, $2, $3)',
-              [text, cursor, cap],
-            );
-            for (const r of older.rows) ids.add(r.session_id);
-            // phase B covers everything older than phase A: complete unless it hit its row cap or the session limit
-            truncated = older.rows.some((r) => r.capped) || ids.size >= cap;
-            // released with the savepoint, a changed setting would outlive it: put the unit's own timeout back
-            await k.query(
-              '/* pipeshub:conversation.search_budget */ SELECT set_config($1, $2, true)',
-              ['statement_timeout', before ?? '0'],
-            );
-          });
-        } catch (e) {
-          if (!(e instanceof DbTimeout)) throw e;
-          truncated = true; // the rollback to the savepoint restored the timeout
-        }
-      }
-      return { ids: [...ids].slice(0, cap), truncated };
+      return rows.map((r) => r.content);
     });
   }
 
@@ -1376,12 +1327,11 @@ export class PgConversationRepository
     k: PgKernelTx,
     sessionId: string,
     messages: NewMessage[],
-    authorUserId?: string,
   ): Promise<MessageDto[]> {
     if (!messages.length) return [];
-    const alloc = await k.query<{ next_seq: number; initiator: string }>(
+    const alloc = await k.query<{ next_seq: number }>(
       `/* pipeshub:conversation.allocate_seq */ UPDATE conversation.chat_sessions SET next_seq = next_seq + $3
-        WHERE org_id = $1 AND id = $2::text RETURNING next_seq, initiator`,
+        WHERE org_id = $1 AND id = $2::text RETURNING next_seq`,
       [k.orgId, sessionId, messages.length],
     );
     if (!alloc.rows[0])
@@ -1389,19 +1339,9 @@ export class PgConversationRepository
         'Chat session not found while allocating message sequence',
       );
     const start = alloc.rows[0].next_seq - messages.length + 1;
-    const author = authorUserId ?? alloc.rows[0].initiator;
-    let lastQuestion: NewMessage | undefined;
     const out: MessageDto[] = [];
     for (const [i, message] of messages.entries()) {
-      if (message.messageType === 'user_query') lastQuestion = message;
-      const stamped = await this.withTurnAttachments(
-        k,
-        message,
-        sessionId,
-        start + i,
-        lastQuestion,
-      );
-      out.push(await this.insertOne(k, sessionId, start + i, author, stamped));
+      out.push(await this.insertOne(k, sessionId, start + i, message));
     }
     return out;
   }
@@ -1410,7 +1350,6 @@ export class PgConversationRepository
     k: PgKernelTx,
     sessionId: string,
     seq: number,
-    author: string,
     message: NewMessage,
   ): Promise<MessageDto> {
     const m = stripNul(message, 'conversation', 'message');
@@ -1418,18 +1357,17 @@ export class PgConversationRepository
     const now = new Date();
     const { rows } = await k.query<MessageSqlRow>(
       SQL(`/* pipeshub:conversation.insert_message */ INSERT INTO conversation.chat_messages AS m
-        (org_id, session_id, seq, id, author_user_id, message_type, content, content_format, status, confidence, citations,
+        (org_id, session_id, seq, id, message_type, content, content_format, status, confidence, citations,
          follow_up_questions, feedback, metadata, model_info, applied_filters, attachments, reference_data, tools, reasoning, parts,
-         has_details, source_record_ids, created_at, updated_at)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb, $17::jsonb,
-                $18::jsonb, $19::jsonb, $20::jsonb, $21::jsonb, $22, $23::text[], $24, $25)
+         created_at, updated_at)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12::jsonb, $13::jsonb, $14::jsonb, $15::jsonb, $16::jsonb,
+                $17::jsonb, $18::jsonb, $19::jsonb, $20::jsonb, $21, $22)
         RETURNING @{M}`),
       [
         k.orgId,
         sessionId,
         seq,
         newObjectId(),
-        author,
         m.messageType,
         (m.content as string | undefined) ?? '', // the document schema defaulted a missing text to ''
         m.contentFormat ?? 'MARKDOWN',
@@ -1446,8 +1384,6 @@ export class PgConversationRepository
         JSON.stringify(s.tools),
         JSON.stringify(s.reasoning),
         JSON.stringify(s.parts),
-        s.hasDetails,
-        m.sourceRecordIds ?? null,
         m.createdAt ?? now,
         m.updatedAt ?? now,
       ],
@@ -1455,41 +1391,11 @@ export class PgConversationRepository
     return messageDto(rows[0] as MessageSqlRow, k.orgId).dto;
   }
 
-  /** An answer's source records also include the attachments of the question it answers. */
-  private async withTurnAttachments(
-    k: PgKernelTx,
-    message: NewMessage,
-    sessionId: string,
-    beforeSeq: number,
-    precedingQuestion: NewMessage | undefined,
-  ): Promise<NewMessage> {
-    if (message.messageType !== 'bot_response' || !message.sourceRecordIds)
-      return message;
-    let attachments: Array<{ recordId?: string }> | undefined =
-      precedingQuestion?.attachments;
-    if (!precedingQuestion) {
-      const { rows } = await k.query<{
-        attachments: Array<{ recordId?: string }>;
-      }>(
-        `/* pipeshub:conversation.question_attachments */ SELECT m.attachments FROM conversation.chat_messages m
-          WHERE m.org_id = $1 AND m.session_id = $2::text AND m.message_type = 'user_query' AND m.seq < $3 ORDER BY m.seq DESC LIMIT 1`,
-        [k.orgId, sessionId, beforeSeq],
-      );
-      attachments = rows[0]?.attachments;
-    }
-    const attached = (attachments ?? []).map((a) => a.recordId as string);
-    return {
-      ...message,
-      sourceRecordIds: [...new Set([...message.sourceRecordIds, ...attached])],
-    };
-  }
-
   async appendMessages(
     sessionId: string,
     orgId: string,
     msgs: NewMessage[],
     tx?: Tx,
-    authorUserId?: string,
   ): Promise<MessageDto[]> {
     if (!msgs.length) return [];
     const oid = oidOf(sessionId);
@@ -1499,7 +1405,7 @@ export class PgConversationRepository
       );
     return inUnit(tx, { write: true }, (k) => {
       assertOrg(k, orgId);
-      return this.insertMessages(k, oid, msgs, authorUserId);
+      return this.insertMessages(k, oid, msgs);
     });
   }
 
@@ -1513,23 +1419,12 @@ export class PgConversationRepository
     if (!oid) return null;
     return inUnit(tx, { write: true }, async (k) => {
       assertOrg(k, orgId);
-      const found = await k.query<{ session_id: string; seq: number }>(
-        '/* pipeshub:conversation.message_position */ SELECT m.session_id, m.seq FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.id = $2::text FOR UPDATE',
+      const found = await k.query<{ id: string }>(
+        '/* pipeshub:conversation.message_position */ SELECT m.id FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.id = $2::text FOR UPDATE',
         [k.orgId, oid],
       );
-      const at = found.rows[0];
-      if (!at) return null;
-      const stamped = stripNul(
-        await this.withTurnAttachments(
-          k,
-          msg,
-          at.session_id,
-          at.seq,
-          undefined,
-        ),
-        'conversation',
-        'message',
-      );
+      if (!found.rows[0]) return null;
+      const stamped = stripNul(msg, 'conversation', 'message');
       const s = storedMessage(stamped);
       const now = new Date();
       const { rows } = await k.query<MessageSqlRow>(
@@ -1537,7 +1432,7 @@ export class PgConversationRepository
             message_type = $3, content = $4, content_format = $5, status = $6, confidence = $7, citations = $8::jsonb,
             follow_up_questions = $9::jsonb, feedback = $10::jsonb, metadata = $11::jsonb, model_info = $12::jsonb, applied_filters = $13::jsonb,
             attachments = $14::jsonb, reference_data = $15::jsonb, tools = $16::jsonb, reasoning = $17::jsonb, parts = $18::jsonb,
-            has_details = $19, source_record_ids = $20::text[], created_at = $21, updated_at = $22
+            created_at = $19, updated_at = $20
           WHERE m.org_id = $1 AND m.id = $2::text RETURNING @{M}`),
         [
           k.orgId,
@@ -1558,8 +1453,6 @@ export class PgConversationRepository
           JSON.stringify(s.tools),
           JSON.stringify(s.reasoning),
           JSON.stringify(s.parts),
-          s.hasDetails,
-          stamped.sourceRecordIds ?? null,
           stamped.createdAt ?? now,
           stamped.updatedAt ?? now,
         ],
@@ -1602,7 +1495,7 @@ export class PgConversationRepository
       const { rows } = await k.query<MessageSqlRow>(
         SQL(`/* pipeshub:conversation.update_user_query */ UPDATE conversation.chat_messages m SET content = $4,
             attachments = COALESCE($5::jsonb, m.attachments), updated_at = $6
-          WHERE m.org_id = $1 AND m.id = $2::text AND m.session_id = $3::text AND m.message_type = 'user_query' RETURNING @{MP}`),
+          WHERE m.org_id = $1 AND m.id = $2::text AND m.session_id = $3::text AND m.message_type = 'user_query' RETURNING @{M}`),
         [
           k.orgId,
           mid,
@@ -1642,7 +1535,7 @@ export class PgConversationRepository
       );
       const { rows } = await k.query<MessageSqlRow>(
         SQL(`/* pipeshub:conversation.append_feedback */ UPDATE conversation.chat_messages m SET feedback = m.feedback || jsonb_build_array($3::jsonb), updated_at = $4
-          WHERE m.org_id = $1 AND m.id = $2::text RETURNING @{MP}`),
+          WHERE m.org_id = $1 AND m.id = $2::text RETURNING @{M}`),
         [k.orgId, oid, JSON.stringify(entry), new Date()],
       );
       return rows[0] ? messageDto(rows[0], k.orgId).dto : null;
@@ -1661,7 +1554,7 @@ export class PgConversationRepository
     return inUnit(tx, { write: false }, async (k) => {
       assertOrg(k, orgId);
       const { rows } = await k.query<MessageSqlRow>(
-        SQL(`/* pipeshub:conversation.find_message */ SELECT @{MP} FROM conversation.chat_messages m
+        SQL(`/* pipeshub:conversation.find_message */ SELECT @{M} FROM conversation.chat_messages m
           WHERE m.org_id = $1 AND m.session_id = $2::text AND m.id = $3::text`),
         [k.orgId, sid, mid],
       );
@@ -1671,7 +1564,6 @@ export class PgConversationRepository
 
   async listMessages(
     sessionId: string,
-    viewer: string,
     q: {
       orgId: string;
       skip?: number;
@@ -1689,12 +1581,11 @@ export class PgConversationRepository
       assertOrg(k, q.orgId);
       const text =
         order === 'desc'
-          ? '/* pipeshub:conversation.list_messages_desc */ SELECT @{MV} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq DESC OFFSET $4 LIMIT $5'
-          : '/* pipeshub:conversation.list_messages */ SELECT @{MV} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq OFFSET $4 LIMIT $5';
+          ? '/* pipeshub:conversation.list_messages_desc */ SELECT @{M} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq DESC OFFSET $3 LIMIT $4'
+          : '/* pipeshub:conversation.list_messages */ SELECT @{M} FROM conversation.chat_messages m WHERE m.org_id = $1 AND m.session_id = $2::text ORDER BY m.seq OFFSET $3 LIMIT $4';
       const { rows } = await k.query<MessageSqlRow>(SQL(text), [
         k.orgId,
         sid,
-        viewer,
         skip,
         limit ?? null,
       ]);
@@ -1707,7 +1598,6 @@ export class PgConversationRepository
 
   async listMessagesOfSessions(
     sessionIds: string[],
-    viewer: string,
     q: { orgId: string; withCitations?: boolean },
   ): Promise<Map<string, MessageRow[]>> {
     const out = new Map<string, MessageRow[]>();
@@ -1716,9 +1606,9 @@ export class PgConversationRepository
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, q.orgId);
       const { rows } = await k.query<MessageSqlRow>(
-        SQL(`/* pipeshub:conversation.list_messages_of_sessions */ SELECT @{MV} FROM conversation.chat_messages m
+        SQL(`/* pipeshub:conversation.list_messages_of_sessions */ SELECT @{M} FROM conversation.chat_messages m
           WHERE m.org_id = $1 AND m.session_id = ANY($2::text[]) ORDER BY m.seq`),
-        [k.orgId, ids, viewer],
+        [k.orgId, ids],
       );
       const docs = q.withCitations
         ? await citationDocs(k, citationIdsOf(rows))
