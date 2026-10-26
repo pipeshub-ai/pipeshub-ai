@@ -15,7 +15,8 @@ Environment:
 - ``RETENTION_IT_LOCAL_ROOT`` (optional): the directory the ``local`` target files under,
   to check that deleted files left the disk
 - ``RETENTION_IT_SCALE`` (optional): number of mappings for the scale test (default 5000)
-- graph: as ``tests/integration/real_graph.py``
+- graph: ``NEO4J_IT_URI`` / ``NEO4J_IT_PASSWORD`` and ``ARANGO_IT_URL`` / ``ARANGO_IT_PASSWORD``,
+  as ``tests/integration/real_graph.py`` reads them
 
 Without ``RETENTION_IT_TARGETS``, ``ARTIFACTS_IT_STORAGE_URL`` (with ``ARTIFACTS_IT_SCOPED_SECRET`` and
 optionally ``ARTIFACTS_IT_STORAGE_TYPE``) names the one storage service to use.
