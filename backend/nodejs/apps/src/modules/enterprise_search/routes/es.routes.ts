@@ -588,7 +588,7 @@ export function createRetrieveRouter(container: Container): Router {
   const appConfig = container.get<AppConfig>('AppConfig');
   router.post(
     '/',
-    authMiddleware.authenticate,
+    authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.SEMANTIC_WRITE),
     ValidationMiddleware.validate(enterpriseSearchRetrieveSchema),
     retrieve(appConfig),
