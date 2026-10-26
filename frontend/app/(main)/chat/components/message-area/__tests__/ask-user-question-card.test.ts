@@ -667,20 +667,36 @@ describe('what a submit sends when earlier answers already went', () => {
   });
 });
 describe('showsStoppedMarker', () => {
+  const stopped = {
+    status: 'stopped',
+    isStreaming: false,
+    hasQuestionCard: false,
+    hasAnswerText: true,
+    repliedInChat: false,
+  };
+
   it('marks a settled reply that Stop cut short', () => {
-    expect(showsStoppedMarker('stopped', false, false)).toBe(true);
+    expect(showsStoppedMarker(stopped)).toBe(true);
   });
 
-  it('leaves out a stopped reply that asked a question, answered or still waiting', () => {
-    expect(showsStoppedMarker('stopped', false, true)).toBe(false);
+  it('leaves out a stopped ask turn whose card is its whole output, waiting or answered', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true, hasAnswerText: false })).toBe(false);
+  });
+
+  it('leaves out an ask turn closed by chatting, whatever text came before the card', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true, repliedInChat: true })).toBe(false);
+  });
+
+  it('marks a stopped resume merged onto the card row with its partial answer', () => {
+    expect(showsStoppedMarker({ ...stopped, hasQuestionCard: true })).toBe(true);
   });
 
   it('waits until the reply has settled', () => {
-    expect(showsStoppedMarker('stopped', true, false)).toBe(false);
+    expect(showsStoppedMarker({ ...stopped, isStreaming: true })).toBe(false);
   });
 
   it('leaves out a reply that was not stopped', () => {
-    expect(showsStoppedMarker('complete', false, false)).toBe(false);
-    expect(showsStoppedMarker(undefined, false, false)).toBe(false);
+    expect(showsStoppedMarker({ ...stopped, status: 'complete' })).toBe(false);
+    expect(showsStoppedMarker({ ...stopped, status: undefined })).toBe(false);
   });
 });

@@ -831,7 +831,13 @@ export const ChatResponse = React.memo(function ChatResponse({
                 settled (never while still streaming/regenerating) — regenerate
                 remains available via MessageActions below, same as any other
                 completed response. */}
-            {showsStoppedMarker(status, isStreaming, hasQuestionCard) && (
+            {showsStoppedMarker({
+              status,
+              isStreaming,
+              hasQuestionCard,
+              hasAnswerText: visibleAnswer.trim() !== '',
+              repliedInChat: Boolean(persistedAskUserQuestion?.repliedInChat),
+            }) && (
               <Flex
                 align="center"
                 gap="1"
