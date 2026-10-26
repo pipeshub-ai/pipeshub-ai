@@ -160,6 +160,13 @@ if [[ -f "$OUT/eks-single-az.yaml" ]]; then
   expect eks-single-az 'app.kubernetes.io/instance: pipeshub-ai' absent
 fi
 
+# The image decides where the browsers live (full: /root, slim: the data volume); a
+# value here overrode only one of the two variables the drivers read.
+if [[ -f "$OUT/local-neo4j-kafka.yaml" ]]; then
+  expect local-neo4j-kafka 'PLAYWRIGHT_BROWSERS_PATH' absent
+  expect local-neo4j-kafka 'PATCHRIGHT_BROWSERS_PATH' absent
+fi
+
 # The DinD daemon must be reachable only through the policy proxy: no TCP
 # listener (pod containers share one network namespace), and its socket volume
 # mounted into dind and docker-proxy alone, never the app container.

@@ -434,11 +434,12 @@ spec:
 
             - name: HOME
               value: /home/user
-            # Chromium is installed into /root during the image build. HOME is
-            # /home/user, and that path is an emptyDir, so Playwright would
-            # look for a browser that is not there.
-            - name: PLAYWRIGHT_BROWSERS_PATH
-              value: /root/.cache/ms-playwright
+            # PLAYWRIGHT_BROWSERS_PATH and PATCHRIGHT_BROWSERS_PATH are not set here:
+            # HOME is /home/user (an emptyDir), so the image's own values must apply.
+            # The full image has Chromium under /root/.cache/ms-playwright; the slim
+            # image downloads it to /data/pipeshub/ms-playwright, which is a volume.
+            # Overriding one of the two sent a slim pod's download to a path the
+            # other driver does not read.
 
             {{- $trustProxy := .Values.trustProxy | default (ternary "1" "" .Values.ingress.enabled) }}
             {{- if $trustProxy }}
