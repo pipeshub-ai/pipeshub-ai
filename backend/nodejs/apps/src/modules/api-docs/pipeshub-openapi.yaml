@@ -8626,27 +8626,37 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied app/connector filter nodes
         kb:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied knowledge-base filter nodes
         recordGroups:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record-group filter nodes
         records:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied folder and record filter nodes (each with everything under it)
         recordsExact:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record filter nodes selected alone
     ChatAttachmentRef:
       type: object
@@ -9882,6 +9892,7 @@ components:
             anyOf:
               - $ref: '#/components/schemas/CitationReference'
               - $ref: '#/components/schemas/PopulatedCitationReference'
+              - $ref: '#/components/schemas/RedactedSource'
           description: |
             References to source documents used in the response. Routes that
             return the saved conversation after a turn (create, add message)
@@ -9930,33 +9941,35 @@ components:
             Reference identifiers extracted from tool responses, used to scope
             follow-up queries (for example Jira project keys or record IDs).
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -9985,6 +9998,26 @@ components:
         updatedAt:
           type: string
           format: date-time
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access]
+        name:
+          type: string
+          description: A neutral label (`Restricted source`).
     CitationReference:
       type: object
       additionalProperties: false
@@ -12415,8 +12448,13 @@ components:
           format: objectId
         citationIds:
           type: array
+          description: |
+            For a search shared with the viewer, a hit the viewer cannot read is a
+            `RedactedSource`.
           items:
-            $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+            anyOf:
+              - $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         records:
           type: object
           description: |
@@ -12507,6 +12545,9 @@ components:
           items:
             type: string
             format: objectId
+          description: |
+            Hit ids. For a search shared with the viewer the ids are not returned
+            (they cannot be checked against the viewer's access), so the array is empty.
         records:
           type: object
           description: |
@@ -15251,7 +15292,9 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+            anyOf:
+              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
@@ -15275,33 +15318,35 @@ components:
             Reference identifiers surfaced from tool responses, used to scope
             follow-up queries.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |

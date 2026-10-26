@@ -272,6 +272,13 @@ const plain = (s: ViewerSearch): ViewerSearch =>
   s.toObject ? s.toObject() : s;
 // A saved search keys `records` by the record's `_id` or `_key`.
 const keyToRecordId = (key: string): string => key.split('/').pop() ?? key;
+// A hit stored as a bare id carries no text and cannot be checked.
+const isBareId = (h: unknown): boolean =>
+  typeof h === 'string' ||
+  (typeof h === 'object' &&
+    h !== null &&
+    typeof (h as { toHexString?: unknown }).toHexString === 'function');
+const isHit = (h: unknown): boolean => !isBareId(h);
 const hitRecord = (h: unknown): string | undefined =>
   (h as CitedDoc | null)?.metadata?.recordId;
 const recordEntries = (s: ViewerSearch): Array<[string, string]> =>
@@ -279,7 +286,7 @@ const recordEntries = (s: ViewerSearch): Array<[string, string]> =>
 
 /**
  * Saved searches of other users shared with the viewer: unreadable hits become
- * placeholders (a hit without a readable record, a bare id included, is unreadable) and unreadable entries
+ * placeholders (a populated hit without a readable record is unreadable; a bare id is dropped) and unreadable entries
  * leave `records`.
  */
 export const redactSearchesFor = async <S extends ViewerSearch>(
@@ -295,7 +302,7 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
     appConfig,
     viewer,
     others.flatMap((s) => [
-      ...(s.citationIds ?? []).map(hitRecord),
+      ...(s.citationIds ?? []).filter(isHit).map(hitRecord),
       ...recordEntries(s).map(([k]) => keyToRecordId(k)),
     ]) as string[],
   );
@@ -304,8 +311,12 @@ export const redactSearchesFor = async <S extends ViewerSearch>(
     const o = plain(s);
     const view: Record<string, unknown> = {
       ...o,
-      citationIds: (o.citationIds ?? []).map((h) =>
-        readable.ids.has(hitRecord(h) ?? '') ? h : { ...REDACTED },
+      // The spec types the history's `citationIds` as id strings, so a bare id (it cannot be
+      // checked) is left out; a populated hit the viewer cannot read becomes a placeholder.
+      citationIds: (o.citationIds ?? []).flatMap((h) =>
+        isHit(h)
+          ? [readable.ids.has(hitRecord(h) ?? '') ? h : { ...REDACTED }]
+          : [],
       ),
       records: Object.fromEntries(
         recordEntries(o).filter(([k]) => readable.ids.has(keyToRecordId(k))),

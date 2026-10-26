@@ -2,6 +2,7 @@ import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
 import { Types } from 'mongoose'
+import { addComputedFields } from '../../../../src/modules/enterprise_search/utils/utils'
 import {
   searchArchivedConversations,
   getAgentConversationById,
@@ -378,8 +379,8 @@ describe('shared chats: per-viewer citations', () => {
     await searchHistory(appConfig)(req(VIEWER), r, sinon.stub())
 
     const [out] = r.json.firstCall.args[0].searchHistory
-    expect(out.citationIds[0]).to.deep.equal({ redacted: true, reason: 'no_access' })
-    expect(out.citationIds[1].content).to.equal('readable text')
+    expect(out.citationIds).to.have.length(1)
+    expect(out.citationIds[0].content).to.equal('readable text')
   })
 
   it('archive search leaves owner-only fields out for a user the chat is shared with', async () => {
@@ -397,6 +398,39 @@ describe('shared chats: per-viewer citations', () => {
     }
     expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)
     expect((await run(OWNER)).failReason).to.equal(SECRET)
+  })
+
+  it('archived list: a user the chat is shared with gets no owner-only fields, the owner does', async () => {
+    stubAccess([])
+    const archived = { _id: SESSION, userId: OWNER, initiator: OWNER, title: 't', isShared: true, sharedWith: [{ userId: VIEWER }], updatedAt: new Date(), archivedBy: OWNER, failReason: SECRET, compactedSummary: SECRET, conversationErrors: [{ message: SECRET }] }
+    sinon.stub(ChatSession, 'find').returns(chain([archived]))
+    sinon.stub(ChatSession, 'countDocuments').resolves(1)
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([]))
+    const run = async (userId: string) => {
+      const r = res()
+      await listAllArchivesConversation(appConfig)(req(userId), r, sinon.stub())
+      return r.json.firstCall.args[0].conversations[0]
+    }
+    expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)
+    expect((await run(OWNER)).failReason).to.equal(SECRET)
+  })
+
+  it('every list that adds computed fields keeps owner-only fields for the owner only', () => {
+    const c = { initiator: OWNER, sharedWith: [], failReason: SECRET, compactedSummary: SECRET, conversationErrors: [{ message: SECRET }] }
+    expect(JSON.stringify(addComputedFields(c as any, VIEWER))).to.not.contain(SECRET)
+    expect(addComputedFields(c as any, OWNER).failReason).to.equal(SECRET)
+  })
+
+  it('the history of a shared search leaves out bare hit ids, keeping the spec\'s id-string array valid', async () => {
+    stubAccess(['rec-ok'])
+    const search = { _id: 's1', userId: OWNER, query: 'q', citationIds: [new Types.ObjectId(), citation(CIT_NO, 'rec-no', SECRET)], records: {} }
+    sinon.stub(EnterpriseSemanticSearch, 'find').returns(chain([search]))
+    sinon.stub(EnterpriseSemanticSearch, 'countDocuments').resolves(1)
+    const r = res()
+    await searchHistory(appConfig)(req(VIEWER), r, sinon.stub())
+
+    const [out] = r.json.firstCall.args[0].searchHistory
+    expect(out.citationIds).to.deep.equal([{ redacted: true, reason: 'no_access' }])
   })
 
   it('the search history lists hide unreadable records of a search shared with the viewer', async () => {
