@@ -84,6 +84,21 @@ describe('ApiDocsService navigation from API_DOCS_NAV', () => {
     expect(tagsInNav(docs)).to.not.include('No Such Tag');
   });
 
+  it('keeps the sidebar when an overlay gives modules or tags the wrong type', async () => {
+    const docs = await docsWith([
+      'x-pipeshub-nav:',
+      '  - name: Bad Modules',
+      '    modules: not-a-list',
+      '  - name: System',
+      '    modules:',
+      '      - name: Bad Tags',
+      '        tags: Health',
+    ]);
+
+    expect(docs.categories.map((c) => c.name)).to.include('Search & AI');
+    expect(tagsInNav(docs)).to.include('Health');
+  });
+
   it('shows a tag listed nowhere under Other, and merges an overlay into an existing heading', async () => {
     const docs = await docsWith([
       'tags:',

@@ -301,9 +301,12 @@ export class ApiDocsService {
         };
         categories.push(category);
       }
-      for (const moduleSpec of (categorySpec.modules ?? []) as (NavModuleSpec | undefined)[]) {
+      const moduleSpecs = Array.isArray(categorySpec.modules) ? categorySpec.modules : [];
+      for (const moduleSpec of moduleSpecs as (NavModuleSpec | undefined)[]) {
         if (!moduleSpec?.name) continue;
-        const tags = (moduleSpec.tags || []).filter((t) => usedTags.has(t) && !claimed.has(t));
+        const tags = (Array.isArray(moduleSpec.tags) ? moduleSpec.tags : []).filter(
+          (t) => usedTags.has(t) && !claimed.has(t),
+        );
         tags.forEach((t) => claimed.add(t));
         const existing = category.modules.find((m) => m.name === moduleSpec.name);
         if (existing) {
