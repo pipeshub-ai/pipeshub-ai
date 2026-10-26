@@ -131,10 +131,10 @@ async function load(
 ): Promise<ProjectDto | null> {
   const { rows } = await k.query<Row>(
     fill(
-      `/* pipeshub:content.project_get */ SELECT @{COLUMNS} WHERE p.org_id = $1 AND p.id = $2@{M1}`,
+      `/* pipeshub:content.project_get */ SELECT @{COLUMNS} WHERE p.org_id = $1 AND p.id = $2@{B}`,
       {
         COLUMNS,
-        M1:
+        B:
           state === 'any'
             ? ''
             : state === 'live'
@@ -248,16 +248,16 @@ export class PgProjectRepository implements ProjectRepository {
       const filter = where.join(' AND ');
       const total = await k.query<{ n: number }>(
         fill(
-          `/* pipeshub:content.project_count */ SELECT count(*)::int AS n FROM content.projects p WHERE @{M0}`,
-          { M0: filter },
+          `/* pipeshub:content.project_count */ SELECT count(*)::int AS n FROM content.projects p WHERE @{A}`,
+          { A: filter },
         ),
         p.values,
       );
       const { rows } = await k.query<Row>(
         fill(
-          `/* pipeshub:content.project_list */ SELECT @{COLUMNS} WHERE @{M1} ORDER BY p.is_pinned DESC, p.last_activity_at DESC, p.id DESC
-          LIMIT @{M2} OFFSET @{M3}`,
-          { COLUMNS, M1: filter, M2: p.add(q.limit), M3: p.add(q.skip) },
+          `/* pipeshub:content.project_list */ SELECT @{COLUMNS} WHERE @{B} ORDER BY p.is_pinned DESC, p.last_activity_at DESC, p.id DESC
+          LIMIT @{C} OFFSET @{D}`,
+          { COLUMNS, B: filter, C: p.add(q.limit), D: p.add(q.skip) },
         ),
         p.values,
       );
@@ -330,8 +330,8 @@ export class PgProjectRepository implements ProjectRepository {
       sets.push(`updated_at = ${p.add(touchedAt())}`);
       await k.query(
         fill(
-          `/* pipeshub:content.project_update */ UPDATE content.projects SET @{M0} WHERE org_id = @{M1} AND id = @{M2}`,
-          { M0: sets.join(', '), M1: p.add(k.orgId), M2: p.add(oid) },
+          `/* pipeshub:content.project_update */ UPDATE content.projects SET @{A} WHERE org_id = @{B} AND id = @{C}`,
+          { A: sets.join(', '), B: p.add(k.orgId), C: p.add(oid) },
         ),
         p.values,
       );

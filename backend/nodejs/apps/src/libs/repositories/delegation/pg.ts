@@ -79,9 +79,7 @@ const eventDto = (r: EventRec): DelegationEventDto => ({
 /** An id that is not well formed matches nothing (a lookup) or is refused (a write). */
 const idOrNone = (v: string): string => oidOf(v) ?? '';
 
-export class PgDelegationRepository
-  implements DelegationRepository
-{
+export class PgDelegationRepository implements DelegationRepository {
   async isAllowed(
     orgId: string,
     serviceAccountId: string,

@@ -395,6 +395,7 @@ export class OAuthProviderController {
               tokenRequest.device_code || '',
             );
 
+          case 'urn:ietf:params:oauth:grant-type:token-exchange': // answered above
           default:
             throw new UnsupportedGrantTypeError(
               `Unsupported grant_type: ${tokenRequest.grant_type}`,
