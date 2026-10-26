@@ -66,6 +66,21 @@ afterEach(() => {
 });
 
 describe('streamSSERequest frame parsing', () => {
+  it.each([
+    ['event field without optional space', 'event:status\ndata: {"step":1}\n\n'],
+    ['data field without optional space', 'event: status\ndata:{"step":1}\n\n'],
+    ['both fields without optional space', 'event:status\ndata:{"step":1}\n\n'],
+    ['both fields with optional space', 'event: status\ndata: {"step":1}\n\n'],
+  ])('parses the %s', async (_description, frame) => {
+    fetchMock.mockResolvedValueOnce(sseResponse([frame]));
+    const sink = collect();
+
+    await streamSSERequest('/s', {}, sink);
+
+    expect(sink.errors).toEqual([]);
+    expect(sink.events).toEqual([{ event: 'status', data: { step: 1 } }]);
+  });
+
   it('delivers each event once, in order, however the bytes are split', async () => {
     const wire =
       sseFrame('RUN_STARTED', { type: 'RUN_STARTED' }) +

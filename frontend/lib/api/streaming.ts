@@ -278,7 +278,8 @@ function parseSSEBuffer(buffer: string): {
   let lastCompleteLineIndex = -1;
 
   while (i < lines.length) {
-    const line = lines[i];
+    const rawLine = lines[i];
+    const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
     // Empty line marks end of event
     if (line.trim() === '') {
@@ -298,20 +299,24 @@ function parseSSEBuffer(buffer: string): {
       continue;
     }
 
-    // Parse event field
-    if (line.startsWith('event: ')) {
-      currentEvent.event = line.substring(7).trim();
-      i++;
-      continue;
-    }
+    const colonIndex = line.indexOf(':');
+    if (colonIndex >= 0) {
+      const field = line.substring(0, colonIndex);
+      const rawValue = line.substring(colonIndex + 1);
+      const value = rawValue.startsWith(' ') ? rawValue.substring(1) : rawValue;
 
-    // Parse data field
-    if (line.startsWith('data: ')) {
-      // A frame may carry several data lines; the SSE format joins them with a newline.
-      const chunk = line.substring(6).trim();
-      currentEvent.data = currentEvent.data === undefined ? chunk : `${currentEvent.data}\n${chunk}`;
-      i++;
-      continue;
+      if (field === 'event') {
+        currentEvent.event = value;
+        i++;
+        continue;
+      }
+
+      if (field === 'data') {
+        // A frame may carry several data lines; the SSE format joins them with a newline.
+        currentEvent.data = currentEvent.data === undefined ? value : `${currentEvent.data}\n${value}`;
+        i++;
+        continue;
+      }
     }
 
     // Skip comments (lines starting with ':')
