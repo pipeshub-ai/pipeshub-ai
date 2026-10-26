@@ -66,7 +66,8 @@ test("Handwritten Connector Sync", async () => {
     const stats = await pipeshub.connectorInstances.getConnectorStats({ connectorId });
     expect(stats.data.connectorId).toEqual(connectorId);
 
-    const app = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
+    // The listing declares a Retry-After header on 503, so the SDK wraps the body in `result`.
+    const { result: app } = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
       parentType: "app",
       parentId: connectorId,
     });
@@ -78,7 +79,7 @@ test("Handwritten Connector Sync", async () => {
     });
     expect(reindexed.recordGroupId).toEqual(feed!.id);
 
-    const group = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
+    const { result: group } = await pipeshub.knowledgeHub.getKnowledgeHubChildNodes({
       parentType: "recordGroup",
       parentId: feed!.id,
     });
