@@ -124,6 +124,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "get_file_paths_for_records": (Rule.ALL, _BY_KEY + "; the code graph maps block owners to their paths"),
     "get_child_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
     "get_parent_record_ids_by_relation_type": (Rule.ALL, _FK_NEIGHBOURS),
+    # The people a record names; returns no record.
+    "get_record_people": (Rule.ALL, _STRUCTURE),
     "get_record_parent_adjacency": (
         Rule.ALL, _STRUCTURE + "; Location drops a trashed ancestor through the access check",
     ),

@@ -298,6 +298,7 @@ class TestAbstractMethodInventory:
         "get_record_taxonomy_links",
         "get_entity_candidate_records",
         "get_permitted_entity_records",
+        "get_record_people",
         "get_taxonomy_entity_membership",
         "get_unreached_taxonomy_entities",
         "find_taxonomy_nodes",

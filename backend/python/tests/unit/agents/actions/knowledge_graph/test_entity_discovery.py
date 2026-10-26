@@ -143,7 +143,7 @@ class TestGuards:
 class TestSearch:
     @pytest.mark.asyncio
     async def test_scope_comes_from_agent_sources(self, patched) -> None:
-        await execute_search_entities(_state(), "legal", entity_types=["topic", "person"], top_k=99)
+        await execute_search_entities(_state(), "legal", entity_types=["topic", "organization"], top_k=99)
 
         _, kwargs = patched[0].call_args
         assert kwargs["source_ids"] == ["conf-1", "kb-1"]

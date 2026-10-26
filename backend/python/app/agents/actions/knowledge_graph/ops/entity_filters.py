@@ -24,6 +24,7 @@ from app.agents.actions.knowledge_graph.ops.scope import (
 )
 from app.modules.demo_data.chat import excluded_app_ids
 from app.modules.retrieval.entity_permissions import (
+    PERSON_ENTITY_TYPE,
     RECORD_GROUP_ENTITY_TYPE,
     SEARCHABLE_ENTITY_TYPES,
     TAXONOMY_ENTITY_TYPES,
@@ -45,10 +46,10 @@ ENTITY_TYPE_TO_FILTER_KEY: dict[str, str] = {
 }
 
 # Scoped through the permission-checked record resolver instead of a name
-# filter: record groups have no filter key, and subcategory entities carry no
-# level while the per-level subcategory filters do.
+# filter: record groups and people have no filter key, and subcategory
+# entities carry no level while the per-level subcategory filters do.
 RECORD_SCOPED_ENTITY_TYPES: frozenset[str] = frozenset(
-    {RECORD_GROUP_ENTITY_TYPE, "subcategory", "named_entity"}
+    {RECORD_GROUP_ENTITY_TYPE, PERSON_ENTITY_TYPE, "subcategory", "named_entity"}
 )
 
 ENTITY_ID_FILTER_KEY_CACHE_KEY = "_kg_entity_id_filter_key"

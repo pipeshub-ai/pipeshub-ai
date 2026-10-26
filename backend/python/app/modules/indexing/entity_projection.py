@@ -1,5 +1,5 @@
-"""Project taxonomy nodes of one org into the entity index, with membership
-read from the graph. Shared by the background rebuild
+"""Project taxonomy nodes and people of one org into the entity index, with
+membership read from the graph. Shared by the background rebuild
 (``entity_index_rebuild``) and taxonomy consolidation
 (``app.modules.entity_resolution.consolidation``), so a node is written the
 same way whichever of them touched it last.
@@ -25,6 +25,8 @@ def taxonomy_entity_type(collection: str) -> tuple[EntityType, str | None]:
     """The entity type and subcategory level of points from ``collection``."""
     if collection == CollectionNames.DEPARTMENTS.value:
         return EntityType.DEPARTMENT, None
+    if collection == CollectionNames.USERS.value:
+        return EntityType.PERSON, None
     kind = KINDS_BY_COLLECTION.get(collection)
     if kind is None:
         raise ValueError(f"{collection!r} is not a taxonomy collection")
@@ -75,11 +77,18 @@ async def project_taxonomy_nodes(
         if not connector_ids:
             unreached.append(key)
             continue
+        record_group_ids = [g for g in reach.get("recordGroupIds") or [] if g]
+        if entity_type == EntityType.PERSON:
+            person = EntityRecord.for_person(key, row["name"], org_id, None, None)
+            entities.append(person.model_copy(update={
+                "connector_ids": connector_ids, "record_group_ids": record_group_ids,
+            }))
+            continue
         entities.append(EntityRecord(
             entity_id=key, entity_type=entity_type, name=row["name"], org_id=org_id,
             aliases=[str(a) for a in row.get("aliases") or [] if a], level=level,
             connector_ids=connector_ids,
-            record_group_ids=[g for g in reach.get("recordGroupIds") or [] if g],
+            record_group_ids=record_group_ids,
             type_category=EntityTypeCategory.GENERIC_SCHEMA_FREE,
         ))
     failed = 0

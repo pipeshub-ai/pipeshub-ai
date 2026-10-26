@@ -81,19 +81,19 @@ _VARIANTS: dict[str, _Variant] = {
                 "access are returned.",
             ),
             _Edit(
-                "a project or space, a document title — to find the matching entity, alongside or "
+                "a project or space, a colleague, a document title — to find the matching entity, alongside or "
                 "before a content search.",
-                "a project or space, a document title, a customer or product — to find the "
+                "a project or space, a colleague, a document title, a customer or product — to find the "
                 "matching entity, alongside or before a content search. A named entity on a few "
                 "records narrows the search well; one on most records narrows nothing.",
             ),
             _Edit(
-                "department/category/subcategory/topic/language or record_group entity.",
-                "department/category/subcategory/topic/language, record_group or named entity.",
+                "department/category/subcategory/topic/language, record_group or person entity.",
+                "department/category/subcategory/topic/language, record_group, person or named entity.",
             ),
         ),
         parameters=(
-            ("entity_types", (_Edit("'record_group', 'record'. Omit", "'record_group', 'record', 'named_entity'. Omit"),)),
+            ("entity_types", (_Edit("'record_group', 'person', 'record'. Omit", "'record_group', 'person', 'record', 'named_entity'. Omit"),)),
             ("named_entity_kinds", (_Edit(
                 "Optional kinds when searching extracted named entities "
                 "(person, organization, product, date, currency, ...). "
@@ -124,15 +124,16 @@ _VARIANTS: dict[str, _Variant] = {
     FIND_RECORDS_BY_ENTITY_TOOL_NAME: _Variant(
         description=(
             _Edit(
-                "every record directly inside a record_group, or the record itself",
-                "every record directly inside a record_group, every record that mentions a "
-                "named entity, or the record itself",
+                "every record directly inside a record_group, every record naming a person, or the "
+                "record itself",
+                "every record directly inside a record_group, every record naming a person, every "
+                "record that mentions a named entity, or the record itself",
             ),
         ),
         parameters=(
             ("entity_type", (_Edit(
-                "'language', 'record_group' or 'record'. Optional",
-                "'language', 'record_group', 'record' or 'named_entity'. Optional",
+                "'language', 'record_group', 'person' or 'record'. Optional",
+                "'language', 'record_group', 'person', 'record' or 'named_entity'. Optional",
             ),)),
         ),
     ),

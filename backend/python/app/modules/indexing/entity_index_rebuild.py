@@ -6,15 +6,17 @@ and a changed embedding model leaves vectors from the old one. This loop
 projects what the graph already holds, with no extraction or LLM call:
 
 - per connector (app document): its record groups, then its indexed records;
-- per org (org document): its canonical taxonomy nodes and departments, with
-  membership read from the graph, deleting points no record reaches;
+- per org (org document): its canonical taxonomy nodes, departments and
+  people, with membership read from the graph, deleting points no record
+  reaches;
 - per org, every ``SWEEP_INTERVAL_MS``: a sweep deleting points whose node is
-  gone or belongs to another org (deleted record groups, rejected stale
-  winners).
+  gone or belongs to another org (deleted record groups and users, rejected
+  stale winners).
 
 A document is done when its ``entityIndexState`` equals the current marker,
-``v<ENTITY_INDEX_VERSION>:<embedding fingerprint>``, so a model change re-runs
-every pass, and each point records the model that embedded it, so a point
+``v<version>:<embedding fingerprint>`` (``ENTITY_INDEX_VERSION`` for
+connectors, ``ORG_PASS_VERSION`` for orgs), so a model change re-runs every
+pass, and each point records the model that embedded it, so a point
 from another model is re-embedded whenever it is next written. The marker
 also carries the collection's stamp (``EntityVectorStore.collection_stamp``),
 so a collection dropped, recreated or emptied from outside is refilled the
@@ -63,8 +65,11 @@ if TYPE_CHECKING:
     )
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
-# Bump when what a pass writes changes, so every document is re-projected.
+# Bump when what a pass writes changes, so its documents are re-projected;
+# separate, so a change to one pass does not re-scan every connector.
 ENTITY_INDEX_VERSION = 1
+# 2: people.
+ORG_PASS_VERSION = 2
 
 LEADER_KEY = "entity_index_rebuild:leader"
 PAGE_SIZE = 200
@@ -110,6 +115,7 @@ _ORGS = CollectionNames.ORGS.value
 _RECORDS = CollectionNames.RECORDS.value
 _RECORD_GROUPS = CollectionNames.RECORD_GROUPS.value
 _DEPARTMENTS = CollectionNames.DEPARTMENTS.value
+_USERS = CollectionNames.USERS.value
 
 CONNECTOR_SOURCES: tuple[str, ...] = (_RECORD_GROUPS, _RECORDS)
 ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
@@ -120,6 +126,7 @@ ENTITY_INDEX_TAXONOMY_SOURCES: tuple[str, ...] = (
     CollectionNames.SUBCATEGORIES2.value,
     CollectionNames.SUBCATEGORIES3.value,
     CollectionNames.TOPICS.value,
+    _USERS,
 )
 
 _SWEPT_TYPES: tuple[str, ...] = (
@@ -129,6 +136,7 @@ _SWEPT_TYPES: tuple[str, ...] = (
     EntityType.LANGUAGE.value,
     EntityType.DEPARTMENT.value,
     EntityType.RECORD_GROUP.value,
+    EntityType.PERSON.value,
 )
 # Node collection of a swept point; subcategories are resolved by level.
 _SWEPT_COLLECTIONS: dict[str, str] = {
@@ -137,6 +145,7 @@ _SWEPT_COLLECTIONS: dict[str, str] = {
     EntityType.LANGUAGE.value: CollectionNames.LANGUAGES.value,
     EntityType.DEPARTMENT.value: _DEPARTMENTS,
     EntityType.RECORD_GROUP.value: _RECORD_GROUPS,
+    EntityType.PERSON.value: _USERS,
 }
 _SUBCATEGORY_COLLECTIONS: dict[str, str] = {
     kind.level: collection for collection, kind in KINDS_BY_COLLECTION.items() if kind.level
@@ -161,10 +170,12 @@ class EntityIndexState:
     SWEEP_FAILURES = "entityIndexSweepFailures"
 
 
-def entity_index_marker(fingerprint: str, stamp: str = "") -> str:
+def entity_index_marker(
+    fingerprint: str, stamp: str = "", *, version: int = ENTITY_INDEX_VERSION,
+) -> str:
     """``stamp`` is ``EntityVectorStore.collection_stamp``: a document done
     under another stamp was projected into a collection that is gone."""
-    return f"v{ENTITY_INDEX_VERSION}{'@' + stamp if stamp else ''}:{fingerprint}"
+    return f"v{version}{'@' + stamp if stamp else ''}:{fingerprint}"
 
 
 _MARKER = re.compile(r"v\d+(?:@[0-9a-z]+)?:(.+)", re.DOTALL)
@@ -275,13 +286,15 @@ class EntityIndexRebuilder:
         # Read every tick, after the line above may have recreated the
         # collection: a collection without its stamp gets a new one, which no
         # document has reached, so every pass runs again.
-        marker = entity_index_marker(fingerprint, await self.store.collection_stamp())
+        stamp = await self.store.collection_stamp()
+        marker = entity_index_marker(fingerprint, stamp)
 
         app = await self.graph.get_entity_index_candidate(_APPS, marker)
         if app and (key := _key_of(app)):
             await self._run_page(_Pass(_APPS, key, app, CONNECTOR_SOURCES, marker))
             return "connector"
 
+        marker = entity_index_marker(fingerprint, stamp, version=ORG_PASS_VERSION)
         sweep_before = self.now_ms() - SWEEP_INTERVAL_MS
         org = await self.graph.get_entity_index_candidate(
             _ORGS, marker, sweep_before=sweep_before,
@@ -820,6 +833,7 @@ async def run_entity_index_rebuild_loop(
 __all__ = [
     "ENTITY_INDEX_TAXONOMY_SOURCES",
     "ENTITY_INDEX_VERSION",
+    "ORG_PASS_VERSION",
     "EntityIndexRebuilder",
     "EntityIndexState",
     "entity_index_marker",
