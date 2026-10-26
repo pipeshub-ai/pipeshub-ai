@@ -548,7 +548,10 @@ export class PgUserRepository implements UserRepository {
     });
   }
 
-  async listWithGroups(orgId: string): Promise<UserWithGroupsDto[]> {
+  async listWithGroups(
+    orgId: string,
+    opts: { includeServiceAccounts?: boolean } = {},
+  ): Promise<UserWithGroupsDto[]> {
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);
       const { rows } = await k.query<{
@@ -561,8 +564,8 @@ export class PgUserRepository implements UserRepository {
             COALESCE((SELECT jsonb_agg(jsonb_build_object('name', g.name, 'type', g.type) ORDER BY g.id)
                         FROM identity.user_group_members m JOIN identity.user_groups g ON g.org_id = m.org_id AND g.id = m.group_id
                        WHERE m.org_id = $1 AND g.org_id = $1 AND m.user_id = u.id AND NOT g.is_deleted), '[]'::jsonb) AS groups
-           FROM identity.users u WHERE u.org_id = $1 AND NOT u.is_deleted ORDER BY u.id`,
-        [k.orgId],
+           FROM identity.users u WHERE u.org_id = $1 AND NOT u.is_deleted AND ($2::boolean OR u.kind <> 'service') ORDER BY u.id`,
+        [k.orgId, opts.includeServiceAccounts === true],
       );
       return rows.map((r) => ({
         _id: r.id,
@@ -576,7 +579,12 @@ export class PgUserRepository implements UserRepository {
 
   async listMembersPage(
     ids: string[],
-    q: { search?: string; skip: number; limit: number },
+    q: {
+      search?: string;
+      skip: number;
+      limit: number;
+      includeServiceAccounts?: boolean;
+    },
   ): Promise<{ rows: MemberSummaryDto[]; total: number }> {
     const list = oidsOf(ids);
     if (list.length === 0) return { rows: [], total: 0 };
@@ -587,6 +595,7 @@ export class PgUserRepository implements UserRepository {
         'NOT u.is_deleted',
         `u.id = ANY(${p.add(list)}::text[])`,
       ];
+      if (q.includeServiceAccounts !== true) conds.push("u.kind <> 'service'");
       if (q.search !== undefined && q.search !== '')
         conds.push(search(p, q.search));
       const where = conds.join(' AND ');
@@ -634,6 +643,22 @@ export class PgUserRepository implements UserRepository {
         [],
       )
     ).map(dto);
+  }
+
+  async serviceAccountIdsAmong(
+    orgId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    const list = oidsOf(ids);
+    if (list.length === 0) return [];
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ id: string }>(
+        "/* pipeshub:identity.user_service_among */ SELECT u.id FROM identity.users u WHERE u.org_id = $1 AND u.id = ANY($2::text[]) AND u.kind = 'service' ORDER BY u.id",
+        [k.orgId, list],
+      );
+      return rows.map((r) => r.id);
+    });
   }
 
   async getServiceAccount(orgId: string, id: string): Promise<UserDto | null> {

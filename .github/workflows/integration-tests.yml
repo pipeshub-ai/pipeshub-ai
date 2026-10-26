@@ -494,7 +494,7 @@ jobs:
       # hourly cap. The token is read-only: PR code on the runner can read it.
       - name: Log in to Docker Hub (read-only)
         if: env.DOCKERHUB_PULL_LOGIN == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
@@ -554,7 +554,7 @@ jobs:
 
       - name: Check out the SharePoint simulator
         if: env.NEEDS_SHAREPOINT_SIM == 'true'
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: pipeshub-ai/connectors-simulator
           ref: ${{ env.CONNSIM_SHAREPOINT_REF }}

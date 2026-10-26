@@ -348,9 +348,25 @@ export class UserController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
+    const { includeServiceAccounts } = req.query;
     const orgId = req.user?.orgId as string;
 
-    const users = await getUserRepository().listWithGroups(orgId);
+    // The same rule as getAllUsers above, for the same reason, and it matters
+    // more here: this route returns each user's `userId` together with the
+    // groups they belong to, and `userId` is exactly what an agent stores when
+    // it is bound to a service account. Left open, any signed-in member could
+    // read off the id of an account an administrator put in a sensitive group
+    // and then bind an agent to it. Admin-only, and only when asked for, so no
+    // existing caller changes behaviour — the people table does not ask.
+    const wantsServiceAccounts = includeServiceAccounts === 'true';
+    const maySeeServiceAccounts =
+      wantsServiceAccounts &&
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+
+    const users = await getUserRepository().listWithGroups(orgId, {
+      includeServiceAccounts: maySeeServiceAccounts,
+    });
 
     res.status(200).json(users);
   }
@@ -372,6 +388,22 @@ export class UserController {
       );
 
       if (!user) {
+        throw new NotFoundError('User not found');
+      }
+
+      // A service account is a user record, so it would be returned here like
+      // anyone else — including its `userId`, which is what binds an agent to
+      // it. The screens that manage these accounts are admin-only and so is
+      // the list of them, so this answers the way it would for an id that is
+      // not there. Checked after the read rather than filtered into it, so the
+      // ordinary case still costs one query.
+      if (
+        user.kind === 'service' &&
+        !(
+          req.user?.userId !== undefined &&
+          (await isUserOrgAdmin(String(req.user.userId), String(orgId)))
+        )
+      ) {
         throw new NotFoundError('User not found');
       }
 
@@ -466,10 +498,25 @@ export class UserController {
 
       const orgId = req.user?.orgId;
 
-      const users = await getUserRepository().listLiveByIds(
+      const found = await getUserRepository().listLiveByIds(
         orgId as string,
         userIds,
       );
+
+      // Same rule as getUserById: a service account is a user record and would
+      // come back here like anyone else, carrying the `userId` that binds an
+      // agent to it. Callers ask this for the people behind agents, chats and
+      // shares, so in practice nothing is dropped — and the admin lookup only
+      // happens when a service account actually turns up.
+      const hasServiceAccount = found.some((u) => u.kind === 'service');
+      const maySeeServiceAccounts =
+        hasServiceAccount &&
+        req.user?.userId !== undefined &&
+        (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+      const users =
+        hasServiceAccount && !maySeeServiceAccounts
+          ? found.filter((u) => u.kind !== 'service')
+          : found;
 
       const userIdStrs = users.map((u) => u._id);
       const dpMap = new Map<string, string>();
@@ -2318,7 +2365,7 @@ export class UserController {
         throw new BadRequestError('User ID is required');
       }
 
-      const { page, limit, search } = req.query;
+      const { page, limit, search, includeServiceAccounts } = req.query;
 
       // Validate search parameter for XSS and format specifiers
       if (search) {
@@ -2343,6 +2390,11 @@ export class UserController {
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
+      // Forwarded, not decided here: the connector service holds the query that
+      // returns these rows, and it checks the caller's role before honouring it.
+      if (includeServiceAccounts === 'true') {
+        queryParams.append('includeServiceAccounts', 'true');
+      }
       const queryString = queryParams.toString();
 
       const aiCommandOptions: AICommandOptions = {

@@ -933,6 +933,32 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect((await users.listMembersPage([], { skip: 0, limit: 10 })).total).to.equal(0);
     });
 
+    it('service accounts stay out of listWithGroups and listMembersPage unless asked for, and serviceAccountIdsAmong names them', async () => {
+      const org = await fx.newOrg();
+      const other = await fx.newOrg();
+      const tag = uniq('Svc');
+      const p = await users.create(org, { email: email(), fullName: `${tag} person` });
+      const s = await users.create(org, { email: svcEmail(org), kind: 'service', fullName: `${tag} bot` });
+      const ids = [p._id, s._id];
+
+      const plain = await users.listWithGroups(org);
+      expect(plain.map((r) => r._id)).to.deep.equal([p._id]);
+      const admin = await users.listWithGroups(org, { includeServiceAccounts: true });
+      expect(admin.map((r) => r._id).sort()).to.deep.equal([p._id, s._id].sort());
+
+      const page = await users.listMembersPage(ids, { skip: 0, limit: 10 });
+      expect(page.rows.map((r) => r._id)).to.deep.equal([p._id]);
+      expect(page.total).to.equal(1); // the count agrees with the page
+      const adminPage = await users.listMembersPage(ids, { skip: 0, limit: 10, includeServiceAccounts: true });
+      expect(adminPage.total).to.equal(2);
+      expect((await users.listMembersPage(ids, { skip: 0, limit: 10, search: `${tag} bot` })).total).to.equal(0);
+
+      expect(await users.serviceAccountIdsAmong(org, ids)).to.deep.equal([s._id]);
+      expect(await users.serviceAccountIdsAmong(org, [p._id])).to.deep.equal([]);
+      expect(await users.serviceAccountIdsAmong(org, [])).to.deep.equal([]);
+      expect(await users.serviceAccountIdsAmong(other, ids)).to.deep.equal([]);
+    });
+
     it('sample accounts: listRemovedIdsByEmail, deleteRemoved, deleteById, setDisabledByEmailDomain', async () => {
       const org = await fx.newOrg();
       const domain = `${uniq('demo')}.example`;

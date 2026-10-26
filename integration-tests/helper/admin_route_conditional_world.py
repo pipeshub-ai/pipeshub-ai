@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
@@ -61,6 +61,8 @@ _CONNECTORS = "/api/v1/connectors"
 _TOOLSETS = "/api/v1/toolsets"
 _MCP = "/api/v1/mcp-servers/instances"
 _AGENTS = "/api/v1/agents"
+_SERVICE_ACCOUNTS = "/api/v1/service-accounts"
+_USERS = "/api/v1/users"
 _SKILLS = "/api/v1/skills"
 _GONE_TIMEOUT_SEC = 120.0
 _GONE_POLL_SEC = 2.0
@@ -71,6 +73,10 @@ SCOPED_SECRET_ENV = "SCOPED_JWT_SECRET"
 # the built-in ones first, which can take longer than that the first time.
 _SKILLS_READY_TIMEOUT_SEC = 300.0
 _SKILLS_READY_POLL_SEC = 5.0
+# Creating a service account publishes an event the connector service
+# consumes before the account is in the graph the directory reads.
+_DIRECTORY_READY_TIMEOUT_SEC = 180.0
+_DIRECTORY_READY_POLL_SEC = 3.0
 
 
 @dataclass(frozen=True)
@@ -589,23 +595,86 @@ class World:
             "personal_mcp": self._create_mcp_server(CREATOR, shared=False, scope="personal"),
         }
 
+    # -------------------------------------------------------- service accounts
+
+    def _build_service_accounts(self) -> dict[str, str]:
+        slug = f"it-admin-{uuid.uuid4().hex[:8]}"
+        account = self._json(
+            ADMIN, "POST", _SERVICE_ACCOUNTS, "Creating a test service account",
+            ok=(200, 201), json={"slug": slug, "fullName": f"{PREFIX} {slug}"},
+        )
+        account_id = str(account.get("id") or "")
+        email = str(account.get("email") or "")
+        if not account_id or not email:
+            raise RuntimeError("Creating a test service account returned no id or address.")
+        self._later(
+            "the test service account",
+            lambda: self._json(ADMIN, "DELETE", f"{_SERVICE_ACCOUNTS}/{account_id}",
+                               "Deleting the test service account", ok=(200, 204, 404)),
+        )
+        self._await_in_the_directory(email)
+        # The team every account joins on the way in. Its key is built from the
+        # org id rather than looked up, which is also what the graph does
+        # (`_get_or_create_all_team_and_add_user`).
+        return {
+            "service_account": account_id,
+            "service_account_email": email,
+            "all_team": f"all_{self.value('org')}",
+        }
+
+    def _await_in_the_directory(self, email: str) -> None:
+        """Wait until the new account reaches the graph the directory reads.
+
+        Creating one writes to Mongo and publishes an event the connector
+        service consumes, so it is not in `GET /users/graph/list` the moment the
+        request returns. The cases below ask whether a member can see it there,
+        which says nothing until it is there to see.
+        """
+        deadline = time.monotonic() + _DIRECTORY_READY_TIMEOUT_SEC
+        while True:
+            listed = self._json(
+                ADMIN, "GET",
+                f"{_USERS}/graph/list?includeServiceAccounts=true&limit=100"
+                f"&search={quote(email)}",
+                "Looking for the test service account", ok=(200,),
+            )
+            if any(
+                isinstance(row, dict) and row.get("email") == email
+                for row in (listed.get("users") or [])
+            ):
+                return
+            if time.monotonic() >= deadline:
+                raise RuntimeError(
+                    f"The test service account never reached the directory: {email}"
+                )
+            time.sleep(_DIRECTORY_READY_POLL_SEC)
+
     # ------------------------------------------------------------------ agents
 
-    def _build_agents(self) -> dict[str, str]:
-        # Its MCP listing must have an org server in it.
-        self.value("shared_mcp")
-        body = self._json(ADMIN, "POST", f"{_AGENTS}/create", "Creating a test agent",
+    def _create_agent(self, caller: str, what: str) -> str:
+        body = self._json(caller, "POST", f"{_AGENTS}/create", f"Creating {what}",
                           ok=(200, 201), json={"name": self._unique_name("agent")})
         agent = body.get("agent")
         agent_key = str(agent.get("_key") or "") if isinstance(agent, dict) else ""
         if not agent_key:
-            raise RuntimeError("Creating a test agent returned no _key.")
+            raise RuntimeError(f"Creating {what} returned no _key.")
         self._later(
-            "the test agent",
-            lambda: self._json(ADMIN, "DELETE", f"{_AGENTS}/{agent_key}", "Deleting the test agent",
+            what,
+            lambda: self._json(caller, "DELETE", f"{_AGENTS}/{agent_key}", f"Deleting {what}",
                                ok=(200, 204, 404)),
         )
-        return {"admin_agent": agent_key}
+        return agent_key
+
+    def _build_agents(self) -> dict[str, str]:
+        # Its MCP listing must have an org server in it.
+        self.value("shared_mcp")
+        return {
+            "admin_agent": self._create_agent(ADMIN, "the test agent"),
+            # A member's own agent. Editing it is theirs to do, which is what
+            # makes a refusal on the binding field mean the binding and not
+            # the agent.
+            "member_agent": self._create_agent(CREATOR, "the member's test agent"),
+        }
 
     # ---------------------------------------------------------------- teardown
 

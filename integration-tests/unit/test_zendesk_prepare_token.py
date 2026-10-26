@@ -11,9 +11,14 @@ import pytest
 from connectors.zendesk import prepare_token
 
 
-def _response(status: int, payload: object) -> SimpleNamespace:
+def _response(
+    status: int, payload: object, headers: dict[str, str] | None = None
+) -> SimpleNamespace:
     return SimpleNamespace(
-        status_code=status, is_success=200 <= status < 300, json=lambda: payload
+        status_code=status,
+        is_success=200 <= status < 300,
+        json=lambda: payload,
+        headers=headers or {},
     )
 
 
@@ -46,6 +51,24 @@ def test_mint_reports_the_oauth_error(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     with pytest.raises(RuntimeError, match=r"HTTP 400 \(unauthorized_client\)"):
         prepare_token.mint_token("inai-90216", "client", "secret")
+
+
+def test_mint_names_the_page_an_account_redirects_to(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A lapsed trial answers 302 to its expiry page; the path says so, the host (the account) stays out."""
+    monkeypatch.setattr(
+        prepare_token.httpx,
+        "post",
+        lambda *_args, **_kwargs: _response(
+            302,
+            None,
+            {"location": "https://inai-90216.zendesk.com/agent/expired-trial?x=1"},
+        ),
+    )
+    with pytest.raises(RuntimeError, match=r"HTTP 302 \(redirected to /agent/expired-trial\)") as raised:
+        prepare_token.mint_token("inai-90216", "client", "secret")
+    assert "inai-90216" not in str(raised.value)
 
 
 def test_mint_requires_an_access_token(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -87,8 +87,13 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # credential on and one each user signs in to themselves, and the creator's
     # personal one. All at MCP_SERVER_URL.
     "mcp": ("shared_mcp", "own_mcp", "personal_mcp"),
-    # An agent of the admin's, which nobody else can see.
-    "agents": ("admin_agent",),
+    # An agent of the admin's, which nobody else can see, and one a member
+    # made and may edit.
+    "agents": ("admin_agent", "member_agent"),
+    # A service account, waited for until it reaches the graph the directory
+    # reads. Its address is what a listing is searched for, and `all_team` is
+    # the organisation's All team, which it joins on the way in.
+    "service_accounts": ("service_account", "service_account_email", "all_team"),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
@@ -269,6 +274,13 @@ _MCP = f"{_MCP_ROOT}/instances"
 _TOOLSETS = "/api/v1/toolsets"
 _TOOLSET_NOT_FOUND = "This toolset was removed, or you no longer have access"
 _TOOLSET_UPDATED = "Toolset instance updated successfully"
+_AGENTS = "/api/v1/agents"
+# A well-formed userId no account has, so the admin's request is stopped by the
+# lookup instead of binding anything. A member never gets that far.
+ABSENT_SERVICE_ACCOUNT = "65f0c0ffee00000000000001"
+_NOT_YOURS_TO_BIND = "Only an administrator can choose the service account"
+_NO_SUCH_ACCOUNT = "was not found in this organisation"
+_NOT_A_SERVICE_AGENT = "Only a service agent searches as a service account"
 _TOOLSET_DELETED = "Toolset instance deleted successfully"
 _OAUTH = f"/api/v1/oauth/{OAUTH_CONNECTOR_TYPE}"
 
@@ -636,6 +648,94 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
     # Nobody else can see the admin's agent; the member side of the rule is the listing above.
     _mcp_listing("get_agent_mcp_servers", f"{_MCP_ROOT}/agents/{{target}}", "admin_agent",
                  Case("admin_agent", MEMBER, False, 404, "not found")),
+    # Making and editing an agent needs only a session. Naming the service
+    # account it searches as needs an administrator, because that spends the
+    # access an administrator granted the account — so these two routes refuse
+    # a member on one field and on nothing else.
+    #
+    # Both allowed cases are stopped by the next check instead of writing
+    # anything: the admin's create names an account that is not there, and the
+    # admin's agent is not a service agent, so it cannot carry a binding. A
+    # member never reaches either message, which is the point.
+    ConditionalRoute(
+        "api/routes/agent.py::create_agent", "POST", f"{_AGENTS}/create",
+        cases=(
+            Case("org", MEMBER, False, 403, _NOT_YOURS_TO_BIND, absent=(_NO_SUCH_ACCOUNT,)),
+            Case("org", ADMIN, True, 400, _NO_SUCH_ACCOUNT, absent=(_NOT_YOURS_TO_BIND,)),
+        ),
+        body={
+            "name": "it-admin-probe", "isServiceAccount": True,
+            "serviceAccountUserId": ABSENT_SERVICE_ACCOUNT,
+        },
+    ),
+    ConditionalRoute(
+        "api/routes/agent.py::update_agent", "PUT", f"{_AGENTS}/{{target}}",
+        cases=(
+            # The member owns this one, so nothing but the binding can refuse them.
+            Case("member_agent", CREATOR, False, 403, _NOT_YOURS_TO_BIND, absent=(_NOT_A_SERVICE_AGENT,)),
+            Case("admin_agent", ADMIN, True, 400, _NOT_A_SERVICE_AGENT, absent=(_NOT_YOURS_TO_BIND,)),
+        ),
+        body={"serviceAccountUserId": ABSENT_SERVICE_ACCOUNT},
+    ),
+    # The directory behind the people screen. Every row carries the `userId`
+    # that binds an agent to a service account, and the gateway attaches the
+    # groups each one belongs to, so a member asking for machine identities is
+    # answered as though they had not asked. Nobody is refused: asking is
+    # allowed, it just does not widen the listing.
+    # Called where it is served. The gateway's `GET /users/graph/list` proxies
+    # here and only forwards the flag; the rule itself lives on this route.
+    ConditionalRoute(
+        "api/routes/entity.py::get_users", "GET", "/api/v1/entity/user/list",
+        cases=(
+            Case("service_account", MEMBER, False, 200, "",
+                 absent=("{service_account_email}",)),
+            Case("service_account", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        # Searched for by address, not just asked for: the listing is paged,
+        # and a new account sorts by name among everyone else, so on a busy org
+        # it would not be on the first page either way round.
+        params={
+            "includeServiceAccounts": "true", "limit": "100",
+            "search": "{service_account_email}",
+        },
+        service=CONNECTOR_SERVICE,
+    ),
+    # The All team is the second copy of the same membership: every account is
+    # put in it when it is created, and a member row carries the `userId` that
+    # binds an agent to a service account, next to the address that gives it
+    # away. `GET /team/{id}` has no membership check of its own, and
+    # `GET /user/teams` embeds the same list per team. Nobody is refused; the
+    # list is simply shorter for a member.
+    ConditionalRoute(
+        "api/routes/entity.py::get_team", "GET", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        service=CONNECTOR_SERVICE,
+    ),
+    # The member page the team screen actually loads.
+    ConditionalRoute(
+        "api/routes/entity.py::get_team_users", "GET", "/api/v1/entity/team/{target}/users",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        # Searched for, because the page is cut at 100 and sorted by nobody in
+        # particular; and the filter runs before the cut, so a member's page
+        # for this search is empty rather than short.
+        params={"limit": "100", "search": "{service_account_email}"},
+        service=CONNECTOR_SERVICE,
+    ),
+    ConditionalRoute(
+        "api/routes/entity.py::get_user_teams", "GET", "/api/v1/entity/user/teams",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        params={"limit": "100"},
+        service=CONNECTOR_SERVICE,
+    ),
 )
 
 # The (target, caller, allowed) cases a connector rule must cover, by the rule's
