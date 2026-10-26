@@ -10910,8 +10910,9 @@ components:
           maximum: 50
           description: |
             Most chunks from any one record. Left out, the search's own per-record
-            allowance applies: at least 4 passages from one record (more for a
-            large `limit`), so one long document does not fill the page.
+            allowance applies: at most `max(4, limit / 6)` passages from one record
+            with default settings (4 at `limit` 8, 8 at `limit` 50). With `limit`
+            4 or less, one record can fill the page.
         rewriteQuery:
           type: boolean
           default: false
