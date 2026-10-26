@@ -418,3 +418,27 @@ class TestKafkaConsumer:
         assert await _run(consumer, "r1") is True
 
         assert indexer.seen == ["r1"]
+
+
+class TestSuspectLockAcrossRestarts:
+    """A consumer started again runs on a new worker loop; its suspect lock must too."""
+
+    @pytest.mark.parametrize("build", [_consumer, _kafka_consumer])
+    def test_a_restarted_consumer_can_hold_suspects_back_again(self, build, tracker) -> None:
+        consumer = build(tracker, Sink(), Indexer(tracker))
+
+        async def contend() -> None:
+            await consumer._suspects.acquire()
+            waiter = asyncio.ensure_future(consumer._suspects.acquire())
+            await asyncio.sleep(0)
+            consumer._suspects.release()
+            await waiter
+            consumer._suspects.release()
+
+        for _ in range(2):
+            loop = asyncio.new_event_loop()
+            try:
+                consumer._on_worker_loop_started(loop)
+                loop.run_until_complete(contend())
+            finally:
+                loop.close()

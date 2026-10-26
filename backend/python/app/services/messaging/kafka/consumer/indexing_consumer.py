@@ -367,6 +367,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     def _on_worker_loop_started(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set up this consumer's admission and lease renewal on its worker loop."""
+        # A lock belongs to the loop that first waits on it, and a consumer
+        # started again runs on a new loop.
+        self._suspects = asyncio.Lock()
         if self.governor is not None:
             # One gate per pool, process-wide (ResourceGovernor.gate
             # memoises by pool, and raises if a second loop uses one), and
