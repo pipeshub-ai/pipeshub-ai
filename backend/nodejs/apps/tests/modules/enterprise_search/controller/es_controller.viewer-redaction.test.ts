@@ -64,36 +64,64 @@ const answer = () => ({
   ],
 })
 
-/** Every field of a stored answer that can carry a hidden record's name, link or text. */
-const leakyAnswer = () => ({
+const R_OK = '11111111-1111-4111-8111-111111111111'
+const R_NO = '22222222-2222-4222-8222-222222222222'
+const OK_NAME = 'Readable page'
+const SECRET_URL = `https://x/${SECRET}`
+
+/** A stored answer with a readable and an unreadable record in every structure that names one. */
+const richAnswer = () => ({
   ...answer(),
-  referenceData: [{ name: SECRET, id: 'rec-no', webUrl: `https://x/${SECRET}` }],
-  reasoning: [{ content: SECRET }],
-  tools: [{ toolName: 'search', toolResult: SECRET }],
-  appliedFilters: { records: [{ id: 'rec-no', name: SECRET }] },
-  followUpQuestions: [{ question: `What about ${SECRET}?`, confidence: 'High' }],
-  feedback: [{ comments: { positive: SECRET } }],
-  futureField: SECRET,
+  referenceData: [
+    { name: OK_NAME, id: R_OK, webUrl: 'https://x/ok' },
+    { name: SECRET, id: R_NO, webUrl: SECRET_URL },
+    { name: `${SECRET}-unidentified`, webUrl: SECRET_URL },
+  ],
+  reasoning: [{ content: 'I looked at the pages' }],
+  tools: [
+    { toolName: 'read', toolResult: { id: R_OK } },
+    { toolName: 'read', toolResult: { id: R_NO, title: SECRET } },
+  ],
+  appliedFilters: {
+    records: [
+      { id: R_OK, name: OK_NAME },
+      { id: R_NO, name: SECRET },
+    ],
+    apps: [{ id: 'app-ok-not-checked', name: 'no id match' }],
+  },
+  followUpQuestions: [{ question: 'And the budget?', confidence: 'High' }],
   parts: [
     { type: 'text', content: 'visible answer text' },
-    { type: 'reasoning', content: SECRET },
-    { type: 'mcp_sign_in', servers: [{ serverName: SECRET }] },
-    { type: 'tool_call', toolName: 'search', displayName: 'Searched', status: 'completed', args: SECRET, argsSummary: SECRET, resultPreview: SECRET, resultSummary: SECRET, resultView: SECRET, artifactId: SECRET },
-    { type: 'sub_agent', roleName: 'worker', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: SECRET }, { type: 'unknown_kind', content: SECRET }] },
+    { type: 'reasoning', content: 'thinking prose' },
+    { type: 'tool_call', toolName: 'read', status: 'completed', args: `{"record_id":"${R_OK}"}`, resultPreview: `{"id":"${R_OK}","title":"${OK_NAME}"}`, resultView: { rows: [{ id: R_OK }] } },
+    { type: 'tool_call', toolName: 'read', status: 'completed', args: `{"record_id":"${R_NO}"}`, argsSummary: SECRET, resultPreview: `{"id":"${R_NO}","title":"${SECRET}"}`, resultSummary: SECRET, resultView: { rows: [{ id: R_NO, name: SECRET }] }, artifactId: R_NO },
+    { type: 'sub_agent', roleName: 'worker', parts: [{ type: 'tool_call', toolName: 'read', resultPreview: `{"id":"${R_NO}","title":"${SECRET}"}` }] },
   ],
 })
 
-const expectNoLeak = (message: any) => {
-  expect(JSON.stringify(message)).to.not.contain(SECRET)
-  for (const f of ['referenceData', 'reasoning', 'tools', 'appliedFilters', 'followUpQuestions', 'feedback', 'futureField']) {
-    expect(message, f).to.not.have.property(f)
-  }
+/** Everything except record references is as the owner sees it; references to R_NO are gone. */
+const expectRecordsOnlyRedacted = (message: any, readableToo = true) => {
+  const wire = JSON.stringify(message)
+  expect(wire).to.not.contain(SECRET)
+  expect(wire).to.not.contain(R_NO)
   expect(message.content).to.equal('The answer [1][2]')
-  expect(message.parts).to.deep.equal([
-    { type: 'text', content: 'visible answer text' },
-    { type: 'tool_call', toolName: 'search', displayName: 'Searched', status: 'completed' },
-    { type: 'sub_agent', roleName: 'worker', parts: [{ type: 'tool_call', toolName: 'read' }] },
-  ])
+  expect(message.reasoning).to.deep.equal([{ content: 'I looked at the pages' }])
+  expect(message.followUpQuestions).to.have.length(1)
+  expect(message.parts[0]).to.deep.equal({ type: 'text', content: 'visible answer text' })
+  expect(message.parts[1]).to.deep.equal({ type: 'reasoning', content: 'thinking prose' })
+  const hidden = { redacted: true, reason: 'no_access', name: 'Restricted source' }
+  expect(message.referenceData[1]).to.deep.equal(hidden)
+  expect(message.referenceData[2], 'no id but a name and url: hidden').to.deep.equal(hidden)
+  expect(message.appliedFilters.records[1]).to.deep.equal(hidden)
+  expect(message.tools[1].toolResult).to.equal('Restricted source')
+  expect(message.parts[3]).to.deep.equal({ type: 'tool_call', toolName: 'read', status: 'completed', redacted: true, resultSummary: 'Restricted source' })
+  expect(message.parts[4].parts[0]).to.deep.equal({ type: 'tool_call', toolName: 'read', redacted: true, resultSummary: 'Restricted source' })
+  if (readableToo) {
+    expect(message.referenceData[0].name).to.equal(OK_NAME)
+    expect(message.appliedFilters.records[0].name).to.equal(OK_NAME)
+    expect(message.tools[0].toolResult).to.deep.equal({ id: R_OK })
+    expect(message.parts[2].resultPreview).to.contain(OK_NAME)
+  }
 }
 
 const req = (userId: string, extra: Record<string, unknown> = {}): any => ({
@@ -162,35 +190,44 @@ describe('shared chats: per-viewer citations', () => {
     expect(asked.flat().sort()).to.deep.equal(['att-no', 'att-ok', 'rec-no', 'rec-ok'])
   })
 
-  it('a viewer gets no tool results, reasoning, reference data, filters or follow-ups, only allow-listed fields', async () => {
-    stubAccess(['rec-ok'])
-    stubConversation([leakyAnswer()])
-    expectNoLeak(await fetchConversation(VIEWER))
+  it('keeps every field and hides only the references to records the viewer cannot read', async () => {
+    stubAccess(['rec-ok', R_OK])
+    stubConversation([richAnswer()])
+    expectRecordsOnlyRedacted(await fetchConversation(VIEWER))
   })
 
-  it('the owner still gets every field', async () => {
+  it('a failed access check hides every record reference but leaves the rest of the chat', async () => {
+    stubAccess(null)
+    stubConversation([richAnswer()])
+    const message = await fetchConversation(VIEWER)
+    expectRecordsOnlyRedacted(message, false)
+    expect(message.referenceData[0].redacted).to.equal(true)
+    expect(message.parts[2].redacted).to.equal(true)
+    expect(message.reasoning).to.have.length(1)
+  })
+
+  it('the owner still gets every field and reference', async () => {
     stubAccess([])
-    stubConversation([leakyAnswer()])
+    stubConversation([richAnswer()])
     const message = await fetchConversation(OWNER)
-    expect(message.parts).to.have.length(5)
-    expect(message.referenceData).to.have.length(1)
-    expect(message.futureField).to.equal(SECRET)
+    expect(message.parts[3].resultPreview).to.contain(SECRET)
+    expect(message.referenceData[1].name).to.equal(SECRET)
   })
 
   it('an agent conversation opened by a project member or shared user is redacted too', async () => {
-    stubAccess(['rec-ok', 'att-ok'])
+    stubAccess(['rec-ok', 'att-ok', R_OK])
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
-    sinon.stub(ChatSessionMessage, 'find').returns(chain([leakyAnswer()]))
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([richAnswer()]))
     const r = res()
     const next = sinon.stub()
     await getAgentConversationById(appConfig)(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
 
     expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
     const message = r.json.firstCall.args[0].conversation.messages[0]
-    expectNoLeak(message)
+    expectRecordsOnlyRedacted(message)
     expect(message.citations[1]).to.deep.equal({ redacted: true, reason: 'no_access' })
     expect(message.attachments).to.deep.equal([{ recordId: 'att-ok', recordName: 'ok.pdf' }])
   })
@@ -215,17 +252,17 @@ describe('shared chats: per-viewer citations', () => {
     expect(JSON.stringify(message)).to.not.contain(SECRET)
   })
 
-  it('an archive strips the same fields from another user\'s messages', async () => {
-    stubAccess(['rec-ok'])
+  it('an archive redacts record references in another user\'s messages', async () => {
+    stubAccess(['rec-ok', R_OK])
     const archived = { _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], updatedAt: new Date(), archivedBy: OWNER }
     sinon.stub(ChatSession, 'find').returns(chain([archived]))
     sinon.stub(ChatSession, 'countDocuments').resolves(1)
-    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...leakyAnswer(), citations: [], attachments: [] }]))
+    sinon.stub(ChatSessionMessage, 'find').returns(chain([{ sessionId: SESSION, ...richAnswer(), citations: [], attachments: [] }]))
     const r = res()
     await listAllArchivesConversation(appConfig)(req(VIEWER), r, sinon.stub())
 
     const message = r.json.firstCall.args[0].conversations[0].messages[0]
-    expectNoLeak(message)
+    expectRecordsOnlyRedacted(message)
   })
 
   it('an archive of another user\'s chat resolves stored citation ids and redacts the same way', async () => {

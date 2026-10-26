@@ -1,14 +1,11 @@
 /**
- * A shared conversation or search is rendered for the person looking at it.
- * - A citation (with its excerpt and quoted context) or search hit whose record
- *   the viewer cannot read becomes a bare `{ redacted: true }` placeholder; an
- *   unreadable attachment is dropped. No id, title, text or link remains.
- * - Everything else a viewer receives is on an allow-list (MESSAGE_FIELDS,
- *   PART_FIELDS): tool results, previews, reasoning, reference data, applied
- *   filters and follow-up questions can name records no citation covers, so
- *   they are not sent. A field added to messages later stays out until allowed.
- * Answer text (`content`, `text` parts) is left as written (accepted residual
- * risk). The owner sees everything.
+ * A shared conversation or search is rendered for the person looking at it: as
+ * the owner sees it, except that every structured reference to a record the
+ * viewer cannot read (citation, attachment, reference data, applied filter,
+ * tool result, search hit) loses its id, name, link and text and shows as a
+ * placeholder. The owner sees everything.
+ * Free text stays as written: the answer, reasoning prose and follow-up
+ * questions (accepted residual risk, as before).
  */
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -90,16 +87,25 @@ interface CitationEntry {
 interface AttachmentEntry {
   recordId?: string;
 }
+/** An item of `referenceData` or `appliedFilters.*`: a named reference to a record or node. */
+interface RefEntry {
+  id?: string;
+  recordId?: string;
+  name?: string;
+  webUrl?: string;
+  metadata?: { recordId?: string } | Map<string, string>;
+}
 /** One entry of the agent-activity transcript (see IMessagePart). */
 interface PartEntry {
   type?: string;
-  content?: string;
   parts?: Array<PartEntry | null>;
 }
-/** The message fields redaction reads; the rest is dropped unless allow-listed. */
 export interface ViewerMessage {
   citations?: Array<CitationEntry | null>;
   attachments?: Array<AttachmentEntry | null>;
+  referenceData?: Array<RefEntry | null>;
+  appliedFilters?: object;
+  tools?: Array<{ toolResult?: unknown } | null>;
   parts?: Array<PartEntry | null>;
 }
 export interface ViewerSearch {
@@ -109,55 +115,85 @@ export interface ViewerSearch {
   toObject?: () => ViewerSearch;
 }
 
-// Internal addressing fields (sessionId, orgId, seq) are stripped later by attachMessages.
-const MESSAGE_FIELDS = [
-  '_id',
-  'sessionId',
-  'orgId',
-  'seq',
-  'messageType',
-  'content',
-  'contentFormat',
-  'status',
-  'confidence',
-  'metadata',
-  'createdAt',
-  'updatedAt',
-  'modelInfo',
-];
-// A tool call keeps its name and state, never its arguments or results.
-const PART_FIELDS = [
-  'type',
-  'toolCallId',
-  'toolName',
-  'displayName',
-  'status',
-  'runId',
-  'roleName',
-];
+const RESTRICTED = 'Restricted source';
+const restrictedRef = (): Record<string, unknown> => ({
+  ...REDACTED,
+  name: RESTRICTED,
+});
+// Stored message ids are a PipesHub record/node key: a UUID or a 24-hex key.
+const ID_TOKEN =
+  /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|\b[0-9a-f]{24}\b/gi;
+const idsIn = (value: unknown): string[] =>
+  (JSON.stringify(value) as string | undefined)?.match(ID_TOKEN) ?? [];
+// Tool-call fields that can carry a record's id, name or text.
+const PART_RECORD_FIELDS = [
+  'args',
+  'argsSummary',
+  'resultPreview',
+  'resultSummary',
+  'resultView',
+  'approval',
+] as const;
+const PART_HIDDEN = new Set<string>([...PART_RECORD_FIELDS, 'artifactId']);
+const FILTER_LISTS = ['apps', 'kb', 'recordGroups', 'records', 'recordsExact'];
 
-const pick = (source: object, fields: string[]): Record<string, unknown> => {
-  const record = source as Record<string, unknown>;
-  return Object.fromEntries(
-    fields.filter((f) => f in record).map((f) => [f, record[f]]),
-  );
+const refId = (e: RefEntry): string | undefined => {
+  const meta =
+    e.metadata instanceof Map
+      ? e.metadata.get('recordId')
+      : e.metadata?.recordId;
+  return e.recordId ?? meta ?? e.id;
 };
+/** Shown only if its record is readable; an entry naming something with no readable id is hidden. */
+const refVisible = (
+  e: RefEntry | null,
+  ok: (id?: string) => boolean,
+): boolean => {
+  if (!e) return true;
+  const id = refId(e);
+  if (id !== undefined && id !== '') return ok(id);
+  return (e.name ?? '') === '' && (e.webUrl ?? '') === '';
+};
+const refIds = (e: RefEntry | null): string[] => {
+  const id = e === null ? undefined : refId(e);
+  return id === undefined || id === '' ? [] : [id];
+};
+const filterLists = (f: object | undefined): Array<[string, RefEntry[]]> =>
+  FILTER_LISTS.flatMap((k) =>
+    Array.isArray((f as Record<string, unknown> | undefined)?.[k])
+      ? [[k, (f as Record<string, RefEntry[]>)[k]] as [string, RefEntry[]]]
+      : [],
+  );
 
-// Stored transcripts can hold a null part; it must not fail the viewer's request.
-const viewerParts = (parts: Array<PartEntry | null>): PartEntry[] =>
-  parts.flatMap((part): PartEntry[] => {
-    if (!part) return [];
-    if (part.type === 'text') {
-      return [{ ...pick(part, PART_FIELDS), content: part.content }];
-    }
-    if (part.type === 'tool_call') return [pick(part, PART_FIELDS)];
-    if (part.type === 'sub_agent') {
-      return [
-        { ...pick(part, PART_FIELDS), parts: viewerParts(part.parts ?? []) },
-      ];
-    }
-    return []; // reasoning, sign-in cards and unknown kinds
-  });
+type Part = PartEntry & Record<string, unknown> & { redacted?: boolean };
+const partIds = (part: PartEntry | null): string[] => {
+  if (!part) return [];
+  const p = part as Part;
+  return [
+    ...PART_RECORD_FIELDS.flatMap((f) => idsIn(p[f])),
+    ...(part.parts ?? []).flatMap(partIds),
+  ];
+};
+const redactPart = (
+  part: PartEntry | null,
+  ok: (id?: string) => boolean,
+): Part | null => {
+  if (!part) return part;
+  const p: Part = { ...part };
+  if (PART_RECORD_FIELDS.some((f) => idsIn(p[f]).some((id) => !ok(id)))) {
+    const rest = Object.fromEntries(
+      Object.entries(p).filter(([k]) => !PART_HIDDEN.has(k)),
+    );
+    return {
+      ...rest,
+      redacted: true,
+      resultSummary: RESTRICTED,
+      ...(part.parts && { parts: part.parts.map((c) => redactPart(c, ok)) }),
+    };
+  }
+  if (part.parts) p.parts = part.parts.map((c) => redactPart(c, ok));
+  return p;
+};
 
 /** The cited document of a message citation: populated, or a bare id to look up. */
 const citedDoc = (c: CitationEntry | null): CitedDoc | string | undefined => {
@@ -207,30 +243,51 @@ export const redactMessagesFor = async <M extends ViewerMessage>(
       : d?.metadata?.recordId;
   };
 
+  // One batched check for every record the viewer is shown a reference to.
   const readable = await readableRecordIds(
     appConfig,
     viewer,
     others.flatMap((m) => [
       ...(m.citations ?? []).map(recordIdOf),
       ...(m.attachments ?? []).map((a) => a?.recordId),
+      ...(m.referenceData ?? []).flatMap(refIds),
+      ...filterLists(m.appliedFilters).flatMap(([, l]) => l.flatMap(refIds)),
+      ...(m.parts ?? []).flatMap(partIds),
+      ...(m.tools ?? []).flatMap((t) => idsIn(t?.toolResult)),
     ]) as string[],
   );
   const ok = (id?: string): boolean => id !== undefined && readable.has(id);
   return messages.map((m) => {
     if (ownerOf(m) === viewer.userId) return m;
-    const view: Record<string, unknown> = {
-      ...pick(m, MESSAGE_FIELDS),
-      ...(m.citations && {
-        citations: m.citations.map((c) =>
-          ok(recordIdOf(c)) ? c : { ...REDACTED },
+    const view: Record<string, unknown> = { ...(m as object) };
+    if (m.citations)
+      view.citations = m.citations.map((c) =>
+        ok(recordIdOf(c)) ? c : { ...REDACTED },
+      );
+    // Dropped, not replaced: the chat UI renders every attachment as a file chip.
+    if (m.attachments)
+      view.attachments = m.attachments.filter((a) => ok(a?.recordId));
+    if (m.referenceData)
+      view.referenceData = m.referenceData.map((e) =>
+        refVisible(e, ok) ? e : restrictedRef(),
+      );
+    if (m.appliedFilters)
+      view.appliedFilters = {
+        ...m.appliedFilters,
+        ...Object.fromEntries(
+          filterLists(m.appliedFilters).map(([k, l]) => [
+            k,
+            l.map((e) => (refVisible(e, ok) ? e : restrictedRef())),
+          ]),
         ),
-      }),
-      // Dropped, not replaced: the chat UI renders every attachment as a file chip.
-      ...(m.attachments && {
-        attachments: m.attachments.filter((a) => ok(a?.recordId)),
-      }),
-      ...(m.parts && { parts: viewerParts(m.parts) }),
-    };
+      };
+    if (m.tools)
+      view.tools = m.tools.map((t) =>
+        t && idsIn(t.toolResult).some((id) => !ok(id))
+          ? { ...t, toolResult: RESTRICTED }
+          : t,
+      );
+    if (m.parts) view.parts = m.parts.map((x) => redactPart(x, ok));
     return view as M;
   });
 };
