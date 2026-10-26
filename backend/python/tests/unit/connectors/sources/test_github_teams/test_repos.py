@@ -355,6 +355,26 @@ class TestCommitDateFailures:
         # The smaller size sticks: the second half isn't tried at 40 again.
         assert [len(b) for b in batches] == [40, 20, 20]
 
+    @pytest.mark.parametrize("error", [
+        "Resource limits for this query were exceeded.",
+        "RESOURCE_LIMITS_EXCEEDED",
+        "We couldn't respond to your request in time.",
+    ])
+    async def test_a_query_over_its_limits_is_split_not_sent_to_rest(self, error: str) -> None:
+        def graphql(query: str) -> object:
+            if len(_graphql_paths(query)) > 20:
+                return failed_response(error)  # no status: GitHub sends these with HTTP 200
+            return _one_commit_each(query)
+
+        c, rest_paths, batches = self._connector(graphql)
+        paths = [f"src/f{i}.py" for i in range(40)]
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", paths)
+
+        assert set(dates) == set(paths)
+        assert rest_paths == []
+        assert [len(b) for b in batches] == [40, 20, 20]
+
     @pytest.mark.parametrize("failure", [
         failed_response("HTTP 403: secondary rate limit", status_code=429),
         failed_response("[{'type': 'RATE_LIMITED', 'message': 'API rate limit exceeded'}]"),

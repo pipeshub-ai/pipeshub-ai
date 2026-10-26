@@ -546,7 +546,15 @@ def _commit_target(res: Any) -> dict | None:
 # error of this type, so the status code alone misses it.
 _GRAPHQL_RATE_LIMITED = "RATE_LIMITED"
 # GraphQL's own "query took too long" answer, also sent with HTTP 200.
-_GRAPHQL_TIMEOUT_MARKERS = ("timeout", "timed out", "something went wrong while executing your query")
+# How GitHub words a query it could not finish, when the status alone doesn't
+# say so: a timeout ("We couldn't respond to your request in time", also sent
+# as 502/504) or a query over its resource limits ("resource limits were
+# exceeded", which can come back with HTTP 200 and partial data). See
+# docs.github.com/en/graphql/overview/rate-limits-and-query-limits-for-the-graphql-api.
+_GRAPHQL_TIMEOUT_MARKERS = (
+    "timeout", "timed out", "something went wrong while executing your query",
+    "couldn't respond to your request in time", "resource limit", "resource_limit",
+)
 
 
 def _classify_failure(res: object) -> _GraphqlFailure:
