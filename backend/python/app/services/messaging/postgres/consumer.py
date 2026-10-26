@@ -289,7 +289,10 @@ class PgMessagingConsumer(IMessagingConsumer):
                     self.config.group_id, self.config.topics
                 )
                 if due is not None:
-                    wait = min(max(due, 0.05) + 0.05, _SAFETY_NET_S)
+                    # On an ordered group a delivery that is already due but was not handed out is waiting behind a live claim of its
+                    # key; that ends with an ack, which sends no notification. Poll at the normal rate, not every 0.1 s.
+                    floor = poll_s if (due <= 0 and self._ordered) else 0.05
+                    wait = min(max(due, floor) + 0.05, _SAFETY_NET_S)
             except Exception as e:
                 self.logger.warning("Could not read the next due time: %s", e)
                 wait = poll_s

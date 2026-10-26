@@ -387,13 +387,19 @@ def test_metric_names_do_not_collide_with_the_other_telemetry_modules() -> None:
 
 
 def test_statements_that_change_the_units_identity_are_refused_at_runtime() -> None:
-    from app.core.db.uow import _REBIND
+    from app.core.db.uow import _COMMENTS, _REBIND
+
+    def refused(sql: str) -> bool:
+        return bool(_REBIND.search(_COMMENTS.sub(" ", sql)))
 
     for sql in ("SELECT set_config('app.org_id','org_b',true)", "select set_config( 'role', 'x', true)", "SET LOCAL app.org_id = 'x'",
-                "SET ROLE x", "set local role x"):
-        assert _REBIND.search(sql), sql
-    for sql in ("SELECT set_config('statement_timeout', '1s', true)", "UPDATE t SET a = 1", "SELECT 'x'"):
-        assert not _REBIND.search(sql), sql
+                "SET ROLE x", "set local role x", "SELECT 1; SET ROLE x", "/* c */ SET ROLE x", "-- c\nSET ROLE x", "SET SESSION AUTHORIZATION x",
+                "DO $$ BEGIN SET ROLE x; END $$", "DO $$ BEGIN EXECUTE 'SET ROLE x'; END $$", "DO $$ BEGIN IF true THEN SET LOCAL app.org_id = 'x'; END IF; END $$"):
+        assert refused(sql), sql
+    for sql in ("SELECT set_config('statement_timeout', '1s', true)", "UPDATE t SET a = 1", "SELECT 'x'",
+                "UPDATE users SET role = $1 WHERE id = $2", "UPDATE t SET a = 1, role = 'x'",
+                "INSERT INTO u (id, role) VALUES ($1, $2) ON CONFLICT (id) DO UPDATE SET role = excluded.role"):
+        assert not refused(sql), sql
 
 
 @pytest.mark.parametrize("sql", ["BEGIN", "commit", "ROLLBACK", "END", "abort", "SAVEPOINT s", "RELEASE s", "ROLLBACK TO SAVEPOINT s",

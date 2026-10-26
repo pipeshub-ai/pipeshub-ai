@@ -169,3 +169,28 @@ async def test_the_configuration_cache_expires_on_the_postgres_store(monkeypatch
     svc = ConfigurationService(log, InMemoryKeyValueStore(log))
     assert isinstance(svc.cache, LRUCache) and not isinstance(svc.cache, TTLCache)
     await svc.close()
+
+
+async def test_an_idle_ordered_consumer_does_not_poll_every_tenth_of_a_second() -> None:
+    """A delivery already due but not handed out is waiting behind a live claim of its key; that ends with an ack, which sends no notification."""
+    import asyncio
+    from unittest.mock import AsyncMock, patch
+
+    consumer = PgMessagingConsumer(LOG, RedisStreamsConfig(topics=["t"], group_id="g"), queue=MagicMock())
+    consumer._wake = asyncio.Event()
+    consumer._listener = MagicMock(healthy=lambda: True)
+    consumer.queue.next_due = AsyncMock(return_value=-5.0)
+    waits: list[float] = []
+
+    async def fake_wait_for(coro, timeout) -> None:
+        coro.close()
+        waits.append(timeout)
+        raise asyncio.TimeoutError
+
+    with patch("app.services.messaging.postgres.consumer.asyncio.wait_for", fake_wait_for):
+        consumer._ordered = False
+        await consumer._idle(1.0)
+        consumer._ordered = True
+        await consumer._idle(1.0)
+    assert waits[0] < 0.2          # unordered: a due delivery that was not claimed lost a race, try again at once
+    assert waits[1] >= 1.0         # ordered: wait for the blocking claim at the normal poll rate

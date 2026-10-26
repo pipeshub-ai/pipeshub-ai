@@ -15,8 +15,9 @@ class PgMessageAdmin(IMessageAdmin):
 
     @override
     async def ensure_topics_exist(self, topics: list[str] | None = None) -> None:
-        # Reads once, so a database that cannot be reached fails here (and the stages wait) rather than at the first publish.
-        await self.queue.topics()
+        # One constant query, so a database that cannot be reached fails here (and the stages wait) rather than at the first publish,
+        # without a DISTINCT pass over the whole message table.
+        await self.queue.ping()
 
     @override
     async def list_topics(self) -> list[str]:

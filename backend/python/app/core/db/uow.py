@@ -65,7 +65,14 @@ _SITE = re.compile(r"/\*\s*pipeshub:([A-Za-z0-9_.]{1,80})\s*\*/")
 _REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,64}")
 _IDENT = re.compile(r"[a-z_][a-z0-9_]{0,62}")
 # A statement may not change the unit's identity (org, role) or its request id once the prologue has set them.
-_REBIND = re.compile(r"set_config\s*\(\s*'(app\.|role|session_authorization)|\bset\s+(local\s+|session\s+)?(app\.|role\b|session\s+authorization)", re.I)
+# The session form of SET counts only where a statement can start (text start, after ';', a quote or '$' so that EXECUTE 'SET ROLE ..' and
+# dollar-quoted bodies are covered, or a PL/pgSQL BEGIN/THEN/ELSE/LOOP): `UPDATE t SET role = $1` sets a column and is allowed.
+_REBIND = re.compile(
+    r"set_config\s*\(\s*'(app\.|role|session_authorization)"
+    r"|(?:^|;|'|\$|\b(?:begin|then|else|loop)\b)\s*set\s+(local\s+|session\s+)?(app\.|role\b|session\s+authorization)",
+    re.I,
+)
+_COMMENTS = re.compile(r"/\*.*?\*/|--[^\n]*", re.S)
 # Transaction control belongs to the runtime (and to tx.savepoint); a statement that ends or splits the unit is refused.
 _TXN_CONTROL = re.compile(r"(begin|commit|rollback|end|abort|savepoint|release|start\s+transaction|prepare\s+transaction)\b")
 # Comments, dollar-quoted bodies (DO blocks, function bodies) and string literals are blanked before looking at statements.
@@ -137,7 +144,7 @@ class Tx:
         if not self._open:
             raise RuntimeError("transaction handle used outside its unit of work")
         if not internal:
-            if _REBIND.search(sql):
+            if _REBIND.search(_COMMENTS.sub(" ", sql)):
                 raise UowUsageError("a statement may not change the unit's org, role or settings")
             if any(_TXN_CONTROL.match(" ".join(st.lower().split())) for st in _SQL_NOISE.sub(" ", sql).split(";")):
                 raise UowUsageError("transaction control statements are not allowed inside a unit; use tx.savepoint()")

@@ -311,6 +311,10 @@ class PgQueue:
         async with (await self.rt.db()).runtime_uow() as tx:
             return bool(await tx.fetchval(_HAS_DEAD, topic, key))
 
+    async def ping(self) -> None:
+        async with (await self.rt.db()).runtime_uow() as tx:
+            await tx.fetchval("/* pipeshub:queue.ping */ SELECT 1")
+
     async def topics(self) -> list[str]:
         async with (await self.rt.db()).runtime_uow() as tx:
             return [r["topic"] for r in await tx.fetch(_TOPICS)]

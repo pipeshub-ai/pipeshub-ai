@@ -27,7 +27,7 @@ _ENTRY_POINT_GROUP = "pipeshub.redis_providers"
 
 
 def default_redis_mode() -> str:
-    """``REDIS_MODE``, or ``inprocess`` when the key-value store and the broker are both PostgreSQL (nothing then needs a Redis server)."""
+    """``REDIS_MODE``, or ``postgres`` when the key-value store and the broker are both PostgreSQL (nothing then needs a Redis server)."""
     explicit = os.getenv("REDIS_MODE")
     if explicit:
         return explicit
