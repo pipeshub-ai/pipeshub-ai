@@ -9,6 +9,7 @@ import weakref
 from datetime import datetime, timedelta
 from typing import Optional
 
+from app.core.org_context import spawn_detached
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import (
@@ -114,10 +115,10 @@ class TokenRefreshService:
         if wait_for_initial_refresh:
             await self._refresh_all_tokens()
         else:
-            asyncio.create_task(self._refresh_all_tokens())
+            spawn_detached(self._refresh_all_tokens())
 
         # Start periodic refresh check
-        asyncio.create_task(self._periodic_refresh_check())
+        spawn_detached(self._periodic_refresh_check())
 
     async def stop(self) -> None:
         """Stop the token refresh service"""

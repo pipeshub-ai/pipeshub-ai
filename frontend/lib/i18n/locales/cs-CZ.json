@@ -432,6 +432,13 @@
     "filterOnlyUnread": "Nepřečtená",
     "filterArchived": "Archivovaná",
     "filterTooltip": "Filtr: {{filter}}",
+    "chatShared": {
+      "title": "Chat s vámi sdílí {{name}}",
+      "titleAgent": "Chat agenta s vámi sdílí {{name}}",
+      "body": "Nyní můžete otevřít „{{chat}}“.",
+      "bodyNoTitle": "Nyní jej můžete otevřít v části „{{place}}“.",
+      "someone": "Kolega"
+    },
     "loadFailed": "Nepodařilo se načíst oznámení",
     "updateFailed": "Oznámení se nepodařilo aktualizovat",
     "removeFailed": "Oznámení se nepodařilo odebrat"
@@ -2875,7 +2882,8 @@
         "errorFallback": "Konektor se nepodařilo zakázat. Zkuste to prosím znovu.",
         "actions": {
           "removeInstance": "odebrat tuto instanci konektoru",
-          "saveConfig": "uložit změny konfigurace"
+          "saveConfig": "uložit změny konfigurace",
+          "saveAuth": "uložit nové přihlašovací údaje"
         }
       },
       "adminAccessDialog": {
@@ -3113,7 +3121,9 @@
           "ready": "Dokončeno",
           "readyTooltip": "Konfigurace je dokončena a ověřena. Po povolení může synchronizace běžet.",
           "desktopOffline": "Desktop je offline",
-          "desktopOfflineTooltip": "Desktopová aplikace, která tuto složku vlastní, není připojena. Pro synchronizaci ji otevřete na daném počítači."
+          "desktopOfflineTooltip": "Desktopová aplikace, která tuto složku vlastní, není připojena. Pro synchronizaci ji otevřete na daném počítači.",
+          "actionNeeded": "Vyžaduje akci",
+          "actionNeededTooltip": "Vyžaduje vaši pozornost: {{items}}"
         },
         "sync": {
           "kind": "Synchronizace",
@@ -3360,6 +3370,12 @@
           "wholeSite": "Celý web",
           "onePage": "Jedna stránka"
         }
+      },
+      "actionItems": {
+        "badge": "Vyžaduje akci",
+        "title": "Vyžaduje akci",
+        "openAuthentication": "Aktualizovat ověření",
+        "viewSteps": "Zobrazit postup nastavení"
       }
     },
     "mcpServers": {
@@ -4509,6 +4525,12 @@
         "selectAllScopes": "Vybrat vše",
         "clearAllScopes": "Zrušit výběr",
         "expiryDays": "{{count}} dní",
+        "expiryCustom": "Vlastní",
+        "expiryCustomLabel": "Počet dní do vypršení tokenu",
+        "expiryCustomUnit": "dní",
+        "expiryCustomHelp": "Zadejte počet dní od 1 do {{max}}.",
+        "expiryCustomInvalid": "Zadejte celý počet dní od 1 do {{max}}.",
+        "expiryCustomPreview": "Vyprší {{date}}",
         "expiresInDays": "Zbývá dní: {{count}}",
         "expiringSoon": "Tokeny s brzy končící platností: {{count}}. Pro každý vytvořte náhradu, přepojte integrace a poté staré tokeny zneplatněte."
       },

@@ -149,11 +149,12 @@ class TestTimestampBackfill:
             side_effect=[[_code_node(1, "src/main.py")], [], []],
         )
         sync.timestamps._fetch_commit_dates = AsyncMock(return_value=({"src/main.py": (100, 200)}, None))
+        c.repos = sync
 
         await sync.timestamps.backfill_repo(repo)
 
         sync.timestamps._fetch_commit_dates.assert_awaited_once_with(
-            repo.owner.login, repo.name, ["src/main.py"],
+            repo.owner.login, repo.name, ["src/main.py"], repo.default_branch,
         )
         [patches] = _patch_calls(c, "records")
         [patch] = patches
@@ -226,7 +227,7 @@ class TestTimestampBackfill:
 
 
 def _graphql_response(target: dict) -> object:
-    return ok_response({"repository": {"defaultBranchRef": {"target": target}}})
+    return ok_response({"repository": {"object": target}})
 
 
 class TestFetchCommitDates:
@@ -353,6 +354,26 @@ class TestCommitDateFailures:
         assert set(dates) == set(paths)
         assert rest_paths == []
         # The smaller size sticks: the second half isn't tried at 40 again.
+        assert [len(b) for b in batches] == [40, 20, 20]
+
+    @pytest.mark.parametrize("error", [
+        "Resource limits for this query were exceeded.",
+        "RESOURCE_LIMITS_EXCEEDED",
+        "We couldn't respond to your request in time.",
+    ])
+    async def test_a_query_over_its_limits_is_split_not_sent_to_rest(self, error: str) -> None:
+        def graphql(query: str) -> object:
+            if len(_graphql_paths(query)) > 20:
+                return failed_response(error)  # no status: GitHub sends these with HTTP 200
+            return _one_commit_each(query)
+
+        c, rest_paths, batches = self._connector(graphql)
+        paths = [f"src/f{i}.py" for i in range(40)]
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", paths)
+
+        assert dates == dict.fromkeys(paths, (1704412800000, 1704412800000))
+        assert rest_paths == []
         assert [len(b) for b in batches] == [40, 20, 20]
 
     @pytest.mark.parametrize("failure", [

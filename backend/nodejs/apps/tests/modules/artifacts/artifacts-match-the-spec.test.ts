@@ -23,6 +23,7 @@ type Operation = {
 }
 type Spec = { paths: Record<string, Record<string, Operation>> }
 
+/** The router under test, with authentication stubbed to pass. */
 function router(): any {
   const container: any = {
     get: sinon.stub().callsFake((key: string) =>
@@ -34,6 +35,7 @@ function router(): any {
   return createArtifactsRouter(container)
 }
 
+/** Every `method /artifacts...` route the router serves, in spec path form. */
 function servedRoutes(): string[] {
   return router()
     .stack.filter((layer: any) => layer.route)
@@ -45,6 +47,7 @@ function servedRoutes(): string[] {
     .sort()
 }
 
+/** Every `method path` the spec documents under `/artifacts`. */
 function documentedRoutes(spec: Spec): string[] {
   return Object.entries(spec.paths)
     .filter(([path]) => path === '/artifacts' || path.startsWith('/artifacts/'))
@@ -52,6 +55,7 @@ function documentedRoutes(spec: Spec): string[] {
     .sort()
 }
 
+/** The requireScopes middleware of one route. */
 function scopeCheckOf(method: string, path: string): (req: any, res: any, next: sinon.SinonStub) => void {
   const layer = router().stack.find(
     (l: any) => l.route && l.route.path === path && l.route.methods[method],
@@ -74,7 +78,8 @@ describe('Artifact routes match the spec', () => {
     expect(operation?.operationId).to.equal('deleteArtifact')
     expect(operation?.security).to.deep.equal([{ bearerAuth: [] }, { oauth2: ['conversation:write'] }])
     expect(operation?.['x-pipeshub-sdk']).to.equal(undefined)
-    expect(Object.keys(operation?.responses ?? {}).sort()).to.deep.equal(['204', '401', '403', '404', '503'])
+    // 400 and 500 are the app-wide markup filter and body parsers, answered before this route runs.
+    expect(Object.keys(operation?.responses ?? {}).sort()).to.deep.equal(['204', '400', '401', '403', '404', '500', '503'])
   })
 
   it('documents the caller role on gallery items', () => {

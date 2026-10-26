@@ -63,6 +63,8 @@ class InspectedPdf:
     content: bytes
     needs_ocr: bool
     repaired: bool
+    # None when only pdfium can open the file.
+    page_count: int | None = None
 
 
 @dataclass(frozen=True)
@@ -84,14 +86,15 @@ def ocr_sample_pages() -> int:
 
 
 async def inspect_untrusted_pdf(content: bytes, *, label: str = "") -> InspectedPdf:
-    """The bytes to parse and whether they need OCR.
+    """The bytes to parse, whether they need OCR, and the page count.
 
     Raises ``UnreadablePdfError`` when the file cannot be opened either way. A
     worker that died (most likely out of memory) or a cancelled caller is
     raised as it is, so those are retried rather than read as a bad file.
     """
     copy = await _readable_copy(content, label)
-    return InspectedPdf(copy.content, await _needs_ocr(copy, label), copy.repaired)
+    page_count = copy.structure.page_count if copy.structure else None
+    return InspectedPdf(copy.content, await _needs_ocr(copy, label), copy.repaired, page_count)
 
 
 async def _readable_copy(content: bytes, label: str) -> _Copy:

@@ -199,6 +199,8 @@ app_schema = {
             "lastSyncFinishedAtTimestamp": {"type": ["number", "null"]},
             "lastSyncOutcome": {"type": ["string", "null"]},
             "lastSyncSummary": {"type": ["string", "null"]},
+            # What the connector's admin has to do (JSON text, see ActionItem); null when nothing.
+            "actionItems": {"type": ["string", "null"]},
             "queuedAtTimestamp": {"type": ["number", "null"]},
             # Set when sync is turned on; see toggle_connector_instance.
             "enabledAtTimestamp": {"type": ["number", "null"]},

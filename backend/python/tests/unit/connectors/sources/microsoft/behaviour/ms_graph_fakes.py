@@ -249,8 +249,10 @@ class RecordingNotifications:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
-    async def publish_notification(self, **kwargs: object) -> None:
+    async def publish_notification(self, **kwargs: object) -> bool:
+        """Like the real service: True when the broker took it."""
         self.sent.append(kwargs)
+        return True
 
 
 
@@ -285,6 +287,9 @@ class FakeRecordsDb:
         self.content_updates: list[Any] = []
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
+        # Per record, whether it has an inherit edge, as the last write left it. Every write
+        # sets it from the record passed, including a permission update, as the processor does.
+        self.inherit_edges: dict[str, bool] = {}
         # The store the processor reads stored edges from (the connector's data store provider).
         self.edge_store: Any = None
 
@@ -356,10 +361,12 @@ class FakeRecordsDb:
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
             self.record_permissions[record.external_record_id] = list(permissions)
+            self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def on_record_metadata_update(self, record: Record) -> None:
         self.metadata_updates.append(record)
         self.records[record.external_record_id] = record
+        self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
@@ -368,6 +375,7 @@ class FakeRecordsDb:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, list(permissions)))
         self.record_permissions[record.external_record_id] = list(permissions)
+        self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
         """Whether the stored node has an inherit edge, read from the edge store as the processor

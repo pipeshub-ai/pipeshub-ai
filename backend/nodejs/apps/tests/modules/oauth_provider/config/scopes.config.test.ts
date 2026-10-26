@@ -11,6 +11,8 @@ import {
   ScopeCategories,
   DefaultMcpScopes,
   AgentMcpScopes,
+  McpToolScopes,
+  mcpDiscoveryScopes,
   AdminOnlyScopes,
   getAllowedScopeNamesForRole,
 } from '../../../../src/modules/oauth_provider/config/scopes.config'
@@ -60,6 +62,32 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     const line = script.split('\n').find((l) => l.startsWith('AGENT_SCOPES=')) ?? ''
     const minted = JSON.parse(line.slice(line.indexOf("'") + 1, line.lastIndexOf("'")))
     expect([...minted].sort()).to.deep.equal([...AgentMcpScopes].sort())
+  })
+
+  // MCP clients request every scope discovery lists, so it lists only what
+  // the /mcp tools use, never more than MCP_SCOPES allows.
+  it('mcpDiscoveryScopes keeps the MCP_SCOPES the tools use, in order', () => {
+    expect(
+      mcpDiscoveryScopes(['openid', 'kb:read', 'conversation:write', 'semantic:write', 'email']),
+    ).to.deep.equal(['kb:read', 'semantic:write'])
+    expect(mcpDiscoveryScopes(['kb:read'])).to.deep.equal(['kb:read'])
+    expect(mcpDiscoveryScopes([])).to.deep.equal([])
+  })
+
+  it('discovery on the stock MCP_SCOPES drops only the scopes no tool uses', () => {
+    const template = readFileSync(resolve(process.cwd(), '../../env.template'), 'utf8')
+    const line = template.split('\n').find((l) => l.startsWith('MCP_SCOPES=')) ?? ''
+    const stock = line.slice('MCP_SCOPES='.length).split(',')
+    for (const list of [stock, DefaultMcpScopes]) {
+      expect(mcpDiscoveryScopes(list)).to.have.members([...McpToolScopes])
+    }
+    expect(stock.filter((s) => !mcpDiscoveryScopes(stock).includes(s))).to.have.members([
+      'openid',
+      'profile',
+      'email',
+      'conversation:write',
+    ])
+    expect(McpToolScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
   })
 
   it('getScopesGroupedByCategoryForRole filters admin-only scopes for non-admin', () => {

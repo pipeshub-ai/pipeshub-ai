@@ -117,6 +117,7 @@ from app.utils.chat_helpers import (
     group_child_results,
     valid_group_labels,
 )
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
@@ -1257,7 +1258,8 @@ class RetrievalService:
                 # ids actually came back instead.
                 missing = [rid for rid in unique_ids if rid not in resolved]
                 if missing:
-                    per_id = await asyncio.gather(
+                    per_id = await gather_with_concurrency(
+                        GRAPH_FANOUT_CONCURRENCY,
                         *[
                             self.graph_provider.get_document(rid, collection)
                             for rid in missing

@@ -7,6 +7,8 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from aiokafka import AIOKafkaConsumer  # type: ignore
 
+from app.core.envelope import DuplicateEnvelope, EnvelopeRejected, open_configured
+from app.core.org_context import bind_optional, spawn_detached
 from app.services.messaging.config import MessageHandler, StreamMessage, messaging_env
 from app.services.messaging.error_classifier import MessageErrorClassifier, MessageErrorType
 from app.services.messaging.interface.consumer import IMessagingConsumer
@@ -141,7 +143,7 @@ class KafkaMessagingConsumer(IMessagingConsumer):
                 await self.initialize()
 
             # create a task for consuming messages
-            self.consume_task = asyncio.create_task(self.__consume_loop())
+            self.consume_task = spawn_detached(self.__consume_loop())
             self.logger.info("Started Kafka consumer task")
         except Exception as e:
             self.logger.error(f"Failed to start Kafka consumer: {str(e)}")
@@ -226,11 +228,21 @@ class KafkaMessagingConsumer(IMessagingConsumer):
             # Carry the producer's trace id into consumer-side logs.
             if self.message_handler and parsed_message:
                 envelope = parsed_message if isinstance(parsed_message, dict) else {}
+                if not isinstance(parsed_message, dict):
+                    StreamMessage(**parsed_message)  # TypeError: not an envelope
                 ctx = context_from_envelope(envelope)
                 token = set_context(ctx.root_id)
                 try:
-                    stream_message = StreamMessage(**parsed_message)
-                    result = await self.message_handler(stream_message)
+                    try:
+                        opened = await open_configured(message.topic, envelope)
+                    except DuplicateEnvelope:
+                        return True, None
+                    except EnvelopeRejected as e:
+                        self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                        return False, e
+                    with bind_optional(opened.ctx):
+                        stream_message = StreamMessage(**opened.message)
+                        result = await self.message_handler(stream_message)
                     return result, None
                 except Exception as e:
                     self.logger.error(

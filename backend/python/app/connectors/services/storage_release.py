@@ -19,6 +19,7 @@ from uuid import uuid4
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.connector_intents import ConnectorIntentStore
+from app.core.org_context import for_org
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -176,7 +177,10 @@ class StorageReleaseReconciler:
                 continue
             if int(intent.get("nextAttemptAt") or 0) > now:
                 continue
-            org_id, connector_id = str(intent["orgId"]), str(intent["connectorId"])
+            org_id, connector_id = str(intent.get("orgId") or ""), str(intent["connectorId"])
+            if not org_id:
+                self.logger.warning("Storage release intent has no org; skipped | connector=%s", connector_id)
+                continue
             # Raised, not None: a failed read must never pass for a gone app.
             app = await self.graph.get_document(connector_id, CollectionNames.APPS.value, raise_on_error=True)
             if app is not None:
@@ -208,11 +212,12 @@ class StorageReleaseReconciler:
                 return "retrying"
             helper = StorageCleanupHelper(self.logger, self.graph, self.config_service)
             try:
-                done = await release_connector_storage(
-                    self.logger, helper, self.config_service,
-                    org_id=org_id, connector_id=connector_id, org_config_service=org_config,
-                    intent=intent, now_ms=self.now_ms,
-                )
+                with for_org(org_id, job="storage_release"):
+                    done = await release_connector_storage(
+                        self.logger, helper, self.config_service,
+                        org_id=org_id, connector_id=connector_id, org_config_service=org_config,
+                        intent=intent, now_ms=self.now_ms,
+                    )
             finally:
                 await helper.close()
             return "released" if done else "retrying"

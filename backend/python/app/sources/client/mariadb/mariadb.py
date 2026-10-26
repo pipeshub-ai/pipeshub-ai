@@ -18,6 +18,8 @@ from app.sources.client.iclient import IClient
 from app.utils.url_fetcher import vetted_addresses
 
 logger = logging.getLogger(__name__)
+# Seconds a read-only agent query may run before the server stops it.
+READ_ONLY_TIMEOUT_S = 120
 
 _DEFAULT_MAX_POOL_SIZE = 10
 
@@ -170,8 +172,13 @@ class MariaDBClient:
         self,
         query: str,
         params: Optional[dict[str, Any] | list[Any] | tuple] = None,
+        *,
+        read_only: bool = False,
     ) -> list[dict[str, Any]]:
-        """Execute a SQL query and return results as list of dicts."""
+        """Execute a SQL query and return results as list of dicts.
+
+        ``read_only`` runs it in a READ ONLY transaction with a statement timeout, so even a
+        stored function it calls cannot write or hold the server."""
         if not self.is_connected():
             await self.connect()
         if self._pool is None:
@@ -182,6 +189,11 @@ class MariaDBClient:
                 cursor = None
                 try:
                     cursor = conn.cursor(dictionary=True)
+                    if read_only:
+                        await cursor.execute("START TRANSACTION READ ONLY")
+                        # A server that doesn't know SET STATEMENT (older MariaDB, MySQL) rejects it: the
+                        # error propagates and the query is not retried without the guard.
+                        query = f"SET STATEMENT max_statement_time={READ_ONLY_TIMEOUT_S} FOR {query}"
                     await cursor.execute(query, params or ())
                     if cursor.description:
                         results = await cursor.fetchall()

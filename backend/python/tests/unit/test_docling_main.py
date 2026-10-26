@@ -233,8 +233,10 @@ class TestLifespan:
             patch("app.docling_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
             patch("app.docling_main.DoclingService", return_value=mock_svc),
             patch("app.docling_main.set_docling_service") as mock_set_svc,
+            patch("app.docling_main.limit_malloc_arenas") as mock_limit_arenas,
         ):
             async with lifespan(mock_app):
+                mock_limit_arenas.assert_called_once_with(2)
                 # During lifespan, app.container should be set
                 assert mock_app.container is mock_container
                 # DoclingService should have been initialized
