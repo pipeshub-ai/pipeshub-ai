@@ -195,6 +195,17 @@ class TestRetrieve:
         assert search.call_args.kwargs["limit"] == 8
 
     @pytest.mark.asyncio
+    async def test_a_section_larger_than_the_candidate_window_does_not_starve_the_page(self) -> None:
+        # Ten passages of one expanded section outscore r2's single match: more than
+        # the 8 candidates limit 2 reads, so a cut before the cap would keep only r1.
+        section = [_hit("r1", i, f"s{i}", 0.9) for i in range(10)]
+        _, body, _, _ = await _retrieve(
+            RetrieveQuery(query="q", limit=2, maxChunksPerRecord=1),
+            _results(*section, _hit("r2", 0, "other", 0.5)),
+        )
+        assert [c["record"]["recordId"] for c in body["chunks"]] == ["r1", "r2"]
+
+    @pytest.mark.asyncio
     async def test_without_a_cap_the_page_reads_only_limit(self) -> None:
         _, _, search, _ = await _retrieve(RetrieveQuery(query="q", limit=3), _results(_hit("r1", 0, "a")))
         assert search.call_args.kwargs["limit"] == 3

@@ -661,7 +661,11 @@ async def retrieve(
                 knowledge_search=True,
                 time_range=time_range,
             )
-            results = _apply_result_limit(results, fetch_limit, body.query)
+            if body.maxChunksPerRecord is None:
+                results = _apply_result_limit(results, body.limit, body.query)
+            # With a cap, nothing is cut here: _retrieve_chunks caps each record
+            # over every candidate, then the page is cut to `limit`. Cutting first
+            # lets one expanded section fill the window and leaves the page short.
             await hide_record_parents_outside_connection(
                 request, graph_provider, user.get("orgId"), user.get("userId"), results,
             )
