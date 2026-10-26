@@ -92,6 +92,13 @@ class VectorMembershipBackfillLeaderLock:
         self.ttl_seconds = max(1, ttl_seconds)
         self.key = key
         self._redis: Redis | None = None
+        self._pg = None
+        from app.services.redis.connection_provider_factory import uses_pg_state
+
+        if uses_pg_state():          # REDIS_MODE=postgres: the lock row lives in platform.kv_entries, visible to every process
+            from app.services.pg_state import PgLeaderLock
+
+            self._pg = PgLeaderLock(owner, self.ttl_seconds, key)
 
     async def _client(self) -> Redis | None:
         if self._redis is not None:
@@ -122,6 +129,8 @@ class VectorMembershipBackfillLeaderLock:
         return client
 
     async def try_acquire(self) -> bool:
+        if self._pg is not None:
+            return await self._pg_call(self._pg.try_acquire)
         try:
             client = await self._client()
             if client is None:
@@ -137,7 +146,16 @@ class VectorMembershipBackfillLeaderLock:
             await self.close()
             return False
 
+    async def _pg_call(self, fn):  # noqa: ANN001, ANN202
+        try:
+            return await fn()
+        except Exception as e:
+            self.logger.warning("Leader lock %s skipped; the database lock failed: %s", self.key, e)
+            return False
+
     async def refresh(self) -> bool:
+        if self._pg is not None:
+            return await self._pg_call(self._pg.refresh)
         try:
             client = self._redis
             if client is None:
@@ -152,6 +170,9 @@ class VectorMembershipBackfillLeaderLock:
             return False
 
     async def release(self) -> None:
+        if self._pg is not None:
+            await self._pg_call(self._pg.release)
+            return
         client = self._redis
         if client is None:
             return

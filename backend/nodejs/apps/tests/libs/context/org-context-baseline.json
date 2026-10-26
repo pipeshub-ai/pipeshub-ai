@@ -9,6 +9,7 @@
   "modules/enterprise_search/utils/utils.ts": 1,
   "modules/knowledge_base/controllers/kb_controllers.ts": 1,
   "modules/notification/service/notification.service.ts": 1,
+  "modules/storage/controllers/storage.controller.ts": 1,
   "modules/user_management/services/metrics.refresh.service.ts": 1
  },
  "direct_org_reads": {

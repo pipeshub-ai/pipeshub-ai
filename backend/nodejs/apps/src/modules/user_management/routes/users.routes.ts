@@ -258,11 +258,25 @@ const listUsersGraphQueryParams = z.object({
       message: 'limit must be a positive integer no greater than 100',
     }),
   search: z.string().optional(),
+  // The same opt-in as `GET /users`, and the connector service applies the same
+  // rule: honoured for an administrator, ignored for anyone else.
+  includeServiceAccounts: z.enum(['true', 'false']).optional(),
 });
 
 const listUsersGraphValidationSchema = z.object({
   body: z.object({}),
   query: listUsersGraphQueryParams,
+  params: z.object({}),
+  headers: z.object({}),
+});
+
+// `fetch/with-groups` had no schema at all, so its one parameter was accepted
+// only because nothing looked. Declared here so it is part of the route.
+const withGroupsValidationSchema = z.object({
+  body: z.object({}),
+  query: z.object({
+    includeServiceAccounts: z.enum(['true', 'false']).optional(),
+  }),
   params: z.object({}),
   headers: z.object({}),
 });
@@ -295,6 +309,7 @@ export function createUserRouter(container: Container) {
     '/fetch/with-groups',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_READ),
+    ValidationMiddleware.validate(withGroupsValidationSchema),
     async (req: Request, res: Response, next: NextFunction) => {
       try {
         const userController = container.get<UserController>('UserController');

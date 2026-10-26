@@ -50,6 +50,7 @@ from app.config.constants.arangodb import (
     RecordTypes,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service_accounts import aql_not_a_service_account
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -10076,7 +10077,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_key, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_key, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
@@ -10181,7 +10188,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return
 
             # 3. Check if team has any existing members to determine role
-            team_with_users = await self.get_team_with_users(team_id=team_key, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_key, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             role = "OWNER" if existing_member_count == 0 else "READER"
 
@@ -11928,6 +11941,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 CollectionNames.DEAL_OF.value,
                 CollectionNames.SOLD_IN.value,
                 CollectionNames.MEMBER_OF.value,
+                CollectionNames.AGENT_KNOWLEDGE.value,
             ]
 
             # Blocks are the bulk of a code connector. Deleted inside the
@@ -12066,6 +12080,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     deleted_blocks = await self.delete_blocks_by_connector_id(
                         connector_id, transaction
                     )
+
+                # An agent names its sources by connectorId, not by an edge, so the
+                # sweep above never reaches them; left behind they show as a raw id.
+                agent_knowledge_keys = await self.http_client.execute_aql(
+                    f"""
+                    FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                        FILTER k.connectorId == @connector_id
+                        RETURN k._key
+                    """,
+                    bind_vars={"connector_id": connector_id},
+                    txn_id=transaction,
+                )
+                await self.delete_nodes_and_edges(
+                    agent_knowledge_keys or [],
+                    CollectionNames.AGENT_KNOWLEDGE.value,
+                    transaction=transaction,
+                )
 
                 # Step 13: Delete the app itself (CRITICAL - must succeed completely)
                 deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
@@ -25381,12 +25412,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
         """
         try:
+            # Every account joins the organisation's All team when it is
+            # created, service accounts included, and each member row carries
+            # the `userId` that binds an agent to one. In the member list
+            # rather than around the team, so `memberCount` counts what the
+            # caller was given.
+            member_filter = "" if include_service_accounts else (
+                f"AND {aql_not_a_service_account('user')}"
+            )
             team_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
             FILTER team._key == @teamId AND team.orgId == @orgId
@@ -25399,7 +25440,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
-                FILTER user != null AND user.isActive == true
+                FILTER user != null AND user.isActive == true {member_filter}
                 RETURN {{
                     "id": user._key,
                     "userId": user.userId,
@@ -25454,13 +25495,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
         """
         try:
             offset = (page - 1) * limit
+
+            # The same member list as get_team_with_users, embedded per team.
+            member_filter = "" if include_service_accounts else (
+                f"AND {aql_not_a_service_account('member_user')}"
+            )
 
             # Build search filter (case-insensitive)
             search_filter = ""
@@ -25490,7 +25538,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR member_permission IN @@permission_collection
                 FILTER member_permission._to == team._id
                 LET member_user = DOCUMENT(member_permission._from)
-                FILTER member_user != null AND member_user.isActive == true
+                FILTER member_user != null AND member_user.isActive == true {member_filter}
                 RETURN {{
                     "id": member_user._key,
                     "userId": member_user.userId,
@@ -25579,7 +25627,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -25590,6 +25640,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             search_filter = ""
             if search:
                 search_filter = "FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)"
+
+            # Inside `all_members`, so it runs before `total_count` is taken
+            # and before the page is cut: the page and the count agree, and
+            # neither says how many rows were withheld.
+            member_filter = "" if include_service_accounts else (
+                f"AND {aql_not_a_service_account('user')}"
+            )
 
             team_users_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
@@ -25603,7 +25660,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
-                FILTER user != null AND user.isActive == true
+                FILTER user != null AND user.isActive == true {member_filter}
                 {search_filter}
                 RETURN {{
                     "id": user._key,
@@ -25883,7 +25940,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -25898,6 +25957,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)
                 """
 
+            # The row carries `userId`, which is the id an agent stores when
+            # it is bound to a service account, so this listing decides who
+            # learns that a machine identity exists.
+            kind_filter = "" if include_service_accounts else (
+                f"FILTER {aql_not_a_service_account('user')}"
+            )
+
             # Query to get users with their team memberships
             users_query = f"""
             FOR edge IN belongsTo
@@ -25906,11 +25972,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET user = DOCUMENT(edge._from)
             FILTER user!=null
             FILTER user.isActive == true
+            {kind_filter}
             {search_filter}
             SORT user.fullName ASC
             LIMIT @offset, @limit
             RETURN {{
                 "id": user._key,
+                "_key": user._key,
+                "_id": user._id,
                 "userId": user.userId,
                 "name": user.fullName,
                 "email": user.email,
@@ -25928,6 +25997,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             LET user = DOCUMENT(edge._from)
             FILTER user!=null
             FILTER user.isActive == true
+            {kind_filter}
             {search_filter}
             COLLECT WITH COUNT INTO total_count
             RETURN total_count

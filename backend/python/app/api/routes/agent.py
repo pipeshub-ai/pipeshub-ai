@@ -7,7 +7,7 @@ import asyncio
 import json
 import logging
 import uuid
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import aclosing
 from logging import Logger
 from typing import TYPE_CHECKING, Any, Literal
@@ -30,6 +30,7 @@ from app.agents.openapi.service import ApiToolsetError, connected_tool_refs
 from app.agents.openapi.store import ApiToolsetStore
 from app.agents.registry.toolset_registry import ToolsetRegistry
 from app.api.middlewares.auth import connection_limit, require_scopes
+from app.api.middlewares.caller_role import CallerRoleStatus, fetch_caller_role
 from app.api.middlewares.token_policy import is_service_token
 from app.api.routes.chatbot import (
     get_llm_for_chat,
@@ -568,19 +569,61 @@ async def _resolve_service_account_binding(
     return wanted
 
 
+async def _only_an_administrator_may_bind(
+    request: Request, config_service: ConfigurationService,
+) -> None:
+    """Refuse a change of binding from anyone who does not administer the org.
+
+    Binding is how an administrator decides what a shared agent may read: the
+    account's reach is whatever they granted it, usually by putting it in
+    groups. Without this check any signed-in member could point an agent they
+    own at any service account in the organisation and ask questions with that
+    account's reach, and because a service agent is shared with everyone
+    (`sa_forces_org_sharing`), so could every colleague after them. The screen
+    that lists these accounts and the one that puts them in groups are both
+    administrator-only already; this is the same rule on the route that spends
+    what those screens grant.
+
+    The role is the live one Node reports for the caller's own credentials,
+    never a flag read off the request. An unconfirmed role is a 503 rather than
+    a refusal: "you are not an administrator" is the wrong thing to tell an
+    administrator whose edit failed because a lookup timed out.
+    """
+    role = await fetch_caller_role(request, config_service)
+    if role.status is not CallerRoleStatus.VALID:
+        raise HTTPException(
+            status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
+            detail=(
+                "We couldn't confirm your role just now, so nothing was saved. "
+                "Please try again."
+            ),
+        )
+    if not role.is_admin:
+        raise HTTPException(
+            status_code=HttpStatusCode.FORBIDDEN.value,
+            detail=(
+                "Only an administrator can choose the service account an agent "
+                "searches as."
+            ),
+        )
+
+
 async def _checked_service_account_binding(
     requested: object,
     graph_provider: IGraphDBProvider,
     caller_org_id: str,
     *,
     is_service_account: bool,
+    admin_check: Callable[[], Awaitable[None]],
+    current: object = None,
 ) -> str | None:
-    """The binding to store, refusing one the agent could not use.
+    """The binding to store, refusing one the agent could not use, and one
+    whoever is asking is not entitled to set.
 
-    `None` is allowed whatever the agent is. It means "search as the creator",
-    which is where every unbound agent already sits, and every agent document
-    carries this field as null — so a client that reads an agent and sends it
-    back unchanged must not be turned away.
+    `None` is allowed on any agent. It means "search as the creator", which is
+    where every unbound agent already sits, and every agent document carries
+    this field as null — so a client that reads an agent and sends it back
+    unchanged must not be turned away.
 
     Anything else is only meaningful on a service agent, and is refused rather
     than quietly dropped: dropping it would leave an agent searching as its
@@ -588,7 +631,20 @@ async def _checked_service_account_binding(
     it. On update, "is a service agent" means what the agent will be once the
     request is applied, so one request may convert an agent and bind it.
     """
-    if requested is None:
+    stored = str(current or "").strip() or None
+    asked = None if requested is None else str(requested or "").strip()
+
+    # Only an administrator picks the account, and that is what `admin_check`
+    # refuses. A value that is not changing passes for anyone, because every
+    # agent document carries this field and a client that reads an agent and
+    # saves it back sends it every time — an owner editing a bound agent's
+    # name would otherwise be turned away. Clearing counts as a change: it
+    # returns the agent to searching as its creator, which is the wider
+    # identity an administrator bound it to get away from.
+    if asked != stored:
+        await admin_check()
+
+    if asked is None:
         return None
     if not is_service_account:
         raise InvalidRequestError(
@@ -596,7 +652,7 @@ async def _checked_service_account_binding(
             "a service agent first, or leave the binding alone."
         )
     return await _resolve_service_account_binding(
-        requested, graph_provider, caller_org_id,
+        asked, graph_provider, caller_org_id,
     )
 
 
@@ -2723,6 +2779,11 @@ async def create_agent(request: Request) -> JSONResponse:
             services["graph_provider"],
             org_key,
             is_service_account=is_service_account,
+            # Built lazily: the gate runs only when a binding is actually
+            # being set, and most creates never name one.
+            admin_check=lambda: _only_an_administrator_may_bind(
+                request, services["config_service"],
+            ),
         )
         if sa_forces_org_sharing() and is_service_account:
             share_with_org = True
@@ -3422,6 +3483,12 @@ async def update_agent(request: Request, agent_id: str) -> JSONResponse:
                 services["graph_provider"],
                 org_key,
                 is_service_account=final_service_account,
+                admin_check=lambda: _only_an_administrator_may_bind(
+                    request, services["config_service"],
+                ),
+                # What the agent is bound to now, so re-saving it unchanged is
+                # not a change anyone needs to be an administrator to make.
+                current=agent.get("serviceAccountUserId"),
             )
         sharing_turned_on = (final_shared and not agent.get("shareWithOrg")) or (
             final_service_account and not agent.get("isServiceAccount")

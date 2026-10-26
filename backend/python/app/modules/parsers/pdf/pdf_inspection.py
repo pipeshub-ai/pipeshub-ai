@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING
 import pdfplumber
 import pypdfium2
 
+from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.modules.parsers.encryption import (
+    PASSWORD_PROTECTED_MESSAGE,
+    pdfium_password_error,
+)
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 
 if TYPE_CHECKING:
@@ -88,9 +93,17 @@ def repair_pdf(content: bytes) -> bytes:
 
     pdfium reconstructs a damaged table from the objects themselves and drops
     trailing garbage, which pdfminer otherwise reads one byte at a time.
-    Raises ``pypdfium2.PdfiumError`` when pdfium cannot open the file either.
+    Raises ``PasswordProtectedError`` when the file needs a password, and
+    ``pypdfium2.PdfiumError`` when pdfium cannot open it for another reason.
     """
-    document = pypdfium2.PdfDocument(content)
+    try:
+        document = pypdfium2.PdfDocument(content)
+    except pypdfium2.PdfiumError as exc:
+        if pdfium_password_error(exc):
+            raise PasswordProtectedError(
+                PASSWORD_PROTECTED_MESSAGE, details={"format": "pdf"}
+            ) from exc
+        raise
     try:
         rewritten = io.BytesIO()
         document.save(rewritten)

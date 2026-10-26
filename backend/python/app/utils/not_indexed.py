@@ -31,6 +31,8 @@ _WHY = {
         "automatic indexing is off for it, so it stays unindexed until someone indexes it",
     ProgressStatus.PAUSED.value: "indexing of its source is paused",
     ProgressStatus.FAILED.value: "indexing it failed",
+    ProgressStatus.PASSWORD_PROTECTED.value:
+        "it is password-protected, so its text cannot be read",
     ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value: "its file type cannot be indexed",
     ProgressStatus.EMPTY.value: "it had no text to index",
     ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:

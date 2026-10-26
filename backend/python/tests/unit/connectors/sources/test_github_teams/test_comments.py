@@ -988,7 +988,7 @@ class TestCommentBlockFailures:
         )
 
         group = next(bg for bg in block_groups if bg.name == "File change: a.py")
-        assert group.data == "[modified file]\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+        assert group.data == "[modified file]\n\nDiff:\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
         assert group.sub_type == GroupSubType.PR_FILE_CHANGE
 
     async def test_removed_file_without_diff_is_not_fetched(self) -> None:
@@ -1052,7 +1052,7 @@ class TestCommentBlockFailures:
             filename="src/new.py", previous_filename="src/old.py",
             status="renamed", patch="@@ -1 +1 @@\n-a\n+b", additions=1, deletions=1,
         ))
-        assert group.data == "[renamed file]\n\nRenamed from src/old.py.\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+        assert group.data == "[renamed file]\n\nRenamed from src/old.py.\n\nDiff:\n```diff\n@@ -1 +1 @@\n-a\n+b\n```"
 
     async def test_mode_change_without_diff_says_so(self) -> None:
         group = await _single_file_group(SimpleNamespace(
@@ -1083,7 +1083,7 @@ class TestCommentBlockFailures:
             "acme", "widgets", 1, pull_request, parent_index=0, record=record,
         )
         group = next(bg for bg in block_groups if bg.name == "File change: gen/new.py")
-        assert "Full File Content:\nprint(2)" in group.data
+        assert "Full File Content:\n```python\nprint(2)\n```" in group.data
 
     async def test_binary_file_without_diff_is_not_inlined(self) -> None:
         # A binary file has no diff either; decoding it as text would index
@@ -1215,13 +1215,13 @@ class TestPullRequestDiffLimit:
         )
 
         assert set(groups) == {"a.py", "b.py", "c.py"}
-        assert groups["a.py"].data == "[modified file]\n\nDiff:\n" + "a" * 60
+        assert groups["a.py"].data == "[modified file]\n\nDiff:\n```diff\n" + "a" * 60 + "\n```"
         # b.py doesn't fit in what a.py left; c.py, smaller, still does.
         assert "b" * 60 not in groups["b.py"].data
         assert "Diff: omitted (1 lines added, 1 removed; this pull request's changes exceed" in groups["b.py"].data
         assert "https://github.com/acme/widgets/pull/1/files" in groups["b.py"].data
         assert "why this change?" in groups["b.py"].data
-        assert groups["c.py"].data == "[modified file]\n\nDiff:\n" + "c" * 30
+        assert groups["c.py"].data == "[modified file]\n\nDiff:\n```diff\n" + "c" * 30 + "\n```"
 
     async def test_a_whole_repository_diff_stays_within_the_limit(self) -> None:
         # The shape of apache/airflow#68316: a commit that deleted the
@@ -1243,7 +1243,8 @@ class TestPullRequestDiffLimit:
             contents={"get_file_contents": ok_response(SimpleNamespace(decoded_content=content, content=None))},
         )
 
-        assert content.decode() in groups["big.py"].data
+        # A single long line is fenced in pieces, all of it kept.
+        assert sum(len(run) for run in groups["big.py"].data.split() if set(run) == {"y"}) == len(content)
         assert "Diff: omitted" in groups["small.py"].data
 
     async def test_inlined_text_is_measured_after_redaction(self, monkeypatch) -> None:

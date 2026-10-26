@@ -247,6 +247,26 @@ class TestRunReindexModes:
         assert args.kwargs["is_placeholder"] is False
 
     @pytest.mark.asyncio
+    async def test_an_explicit_password_protected_filter_is_reindexed(self, service) -> None:
+        """The default selection is FAILED only; asking for PASSWORD_PROTECTED by name works,
+        for when the source file has lost its password."""
+        connector = AsyncMock()
+        connector.reindex_records = AsyncMock()
+        locked = _make_mock_record("r1")
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[locked], []])
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["PASSWORD_PROTECTED"],
+        )
+
+        first = service.graph_provider.get_records_by_status.call_args_list[0]
+        assert first.kwargs["status_filters"] == ["PASSWORD_PROTECTED"]
+        assert first.kwargs["exclude_statuses"] == [ProgressStatus.IN_PROGRESS.value]
+        connector.reindex_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_reindex_processes_batch(self, service):
         """When records are returned, they are processed and status updated."""
         connector = AsyncMock()
@@ -693,6 +713,33 @@ class TestStageReruns:
         service._ensure_connector = AsyncMock()
         assert await service._handle_reindex("gmail", payload) is False
         service._ensure_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [({}, "reindex:c1:*:0:*:FAILED"), ({"stages": ["classify"]}, "reindex:c1:*:0:*:FAILED:stages=classify")],
+        ids=["indexing", "classification"],
+    )
+    async def test_a_connector_wide_reindex_without_filters_selects_only_failed(self, service, extra, expected) -> None:
+        """The panels' "Reindex failed" buttons send no filter and rely on this default: a record that needs
+        a password is not a failure, and a retry cannot help it."""
+        from unittest.mock import patch
+
+        connector = MagicMock()
+        connector.app.get_app_name.return_value.name = "GOOGLE_DRIVE"
+        service._ensure_connector = AsyncMock(return_value=connector)
+        keys: list[str] = []
+
+        async def start_if_idle(key: str, coro: Coroutine[object, object, object]) -> object:
+            keys.append(key)
+            coro.close()
+            return object()
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as manager:
+            manager.start_if_idle = start_if_idle
+            assert await service._handle_reindex("gmail", {"orgId": "o1", "connectorId": "c1", **extra}) is True
+        assert keys == [expected]
+        assert "PASSWORD_PROTECTED" not in keys[0]
 
     @pytest.mark.asyncio
     async def test_a_kb_stage_rerun_without_filters_retries_only_failures(self, service) -> None:

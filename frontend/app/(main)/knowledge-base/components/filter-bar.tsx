@@ -152,6 +152,7 @@ export function FilterBar({ pageViewMode }: KBFilterBarProps) {
       AUTO_INDEX_OFF: 'var(--slate-8)',
       EMPTY: 'var(--slate-9)',
       ENABLE_MULTIMODAL_MODELS: 'var(--slate-9)',
+      PASSWORD_PROTECTED: 'var(--amber-11)',
       CONNECTOR_DISABLED: 'var(--slate-9)',
     };
     return colorMap[status] || 'var(--slate-9)';

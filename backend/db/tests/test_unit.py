@@ -450,3 +450,13 @@ def test_a_bad_lock_timeout_is_a_configuration_error_before_any_connection(monke
             pass
     assert excinfo.value.code == migrate.EXIT_CONFIG
     assert "PG_MIGRATE_LOCK_TIMEOUT_S" in str(excinfo.value)
+
+
+def test_no_shipped_table_uses_the_lineage_class():
+    """The `lineage` row policy is a hook for deployments that add a parent hierarchy; no table shipped here may register it."""
+    import re
+    versions = Path(__file__).resolve().parents[1] / "versions"
+    use = re.compile(r"""apply_rls\s*\([^;]*?['"]lineage['"]""", re.S)
+    found = [str(p.relative_to(versions)) for p in sorted(versions.rglob("*"))
+             if p.suffix in (".sql", ".py") and use.search(p.read_text(encoding="utf-8"))]
+    assert found == [], f"these revisions register the lineage class: {found}"

@@ -1,3 +1,4 @@
+from collections.abc import Awaitable, Callable
 import builtins
 import logging
 import os
@@ -981,6 +982,7 @@ class MessageRecord(Record):
             start_ts=message_doc.get("startTs"),
             end_ts=message_doc.get("endTs"),
             involved_user_source_ids=message_doc.get("involvedUserSourceIds", []),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1109,6 +1111,7 @@ class MailRecord(Record):
             internet_message_id=mail_doc.get("messageIdHeader"),
             conversation_index=mail_doc.get("conversationIndex"),
             label_ids=mail_doc.get("labelIds", []),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1281,6 +1284,7 @@ class LinkRecord(Record):
             preview_renderable=record_doc.get("previewRenderable", True),
             is_dependent_node=record_doc.get("isDependentNode", False),
             parent_node_id=record_doc.get("parentNodeId"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1372,6 +1376,7 @@ class CommentRecord(Record):
             author_source_id=comment_doc.get("authorSourceId") or comment_doc.get("authorId") or "unknown",
             resolution_status=comment_doc.get("resolutionStatus"),
             comment_selection=comment_doc.get("commentSelection"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1514,8 +1519,12 @@ class TicketRecord(Record):
         self,
         frontend_url: str | None = None,
         config_service: Any = None,
+        readable_issue_ids: Callable[[str, set[str]], Awaitable[set[str]]] | None = None,
     ) -> str:
-        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC."""
+        """Return ticket LLM context with live Jira fields when connector is Jira Cloud/DC.
+
+        ``readable_issue_ids(connector_id, issue_ids)`` gives the issues the viewer may read.
+        """
         base = self.to_llm_context(frontend_url=frontend_url)
         if not config_service:
             return base
@@ -1526,7 +1535,7 @@ class TicketRecord(Record):
             )
             if not is_jira_connector(self.connector_name):
                 return base
-            return await enrich_ticket_llm_context(base, self, config_service)
+            return await enrich_ticket_llm_context(base, self, config_service, readable_issue_ids)
         except Exception:
             return base
 
@@ -1636,6 +1645,7 @@ class TicketRecord(Record):
             reporter_source_id=ticket_doc.get("reporter_source_id"),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1742,6 +1752,7 @@ class ProjectRecord(Record):
             lead_id=project_doc.get("leadId"),
             lead_name=project_doc.get("leadName"),
             lead_email=project_doc.get("leadEmail"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -1824,6 +1835,7 @@ class ProductRecord(Record):
             is_active=product_doc.get("isActive"),
             sku=product_doc.get("sku"),
             list_price=product_doc.get("listPrice"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2148,6 +2160,7 @@ class DealRecord(Record):
             is_closed=deal_doc.get("isClosed"),
             created_date=deal_doc.get("createdDate"),
             close_date=deal_doc.get("closeDate"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2342,6 +2355,7 @@ class SQLViewRecord(Record):
             source_tables=view_doc.get("sourceTables") or [],
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2442,6 +2456,7 @@ class SQLTableRecord(Record):
             primary_keys=table_doc.get("primaryKeys") or [],
             foreign_keys=table_doc.get("foreignKeys") or [],
             comment=table_doc.get("comment"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2650,6 +2665,7 @@ class PullRequestRecord(Record):
             last_commit_sha=pr_doc.get("lastCommitSha"),
             merged_at=pr_doc.get("mergedAtTimestamp"),
             closed_at=pr_doc.get("closedAtTimestamp"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2847,6 +2863,7 @@ class ArtifactRecord(Record):
             content_hash=artifact_doc.get("contentHash"),
             result_schema=artifact_doc.get("resultSchema"),
             versions=deserialize_artifact_versions(artifact_doc.get("versions")),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -3074,6 +3091,7 @@ class CodeFileRecord(Record):
             language=arango_base_code_file_record.get("language"),
             file_role=arango_base_code_file_record.get("fileRole"),
             commit_sha=arango_base_code_file_record.get("commitSha"),
+            access_rule=read_access_rule(arango_base_record),
             **Record.delete_state_from_arango(arango_base_record),
         )
 
@@ -3612,6 +3630,7 @@ class MeetingRecord(Record):
             end_time=meeting_doc.get("endTime"),
             timezone=meeting_doc.get("timezone"),
             recording_url=meeting_doc.get("recordingUrl"),
+            access_rule=read_access_rule(record_doc),
             **Record.delete_state_from_arango(record_doc),
         )
 

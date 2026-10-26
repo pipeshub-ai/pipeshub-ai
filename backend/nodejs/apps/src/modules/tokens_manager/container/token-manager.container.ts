@@ -1,3 +1,4 @@
+import type { ICacheService } from '../../../libs/services/cache/cacheService.interface';
 import { Container } from 'inversify';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { MongoService } from '../../../libs/services/mongo.service';
@@ -72,7 +73,7 @@ export class TokenManagerContainer {
         container.get('Logger'),
       );
       container
-        .bind<RedisService>('RedisService')
+        .bind<ICacheService>('RedisService')
         .toConstantValue(redisService);
 
       // Same fingerprint `RedisService` just resolved internally (Phase 5,

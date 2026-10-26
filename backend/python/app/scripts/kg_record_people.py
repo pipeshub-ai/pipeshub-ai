@@ -1,10 +1,10 @@
 """Operator command: link existing records to the members they name and the
-CRM accounts they belong to (KG-13).
+CRM accounts they belong to.
 
 New and updated records are linked as they sync (``record_people``,
 ``record_organizations``). This backfills the records synced before that,
 from what their type documents and record groups already hold, with no
-connector re-sync. With ``--apply`` it first stamps the tenant on CRM
+connector re-sync. With ``--apply`` it first stamps the org on CRM
 accounts written before accounts recorded one. A dry run unless
 ``--apply``; re-running is safe, since each record's edges are replaced.
 
@@ -57,11 +57,13 @@ class _DryRunStore:
         self._graph = graph
         self.edges = 0
 
-    async def get_user_by_email(self, email: str) -> User | None:
-        return await self._graph.get_user_by_email(email)
+    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> User | None:
+        return await self._graph.get_user_by_email(email, raise_on_error=raise_on_error)
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None:
-        return await self._graph.get_user_by_source_id(source_user_id, connector_id)
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False
+    ) -> User | None:
+        return await self._graph.get_user_by_source_id(source_user_id, connector_id, raise_on_error=raise_on_error)
 
     async def get_record_group_organization(self, record_group_id: str, org_id: str) -> str | None:
         return await self._graph.get_record_group_organization(record_group_id, org_id)

@@ -506,7 +506,7 @@
     "willBeReindexed": "将被重新索引",
     "reindexConfirm": "重新索引此{{type}}？",
     "reindexDescription": "这将更新此{{type}}及其内容的搜索索引。",
-    "deleteCollectionBody": "'{{name}}' 及其中的所有内容将被删除。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有内容将被删除。它也会从所有使用它的智能体中移除。",
     "deleteFolderBody": "'{{name}}' 及其中的所有内容将从此集合中删除。",
     "deleteFileBody": "'{{name}}' 将从此集合中删除。"
   },
@@ -734,6 +734,7 @@
       "empty": "空",
       "paused": "已暂停",
       "needsMultimodalModel": "需要多模态模型",
+      "passwordProtected": "受密码保护",
       "skipped": "已跳过",
       "pending": "待处理"
     },
@@ -2900,6 +2901,8 @@
         "statFailedSub": "错误（API/权限问题）",
         "statUnsupported": "不支持",
         "statUnsupportedSub": "无法处理",
+        "statPasswordProtected": "受密码保护",
+        "statPasswordProtectedSub": "没有密码无法读取",
         "statInProgressSub": "仍在索引中",
         "statQueued": "已排队",
         "statQueuedSub": "等待建立索引",

@@ -38,6 +38,7 @@ from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
+from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
@@ -47,7 +48,13 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.docling.client import within_docling_size_limit
+from app.services.docling.client import (
+    MAX_PAGES_ENV,
+    DoclingUnavailableError,
+    docling_max_pages,
+    docling_takes,
+    within_docling_size_limit,
+)
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
@@ -289,23 +296,40 @@ class EventProcessor:
             self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
+        elif not docling_takes(len(pdf_binary), inspected.page_count):
+            self.logger.info(
+                "📄 PDF has %d pages, more than Docling takes (%s=%d); using the PdfPlumber+OpenCV processor",
+                inspected.page_count, MAX_PAGES_ENV, docling_max_pages(),
+            )
         else:
             docling_failed = False
-            async for event in self.processor.process_pdf_with_docling(
-                recordName=record_name,
-                recordId=record_id,
-                pdf_binary=pdf_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                if event.event == IndexingEvent.DOCLING_FAILED:
-                    docling_failed = True
-                else:
-                    yield event
-            if not docling_failed:
-                return
-            self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
+            yielded = False
+            try:
+                async for event in self.processor.process_pdf_with_docling(
+                    recordName=record_name,
+                    recordId=record_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.DOCLING_FAILED:
+                        docling_failed = True
+                    else:
+                        yielded = True
+                        yield event
+            except DoclingUnavailableError as exc:
+                # Only before Docling produced anything: after PARSING_COMPLETE a
+                # second parse would index the record twice.
+                if yielded:
+                    raise
+                self.logger.warning(
+                    "⚠️ Docling is unavailable (%s); using the PdfPlumber+OpenCV processor", exc
+                )
+            else:
+                if not docling_failed:
+                    return
+                self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
         async for event in self.processor.process_pdf_with_pdf_plumber(
             recordName=record_name,
@@ -1686,6 +1710,10 @@ class EventProcessor:
                 return
 
             # ── Legacy per-format dispatch (existing behaviour) ──────────────
+            # The parsing service makes the same check on its own side.
+            raise_if_password_protected_office(
+                file_content, extension=extension, mime_type=mime_type
+            )
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(

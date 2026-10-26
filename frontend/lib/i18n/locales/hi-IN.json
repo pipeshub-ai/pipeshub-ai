@@ -422,7 +422,7 @@
     "willBeReindexed": "री-इंडेक्स किया जाएगा",
     "reindexConfirm": "क्या इस {{type}} को री-इंडेक्स करें?",
     "reindexDescription": "यह इस {{type}} और इसकी सामग्री के लिए खोज इंडेक्स को अपडेट करेगा।",
-    "deleteCollectionBody": "'{{name}}' और उसके अंदर की सभी चीज़ें हटा दी जाएँगी।",
+    "deleteCollectionBody": "'{{name}}' और उसके अंदर की सभी चीज़ें हटा दी जाएँगी। इसे उन सभी एजेंट से भी हटा दिया जाएगा जो इसका उपयोग करते हैं।",
     "deleteFolderBody": "'{{name}}' और उसके अंदर की सभी चीज़ें इस संग्रह से हटा दी जाएँगी।",
     "deleteFileBody": "'{{name}}' इस संग्रह से हटा दिया जाएगा।"
   },
@@ -645,6 +645,7 @@
       "empty": "खाली",
       "paused": "रोका गया",
       "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
+      "passwordProtected": "पासवर्ड से सुरक्षित",
       "skipped": "छोड़ा गया",
       "pending": "लंबित"
     },
@@ -2758,6 +2759,8 @@
         "statFailedSub": "Errors (API / permission issues)",
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
+        "statPasswordProtected": "पासवर्ड से सुरक्षित",
+        "statPasswordProtectedSub": "पासवर्ड के बिना नहीं पढ़ा जा सकता",
         "statInProgressSub": "Still being indexed",
         "statQueued": "Queued",
         "statQueuedSub": "Waiting to be indexed",

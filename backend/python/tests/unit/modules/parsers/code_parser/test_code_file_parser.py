@@ -246,6 +246,26 @@ export class Service extends Base implements Runnable {
     assert find["receiverType"] == "Repo"  # from `const r: Repo`
 
 
+def test_typescript_field_types_resolve_member_calls() -> None:
+    src = b'''
+export class Controller {
+  private _model: CodeActionModel;
+  private readonly _list = new List();
+  private _hover?: Hover | undefined;
+  go() {
+    this._model.trigger();
+    this._list.reveal();
+    this._hover?.hide();
+  }
+}
+'''
+    container = CodeFileParser().parse_to_blocks(src, "c.ts", "src/c.ts", "typescript")
+    edges = {e["toName"]: e for e in _blocks_by_name(container)["go"].code_metadata.pending_edges}
+    assert edges["trigger"]["receiverType"] == "CodeActionModel"  # annotated field
+    assert edges["reveal"]["receiverType"] == "List"  # `= new List()`
+    assert edges["hide"]["receiverType"] == "Hover"  # `Hover | undefined`
+
+
 def test_pending_edges_are_not_capped() -> None:
     call_count = 600
     body = "\n".join(f"    call_{i}()" for i in range(call_count))

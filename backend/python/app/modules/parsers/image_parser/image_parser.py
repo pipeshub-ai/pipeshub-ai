@@ -33,6 +33,7 @@ VIEWBOX_NUM_COMPONENTS = 4
 # serve any amount. downscale_to_limits fits accepted images to each model.
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=_MAX_IMAGE_BYTES, timeout_s=10.0)
+_CSS_VAR_OPEN = re.compile(r'var\(\s*--[\w-]+\s*(,)?')
 _logger = logging.getLogger(__name__)
 
 
@@ -320,10 +321,66 @@ class ImageParser:
             return None, None
 
     @staticmethod
+    def _resolve_css_var_fallbacks(svg_str: str) -> str:
+        """
+        Replace each CSS ``var(--name, fallback)`` with its fallback, as a browser
+        does when the custom property is not defined.
+
+        cairosvg has no custom-property support, and its color parser finds a hex
+        color anywhere in the value but slices it from index 1, so
+        ``var(--fill-0, #B4B4B4)`` fails with "invalid literal for int() with
+        base 16: 'ar'". A ``var()`` without a fallback, or one whose parentheses
+        never close, is left as is.
+
+        One pass with an explicit stack: the SVG comes from a document, so deep
+        ``var()`` nesting must not recurse or rescan.
+        """
+        if 'var(' not in svg_str:
+            return svg_str
+        out: list[str] = []
+        # One frame per open var(): [has_fallback, open parens inside it,
+        # input index of "var(", output length at "var("].
+        frames: list[list] = []
+        i = 0
+        n = len(svg_str)
+        while i < n:
+            char = svg_str[i]
+            match = _CSS_VAR_OPEN.match(svg_str, i) if char == 'v' else None
+            if match:
+                has_fallback = match.group(1) is not None
+                frames.append([has_fallback, 0, i, len(out)])
+                i = match.end()
+                if has_fallback:
+                    while i < n and svg_str[i].isspace():
+                        i += 1
+                else:
+                    out.extend(match.group(0))
+                continue
+            if frames and char == '(':
+                frames[-1][1] += 1
+            elif frames and char == ')':
+                if frames[-1][1]:
+                    frames[-1][1] -= 1
+                else:
+                    has_fallback, _, _, out_start = frames.pop()
+                    if has_fallback:
+                        while len(out) > out_start and out[-1].isspace():
+                            out.pop()
+                        i += 1
+                        continue
+            out.append(char)
+            i += 1
+        if frames:
+            _, _, in_start, out_start = frames[0]
+            return ''.join(out[:out_start]) + svg_str[in_start:]
+        return ''.join(out)
+
+    @staticmethod
     def _sanitize_svg_content(svg_str: str) -> bytes:
         """
         Sanitize SVG content to fix common XML parsing issues, including unbound namespace prefixes.
-        This function ensures that common SVG namespace declarations are present in the root <svg> element.
+        This function ensures that common SVG namespace declarations are present in the root <svg> element,
+        and replaces CSS var() values that cairosvg cannot read with their fallbacks.
 
         Args:
             svg_str: SVG content as a string
@@ -332,6 +389,8 @@ class ImageParser:
             Sanitized SVG content as bytes
         """
         try:
+            svg_str = ImageParser._resolve_css_var_fallbacks(svg_str)
+
             # Find the <svg> tag (case-insensitive)
             svg_tag_pattern = r'(<svg[^>]*?)>'
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)
