@@ -357,6 +357,11 @@ PYTHON_CONDITIONAL_ADMIN = {
     # Everyone gets the listing; only admins see how an org server is reached.
     "api/routes/mcp_servers.py::get_my_mcp_servers": "connection details for admins",
     "api/routes/mcp_servers.py::get_agent_mcp_servers": "connection details for admins",
+    # Members make and edit their own agents, and nothing here refuses them.
+    # One field needs an admin: the service account the agent searches as,
+    # because binding spends the access an administrator granted that account.
+    "api/routes/agent.py::create_agent": "only a service-account binding needs admin",
+    "api/routes/agent.py::update_agent": "only a service-account binding needs admin",
 }
 
 

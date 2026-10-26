@@ -591,21 +591,30 @@ class World:
 
     # ------------------------------------------------------------------ agents
 
-    def _build_agents(self) -> dict[str, str]:
-        # Its MCP listing must have an org server in it.
-        self.value("shared_mcp")
-        body = self._json(ADMIN, "POST", f"{_AGENTS}/create", "Creating a test agent",
+    def _create_agent(self, caller: str, what: str) -> str:
+        body = self._json(caller, "POST", f"{_AGENTS}/create", f"Creating {what}",
                           ok=(200, 201), json={"name": self._unique_name("agent")})
         agent = body.get("agent")
         agent_key = str(agent.get("_key") or "") if isinstance(agent, dict) else ""
         if not agent_key:
-            raise RuntimeError("Creating a test agent returned no _key.")
+            raise RuntimeError(f"Creating {what} returned no _key.")
         self._later(
-            "the test agent",
-            lambda: self._json(ADMIN, "DELETE", f"{_AGENTS}/{agent_key}", "Deleting the test agent",
+            what,
+            lambda: self._json(caller, "DELETE", f"{_AGENTS}/{agent_key}", f"Deleting {what}",
                                ok=(200, 204, 404)),
         )
-        return {"admin_agent": agent_key}
+        return agent_key
+
+    def _build_agents(self) -> dict[str, str]:
+        # Its MCP listing must have an org server in it.
+        self.value("shared_mcp")
+        return {
+            "admin_agent": self._create_agent(ADMIN, "the test agent"),
+            # A member's own agent. Editing it is theirs to do, which is what
+            # makes a refusal on the binding field mean the binding and not
+            # the agent.
+            "member_agent": self._create_agent(CREATOR, "the member's test agent"),
+        }
 
     # ---------------------------------------------------------------- teardown
 
