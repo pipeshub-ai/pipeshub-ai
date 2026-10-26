@@ -30,8 +30,6 @@ export const API_DOCS_NAV: NavCategorySpec[] = [
         tags: [
           'User Account',
           'Organization Auth Config',
-          'SAML',
-          'OAuth',
           'Personal Access Tokens',
         ],
       },
@@ -98,10 +96,11 @@ export const API_DOCS_NAV: NavCategorySpec[] = [
       {
         name: 'Enterprise Search',
         icon: 'search',
-        description: 'Conversational AI and semantic search',
+        description: 'Conversational AI, semantic search, and code graphs',
         tags: [
           'Conversations',
           'Projects',
+          'Code Graph',
           'Semantic Search',
           'Conversational Speech',
         ],
@@ -135,12 +134,14 @@ export const API_DOCS_NAV: NavCategorySpec[] = [
       {
         name: 'Toolsets',
         icon: 'tool',
-        description: 'Toolsets that give agents actions in other apps',
+        description:
+          'Toolsets that give agents actions in other apps or your own REST APIs',
         tags: [
           'Toolset Registry',
           'Toolset Instances',
           'Toolset Configuration',
           'Toolset OAuth',
+          'API Toolsets',
         ],
       },
       {
