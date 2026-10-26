@@ -64,7 +64,7 @@
     "dayjs": "^1.11.23",
     "docx-preview": "^0.4.1",
     "dompurify": "^3.4.17",
-    "i18next": "^25.8.0",
+    "i18next": "^26.5.7",
     "i18next-browser-languagedetector": "^8.2.1",
     "immer": "^11.2.7",
     "katex": "^0.19.0",
