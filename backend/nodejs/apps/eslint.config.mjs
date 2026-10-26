@@ -93,6 +93,28 @@ export default tseslint.config(
     },
   },
 
+  // Tests stub and fake with `any`, assert with chai expressions and keep their own formatting; the rules that
+  // catch real mistakes (unused symbols, floating promises, misused promises) still apply.
+  {
+    files: ['tests/**/*.ts'],
+    rules: {
+      'prettier/prettier': 'off',
+      '@typescript-eslint/no-explicit-any': 'off',
+      '@typescript-eslint/no-unsafe-argument': 'off',
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      '@typescript-eslint/no-unsafe-call': 'off',
+      '@typescript-eslint/no-unsafe-member-access': 'off',
+      '@typescript-eslint/no-unsafe-return': 'off',
+      '@typescript-eslint/no-unused-expressions': 'off',
+      '@typescript-eslint/require-await': 'off',
+      '@typescript-eslint/no-non-null-assertion': 'off',
+      '@typescript-eslint/unbound-method': 'off',
+      '@typescript-eslint/no-confusing-void-expression': 'off',
+      '@typescript-eslint/no-require-imports': 'off',
+      '@typescript-eslint/no-dynamic-delete': 'off',
+    },
+  },
+
   // sharp's loader allowlist is applied when image.utils is imported.
   // Every other file must go through that module so a new decode site
   // cannot skip it.
