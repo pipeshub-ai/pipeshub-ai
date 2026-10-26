@@ -453,7 +453,7 @@ class TestGCSProcessRecordsRetry:
         with pytest.raises(Exception, match="Some other error"):
             await gcs_connector._process_records_with_retry([(MagicMock(), [])])
 
-    async def test_a_moved_record_is_saved_as_a_move(self, gcs_connector):
+    async def test_a_moved_record_is_saved_as_a_move(self, gcs_connector) -> None:
         """on_new_records finds no record at the new key, so the stored content
         would stay at the old path."""
         gcs_connector.data_entities_processor.on_records_moved = AsyncMock()
@@ -468,7 +468,7 @@ class TestGCSProcessRecordsRetry:
         )
         gcs_connector.data_entities_processor.on_new_records.assert_awaited_once_with([(new, [])])
 
-    async def test_a_batch_of_moves_only_saves_no_new_records(self, gcs_connector):
+    async def test_a_batch_of_moves_only_saves_no_new_records(self, gcs_connector) -> None:
         gcs_connector.data_entities_processor.on_records_moved = AsyncMock()
         moved = MagicMock(id="r1", external_record_id="bucket/new/a.txt")
         gcs_connector._moved_record_ids = {"r1": "bucket/old/a.txt"}
