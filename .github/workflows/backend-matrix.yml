@@ -26,9 +26,14 @@ name: backend-matrix
 # such URLs (ARTIFACTS_IT_S3_VHOST=1 tells the tests so). Nothing reaches AWS. A
 # discovered file that contributes no test case (for example, one missing
 # pytest.mark.integration) fails the job, as does any skip, except a reason that
-# begins "not applicable on <store>:" on the leg running that store. A storage test that also needs a graph store belongs in the graph jobs
-# (name NEO4J_IT_URI or ARANGO_IT_URL there); one that skips here for lack of a
-# service fails this job like any other skip.
+# begins "not applicable on <store>:" on the leg running that store.
+#
+# A test that needs a graph store and storage together names both
+# ARTIFACTS_IT_STORAGE_URL and NEO4J_IT_URI or ARANGO_IT_URL. The graph jobs leave
+# such a file out (they have no storage service, so it could only skip there); the
+# storage job runs it, and when it finds one starts Neo4j and ArangoDB beside the
+# file store, on every leg. Both engines run on every leg because the file's
+# backend parameter covers both and a backend that is not configured skips.
 
 on:
   pull_request:
@@ -253,7 +258,9 @@ jobs:
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
-            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort | tr '\n' ' ')
+            # Files that also need storage run in the storage job.
+            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort \
+              | xargs -r grep -LE 'ARTIFACTS_IT_STORAGE_URL' | tr '\n' ' ')
             echo "Discovered: $TESTS"
           fi
           # shellcheck disable=SC2086
@@ -326,6 +333,12 @@ jobs:
       STORAGE_PORT: '13000'
       MONGO_STORAGE_IT_PORT: '19117'
       MINIO_VHOST_STORAGE_IT_PORT: '19143'
+      # The graph stores, for the tests that need one beside storage (same as the
+      # backend job above; they are started only when such a test is found).
+      NEO4J_IT_URI: bolt://localhost:17687
+      NEO4J_IT_PASSWORD: ensure-it-pass
+      ARANGO_IT_URL: http://localhost:18529
+      ARANGO_IT_PASSWORD: ensure-it-pass
       # Throwaway: the stores are on this runner's loopback interface.
       SCOPED_SECRET: storage-it-scoped-secret
       S3_KEY: storage-it
@@ -388,10 +401,31 @@ jobs:
             echo "SSL_CERT_FILE=$RUNNER_TEMP/storage-it-certs/ca.crt"
           } >> "$GITHUB_ENV"
 
+      # Every file that reads the storage URL. Those that also name a graph store
+      # need Neo4j and ArangoDB running as well.
+      - name: Find the storage tests
+        id: discover
+        working-directory: backend/python
+        run: |
+          TESTS=$(grep -rlE --include='*.py' 'ARTIFACTS_IT_STORAGE_URL' tests/integration | sort | tr '\n' ' ')
+          echo "Discovered: $TESTS"
+          echo "$TESTS" > "$RUNNER_TEMP/storage-discovered.txt"
+          # shellcheck disable=SC2086
+          if grep -lE 'NEO4J_IT_URI|ARANGO_IT_URL' $TESTS; then
+            echo "graph=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "graph=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Start ${{ matrix.backend }} storage
         run: |
           # shellcheck disable=SC2086
           docker compose -f "$COMPOSE_FILE" --profile vhost up -d --wait --wait-timeout 300 $SERVICES
+
+      - name: Start Neo4j and ArangoDB
+        if: steps.discover.outputs.graph == 'true'
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.graph-db.yml up -d --wait --wait-timeout 300 neo4j-graph-it arango-graph-it
 
       - name: Start the storage service
         working-directory: backend/nodejs/apps
@@ -421,9 +455,7 @@ jobs:
           ARTIFACTS_IT_SCOPED_SECRET: ${{ env.SCOPED_SECRET }}
           ARTIFACTS_IT_STORAGE_TYPE: ${{ matrix.storage_type }}
         run: |
-          TESTS=$(grep -rlE --include='*.py' 'ARTIFACTS_IT_STORAGE_URL' tests/integration | sort | tr '\n' ' ')
-          echo "Discovered: $TESTS"
-          echo "$TESTS" > "$RUNNER_TEMP/storage-discovered.txt"
+          TESTS=$(cat "$RUNNER_TEMP/storage-discovered.txt")
           # shellcheck disable=SC2086
           pytest $TESTS -m integration -v -rs --timeout=300 --junitxml="$REPORT"
 
@@ -444,6 +476,7 @@ jobs:
           cat "$RUNNER_TEMP/storage-it-server.log" || true
           echo "::endgroup::"
           docker compose -f "$COMPOSE_FILE" --profile vhost logs --no-color --timestamps
+          (cd deployment/docker-compose && docker compose -f docker-compose.integration.graph-db.yml logs --no-color --timestamps)
 
       - name: Tear down
         if: always()
@@ -453,3 +486,4 @@ jobs:
             kill -- "-$(cat "$RUNNER_TEMP/storage-it-server.pid")" 2>/dev/null || true
           fi
           docker compose -f "$COMPOSE_FILE" --profile vhost down -v
+          (cd deployment/docker-compose && docker compose -f docker-compose.integration.graph-db.yml down -v)
