@@ -251,12 +251,14 @@ export class InProcessCacheService implements ICacheService {
     const next = e === undefined ? 1 : Number(e.value) + 1;
     this.entries.set(k, {
       value: String(next),
-      // no ttl: no expiry, as RedisService.increment (INCR alone sets none)
+      // No ttl: no expiry, as RedisService.increment (INCR alone sets none). A finite expiry is fixed when the counter is created, but a
+      // counter that has none takes the first ttl it is given, as EXPIRE on a key without one does in Redis.
       expiresAt:
-        e?.expiresAt ??
-        (options.ttl === undefined
-          ? Number.POSITIVE_INFINITY
-          : Date.now() + options.ttl * 1000),
+        e?.expiresAt !== undefined && Number.isFinite(e.expiresAt)
+          ? e.expiresAt
+          : options.ttl === undefined
+            ? Number.POSITIVE_INFINITY
+            : Date.now() + options.ttl * 1000,
     });
     return Promise.resolve(next);
   }
