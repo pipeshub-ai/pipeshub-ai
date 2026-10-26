@@ -13,7 +13,12 @@ from typing import Any
 import pdfplumber
 
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
-from app.services.docling.client import MAX_PAGES_ENV, docling_max_pages, docling_takes
+from app.services.docling.client import (
+    MAX_PAGES_ENV,
+    DoclingUnavailableError,
+    docling_max_pages,
+    docling_takes,
+)
 from app.services.parsing.interface import (
     IParser,
     ParseError,
@@ -79,7 +84,8 @@ class SmartPDFParser:
 
     With a *large_pdf_parser*, a text PDF that Docling does not take (over its
     size or page limit, see ``docling_takes``) goes to that parser instead, and
-    so does one the primary parser fails on, before OCR is tried.
+    so does one the primary parser fails on, before OCR is tried, or one it
+    cannot reach (Docling down or shedding load).
     """
 
     def __init__(
@@ -122,6 +128,15 @@ class SmartPDFParser:
 
         try:
             return await primary.parse(content, record_name, config)
+        except DoclingUnavailableError as exc:
+            if self._large is None or primary is self._large:
+                raise
+            logger.warning(
+                "SmartPDFParser: Docling is unavailable for '%s' (%s). Using the PdfPlumber+OpenCV parser.",
+                record_name,
+                exc,
+            )
+            return await self._large.parse(content, record_name, config)
         except ParseError as exc:
             if self._large is None or primary is self._large or exc.code in _NOT_RETRIED:
                 return await self._ocr_after(exc, content, record_name, config)

@@ -1159,31 +1159,7 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_pdf_plumber.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_a_short_pdf_waits_for_an_unreachable_docling(self) -> None:
-        """An outage does not switch a short PDF to another parser: the record is retried."""
-        from app.services.docling.client import DoclingUnavailableError
-
-        ep, _, processor, gp = _make_event_processor()
-        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
-
-        async def docling_down(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
-            raise DoclingUnavailableError("Docling could not parse rec-1.pdf: down")
-            yield  # noqa: unreachable
-
-        processor.process_pdf_with_docling = MagicMock(side_effect=docling_down)
-        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
-
-        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
-             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
-             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             _pdf_inspection(needs_ocr=False, page_count=10):
-            with pytest.raises(DoclingUnavailableError):
-                await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
-
-        processor.process_pdf_with_pdf_plumber.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_an_unreachable_docling_retries_the_record_without_another_parser(self) -> None:
+    async def test_an_unreachable_docling_hands_the_text_pdf_to_the_layout_parser(self) -> None:
         from app.services.docling.client import DoclingUnavailableError
 
         ep, _, processor, gp = _make_event_processor()
@@ -1201,11 +1177,52 @@ class TestOnEventEdgeCases:
              patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
              _pdf_inspection(needs_ocr=False):
+            events = await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        assert len(events) == 3
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docling_lost_after_it_began_indexing_is_not_parsed_twice(self) -> None:
+        """Once Docling's parse completed, the record is retried rather than parsed again."""
+        from app.services.docling.client import DoclingUnavailableError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def lost_midway(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            raise DoclingUnavailableError("Docling went away")
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=lost_midway)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False):
             with pytest.raises(DoclingUnavailableError):
                 await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
 
         processor.process_pdf_with_pdf_plumber.assert_not_called()
-        processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_scan_with_docling_down_still_goes_to_ocr(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=AssertionError("Docling is not asked about a scan"))
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=True, page_count=5):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_document_with_ocr.assert_called_once()
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_an_unreadable_pdf_fails_before_any_parser_reads_it(self) -> None:

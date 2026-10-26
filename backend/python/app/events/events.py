@@ -49,6 +49,7 @@ from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
 from app.services.docling.client import (
     MAX_PAGES_ENV,
+    DoclingUnavailableError,
     docling_max_pages,
     docling_takes,
     within_docling_size_limit,
@@ -301,21 +302,33 @@ class EventProcessor:
             )
         else:
             docling_failed = False
-            async for event in self.processor.process_pdf_with_docling(
-                recordName=record_name,
-                recordId=record_id,
-                pdf_binary=pdf_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                if event.event == IndexingEvent.DOCLING_FAILED:
-                    docling_failed = True
-                else:
-                    yield event
-            if not docling_failed:
-                return
-            self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
+            yielded = False
+            try:
+                async for event in self.processor.process_pdf_with_docling(
+                    recordName=record_name,
+                    recordId=record_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.DOCLING_FAILED:
+                        docling_failed = True
+                    else:
+                        yielded = True
+                        yield event
+            except DoclingUnavailableError as exc:
+                # Only before Docling produced anything: after PARSING_COMPLETE a
+                # second parse would index the record twice.
+                if yielded:
+                    raise
+                self.logger.warning(
+                    "⚠️ Docling is unavailable (%s); using the PdfPlumber+OpenCV processor", exc
+                )
+            else:
+                if not docling_failed:
+                    return
+                self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
         async for event in self.processor.process_pdf_with_pdf_plumber(
             recordName=record_name,

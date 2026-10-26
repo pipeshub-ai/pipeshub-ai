@@ -654,7 +654,7 @@ class TestSmartPDFParserPageRouting:
         ocr.parse.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_an_unreachable_docling_is_raised_not_rerouted(self) -> None:
+    async def test_an_unreachable_docling_hands_the_pdf_to_the_layout_parser(self) -> None:
         from app.services.docling.client import DoclingUnavailableError
 
         docling, layout, ocr = _routed_parsers(docling_error=DoclingUnavailableError("down"))
@@ -662,10 +662,43 @@ class TestSmartPDFParserPageRouting:
 
         with patch(
             "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ):
+            result = await parser.parse(b"%PDF", "a.pdf")
+
+        layout.parse.assert_awaited_once()
+        ocr.parse.assert_not_called()
+        assert result.provider_used == ParserProvider.DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_a_layout_failure_with_docling_down_is_not_sent_to_ocr(self) -> None:
+        from app.services.docling.client import DoclingUnavailableError
+
+        docling, layout, ocr = _routed_parsers(
+            docling_error=DoclingUnavailableError("down"),
+            layout_error=ParseError(ParseErrorCode.PARSE_FAILED, "no"),
+        )
+        parser = SmartPDFParser(docling, ocr, large_pdf_parser=layout)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
+        ), pytest.raises(ParseError):
+            await parser.parse(b"%PDF", "a.pdf")
+
+        ocr.parse.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_without_a_layout_parser_an_unreachable_docling_is_raised(self) -> None:
+        """The explicit Docling provider has no other parser to hand the file to: it retries."""
+        from app.services.docling.client import DoclingUnavailableError
+
+        docling, _, ocr = _routed_parsers(docling_error=DoclingUnavailableError("down"))
+        parser = SmartPDFParser(docling, ocr)
+
+        with patch(
+            "app.services.parsing.providers.smart_pdf_parser._detect_needs_ocr", return_value=(False, 10)
         ), pytest.raises(DoclingUnavailableError):
             await parser.parse(b"%PDF", "a.pdf")
 
-        layout.parse.assert_not_called()
         ocr.parse.assert_not_called()
 
     def test_a_file_pdfplumber_cannot_open_has_no_page_count(self) -> None:
