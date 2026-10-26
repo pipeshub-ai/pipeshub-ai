@@ -451,7 +451,7 @@ export class UserController {
       req.user?.userId !== undefined &&
       (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
 
-    const match: Record<string, any> = {
+    const match: Record<string, unknown> = {
       orgId: orgIdObj, // Only include users from the same org
       isDeleted: false, // Exclude deleted users
     };
