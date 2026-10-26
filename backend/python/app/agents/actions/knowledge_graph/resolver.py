@@ -521,7 +521,7 @@ class RecordResolver:
             )
             for c in connectors
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for rec in results:
             if isinstance(rec, Exception) or rec is None:
