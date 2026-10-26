@@ -124,6 +124,25 @@ contextBridge.exposeInMainWorld('electronAPI', {
       return () => ipcRenderer.removeListener('local-sync-status', listener);
     },
   },
+  /** "Run PipesHub on this computer" (see electron/local-mode.ts). */
+  desktop: {
+    getState: () => ipcRenderer.invoke('desktop/state'),
+    setMode: (mode: 'local' | 'remote') => ipcRenderer.invoke('desktop/set-mode', { mode }),
+    setKeepRunning: (value: boolean) => ipcRenderer.invoke('desktop/set-keep-running', { value }),
+    retryLocal: () => ipcRenderer.invoke('desktop/local-retry'),
+    openLogs: () => ipcRenderer.invoke('desktop/local-open-logs'),
+    onStateChanged: (callback: (payload: unknown) => void): (() => void) => {
+      const listener = (_event: IpcRendererEvent, payload: unknown) => callback(payload);
+      ipcRenderer.on('desktop/state-changed', listener);
+      return () => ipcRenderer.removeListener('desktop/state-changed', listener);
+    },
+  },
+  /** Repositories pushed to the local server's code index (local mode only). */
+  localRepo: {
+    add: (rootPath: string) => ipcRenderer.invoke('local-repo/add', { rootPath }),
+    list: () => ipcRenderer.invoke('local-repo/list'),
+    remove: (repoKey: string) => ipcRenderer.invoke('local-repo/remove', { repoKey }),
+  },
   localFs: {
     openRecordSource: (payload: OpenLocalFsRecordSourcePayload) => (
       ipcRenderer.invoke('local-fs/open-record-source', payload)
