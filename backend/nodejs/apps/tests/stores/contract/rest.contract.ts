@@ -181,9 +181,7 @@ export function describeRemainingContract(
   fx: OrgFixture,
   r: { projects: ProjectRepository; connectors: ConnectorsConfigRepository; slack: SlackThreadRepository; delegation: DelegationRepository; users: UserRepository; groups: GroupRepository },
 ): void {
-  const { projects, connectors, slack, delegation, users, groups } = r;
-  const { orgs } = fx;
-  const newOrg = (extra: Record<string, unknown> = {}) => createOrgLikeSignUp(fx, orgInput(extra));
+  const { projects, connectors, slack, delegation } = r;
 
   describe('project', () => {
     const base = { tools: [] as string[] };

@@ -6770,9 +6770,9 @@ describe('Enterprise Search Controller', () => {
         await wait(100)
 
         expect(update.calledOnce).to.be.true
-        expect(String(update.firstCall.args[0])).to.equal(userQueryId.toString())
+        expect(update.firstCall.args[0]).to.equal(userQueryId.toString())
         expect(update.firstCall.args[1]).to.equal('Edited question')
-        expect(String(update.firstCall.args[2])).to.equal(VALID_OID)
+        expect(update.firstCall.args[2]).to.equal(VALID_OID)
         expect(success.calledOnce).to.be.true
         expect(update.calledBefore(success)).to.be.true
       })

@@ -35,7 +35,8 @@ export const buildFilter = (
     limit: 1,
   })
   // The scope is applied by the caller in the old shape.
-  const { sessionType: _scope, ...filter } = buildSessionFilter(query)
+  const filter: Record<string, unknown> = { ...buildSessionFilter(query) }
+  delete filter.sessionType
   return filter
 }
 
