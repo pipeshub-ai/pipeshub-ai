@@ -384,6 +384,7 @@ class MessagingFactory:
                 disposition_sink=disposition_sink,
                 concurrency_manager=concurrency_manager,
                 stage_admission=stage_admission,
+                worker=worker if consumer_type == ConsumerType.INDEXING else None,
             )
         if broker_type == MessageBrokerType.KAFKA:
             if config is None:

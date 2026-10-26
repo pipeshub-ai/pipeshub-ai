@@ -338,6 +338,7 @@ async def test_open_async_generator_abandoned_does_not_leak_connection(env, make
         except Exception as e:
             res = type(e).__name__
     print("\nABANDONED-GEN", res)
+    assert res == "freed", res
 
 
 async def test_stress_8000_mixed_units(env, make) -> None:
