@@ -19,9 +19,31 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.api.router import update_connector_instance_auth_config
+from app.config.redaction import REDACTED_PLACEHOLDER
+from app.connectors.api.router import (
+    _require_auth_is_object,
+    update_connector_instance_auth_config,
+)
 
 _ROUTER = "app.connectors.api.router"
+
+
+@pytest.fixture(autouse=True)
+def _edition_resolvers():
+    """Stand-ins for the two edition-bound lookups, so these tests run the same in either edition.
+
+    A save that names an OAuth app must find it, and the config service is the container's;
+    these tests are about the rest of the save.
+    """
+
+    async def _resolve(container, config_path, org_id, config_id, config_service):
+        return {"_id": config_id, "orgId": org_id}
+
+    with (
+        patch(f"{_ROUTER}.resolve_oauth_config", side_effect=_resolve),
+        patch(f"{_ROUTER}.resolve_config_service", side_effect=lambda container, org_id: container.config_service()),
+    ):
+        yield
 
 
 # ---------------------------------------------------------------------------
@@ -213,9 +235,12 @@ class TestAdminOAuthCreatesNewConfig:
 
         assert result["success"] is True
         assert result["config"]["auth"]["oauthConfigId"] == "oauth-new-1"
-        # Credentials should be cleared
-        assert result["config"]["credentials"] is None
-        assert result["config"]["oauth"] is None
+        # Credentials are cleared in the store and never sent back
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in result["config"]
+        assert "oauth" not in result["config"]
         # Only secret OAuth fields are filtered for OAUTH type — clientSecret
         # lives only in the shared OAuth-app config. clientId is not secret
         # (it leaks in the authorize URL anyway) and stays on the instance
@@ -287,22 +312,18 @@ class TestAdminOAuthUpdatesExistingConfigFound:
 
 
 class TestAdminOAuthUpdatesExistingConfigNotFound:
-    """3. Admin + OAUTH + has credentials + has oauth_app_id + config NOT found.
+    """3. Admin + OAUTH + has credentials + has oauth_app_id + config NOT found
+       -> a new OAuth config is created and the connector is linked to it."""
 
-    NOTE: The source code has a variable shadowing issue at line 2815 where
-    ``existing_config = None`` shadows the outer etcd config variable.  When
-    the oauth_app_id is not found in the list, the outer ``existing_config``
-    becomes ``None``, causing ``existing_config.get("auth", {})`` at line 2882
-    to raise ``AttributeError``.  This results in a 500 error.
-    The test documents the actual current behavior.
-    """
-
-    async def test_config_not_found_triggers_500_due_to_variable_shadowing(self):
+    async def test_config_not_found_creates_a_new_one_and_keeps_the_connectors_auth(self):
         # oauth_app_id won't match anything in existing configs
         existing_oauth_cfgs = [
             {"_id": "other-id", "orgId": "o1", "oauthInstanceName": "Other"},
         ]
-        config_service = _make_config_service(oauth_configs=existing_oauth_cfgs)
+        config_service = _make_config_service(
+            instance_config={"auth": {"connectorScope": "personal", "includeJiraScope": True}, "credentials": None},
+            oauth_configs=existing_oauth_cfgs,
+        )
         registry = _make_connector_registry()
         container = _make_container(config_service)
 
@@ -327,24 +348,25 @@ class TestAdminOAuthUpdatesExistingConfigNotFound:
             patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
             patch(_PATCH_NAME_CONFLICT),
+            patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(
                 _PATCH_CREATE_OAUTH,
                 new_callable=AsyncMock,
                 return_value="oauth-brand-new",
-            ),
+            ) as create_oauth,
             patch(_PATCH_OAUTH_PATH, return_value="/services/oauth/googledrive"),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
         ):
-            # Due to variable shadowing bug, this raises 500 instead of succeeding
-            with pytest.raises(HTTPException) as exc_info:
-                await update_connector_instance_auth_config(
-                    "conn1", request, graph_provider
-                )
+            result = await update_connector_instance_auth_config(
+                "conn1", request, graph_provider
+            )
 
-        assert exc_info.value.status_code == HttpStatusCode.INTERNAL_SERVER_ERROR.value
-        # an internal AttributeError never reaches the person
-        assert exc_info.value.detail == "We couldn't save this connector's sign-in details. Please try again; if it keeps failing, contact your admin."
-        assert "NoneType" not in exc_info.value.detail
+        assert create_oauth.await_args.kwargs["oauth_app_id"] is None
+        auth = result["config"]["auth"]
+        assert auth["oauthConfigId"] == "oauth-brand-new"
+        # The app lookup must not replace the connector's own stored auth.
+        assert auth["includeJiraScope"] is True
+        assert auth["connectorScope"] == "personal"
 
 
 class TestAdminOAuthNoCredentialsHasAppId:
@@ -473,7 +495,9 @@ class TestOAuthMetadataRedirectUriWithBaseUrl:
     """7. OAuth metadata with redirect URI + base_url provided."""
 
     async def test_redirect_uri_uses_provided_base_url(self):
-        config_service = _make_config_service()
+        config_service = _make_config_service(
+            endpoints={"frontend": {"publicEndpoint": "https://custom.example.com"}},
+        )
         registry = _make_connector_registry()
         container = _make_container(config_service)
 
@@ -502,6 +526,40 @@ class TestOAuthMetadataRedirectUriWithBaseUrl:
         assert result["success"] is True
         auth = result["config"]["auth"]
         assert auth["redirectUri"] == "https://custom.example.com/oauth/callback"
+        assert auth["scopes"] == ["read", "write"]
+        assert auth["authorizeUrl"] == "https://auth.example.com/authorize"
+        assert auth["tokenUrl"] == "https://auth.example.com/token"
+
+    async def test_redirect_uri_ignores_base_url_not_matching_configured_frontend(self) -> None:
+        config_service = _make_config_service()
+        registry = _make_connector_registry()
+        container = _make_container(config_service)
+
+        body = {
+            "auth": {"oauthConfigId": "oauth-1"},
+            "baseUrl": "app://.",
+        }
+        request = _make_request(
+            is_admin=True,
+            body=body,
+            container=container,
+            connector_registry=registry,
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
+
+        with (
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
+            patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret"]),
+            patch(_PATCH_TIMESTAMP, return_value=1234567890),
+        ):
+            result = await update_connector_instance_auth_config(
+                "conn1", request, graph_provider
+            )
+
+        assert result["success"] is True
+        auth = result["config"]["auth"]
+        assert auth["redirectUri"] == "https://app.example.com/oauth/callback"
         assert auth["scopes"] == ["read", "write"]
         assert auth["authorizeUrl"] == "https://auth.example.com/authorize"
         assert auth["tokenUrl"] == "https://auth.example.com/token"
@@ -1015,11 +1073,13 @@ class TestOAuthFieldFilteringKeepsMetadataFields:
         graph_provider = AsyncMock()
         graph_provider.get_document = AsyncMock(return_value={"scope": "personal"})
 
+        linked_app = {"_id": "oauth-1", "orgId": "o1", "config": {"instanceUrl": "https://gitlab.mycompany.com"}}
         with (
             patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=_base_instance()),
             patch(_PATCH_OAUTH_FIELDS, return_value=["clientId", "clientSecret", "instanceUrl"]),
             patch(_PATCH_SECRET_OAUTH_FIELDS, return_value={"clientSecret"}),
             patch(_PATCH_TIMESTAMP, return_value=1234567890),
+            patch(f"{_ROUTER}.resolve_oauth_config", AsyncMock(return_value=linked_app)),
         ):
             result = await update_connector_instance_auth_config(
                 "conn1", request, graph_provider
@@ -1082,6 +1142,94 @@ class TestMergePreservesExistingAuthFields:
         assert auth["existingField"] == "should-survive"
         assert auth["apiToken"] == "new-tok"
         assert auth["connectorScope"] == "personal"
-        # credentials and oauth should be cleared
-        assert result["config"]["credentials"] is None
-        assert result["config"]["oauth"] is None
+        # credentials and oauth are cleared in the store and never sent back
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in result["config"]
+        assert "oauth" not in result["config"]
+
+
+class TestConnectorAuthValidation:
+    """The connector checks the settings a save would store, before anything is stored."""
+
+    SMB_AUTH = {"server": "fs01.example", "port": "445", "username": "svc", "share": "departments"}
+
+    async def _save(self, body_auth: dict, stored_auth: dict) -> tuple[Any, AsyncMock]:
+        config_service = _make_config_service(instance_config={"auth": stored_auth, "credentials": None})
+        self.config_service = config_service
+        registry = _make_connector_registry()
+        registry.get_connector_metadata = AsyncMock(
+            return_value={
+                "config": {
+                    "auth": {
+                        "schemas": {"BASIC_AUTH": {"fields": [{"name": "password", "fieldType": "PASSWORD"}]}}
+                    }
+                }
+            }
+        )
+        request = _make_request(
+            is_admin=True,
+            body={"auth": body_auth},
+            container=_make_container(config_service),
+            connector_registry=registry,
+        )
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={"scope": "team"})
+        instance = _base_instance(type="SMB", authType="BASIC_AUTH", scope="team")
+        with (
+            patch(_PATCH_VALIDATE, new_callable=AsyncMock, return_value=instance),
+            patch(_PATCH_TIMESTAMP, return_value=1),
+        ):
+            result = await update_connector_instance_auth_config("conn1", request, graph_provider)
+        return result, registry
+
+    async def test_a_required_secret_neither_sent_nor_stored_is_a_400(self) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await self._save(self.SMB_AUTH, {"connectorScope": "team"})
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail == "Password is required."
+
+    async def test_a_stored_secret_counts(self) -> None:
+        result, registry = await self._save(self.SMB_AUTH, {"connectorScope": "team", "password": "kept"})
+
+        assert result["config"]["auth"]["password"] == REDACTED_PLACEHOLDER
+        assert self.config_service.set_config.await_args.args[1]["auth"]["password"] == "kept"
+        registry.update_connector_instance.assert_awaited_once()
+
+    @pytest.mark.parametrize("auth", [None, "secret", ["a"]])
+    async def test_auth_that_is_not_an_object_is_a_400(self, auth: object) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await self._save(auth, {"connectorScope": "team"})  # type: ignore[arg-type]
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail == "Auth configuration must be an object."
+
+    @pytest.mark.parametrize("auth", ["secret", ["a"], 5])
+    def test_create_refuses_auth_that_is_not_an_object(self, auth: object) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            _require_auth_is_object(auth)
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    def test_a_null_auth_is_fine_only_where_allowed(self) -> None:
+        _require_auth_is_object(None, allow_null=True)
+        with pytest.raises(HTTPException):
+            _require_auth_is_object(None)
+
+    @pytest.mark.parametrize(
+        ("change", "detail"),
+        [
+            ({"server": ""}, "Server is required."),
+            ({"port": "99999"}, "Port must be a whole number from 1 to 65535."),
+            ({"server": "192.0.2.1\\evil"}, "Server must be a hostname or an IP address"),
+            ({"share": "qa/../other"}, "Share must be a single share name"),
+        ],
+    )
+    async def test_bad_fields_are_a_400_and_nothing_is_saved(self, change: dict, detail: str) -> None:
+        with pytest.raises(HTTPException) as exc_info:
+            await self._save({**self.SMB_AUTH, "password": "p", **change}, {"connectorScope": "team"})
+
+        assert exc_info.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc_info.value.detail.startswith(detail)

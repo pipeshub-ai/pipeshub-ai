@@ -595,6 +595,7 @@ class MariaDBDataSource:
         database_name: str,
         table_name: str,
         limit: Optional[int] = None,
+        order_by: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
         """Return up to ``limit`` rows from a table.
 
@@ -602,6 +603,8 @@ class MariaDBDataSource:
             database_name: Database name
             table_name: Table name
             limit: Max rows; defaults to ``DEFAULT_TABLE_ROW_FETCH_LIMIT``
+            order_by: Columns to sort by, so a LIMIT returns the same rows
+                every time; unsorted when empty
 
         Returns:
             List of row dicts.
@@ -615,7 +618,11 @@ class MariaDBDataSource:
         row_limit = limit if limit is not None else DEFAULT_TABLE_ROW_FETCH_LIMIT
         safe_database = database_name.replace('`', '``')
         safe_table = table_name.replace('`', '``')
-        query = f"SELECT * FROM `{safe_database}`.`{safe_table}` LIMIT {int(row_limit)}"
+        query = f"SELECT * FROM `{safe_database}`.`{safe_table}`"
+        if order_by:
+            columns = ", ".join(f"`{c.replace('`', '``')}`" for c in order_by)
+            query += f" ORDER BY {columns}"
+        query += f" LIMIT {int(row_limit)}"
         return await self._client.execute_query(query)
 
     async def get_table_stats(

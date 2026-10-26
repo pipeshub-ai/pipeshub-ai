@@ -209,12 +209,13 @@ class TestDcInitAndAuditGaps:
         assert await conn._detect_and_handle_deletions(1_700_000_000_000) == 0
 
     @pytest.mark.asyncio
-    async def test_detect_and_handle_deletions_swallows_per_issue_errors(self):
+    async def test_detect_and_handle_deletions_tries_every_issue_and_keeps_the_checkpoint_on_a_failure(self):
         conn = _make_dc_connector()
         conn._fetch_deleted_issues_from_audit = AsyncMock(return_value=["PROJ-1", "PROJ-2"])
-        conn._handle_deleted_issue = AsyncMock(side_effect=[None, RuntimeError("boom")])
+        conn._handle_deleted_issue = AsyncMock(side_effect=[RuntimeError("boom"), None])
 
-        assert await conn._detect_and_handle_deletions(1_700_000_000_000) == 1
+        assert await conn._detect_and_handle_deletions(1_700_000_000_000) is None
+        assert conn._handle_deleted_issue.await_count == 2
 
     @pytest.mark.asyncio
     async def test_fetch_deleted_issues_from_audit_paginates(self):

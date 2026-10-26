@@ -15,7 +15,7 @@ from app.config.providers.etcd.etcd3_store import Etcd3DistributedKeyValueStore
 from app.utils.encryption.encryption_service import EncryptionService
 from app.utils.logger import create_logger
 
-dotenv.load_dotenv()
+dotenv.load_dotenv(dotenv.find_dotenv(usecwd=True))
 
 logger = create_logger("etcd")
 
@@ -99,16 +99,16 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
         )
 
         def serialize(value: Union[str, int, float, bool, Dict, list, None]) -> bytes:
-            self.logger.debug("🔄 Serializing value: %s (type: %s)", value, type(value))
             if value is None:
                 self.logger.debug("⚠️ Serializing None value to empty bytes")
                 return b""
             if isinstance(value, (str, int, float, bool)):
                 serialized = json.dumps(value).encode("utf-8")
-                self.logger.debug("✅ Serialized primitive value: %s", serialized)
-                return serialized
-            serialized = json.dumps(value, default=str).encode("utf-8")
-            self.logger.debug("✅ Serialized complex value: %s", serialized)
+            else:
+                serialized = json.dumps(value, default=str).encode("utf-8")
+            self.logger.debug(
+                "✅ Serialized %s value (%d bytes)", type(value).__name__, len(serialized)
+            )
             return serialized
 
         def deserialize(value: bytes) -> Union[str, int, float, bool, dict, list, None]:
@@ -216,7 +216,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     return self._decode_value(key, encrypted_value)
                 except Exception as e:
                     self.logger.error(
-                        f"❌ Failed to process value for key {key}: {str(e)}"
+                        "❌ Failed to process value for key %s: %s", key, type(e).__name__
                     )
                     # A value came back and could not be read: not the same as
                     # no value, so a caller that asked must not see None.
@@ -228,8 +228,7 @@ class Etcd3EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return None
 
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
-            self.logger.exception("Detailed error:")
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             return None

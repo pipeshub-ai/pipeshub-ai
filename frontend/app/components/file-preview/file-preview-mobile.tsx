@@ -1,7 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -9,6 +9,7 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { FilePreviewRenderer } from './renderers/file-preview-renderer';
 import { FileDetailsTab } from './file-details-tab';
 import { CitationCard } from './citations-panel';
+import { VersionSwitcher } from './version-switcher';
 import { useTranslation } from 'react-i18next';
 import { useCitationSync } from './use-citation-sync';
 import { usePdfZoom } from './use-pdf-zoom';
@@ -33,6 +34,11 @@ export function FilePreviewMobile({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
+  onChat,
+  latestVersion,
+  onVersionChange,
+  isSwitchingVersion,
 }: FilePreviewProps) {
   const { t } = useTranslation();
   const hasCitations = citations && citations.length > 0;
@@ -173,8 +179,16 @@ export function FilePreviewMobile({
           >
             {file.name}
           </Text>
+          {file.version !== undefined && onVersionChange && (
+            <VersionSwitcher
+              version={file.version}
+              latestVersion={latestVersion ?? file.version}
+              onVersionChange={onVersionChange}
+              isSwitching={isSwitchingVersion}
+            />
+          )}
           {!hideFileDetails && (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="ghost"
               color="gray"
               size="1"
@@ -188,8 +202,14 @@ export function FilePreviewMobile({
         </Flex>
 
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {onChat && (
+            <Button size="1" variant="surface" onClick={onChat}>
+              <MaterialIcon name="assistant" size={16} />
+              {t('kb.chatWithSelection')}
+            </Button>
+          )}
           {canDownload && (
-            <IconButton
+            <IconButton className="touch-hit"
               variant="ghost"
               color="gray"
               size="1"
@@ -198,6 +218,7 @@ export function FilePreviewMobile({
                   name: file.name,
                   url: file.url,
                   blob: file.blob,
+                  onDownload,
                 })
               }
               title={t('action.download')}
@@ -205,7 +226,7 @@ export function FilePreviewMobile({
               <MaterialIcon name="download" size={16} color="var(--slate-11)" />
             </IconButton>
           )}
-          <IconButton
+          <IconButton className="touch-hit"
             variant="ghost"
             color="gray"
             size="1"
@@ -235,7 +256,7 @@ export function FilePreviewMobile({
                 flexShrink: 0,
               }}
             >
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -346,7 +367,7 @@ export function FilePreviewMobile({
                   pointerEvents: 'auto',
                 }}
               >
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -372,7 +393,7 @@ export function FilePreviewMobile({
                     {Math.round(pdfScale * 100)}%
                   </Text>
                 </Box>
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -384,7 +405,7 @@ export function FilePreviewMobile({
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -411,7 +432,7 @@ export function FilePreviewMobile({
                   aria-hidden
                 />
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -435,7 +456,7 @@ export function FilePreviewMobile({
                   </Text>
                 </Box>
 
-                <IconButton
+                <IconButton className="touch-hit"
                   variant="ghost"
                   color="gray"
                   size="1"
@@ -505,7 +526,7 @@ export function FilePreviewMobile({
               <Text size="1" weight="medium" style={{ color: 'var(--neutral-a12)' }}>
                 {t('chat.citations')}
               </Text>
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="2"

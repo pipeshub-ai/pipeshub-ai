@@ -1,6 +1,13 @@
 name: graph_record
 description: Base Record from graph (matches Record.model_dump mode=json).
 fields:
+  access_rule:
+    required: false
+    type: string
+    enum:
+      - OPEN
+      - STRICT
+      - RESTRICTED
   block_containers:
     type: object
     required: false
@@ -11,6 +18,9 @@ fields:
       block_groups:
         type: array
         required: true
+      code_facts_version:
+        type: string
+        required: false
   child_record_ids:
     required: false
     type: array
@@ -56,6 +66,17 @@ fields:
   inherit_permissions:
     required: false
     type: boolean
+  # Write-time instructions to the processor (inherit from the group, replace the stored
+  # grants, the source listed every group it shares the record with); never stored.
+  inherit_permissions_from_group:
+    required: false
+    type: boolean
+  rewrite_permissions:
+    required: false
+    type: boolean
+  shared_groups_complete:
+    required: false
+    type: boolean
   is_dependent_node:
     required: false
     type: boolean
@@ -71,6 +92,27 @@ fields:
   is_vlm_ocr_processed:
     required: false
     type: boolean
+  is_deleted:
+    required: false
+    type: boolean
+  deleted_at:
+    required: false
+    type: integer
+  deleted_by_user_id:
+    required: false
+    type: string
+  delete_source:
+    required: false
+    type: string
+  delete_batch_id:
+    required: false
+    type: string
+  purge_attempts:
+    required: false
+    type: integer
+  purge_last_error:
+    required: false
+    type: string
   md5_hash:
     required: false
     type: string
@@ -143,15 +185,24 @@ fields:
   source_created_at:
     required: false
     type: integer
+  source_timestamp_origin:
+    required: false
+    type: string
   source_updated_at:
     required: false
     type: integer
   summary_document_id:
     required: false
     type: string
+  trashed_external_record_id:
+    required: false
+    type: string
   updated_at:
     required: false
     type: integer
+  uploaded_by:
+    required: false
+    type: string
   version:
     required: true
     type: integer

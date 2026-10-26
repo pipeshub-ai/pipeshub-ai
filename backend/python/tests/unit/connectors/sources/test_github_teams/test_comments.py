@@ -28,7 +28,11 @@ from app.connectors.sources.github_teams.comments import (
     _image_format_from_bytes,
     _is_github_attachment_url,
 )
-from app.connectors.sources.github_teams.constants import PR_FILE_INLINE_CONTENT_MAX_BYTES
+from app.connectors.sources.github_teams import comments as comments_module
+from app.connectors.sources.github_teams.constants import (
+    PR_DIFF_TEXT_MAX_BYTES,
+    PR_FILE_INLINE_CONTENT_MAX_BYTES,
+)
 from app.models.blocks import GroupSubType, GroupType
 from app.models.entities import FileRecord
 
@@ -511,6 +515,31 @@ class TestReviewCommentThreading:
         other = next(bg for bg in block_groups if bg.name == "File change: untouched.py").data
         assert "Review comments" not in other
 
+    async def test_secrets_in_diffs_and_comments_are_redacted(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        key = "AKIAIOSFODNN7EXAMPLA"
+
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([_conv_comment(1, f"leaked {key}", _dt(1))]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([
+                _review_comment(rc_id=2, path="cfg.py", body=f"use {key}"),
+            ]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="cfg.py", status="modified", patch=f"+AWS_KEY = '{key}'"),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        dumped = "".join(bg.model_dump_json() for bg in block_groups)
+        assert key not in dumped
+        assert "«REDACTED:aws-access-key»" in dumped
+
     async def test_review_comments_carry_author_identity(self) -> None:
         c = make_mock_connector()
         helper = CommentsHelper(c)
@@ -689,7 +718,7 @@ class TestAttachmentRecordBuilding:
 
     async def test_child_records_reuse_existing_and_create_new(self) -> None:
         c = make_mock_connector()
-        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=False)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(
             side_effect=[existing, None]
         )
@@ -707,7 +736,7 @@ class TestAttachmentRecordBuilding:
 
     async def test_block_comment_attachments_reuse_existing(self) -> None:
         c = make_mock_connector()
-        existing = SimpleNamespace(id="att-1", record_name="spec.pdf")
+        existing = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=False)
         c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
         helper = CommentsHelper(c)
         text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
@@ -716,6 +745,22 @@ class TestAttachmentRecordBuilding:
 
         assert attachments[0].id == "att-1"
         assert remaining == []
+
+
+    async def test_an_attachment_in_the_trash_is_written_again_under_its_own_id(self) -> None:
+        """Linked again after it was removed (trash on): written again so the processor
+        brings it back and indexes it, and the parent's blocks point at that record."""
+        c = make_mock_connector()
+        trashed = SimpleNamespace(id="att-1", record_name="spec.pdf", is_deleted=True)
+        c.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=trashed)
+        helper = CommentsHelper(c)
+        text = "[spec.pdf](https://github.com/user-attachments/files/9/spec.pdf)"
+
+        children, remaining = await helper.make_child_records_of_attachments(text, _parent_ticket())
+        attachments, review_remaining = await helper.make_block_comment_of_attachments(text, _parent_ticket())
+
+        assert [u.record.id for u in remaining] == ["att-1"] and [ch.child_id for ch in children] == ["att-1"]
+        assert [u.record.id for u in review_remaining] == ["att-1"] and attachments[0].id == "att-1"
 
 
 class TestCommentBlockFailures:
@@ -750,24 +795,40 @@ class TestCommentBlockFailures:
             await helper.build_issue_comment_blocks("acme", "widgets", 1, 0, record)
         assert exc.value.status_code == HttpStatusCode.CONFLICT.value
 
-    async def test_reviews_failure_still_builds_conversation(self) -> None:
+    async def test_reviews_failure_fails_the_stream(self) -> None:
+        """Review text is part of the PR's indexed content. Building the PR without
+        it would index it as complete and, its revision unchanged, never again."""
         c = make_mock_connector()
         helper = CommentsHelper(c)
         c.runtime.ds_call.side_effect = _dispatch(c, {
             "list_issue_comments": ok_response([_conv_comment(1, "hello", _dt(1))]),
-            "get_pull_reviews": failed_response("403"),
-            "get_pull_review_comments": failed_response("403"),
+            "get_pull_reviews": failed_response("503", status_code=503),
+            "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([]),
         })
         record, pull_request = _pr_blocks_fixture()
 
-        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
-            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
-        )
+        with pytest.raises(HTTPException) as exc:
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
+        assert exc.value.status_code >= 500
 
-        assert len(block_groups) == 1
-        assert "hello" in block_groups[0].data
-        assert block_groups[0].data.startswith("**Comment by alice")
+    async def test_review_comments_failure_fails_the_stream(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": failed_response("502", status_code=502),
+            "get_pull_file_changes": ok_response([]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+
+        with pytest.raises(HTTPException):
+            await helper.build_pr_comment_and_diff_blocks(
+                "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+            )
 
     async def test_file_changes_failure_raises(self) -> None:
         c = make_mock_connector()
@@ -796,7 +857,7 @@ class TestCommentBlockFailures:
             "get_pull_reviews": ok_response([]),
             "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([
-                SimpleNamespace(filename="big.bin", status="modified", patch="@@", changes=12),
+                SimpleNamespace(filename="big.bin", status="modified", patch=None, changes=12),
             ]),
             "get_file_contents": ok_response(
                 SimpleNamespace(size=10**9, decoded_content=b"x", content=None),
@@ -824,7 +885,7 @@ class TestCommentBlockFailures:
             "get_pull_reviews": ok_response([]),
             "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([
-                SimpleNamespace(filename="a.py", status="modified", patch="@@", changes=10**7),
+                SimpleNamespace(filename="a.py", status="modified", patch=None, changes=10**7),
             ]),
             "get_file_contents": ok_response(
                 SimpleNamespace(size=8, decoded_content=b"print(1)", content=None),
@@ -849,7 +910,7 @@ class TestCommentBlockFailures:
             "get_pull_reviews": ok_response([]),
             "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([
-                SimpleNamespace(filename="big.py", status="modified", patch="@@"),
+                SimpleNamespace(filename="big.py", status="modified", patch=None),
             ]),
             "get_file_contents": ok_response(
                 SimpleNamespace(decoded_content=huge, content=None),
@@ -883,7 +944,9 @@ class TestCommentBlockFailures:
         )
         assert not any(bg.name and bg.name.startswith("File change") for bg in block_groups)
 
-    async def test_inline_file_content_is_included(self) -> None:
+    async def test_file_without_diff_has_its_content_inlined(self) -> None:
+        # GitHub leaves ``patch`` out when a diff is too large to show; the
+        # file's text at the PR head is then the only view of the change.
         c = make_mock_connector()
         helper = CommentsHelper(c)
         c.runtime.ds_call.side_effect = _dispatch(c, {
@@ -891,7 +954,7 @@ class TestCommentBlockFailures:
             "get_pull_reviews": ok_response([]),
             "get_pull_review_comments": ok_response([]),
             "get_pull_file_changes": ok_response([
-                SimpleNamespace(filename="a.py", status="modified", patch="@@", size=10),
+                SimpleNamespace(filename="a.py", status="modified", patch=None, size=10),
             ]),
             "get_file_contents": ok_response(SimpleNamespace(decoded_content=b"print(1)", content=None)),
         })
@@ -903,6 +966,150 @@ class TestCommentBlockFailures:
         )
         group = next(bg for bg in block_groups if bg.name == "File change: a.py")
         assert "print(1)" in group.data
+
+    async def test_file_with_diff_is_not_fetched_or_inlined(self) -> None:
+        # The diff and review comments describe the change; the whole file at
+        # the PR head is not indexed again inside every PR that touches it.
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="a.py", status="modified", patch="@@ -1 +1 @@\n-a\n+b"),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+
+        group = next(bg for bg in block_groups if bg.name == "File change: a.py")
+        assert group.data == "[modified file]\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+        assert group.sub_type == GroupSubType.PR_FILE_CHANGE
+
+    async def test_removed_file_without_diff_is_not_fetched(self) -> None:
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="gone.bin", status="removed", patch=None),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: gone.bin")
+        assert "Full File Content" not in group.data
+
+    async def test_pure_rename_is_not_fetched_or_inlined(self) -> None:
+        # A rename with no line changes has no diff because nothing changed;
+        # its whole text would be the same file indexed once more.
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(
+                    filename="src/new_name.py", previous_filename="src/old_name.py",
+                    status="renamed", patch=None, additions=0, deletions=0,
+                ),
+            ]),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: src/new_name.py")
+        # GitHub counts a binary's lines as 0/0 even when it changed, so the
+        # record names the old path and claims nothing about the content.
+        assert group.data == "[renamed file]\n\nRenamed from src/old_name.py."
+
+    async def test_pure_copy_names_its_source_and_is_not_fetched(self) -> None:
+        group = await _single_file_group(SimpleNamespace(
+            filename="src/copy.py", previous_filename="src/original.py",
+            status="copied", patch=None, additions=0, deletions=0,
+        ))
+        assert group.data == "[copied file]\n\nCopied from src/original.py."
+        assert "no textual diff available" not in group.data
+
+    async def test_renamed_file_with_diff_records_its_old_path(self) -> None:
+        # A search for the old path should still find the PR that moved it.
+        group = await _single_file_group(SimpleNamespace(
+            filename="src/new.py", previous_filename="src/old.py",
+            status="renamed", patch="@@ -1 +1 @@\n-a\n+b", additions=1, deletions=1,
+        ))
+        assert group.data == "[renamed file]\n\nRenamed from src/old.py.\n\nDiff:\n@@ -1 +1 @@\n-a\n+b"
+
+    async def test_mode_change_without_diff_says_so(self) -> None:
+        group = await _single_file_group(SimpleNamespace(
+            filename="bin/run.sh", status="changed", patch=None, additions=0, deletions=0,
+        ))
+        assert group.data == "[changed file]\n\nFile mode or type changed."
+
+    async def test_renamed_file_with_changes_but_no_diff_is_inlined(self) -> None:
+        # Renamed and edited, with a diff too large for GitHub to show.
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(
+                    filename="gen/new.py", previous_filename="gen/old.py",
+                    status="renamed", patch=None, additions=4000, deletions=3000,
+                ),
+            ]),
+            "get_file_contents": ok_response(SimpleNamespace(decoded_content=b"print(2)", content=None)),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: gen/new.py")
+        assert "Full File Content:\nprint(2)" in group.data
+
+    async def test_binary_file_without_diff_is_not_inlined(self) -> None:
+        # A binary file has no diff either; decoding it as text would index
+        # a page of replacement characters.
+        c = make_mock_connector()
+        helper = CommentsHelper(c)
+        c.runtime.ds_call.side_effect = _dispatch(c, {
+            "list_issue_comments": ok_response([]),
+            "get_pull_reviews": ok_response([]),
+            "get_pull_review_comments": ok_response([]),
+            "get_pull_file_changes": ok_response([
+                SimpleNamespace(filename="logo.png", status="added", patch=None),
+            ]),
+            "get_file_contents": ok_response(SimpleNamespace(
+                size=16, decoded_content=b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR", content=None,
+            )),
+        })
+        record, pull_request = _pr_blocks_fixture()
+        pull_request.head = SimpleNamespace(sha="abc")
+
+        block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+            "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+        )
+        group = next(bg for bg in block_groups if bg.name == "File change: logo.png")
+        assert "Full File Content" not in group.data
+        assert "no textual diff available" in group.data
 
     async def test_decode_content_file_from_decoded_and_base64(self) -> None:
         helper = CommentsHelper(make_mock_connector())
@@ -927,15 +1134,32 @@ class TestCommentBlockFailures:
 
         assert helper._decode_content_file(_Bad()) is None
 
-    async def test_commit_fetch_failure_returns_empty(self) -> None:
+    async def test_commit_fetch_failure_fails_the_stream(self) -> None:
         c = make_mock_connector()
         helper = CommentsHelper(c)
-        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500")})
+        c.runtime.ds_call.side_effect = _dispatch(c, {"get_pull_commits": failed_response("500", status_code=500)})
 
-        blocks, bg = await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
+        with pytest.raises(HTTPException):
+            await helper.build_pr_commit_blocks("acme", "widgets", 1, index=1, parent_index=0)
 
-        assert blocks == []
-        assert bg is None
+
+async def _single_file_group(file: SimpleNamespace) -> object:
+    """The file-change group for a PR with one changed file; any contents
+    request fails the test, since ``get_file_contents`` is not mocked."""
+    c = make_mock_connector()
+    helper = CommentsHelper(c)
+    c.runtime.ds_call.side_effect = _dispatch(c, {
+        "list_issue_comments": ok_response([]),
+        "get_pull_reviews": ok_response([]),
+        "get_pull_review_comments": ok_response([]),
+        "get_pull_file_changes": ok_response([file]),
+    })
+    record, pull_request = _pr_blocks_fixture()
+    pull_request.head = SimpleNamespace(sha="abc")
+    block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+        "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+    )
+    return next(bg for bg in block_groups if bg.name == f"File change: {file.filename}")
 
 
 def _dispatch(c: object, mapping: dict[str, object]) -> object:
@@ -947,6 +1171,100 @@ def _dispatch(c: object, mapping: dict[str, object]) -> object:
         raise AssertionError(f"unmocked ds_call for {method!r}")
 
     return _fn
+
+
+async def _pr_file_groups(
+    files: list[SimpleNamespace], *, review_comments: list[SimpleNamespace] | None = None,
+    contents: dict[str, object] | None = None,
+) -> dict[str, object]:
+    """The file-change groups of a PR with *files*, by file name."""
+    c = make_mock_connector()
+    helper = CommentsHelper(c)
+    c.runtime.ds_call.side_effect = _dispatch(c, {
+        "list_issue_comments": ok_response([]),
+        "get_pull_reviews": ok_response([]),
+        "get_pull_review_comments": ok_response(review_comments or []),
+        "get_pull_file_changes": ok_response(files),
+        **(contents or {}),
+    })
+    record, pull_request = _pr_blocks_fixture()
+    pull_request.head = SimpleNamespace(sha="abc")
+    block_groups, _ = await helper.build_pr_comment_and_diff_blocks(
+        "acme", "widgets", 1, pull_request, parent_index=0, record=record,
+    )
+    return {
+        bg.name.removeprefix("File change: "): bg
+        for bg in block_groups if bg.name and bg.name.startswith("File change: ")
+    }
+
+
+def _changed(name: str, patch: str | None, status: str = "modified") -> SimpleNamespace:
+    lines = patch.count("\n") + 1 if patch else 0
+    return SimpleNamespace(filename=name, status=status, patch=patch, additions=lines, deletions=lines)
+
+
+class TestPullRequestDiffLimit:
+    """A PR's diff text is capped, so one whose diff deletes or re-adds the whole
+    repository is indexed without its bulk instead of failing in storage."""
+
+    async def test_a_file_past_the_limit_is_named_without_its_text(self, monkeypatch) -> None:
+        monkeypatch.setattr(comments_module, "PR_DIFF_TEXT_MAX_BYTES", 100)
+        groups = await _pr_file_groups(
+            [_changed("a.py", "a" * 60), _changed("b.py", "b" * 60), _changed("c.py", "c" * 30)],
+            review_comments=[_review_comment(rc_id=1, path="b.py", body="why this change?")],
+        )
+
+        assert set(groups) == {"a.py", "b.py", "c.py"}
+        assert groups["a.py"].data == "[modified file]\n\nDiff:\n" + "a" * 60
+        # b.py doesn't fit in what a.py left; c.py, smaller, still does.
+        assert "b" * 60 not in groups["b.py"].data
+        assert "Diff: omitted (1 lines added, 1 removed; this pull request's changes exceed" in groups["b.py"].data
+        assert "https://github.com/acme/widgets/pull/1/files" in groups["b.py"].data
+        assert "why this change?" in groups["b.py"].data
+        assert groups["c.py"].data == "[modified file]\n\nDiff:\n" + "c" * 30
+
+    async def test_a_whole_repository_diff_stays_within_the_limit(self) -> None:
+        # The shape of apache/airflow#68316: a commit that deleted the
+        # repository, which GitHub lists as 3,000 removed files.
+        patch = "@@ -1,200 +0,0 @@\n" + "-    total = total + compute(item)\n" * 200
+        files = [_changed(f"src/f{i}.py", patch, status="removed") for i in range(3000)]
+        groups = await _pr_file_groups(files)
+
+        assert len(groups) == 3000
+        with_text = sum(patch in g.data for g in groups.values())
+        assert with_text == PR_DIFF_TEXT_MAX_BYTES // len(patch.encode())
+        assert sum("Diff: omitted" in g.data for g in groups.values()) == 3000 - with_text
+
+    async def test_inlined_file_text_counts_toward_the_limit(self, monkeypatch) -> None:
+        monkeypatch.setattr(comments_module, "PR_DIFF_TEXT_MAX_BYTES", PR_FILE_INLINE_CONTENT_MAX_BYTES + 10)
+        content = b"y" * PR_FILE_INLINE_CONTENT_MAX_BYTES
+        groups = await _pr_file_groups(
+            [_changed("big.py", None), _changed("small.py", "z" * 20)],
+            contents={"get_file_contents": ok_response(SimpleNamespace(decoded_content=content, content=None))},
+        )
+
+        assert content.decode() in groups["big.py"].data
+        assert "Diff: omitted" in groups["small.py"].data
+
+    async def test_inlined_text_is_measured_after_redaction(self, monkeypatch) -> None:
+        # Redaction can lengthen a short secret, so text that fit before it may not after.
+        monkeypatch.setattr(comments_module, "PR_DIFF_TEXT_MAX_BYTES", PR_FILE_INLINE_CONTENT_MAX_BYTES)
+        monkeypatch.setattr(comments_module, "redact_secrets", lambda text: SimpleNamespace(text=text + "!!"))
+        content = b"y" * PR_FILE_INLINE_CONTENT_MAX_BYTES
+        groups = await _pr_file_groups(
+            [_changed("big.py", None)],
+            contents={"get_file_contents": ok_response(SimpleNamespace(decoded_content=content, content=None))},
+        )
+
+        assert "y" * 100 not in groups["big.py"].data
+        assert "Full File Content: omitted (this pull request's changes exceed" in groups["big.py"].data
+
+    async def test_no_contents_request_once_an_inlined_file_cannot_fit(self, monkeypatch) -> None:
+        # get_file_contents is not mocked, so a request for it fails the test.
+        monkeypatch.setattr(comments_module, "PR_DIFF_TEXT_MAX_BYTES", PR_FILE_INLINE_CONTENT_MAX_BYTES - 1)
+        groups = await _pr_file_groups([_changed("big.py", None)])
+
+        assert "Full File Content: omitted (this pull request's changes exceed" in groups["big.py"].data
 
 
 class TestAttachmentIndexingFilter:

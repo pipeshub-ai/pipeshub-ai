@@ -6,7 +6,6 @@ from app.config.constants.arangodb import CollectionNames
 from app.models.entities import EntityRecord, EntityType
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.normalizer import normalize_name
-from app.modules.retrieval.entity_permissions import EntityAccessContext, EntityHit
 
 TOPICS = CollectionNames.TOPICS.value
 
@@ -48,7 +47,8 @@ class TestTier0AliasMatch:
         assert resolution.stats.tier0_hits == 1
         assert fake_store.match_calls == []
         assert model.calls == []
-        assert meta.topics == ["bug bash session"]
+        assert meta.topics == ["Bug Bash Testing Session"]
+        assert resolution.get(TOPICS, "Bug Bash Testing Session").key == key
 
     async def test_name_match_wins_over_alias_match(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
@@ -117,21 +117,33 @@ class TestMergeWritesBothAliasForms:
         assert len(fake_graph.nodes_in(TOPICS)) == 1
 
 
-class TestQuerySideAliases:
-    def test_search_entities_renders_aliases(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.entity_discovery import _render_hits
+class TestTier0AliasTies:
+    async def test_an_alias_shared_by_two_nodes_resolves_to_the_same_one_every_time(
+        self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        """KG-39: the winner no longer depends on the provider's row order."""
+        scripted_model()
+        first = _seed(fake_graph, "acme", "launch plan", aliases=["go live"])
+        second = _seed(fake_graph, "acme", "cutover", aliases=["go live"])
+        expected = min(first, second)
+        for order in (list(fake_graph.nodes.items()), list(reversed(fake_graph.nodes.items()))):
+            fake_graph.nodes = dict(order)
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Go live"]))
+            )
+            (entity,) = resolution.entries.values()
+            assert entity.key == expected
 
-        context = EntityAccessContext(
-            org_id="acme", user_key="u", app_level_app_ids=frozenset(), record_level_app_ids=frozenset(),
-            record_group_ids=frozenset(), app_names={},
+    async def test_two_live_nodes_with_one_name_resolve_to_the_lowest_key(
+        self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        """Older graphs can hold two nodes with one normalized name; the name
+        match follows the same lowest-key rule as an alias tie."""
+        scripted_model()
+        for key in ("k-b", "k-a"):
+            fake_graph.nodes[(TOPICS, key)] = {"name": "Go live", "normalizedName": "go live", "orgId": "acme"}
+        resolution = await make_resolver().resolve(
+            ctx_factory("r1", "acme", metadata_factory(topics=["Go live"]))
         )
-        hit = EntityHit(
-            entity_id="k", entity_type="topic", name="Bug bash session", score=0.5,
-            records=[], more_records=False, aliases=("Bug bash testing session", "bug bash"),
-        )
-        results, _ = _render_hits([hit], context, None)
-        assert results[0]["aliases"] == ["Bug bash testing session", "bug bash"]
-
-        plain = EntityHit(entity_id="k2", entity_type="topic", name="Plain", score=0.4, records=[], more_records=False)
-        results, _ = _render_hits([plain], context, None)
-        assert "aliases" not in results[0]
+        (entity,) = resolution.entries.values()
+        assert entity.key == "k-a"

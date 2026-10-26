@@ -59,6 +59,57 @@ const logger = Logger.getInstance({
   service: 'Knowledge Base Controller',
 });
 
+const KNOWLEDGE_HUB_MIN_QUERY_LENGTH = 2;
+const KNOWLEDGE_HUB_MAX_QUERY_LENGTH = 500;
+
+/**
+ * The search text for a knowledge-hub listing, after trim.
+ * Missing stays a browse. Empty, whitespace, or one character is the same
+ * minimum-length error the connector service returns. The cap matches that
+ * service; HTML is rejected earlier by the XSS middleware.
+ */
+function knowledgeHubQueryText(raw: unknown): string | undefined {
+  if (raw === undefined || raw === null) {
+    return undefined;
+  }
+  // Express turns `?q=a&q=b` into an array. The connector sees one string,
+  // the same join URLSearchParams used to forward. An object would stringify
+  // to "[object Object]" and pass the length check.
+  if (Array.isArray(raw)) {
+    const parts: string[] = [];
+    for (const part of raw) {
+      if (typeof part !== 'string') {
+        throw new BadRequestError('Search query must be text');
+      }
+      parts.push(part);
+    }
+    return parts.join(',');
+  }
+  if (typeof raw !== 'string') {
+    throw new BadRequestError('Search query must be text');
+  }
+  return raw;
+}
+
+export function knowledgeHubSearchQuery(raw: unknown): string | undefined {
+  const text = knowledgeHubQueryText(raw);
+  if (text === undefined) {
+    return undefined;
+  }
+  const q = text.trim();
+  if (q.length < KNOWLEDGE_HUB_MIN_QUERY_LENGTH) {
+    throw new BadRequestError(
+      `Search query must be at least ${KNOWLEDGE_HUB_MIN_QUERY_LENGTH} characters`,
+    );
+  }
+  if (q.length > KNOWLEDGE_HUB_MAX_QUERY_LENGTH) {
+    throw new BadRequestError(
+      `Search query too long (max: ${KNOWLEDGE_HUB_MAX_QUERY_LENGTH} characters)`,
+    );
+  }
+  return q;
+}
+
 /**
  * Get Knowledge Hub nodes (unified browse API)
  * Supports browsing KBs, apps, folders, record groups, and records
@@ -84,6 +135,7 @@ export const getKnowledgeHubNodes =
 
       // Build query string from request query params
       const queryParams = new URLSearchParams();
+      const searchQuery = knowledgeHubSearchQuery(req.query.q);
 
       // Map query params (camelCase to snake_case for Python backend)
       const paramMapping: { [key: string]: string } = {
@@ -104,13 +156,20 @@ export const getKnowledgeHubNodes =
         updatedAt: 'updated_at',
         size: 'size',
         include: 'include',
+        cursor: 'cursor',
       };
 
       for (const [key, snakeKey] of Object.entries(paramMapping)) {
+        if (key === 'q') {
+          continue;
+        }
         const value = req.query[key];
         if (value) {
           queryParams.append(snakeKey, value as string);
         }
+      }
+      if (searchQuery !== undefined) {
+        queryParams.append('q', searchQuery);
       }
 
       if (req.query.onlyContainers !== undefined) {
@@ -666,7 +725,18 @@ export const createFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params as { kbId: string };
-      const { folderId } = req.query as { folderId?: string };
+      // For the subfolder route (/:kbId/folder/:folderId/subfolder) the parent
+      // id is a path parameter; the root-folder route passes it as a query
+      // param. If both are passed, verify they do not conflict to avoid creating
+      // the folder under the wrong parent.
+      const pathFolderId = (req.params as { folderId?: string }).folderId;
+      const queryFolderId = (req.query as { folderId?: string }).folderId;
+      if (pathFolderId && queryFolderId && pathFolderId !== queryFolderId) {
+        throw new BadRequestError(
+          'Conflicting folderId in path and query parameters',
+        );
+      }
+      const folderId: string | undefined = pathFolderId ?? queryFolderId;
       const { folderName } = req.body;
 
       if (!userId || !orgId) {
@@ -835,7 +905,7 @@ const placeholderErrorMessage = (err: unknown): string => {
 // buffering, and the per-response socket timeout is cleared so a long upload
 // stream is not closed by Node's default 120s timeout.
 const UPLOAD_SSE_HEADERS = {
-  'Content-Type': 'text/event-stream',
+  'Content-Type': 'text/event-stream; charset=utf-8',
   'Cache-Control': 'no-cache, no-transform',
   Connection: 'keep-alive',
   'X-Accel-Buffering': 'no',
@@ -1279,6 +1349,10 @@ export const updateRecord =
           extension,
           lastModified,
           sha256Hash,
+          // Same clock and stage as the file processor's fallback for a missing
+          // lastModified. Python's own clock is read after the storage upload
+          // below, which has no time limit, so it cannot tell the two apart.
+          receivedAt: Date.now(),
         };
 
         // Get filename without extension to use as record name
@@ -1682,6 +1756,121 @@ export const deleteRecord =
   };
 
 /**
+ * Bring a deleted item back from the trash, with everything deleted along with it.
+ * The connector service checks the caller's role on the collection.
+ */
+export const restoreRecord =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { recordId } = req.params as { recordId: string };
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/record/${encodeURIComponent(recordId)}/restore`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Restoring record',
+        'Record not restored',
+      );
+    } catch (error: any) {
+      logger.error('Error restoring record', {
+        recordId: req.params.recordId,
+        error: error.message,
+        status: error.response?.status,
+      });
+      next(handleBackendError(error, 'restore record'));
+    }
+  };
+
+/**
+ * Restore several deleted items; the answer lists the outcome for each id.
+ */
+export const restoreRecords =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      const { recordIds } = req.body as { recordIds: string[] };
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/records/restore`,
+        HttpMethod.POST,
+        req.headers as Record<string, string>,
+        { recordIds },
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Restoring records',
+        'Records not restored',
+      );
+    } catch (error: any) {
+      logger.error('Error restoring records', {
+        error: error.message,
+        status: error.response?.status,
+      });
+      next(handleBackendError(error, 'restore records'));
+    }
+  };
+
+/**
+ * One page of a collection's recently deleted items: what the caller may restore.
+ * The connector service scopes it to the caller's org and role on the collection.
+ */
+export const listTrash =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { userId, orgId } = req.user || {};
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+      const { kbId } = req.params as { kbId: string };
+      const { page, limit } = req.query as { page?: string; limit?: string };
+      const query = new URLSearchParams({ page: page ?? '1', limit: limit ?? '25' });
+
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/kb/${encodeURIComponent(kbId)}/trash?${query.toString()}`,
+        HttpMethod.GET,
+        req.headers as Record<string, string>,
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'Listing deleted items',
+        'Deleted items not found',
+      );
+    } catch (error: any) {
+      logger.error('Error listing deleted items', {
+        kbId: req.params.kbId,
+        error: error.message,
+        status: error.response?.status,
+      });
+      next(handleBackendError(error, 'load the recently deleted items'));
+    }
+  };
+
+/**
  * Create permissions for multiple users on a knowledge base
  */
 export const createKBPermission =
@@ -1693,7 +1882,17 @@ export const createKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds, role } = req.body;
+      // Both lists are optional in the request validators, so a caller may
+      // send only one of them. Treat a missing list as empty.
+      const {
+        userIds = [],
+        teamIds = [],
+        role,
+      } = req.body as {
+        userIds?: string[];
+        teamIds?: string[];
+        role?: string;
+      };
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');
@@ -1773,7 +1972,17 @@ export const updateKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds, role } = req.body;
+      // Both lists are optional in the request validators, so a caller may
+      // send only one of them. Treat a missing list as empty.
+      const {
+        userIds = [],
+        teamIds = [],
+        role,
+      } = req.body as {
+        userIds?: string[];
+        teamIds?: string[];
+        role?: string;
+      };
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');
@@ -1843,7 +2052,12 @@ export const removeKBPermission =
   ): Promise<void> => {
     try {
       const { kbId } = req.params as { kbId: string };
-      const { userIds, teamIds } = req.body;
+      // Both lists are optional in the request validator, so a caller may
+      // send only one of them. Treat a missing list as empty.
+      const { userIds = [], teamIds = [] } = req.body as {
+        userIds?: string[];
+        teamIds?: string[];
+      };
 
       if (userIds.length === 0 && teamIds.length === 0) {
         throw new BadRequestError('User IDs or team IDs are required');

@@ -54,6 +54,7 @@ from helper.http.session_client import (  # noqa: E402
     SessionClient,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
 )
@@ -79,13 +80,28 @@ class OAuthProviderTestBase:
 def oauth_credentials(
     pipeshub_client: PipeshubClient,
 ) -> Iterator[dict]:
-    """Provide client_id, client_secret, and a fresh access_token for tests."""
-    pipeshub_client._ensure_access_token()
-    yield {
+    """Provide client_id, client_secret, and a fresh access_token for tests.
+
+    The token is minted here rather than taken from ``pipeshub_client``: on the
+    local stack that client uses a login session, and these tests introspect
+    and revoke an OAuth access token.
+    """
+    credentials = {
         "client_id": os.environ.get("CLIENT_ID", ""),
         "client_secret": os.environ.get("CLIENT_SECRET", ""),
-        "access_token": pipeshub_client._access_token,
     }
+    credentials["access_token"] = _client_credentials_token(pipeshub_client, credentials)
+    yield credentials
+
+
+def _client_credentials_token(pipeshub_client: PipeshubClient, credentials: dict) -> str:
+    resp = OAuthProviderClient(pipeshub_client).token(
+        grant_type="client_credentials",
+        client_id=credentials["client_id"],
+        client_secret=credentials["client_secret"],
+    )
+    assert resp.status_code == 200, f"token fetch failed: {resp.status_code} {resp.text}"
+    return str(resp.json()["access_token"])
 
 
 # ====================================================================
@@ -156,6 +172,7 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
     @pytest.fixture(autouse=True)
     def _setup_credentials(self, oauth_credentials: dict) -> None:
         self.client_id = oauth_credentials["client_id"]
+        self.access_token = oauth_credentials["access_token"]
 
     def test_response_and_errors(self, user_session_client: SessionClient) -> None:
         """401 missing auth, 403 OAuth access token, 400 invalid consent body."""
@@ -172,7 +189,12 @@ class TestOAuthAuthorizeConsent(OAuthProviderTestBase):
         )
 
         # A client must not be able to consent with a token it already holds.
-        resp = self.oauth.authorize_consent(**consent, auth=True)
+        resp = self.oauth.post(
+            "/api/v1/oauth2/authorize",
+            json=consent,
+            auth=False,
+            headers={"Authorization": f"Bearer {self.access_token}"},
+        )
         assert resp.status_code == 403, (
             f"Expected 403 for an OAuth access token, got {resp.status_code}: {resp.text}"
         )
@@ -344,8 +366,9 @@ class TestOAuthRevoke(OAuthProviderTestBase):
         assert_response_matches_openapi_operation(
             resp.json(), "oauthRevoke", status_code="401"
         )
-        self.pipeshub_client._fetch_access_token()
-        self.oauth_credentials["access_token"] = self.pipeshub_client._access_token
+        self.oauth_credentials["access_token"] = _client_credentials_token(
+            self.pipeshub_client, self.oauth_credentials
+        )
 
 
 # ====================================================================
@@ -391,24 +414,29 @@ class TestOAuthProviderRateLimiting(OAuthProviderTestBase):
         """Burst token endpoint and validate any 429 error schema."""
         TOTAL = 1010
         rate_limited: list[requests.Response] = []
-        for _ in range(TOTAL):
-            resp = self.oauth.introspect(
-                token=self.access_token,
-                client_id=self.client_id,
-                client_secret=self.client_secret,
-            )
-            if resp.status_code == 429:
-                rate_limited.append(resp)
-            if len(rate_limited) >= 3:
-                break
+        try:
+            for _ in range(TOTAL):
+                resp = self.oauth.introspect(
+                    token=self.access_token,
+                    client_id=self.client_id,
+                    client_secret=self.client_secret,
+                )
+                if resp.status_code == 429:
+                    rate_limited.append(resp)
+                if len(rate_limited) >= 3:
+                    break
 
-        if not rate_limited:
-            pytest.skip(
-                f"No 429 responses from {TOTAL} sequential requests — "
-                f"rate limiter window may be fresh"
-            )
+            if not rate_limited:
+                pytest.skip(
+                    f"No 429 responses from {TOTAL} sequential requests — "
+                    f"rate limiter window may be fresh"
+                )
 
-        for resp in rate_limited:
-            assert_response_matches_openapi_operation(
-                resp.json(), "oauthIntrospect", status_code="429"
-            )
+            for resp in rate_limited:
+                assert_response_matches_openapi_operation(
+                    resp.json(), "oauthIntrospect", status_code="429"
+                )
+        finally:
+            # Introspect shares its per-IP count with /oauth2/token, which the
+            # MCP package suite needs a little later on this same worker.
+            wait_out_rate_limit(rate_limited[-1] if rate_limited else None)

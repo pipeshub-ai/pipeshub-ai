@@ -8,6 +8,16 @@ import { KeyValueStoreService } from '../../../libs/services/keyValueStore.servi
 import axios from 'axios';
 import { AppConfig } from '../config/config';
 import { ConfigService } from '../services/cm.service';
+import { BuildInfo, getBuildInfo } from '../../../libs/utils/build-info.utils';
+import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
+import { buildProxyHeaders } from '../controllers/connector.controllers';
+import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replicas';
+
+const STORAGE_WARNING_TIMEOUT_MS = 2000;
 
 const logger = Logger.getInstance({
   service: 'HealthStatus'
@@ -35,6 +45,9 @@ export interface HealthStatus {
     // via getDeploymentConfig()'s KV-store fresh/fallback path.
     redisMode: string;
   };
+  build: BuildInfo;
+  // Configuration that works but loses data or misbehaves; status stays healthy.
+  warnings?: string[];
 }
 
 export function createHealthRouter(
@@ -50,7 +63,10 @@ export function createHealthRouter(
   );
 
   const appConfig = container.get<AppConfig>('AppConfig');
+  const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const configService = ConfigService.getInstance();
+  // Resolved here, at startup: from source it shells out to git once.
+  const build = getBuildInfo();
 
   async function getDeploymentConfig() {
     try {
@@ -166,15 +182,32 @@ export function createHealthRouter(
           // to manage DB credentials or knowing which HTTP ports to probe —
           // both of which break for managed cloud deployments (e.g. Neo4j Aura
           // doesn't expose the HTTP discovery ports 7474/7473).
+          // Stay at 5s. Helm startup, readiness, and liveness probes call this
+          // route with timeoutSeconds 5; a longer wait here fails the probe
+          // and restarts the pod. The connector probe returns before this.
           const graphDbResp = await axios.get(
             `${appConfig.connectorBackend}/health/graph-db`,
             { timeout: 5000, validateStatus: () => true },
           );
           services.graphDb = graphDbResp.status === 200 ? 'healthy' : 'unhealthy';
-          if (graphDbResp.status !== 200) overallHealthy = false;
-        } catch (error) {
+          if (graphDbResp.status !== 200) {
+            overallHealthy = false;
+            Logger.getInstance({ service: 'HealthStatus' }).error(
+              'graph-db health check returned non-200',
+              { status: graphDbResp.status },
+            );
+          }
+        } catch (error: unknown) {
           services.graphDb = 'unhealthy';
           overallHealthy = false;
+          const axiosErr = error as { code?: string; message?: string };
+          const timedOut = axiosErr?.code === 'ECONNABORTED';
+          Logger.getInstance({ service: 'HealthStatus' }).error(
+            timedOut
+              ? 'graph-db health check timed out'
+              : 'graph-db health check failed',
+            axiosErr?.message ?? error,
+          );
         }
       }
 
@@ -197,6 +230,25 @@ export function createHealthRouter(
         }
       }
 
+      const warnings: string[] = [];
+      // Warning only: a stalled store must not hold the health answer.
+      let timer: NodeJS.Timeout | undefined;
+      try {
+        const replicaProblem = await Promise.race([
+          configuredLocalStorageReplicaProblem(keyValueStoreService),
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), STORAGE_WARNING_TIMEOUT_MS);
+          }),
+        ]);
+        if (replicaProblem) warnings.push(replicaProblem);
+      } catch (error) {
+        logger.warn(
+          'Could not read the storage configuration for the health warnings',
+          error,
+        );
+      }
+      clearTimeout(timer);
+
       const health: HealthStatus = {
         status: overallHealthy ? 'healthy' : 'unhealthy',
         timestamp: new Date().toISOString(),
@@ -209,6 +261,8 @@ export function createHealthRouter(
           vectorDbType: deployment.vectorDbType || 'pending',
           redisMode: process.env.REDIS_MODE || 'standalone',
         },
+        build,
+        ...(warnings.length > 0 ? { warnings } : {}),
       };
 
       res.status(200).json(health);
@@ -301,6 +355,43 @@ export function createHealthRouter(
       });
     }
   });
+
+  // Whether the vector database has the memory to keep search fast. Kept off
+  // GET / because that route is the Helm probe target (5s timeout) and this one
+  // reads every collection's configuration. Admin-only: it reports index sizes.
+  // Advisory: it never changes any service's status.
+  router.get(
+    '/vector-db/memory',
+    authMiddleware.authenticate.bind(authMiddleware),
+    requireScopes(OAuthScopeNames.CONFIG_READ),
+    userAdminCheck,
+    async (req: AuthenticatedUserRequest, res) => {
+      try {
+        const resp = await axios.get(
+          `${appConfig.connectorBackend}/health/vector-db/memory`,
+          {
+            headers: buildProxyHeaders(req),
+            timeout: 5000,
+            validateStatus: () => true,
+          },
+        );
+        const data: unknown = resp.data;
+        if (resp.status === 200 && typeof data === 'object' && data !== null) {
+          res.status(200).json(data);
+          return;
+        }
+        logger.warn('vector-db memory report returned non-200', {
+          status: resp.status,
+        });
+      } catch (error: unknown) {
+        logger.warn(
+          'vector-db memory report failed',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      res.status(502).json({ status: 'unknown' });
+    },
+  );
 
   return router;
 }

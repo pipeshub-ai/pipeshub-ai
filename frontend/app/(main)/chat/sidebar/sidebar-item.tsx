@@ -10,7 +10,7 @@ interface SidebarItemProps {
   /** Label text or ReactNode displayed in the item */
   label: React.ReactNode;
   /** Optional second line under the label (e.g. who shared a chat) */
-  subtitle?: string;
+  subtitle?: React.ReactNode;
   /** Optional content rendered on the right side (e.g., keyboard shortcut badge) */
   rightSlot?: React.ReactNode;
   /** Click handler */
@@ -139,9 +139,15 @@ export function SidebarItem({
     </div>
   );
 
+  const iconSlot = icon ? (
+    <span style={{ display: 'inline-flex', flexShrink: 0, lineHeight: 0 }}>
+      {icon}
+    </span>
+  ) : null;
+
   const content = (
     <>
-      {icon}
+      {iconSlot}
       {labelContent}
       {rightSlot}
     </>
@@ -178,7 +184,7 @@ export function SidebarItem({
               cursor: 'pointer',
             }}
           >
-            {icon}
+            {iconSlot}
             {labelContent}
           </Link>
           <span

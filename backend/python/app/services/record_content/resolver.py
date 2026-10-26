@@ -18,9 +18,11 @@ without monkey-patching.
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
+
+from app.models.entities import RecordType
 
 from .authorizer import TieredRecordAuthorizer
 from .models import (
@@ -34,9 +36,19 @@ from .strategies import (
     build_resolved_content,
 )
 
+if TYPE_CHECKING:
+    from app.services.artifact_registry.models import Actor
+
 logger = logging.getLogger(__name__)
 
 __all__ = ["RecordContentResolver"]
+
+
+def _is_artifact(record: object) -> bool:
+    record_type = getattr(record, "record_type", None)
+    if record_type is None and isinstance(record, dict):
+        record_type = record.get("recordType")
+    return str(getattr(record_type, "value", record_type) or "") == RecordType.ARTIFACT.value
 
 
 class RecordContentResolver:
@@ -69,8 +81,13 @@ class RecordContentResolver:
         conversation_id: str | None = None,
         max_bytes: int,
         session: aiohttp.ClientSession | None = None,
+        artifact_actor: Actor | None = None,
     ) -> Any:
         """Resolve `ref` to a `ResolvedRecordContent`.
+
+        Artifacts are read as `artifact_actor` when it is given, every other
+        record as `actor`: a service-account agent reads knowledge as its
+        creator, while the artifacts of the chat belong to the person chatting.
 
         Raises:
             RecordNotFoundError — ref cannot be mapped to any record.
@@ -78,11 +95,13 @@ class RecordContentResolver:
             RecordTooLargeError — content exceeds `max_bytes`.
             RecordContentUnavailableError — transport/connector failure.
         """
-        record = await self._lookup_record(ref, actor, conversation_id)
+        artifact_actor = artifact_actor or actor
+        record = await self._lookup_record(ref, artifact_actor, conversation_id)
+        reader = artifact_actor if _is_artifact(record) else actor
 
-        await self._authorizer.authorize(actor, record)
+        await self._authorizer.authorize(reader, record)
 
-        content, source = await self._fetch(record, actor=actor, version=version,
+        content, source = await self._fetch(record, actor=reader, version=version,
                                             max_bytes=max_bytes, session=session)
         return build_resolved_content(record, content, version, source)
 
@@ -91,9 +110,9 @@ class RecordContentResolver:
     # ------------------------------------------------------------------
 
     async def _lookup_record(
-        self, ref: str, actor: Any, conversation_id: str | None
+        self, ref: str, artifact_actor: Actor, conversation_id: str | None
     ) -> Any:
-        """Try graph lookup first, then artifact registry fallback."""
+        """Try graph lookup first, then artifact registry fallback (as `artifact_actor`)."""
         try:
             record = await self._graph.get_record_by_id(ref)
         except Exception as exc:
@@ -106,7 +125,7 @@ class RecordContentResolver:
         # Artifact logical-name fallback (e.g. model passes "report.pdf"
         # instead of the UUID artifact_id).
         if self._artifacts is not None and conversation_id:
-            return await self._resolve_via_artifact_registry(ref, actor, conversation_id)
+            return await self._resolve_via_artifact_registry(ref, artifact_actor, conversation_id)
 
         raise RecordNotFoundError(f"Record not found: {ref}")
 

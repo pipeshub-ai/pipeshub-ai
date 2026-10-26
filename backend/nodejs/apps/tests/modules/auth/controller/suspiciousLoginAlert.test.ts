@@ -73,11 +73,12 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
     // Drive straight to the wrong-password branch that raises the alert.
     sinon.stub(controllerRef, 'ensureBlockStatus').resolves(false);
     sinon.stub(controllerRef, 'verifyPassword').resolves(false);
-    sinon.stub(controllerRef, 'incrementWrongCredentialCount').resolves({
+    sinon.stub(controllerRef, 'reserveCredentialAttempt').resolves({
       userId: 'u1',
       orgId: 'o1',
+      hashedPassword: 'hashed',
       wrongCredentialCount: 5,
-      isBlocked: true,
+      isBlocked: false,
       save: sinon.stub().resolves(),
     });
   };
@@ -86,20 +87,22 @@ describe('UserAccountController - suspicious login alert is best effort', () => 
     sinon.stub(Org, 'findOne').resolves({ shortName: 'Corp' } as any);
     sinon.stub(Users, 'findOne').resolves({ fullName: 'Test User' } as any);
     sinon.stub(UserActivities, 'create').resolves({} as any);
+    // A real hash of a different OTP, so bcrypt.compare genuinely misses.
+    const hashedOTP = bcrypt.hashSync('999999', 4);
     sinon.stub(UserCredentials, 'findOne').resolves({
       userId: 'u1',
       orgId: 'o1',
       otpValidity: Date.now() + 60_000,
-      // A real hash of a different OTP, so bcrypt.compare genuinely misses.
-      hashedOTP: bcrypt.hashSync('999999', 4),
+      hashedOTP,
       wrongCredentialCount: 4,
       isBlocked: false,
       save: sinon.stub().resolves(),
     } as any);
     sinon.stub(controllerRef, 'ensureBlockStatus').resolves(false);
-    sinon.stub(controllerRef, 'incrementWrongCredentialCount').resolves({
+    sinon.stub(controllerRef, 'reserveCredentialAttempt').resolves({
       userId: 'u1',
       orgId: 'o1',
+      hashedOTP,
       wrongCredentialCount: 5,
       isBlocked: false,
       save: sinon.stub().resolves(),

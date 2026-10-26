@@ -72,12 +72,12 @@ jobs:
           fi
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
 
       - name: Install backend dependencies
         working-directory: backend/python
@@ -118,6 +118,24 @@ jobs:
             --baseline "tests/evals/baselines/$CASE_SET_INPUT.json" \
             --fail-on-regression
 
+      # The demo acceptance test's answer judge, checked against hand-labelled
+      # hard cases (tests/evals/answer_judge_calibration.yaml). Its own step so
+      # a judge that drifts fails here, not as unexplained demo failures.
+      - name: Calibrate the demo answer judge
+        if: ${{ !cancelled() }}
+        working-directory: backend/python
+        env:
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          EVAL_PROVIDER: azure_openai
+        run: |
+          source .venv/bin/activate
+          python -m tests.evals.run_judge_calibration \
+            --output reports/evals/judge-calibration.json \
+            --summary reports/evals/summary.md
+
       - name: Write job summary
         if: ${{ !cancelled() }}
         run: |
@@ -130,7 +148,7 @@ jobs:
 
       - name: Upload eval result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: answer-quality-${{ github.run_id }}
           path: backend/python/reports/evals/

@@ -26,6 +26,7 @@ from app.services.embeddings.multimodal.interface import (
     ImageEmbeddingResult,
     IMultimodalEmbeddingProvider,
 )
+from app.utils.model_egress import guarded_async_client
 
 _CONCURRENCY_LIMIT = 5
 _DEFAULT_BASE_URL = "http://localhost:11434"
@@ -82,7 +83,7 @@ class OllamaMultimodalProvider(IMultimodalEmbeddingProvider):
                         )
                     return ImageEmbeddingResult(index=i, error=str(e))
 
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with guarded_async_client(self.base_url, timeout=60.0) as client:
             return await asyncio.gather(
                 *[embed_single(client, i, b64) for i, b64 in enumerate(image_base64s)]
             )

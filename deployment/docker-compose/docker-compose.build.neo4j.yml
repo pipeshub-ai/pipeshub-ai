@@ -9,6 +9,8 @@ services:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
         RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-pipeshubai/pipeshub-ai-base:runtime}
+        APP_VERSION: ${APP_VERSION:-}
+        GIT_COMMIT: ${GIT_COMMIT:-}
       shm_size: 4gb
       ulimits:
         memlock:
@@ -52,6 +54,7 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-http://localhost:3001}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
+      - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
@@ -84,6 +87,12 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
+      # Indexing lanes on Redis Streams: how many (every service must agree), and
+      # how a connector is given one: "assigned" (the least busy lane, recorded
+      # once) or "hash", which switches assigned lanes off.
+      - FAIR_SCHEDULING_LANE_COUNT=${FAIR_SCHEDULING_LANE_COUNT:-8}
+      - FAIR_SCHEDULING_LANE_ASSIGNMENT=${FAIR_SCHEDULING_LANE_ASSIGNMENT:-assigned}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -110,6 +119,7 @@ services:
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -120,14 +130,15 @@ services:
       - MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE=${MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE:-1000}
 
       # Set to true to replace secrets in config API responses with **** markers
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -145,18 +156,62 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Most characters one agent turn may stream before it is stopped as a
+      # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
+      - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
+      # true: features that trade some compute or tokens per question for
+      # better answers (keyword hits merged by rank fusion, search results
+      # with the most relevant record first, answer composition and
+      # multi-step rules, reading an answer's records in full). Off by
+      # default. A feature's own switch below, when set to true or false,
+      # overrides it for that feature; blank follows it.
+      # It also turns on named-entity extraction while indexing, and the
+      # entity tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
+      - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
+      - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
+      - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
+      - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
+      - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
+      - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
+      - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
+      - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
+      - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
+
+      # OPIK config
+      - OPIK_API_KEY=${OPIK_API_KEY:-}
+      - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
+
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
+      # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
+      - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
+      # How long a delete waits for a running sync to stop.
+      - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
-      
-      - OPIK_API_KEY=${OPIK_API_KEY:-}
-      - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
       # AWS credentials (for Bedrock IAM role access from inside the container)
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
@@ -168,17 +223,36 @@ services:
       - BOT_TOKEN=${BOT_TOKEN:-}
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
+      # Custom (non-catalog) STDIO MCP servers run an admin-entered command on this
+      # host as the app user, with its network access. Off unless "true"; catalog
+      # and remote (HTTP) MCP servers are unaffected.
+      - MCP_ALLOW_CUSTOM_STDIO=${MCP_ALLOW_CUSTOM_STDIO:-false}
+
       # Sandbox execution mode (local = subprocess, docker = ephemeral containers).
       # Defaults to "docker" -- the sandbox-image service below builds the required
       # pipeshub/sandbox:latest image before pipeshub-ai starts.
       # Production (docker-compose.prod.yml) pulls pipeshubai/pipeshub-sandbox:${IMAGE_TAG}
       # from the registry instead; build/push from deployment/sandbox alongside pipeshub-ai.
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # SANDBOX_MODE=local is refused unless this is "true" (single-user dev only).
+      - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshub/sandbox:latest}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # The app never sees the Docker socket; sandbox containers are created
+      # through docker-socket-proxy, which only admits sandbox-shaped requests.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
+      # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
+      # the storage driver supports it; logs a warning once otherwise.
+      - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
 
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      # Set to "true" to defer graph enrichment until after vectordb indexing completes
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       # Lazy tool loading: group connector tools into toolsets and disclose
       # their schemas on demand (list_toolsets/fetch_tools/search_tools)
@@ -191,6 +265,11 @@ services:
       - PIPESHUB_LAZY_TOOLS_MENTION_THRESHOLD=${PIPESHUB_LAZY_TOOLS_MENTION_THRESHOLD:-0.4}
 
     depends_on:
+      docker-socket-proxy:
+        # Not service_healthy: an older image (rollback.sh) has no proxy
+        # module, and that must cost run_code, not the whole app.
+        condition: service_started
+        required: false
       qdrant:
         condition: service_healthy
       redis:
@@ -202,13 +281,17 @@ services:
       sandbox-image:
         condition: service_completed_successfully
 
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - default
+      - sandbox-control
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       # Persist the HuggingFace model cache so models pulled at runtime survive
       # container recreation instead of being re-downloaded on every restart.
       - pipeshub_hf_cache:/root/.cache/huggingface
-      - /var/run/docker.sock:/var/run/docker.sock  # Required for SANDBOX_MODE=docker
     extra_hosts:
       - "host.docker.internal:host-gateway"
     # Probe the aggregated /api/v1/health/services endpoint served by the
@@ -227,6 +310,43 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  # The only container with the Docker socket. It forwards just the calls the
+  # coding sandbox makes, refuses any container create that would reach the
+  # host (privileged, binds, devices, host namespaces, other images or
+  # networks), and only acts on containers it created. See
+  # backend/python/app/sandbox/docker_proxy.py.
+  docker-socket-proxy:
+    image: pipeshub-ai:latest
+    restart: always
+    # Root only to open the root-owned socket; it holds no capabilities.
+    user: "0:0"
+    working_dir: /app/python
+    # Bypasses the image entrypoint, which drops privileges for the app and
+    # needs capabilities this container deliberately does not have.
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshub/sandbox:latest}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   mongodb:
     image: mongo:${MONGO_IMAGE_TAG:-8.0.17}
@@ -326,7 +446,7 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      - KAFKA_CREATE_TOPICS=record-events:32:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
@@ -372,7 +492,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 4G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: 2G
@@ -413,3 +536,10 @@ volumes:
     driver: local
   kafka_data:
     driver: local
+
+networks:
+  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
+  # can reach the proxy.
+  sandbox-control:
+    driver: bridge
+    internal: true

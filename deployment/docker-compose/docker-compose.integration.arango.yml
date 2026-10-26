@@ -9,6 +9,8 @@ services:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
         RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-pipeshubai/pipeshub-ai-base:runtime}
+        APP_VERSION: ${APP_VERSION:-}
+        GIT_COMMIT: ${GIT_COMMIT:-}
       shm_size: 4gb
       ulimits:
         memlock:
@@ -56,14 +58,28 @@ services:
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       # The Web and RSS connectors crawl the web-fixtures service, which is on the private Docker network.
       - WEB_CONNECTOR_ALLOWED_HOSTS=web-fixtures
+      # The Jira Cloud API-token connector only talks to Atlassian sites; jira-sim stands in for one.
+      - PIPESHUB_ATLASSIAN_ALLOWED_SITE_HOSTS=jira-sim.internal
+      # Unset: the Notion connector calls api.notion.com. The Notion suite sets it to the notion-sim service.
+      - NOTION_API_BASE_URL=${NOTION_CONNECTOR_BASE_URL:-}
+      # The test Nextcloud (nextcloud-source) has no TLS.
+      - PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP=true
       - STRICT_MODE=${STRICT_MODE:-false}
+      # The session-revocation checks look within seconds of a sign-out; the product default is 30s.
+      - SESSION_CHECK_CACHE_SECONDS=${SESSION_CHECK_CACHE_SECONDS:-2}
+      # The pinned Zammad (6.4) can't count tickets; list them every sync so a delete lands.
+      - ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS=${ZAMMAD_FULL_TICKET_LISTING_INTERVAL_MS:-0}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
+      - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       # Security settings - allow override with custom secret
       - SECRET_KEY=${SECRET_KEY:-your_random_encryption_secret_key}
       # Signs service tokens. Fixed so the storage suite can mint tokens this
       # stack accepts; the app only reads it on the first boot of a fresh volume.
       - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
+      # Empty unless the Gmail suites run (gmail-sim profile): then the Gmail connectors, and only they,
+      # call the Gmail simulator instead of Google (integration-tests/connectors/gmail/DESIGN.md).
+      - GMAIL_GOOGLE_API_BASE_URL=${GMAIL_GOOGLE_API_BASE_URL:-}
 
       # Public endpoints
       - CONNECTOR_PUBLIC_BACKEND=${CONNECTOR_PUBLIC_BACKEND:-}
@@ -78,7 +94,11 @@ services:
       - PARSING_SERVICE_URL=http://localhost:8092
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-true}
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
+      # run_code needs a sandbox, and an unset SANDBOX_MODE turns it off. This
+      # stack is single-user CI with no Docker daemon for sandbox containers, so run it locally.
+      - SANDBOX_MODE=${SANDBOX_MODE:-local}
+      - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-true}
 
       # Key-Value Store Configuration
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -93,6 +113,12 @@ services:
       # Message broker config
       - MESSAGE_BROKER=${MESSAGE_BROKER:-kafka}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
+      # Indexing lanes on Redis Streams: how many (every service must agree), and
+      # how a connector is given one: "assigned" (the least busy lane, recorded
+      # once) or "hash", which switches assigned lanes off.
+      - FAIR_SCHEDULING_LANE_COUNT=${FAIR_SCHEDULING_LANE_COUNT:-8}
+      - FAIR_SCHEDULING_LANE_ASSIGNMENT=${FAIR_SCHEDULING_LANE_ASSIGNMENT:-assigned}
 
       # Kafka config
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -119,6 +145,7 @@ services:
       # Qdrant config
       - QDRANT_API_KEY=${QDRANT_API_KEY:-your_qdrant_secret_api_key}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-4G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -133,11 +160,14 @@ services:
       - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # MCP OAuth scopes
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
 
       # Token config
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      # One minute rather than twenty, so the expired-link test waits a minute, not
+      # twenty. Only forgot-password links use it; invites have their own lifetime.
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
@@ -147,6 +177,34 @@ services:
       # Set an explicit integer only to pin a hard ceiling.
       - MAX_CONCURRENT_PARSING=${MAX_CONCURRENT_PARSING:-}
       - MAX_CONCURRENT_INDEXING=${MAX_CONCURRENT_INDEXING:-}
+
+      # High-accuracy features (see docker-compose.yml). Off unless set.
+      - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
+      - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
+      - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
+      - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
+      - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
+      - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
+      - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
+      - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
+      - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-true}
+
 
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
@@ -245,6 +303,133 @@ services:
       - "127.0.0.1:8089:8080"
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixtures__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # Confluence Cloud and Jira Cloud simulators (pipeshub-ai/connectors-simulator) for
+  # the Confluence and Jira suites, behind the atlassian-sim profile. Both serve one
+  # site with the same people and groups, served from the lumenfold@2 content pack
+  # (CONNSIM_PACK_DIR, downloaded from S3 by the workflow). Pack and build time are
+  # pinned, so every run gets the same world and the suites can name fixture issues
+  # (integration-tests/connectors/atlassian_sim.env). The test process uses the
+  # published ports; the connector uses the aliases. The Confluence connector only
+  # resolves users through Jira on an *.atlassian.net host on port 80, hence that
+  # alias. Never recreate confluence-sim while a connector syncs from it: without the
+  # alias the name resolves to the real atlassian.net.
+  confluence-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["atlassian-sim"]
+    restart: always
+    command: ["confluence"]
+    environment: &connsim-site
+      CONNSIM_SOURCES: confluence,jira
+      CONNSIM_PACK: /pack
+      CONNSIM_BUILD_TIME_MS: "1767225600000"
+      CONNSIM_MEDIA_BASE_URL: http://confluence-sim-media.atlassian.net
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8101:80"
+    networks:
+      default:
+        aliases:
+          - confluence-sim.atlassian.net
+          - confluence-sim-media.atlassian.net
+    mem_limit: 1g
+
+  jira-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["atlassian-sim"]
+    restart: always
+    command: ["jira"]
+    environment: *connsim-site
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8102:80"
+    networks:
+      default:
+        aliases:
+          - jira-sim.internal
+    mem_limit: 1g
+
+  # The Notion simulator for the Notion suite, behind the notion-sim profile: the Notion part of the
+  # same content pack, with the suite's fixture tree in it (integration-tests/connectors/notion_sim.env).
+  # A site of its own (CONNSIM_SOURCES=notion), seed and build time pinned so the tree's ids stay put. The
+  # connector reaches it through NOTION_API_BASE_URL, so no real host is aliased.
+  notion-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["notion-sim"]
+    restart: always
+    command: ["notion"]
+    environment:
+      CONNSIM_SOURCES: notion
+      CONNSIM_PACK: /pack
+      CONNSIM_SEED: "42"
+      CONNSIM_BUILD_TIME_MS: "1767225600000"
+    volumes:
+      - connsim_data:/data
+      - ${CONNSIM_PACK_DIR:-./connsim-pack-not-downloaded}:/pack:ro
+    ports:
+      - "127.0.0.1:8103:80"
+    networks:
+      default:
+        aliases:
+          - notion-sim.internal
+    mem_limit: 1g
+
+  # An external MCP server that agent tests register and call, so "an agent
+  # calls an MCP tool" is checked without a third-party service. Its call log
+  # is read through the published port (integration-tests/helper/mcp_fixture.py).
+  # The Gmail simulator for the Gmail suites (gmail-sim profile). The connectors reach it by alias through
+  # GMAIL_GOOGLE_API_BASE_URL, the test process on the published port. It holds no data until a test loads a
+  # scenario, so it needs no content pack.
+  gmail-sim:
+    image: ${CONNSIM_IMAGE:-pipeshub/connectors-simulator:it}
+    profiles: ["gmail-sim"]
+    restart: always
+    command: ["gmail"]
+    environment:
+      CONNSIM_SOURCES: gmail
+    ports:
+      - "127.0.0.1:8106:80"
+    networks:
+      default:
+        aliases:
+          - gmail-sim.internal
+    mem_limit: 512m
+
+  mcp-fixture:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "/srv/server.py", "--port", "8080"]
+    volumes:
+      - ../../integration-tests/mcp_fixture:/srv:ro
+    ports:
+      - "127.0.0.1:8097:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  # A REST API (Acme Helpdesk) that agent tests add as an API Toolset from its
+  # OpenAPI spec, so "an agent calls an internal API" is checked without a
+  # third-party service. Its call log is read through the published port
+  # (integration-tests/helper/openapi_fixture.py).
+  openapi-fixture:
+    image: python:3.12.11-alpine3.22@sha256:efcdfa6a6b2fd2afb9c7dfa9a5b288a6f68338b5cfdebe6b637d986067d85757
+    restart: always
+    command: ["python", "/srv/server.py", "--port", "8080"]
+    volumes:
+      - ../../integration-tests/openapi_fixture:/srv:ro
+    ports:
+      - "127.0.0.1:8098:8080"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/__fixture__/health')"]
       interval: 5s
       timeout: 3s
       retries: 20
@@ -402,6 +587,7 @@ services:
       /bin/sh -c "
       mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-pipeshubtest} ${MINIO_ROOT_PASSWORD:-pipeshubtest123} &&
       mc mb --ignore-existing local/${MINIO_TEST_BUCKET:-pipeshub-connector-test} &&
+      mc mb --ignore-existing local/${MINIO_SECOND_TEST_BUCKET:-pipeshub-connector-test-2} &&
       echo 'minio bucket ready'
       "
 
@@ -448,7 +634,7 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      - KAFKA_CREATE_TOPICS=record-events:32:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
@@ -477,7 +663,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 4G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-4G}
         reservations:
           cpus: '2'
           memory: 2G
@@ -628,6 +817,7 @@ services:
       - zammad-storage:/opt/zammad/storage
 
 volumes:
+  connsim_data:
   zammad-storage:
   mongodb_data:
     driver: local

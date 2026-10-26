@@ -1,13 +1,16 @@
 import asyncio
 import json
-import ssl
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
 from aiokafka import AIOKafkaProducer  # type: ignore
 
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
+from app.services.messaging.kafka.config.kafka_config import (
+    KafkaProducerConfig,
+    kafka_security_kwargs,
+)
+from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -22,6 +25,10 @@ class KafkaMessagingProducer(IMessagingProducer):
         self.producer: Optional[AIOKafkaProducer] = None
         self.kafka_config = kafka_config
         self.processed_messages: Dict[str, List[int]] = {}
+        # The loop the AIOKafkaProducer was started on. Its sender task and
+        # futures live there, and the indexing service also sends from its
+        # worker loop, so sends from any other loop are handed back to it.
+        self._owner_loop: asyncio.AbstractEventLoop | None = None
         self._producer_lock = asyncio.Lock()
 
     @staticmethod
@@ -32,17 +39,7 @@ class KafkaMessagingProducer(IMessagingProducer):
             'client_id': kafka_config.client_id,
         }
 
-        # Add SSL/SASL configuration
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
 
         return config
 
@@ -69,6 +66,7 @@ class KafkaMessagingProducer(IMessagingProducer):
 
                 # Only assign after successful start
                 self.producer = producer
+                self._owner_loop = asyncio.get_running_loop()
                 self.logger.info(f"✅ Kafka producer initialized and started with client_id: {producer_config.get('client_id')}")
 
             except Exception as e:
@@ -89,6 +87,7 @@ class KafkaMessagingProducer(IMessagingProducer):
                 try:
                     await self.producer.stop()
                     self.producer = None
+                    self._owner_loop = None
                     self.logger.info("✅ Kafka producer stopped successfully")
                 except Exception as e:
                     self.logger.error(f"❌ Error stopping Kafka producer: {str(e)}")
@@ -102,9 +101,7 @@ class KafkaMessagingProducer(IMessagingProducer):
     # implementing abstract methods from IMessagingProducer
     async def stop(self) -> None:
         """Stop the Kafka producer"""
-        if self.producer:
-            await self.stop()
-            self.logger.info("✅ Kafka producer stopped successfully")
+        await self.cleanup()
 
     # implementing abstract methods from IMessagingProducer
     async def send_message(
@@ -114,11 +111,21 @@ class KafkaMessagingProducer(IMessagingProducer):
         key: Optional[str] = None
     ) -> bool:
         """Send a message to a Kafka topic"""
+        # Stamped before the hop: the owner loop's context has no request id.
+        return await run_on_loop(
+            self._owner_loop, self._send_message(topic, inject_envelope(message), key)
+        )
+
+    async def _send_message(
+        self,
+        topic: str,
+        message: dict[str, Any],
+        key: str | None,
+    ) -> bool:
         try:
             if self.producer is None:
                 await self.initialize()
 
-            message = inject_envelope(message)
             message_value = json.dumps(message).encode('utf-8')
             message_key = key.encode('utf-8') if key else None
 
@@ -156,7 +163,14 @@ class KafkaMessagingProducer(IMessagingProducer):
         """
         if not messages:
             return []
+        stamped = [(key, inject_envelope(message)) for key, message in messages]
+        return await run_on_loop(self._owner_loop, self._send_messages(topic, stamped))
 
+    async def _send_messages(
+        self,
+        topic: str,
+        messages: list[tuple[str | None, dict[str, Any]]],
+    ) -> list[bool]:
         if self.producer is None:
             await self.initialize()
 
@@ -167,8 +181,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         first_error: Optional[BaseException] = None
         for key, message in messages:
             try:
-                envelope = inject_envelope(message)
-                message_value = json.dumps(envelope).encode('utf-8')
+                message_value = json.dumps(message).encode('utf-8')
                 message_key = key.encode('utf-8') if key else None
                 # send() returns a future once the record is buffered; it only blocks
                 # when the accumulator is full, which is the backpressure we want.

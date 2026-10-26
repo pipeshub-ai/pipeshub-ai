@@ -45,6 +45,9 @@ function stats(indexingStatus: Record<string, number>, total?: number): Connecto
 
 const toastTitles = () => toasts().map((t) => t.title);
 
+// Retries live inside the Data extraction with AI section, which starts collapsed.
+const openEnrichment = () => fireEvent.click(screen.getByRole('button', { name: /Data extraction with AI/ }));
+
 beforeEach(() => {
   installDomShims();
   useConnectorsStore.getState().reset();
@@ -68,7 +71,7 @@ describe('OverviewTab: record status', () => {
         stats={stats({ COMPLETED: 40, FAILED: 3, QUEUED: 2 }, 45)}
       />
     );
-    expect(screen.getByText('Records Status')).toBeTruthy();
+    expect(screen.getByText('Records status')).toBeTruthy();
     expect(screen.getByText('45')).toBeTruthy();
     expect(screen.getByText('40')).toBeTruthy();
     expect(screen.getByText('Errors (API / permission issues)')).toBeTruthy();
@@ -89,7 +92,7 @@ describe('OverviewTab: record status', () => {
         stats={null}
       />
     );
-    expect(screen.getByText('35% Complete')).toBeTruthy();
+    expect(screen.getByText('35% complete')).toBeTruthy();
   });
 
   it('opens the failed records in the knowledge base', () => {
@@ -146,6 +149,136 @@ describe('OverviewTab: actions', () => {
     fireEvent.click(screen.getByRole('button', { name: /Manual index \(7\)/ }));
 
     await waitFor(() => expect(reindexConnector).toHaveBeenCalledWith('conn-1', ['AUTO_INDEX_OFF']));
+  });
+
+  it('keeps the reindex actions disabled while a classification retry runs', async () => {
+    let finish: (value: unknown) => void = () => {};
+    reindexConnector.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const withFailedClassification = stats({ COMPLETED: 5, FAILED: 3 });
+    withFailedClassification.stats.extractionStatus = {
+      FAILED: 2,
+    } as ConnectorStatsResponse['data']['stats']['extractionStatus'];
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedClassification} />);
+    openEnrichment();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed classification \(2\)/ }));
+
+    await waitFor(() => expect(reindexConnector).toHaveBeenCalledWith('conn-1', ['FAILED'], ['classify']));
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: /Reindex failed \(3\)/ }) as HTMLButtonElement).disabled).toBe(true)
+    );
+    expect(
+      (screen.getByRole('button', { name: /Retry failed classification \(2\)/ }) as HTMLButtonElement).disabled
+    ).toBe(true);
+
+    finish({});
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: /Reindex failed \(3\)/ }) as HTMLButtonElement).disabled).toBe(false)
+    );
+  });
+
+  it('hides the entity extraction retry when no record failed it', () => {
+    const noFailedEntities = stats({ COMPLETED: 5 });
+    noFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
+    noFailedEntities.stats.entitiesStatus = { COMPLETED: 5, FAILED: 0 };
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={noFailedEntities} />);
+    openEnrichment();
+
+    expect(screen.queryByRole('button', { name: /Retry failed entity extraction/ })).toBeNull();
+  });
+
+  it('hides the entity extraction retry when the backend sends no entitiesStatus', () => {
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={stats({ COMPLETED: 5 })} />);
+
+    expect(screen.queryByRole('button', { name: /Retry failed entity extraction/ })).toBeNull();
+  });
+
+  it('retries failed entity extraction and refreshes the numbers', async () => {
+    const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
+    withFailedEntities.stats.entitiesStatus = { COMPLETED: 1, FAILED: 4 };
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+    openEnrichment();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
+
+    await waitFor(() => expect(reindexConnector).toHaveBeenCalledWith('conn-1', ['FAILED'], ['entities']));
+    await waitFor(() => expect(toastTitles()).toContain('Entity extraction retry queued'));
+    expect(fetchInstanceStats).toHaveBeenCalledWith('conn-1', { force: true });
+  });
+
+  it('does not call a queued entity extraction retry failed when only the stats refresh fails', async () => {
+    fetchInstanceStats.mockRejectedValue(new Error('stats down'));
+    const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
+    withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+    openEnrichment();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
+
+    await waitFor(() => expect(toastTitles()).toContain('Entity extraction retry queued'));
+    await waitFor(() => expect(fetchInstanceStats).toHaveBeenCalled());
+    expect(toastTitles()).not.toContain('Failed to retry entity extraction');
+    await waitFor(() =>
+      expect(
+        (screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }) as HTMLButtonElement).disabled,
+      ).toBe(false),
+    );
+  });
+
+  it('does not call a queued classification retry failed when only the stats refresh fails', async () => {
+    fetchInstanceStats.mockRejectedValue(new Error('stats down'));
+    const withFailedClassification = stats({ COMPLETED: 5 });
+    withFailedClassification.stats.extractionStatus = {
+      FAILED: 2,
+    } as ConnectorStatsResponse['data']['stats']['extractionStatus'];
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedClassification} />);
+    openEnrichment();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed classification \(2\)/ }));
+
+    await waitFor(() => expect(fetchInstanceStats).toHaveBeenCalled());
+    expect(toastTitles()).not.toContain('Failed to retry classification');
+  });
+
+  it('reports a failed entity extraction retry', async () => {
+    reindexConnector.mockRejectedValue(new Error('nope'));
+    const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
+    withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+    openEnrichment();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
+
+    await waitFor(() => expect(toastTitles()).toContain('Failed to retry entity extraction'));
+  });
+
+  it('keeps the other reindex actions disabled while an entity extraction retry runs', async () => {
+    let finish: (value: unknown) => void = () => {};
+    reindexConnector.mockReturnValue(new Promise((resolve) => (finish = resolve)));
+    const withFailures = stats({ COMPLETED: 5, FAILED: 3 });
+    withFailures.stats.extractionStatus = { FAILED: 2 };
+    withFailures.stats.entitiesStatus = { FAILED: 4 };
+    renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailures} />);
+    openEnrichment();
+
+    fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
+
+    await waitFor(() => expect(reindexConnector).toHaveBeenCalledWith('conn-1', ['FAILED'], ['entities']));
+    const disabled = (name: RegExp) => (screen.getByRole('button', { name }) as HTMLButtonElement).disabled;
+    await waitFor(() => expect(disabled(/Reindex failed \(3\)/)).toBe(true));
+    expect(disabled(/Retry failed classification \(2\)/)).toBe(true);
+    expect(disabled(/Retry failed entity extraction \(4\)/)).toBe(true);
+
+    finish({});
+    await waitFor(() => expect(disabled(/Reindex failed \(3\)/)).toBe(false));
+    expect(disabled(/Retry failed classification \(2\)/)).toBe(false);
   });
 
   it('starts a sync and confirms it', async () => {

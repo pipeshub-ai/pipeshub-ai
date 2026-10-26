@@ -70,10 +70,27 @@ class TestMergeIntoWinner:
         entity = resolution.entries[(TOPICS, "bug bash testing")]
         assert entity.new_aliases == []
 
+    async def test_a_node_with_twenty_aliases_still_records_a_new_one(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        """D-20: at the old cap of 20 a merged spelling was never stored, so
+        every later record re-asked the model about it."""
+        await seeded_store(_topic("k-bug", "Bug bash testing", aliases=[f"alias {i}" for i in range(20)]))
+        p1, p2 = _patched(_answer(MergeDecision(i=0, same=True, target="k-bug")))
+        with p1, p2:
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
+            )
+        entity = resolution.entries[(TOPICS, "bug bash testing")]
+        assert entity.new_aliases == ["Bug bash testing session"]
+        assert resolution.stats.alias_cap_hits == 0
+
     async def test_alias_cap_still_merges_but_does_not_append(
         self, make_resolver, seeded_store, metadata_factory, ctx_factory
     ) -> None:
-        aliases = [f"alias {i}" for i in range(20)]
+        from app.modules.entity_resolution.models import MAX_ALIASES_PER_NODE
+
+        aliases = [f"alias {i}" for i in range(MAX_ALIASES_PER_NODE)]
         await seeded_store(_topic("k-bug", "Bug bash testing", aliases=aliases))
         p1, p2 = _patched(_answer(MergeDecision(i=0, same=True, target="k-bug")))
         with p1, p2:
@@ -82,7 +99,7 @@ class TestMergeIntoWinner:
             )
         entity = resolution.entries[(TOPICS, "bug bash testing")]
         assert entity.key == "k-bug"
-        assert len(entity.aliases) == 20
+        assert len(entity.aliases) == MAX_ALIASES_PER_NODE
         assert entity.new_aliases == []
         assert resolution.stats.alias_cap_hits == 1
 
@@ -300,21 +317,45 @@ class TestSameAsItem:
         assert resolution.stats.merges == 1
         assert resolution.stats.in_record_merges == 1
 
-    async def test_conflicting_winners_in_one_group_keep_first_and_count(
+    async def test_a_valid_target_wins_over_an_item_pointer(
         self, make_resolver, seeded_store, metadata_factory, ctx_factory
     ) -> None:
-        await seeded_store(_topic("k-a", "Alpha topic"), _topic("k-b", "Beta topic"))
+        """KG-39: the model named both the offered node and another item; the
+        node is the stronger answer and must not be dropped for the pointer."""
+        await seeded_store(_topic("k-bug", "Bug bash testing"))
         p1, p2 = _patched(_answer(
-            MergeDecision(i=0, same=True, target="k-a"),
-            MergeDecision(i=1, same=True, target="k-b"),
-            MergeDecision(i=2, same=True, same_as_item=0),
+            MergeDecision(i=0, same=False),
+            MergeDecision(i=1, same=True, target="k-bug", same_as_item=0),
         ))
         with p1, p2:
             resolution = await make_resolver().resolve(
-                ctx_factory("r1", "acme", metadata_factory(topics=["Alpha topic x", "Beta topic x", "Gamma"]))
+                ctx_factory("r1", "acme", metadata_factory(topics=["Release notes", "Bug bash testing session"]))
             )
-        # only a genuine group can conflict: bind item 1 to item 0 through 2
-        assert resolution.stats.rejected_decisions == 0  # 0 and 1 are separate components here
+        merged = resolution.entries[(TOPICS, "bug bash testing")]
+        assert merged.key == "k-bug" and merged.extracted_names == ["Bug bash testing session"]
+        assert resolution.entries[(TOPICS, "release notes")].is_new
+        assert resolution.stats.merges == 1 and resolution.stats.rejected_decisions == 0
+
+
+class TestEmptyAnswer:
+    async def test_an_answer_with_no_usable_decision_counts_as_a_failed_call(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        """KG-39: an empty (or all-invalid) decision list is not a success."""
+        from app.modules.entity_resolution import resolver as resolver_module
+
+        await seeded_store(_topic("k-bug", "Bug bash testing"))
+        p1, p2 = _patched(_answer(MergeDecision(i=7, same=True, target="k-bug")))
+        with p1, p2, patch.object(resolver_module.metrics, "record_model_call") as calls, \
+                patch.object(resolver_module.metrics, "record_fallback") as fallbacks:
+            resolver = make_resolver()
+            resolution = await resolver.resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
+            )
+        assert [c.args[0] for c in calls.call_args_list] == ["empty"]
+        assert ("model_empty", 1) in [tuple(c.args) for c in fallbacks.call_args_list]
+        assert resolution.stats.model_failures == 1
+        assert resolution.entries[(TOPICS, "bug bash testing session")].is_new
 
 
 class TestConcurrencyByConstruction:
@@ -326,3 +367,39 @@ class TestConcurrencyByConstruction:
         a = await resolver.resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Onboarding checklist"])))
         b = await resolver.resolve(ctx_factory("r2", "acme", metadata_factory(topics=["onboarding  checklist"])))
         assert a.entries[(TOPICS, "onboarding checklist")].key == b.entries[(TOPICS, "onboarding checklist")].key
+
+
+class TestSeveralCandidates:
+    """KG-12: the model is offered the top candidates, and may merge into any
+    of them; anything it was not offered is still rejected."""
+
+    async def test_merging_into_the_second_ranked_candidate(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        await seeded_store(_topic("k-notes", "Release notes"), _topic("k-check", "Release checklist"))
+        p1, p2 = _patched(_answer(MergeDecision(i=0, same=True, target="k-check")))
+        with p1, p2:
+            resolution = await make_resolver().resolve(
+                ctx_factory("r1", "acme", metadata_factory(topics=["Release check list"]))
+            )
+        entity = resolution.entries[(TOPICS, "release checklist")]
+        assert entity.key == "k-check" and entity.decision == "merge"
+        assert resolution.stats.merges == 1
+
+    async def test_every_offered_candidate_reaches_the_prompt(
+        self, make_resolver, seeded_store, metadata_factory, ctx_factory
+    ) -> None:
+        from app.modules.entity_resolution import resolver as resolver_module
+
+        await seeded_store(_topic("k-a", "Release notes"), _topic("k-b", "Release checklist"), _topic("k-c", "Release plan"))
+        seen: list[str] = []
+
+        async def _capture(llm, messages, schema, **kwargs) -> MergeDecisions:
+            seen.append(messages[0].content)
+            return _answer(MergeDecision(i=0, same=False))
+
+        with patch.object(resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {}))), \
+                patch.object(resolver_module, "invoke_with_structured_output_and_reflection", side_effect=_capture):
+            await make_resolver().resolve(ctx_factory("r1", "acme", metadata_factory(topics=["Release thing"])))
+        assert all(name in seen[0] for name in ("Release notes", "Release checklist", "Release plan"))
+        assert not any(key in seen[0] for key in ("k-a", "k-b", "k-c"))

@@ -244,13 +244,11 @@ class TestRenderFlatText:
 # execute_list_files
 # ---------------------------------------------------------------------------
 
-from unittest.mock import AsyncMock, patch
 
 
 class TestExecuteListFiles:
     @pytest.mark.asyncio
     async def test_no_state(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         ok, msg = await execute_list_files(None)
         assert ok is False
@@ -258,7 +256,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_no_graph_provider(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         state: dict[str, Any] = {"graph_provider": None}
         with patch(
@@ -271,7 +268,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_empty_scope(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=(), kb_ids=(), is_empty=lambda: True)
         state: dict[str, Any] = {
@@ -290,7 +286,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_happy_path(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
         item = _item_with_enum("record", "rec-1")
@@ -330,7 +325,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_query_too_short_ignored(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
         resp = _response(items=[])
@@ -367,7 +361,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_invalid_sort_defaults(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
         resp = _response(items=[])
@@ -406,7 +399,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_source_ids_matched(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(
             app_ids=("app-1", "app-2"), kb_ids=("kb-1",), is_empty=lambda: False
@@ -444,7 +436,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_exception_returns_error(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
 
@@ -470,7 +461,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_page_limit_clamped(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
         resp = _response(items=[])
@@ -507,7 +497,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_node_types_filtered(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
         resp = _response(items=[])
@@ -545,7 +534,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_query_long_truncated(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(app_ids=("app-1",), kb_ids=(), is_empty=lambda: False)
         resp = _response(items=[])
@@ -580,7 +568,6 @@ class TestExecuteListFiles:
 
     @pytest.mark.asyncio
     async def test_source_ids_no_match_falls_back(self) -> None:
-        from app.agents.actions.knowledge_graph.ops.listing import execute_list_files
 
         scope = SimpleNamespace(
             app_ids=("app-1",), kb_ids=("kb-1",), is_empty=lambda: False

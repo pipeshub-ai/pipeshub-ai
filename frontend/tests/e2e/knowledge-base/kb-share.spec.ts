@@ -26,7 +26,7 @@ async function openShareDialog(page: Page, kbId: string) {
   await page.goto(`/knowledge-base/?nodeType=app&nodeId=${kbId}`);
   // exact: the sidebar lists the collection itself, whose name may contain "Share".
   await page.getByRole('button', { name: 'Share', exact: true }).click();
-  const dialog = page.getByRole('dialog', { name: 'Share Collection' });
+  const dialog = page.getByRole('dialog', { name: 'Share collection' });
   await expect(dialog).toBeVisible({ timeout: 15_000 });
   return dialog;
 }
@@ -66,8 +66,9 @@ async function openCollectionContents(page: Page, kbId: string) {
 
 function collectionEntry(page: Page, kbName: string) {
   // A collection with files gets an expand chevron whose icon text leads the accessible name.
+  // Its row menu is named "More options for <name>", which is not the entry itself.
   const escaped = kbName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return page.getByRole('button', { name: new RegExp(`(^|\\s)${escaped}$`) });
+  return page.getByRole('button', { name: new RegExp(`^(?!More options for )(.*\\s)?${escaped}$`) });
 }
 
 test.describe('Share a collection', () => {
@@ -112,7 +113,7 @@ test.describe('Share a collection', () => {
     // Listings show the name without its extension.
     const fileLabel = file.name.replace(/\.pdf$/, '');
     await input!.setInputFiles([file]);
-    await page.getByRole('button', { name: 'Save' }).click();
+    await page.getByTestId('upload-sidebar-save').click();
     await expect(
       page.locator('[data-testid="upload-item-row"][data-status="completed"]'),
     ).toHaveCount(1, { timeout: 60_000 });
@@ -161,8 +162,10 @@ test.describe('Share a collection', () => {
       const after = await openCollectionContents(memberPage, kbId);
       if (after.status < 400) {
         expect(after.names, 'the server should return none of the collection\'s files').toEqual([]);
-        // The table has finished loading once it shows its empty state; only then is absence meaningful.
-        await expect(memberPage.getByText(`${kbName} is empty`)).toBeVisible({ timeout: 30_000 });
+        // The page has finished loading once it shows its empty state; only then is absence meaningful.
+        // Breadcrumbs only list what the user can see (#3115), so a revoked user gets no
+        // collection to name and the page shows its no-selection state.
+        await expect(memberPage.getByText('No collection selected')).toBeVisible({ timeout: 30_000 });
       } else {
         expect([403, 404], 'a refused request should be 403 or 404').toContain(after.status);
       }

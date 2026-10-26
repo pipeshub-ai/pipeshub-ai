@@ -30,7 +30,7 @@ def _make_orchestrator(*, graph_doc=None, vector_result=None):
     vector_store.apply = AsyncMock(return_value=vector_result)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value=graph_doc)
-    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
     orch = SinkOrchestrator(
         graphdb=graphdb,
         blob_storage=blob_storage,
@@ -206,6 +206,7 @@ class TestSaveReconciliationMetadata:
 
         ctx = MagicMock(spec=TransformContext)
         ctx.record = record
+        ctx.settings = {}
         ctx.reconciliation_context = ReconciliationContext(
             new_metadata={"hash_to_block_ids": {"h": ["b"]}, "block_id_to_index": {"b": 0}}
         )
@@ -215,6 +216,9 @@ class TestSaveReconciliationMetadata:
         orch.blob_storage.save_reconciliation_metadata.assert_awaited_once_with(
             "org-rc", "rec-rc", "vr-rc",
             ctx.reconciliation_context.new_metadata,
+            document_path=ctx.settings.get("storage_path"),
+            connector_id=record.connector_id,
+            record_group_id=record.record_group_id,
         )
 
     @pytest.mark.asyncio
@@ -267,3 +271,43 @@ class TestApplyPersistsReconciliation:
         await orch.apply(ctx)
 
         orch.blob_storage.save_reconciliation_metadata.assert_awaited_once()
+
+
+class TestEveryBlobWriteKeepsTheSqlRowLimit:
+    """L21: every write of a record's stored copy keeps a SQL table to the row
+    limit, while the record itself keeps all of its rows."""
+
+    @staticmethod
+    def _sql_ctx(rows: int = 40) -> MagicMock:
+        blocks = [_make_row_block(i) for i in range(rows)]
+        bg = BlockGroup(
+            index=0, type=GroupType.TABLE, sub_type=GroupSubType.SQL_TABLE,
+            children=BlockGroupChildren(block_ranges=[IndexRange(start=0, end=rows - 1)], block_group_ranges=[]),
+        )
+        record = MagicMock()
+        record.block_containers = BlocksContainer(blocks=blocks, block_groups=[bg])
+        ctx = MagicMock()
+        ctx.record = record
+        return ctx
+
+    @pytest.mark.asyncio
+    async def test_stored_copy_has_the_limited_rows_and_the_record_keeps_all(self) -> None:
+        orch = _make_orchestrator()
+        seen = []
+        orch.blob_storage.apply = AsyncMock(side_effect=lambda ctx: seen.append(len(ctx.record.block_containers.blocks)))
+        ctx = self._sql_ctx(40)
+
+        await orch.write_blob(ctx)
+
+        assert seen == [SinkOrchestrator.LIMIT_SQL_ROW_BLOCKS_TO]
+        assert len(ctx.record.block_containers.blocks) == 40
+
+    @pytest.mark.asyncio
+    async def test_rows_are_restored_when_the_write_fails(self) -> None:
+        orch = _make_orchestrator()
+        orch.blob_storage.apply = AsyncMock(side_effect=RuntimeError("storage down"))
+        ctx = self._sql_ctx(40)
+
+        with pytest.raises(RuntimeError):
+            await orch.write_blob(ctx)
+        assert len(ctx.record.block_containers.blocks) == 40

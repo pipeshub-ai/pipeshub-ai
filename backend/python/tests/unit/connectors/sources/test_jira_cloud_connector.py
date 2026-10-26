@@ -40,6 +40,7 @@ import httpx
 import pytest
 from fastapi import HTTPException
 
+from app.connectors.sources.atlassian.core.jira_issue_security import IssueSecurityContext, SchemeKnowledge
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus, RecordRelations
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -114,7 +115,10 @@ def _make_mock_deps():
 
 def _make_connector():
     logger, dep, dsp, cs = _make_mock_deps()
-    return JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
+    connector = JiraConnector(logger, dep, dsp, cs, "conn-jira-cov", "team", "test-user-id")
+    # No issue security scheme: unsecured issues are unchanged
+    connector._load_issue_security = AsyncMock(return_value=IssueSecurityContext(knowledge=SchemeKnowledge.NONE))
+    return connector
 
 
 def _make_mock_response(status=200, data=None):
@@ -280,6 +284,45 @@ class TestInitCoverage:
                 await connector.init()
             # Setup path: FE gets the error via ConnectorInitError; no inbox notify.
             connector.notify.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("base_url", ["http://169.254.169.254", "https://jira.corp.internal", "https://acme.atlassian.net.evil.com"])
+    async def test_init_refuses_an_api_token_site_that_is_not_atlassian_cloud(self, base_url: str) -> None:
+        """PP-205: the email + API token goes to the configured URL itself, so it must be the Atlassian site."""
+        from app.connectors.core.base.connector.connector_service import (
+            ConnectorInitError,
+        )
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+
+        connector = _make_connector()
+        client = JiraClient(JiraRESTClientViaApiKey(base_url, "sync@acme.com", "token"))
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            with pytest.raises(ConnectorInitError, match="your-company.atlassian.net"):
+                await connector.init()
+        data_source.assert_not_called()  # nothing was sent to that host
+        assert connector.data_source is None
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("base_url", [
+        "https://acme.atlassian.net",
+        "https://acme.atlassian.net/jira",                              # Jira answers there too: synced before
+        "https://acme.atlassian.net/jira/software/projects/ENG/boards/1",
+        "http://acme.atlassian.net",
+    ])
+    async def test_init_talks_to_the_site_root_of_an_atlassian_url(self, base_url: str) -> None:
+        """A URL that synced before the PP-205 check keeps syncing, at the site root, over https."""
+        from app.sources.client.jira.jira import JiraClient, JiraRESTClientViaApiKey
+
+        connector = _make_connector()
+        client = JiraClient(JiraRESTClientViaApiKey(base_url, "sync@acme.com", "token"))
+        client.site_url = base_url
+        with patch.object(connector, "_build_jira_client", AsyncMock(return_value=client)), \
+                patch("app.connectors.sources.atlassian.jira_cloud.connector.JiraDataSource") as data_source:
+            data_source.return_value.get_current_user = AsyncMock(side_effect=Exception("offline"))
+            assert await connector.init() is True
+        assert client.get_client().get_base_url() == "https://acme.atlassian.net"
+        assert connector.site_url == "https://acme.atlassian.net"  # web links: /browse/KEY at the root
 
     @pytest.mark.asyncio
     async def test_init_multi_site_raises_connector_init_error(self):
@@ -1086,6 +1129,101 @@ class TestFetchUsersPhases:
         assert "hidden@example.com" in emails
         assert "visible@example.com" in emails
         assert len(result) == 2
+
+    @pytest.mark.asyncio
+    async def test_reverse_lookup_never_resolves_a_deactivated_account(self) -> None:
+        """A deactivated Jira account with a PipesHub user's email must not become an app user."""
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock(email="gone@example.com")]
+        )
+        users_data = [
+            {"accountId": "u2", "accountType": "atlassian", "active": True},
+            {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
+        ]
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, users_data))
+        mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u9", "accountType": "atlassian", "emailAddress": "gone@example.com", "active": False},
+        ]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await connector._fetch_users() == []
+        assert connector._deactivated_account_ids == {"u9"}
+
+    @pytest.mark.asyncio
+    async def test_reverse_lookup_rejects_an_account_the_bulk_listing_did_not_offer(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_entities_processor.get_all_app_users = AsyncMock(return_value=[])
+        connector.data_entities_processor.get_all_active_users = AsyncMock(
+            return_value=[MagicMock(email="hidden@example.com")]
+        )
+        mock_ds = MagicMock()
+        mock_ds.get_all_users = AsyncMock(return_value=_make_mock_response(200, [
+            {"accountId": "u2", "accountType": "atlassian", "active": True},
+        ]))
+        mock_ds.find_users = AsyncMock(return_value=_make_mock_response(200, [{"accountId": "other"}]))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        assert await connector._fetch_users() == []
+
+    @pytest.mark.asyncio
+    async def test_users_without_product_access_are_left_out(self) -> None:
+        connector = _make_connector()
+        licensed, unlicensed = (
+            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+            for i in ("lic", "unlic")
+        )
+        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users([licensed, unlicensed], mapping) == [licensed]
+        connector._fetch_group_members.assert_awaited_once_with("g1", "jira-software-users")
+
+    @pytest.mark.asyncio
+    async def test_product_access_unknown_keeps_every_user(self) -> None:
+        connector = _make_connector()
+        users = [AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="u", email="u@x.com", full_name="u")]
+        connector._fetch_group_members = AsyncMock(return_value=([], False))
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users(users, {}) == users
+        assert await connector._keep_licensed_users(users, mapping) == users
+
+    @pytest.mark.asyncio
+    async def test_a_partly_read_role_list_keeps_every_user(self) -> None:
+        connector = _make_connector()
+        users = [
+            AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=f"{i}@x.com", full_name=i)
+            for i in ("lic", "other")
+        ]
+        connector._fetch_group_members = AsyncMock(return_value=(["lic"], True))
+        connector._app_roles_unread = True
+        mapping = {"jira-software": [{"groupId": "g1", "name": "jira-software-users"}]}
+
+        assert await connector._keep_licensed_users(users, mapping) == users
+        connector._fetch_group_members.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_withdraws_stored_users_jira_reports_ineligible(self) -> None:
+        connector = _make_connector()
+        connector.data_entities_processor.withdraw_app_user_access = AsyncMock()
+        stored = [
+            AppUser(id=f"node-{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=i, email=e, full_name=i)
+            for i, e in (("dead", "a@x.com"), ("unlic", "b@x.com"), ("ok", "c@x.com"), ("old", "d@x.com"))
+        ]
+        connector._stored_app_users = stored
+        # d@x.com was deactivated under one account but kept under another.
+        kept = [stored[2], AppUser(app_name=Connectors.JIRA, connector_id="c", source_user_id="new", email="d@x.com", full_name="d")]
+
+        await connector._withdraw_ineligible_app_users(kept, {"dead", "unlic", "old"})
+
+        connector.data_entities_processor.withdraw_app_user_access.assert_awaited_once_with(
+            "conn-jira-cov", [stored[0], stored[1]]
+        )
 
     @pytest.mark.asyncio
     async def test_reverse_lookup_skipped_when_all_resolved(self):
@@ -2618,6 +2756,42 @@ class TestParseIssueToBlocksCoverage:
         assert comment_bg.data == "<p>Comment 1</p>"
 
     @pytest.mark.asyncio
+    async def test_restricted_comments_are_left_out(self) -> None:
+        connector = _make_connector()
+        issue_data = {"id": "100", "fields": {"summary": "Test"}}
+        comments_data = [
+            {"id": "c1", "author": {"displayName": "A"}, "created": "2024-01-15T10:00:00.000Z"},
+            {"id": "c2", "author": {"displayName": "B"}, "created": "2024-01-16T10:00:00.000Z",
+             "visibility": {"type": "role", "value": "Administrators"}},
+            {"id": "c3", "author": {"displayName": "C"}, "created": "2024-01-17T10:00:00.000Z",
+             "visibility": {"type": "group", "value": "jira-admins", "identifier": "g1"}},
+        ]
+        rendered_fields = {"description": "", "comment": {"comments": [
+            {"id": "c1", "body": "<p>open</p>"},
+            {"id": "c2", "body": "<p>role secret</p>"},
+            {"id": "c3", "body": "<p>group secret</p>"},
+        ]}}
+
+        result = await connector._parse_issue_to_blocks(
+            issue_data, "PROJ-1", weburl="https://jira/browse/PROJ-1",
+            rendered_fields=rendered_fields, comments_data=comments_data,
+        )
+        assert {bg.source_group_id for bg in result.block_groups} & {"c1", "c2", "c3"} == {"c1"}
+        assert "secret" not in result.model_dump_json()
+
+    def test_restricted_comment_images_are_not_treated_as_inline(self) -> None:
+        connector = _make_connector()
+        fields = {
+            "attachment": [{"id": "9", "filename": "s.png", "mimeType": "image/png", "size": 10}],
+            "comment": {"comments": [{"id": "c2", "body": "!s.png!",
+                                      "visibility": {"type": "role", "value": "Administrators"}}]},
+        }
+        # The attachment is still visible on the issue in Jira, so it keeps its own record.
+        assert connector._resolve_inline_image_attachment_ids(fields) == set()
+        fields["comment"]["comments"][0].pop("visibility")
+        assert connector._resolve_inline_image_attachment_ids(fields) == {"9"}
+
+    @pytest.mark.asyncio
     async def test_comment_rendered_body_fallback(self):
         """Comment HTML may arrive on the comment object itself (renderedBody) rather than in
         renderedFields.comment — that path is used when present."""
@@ -3154,10 +3328,37 @@ class TestFetchProjectPermissionSchemeCoverage:
         }))
         connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
 
-        permissions = await connector._fetch_project_permission_scheme("PROJ", {})
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
-        assert permissions[0].external_id == "all_licensed_users"
+        mapping = {
+            "jira-software": [{"groupId": "g-sw"}, {"groupId": "g-shared"}],
+            "jira-servicedesk": [{"groupId": "g-sd"}, {"groupId": "g-shared"}],
+        }
+        permissions = await connector._fetch_project_permission_scheme("PROJ", mapping)
+        # "Any logged in user" = the union of the product-access groups, never an ORG grant
+        assert {(p.entity_type, p.external_id) for p in permissions} == {
+            (EntityType.GROUP, "g-sw"), (EntityType.GROUP, "g-shared"), (EntityType.GROUP, "g-sd")}
+        assert len(permissions) == 3
+
+        # No application roles known: nothing is granted (an unlicensed account must not get in)
+        assert await connector._fetch_project_permission_scheme("PROJ", {}) == []
+
+    @pytest.mark.asyncio
+    async def test_application_role_no_param_with_a_role_unread_keeps_the_stored_access(self) -> None:
+        """The union needs every role: with one unread it is partial, so the project is held back."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_assigned_permission_scheme = AsyncMock(return_value=_make_mock_response(200, {"id": 1}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {
+            "permissions": [{
+                "permission": "BROWSE_PROJECTS",
+                "holder": {"type": "applicationRole", "parameter": None},
+            }],
+        }))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+        connector._app_roles_unread = True
+
+        await connector._fetch_project_permission_scheme("PROJ", {"jira-software": [{"groupId": "g-sw"}]})
+        assert "PROJ" in connector._projects_naming_unread_roles
+        assert connector._project_access_may_be_partial("PROJ")
 
 
 # ===========================================================================
@@ -3352,6 +3553,24 @@ class TestSyncUserGroupsCoverage:
 
         result = await connector._sync_user_groups([_make_app_user(email="user@example.com")])
         assert len(result["g1"]) == 0
+
+    @pytest.mark.asyncio
+    async def test_each_group_is_written_in_its_own_transaction(self) -> None:
+        # All groups of a large site in one transaction outlived its timeout and
+        # every group was rolled back.
+        connector = _make_connector()
+        connector._fetch_groups = AsyncMock(return_value=([
+            {"groupId": "g1", "name": "developers"},
+            {"groupId": "g2", "name": "designers"},
+            {"groupId": "g3", "name": "support"},
+        ], False))
+        connector._fetch_group_members = AsyncMock(return_value=([], True))
+
+        await connector._sync_user_groups([])
+
+        calls = connector.data_entities_processor.on_new_user_groups.await_args_list
+        assert [len(c.args[0]) for c in calls] == [1, 1, 1]
+        assert sorted(c.args[0][0][0].source_user_group_id for c in calls) == ["g1", "g2", "g3"]
 
 
 # ===========================================================================

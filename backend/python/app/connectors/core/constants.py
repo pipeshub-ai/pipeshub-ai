@@ -1,10 +1,12 @@
 """Constants shared across all connectors (config paths, OAuth keys, batch sizes)."""
 
+from enum import Enum
+
 
 class ConfigPaths:
     """Configuration path templates for etcd / configuration service."""
-    CONNECTOR_CONFIG = "/services/connectors/{connector_id}/config"
-    OAUTH_CONFIG = "/services/oauth/{connector_type}"
+    CONNECTOR_CONFIG_PATH = "/services/connectors/{connector_id}/config"
+    OAUTH_CONFIG_PATH = "/services/oauth/{connector_type}"
 
 
 class OAuthConfigKeys:
@@ -31,6 +33,7 @@ class AuthFieldKeys:
     CLIENT_SECRET = "clientSecret"
     CLIENT_SECRET_ALT = "client_secret"
     INSTANCE_URL = "instanceUrl"
+    LOGIN_URL = "loginUrl"
     HAS_ADMIN_CONSENT = "hasAdminConsent"
     AUTHORIZE_URL = "authorizeUrl"
     TOKEN_URL = "tokenUrl"
@@ -103,6 +106,15 @@ class ConnectorErrorCodes:
     DESKTOP_OWNED_BY_OTHER_DEVICE = "DESKTOP_OWNED_BY_OTHER_DEVICE"
 
 
+class SyncRunOutcome(str, Enum):
+    """How the last sync run ended, stored on the app doc as ``lastSyncOutcome``."""
+
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    STOPPED = "stopped"
+    SKIPPED = "skipped"
+
+
 class ConnectorStateKeys:
     """Keys for connector state/status fields (typically in connector documents)."""
     IS_CONFIGURED = "isConfigured"
@@ -116,6 +128,11 @@ class ConnectorStateKeys:
     VECTOR_MEMBERSHIP_BACKFILL_VRIDS = "vectorMembershipBackfillVrids"
     VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED = "vectorMembershipBackfillExhausted"
     ROOT_MEMBERSHIP_REQUESTED = "rootMembershipRequested"
+    PENDING_RESYNC = "pendingResync"
+    LAST_SYNC_STARTED_AT = "lastSyncStartedAtTimestamp"
+    LAST_SYNC_FINISHED_AT = "lastSyncFinishedAtTimestamp"
+    LAST_SYNC_OUTCOME = "lastSyncOutcome"
+    LAST_SYNC_SUMMARY = "lastSyncSummary"
     UPDATED_AT_TIMESTAMP = "updatedAtTimestamp"
     UPDATED_BY = "updatedBy"
     CREATED_AT_TIMESTAMP = "createdAtTimestamp"
@@ -139,6 +156,26 @@ CONNECTOR_NOTION_TEAM_ACCESS_INFO = (
     "Notion workspace. Notion's API does not expose per-page sharing, so access cannot be "
     "restricted to the people a page is shared with. Use the Notion Personal connector if you "
     "want your pages searchable only by you."
+)
+
+
+# The permission lists must match what test_connection_and_access checks.
+_OBJECT_STORE_TEAM_ACCESS_INFO = (
+    "If you create a team connector, everyone in your organization can search every bucket it "
+    "syncs. With Bucket Names empty, that is every bucket the key can list."
+)
+CONNECTOR_S3_INFO = (
+    "This connector only lists and reads objects, so give it a read-only key. Its IAM policy "
+    "needs s3:ListBucket, s3:GetBucketLocation and s3:GetObject on the buckets to sync. It needs "
+    "s3:ListAllMyBuckets to discover the buckets and to load the Bucket Names options. For buckets "
+    "encrypted with SSE-KMS, also allow kms:Decrypt on the KMS key."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
+)
+CONNECTOR_MINIO_INFO = (
+    "This connector only lists and reads objects, so give it a read-only key. Its MinIO policy "
+    "needs s3:ListBucket and s3:GetObject on the buckets to sync. It needs s3:ListAllMyBuckets "
+    "to discover the buckets and to load the Bucket Names options."
+    "\n\n" + _OBJECT_STORE_TEAM_ACCESS_INFO
 )
 
 

@@ -43,6 +43,8 @@ from dataclasses import dataclass, field
 from typing import (
     Any,
     AsyncIterator,
+    Awaitable,
+    Callable,
     Mapping,
     Optional,
     Protocol,
@@ -814,15 +816,21 @@ async def rewrite_or_delete_virtual_record(
     graph_provider,
     virtual_record_id: str,
     logger,
+    release_mapping: Callable[[list[str]], Awaitable[Any]] | None = None,
 ) -> str:
-    """Delete points if no graph records remain; otherwise rewrite both arrays."""
+    """Delete points if no graph records remain; otherwise rewrite both arrays.
+
+    ``release_mapping`` replaces the plain mapping-row delete after the points
+    go, so a caller can remove the virtual record's stored content first.
+    """
     if not virtual_record_id or vector_db is None or locator is None:
         return "skipped"
     lock = _vrid_lock(virtual_record_id)
     async with asyncio.timeout(MEMBERSHIP_LOCK_TIMEOUT_SECONDS):
         async with lock:
             return await _rewrite_or_delete_locked(
-                vector_db, locator, graph_provider, virtual_record_id, logger
+                vector_db, locator, graph_provider, virtual_record_id, logger,
+                release_mapping,
             )
 
 
@@ -832,6 +840,7 @@ async def _rewrite_or_delete_locked(
     graph_provider,
     virtual_record_id: str,
     logger,
+    release_mapping: Callable[[list[str]], Awaitable[Any]] | None = None,
 ) -> str:
     # Raising on both: an empty answer here deletes this virtual record's
     # points from every managed collection, and then the mapping that is the
@@ -901,6 +910,9 @@ async def _rewrite_or_delete_locked(
             len(collections),
         )
 
+    if release_mapping is not None:
+        await release_mapping([virtual_record_id])
+        return "deleted"
     try:
         await graph_provider.delete_nodes(
             keys=[virtual_record_id],

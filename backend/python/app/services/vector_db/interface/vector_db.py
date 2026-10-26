@@ -8,10 +8,12 @@ from app.services.vector_db.models import (
     FilterValue,
     HybridSearchRequest,
     ScrollResult,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
     VectorDBHealth,
+    VectorDBMemoryReport,
     VectorPoint,
 )
 
@@ -78,6 +80,26 @@ class IVectorDBService(ABC):
     async def health_check(self) -> VectorDBHealth:
         """Perform a live health check and return a structured result."""
         raise NotImplementedError
+
+    async def memory_report(self) -> VectorDBMemoryReport | None:
+        """Estimate the memory search needs to stay fast, against what the store has.
+
+        None when the provider cannot estimate it. Concrete so providers that
+        manage their own memory (OpenSearch, Redis) need not implement it.
+        """
+        return None
+
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        """Whether ``error``, raised by this provider's client during a search,
+        is one a second attempt may get past: a timeout or the store being
+        briefly unreachable. None for everything else (a bad request, auth),
+        which a retry would only repeat.
+
+        Concrete so a provider with nothing client-specific to classify keeps
+        the builtin ``TimeoutError``/``ConnectionError`` handling of
+        ``search_retry`` and nothing more.
+        """
+        return None
 
     # ------------------------------------------------------------------
     # Collection management
@@ -194,6 +216,18 @@ class IVectorDBService(ABC):
         transferred and discarded.
         """
         raise NotImplementedError
+
+    def scroll_offset_after_delete(
+        self, next_offset: Optional[str], deleted: int,
+    ) -> Optional[str]:
+        """``next_offset`` from ``scroll``, adjusted after the caller deleted
+        ``deleted`` of the points that page returned.
+
+        A key-based cursor (the next id, a ``search_after`` value) is
+        unaffected. A positional one must step back, or the next page skips
+        as many points as were deleted.
+        """
+        return next_offset
 
     @abstractmethod
     async def retrieve_points(

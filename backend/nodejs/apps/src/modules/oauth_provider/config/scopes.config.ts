@@ -200,6 +200,26 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     requiresUserConsent: true,
   },
 
+  // Toolsets
+  'toolset:read': {
+    name: 'toolset:read',
+    description: 'Read toolsets and their authentication status',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:write': {
+    name: 'toolset:write',
+    description: 'Add, configure and authenticate toolsets',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+  'toolset:delete': {
+    name: 'toolset:delete',
+    description: 'Remove toolsets and their credentials',
+    category: 'Toolsets',
+    requiresUserConsent: true,
+  },
+
   // Projects
   'project:read': {
     name: 'project:read',
@@ -243,6 +263,14 @@ export const OAuthScopes: Record<string, ScopeDefinition> = {
     name: 'connector:delete',
     description: 'Delete connectors',
     category: 'Connectors',
+    requiresUserConsent: true,
+  },
+
+  // Code graph
+  'code:read': {
+    name: 'code:read',
+    description: 'Read indexed code repositories and their code graph',
+    category: 'Code',
     requiresUserConsent: true,
   },
 
@@ -327,22 +355,28 @@ export const DefaultMcpScopes = [
   'profile',
   'email',
   'offline_access',
+  'semantic:read',
   'semantic:write',
   'conversation:write',
   'conversation:chat',
   'kb:read',
+  'kb:write',
+  'kb:upload',
   'team:read',
   'user:read',
+  'usergroup:read',
   'config:read',
   'agent:read',
   'agent:execute',
   'connector:read',
+  'code:read',
 ];
 
 /**
- * Scopes the CLI/agent preset mints. The first-party device app
- * (`pipeshub-agent`) and Dynamic Client Registration default to this set
- * (intersected with instance MCP_SCOPES). Never grant
+ * Scopes the CLI/agent preset mints. Dynamic Client Registration defaults
+ * to this set, and the first-party device app (`pipeshub-agent`) to this set
+ * plus `offline_access` (`DEVICE_APP_SCOPES`, so device logins get a refresh
+ * token), both intersected with instance MCP_SCOPES. Never grant
  * `client_credentials` to the first-party device app: the grant carries no
  * identity of its own, so AuthMiddleware resolves its tokens to the app's
  * `createdBy` and they run as that person. DCR needs no such care — it
@@ -353,8 +387,13 @@ export const AgentMcpScopes = [
   'conversation:chat',
   'semantic:write',
   'kb:read',
+  // Lets an agent fill an empty workspace: create a collection and upload into
+  // it. Delete stays out of the preset.
+  'kb:write',
+  'kb:upload',
   'user:read',
   'connector:read',
+  'code:read',
 ] as const;
 
 export const ScopeCategories = [
@@ -369,8 +408,10 @@ export const ScopeCategories = [
   'Conversations',
   'Agents',
   'MCP Servers',
+  'Toolsets',
   'Projects',
   'Connectors',
+  'Code',
   'Configuration',
   'Crawling',
 ];

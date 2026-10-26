@@ -57,6 +57,28 @@ describe('AIServiceCommand', () => {
   })
 
   describe('execute', () => {
+    it('keeps the retry-after header of a response, and no other header', async () => {
+      const response = makeFetchResponse(503, { detail: 'down' }, 'Service Unavailable')
+      ;(response.headers as Headers).set('retry-after', '5')
+      ;(response.headers as Headers).set('set-cookie', 'session=abc')
+      fetchStub.resolves(response)
+
+      const cmd = new AIServiceCommand({ uri: 'http://ai.local/query', method: HttpMethod.GET, headers: {}, maxAttempts: 1 })
+      const result = await cmd.execute()
+
+      expect(result.statusCode).to.equal(503)
+      expect(result.headers).to.deep.equal({ 'retry-after': '5' })
+    })
+
+    it('adds no headers when the response has no retry-after', async () => {
+      fetchStub.resolves(makeFetchResponse(200, { ok: true }))
+
+      const cmd = new AIServiceCommand({ uri: 'http://ai.local/query', method: HttpMethod.GET, headers: {} })
+      const result = await cmd.execute()
+
+      expect(result).to.not.have.property('headers')
+    })
+
     it('should return AIServiceResponse with statusCode, data, and msg on success', async () => {
       const responseData = { answer: 'Hello, world!' }
       fetchStub.resolves(makeFetchResponse(200, responseData, 'OK'))

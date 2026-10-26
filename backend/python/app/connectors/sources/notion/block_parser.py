@@ -6,9 +6,11 @@ This parser is designed to be extensible - new block types can be easily added.
 """
 
 import json
+import logging
 import re
 from datetime import datetime
-from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Tuple
+from urllib.parse import unquote, urlparse
 from uuid import uuid4
 
 from app.models.blocks import (
@@ -34,6 +36,49 @@ from app.models.blocks import (
 
 # Type alias for relations and people tuple
 RelationsAndPeople = Tuple[List[str], List[str]]
+
+
+if TYPE_CHECKING:
+    from app.sources.external.notion.notion import NotionDataSource
+
+# Page objects show at most this many items of a list property; the property-item endpoint has the rest (D).
+_INLINE_CAP = 25
+_CAPPED_LIST_TYPES = ("title", "rich_text", "people", "relation")
+
+
+def property_items_fetcher(
+    datasource: "NotionDataSource", logger: Optional[logging.Logger] = None
+) -> Callable[[str, str], Awaitable[Optional[dict[str, Any]]]]:
+    """A ``property_items_fetcher`` for ``parse_data_source_to_blocks``: every page of
+    GET /pages/{page_id}/properties/{property_id}, merged into one list response (None on any failure, so the
+    caller keeps the value it already has)."""
+
+    async def fetch(page_id: str, property_id: str) -> Optional[dict[str, Any]]:
+        merged: Optional[dict[str, Any]] = None
+        cursor: Optional[str] = None
+        for _ in range(100):  # 10,000 items at most, as a query returns
+            response = await datasource.retrieve_page_property_item(
+                page_id, property_id, start_cursor=cursor, page_size=100
+            )
+            if not response.success or response.data is None:
+                if logger:
+                    logger.warning(f"Could not read property {property_id} of page {page_id}: {response.error}")
+                return None
+            data = response.data.json()
+            if data.get("object") != "list":
+                return {"results": [data], "property_item": data}
+            if merged is None:
+                merged = data
+            else:
+                merged["results"].extend(data.get("results", []))
+                merged["property_item"] = data.get("property_item", merged.get("property_item"))
+            if not data.get("has_more"):
+                return merged
+            cursor = data.get("next_cursor")
+        return merged
+
+    return fetch
+
 
 class NotionBlockParser:
     """
@@ -563,6 +608,46 @@ class NotionBlockParser:
         """Parse heading_3 block."""
         return await self._parse_heading(notion_block, type_data, parent_group_index, block_index, parent_page_url, level=3)
 
+    async def _parse_heading_4(
+        self,
+        notion_block: dict[str, Any],
+        type_data: dict[str, Any],
+        parent_group_index: int | None,
+        block_index: int,
+        parent_page_url: str | None = None,
+        parent_page_id: str | None = None,
+    ) -> Block:
+        """Parse heading_4 block."""
+        return await self._parse_heading(notion_block, type_data, parent_group_index, block_index, parent_page_url, level=4)
+
+    async def _parse_meeting_notes(
+        self,
+        notion_block: dict[str, Any],
+        type_data: dict[str, Any],
+        parent_group_index: int | None,
+        block_index: int,
+        parent_page_url: str | None = None,
+        parent_page_id: str | None = None,
+    ) -> Block:
+        """A meeting notes block: its title, as a heading over the notes (its children)."""
+        return await self._parse_heading(
+            notion_block, {"rich_text": type_data.get("title") or []}, parent_group_index, block_index,
+            parent_page_url, level=3,
+        )
+
+    _parse_transcription = _parse_meeting_notes  # its name before Notion-Version 2026-03-11
+
+    async def _parse_tab(
+        self,
+        notion_block: dict[str, Any],
+        type_data: dict[str, Any],
+        parent_group_index: int | None,
+        block_index: int,
+        parent_page_url: str | None = None,
+        parent_page_id: str | None = None,
+    ) -> None:
+        """A tab has no content of its own; its children (the tab's pages) are kept by the connector."""
+
     async def _parse_heading(
         self,
         notion_block: Dict[str, Any],
@@ -852,6 +937,7 @@ class NotionBlockParser:
         rich_text = type_data.get("rich_text", [])
         text = self.extract_plain_text(rich_text)
         language = type_data.get("language", "plain text")
+        caption = self.extract_plain_text(type_data.get("caption") or [])
 
         return Block(
             id=str(uuid4()),
@@ -861,7 +947,7 @@ class NotionBlockParser:
             sub_type=BlockSubType.CODE,
             format=DataFormat.TXT,
             data=text,
-            name=f"{language} code" if language else "Code",
+            name=(f"{language} code" if language else "Code") + (f": {caption}" if caption else ""),
             code_metadata=CodeMetadata(
                 language=language,
                 is_executable=False,
@@ -1226,7 +1312,9 @@ class NotionBlockParser:
         # Extract filename for display
         file_name = type_data.get("name", "")
         if not file_name:
-            file_name = caption_text or f"{media_type.capitalize()}"
+            # The file's own name (the URL's last path segment) before the caption or the type.
+            url_name = "" if is_external else unquote(urlparse(file_url).path.rsplit("/", 1)[-1])
+            file_name = url_name or caption_text or f"{media_type.capitalize()}"
 
         # Determine block type based on media type and whether it's a direct file or embed
         # - Images: Always IMAGE block (for base64 conversion support)
@@ -1616,6 +1704,9 @@ class NotionBlockParser:
         get_user_child_callback: Optional[
             Callable[[str], Awaitable[Optional[ChildRecord]]]
         ] = None,
+        property_items_fetcher: Optional[
+            Callable[[str, str], Awaitable[Optional[dict[str, Any]]]]
+        ] = None,
     ) -> Tuple[List[Block], List[BlockGroup]]:
         """
         Parse Notion data source metadata and rows into TABLE blocks.
@@ -1633,12 +1724,16 @@ class NotionBlockParser:
                                      Takes external_id (str) and returns Optional[ChildRecord]
             get_user_child_callback: Optional async callback to get ChildRecord for a user.
                                    Takes user_id (str) and returns Optional[ChildRecord]
+            property_items_fetcher: Optional async callback (page_id, property_id) -> every item of that
+                                   property (see ``property_items_fetcher``); used for values Notion cut at 25
 
         Returns:
             Tuple of (List[Block], List[BlockGroup])
         """
         blocks: List[Block] = []
         block_groups: List[BlockGroup] = []
+        if property_items_fetcher is not None:
+            await self.expand_truncated_properties(data_source_rows, property_items_fetcher)
 
         # Extract column definitions and description
         properties = data_source_metadata.get("properties", {})
@@ -1647,9 +1742,6 @@ class NotionBlockParser:
         description_raw = data_source_metadata.get("description") or []
         description = self.extract_rich_text(description_raw)
         self.logger.debug(f"Parsing data source {data_source_id} with {len(column_names)} columns")
-
-        # Generate table markdown (LLM enhancement will happen in indexing side)
-        table_markdown = self._generate_data_source_markdown(column_names, data_source_rows)
 
         # Create TABLE BlockGroup (without LLM summary - will be enhanced during indexing)
         table_group = BlockGroup(
@@ -1669,7 +1761,7 @@ class NotionBlockParser:
             data={
                 "table_summary": "",  # Will be filled during indexing with LLM
                 "column_headers": column_names,  # Will be LLM-enhanced during indexing
-                "table_markdown": table_markdown,  # Used by LLM for enhancement
+                "table_markdown": "",  # Set once the cells are resolved (used by LLM for enhancement)
             },
             children=BlockGroupChildren(),
         )
@@ -1699,6 +1791,10 @@ class NotionBlockParser:
             data_source_rows, column_names, column_names,  # Use raw column_names
             get_record_child_callback, get_user_child_callback
         )
+        # The LLM's view of the table shows names, as the rows do, not the ids in the raw properties.
+        table_group.data["table_markdown"] = self._generate_data_source_markdown(
+            column_names, data_source_rows, row_cell_values
+        )
         # Simple delimiter-joined descriptions (will be LLM-enhanced during indexing)
         row_descriptions = [delimiter.join(str(v) for v in row_dict.values()) for row_dict in row_dicts]
 
@@ -1712,6 +1808,44 @@ class NotionBlockParser:
         self.logger.info(f"Parsed data source {data_source_id}: {len(column_names)} columns, {len(blocks)} rows")
 
         return blocks, block_groups
+
+    async def expand_truncated_properties(
+        self,
+        rows: list[dict[str, Any]],
+        fetch: Callable[[str, str], Awaitable[Optional[dict[str, Any]]]],
+    ) -> None:
+        """Replaces values Notion cut short in page objects with their full lists, in place.
+
+        A page object carries at most 25 items of a relation (then ``has_more``), and of a title, rich text or
+        people property (with no flag), and a rollup over many relations may be ``incomplete``. The
+        property-item endpoint pages through all of them.
+        """
+        for row in rows:
+            page_id = row.get("id")
+            for prop in (row.get("properties") or {}).values():
+                if not isinstance(prop, dict) or not page_id or not prop.get("id"):
+                    continue
+                kind = prop.get("type", "")
+                value = prop.get(kind)
+                cut = (
+                    (kind == "relation" and prop.get("has_more"))
+                    or (kind in _CAPPED_LIST_TYPES and isinstance(value, list) and len(value) >= _INLINE_CAP)
+                    or (kind == "rollup" and isinstance(value, dict) and value.get("type") == "incomplete")
+                )
+                if not cut:
+                    continue
+                full = await fetch(page_id, prop["id"])
+                if not full:
+                    continue  # keep what the page object had
+                if kind == "rollup":
+                    rollup = (full.get("property_item") or {}).get("rollup")
+                    if rollup:
+                        prop["rollup"] = rollup
+                    continue
+                items = [r.get(kind) for r in full.get("results", []) if isinstance(r, dict) and r.get(kind)]
+                if items:
+                    prop[kind] = items
+                    prop["has_more"] = False
 
     def _extract_relations_and_people(
         self,
@@ -2176,11 +2310,18 @@ class NotionBlockParser:
                 if rollup_type == "number":
                     num = rollup.get("number")
                     return str(num) if num is not None else ""
+                elif rollup_type == "date":
+                    date_obj = rollup.get("date")
+                    if date_obj:
+                        start, end = date_obj.get("start", ""), date_obj.get("end")
+                        return f"{start} - {end}" if end else start
+                    return ""
                 elif rollup_type == "array":
                     # For arrays, recursively extract values
                     arr = rollup.get("array", [])
                     values = [self._extract_property_value(item) for item in arr]
                     return ", ".join(filter(None, values))
+                # "incomplete" / "unsupported": Notion could not compute it, so there is no value to show
                 return ""
 
             elif prop_type == "created_time":
@@ -2204,9 +2345,24 @@ class NotionBlockParser:
                     file_names.append(f.get("name", "") or f.get("external", {}).get("url", ""))
                 return ", ".join(filter(None, file_names))
 
+            elif prop_type == "unique_id":
+                uid = prop.get("unique_id") or {}
+                number = uid.get("number")
+                if number is None:
+                    return ""
+                return f"{uid['prefix']}-{number}" if uid.get("prefix") else str(number)
+
+            elif prop_type == "verification":
+                verification = prop.get("verification") or {}
+                return verification.get("state", "") or ""
+
+            elif prop_type == "button":
+                return ""  # an action, not data
+
             else:
-                # Unknown type - try to stringify
-                return str(prop.get(prop_type, ""))
+                # Unknown type: only a plain scalar is shown; a structure would come out as a Python repr
+                value = prop.get(prop_type)
+                return str(value) if isinstance(value, (str, int, float)) and not isinstance(value, bool) else ""
 
         except Exception as e:
             self.logger.debug(f"Error extracting property value for type {prop_type}: {e}")
@@ -2215,7 +2371,8 @@ class NotionBlockParser:
     def _generate_data_source_markdown(
         self,
         column_names: List[str],
-        data_source_rows: List[Dict[str, Any]]
+        data_source_rows: List[Dict[str, Any]],
+        cell_values: list[list[str]] | None = None,
     ) -> str:
         """
         Generate markdown table from data source rows.
@@ -2223,6 +2380,8 @@ class NotionBlockParser:
         Args:
             column_names: List of column names
             data_source_rows: List of row data from Notion API
+            cell_values: the rows' cells with people and relations resolved to names, as the table rows
+                show them; without them the cells are read from the raw properties (ids)
 
         Returns:
             Markdown table string
@@ -2238,16 +2397,17 @@ class NotionBlockParser:
         lines.append("|" + "|".join([" --- " for _ in column_names]) + "|")
 
         # Data rows (limit to first 100 for performance)
-        for page in data_source_rows[:100]:
+        for n, page in enumerate(data_source_rows[:100]):
             page_properties = page.get("properties", {})
-            cell_values = []
-            for col_name in column_names:
-                prop = page_properties.get(col_name, {})
-                cell_value = self._extract_property_value(prop)
+            row = []
+            for i, col_name in enumerate(column_names):
+                if cell_values is not None and n < len(cell_values) and i < len(cell_values[n]):
+                    cell_value = str(cell_values[n][i])
+                else:
+                    cell_value = self._extract_property_value(page_properties.get(col_name, {}))
                 # Escape pipes and limit cell length
-                cell_value = cell_value.replace("|", "\\|")[:200]
-                cell_values.append(cell_value)
-            lines.append("| " + " | ".join(cell_values) + " |")
+                row.append(cell_value.replace("|", "\\|")[:200])
+            lines.append("| " + " | ".join(row) + " |")
 
         if len(data_source_rows) > self.MAX_DATA_SOURCE_ROWS_DISPLAY:
             lines.append(f"| ... ({len(data_source_rows) - self.MAX_DATA_SOURCE_ROWS_DISPLAY} more rows) |")
@@ -2483,7 +2643,7 @@ class NotionBlockParser:
         self._calculate_list_indent_levels(blocks, block_groups)
 
         # Fix numbered list item numbering
-        self._fix_numbered_list_numbering(blocks)
+        self._fix_numbered_list_numbering(blocks, block_groups)
 
         # Group consecutive list items into BlockGroups
         self._group_list_items(blocks, block_groups)
@@ -2553,187 +2713,158 @@ class NotionBlockParser:
             elif cols is not None and not row_count:
                 group.table_metadata.num_of_cells = 0
 
-    def _calculate_list_indent_levels(self, blocks: List[Block], block_groups: List[BlockGroup]) -> None:
-        """
-        Calculate actual indent levels for list items based on block hierarchy.
+    @staticmethod
+    def _owns(group: BlockGroup, block: Block) -> bool:
+        """A wrapper group made for a block with children (the block is its first child)."""
+        return (group.type == GroupType.TEXT_SECTION and block.source_id is not None
+                and group.source_group_id == block.source_id)
 
-        Counts INLINE groups (which represent nesting) and list groups in the parent chain.
-        Each INLINE group in the chain represents one level of nesting for nested list items.
+    def _container(self, block: Block, block_groups: list[BlockGroup]) -> int | None:
+        """The group a block sits in among its siblings: a block with children sits in the group of its
+        wrapper, not in the wrapper (which also holds its children)."""
+        parent = block.parent_index
+        if parent is not None and parent < len(block_groups) and self._owns(block_groups[parent], block):
+            return block_groups[parent].parent_index
+        return parent
 
-        Args:
-            blocks: List of blocks (modified in-place)
-            block_groups: List of block groups
-        """
-        def count_nesting_levels(block_index: int) -> int:
-            """Count nesting levels by traversing parent BlockGroup chain upward."""
-            indent = 0
-            visited_groups = set()
-            max_depth = 50  # Safety limit
-
-            # Start with the block's immediate parent group
-            block = blocks[block_index]
-            current_group_idx = block.parent_index
-
-            for _ in range(max_depth):
-                # Stop if no parent group or already visited (cycle detection)
-                if current_group_idx is None or current_group_idx in visited_groups:
-                    break
-
-                # Validate group index
-                if current_group_idx >= len(block_groups):
-                    break
-
-                visited_groups.add(current_group_idx)
-                current_group = block_groups[current_group_idx]
-
-                # Count TEXT_SECTION groups (represent nesting) and list groups
-                if current_group.type == GroupType.TEXT_SECTION:
-                    # TEXT_SECTION group means this is nested - increment indent
-                    indent += 1
-                elif current_group.type in (GroupType.LIST, GroupType.ORDERED_LIST):
-                    # Already in a list group - increment indent
-                    indent += 1
-
-                # Traverse upward to parent group's parent (follow BlockGroup hierarchy)
-                current_group_idx = current_group.parent_index
-
-            return indent
-
-        # Calculate indent for each list item
-        for i, block in enumerate(blocks):
-            if block.list_metadata:
-                indent_level = count_nesting_levels(i)
-                block.list_metadata.indent_level = indent_level
-
-    def _fix_numbered_list_numbering(self, blocks: List[Block]) -> None:
-        """
-        Fix numbered list item numbering by replacing placeholder "1." with correct numbers.
-
-        Tracks consecutive numbered list items at each indent level and assigns
-        sequential numbers (1, 2, 3, ...) to each item. Handles nested lists correctly
-        by maintaining separate counters per indent level.
-
-        Args:
-            blocks: List of blocks (modified in-place)
-        """
-        # Track counters for each indent level
-        counters: Dict[int, int] = {}
-        previous_indent: Optional[int] = None
-
-        for block in blocks:
-            # Check if this is a numbered list item
-            if block.list_metadata and block.list_metadata.list_style == "numbered":
-                indent_level = block.list_metadata.indent_level or 0
-
-                # Continue numbering if we've seen this indent level before AND
-                # the previous block was also a list item (not interrupted by non-list block)
-                if indent_level in counters and previous_indent is not None:
-                    # Continue numbering at this level (works when returning from nesting too)
-                    counters[indent_level] += 1
-                else:
-                    # Start new sequence (first item at this level or after interruption)
-                    counters[indent_level] = 1
-
-                # Replace "1." with correct number in the data
-                current_number = counters[indent_level]
-                if isinstance(block.data, str):
-                    # Handle various formats: "1. text", "1.", "1.  text" (with extra spaces)
-                    # Match "1." at the start, optionally followed by spaces and text
-                    block.data = re.sub(r'^1\.\s*', f'{current_number}. ', block.data, count=1)
-
-                previous_indent = indent_level
-            else:
-                # Not a numbered list item - reset tracking
-                previous_indent = None
-
-    def _group_list_items(self, blocks: List[Block], block_groups: List[BlockGroup]) -> None:
-        """
-        Group consecutive list items with the same indent level into BlockGroups.
-
-        Creates a BlockGroup for each sequence of consecutive list items (numbered or bulleted)
-        with the same indent level. Updates block parent_index to point to the group.
-
-        Args:
-            blocks: List of blocks (modified in-place)
-            block_groups: List of block groups (modified in-place, groups added here)
-        """
-        if not blocks:
-            return
-
-        # Track current list group
-        current_group_start: Optional[int] = None
-        current_indent: Optional[int] = None
-        current_list_style: Optional[str] = None
-        group_blocks: List[int] = []
-
-        for i, block in enumerate(blocks):
-            # Check if this is a list item
-            if block.list_metadata:
-                list_style = block.list_metadata.list_style
-                indent_level = block.list_metadata.indent_level or 0
-
-                # Check if this continues the current group
-                if (current_group_start is not None and
-                    current_indent == indent_level and
-                    current_list_style == list_style):
-                    # Continue current group
-                    group_blocks.append(i)
-                else:
-                    # Finish previous group if exists
-                    if current_group_start is not None and group_blocks:
-                        self._create_list_group(
-                            blocks, block_groups, group_blocks, current_list_style
-                        )
-
-                    # Start new group
-                    current_group_start = i
-                    current_indent = indent_level
-                    current_list_style = list_style
-                    group_blocks = [i]
-            else:
-                # Not a list item - finish current group
-                if current_group_start is not None and group_blocks:
-                    self._create_list_group(
-                        blocks, block_groups, group_blocks, current_list_style
-                    )
-                    current_group_start = None
-                    current_indent = None
-                    current_list_style = None
-                    group_blocks = []
-
-        # Finish last group if exists
-        if current_group_start is not None and group_blocks:
-            self._create_list_group(
-                blocks, block_groups, group_blocks, current_list_style
+    @staticmethod
+    def _lists_ended_by(
+        container: int | None, block_groups: list[BlockGroup], list_items: set[str]
+    ) -> list[int | None]:
+        """The containers whose list a block in `container` ends: a block inside a table, column list or
+        other group ends the list that group sits in, though the group puts no block of its own there.
+        A list item's wrapper (a nested list) and a list group do not end it."""
+        ended: list[int | None] = []
+        group_idx, seen = container, set()
+        while group_idx is not None and group_idx < len(block_groups) and group_idx not in seen:
+            seen.add(group_idx)
+            group = block_groups[group_idx]
+            in_list = group.type in (GroupType.LIST, GroupType.ORDERED_LIST) or (
+                group.type == GroupType.TEXT_SECTION and group.source_group_id in list_items
             )
+            if not in_list:
+                ended.append(group.parent_index)
+            group_idx = group.parent_index
+        return ended
+
+    def _calculate_list_indent_levels(self, blocks: list[Block], block_groups: list[BlockGroup]) -> None:
+        """
+        Indent level of each list item: the number of list items it is nested under.
+
+        A list item with children is the first child of a wrapper group that also holds its children, so a
+        child item's nesting is the list-item wrappers above it, not counting its own.
+        """
+        list_items = {b.source_id for b in blocks if b.list_metadata and b.source_id}
+        for block in blocks:
+            if not block.list_metadata:
+                continue
+            indent, seen = 0, set()
+            group_idx = block.parent_index
+            while group_idx is not None and group_idx < len(block_groups) and group_idx not in seen:
+                seen.add(group_idx)
+                group = block_groups[group_idx]
+                if (group.type == GroupType.TEXT_SECTION and group.source_group_id in list_items
+                        and group.source_group_id != block.source_id):
+                    indent += 1
+                group_idx = group.parent_index
+            block.list_metadata.indent_level = indent
+
+    def _fix_numbered_list_numbering(self, blocks: list[Block], block_groups: list[BlockGroup] | None = None) -> None:
+        """
+        Number numbered list items 1, 2, 3, ... among their siblings: per container, so a nested list
+        starts again at 1 and its parent list continues after it. Any other block in the same container
+        ends the list, as does a group there (a table, a column list) through the blocks inside it.
+        """
+        groups = block_groups or []
+        list_items = {b.source_id for b in blocks if b.list_metadata and b.source_id}
+        counters: dict[int | None, int] = {}
+        for block in blocks:
+            container = self._container(block, groups)
+            for ended in self._lists_ended_by(container, groups, list_items):
+                counters.pop(ended, None)
+            if not (block.list_metadata and block.list_metadata.list_style == "numbered"):
+                counters.pop(container, None)
+                continue
+            counters[container] = counters.get(container, 0) + 1
+            if isinstance(block.data, str):
+                # "1. text", "1.", "1.  text": the parser numbers every item 1.
+                block.data = re.sub(r'^1\.\s*', f'{counters[container]}. ', block.data, count=1)
+
+    def _group_list_items(self, blocks: list[Block], block_groups: list[BlockGroup]) -> None:
+        """
+        Group each run of list items of one style that are siblings in one container into a list BlockGroup.
+        A run ends at any other block in that container, or at a group in it (a table, a column list); blocks
+        in a nested list or another column do not end it, and never join it.
+        """
+        list_items = {b.source_id for b in blocks if b.list_metadata and b.source_id}
+        runs: dict[int | None, tuple[str, list[int]]] = {}
+        for i, block in enumerate(blocks):
+            container = self._container(block, block_groups)
+            for ended in self._lists_ended_by(container, block_groups, list_items):
+                if ended in runs:
+                    style, members = runs.pop(ended)
+                    self._create_list_group(blocks, block_groups, members, style, ended)
+            style = block.list_metadata.list_style if block.list_metadata else None
+            run = runs.get(container)
+            if run is not None and (style is None or run[0] != style):
+                self._create_list_group(blocks, block_groups, run[1], run[0], container)
+                del runs[container]
+                run = None
+            if style is not None:
+                if run is None:
+                    runs[container] = (style, [i])
+                else:
+                    run[1].append(i)
+        for container, (style, members) in runs.items():
+            self._create_list_group(blocks, block_groups, members, style, container)
 
     def _create_list_group(
         self,
-        blocks: List[Block],
-        block_groups: List[BlockGroup],
-        group_block_indices: List[int],
-        list_style: str
+        blocks: list[Block],
+        block_groups: list[BlockGroup],
+        group_block_indices: list[int],
+        list_style: str,
+        container: int | None = None,
     ) -> None:
-        """Create a BlockGroup for a sequence of list items."""
-        if len(group_block_indices) < 1:
+        """A list BlockGroup in `container` for a run of sibling items. An item with children enters the list
+        with its wrapper; the container then holds the list instead of the items, so nothing has two parents."""
+        if not group_block_indices:
             return
-
-        # Create the group
         group_index = len(block_groups)
         group_children = BlockGroupChildren()
+        moved_blocks: set[int] = set()
+        moved_groups: set[int] = set()
         for idx in group_block_indices:
-            group_children.add_block_index(idx)
-        group = BlockGroup(
+            block = blocks[idx]
+            parent = block.parent_index
+            if parent is not None and parent < len(block_groups) and self._owns(block_groups[parent], block):
+                group_children.add_block_group_index(parent)
+                block_groups[parent].parent_index = group_index
+                moved_groups.add(parent)
+            else:
+                group_children.add_block_index(idx)
+                block.parent_index = group_index
+                moved_blocks.add(idx)
+        block_groups.append(BlockGroup(
             index=group_index,
+            parent_index=container,
             type=GroupType.ORDERED_LIST if list_style == "numbered" else GroupType.LIST,
             children=group_children,
             list_metadata=blocks[group_block_indices[0]].list_metadata,
-        )
-        block_groups.append(group)
-
-        # Update blocks to point to the group
-        for idx in group_block_indices:
-            blocks[idx].parent_index = group_index
+        ))
+        if container is not None and container < len(block_groups) and block_groups[container].children:
+            old = block_groups[container].children
+            rebuilt = BlockGroupChildren()
+            for r in old.block_ranges:
+                for i in range(r.start, r.end + 1):
+                    if i not in moved_blocks:
+                        rebuilt.add_block_index(i)
+            for r in old.block_group_ranges:
+                for i in range(r.start, r.end + 1):
+                    if i not in moved_groups:
+                        rebuilt.add_block_group_index(i)
+            rebuilt.add_block_group_index(group_index)
+            block_groups[container].children = rebuilt
 
     def _convert_indices_to_block_group_children(
         self,
@@ -2791,7 +2922,8 @@ class NotionBlockParser:
         notion_comment: Dict[str, Any],
         author_name: Optional[str] = None,
         quoted_text: Optional[str] = None,
-        comment_attachments: Optional[List[CommentAttachment]] = None
+        comment_attachments: Optional[List[CommentAttachment]] = None,
+        page_url: Optional[str] = None,
     ) -> Optional[BlockComment]:
         """
         Parse Notion comment data into BlockComment object.
@@ -2804,6 +2936,7 @@ class NotionBlockParser:
             author_name: Author's display name (resolved by connector via async user lookup)
             quoted_text: The text that was commented on (for block-level comments)
             comment_attachments: List of CommentAttachment objects (created from FileRecords by connector)
+            page_url: The page's URL; the comment then links to its discussion there
 
         Returns:
             BlockComment object or None if parsing fails
@@ -2836,7 +2969,7 @@ class NotionBlockParser:
                 author_name=author_name,
                 thread_id=discussion_id,
                 resolution_status=None,  # Notion doesn't provide resolution status
-                weburl=None,  # Notion doesn't provide direct comment URLs
+                weburl=self.discussion_url(page_url, discussion_id),
                 created_at=created_at,
                 updated_at=updated_at,
                 attachments=comment_attachments,
@@ -2846,6 +2979,16 @@ class NotionBlockParser:
         except Exception as e:
             self.logger.warning(f"Failed to parse Notion comment: {e}")
             return None
+
+    @staticmethod
+    def discussion_url(page_url: Optional[str], discussion_id: Optional[str]) -> Optional[str]:
+        """A link that opens the page at the discussion: Notion's "Copy link to discussion" form,
+        ``<page url>?d=<discussion id without dashes>`` (not verified in a browser). None without a page URL."""
+        if not page_url or not discussion_id:
+            return None
+        base = page_url.split("#", 1)[0]
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}d={discussion_id.replace('-', '')}"
 
     def create_comment_group(
         self,

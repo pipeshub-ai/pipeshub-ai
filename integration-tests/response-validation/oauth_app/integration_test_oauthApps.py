@@ -45,6 +45,7 @@ Requires (handled by the root conftest):
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import uuid
 from pathlib import Path
@@ -60,12 +61,14 @@ for _p in (_ROOT, _RV_HELPER):
     if s not in sys.path:
         sys.path.insert(0, s)
 
-from helper.clients.oauth_client import OAuthAppsClient  # noqa: E402
+from helper.clients.oauth_client import OAuthAppsClient, OAuthProviderClient  # noqa: E402
+from helper.local_auth import session_service_account_id  # noqa: E402
 from helper.http.session_client import (  # noqa: E402
     SESSION_REQUIRED_MESSAGE,
     SessionClient,
 )
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
+from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from helper.second_user import SecondUser, log_in, second_user  # noqa: E402, F401
 from openapi_schema_validator import (  # noqa: E402
     assert_response_matches_openapi_operation,
@@ -109,6 +112,8 @@ def _make_app_body(grant_types: list[str] | None = None) -> dict:
     }
     if grant_types is not None:
         body["allowedGrantTypes"] = grant_types
+        if "client_credentials" in grant_types:
+            body["tokenIdentityUserId"] = session_service_account_id()
     return body
 
 
@@ -770,8 +775,14 @@ class TestOAuthAppsRequireSession(OAuthAppsTestBase):
         assert SESSION_REQUIRED_MESSAGE in body["error"]["message"], body
 
     def test_oauth_access_token_is_refused(self, pipeshub_client: PipeshubClient) -> None:
-        """The client-credentials token the rest of the suite uses gets 403."""
-        self._assert_create_refused(pipeshub_client.auth_headers)
+        """A client-credentials token gets 403."""
+        resp = OAuthProviderClient(pipeshub_client).token(
+            grant_type="client_credentials",
+            client_id=os.environ.get("CLIENT_ID", ""),
+            client_secret=os.environ.get("CLIENT_SECRET", ""),
+        )
+        assert resp.status_code == 200, f"token fetch failed: {resp.status_code} {resp.text}"
+        self._assert_create_refused({"Authorization": f"Bearer {resp.json()['access_token']}"})
 
     def test_personal_access_token_is_refused(self, user_session_client: SessionClient) -> None:
         """A personal access token minted by the same user gets 403."""
@@ -804,20 +815,25 @@ class TestOAuthAppRateLimiting(OAuthAppsTestBase):
         TOTAL = 1010
 
         rate_limited: list[requests.Response] = []
-        for _ in range(TOTAL):
-            resp = self.oauth.list_apps(limit=1)
-            if resp.status_code == 429:
-                rate_limited.append(resp)
-            if len(rate_limited) >= 5:
-                break
+        try:
+            for _ in range(TOTAL):
+                resp = self.oauth.list_apps(limit=1)
+                if resp.status_code == 429:
+                    rate_limited.append(resp)
+                if len(rate_limited) >= 5:
+                    break
 
-        if not rate_limited:
-            pytest.skip(
-                f"No 429 responses from {TOTAL} sequential requests — "
-                f"rate limiter window may be fresh in this environment"
-            )
+            if not rate_limited:
+                pytest.skip(
+                    f"No 429 responses from {TOTAL} sequential requests — "
+                    f"rate limiter window may be fresh in this environment"
+                )
 
-        for resp in rate_limited:
-            assert_response_matches_openapi_operation(
-                resp.json(), "listOAuthApps", status_code="429"
-            )
+            for resp in rate_limited:
+                assert_response_matches_openapi_operation(
+                    resp.json(), "listOAuthApps", status_code="429"
+                )
+        finally:
+            # Counted per test user, who goes on to register OAuth apps for the
+            # MCP suites on this same worker.
+            wait_out_rate_limit(rate_limited[-1] if rate_limited else None)

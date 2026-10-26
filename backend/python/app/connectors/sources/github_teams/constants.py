@@ -16,9 +16,14 @@ from app.config.constants.arangodb import ExtensionTypes
 # never passes a base_url, and the connector's auth config has no
 # instance-URL field to source one from.
 
-# REST "core" budget (authenticated) is 5,000 req/hr. There is no proactive
-# pause: like every other connector, a rate-limited call fails fast, the sync
-# aborts with its checkpoint withheld, and the scheduler retries later.
+# REST "core" budget (authenticated) is 5,000 req/hr, shared with every other
+# tool on the token owner's account. Sync, listing and streaming to indexing
+# stop sending once a reserve of it is left (github_async._check_reserve); a
+# person opening a file does not, and stops only when the pool is spent. A
+# rate limit that resets within _GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS is waited
+# out in ds_call; a longer one fails fast: the sync aborts with its checkpoint
+# withheld and the scheduler retries later, and a stream answers 429 with
+# Retry-After, on which indexing puts the record back in line until then.
 # (The timestamp backfill runs on GraphQL's separate point budget.)
 
 # Search API budget is a *separate*, much smaller pool: 30 req/min. Used by
@@ -76,10 +81,23 @@ CODE_FILE_MAX_SIZE_BYTES = 5 * 1024 * 1024  # 5 MB
 PR_PAGE_SIZE = 100
 ISSUE_PAGE_SIZE = 100
 
-# A PR's changed-file contents are inlined into the blocks payload and held in
-# memory while the container is serialised, so cap what gets inlined. The diff
-# itself is always kept — only the full-file body is dropped above this.
+# A changed file GitHub returns without a diff (too large to show) has its
+# contents inlined into the PR's blocks payload instead, held in memory while
+# the container is serialised, so cap what gets inlined.
 PR_FILE_INLINE_CONTENT_MAX_BYTES = 256 * 1024
+
+# Each inlined file costs one Contents API call, every time the PR is indexed. A PR
+# of 300 binary or too-large files would cost ~300 calls per update, so ~16 updates
+# of one such PR spend a whole hourly budget. Past this many, nothing more is inlined.
+PR_FILE_INLINE_MAX_FILES = 30
+
+# Diff and inlined file text kept per pull request. Parsing turns diff text into
+# blocks whose stored JSON is about ten times its size, and storage refuses a
+# record over 100 MB, so a PR whose diff deletes or re-adds the whole repository
+# (GitHub lists up to 3,000 files) failed outright. Past this, a file's change is
+# named but its text left out. 4 MiB is ~40 MB stored, and well above ordinary
+# PRs: the largest of 400 recent apache/airflow merges was 2.7 MB.
+PR_DIFF_TEXT_MAX_BYTES = 4 * 1024 * 1024
 
 # GitHub permits attachment uploads up to 25 MB; refuse anything larger so a
 # single record cannot stall the stream indefinitely.
@@ -125,6 +143,12 @@ _SEARCH_PUBLIC_PAGES_PER_REQUEST = 3
 # sync-state to lean on). One keystroke = one request, so cache briefly.
 _ORG_SCOPE_CACHE_TTL_SECONDS = 60.0
 
+# Streamed records name their repository only by numeric id, so each one needs
+# owner/name before its real request. Remembered per repository for this long:
+# a sync streams hundreds of records per repo, and the bound means a renamed or
+# transferred repository is picked up again within minutes.
+_REPO_LOOKUP_TTL_SECONDS = 15 * 60.0
+
 # ---------------------------------------------------------------------------
 # Auth error markers — substring fallback for stringified errors on
 # GitHubResponse objects that carry no HTTP status
@@ -141,26 +165,31 @@ _AUTH_ERROR_MARKERS: tuple[str, ...] = (
 )
 
 HTTP_UNAUTHORIZED = 401
+HTTP_NOT_FOUND = 404
 
-# Transient statuses worth retrying. 403 is excluded: GitHub uses it for both
-# rate limiting and genuine permission denials, and retrying the latter just
-# burns budget — check_rate_limit_and_pause handles the former.
+# Transient statuses worth retrying. 403 is excluded: it is a genuine
+# permission denial by the time it gets here, because the data source reports
+# GitHub's rate-limited 403s as 429, and ds_call waits those out separately.
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 500, 502, 503, 504})
+# httpx transport failures: the connection broke before GitHub sent a status. Not
+# retried, one dropped connection made a sync a silent no-op (B3: a force-push sat
+# unsynced until the next sync).
+_RETRYABLE_TRANSPORT_ERRORS: frozenset[str] = frozenset({
+    "RemoteProtocolError", "ConnectError", "ReadError", "WriteError", "CloseError",
+    "ConnectTimeout", "PoolTimeout", "ReadTimeout", "WriteTimeout",
+})
 _GITHUB_MAX_RETRIES = 3
 _GITHUB_RETRY_BASE_DELAY_SECONDS = 1.0
 _GITHUB_RETRY_MAX_DELAY_SECONDS = 30.0
+
+# Longest rate-limit wait taken inside one call. A stream request runs under
+# the indexing service's HTTP timeout (aiohttp's 300s default), so a primary
+# reset up to an hour away is left to the caller's retry instead.
+_GITHUB_RATE_LIMIT_MAX_WAIT_SECONDS = 90
+# GitHub's documented wait for a secondary limit that sends no Retry-After.
+_GITHUB_SECONDARY_RATE_LIMIT_WAIT_SECONDS = 60
 
 # GitHub collaborator "affiliation" values, used to enumerate collaborators
 # without paying for a per-user permission lookup (NamedUser.permissions
 # already carries the role for the queried repo).
 AFFILIATION_ALL = "all"
-
-# ---------------------------------------------------------------------------
-# Deletion safety valve
-# ---------------------------------------------------------------------------
-
-# A recursive Git Tree can return HTTP 200 with a truncated set. Deleting a
-# large fraction of a repo's code records on a single walk would wipe real
-# files, so refuse and leave them for the next complete walk.
-REPO_DELETE_VALVE_MAX_FRACTION = 0.5
-REPO_DELETE_VALVE_MIN_ABSOLUTE = 5

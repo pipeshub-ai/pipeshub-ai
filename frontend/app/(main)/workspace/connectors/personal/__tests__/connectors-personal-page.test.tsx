@@ -86,7 +86,7 @@ describe('Personal connectors page', () => {
     renderInTheme(<PersonalConnectorsPage />);
 
     expect(await screen.findByTestId('connector-card-Gmail')).toBeTruthy();
-    expect(screen.getByRole('heading', { name: 'Your Personal Connectors' })).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Your connectors' })).toBeTruthy();
     expect(api.getRegistryConnectors).toHaveBeenCalledWith('personal');
     expect(api.getActiveConnectors).toHaveBeenCalledWith('personal');
     expect(nav.replace).not.toHaveBeenCalled();
@@ -112,7 +112,7 @@ describe('Personal connectors page', () => {
     renderInTheme(<PersonalConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Gmail');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     expect(await screen.findByRole('dialog', { name: 'Set up Gmail' })).toBeTruthy();
     expect(useConnectorsStore.getState().selectedScope).toBe('personal');
@@ -122,7 +122,7 @@ describe('Personal connectors page', () => {
     renderInTheme(<PersonalConnectorsPage />);
     const card = await screen.findByTestId('connector-card-LOCAL_FS');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     await waitFor(() => expect(toasts()).toHaveLength(1));
     expect(toasts()[0]).toMatchObject({
@@ -155,5 +155,23 @@ describe('Personal connectors page', () => {
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync', undefined));
     await waitFor(() => expect(toastTitles()).toContain('Connector sync enabled'));
+  });
+
+  it('re-reads the connector after a failed toggle so the switch shows the real state', async () => {
+    const instance = makeInstance({ type: 'Gmail', name: 'Work mail', isActive: false, scope: 'personal' });
+    nav.params = new URLSearchParams('connectorType=Gmail');
+    api.getActiveConnectors.mockResolvedValue({ connectors: [instance] });
+    api.getConnectorInstance.mockResolvedValue({ ...instance, isActive: true });
+    api.toggleConnector.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down', statusCode: 500 });
+    renderInTheme(<PersonalConnectorsPage />);
+    const toggle = await screen.findByRole('switch');
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    api.getConnectorInstance.mockClear();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(api.getConnectorInstance).toHaveBeenCalledWith('conn-1'));
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+    expect(toastTitles()).not.toContain('Connector sync enabled');
   });
 });

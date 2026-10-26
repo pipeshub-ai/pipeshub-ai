@@ -37,7 +37,10 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
   let defaultEndpoint: string
   const documents = new Map<string, InstanceType<typeof DocumentModel>>()
 
-  const upload = async (name = 'report.pdf'): Promise<{ status: number; body: Record<string, unknown> }> => {
+  const upload = async (
+    name = 'report.pdf',
+    userId: string = USER_ID,
+  ): Promise<{ status: number; body: Record<string, unknown> }> => {
     const form = new FormData()
     form.append('file', new Blob(['%PDF-1.4 tiny'], { type: 'application/pdf' }), name)
     form.append('documentPath', `PipesHub/KnowledgeBase/private/${USER_ID}`)
@@ -45,7 +48,7 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     form.append('documentName', path.parse(name).name)
     const res = await fetch(`${baseUrl}/internal/upload`, {
       method: 'POST',
-      headers: { authorization: `Bearer ${scopedStorageServiceJwtGenerator(ORG_ID, SCOPED_JWT_SECRET, USER_ID)}` },
+      headers: { authorization: `Bearer ${scopedStorageServiceJwtGenerator(ORG_ID, SCOPED_JWT_SECRET, userId)}` },
       body: form,
     })
     const text = await res.text()
@@ -167,6 +170,15 @@ describe('Storage internal upload over HTTP: the local disk path', () => {
     const files = filesOnDisk()
     expect(files).to.have.length(4)
     for (const id of documents.keys()) expect(files.filter((f) => f.includes(id)), id).to.have.length(2)
+  })
+
+  it('refuses a token whose user id is malformed with 400, and stores nothing', async () => {
+    const r = await upload('report.pdf', 'not-a-user-id')
+
+    expect(r.status).to.equal(400)
+    expect((r.body.error as { message: string }).message).to.contain("The user id in the storage token isn't valid")
+    expect(documents.size).to.equal(0)
+    expect(filesOnDisk()).to.have.length(0)
   })
 
   const configCalls = () => backend.callsTo('GET', '/api/v1/configurationManager/internal/storageConfig')

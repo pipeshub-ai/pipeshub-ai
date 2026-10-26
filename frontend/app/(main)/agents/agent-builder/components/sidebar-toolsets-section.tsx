@@ -4,8 +4,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next';
 import { Box, Flex, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { CHAT_ITEM_HEIGHT, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
-import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
+import { isPersonalToolset, type BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import {
   buildToolDragPayload,
   buildToolsetDragPayload,
@@ -17,11 +16,16 @@ import {
 } from '../sidebar-toolset-utils';
 import { normalizePaletteLabel } from '../display-utils';
 import { SidebarCategoryRow } from './sidebar-category-row';
+import { SidebarToolDragRow } from './sidebar-draggable-row';
 import { UserToolsetConfigDialog } from './user-toolset-config-dialog';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 import { AgentBuilderWebSearchSection } from './sidebar-web-search-section';
-import { toggleKeyedBoolean } from '../sidebar-expand-utils';
+import type { UseWebSearchConfigResult } from '../hooks/use-web-search-config';
+import { useSearchAwareExpanded } from '../sidebar-expand-utils';
+import { filterToolsetTools } from '../sidebar-utils';
+import { isApiToolsetRow } from '../api-toolset-attachments';
+import { usableByServiceAccount } from '../../../workspace/api-toolsets/toolset-form';
 import type { AgentWebSearchAttachment } from '../types';
 
 /** Toolset type row (e.g. Slack): expanded by default so instance rows are listed. */
@@ -29,13 +33,8 @@ const DEFAULT_TOOLSET_TYPE_EXPANDED = true;
 /** Toolset instance row: collapsed by default; user expands to see tools (Knowledge stops at instance rows). */
 const DEFAULT_TOOLSET_INSTANCE_EXPANDED = false;
 const TOOLSET_SHOW_MORE_LIMIT = 5;
-
-function applyToolDrag(e: React.DragEvent, data: Record<string, string>) {
-  e.dataTransfer.effectAllowed = 'move';
-  Object.entries(data).forEach(([k, v]) => {
-    if (v != null) e.dataTransfer.setData(k, v);
-  });
-}
+/** Where a member connects an API toolset: it's listed with their own actions. */
+const API_TOOLSETS_CONNECT_PAGE = '/workspace/actions/personal/';
 
 /** Row-level drag/configure flags for one toolset instance (shared by single-type and grouped UI). */
 function getToolsetPaletteRowState(
@@ -102,62 +101,24 @@ function ToolDragRow(props: {
     duplicateTypeDragBlocked,
     onDragBlocked,
   } = props;
-  const payload = buildToolDragPayload(tool, toolset);
   const blocked = needsConfiguration || structureLocked || duplicateTypeDragBlocked;
   return (
-    <Box
-      draggable={!blocked}
-      onDragStart={(e) => {
-        if (blocked) {
-          e.preventDefault();
-          onDragBlocked?.();
-          return;
-        }
-        applyToolDrag(e, payload);
-      }}
+    <SidebarToolDragRow
+      name={tool.name}
+      data={buildToolDragPayload(tool, toolset)}
+      disabled={blocked}
+      onBlocked={onDragBlocked}
       mb="1"
-      style={{
-        display: 'flex',
-        alignItems: 'center',
-        width: '100%',
-        minWidth: 0,
-        minHeight: CHAT_ITEM_HEIGHT,
-        padding: '0 12px',
-        boxSizing: 'border-box',
-        gap: 8,
-        cursor: blocked ? 'not-allowed' : 'grab',
-        opacity: blocked ? 0.55 : 1,
-        borderRadius: 'var(--radius-1)',
-        border: '1px solid transparent',
-        backgroundColor: 'transparent',
-      }}
-      className={
-        blocked
-          ? 'agent-builder-draggable-row agent-builder-draggable-row--disabled'
-          : 'agent-builder-draggable-row'
-      }
-    >
-      <MaterialIcon name="build" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" style={{ flexShrink: 0, lineHeight: 0 }} />
-      <span
-        style={{
-          flex: 1,
-          minWidth: 0,
-          fontSize: 14,
-          color: 'var(--slate-11)',
-          whiteSpace: 'normal',
-          overflowWrap: 'anywhere',
-          wordBreak: 'break-word',
-          textAlign: 'left',
-        }}
-      >
-        {normalizePaletteLabel(tool.name)}
-      </span>
-    </Box>
+    />
   );
 }
 
 export function AgentBuilderToolsetsSection(props: {
   toolsets: BuilderSidebarToolset[];
+  /** Palette-wide search query, applied on top of this section's own server-side search. */
+  search?: string;
+  /** Web search config loaded by the sidebar, handed to the web search group. */
+  webSearchConfig: UseWebSearchConfigResult;
   loading: boolean;
   refreshToolsets: (
     agentKey?: string | null,
@@ -179,9 +140,12 @@ export function AgentBuilderToolsetsSection(props: {
   onPaletteStructureDragBlocked?: () => void;
   /** Web-search provider currently attached to the agent (null if none). */
   webSearchAttached: AgentWebSearchAttachment | null;
+  /** Shared with the org or a service account: personal actions can't go on it. */
+  agentShared?: boolean;
 }) {
   const {
     toolsets,
+    search = '',
     loading,
     refreshToolsets,
     activeToolsetTypeKeys,
@@ -194,19 +158,18 @@ export function AgentBuilderToolsetsSection(props: {
     orgCredentialUiLocked = false,
     onPaletteStructureDragBlocked,
     webSearchAttached,
+    agentShared = false,
   } = props;
 
   const { t } = useTranslation();
   const [searchInput, setSearchInput] = useState('');
-  const [expandedApps, setExpandedApps] = useState<Record<string, boolean>>({});
+  const searching = search.trim() !== '';
+  const { isOpen, toggle: onAppToggle } = useSearchAwareExpanded(searching);
   const [userConfigToolset, setUserConfigToolset] = useState<BuilderSidebarToolset | null>(null);
-  const [showAllToolsets, setShowAllToolsets] = useState(false);
+  const [showAllToolsetsState, setShowAllToolsets] = useState(false);
+  const showAllToolsets = showAllToolsetsState || searching;
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-
-  const onAppToggle = useCallback((key: string, defaultWhenUnset: boolean) => {
-    setExpandedApps((p) => toggleKeyedBoolean(p, key, defaultWhenUnset));
-  }, []);
 
   const handleSearchChange = useCallback(
     (value: string) => {
@@ -247,6 +210,15 @@ export function AgentBuilderToolsetsSection(props: {
   const buildUiState = useCallback(
     (ts: BuilderSidebarToolset) => {
       const isFromRegistry = ts.isFromRegistry === true || !ts.instanceId;
+      if (isApiToolsetRow(ts)) {
+        return {
+          isFromRegistry,
+          forceShowConfigureIcon: false,
+          configureUseKeyIcon: false,
+          configureIconColor: 'var(--slate-11)',
+          configureTooltip: t('agentBuilder.apiToolsets.connectTooltip'),
+        };
+      }
       if (isServiceAccount && !isFromRegistry) {
         return {
           isFromRegistry,
@@ -287,6 +259,11 @@ export function AgentBuilderToolsetsSection(props: {
         onNotify(t('agentBuilder.paletteActionBlockedViewOnly'));
         return;
       }
+      // API toolsets aren't connected from the builder: members do it from their actions page.
+      if (isApiToolsetRow(ts)) {
+        window.open(API_TOOLSETS_CONNECT_PAGE, '_blank', 'noopener');
+        return;
+      }
       const instanceId = ts.instanceId || '';
       const isFromRegistry = ts.isFromRegistry === true || !instanceId;
 
@@ -308,7 +285,17 @@ export function AgentBuilderToolsetsSection(props: {
     [orgCredentialUiLocked, isServiceAccount, onManageAgentToolsetCredentials, onNotify, t]
   );
 
-  const toolsetsByType = useMemo(() => groupToolsetsByType(toolsets), [toolsets]);
+  // API toolsets come from their own list, which the server-side search doesn't filter.
+  const visibleToolsets = useMemo(() => {
+    const query = searchInput.trim().toLowerCase();
+    return toolsets.filter(
+      (ts) =>
+        (!query || !isApiToolsetRow(ts) || ts.displayName.toLowerCase().includes(query)) &&
+        filterToolsetTools(ts, search) !== null
+    );
+  }, [toolsets, searchInput, search]);
+
+  const toolsetsByType = useMemo(() => groupToolsetsByType(visibleToolsets), [visibleToolsets]);
 
   const handleUnconfiguredDrag = useCallback(
     (ts: BuilderSidebarToolset, isFromRegistry: boolean) => {
@@ -349,6 +336,17 @@ export function AgentBuilderToolsetsSection(props: {
     else onNotify(t('agentBuilder.viewerPaletteDragBlocked'));
   }, [onPaletteStructureDragBlocked, onNotify, t]);
 
+  const notifyPersonalOnSharedAgent = useCallback(
+    (ts: BuilderSidebarToolset) => {
+      onNotify(
+        t('agentBuilder.toolsetPersonalOnSharedAgentNotify', {
+          name: ts.instanceName?.trim() || ts.displayName || ts.name || '',
+        })
+      );
+    },
+    [onNotify, t]
+  );
+
   const orgCredentialLockedTooltip = t('agentBuilder.paletteActionBlockedViewOnly');
 
   return (
@@ -372,6 +370,8 @@ export function AgentBuilderToolsetsSection(props: {
 
       <AgentBuilderWebSearchSection
         attached={webSearchAttached}
+        search={search}
+        config={props.webSearchConfig}
         onNotify={onNotify}
         structureLocked={structureLocked}
       />
@@ -380,11 +380,11 @@ export function AgentBuilderToolsetsSection(props: {
         <AgentBuilderPaletteSkeletonList count={6} />
       ) : null}
 
-      {!loading && toolsets.length === 0 ? (
+      {!loading && visibleToolsets.length === 0 ? (
         <Box pl="3" py="2">
           <Text size="1" style={{ color: 'var(--slate-11)', fontStyle: 'italic' }}>
-            {searchInput.trim()
-            ? t('agentBuilder.noToolsetsMatch', { query: searchInput })
+            {searchInput.trim() || searching
+            ? t('agentBuilder.noToolsetsMatch', { query: searchInput.trim() || search.trim() })
             : t('agentBuilder.noToolsetsAvailable')}
           </Text>
         </Box>
@@ -406,12 +406,16 @@ export function AgentBuilderToolsetsSection(props: {
               {visibleEntries.map(([toolsetType, typeToolsets]) => {
                 const first = typeToolsets[0];
                 const typeKey = `toolset-type-${toolsetType}`;
-                const isTypeExpanded = expandedApps[typeKey] ?? DEFAULT_TOOLSET_TYPE_EXPANDED;
+                const isTypeExpanded = isOpen(typeKey, DEFAULT_TOOLSET_TYPE_EXPANDED);
 
                 return (
                   <Box key={toolsetType} mb="2">
                     <SidebarCategoryRow
-                      groupLabel={normalizePaletteLabel((first.toolsetType || toolsetType) as string)}
+                      groupLabel={
+                        isApiToolsetRow(first)
+                          ? t('agentBuilder.apiToolsets.section')
+                          : normalizePaletteLabel((first.toolsetType || toolsetType) as string)
+                      }
                       groupConnectorType={(first.toolsetType || toolsetType) as string}
                       groupIcon={first.iconPath}
                       itemCount={typeToolsets.length}
@@ -420,9 +424,20 @@ export function AgentBuilderToolsetsSection(props: {
                     >
                       {typeToolsets.map((ts) => {
                         const instKey = `toolset-${ts.instanceId || ts.name.toLowerCase()}`;
-                        const isInstanceExpanded =
-                          expandedApps[instKey] ?? DEFAULT_TOOLSET_INSTANCE_EXPANDED;
+                        const isInstanceExpanded = isOpen(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED);
+                        const shownTools = filterToolsetTools(ts, search) ?? ts.tools;
                         const ui = buildUiState(ts);
+                        // A personal action holds one user's sign-in: others running the agent couldn't use it.
+                        const personalBlocked = agentShared && isPersonalToolset(ts);
+                        // A service account runs as nobody: it can't use an API toolset that needs a member's credential.
+                        const serviceAccountBlocked =
+                          isServiceAccount && isApiToolsetRow(ts) && !usableByServiceAccount(ts.apiToolset);
+                        const rowLocked = structureLocked || personalBlocked || serviceAccountBlocked;
+                        const notifyRowLocked = personalBlocked
+                          ? () => notifyPersonalOnSharedAgent(ts)
+                          : serviceAccountBlocked
+                            ? () => onNotify(t('agentBuilder.apiToolsets.serviceAccountBlocked'))
+                            : notifyStructureDragBlocked;
                         const {
                           needsConfiguration,
                           dragPayload,
@@ -436,10 +451,10 @@ export function AgentBuilderToolsetsSection(props: {
                           ts,
                           ui,
                           activeToolsetTypeKeys,
-                          structureLocked,
+                          rowLocked,
                           orgCredentialUiLocked,
                           isServiceAccount,
-                          notifyStructureDragBlocked,
+                          notifyRowLocked,
                           () => handleDuplicateDrag(ts),
                           () => handleUnconfiguredDrag(ts, ui.isFromRegistry)
                         );
@@ -461,7 +476,7 @@ export function AgentBuilderToolsetsSection(props: {
                             groupLabel={normalizePaletteLabel(ts.instanceName || ts.displayName || ts.name || '')}
                             groupConnectorType={ts.toolsetType}
                             groupIcon={ts.iconPath}
-                            itemCount={ts.tools.length}
+                            itemCount={shownTools.length}
                             isExpanded={isInstanceExpanded}
                             onToggle={() => onAppToggle(instKey, DEFAULT_TOOLSET_INSTANCE_EXPANDED)}
                             dragType={dragType}
@@ -478,16 +493,16 @@ export function AgentBuilderToolsetsSection(props: {
                             configureIconColor={ui.configureIconColor}
                             toolsetStatus={getToolsetSidebarStatus(ts)}
                           >
-                            {ts.tools.map((tool) => (
+                            {shownTools.map((tool) => (
                               <ToolDragRow
                                 key={`${ts.instanceId}-${tool.fullName || tool.name}`}
                                 tool={tool}
                                 toolset={ts}
                                 needsConfiguration={needsConfiguration}
-                                structureLocked={structureLocked}
+                                structureLocked={rowLocked}
                                 duplicateTypeDragBlocked={duplicateTypeDragBlocked}
                                 onDragBlocked={() => {
-                                  if (structureLocked) notifyStructureDragBlocked();
+                                  if (rowLocked) notifyRowLocked();
                                   else if (needsConfiguration) handleUnconfiguredDrag(ts, ui.isFromRegistry);
                                   else if (duplicateTypeDragBlocked) handleDuplicateDrag(ts);
                                 }}
@@ -500,7 +515,7 @@ export function AgentBuilderToolsetsSection(props: {
                   </Box>
                 );
               })}
-              {typeEntries.length > TOOLSET_SHOW_MORE_LIMIT && (
+              {!searching && typeEntries.length > TOOLSET_SHOW_MORE_LIMIT && (
                 <button
                   type="button"
                   aria-expanded={showAllToolsets}

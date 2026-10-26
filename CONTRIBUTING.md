@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md)
+**Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md) · [Čeština](docs/i18n/cs/CONTRIBUTING.md)
 
 This English file is current. The translations may lag; use this page for labeled issues and local setup until they catch up.
 
@@ -50,7 +50,7 @@ Markdown-only work does not need Docker or a local stack. If you add or change a
 
 ## New connectors
 
-A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk through scope first.
+A new connector is a large piece of work. [CONNECTOR.md](CONNECTOR.md) is the starting point, and [CONNECTOR_CHECKLIST.md](CONNECTOR_CHECKLIST.md) is what a reviewer will check it against; Discord is a good place to talk through scope first.
 
 ## Setting Up the Development Environment
 
@@ -257,6 +257,12 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Provide a clear description of the changes
    - Reference any related issues
    - Add screenshots if applicable
+
+Pull requests from forks run the integration tests without repository secrets:
+CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
+runs the full suite on a reviewed commit using *Run workflow* on
+`integration-tests.yml` with that commit's hash (see
+[integration-tests/README.md](integration-tests/README.md)).
 
 ## Code Style Guidelines
 

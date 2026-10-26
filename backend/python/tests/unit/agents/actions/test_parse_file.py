@@ -641,13 +641,12 @@ class TestHandleCsvTsv:
         assert result.blocks == []
 
     @pytest.mark.asyncio
-    async def test_undecodable_returns_empty(self):
+    async def test_windows_1252_csv_is_decoded(self) -> None:
         parser = _make_parser()
-        parser._csv_parser.read_raw_rows = MagicMock(
-            side_effect=UnicodeDecodeError("utf-8", b"", 0, 1, "bad")
-        )
-        result = await parser.handle_csv(b"\xff\xfe", "bad.csv")
-        assert isinstance(result, BlocksContainer)
+        parser._csv_parser.read_raw_rows = MagicMock(return_value=[])
+        await parser.handle_csv(b"item,price\nWidget,\x80 5 \x93each\x94\n", "prices.csv")
+        stream = parser._csv_parser.read_raw_rows.call_args[0][0]
+        assert stream.getvalue() == "item,price\nWidget,\u20ac 5 \u201ceach\u201d\n"
 
     @pytest.mark.asyncio
     async def test_csv_successful_parse(self):
@@ -698,26 +697,13 @@ class TestHandleMd:
         assert "Heading" in call_args[0]
 
     @pytest.mark.asyncio
-    async def test_latin1_fallback(self):
-        """Bytes undecodable as utf-8 fall back to latin-1 which always succeeds."""
+    async def test_windows_1252_fallback(self) -> None:
         parser = _make_parser()
         expected = BlocksContainer(blocks=[], block_groups=[])
         parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
-        # Non-utf-8 bytes; latin-1/iso-8859-1 accepts anything
-        result = await parser.handle_md(b"\xff\xfecaf\xe9", "a.md")
+        result = await parser.handle_md(b"\x93caf\xe9\x94 \x80", "a.md")
         assert result is expected
-
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        raw = MagicMock()
-
-        def _decode(*_a, **_k):
-            raise UnicodeDecodeError("utf-8", b"", 0, 1, "x")
-
-        raw.decode = _decode
-        parser = _make_parser()
-        with pytest.raises(ValueError, match="Unable to decode Markdown"):
-            await parser.handle_md(raw, "a.md")
+        assert parser._markdown_string_to_blocks.call_args[0][0] == "\u201ccaf\u00e9\u201d \u20ac"
 
 
 class TestHandleTxt:
@@ -728,18 +714,6 @@ class TestHandleTxt:
         parser._markdown_string_to_blocks = AsyncMock(return_value=expected)
         result = await parser.handle_txt(b"plain text", "notes.txt")
         assert result is expected
-
-    @pytest.mark.asyncio
-    async def test_decode_failure_raises(self):
-        raw = MagicMock()
-
-        def _decode(*_a, **_k):
-            raise UnicodeDecodeError("utf-8", b"", 0, 1, "x")
-
-        raw.decode = _decode
-        parser = _make_parser()
-        with pytest.raises(ValueError, match="Unable to decode text file"):
-            await parser.handle_txt(raw, "notes.txt")
 
 
 class TestHandleMdx:

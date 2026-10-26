@@ -62,7 +62,7 @@ import {
   clearToasts,
 } from '../../__tests__/fixtures';
 
-const jira = makeConnector({ isAdminAccessRequired: true, personalConnectorType: 'Jira Personal' });
+const jira = makeConnector({ isAdminAccessRequired: true, personalConnectorType: 'Jira personal' });
 const slack = makeConnector({ name: 'Slack', type: 'Slack', appGroup: 'Slack' });
 
 beforeEach(() => {
@@ -140,7 +140,7 @@ describe('Team connectors page: setup that needs admin access at the provider', 
     renderInTheme(<TeamConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Jira');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     const dialog = await screen.findByRole('dialog', { name: 'Admin access required' });
     expect(
@@ -155,15 +155,15 @@ describe('Team connectors page: setup that needs admin access at the provider', 
   it('points a non-admin at the personal connector', async () => {
     renderInTheme(<TeamConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Jira');
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Admin access required' });
 
     fireEvent.click(within(dialog).getByRole('button', { name: "No, I'm not an admin" }));
 
     const redirect = await screen.findByRole('dialog', { name: 'Use the personal connector instead' });
-    fireEvent.click(within(redirect).getByRole('button', { name: 'Go to Atlassian Personal' }));
+    fireEvent.click(within(redirect).getByRole('button', { name: 'Go to Atlassian personal' }));
     expect(nav.push).toHaveBeenCalledWith(
-      '/workspace/connectors/personal/?connectorType=Jira%20Personal'
+      '/workspace/connectors/personal/?connectorType=Jira%20personal'
     );
     expect(useConnectorsStore.getState().isPanelOpen).toBe(false);
   });
@@ -172,7 +172,7 @@ describe('Team connectors page: setup that needs admin access at the provider', 
     renderInTheme(<TeamConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Slack');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     expect(await screen.findByRole('dialog', { name: 'Set up Slack' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'Admin access required' })).toBeNull();
@@ -186,6 +186,11 @@ describe('Team connectors page: turning sync on and off', () => {
     api.getConnectorInstance.mockResolvedValue({ ...instance, isActive: !instance.isActive });
     renderInTheme(<TeamConnectorsPage />);
     return instance;
+  }
+
+  async function confirmDisable() {
+    const dialog = await screen.findByRole('alertdialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Disable sync' }));
   }
 
   it('enables sync and confirms it', async () => {
@@ -205,6 +210,7 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(toggle);
+    await confirmDisable();
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalledWith('conn-1', 'sync'));
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Connector sync disabled'));
@@ -217,6 +223,7 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(toggle);
+    await confirmDisable();
 
     await waitFor(() => expect(toasts().map((t) => t.title)).toContain('Could not update connector'));
     expect(toasts().map((t) => t.title)).not.toContain('Connector sync disabled');
@@ -229,9 +236,24 @@ describe('Team connectors page: turning sync on and off', () => {
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
 
     fireEvent.click(toggle);
+    await confirmDisable();
 
     await waitFor(() => expect(api.toggleConnector).toHaveBeenCalled());
     await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
     expect(toasts()).toEqual([]);
+  });
+
+  it('re-reads the connector after a failed toggle so the switch shows the real state', async () => {
+    openTypePage(makeInstance({ isActive: false }));
+    api.toggleConnector.mockRejectedValue({ type: 'SERVER_ERROR', message: 'down', statusCode: 500 });
+    const toggle = await screen.findByRole('switch');
+    await waitFor(() => expect(toggle.hasAttribute('disabled')).toBe(false));
+    api.getConnectorInstance.mockClear();
+
+    fireEvent.click(toggle);
+
+    await waitFor(() => expect(api.getConnectorInstance).toHaveBeenCalledWith('conn-1'));
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'));
+    expect(toasts().map((t) => t.title)).not.toContain('Connector sync enabled');
   });
 });

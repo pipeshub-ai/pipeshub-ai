@@ -191,6 +191,7 @@ class TestHandleOAuthCallbackDeep:
         mock_startup.get_token_refresh_service.return_value = mock_refresh_service
 
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \
@@ -245,6 +246,7 @@ class TestHandleOAuthCallbackDeep:
         mock_startup.get_token_refresh_service.return_value = mock_refresh_service
 
         with patch(_SETTINGS_PATH_PATCH, new_callable=AsyncMock, return_value="/settings/connectors"), \
+             patch("app.connectors.api.router.resolve_oauth_base_url", new_callable=AsyncMock, return_value="https://app.example.com"), \
              patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch(_BUILD_FLOW_PATCH, new_callable=AsyncMock, return_value={"clientId": "cid"}), \
              patch(_OAUTH_CONFIG_PATCH, return_value=MagicMock()), \
@@ -1254,8 +1256,7 @@ class TestToggleConnectorInstanceDeep:
 
         assert result["success"] is True
 
-    async def test_generic_exception_raises_500(self):
-        """Lines 5385-5387: generic exception in toggle raises 500."""
+    async def test_a_failed_org_read_is_503(self):
         from app.connectors.api.router import toggle_connector_instance
 
         req = _make_request(is_admin=True, body={"type": "sync"})
@@ -1266,7 +1267,7 @@ class TestToggleConnectorInstanceDeep:
 
         with pytest.raises(HTTPException) as exc_info:
             await toggle_connector_instance("c1", req, graph_provider=graph_provider)
-        assert exc_info.value.status_code == 500
+        assert exc_info.value.status_code == 503
 
 
 # ===========================================================================
@@ -1328,9 +1329,7 @@ class TestDeleteConnectorInstanceDeep:
         )
 
         graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock(
-            side_effect=RuntimeError("graph DB error")
-        )
+        graph_provider.update_node = AsyncMock(side_effect=RuntimeError("graph DB error"))
         graph_provider.check_connector_in_use = AsyncMock(return_value=[])
 
         producer = req.app.container.messaging_producer
@@ -1345,6 +1344,8 @@ class TestDeleteConnectorInstanceDeep:
                 )
         assert exc_info.value.status_code == 500
         assert "Failed to initiate connector deletion" in exc_info.value.detail
+        # The status write comes first, so a failed one stops nothing and deletes nothing.
+        producer.send_message.assert_not_called()
 
     async def test_successful_deletion_flow(self):
         """Lines 5460-5519: full success path with event publishing and DELETING status."""
@@ -1359,12 +1360,17 @@ class TestDeleteConnectorInstanceDeep:
             return_value=instance
         )
 
+        calls: list[str] = []
         graph_provider = AsyncMock()
-        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.update_node = AsyncMock(
+            side_effect=lambda key, collection, updates: calls.append(f"status={updates['status']}")
+        )
         graph_provider.check_connector_in_use = AsyncMock(return_value=[])
 
         producer = req.app.container.messaging_producer
-        producer.send_message = AsyncMock()
+        producer.send_message = AsyncMock(
+            side_effect=lambda topic, message, **_: calls.append(message["eventType"])
+        )
 
         with patch(_BETA_PATCH, new_callable=AsyncMock), \
              patch("app.connectors.api.router._validate_connector_deletion_permissions"), \
@@ -1374,10 +1380,74 @@ class TestDeleteConnectorInstanceDeep:
             )
 
         assert result.status_code == 202
-        # Verify two messages sent: appDisabled + delete
-        assert producer.send_message.call_count == 2
-        # Verify batch_upsert_nodes called to set DELETING status
-        graph_provider.batch_upsert_nodes.assert_called_once()
+        # DELETING is written before any event: the delete's consumer runs in this
+        # service and can finish first, and a later write would hit a deleted node.
+        assert calls[0] == "status=DELETING"
+        assert calls[1] == "appDisabled"
+        assert calls[2].endswith(".delete") and len(calls) == 3
+        graph_provider.batch_upsert_nodes.assert_not_called()
+
+    async def test_a_failed_delete_publish_leaves_the_connector_out_of_deleting(self) -> None:
+        from app.config.constants.arangodb import CollectionNames
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", extra={"isActive": True})
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
+            return_value=instance
+        )
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
+
+        async def send(topic: str, message: dict, **_: str) -> None:
+            if message["eventType"].endswith(".delete"):
+                raise RuntimeError("broker down")
+
+        req.app.container.messaging_producer.send_message = AsyncMock(side_effect=send)
+
+        with patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"), \
+             patch(_TIMESTAMP_PATCH, return_value=1000):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance("c1", req, graph_provider=graph_provider)
+
+        assert exc_info.value.status_code == 500
+        statuses = [c.args[2]["status"] for c in graph_provider.update_node.await_args_list]
+        assert statuses == ["DELETING"]
+        # Only the DELETING mark this request wrote is cleared, not a newer one.
+        graph_provider.update_node_fields_if_match.assert_awaited_once_with(
+            "c1",
+            CollectionNames.APPS.value,
+            {"status": None, "updatedAtTimestamp": 1000},
+            {"status": "DELETING", "updatedAtTimestamp": 1000},
+        )
+
+    async def test_a_failed_delete_cleanup_keeps_the_publish_error(self) -> None:
+        from app.connectors.api.router import delete_connector_instance
+
+        req = _make_request(is_admin=True)
+        instance = _make_instance(scope="team", created_by="u1", extra={"isActive": True})
+        req.app.state.connector_registry.get_connector_instance_for_deletion = AsyncMock(
+            return_value=instance
+        )
+        graph_provider = AsyncMock()
+        graph_provider.check_connector_in_use = AsyncMock(return_value=[])
+        graph_provider.update_node_fields_if_match = AsyncMock(side_effect=RuntimeError("db down"))
+
+        async def send(topic: str, message: dict, **_: str) -> None:
+            if message["eventType"].endswith(".delete"):
+                raise RuntimeError("broker down")
+
+        req.app.container.messaging_producer.send_message = AsyncMock(side_effect=send)
+
+        with patch(_BETA_PATCH, new_callable=AsyncMock), \
+             patch("app.connectors.api.router._validate_connector_deletion_permissions"), \
+             patch(_TIMESTAMP_PATCH, return_value=1000):
+            with pytest.raises(HTTPException) as exc_info:
+                await delete_connector_instance("c1", req, graph_provider=graph_provider)
+
+        assert exc_info.value.status_code == 500
+        assert str(exc_info.value.__cause__) == "broker down"
 
 
 # ===========================================================================

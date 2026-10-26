@@ -37,6 +37,7 @@ def _make_connector():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
     dep.on_record_content_update = AsyncMock()
@@ -420,7 +421,7 @@ class TestNormalizeUrl:
     def test_lowercases_netloc(self):
         c = _make_connector()
         result = c._normalize_url("https://EXAMPLE.COM/path")
-        assert "example.com" in result
+        assert result == "https://example.com/path"
 
     def test_root_path_preserved(self):
         c = _make_connector()

@@ -1,5 +1,6 @@
 import { inject, injectable } from 'inversify';
 import nodemailer from 'nodemailer';
+import type { Transporter } from 'nodemailer';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
@@ -10,6 +11,7 @@ import {
   MailSendResult,
   SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
+  smtpProblemOf,
 } from '../types/mail-event.types';
 
 const SMTP_DNS_TIMEOUT_MS = 30_000;
@@ -25,7 +27,7 @@ export const SMTP_CIRCUIT_COOLDOWN_MS = 60_000;
 
 interface PooledTransport {
   key: string;
-  transporter: nodemailer.Transporter;
+  transporter: Transporter;
   inFlight: number;
 }
 
@@ -60,8 +62,17 @@ export class MailSenderService {
   ) {}
 
   /** Resolves the live SMTP config, or null when the org has not set one up. */
-  getSmtpConfig(): SmtpConfig | null {
+  getSmtpConfig(
+    _orgId?: string,
+  ): SmtpConfig | null | Promise<SmtpConfig | null> {
     return (this.getAppConfig().smtp as SmtpConfig | undefined) ?? null;
+  }
+
+  protected renderContent(
+    emailTemplateType: string,
+    templateData: Record<string, unknown>,
+  ): string {
+    return getEmailContent(emailTemplateType, templateData);
   }
 
   /** Releases pooled SMTP connections so shutdown is not held open. */
@@ -93,6 +104,9 @@ export class MailSenderService {
       connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
       greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
       socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
+      // Attachments come from the request body; never let one read a local file or fetch a URL.
+      disableFileAccess: true,
+      disableUrlAccess: true,
       ...(!smtpConfig.username
         ? {}
         : smtpConfig.password
@@ -111,7 +125,7 @@ export class MailSenderService {
     }
   }
 
-  private closeQuietly(transporter: nodemailer.Transporter): void {
+  private closeQuietly(transporter: Transporter): void {
     try {
       transporter.close();
     } catch {
@@ -155,7 +169,7 @@ export class MailSenderService {
 
   private async sendWithDeadline(
     pool: PooledTransport,
-    message: Parameters<nodemailer.Transporter['sendMail']>[0],
+    message: Parameters<Transporter['sendMail']>[0],
     deadlineMs: number,
   ): Promise<void> {
     let timer: NodeJS.Timeout | undefined;
@@ -233,7 +247,7 @@ export class MailSenderService {
   ): Promise<MailSendResult> {
     let emailContent: string;
     try {
-      emailContent = getEmailContent(
+      emailContent = this.renderContent(
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
@@ -253,6 +267,7 @@ export class MailSenderService {
     if (openUntil !== null) {
       return {
         status: 'unavailable',
+        problem: 'unreachable',
         error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
       };
     }
@@ -264,6 +279,7 @@ export class MailSenderService {
           from: smtpConfig.fromEmail,
           to: bodyData.sendEmailTo,
           cc: bodyData.sendCcTo,
+          replyTo: bodyData.replyTo,
           subject: bodyData.subject,
           html: emailContent,
           attachments: bodyData.attachments || [],
@@ -300,8 +316,9 @@ export class MailSenderService {
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
-      this.logger.error('Mail send error', { error: message, kind });
-      return { status: kind, error: message };
+      const problem = smtpProblemOf(error);
+      this.logger.error('Mail send error', { error: message, kind, problem });
+      return { status: kind, error: message, ...(problem && { problem }) };
     }
   }
 }

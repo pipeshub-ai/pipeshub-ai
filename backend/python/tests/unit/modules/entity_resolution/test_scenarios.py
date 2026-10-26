@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 
@@ -93,7 +94,7 @@ class TestR1FirstRecord:
         # Nothing exists yet, so no winner is offered; the one call exists
         # only to let the model group in-record siblings (two new topics).
         assert len(model.calls) == 1
-        assert all(item["match"] is None for item in model.calls[0])
+        assert all(item["matches"] == [] for item in model.calls[0])
         assert resolution.stats.winners_offered == 0
         assert resolution.stats.new_nodes == 6
         assert resolution.stats.names_deduped == 1
@@ -158,9 +159,10 @@ class TestR2ExactAndWinnerMerges:
         assert topic_edges[topic_key]["extractedName"] == "BUG BASH TESTING "
         assert len(fake_graph.edges_from("r2", BELONGS_TO_CATEGORY)) == 2
 
-        assert meta.categories == ["Quality Assurance"]
-        assert meta.sub_category_level_1 == "Testing"
-        assert meta.topics == ["Bug bash testing", "Release checklist"]
+        # The record keeps its own spellings; the edges carry the merges.
+        assert meta.categories == ["QA"]
+        assert meta.sub_category_level_1 == "testing"
+        assert meta.topics == ["BUG BASH TESTING", "Bug bash testing session", "Release checklist"]
 
         cat_point = fake_store.point("acme", "category", k("acme", CATEGORIES, "quality assurance"))
         assert cat_point["aliases"] == ["QA"]
@@ -185,7 +187,7 @@ class TestR3SimilarButDistinct:
         kinds = {i["name"]: i["kind"] for i in items}
         assert kinds == {"Integration Testing": "subcategory level 2", "Integration testing": "topic"}
         level2 = next(i for i in items if i["kind"] == "subcategory level 2")
-        assert level2["match"]["name"] == "Manual Testing"
+        assert [m["name"] for m in level2["matches"]] == ["Manual Testing"]
 
         topic_key = k("acme", TOPICS, "integration testing")
         sub2_key = k("acme", SUB2, "integration testing")
@@ -207,7 +209,7 @@ class TestR4Reordering:
         assert fake_graph.node(TOPICS, topic_key)["aliases"] == ["Testing bug bash"]
         (edge,) = fake_graph.edges_from("r4", BELONGS_TO_TOPIC)
         assert edge["to_id"] == topic_key and edge["extractedName"] == "Testing bug bash"
-        assert meta.topics == ["Bug bash testing"]
+        assert meta.topics == ["Testing bug bash"]
 
 
 class TestR5ModelDisplayForm:
@@ -225,7 +227,7 @@ class TestR5ModelDisplayForm:
         node = fake_graph.node(TOPICS, key)
         assert node["name"] == "Release Checklist v2"
         assert node["aliases"] == ["release-checklist v2"]
-        assert meta.topics == ["Release Checklist v2"]
+        assert meta.topics == ["release-checklist v2"]
 
         scripted_model()
         resolution = await run(ctx_factory("r6", "acme", metadata_factory(categories=["Quality Assurance"], topics=["release checklist v2"])))
@@ -289,7 +291,7 @@ class TestR7InRecordCollisionWithExisting:
         assert fake_graph.node(TOPICS, nda_key)["aliases"] == ["Non-disclosure agreement"]
         (edge,) = fake_graph.edges_from("r7b", BELONGS_TO_TOPIC)
         assert edge["to_id"] == nda_key and edge["extractedName"] == "NDA"
-        assert meta.topics == ["NDA"]
+        assert meta.topics == ["NDA", "Non-disclosure agreement"]
 
 
 class TestR8PerOrgIsolation:
@@ -361,23 +363,51 @@ class TestR11InRecordDuplicatesInEmptyOrg:
         assert len(fake_graph.nodes_in(TOPICS)) == 1
         (edge,) = fake_graph.edges_from("f1", BELONGS_TO_TOPIC)
         assert edge["extractedName"] == "Bug bash"
-        assert meta.topics == ["Bug bash"]
+        assert meta.topics == ["Bug bash", "Bug bash testing"]
         assert fake_store.point("fresh", "topic", key)["aliases"] == ["Bug bash testing"]
 
 
 class TestFailures:
-    async def test_vector_store_down_still_enriches_with_new_nodes(
+    async def test_vector_store_down_defers_without_minting_and_the_retry_merges(
+        self, pipeline, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        run, _ = await _seed_r1(pipeline, fake_graph, metadata_factory, ctx_factory, scripted_model)
+        model = scripted_model({"bug bash testing session": ("same", "Bug bash testing")})
+        nodes_before = dict(fake_graph.nodes)
+        points_before = len(fake_store.points)
+        fake_store.fail_matches = True
+        meta = metadata_factory(categories=["QA"], topics=["Bug bash testing session"])
+        with pytest.raises(EntityLookupUnavailableError):
+            await run(ctx_factory("r2", "acme", meta))
+        assert model.calls == []
+        assert fake_graph.nodes == nodes_before
+        assert fake_graph.edges_from("r2", BELONGS_TO_TOPIC) == []
+        assert len(fake_store.points) == points_before
+
+        # Redelivery: the same record once the store answers again.
+        fake_store.fail_matches = False
+        resolution = await run(ctx_factory("r2", "acme", meta))
+        winner = k("acme", TOPICS, "bug bash testing")
+        assert resolution.get(TOPICS, "Bug bash testing session").key == winner
+        assert (TOPICS, k("acme", TOPICS, "bug bash testing session")) not in fake_graph.nodes
+        assert len(fake_graph.nodes_in(TOPICS)) == len([key for key in nodes_before if key[0] == TOPICS])
+        assert len(fake_graph.edges_from("r2", BELONGS_TO_TOPIC)) == 1
+        assert (BELONGS_TO_TOPIC, f"{CollectionNames.RECORDS.value}/r2", f"{TOPICS}/{winner}") in fake_graph.edges
+        assert fake_graph.node(TOPICS, winner)["aliases"] == ["Bug bash testing session"]
+
+    async def test_winner_check_down_defers_without_minting(
         self, pipeline, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
     ) -> None:
         run, _ = await _seed_r1(pipeline, fake_graph, metadata_factory, ctx_factory, scripted_model)
         model = scripted_model()
-        fake_store.fail_matches = True
+        nodes_before = dict(fake_graph.nodes)
+        fake_graph.fail_node_lookup = True
         meta = metadata_factory(categories=["QA"], topics=["Bug bash testing session"])
-        resolution = await run(ctx_factory("r2", "acme", meta))
-        assert resolution.stats.vector_failures == 2
+        with pytest.raises(EntityLookupUnavailableError):
+            await run(ctx_factory("r2", "acme", meta))
         assert model.calls == []
-        assert (TOPICS, k("acme", TOPICS, "bug bash testing session")) in fake_graph.nodes
-        assert len(fake_graph.edges_from("r2", BELONGS_TO_TOPIC)) == 1
+        assert fake_graph.nodes == nodes_before
+        assert fake_graph.edges_from("r2", BELONGS_TO_TOPIC) == []
 
     async def test_model_down_makes_names_new(
         self, pipeline, fake_graph, metadata_factory, ctx_factory, scripted_model
@@ -408,7 +438,7 @@ class TestFailures:
         scripted_model()
         run = pipeline("apply")
         fake_graph.fail_find = True
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EntityLookupUnavailableError):
             await run(ctx_factory("r1", "acme", metadata_factory(categories=["QA"], topics=["x y"])))
         assert fake_store.upserts == []
         assert fake_graph.nodes == {}

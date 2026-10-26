@@ -178,10 +178,10 @@ class TestSharingAndPermissions:
         perms = {p.external_id: p for p in db.permissions["file-1"].values()}
         assert perms[BOB].type == PermissionType.WRITE
         assert perms["g-eng"].entity_type == EntityType.GROUP
-        assert perms["ORG_org-1"].entity_type == EntityType.GROUP
+        assert perms["org-1"].entity_type == EntityType.ORG
         assert db.records["file-1"].is_shared is True
-        assert db.access("file-2") == {"PUBLIC"}
-        assert {"PUBLIC", "ORG_org-1", "g-eng"} <= set(db.user_groups)
+        assert "PUBLIC" not in db.access("file-2")
+        assert "g-eng" in db.user_groups
 
     async def test_a_shared_folder_keeps_its_owner_and_place_in_the_owners_tree(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)
@@ -234,6 +234,23 @@ class TestSharingAndPermissions:
 
         assert db.records["file-1"].path == "/All Files/Team/plan.pdf"
         assert checkpoints.cursor() is None
+
+    async def test_a_stored_shared_file_with_no_file_node_does_not_hold_back_the_cursor(
+        self, box_api, db, checkpoints
+    ) -> None:
+        enterprise(box_api, db)
+        box_api.add_folder("fold-t", "Team", ALICE)
+        box_api.add_file("file-1", "plan.pdf", ALICE, parent="fold-t")
+        box_api.collaborate("fold-t", BOB)
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        checkpoints.sync_points.clear()
+        db.missing_file_nodes.add(db.records["file-1"].id)
+
+        await connector.run_sync()
+
+        assert db.records["file-1"].external_record_group_id == ALICE
+        assert checkpoints.cursor() is not None
 
     @pytest.mark.parametrize("fresh_connector", [False, True])
     async def test_a_partial_user_list_does_not_move_a_shared_folder_out_of_its_owners_drive(
@@ -529,6 +546,29 @@ class TestGroups:
         assert db.deleted_groups == ["g-old"]
         assert {"g-eng", "PUBLIC", "ORG_org-1"} <= set(db.user_groups)
 
+    async def test_a_group_deletion_the_database_refuses_is_tried_again_on_the_next_sync(self, box_api, db, checkpoints) -> None:
+        enterprise(box_api, db)
+        box_api.add_group("g-eng", "Engineering", (ALICE,))
+        box_api.add_group("g-old", "Old", (ALICE,))
+        box_api.add_group("g-older", "Older", (ALICE,))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        del box_api.groups["g-old"], box_api.groups["g-older"]
+        checkpoints.sync_points.clear()
+        db.fail_group_delete_for.add("g-old")
+
+        await connector.run_sync()
+
+        assert db.deleted_groups == ["g-older"], "the group after the one that failed is still deleted"
+        assert "g-old" in db.user_groups
+
+        db.fail_group_delete_for.clear()
+        checkpoints.sync_points.clear()
+        await connector.run_sync()
+
+        assert db.deleted_groups == ["g-older", "g-old"]
+        assert {"g-eng", "PUBLIC", "ORG_org-1"} <= set(db.user_groups)
+
 
 class TestEventStreamAnchor:
     async def test_a_full_sync_saves_the_stream_position_it_started_from(self, box_api, db, checkpoints) -> None:
@@ -787,7 +827,7 @@ class TestDatabaseFailuresDuringAFullSync:
         db.fail_group_write_for.clear()
         await connector.run_sync()
 
-        assert "ORG_org-1" in db.access("file-a")
+        assert "org-1" in db.access("file-a")
 
     async def test_a_share_whose_collaborator_could_not_be_looked_up_leaves_no_cursor(self, box_api, db, checkpoints) -> None:
         enterprise(box_api, db)

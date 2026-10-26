@@ -32,13 +32,13 @@ DURATIONS = REPO / "scripts/shard_durations.json"
 # nightly ends when the slowest shard ends, so drift here is wasted wall clock.
 MAX_OVER_MEAN = 1.35
 
-# Connectors that are not registered yet. A shard must not select them, and the
-# core job must exclude them, or the nightly tries to construct a missing type.
+# CIFS is not registered yet, so it stays out of nightly shards and core.
 HELD_OUT_CONNECTORS = frozenset({"cifs"})
 
-# Suites with a job of their own, named after their marker, that must start on a
-# stack no other suite has touched. Core must leave them out, or they run twice.
-SOLO_SHARDS = ("demo",)
+# Suites with a job of their own, named after their marker. "demo" must start on
+# a stack no other suite has touched; "ai_agents" costs model calls, so its job
+# runs on the nightly only. Core must leave them out, or they run twice.
+SOLO_SHARDS = ("demo", "ai_agents")
 
 _SHARD_LINE = re.compile(r'^\s*CONN_SHARD_(\d+):\s*"([^"]*)"\s*$', re.MULTILINE)
 _CORE_MARKER_LINE = re.compile(

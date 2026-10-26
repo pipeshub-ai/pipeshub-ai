@@ -37,6 +37,7 @@ from app.agents.mcp.models import AuthHint, MCPAuthMode, MCPServerTemplate, MCPT
         # Google returns a refresh token only for an offline grant, and only re-issues
         # one when consent is re-shown; without both, every connection dies at expiry.
         authorization_params={"access_type": "offline", "prompt": "consent"},
+        client_secret_prefix="GOCSPX-",
         supports_dcr=False,
         documentation_url="https://developers.google.com/workspace/drive/api/guides/configure-mcp-server",
         auth_hint=AuthHint(

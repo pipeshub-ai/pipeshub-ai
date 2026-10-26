@@ -1,5 +1,6 @@
 'use client';
 
+import { asArray } from '@/lib/utils/safe';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Badge,
@@ -526,7 +527,7 @@ export function ServiceAccountTokensPanel({
                     )}
                   </Flex>
                   <Text size="1" style={{ color: 'var(--slate-10)', ...CREDENTIAL_MONO }}>
-                    {token.scopes.join(', ')}
+                    {asArray(token.scopes).join(', ')}
                   </Text>
                   <Text size="1" style={{ color: 'var(--slate-10)' }}>
                     {lastUsed

@@ -226,9 +226,13 @@ export class TeamsController {
         throw new NotFoundError('Getting team failed: Team not found');
       }
       const found = teamIn(teamData);
-      if (found !== undefined) {
-        await enrichTeamsProfilePictures(orgId, [found], this.logger);
+      // Defence in depth: the service scopes by org, but never relay a team
+      // from another org even if that scoping regresses. A team the caller
+      // may not see is reported as missing, not forbidden.
+      if (found === undefined || found.orgId !== orgId) {
+        throw new NotFoundError('Team not found');
       }
+      await enrichTeamsProfilePictures(orgId, [found], this.logger);
       res.status(HTTP_STATUS.OK).json(teamData);
     } catch (error: any) {
       this.logger.error('Error getting team', {
@@ -435,6 +439,10 @@ export class TeamsController {
       const aiResponse = await aiCommand.execute();
       if (!aiResponse) {
         throw new InternalServerError('No response from AI service');
+      }
+      // An unreadable database must not look like a person with no teams.
+      if (aiResponse.statusCode === HTTP_STATUS.SERVICE_UNAVAILABLE) {
+        throw handleBackendError(aiResponse, 'get user teams');
       }
       if (aiResponse.statusCode !== HTTP_STATUS.OK) {
         res.status(HTTP_STATUS.OK).json({

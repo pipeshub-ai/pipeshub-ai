@@ -1,14 +1,14 @@
 import asyncio
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from contextvars import ContextVar
 from datetime import datetime
 from io import IOBase
 from typing import Any, Dict, Optional, Union
 
-try:
-    import aioboto3  # type: ignore
-    from botocore.config import Config  # type: ignore
-    from botocore.exceptions import ClientError  # type: ignore
-except ImportError:
-    raise ImportError("aioboto3 is not installed. Please install it with `pip install aioboto3`")
+from aiobotocore.session import AioSession
+from botocore.config import Config
+from botocore.exceptions import ClientError
 
 from app.sources.client.minio.minio import MinIOClient
 from app.sources.client.s3.s3 import S3Response
@@ -16,7 +16,7 @@ from app.sources.client.s3.s3 import S3Response
 
 class MinIODataSource:
     """
-    MinIO S3-compatible API client wrapper using aioboto3.
+    MinIO S3-compatible API client wrapper using aiobotocore.
 
     This class provides the same interface as S3DataSource but connects to a MinIO
     server instead of AWS S3. The key difference is the use of a custom endpoint_url
@@ -29,14 +29,16 @@ class MinIODataSource:
         """Initialize with MinIOClient."""
         self._minio_client = minio_client
         self._session = None
+        # Per task tree: a call from a request outside shared_client() must not get a client that scope may close.
+        self._shared_client: ContextVar[Any] = ContextVar(f"minio_shared_client_{id(self)}", default=None)
         # Get endpoint configuration from client
         credentials = self._minio_client.get_credentials()
         self._endpoint_url = credentials.get('endpoint_url')
         self._use_ssl = credentials.get('use_ssl', True)
         self._verify_ssl = credentials.get('verify_ssl', True)
 
-    async def _get_aioboto3_session(self) -> aioboto3.Session:  # type: ignore[valid-type]
-        """Get or create the aioboto3 session."""
+    async def _get_session(self) -> AioSession:
+        """Get or create the aiobotocore session."""
         if self._session is None:
             self._session = self._minio_client.get_session()
         return self._session
@@ -44,7 +46,7 @@ class MinIODataSource:
     def _get_client_kwargs(self) -> Dict[str, Any]:
         """Get client kwargs for MinIO connection (endpoint_url, ssl settings).
 
-        Note: 'use_ssl' is not a valid parameter for boto3 session.client().
+        Note: 'use_ssl' is not a valid parameter for session.create_client().
         SSL is determined by the protocol in endpoint_url (http vs https).
         'verify' controls SSL certificate verification.
         """
@@ -52,6 +54,31 @@ class MinIODataSource:
             'endpoint_url': self._endpoint_url,
             'verify': self._verify_ssl
         }
+
+    @asynccontextmanager
+    async def shared_client(self) -> AsyncIterator[None]:
+        """Make every call in this scope, and in tasks started inside it, reuse one client."""
+        if self._shared_client.get() is not None:
+            yield
+            return
+        session = await self._get_session()
+        async with session.create_client('s3', **self._get_client_kwargs()) as s3_client:
+            token = self._shared_client.set(s3_client)
+            try:
+                yield
+            finally:
+                self._shared_client.reset(token)
+
+    @asynccontextmanager
+    async def _client(self) -> AsyncIterator[Any]:
+        """The shared client inside shared_client(), else a new client for this call."""
+        shared = self._shared_client.get()
+        if shared is not None:
+            yield shared
+            return
+        session = await self._get_session()
+        async with session.create_client('s3', **self._get_client_kwargs()) as s3_client:
+            yield s3_client
 
     def _handle_s3_response(self, response: object) -> S3Response:
         """Handle S3 API response with comprehensive error handling."""
@@ -74,17 +101,35 @@ class MinIODataSource:
 
     # Core S3-compatible methods used by the connector
 
-    async def list_buckets(self) -> S3Response:
+    async def list_buckets(
+        self,
+        MaxBuckets: Optional[int] = None,
+        ContinuationToken: Optional[str] = None,
+        Prefix: Optional[str] = None,
+        BucketRegion: Optional[str] = None
+    ) -> S3Response:
         """MinIO List Buckets operation."""
+        kwargs: dict[str, Any] = {}
+        if MaxBuckets is not None:
+            kwargs['MaxBuckets'] = MaxBuckets
+        if ContinuationToken is not None:
+            kwargs['ContinuationToken'] = ContinuationToken
+        if Prefix is not None:
+            kwargs['Prefix'] = Prefix
+        if BucketRegion is not None:
+            kwargs['BucketRegion'] = BucketRegion
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
-                response = await s3_client.list_buckets()
+            async with self._client() as s3_client:
+                response = await s3_client.list_buckets(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -123,14 +168,17 @@ class MinIODataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.list_objects_v2(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -148,14 +196,17 @@ class MinIODataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.get_bucket_location(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -207,14 +258,17 @@ class MinIODataSource:
             kwargs['ChecksumMode'] = ChecksumMode
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.head_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -284,14 +338,17 @@ class MinIODataSource:
             kwargs['ChecksumMode'] = ChecksumMode
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.get_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -317,13 +374,13 @@ class MinIODataSource:
             kwargs['HttpMethod'] = HttpMethod
 
         try:
-            session = await self._get_aioboto3_session()
+            session = await self._get_session()
             # Use Signature Version 4 for compatibility
             s3_config = Config(signature_version='s3v4')
             client_kwargs = self._get_client_kwargs()
             client_kwargs['config'] = s3_config
 
-            async with session.client('s3', **client_kwargs) as s3_client:
+            async with session.create_client('s3', **client_kwargs) as s3_client:
                 # generate_presigned_url is a synchronous method in boto3
                 url_result = s3_client.generate_presigned_url(**kwargs)
                 if asyncio.iscoroutine(url_result):
@@ -456,14 +513,17 @@ class MinIODataSource:
             kwargs['ChecksumSHA256'] = ChecksumSHA256
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.put_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -491,14 +551,17 @@ class MinIODataSource:
             kwargs['ExpectedBucketOwner'] = ExpectedBucketOwner
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.delete_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")
 
@@ -521,13 +584,16 @@ class MinIODataSource:
             kwargs['Metadata'] = Metadata
 
         try:
-            session = await self._get_aioboto3_session()
-            async with session.client('s3', **self._get_client_kwargs()) as s3_client:
+            async with self._client() as s3_client:
                 response = await s3_client.copy_object(**kwargs)
                 return self._handle_s3_response(response)
         except ClientError as e:
             error_code = e.response.get('Error', {}).get('Code', 'Unknown')
             error_message = e.response.get('Error', {}).get('Message', str(e))
-            return S3Response(success=False, error=f"{error_code}: {error_message}")
+            return S3Response(
+                success=False,
+                error=f"{error_code}: {error_message}",
+                status_code=e.response.get('ResponseMetadata', {}).get('HTTPStatusCode'),
+            )
         except Exception as e:
             return S3Response(success=False, error=f"Unexpected error: {str(e)}")

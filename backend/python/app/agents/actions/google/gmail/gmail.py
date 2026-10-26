@@ -36,6 +36,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.gmail.gmail import GoogleGmailDataSource
 
@@ -202,11 +203,7 @@ class GetUserProfileInput(BaseModel):
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "https://www.googleapis.com/auth/gmail.send",
-                    "https://www.googleapis.com/auth/gmail.readonly",
-                    "https://www.googleapis.com/auth/gmail.modify"
-                ]
+                agent=list(GOOGLE_TOOLSET_SCOPES["gmail"]),
             ),
             token_access_type="offline",
             additional_params={
@@ -299,15 +296,16 @@ class Gmail:
                 error=failure.error,
             )
 
-        if bundle.failures and not bundle.resolved:
-            raise ValueError(
-                "Attachment resolution failed: "
-                + "; ".join(f"{f.ref}: {f.error}" for f in bundle.failures)
-            )
         if bundle.failures:
+            # Sending is final: a mail that silently lost some of its attachments cannot be taken back.
             logger.warning(
-                "Gmail: some attachment_record_ids could not be resolved: %s",
+                "Gmail: attachment_record_ids could not be resolved, nothing sent: %s",
                 [f.to_dict() for f in bundle.failures],
+            )
+            raise ValueError(
+                "Nothing was sent: these attachments could not be added: "
+                + ", ".join(str(f.ref) for f in bundle.failures)
+                + ". Check that they still exist and that you can open them, then try again."
             )
 
         for r in bundle.resolved:
@@ -345,7 +343,7 @@ class Gmail:
             ToolParameter(name="thread_id", type=ParameterType.STRING, description="The thread ID to maintain conversation context", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
     )
     async def reply(
         self,
@@ -463,7 +461,7 @@ class Gmail:
             ToolParameter(name="message_id", type=ParameterType.STRING, description="The message ID for threading", required=False),
             attachment_record_ids_parameter(required=False),
         ],
-        tags=[Tag(key="category", value="email"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="email"), Tag(key="type", value="destructive")],
         args_summary=lambda args: f"Sending email to {', '.join(args.get('mail_to') or []) or '?'}",
         result_summary=confirmation("Email sent"),
     )

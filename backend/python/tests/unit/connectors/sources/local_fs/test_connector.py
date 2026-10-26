@@ -126,6 +126,7 @@ from app.connectors.sources.local_fs.models import (  # noqa: E402
     LocalFsFileEventBatchStats,
     LocalFsPullBatch,
 )
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (  # noqa: E402
     AppMetadata,
     FileRecord,
@@ -135,7 +136,7 @@ from app.models.entities import (  # noqa: E402
     RecordType,
     User,
 )
-from app.models.permission import PermissionType  # noqa: E402
+from app.utils.user_messages import action_failed  # noqa: E402
 
 
 class TestLocalFsApp:
@@ -197,7 +198,8 @@ def folder_connector() -> LocalFsConnector:
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_file_record_by_id = AsyncMock(return_value=None)
     proc.get_records_by_status = AsyncMock(return_value=[])
-    proc.on_record_deleted = AsyncMock()
+    # A hard delete, unless a test moves the record to the trash.
+    proc.on_record_deleted = AsyncMock(return_value=False)
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
@@ -752,6 +754,44 @@ class TestLocalFsConnectorAsync:
             await folder_connector.stream_record(rec)
         assert ei.value.status_code == HttpStatusCode.NOT_FOUND.value
 
+    @pytest.mark.parametrize(
+        "error",
+        [
+            LocalFsDesktopRemoteError(
+                "INTERNAL", "SENTINEL EACCES /Users/ada/Notes/a.txt", retryable=True
+            ),
+            LocalFsDesktopTimeoutError("SENTINEL Desktop content fetch timed out (a.txt)"),
+        ],
+        ids=["desktop-answered-with-a-failure", "desktop-did-not-answer"],
+    )
+    async def test_stream_record_desktop_failure_is_503_with_fixed_text(
+        self, folder_connector: LocalFsConnector, error: Exception
+    ):
+        folder_connector._fetch_desktop_content = AsyncMock(side_effect=error)
+        rec = FileRecord(
+            record_name="a.txt",
+            record_type=RecordType.FILE,
+            external_record_id="e5",
+            version=0,
+            origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LOCAL_FS,
+            connector_id="c1",
+            is_file=True,
+            path="a.txt",
+            local_fs_relative_path="a.txt",
+            mime_type="text/plain",
+            record_group_type=RecordGroupType.DRIVE,
+        )
+        with pytest.raises(HTTPException) as ei:
+            await folder_connector.stream_record(rec)
+        assert ei.value.status_code == HttpStatusCode.SERVICE_UNAVAILABLE.value
+        assert ei.value.detail == action_failed("open this file from the desktop app")
+        assert "SENTINEL" not in ei.value.detail
+        assert ei.value.__cause__ is error
+        log_call = folder_connector.logger.warning.call_args
+        assert log_call.kwargs["exc_info"] is True
+        assert error in log_call.args
+
     async def test_stream_record_storage_path_delegates_to_storage(
         self, folder_connector: LocalFsConnector
     ):
@@ -886,7 +926,7 @@ class TestLocalFsConnectorAsync:
         assert record.path == "notes/a.txt"
         assert record.record_name == "a.txt"
         assert record.external_revision_id == "2d119f1cd272958a492a144af600b9dc36531f73027b34073967345b027021b1"
-        assert permissions[0].type == PermissionType.OWNER
+        assert permissions == []
 
     async def test_apply_file_event_batch_skips_event_missing_sha256(
         self, folder_connector: LocalFsConnector, tmp_path: Path
@@ -1002,7 +1042,7 @@ class TestLocalFsConnectorAsync:
         folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
             return_value=existing
         )
-        folder_connector.data_entities_processor.on_record_deleted = AsyncMock()
+        folder_connector.data_entities_processor.on_record_deleted = AsyncMock(return_value=False)
         folder_connector._delete_storage_document = AsyncMock()
 
         with patch(
@@ -1438,7 +1478,7 @@ class _FakeResponse:
     def __init__(
         self,
         status: int,
-        text: str = "",
+        text: str | bytes = "",
         *,
         headers: Optional[dict[str, str]] = None,
         raise_on: Optional[Exception] = None,
@@ -1452,6 +1492,11 @@ class _FakeResponse:
         if self._raise is not None:
             raise self._raise
         return self._text
+
+    async def read(self) -> bytes:
+        if self._raise is not None:
+            raise self._raise
+        return self._text if isinstance(self._text, bytes) else self._text.encode("utf-8")
 
     async def __aenter__(self) -> "_FakeResponse":
         if self._raise is not None:
@@ -1793,16 +1838,36 @@ class TestDeleteExternalIds:
         assert failed == []
         folder_connector._delete_storage_document.assert_awaited_once_with("doc-7")
 
-    async def test_a_record_whose_file_record_cannot_be_read_is_kept_owed(
+    async def test_a_push_flow_record_moved_to_the_trash_keeps_its_stored_copy(
         self, folder_connector
     ) -> None:
-        """Both providers answer None from get_file_record_by_id when the read fails.
-
-        Deleting the record anyway would drop the only pointer to its stored copy.
-        """
+        """The trash entry owns the file until the purge removes both."""
         record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
         folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            return_value=record
+        )
+        folder_connector.data_entities_processor.on_record_deleted = AsyncMock(return_value=True)
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(["ext-1"], "user-1")
+
+        assert failed == []
+        folder_connector.data_entities_processor.on_record_deleted.assert_awaited_once()
+        folder_connector._delete_storage_document.assert_not_awaited()
+
+    async def test_a_record_whose_file_record_cannot_be_read_is_kept_owed(
+        self, folder_connector
+    ) -> None:
+        """Deleting the record anyway would drop the only pointer to its stored copy."""
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            side_effect=GraphQueryError("Could not read file record rec-1: unavailable")
         )
         folder_connector._delete_storage_document = AsyncMock()
 
@@ -1810,6 +1875,30 @@ class TestDeleteExternalIds:
 
         assert failed == ["ext-1"]
         folder_connector.data_entities_processor.on_record_deleted.assert_not_awaited()
+        folder_connector._delete_storage_document.assert_not_awaited()
+
+    @pytest.mark.parametrize("ids_known_to_exist", [False, True], ids=["event", "retry"])
+    async def test_a_record_with_no_files_row_is_retired_with_nothing_to_clean_up(
+        self, folder_connector, ids_known_to_exist: bool
+    ) -> None:
+        """The blob pointer lives on the files row, so without one there is no stored copy to chase."""
+        record = _file_record(path=f"{LOCAL_FS_STORAGE_PATH_PREFIX}doc-7")
+        folder_connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_as_base_record(record)
+        )
+        folder_connector.data_entities_processor.get_file_record_by_id = AsyncMock(
+            return_value=None
+        )
+        folder_connector._delete_storage_document = AsyncMock()
+
+        failed = await folder_connector._delete_external_ids(
+            ["ext-1"], "user-1", ids_known_to_exist=ids_known_to_exist
+        )
+
+        assert failed == []
+        folder_connector.data_entities_processor.on_record_deleted.assert_awaited_once_with(
+            record_id="rec-1"
+        )
         folder_connector._delete_storage_document.assert_not_awaited()
 
 
@@ -1910,6 +1999,28 @@ class TestStreamStorageRecord:
         resp = await folder_connector._stream_storage_record(self._record(), "doc-1")
         assert resp.body == b"hi"
         assert resp.media_type == "application/octet-stream"
+
+    async def test_returns_raw_bytes_as_sent(self, folder_connector, monkeypatch) -> None:
+        folder_connector._storage_base_url = AsyncMock(return_value="http://x")
+        folder_connector._storage_token = AsyncMock(return_value="t")
+        pdf = b"%PDF-1.4\n\xff\xfe binary"
+        headers = {"Content-Type": "application/octet-stream"}
+        session = _FakeSession([("get", _FakeResponse(200, pdf, headers=headers))])
+        _patch_session(monkeypatch, session)
+
+        resp = await folder_connector._stream_storage_record(self._record(), "doc-1")
+        assert resp.body == pdf
+
+    async def test_raw_bytes_that_look_like_json_are_not_parsed(self, folder_connector, monkeypatch) -> None:
+        folder_connector._storage_base_url = AsyncMock(return_value="http://x")
+        folder_connector._storage_token = AsyncMock(return_value="t")
+        body = b'{"type": "Buffer", "data": [104, 105]}'
+        headers = {"Content-Type": "application/octet-stream"}
+        session = _FakeSession([("get", _FakeResponse(200, body, headers=headers))])
+        _patch_session(monkeypatch, session)
+
+        resp = await folder_connector._stream_storage_record(self._record(), "doc-1")
+        assert resp.body == body
 
     async def test_non_2xx_raises_bad_gateway(self, folder_connector, monkeypatch):
         folder_connector._storage_base_url = AsyncMock(return_value="http://x")
@@ -2810,7 +2921,6 @@ class TestEventDateFilters:
 
     def _filter(self, key, start, end):
         from app.connectors.core.registry.filters import (
-            DatetimeOperator,
             Filter,
             FilterType,
         )
@@ -3002,7 +3112,7 @@ class TestApplyFileEventBatchDirectoryRename:
         on_records_moved instead of deleting the old row and creating a
         new one.
         """
-        owner = await self._setup(folder_connector, tmp_path)
+        await self._setup(folder_connector, tmp_path)
         folder_connector.config_service.get_config = AsyncMock(
             return_value={"sync": {"customValues": {SYNC_ROOT_PATH_KEY: str(tmp_path / "desktop-only")}}}
         )
@@ -3029,7 +3139,8 @@ class TestApplyFileEventBatchDirectoryRename:
         assert folder_record.local_fs_relative_path == "docs"
         assert folder_record.is_file is False
         assert folder_record.mime_type == MimeTypes.FOLDER.value
-        assert perms[0].email == owner.email
+        assert folder_record.inherit_permissions is True
+        assert perms == []
         folder_connector.data_entities_processor.on_new_records.assert_not_awaited()
         folder_connector._delete_external_ids.assert_not_awaited()
 
@@ -3155,7 +3266,7 @@ class TestApplyFileEventBatchValidation:
         assert folder_record.local_fs_relative_path == "dir_placeholder"
         assert folder_record.is_file is False
         assert folder_record.mime_type == MimeTypes.FOLDER.value
-        assert permissions[0].email == "u@x.com"
+        assert permissions == []
 
     async def test_unsupported_event_type_is_skipped_not_fatal(
         self, folder_connector, tmp_path, monkeypatch
@@ -3460,7 +3571,9 @@ class TestApplyFileEventBatchOrdering:
         async def on_new(batch) -> None:
             calls.append("new:" + ",".join(r.local_fs_relative_path for r, _p in batch))
 
-        async def on_moved(batch) -> None:
+        async def on_moved(batch, *, permissions_fetched: bool = False) -> None:
+            # Local FS moves carry the record's whole permission list.
+            assert permissions_fetched is True
             calls.append("moved:" + ",".join(r.local_fs_relative_path for _o, r, _p in batch))
 
         async def on_deleted(external_ids, _user_id) -> list[str]:

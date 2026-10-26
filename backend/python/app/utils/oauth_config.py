@@ -1,11 +1,14 @@
 import json
 import logging
 import re
+from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
 from urllib.parse import urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
+from app.connectors.core.constants import AuthFieldKeys
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +176,128 @@ def _override_oauth_host_with_instance(url: str, instance_url: str) -> str:
     return f"{instance_parsed.scheme}://{instance_parsed.netloc}{url_parsed.path}"
 
 
+SALESFORCE_PRODUCTION_LOGIN_HOST = "login.salesforce.com"
+_SALESFORCE_DOMAIN = "salesforce.com"
+_DNS_LABEL = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$")
+_HTTPS_DEFAULT_PORT = 443
+SALESFORCE_LOGIN_URL_ERROR = (
+    "The Salesforce Login URL must be an https address on salesforce.com with nothing after "
+    "the host, such as https://test.salesforce.com for a sandbox or "
+    "https://yourcompany.my.salesforce.com for My Domain. Leave it blank for production."
+)
+
+
+def normalize_salesforce_login_url(value: object) -> str:
+    """Return ``https://<host>`` for a Salesforce login URL, or "" when it is blank.
+
+    The token request carries the client secret and runs on the server, so only hosts
+    Salesforce owns are accepted. Raises ValueError for anything else.
+    """
+    if value is None:
+        return ""
+    if not isinstance(value, str):
+        raise ValueError(SALESFORCE_LOGIN_URL_ERROR)
+    raw = value.strip()
+    if not raw:
+        return ""
+    if any(ch.isspace() or ch == "\\" or ord(ch) < 0x20 for ch in raw):
+        raise ValueError(SALESFORCE_LOGIN_URL_ERROR)
+    try:
+        parsed = urlparse(raw)
+        port = parsed.port
+    except ValueError:
+        raise ValueError(SALESFORCE_LOGIN_URL_ERROR) from None
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, _HTTPS_DEFAULT_PORT)
+        or parsed.path not in ("", "/")
+        or parsed.params
+        or parsed.query
+        or parsed.fragment
+        or parsed.netloc.lower() not in (host, f"{host}:{_HTTPS_DEFAULT_PORT}")
+        or not host.endswith(f".{_SALESFORCE_DOMAIN}")
+        or not all(_DNS_LABEL.match(label) for label in host.split("."))
+    ):
+        raise ValueError(SALESFORCE_LOGIN_URL_ERROR)
+    return f"https://{host}"
+
+
+def _is_salesforce_production_login(url: str) -> bool:
+    # A malformed saved URL must not break sign-in for connectors that never had this setting.
+    try:
+        return bool(url) and (urlparse(url).hostname or "").lower() == SALESFORCE_PRODUCTION_LOGIN_HOST
+    except ValueError:
+        return False
+
+
+def _apply_salesforce_login_host(url: str, login_url: str) -> str:
+    """Move a Salesforce production OAuth endpoint onto the chosen login host, keeping its path."""
+    if not _is_salesforce_production_login(url):
+        return url
+    # The token request carries the client secret, so a saved http:// endpoint must not survive the move.
+    return urlparse(url)._replace(scheme="https", netloc=urlparse(login_url).netloc).geturl()
+
+
+def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, Any] | None) -> None:
+    """Raise ValueError when a Salesforce OAuth app's Login URL is not a Salesforce host.
+
+    Other connector and toolset types are left alone. Called on save, so an admin
+    hears about a bad value at once instead of at sign-in.
+    """
+    if (connector_type or "").replace(" ", "").lower() != "salesforce":
+        return
+    normalize_salesforce_login_url((settings or {}).get(AuthFieldKeys.LOGIN_URL))
+
+
+@dataclass(frozen=True)
+class OAuthUrlRule:
+    """A connector's own rule for where its OAuth requests may go.
+
+    The code exchange and refresh send the client secret from the server, so a
+    connector whose endpoints are fixed by its settings registers one of these
+    instead of trusting the saved URL fields. ``check`` runs on save, ``pin``
+    rewrites the flow's URLs before every request; both raise ValueError with a
+    message fit to show the admin. ``settings`` are the keys ``pin`` reads.
+    """
+
+    check: Callable[[dict[str, Any]], None]
+    pin: Callable[[dict[str, Any]], None]
+    settings: tuple[str, ...] = ()
+
+
+_OAUTH_URL_RULES: dict[str, OAuthUrlRule] = {}
+
+
+def _rule_for(connector_type: str) -> OAuthUrlRule | None:
+    return _OAUTH_URL_RULES.get((connector_type or "").replace(" ", "").lower())
+
+
+def register_oauth_url_rule(connector_type: str, rule: OAuthUrlRule) -> None:
+    _OAUTH_URL_RULES[connector_type.replace(" ", "").lower()] = rule
+
+
+def check_oauth_url_settings(connector_type: str, settings: dict[str, Any] | None) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.check(settings or {})
+
+
+def pin_oauth_urls(connector_type: str, flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    if rule:
+        rule.pin(flow_config)
+
+
+def carry_oauth_url_settings(connector_type: str, source: dict[str, Any], flow_config: dict[str, Any]) -> None:
+    rule = _rule_for(connector_type)
+    for key in rule.settings if rule else ():
+        if not flow_config.get(key) and source.get(key):
+            flow_config[key] = source[key]
+
+
 def get_oauth_config(auth_config: dict) -> OAuthConfig:
     # Derive authorize/token URLs from instanceUrl when not explicitly set.
     # This allows self-managed connectors (e.g. GitLab EE) to work without
@@ -191,6 +316,14 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
     if instance_url:
         authorize_url = _override_oauth_host_with_instance(authorize_url, instance_url)
         token_url = _override_oauth_host_with_instance(token_url, instance_url)
+
+    # Sandboxes and My Domain orgs sign in on their own host, and a refresh must go back
+    # to the host that issued the token, so authorize, token and refresh all move together.
+    if _is_salesforce_production_login(authorize_url) or _is_salesforce_production_login(token_url):
+        login_url = normalize_salesforce_login_url(auth_config.get(AuthFieldKeys.LOGIN_URL))
+        if login_url:
+            authorize_url = _apply_salesforce_login_host(authorize_url, login_url)
+            token_url = _apply_salesforce_login_host(token_url, login_url)
 
     oauth_config = OAuthConfig(
             client_id=auth_config['clientId'],
@@ -223,18 +356,39 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         try:
             parsed_url = urlparse(token_url)
             hostname = parsed_url.hostname or ''
-            hostname_lower = hostname.lower()
-            # Check if hostname is exactly notion.com or ends with .notion.com (for subdomains)
-            # This prevents matching malicious domains like evilnotion.com or notion.com.evil.com
-            if hostname_lower == 'notion.com' or hostname_lower.endswith('.notion.com'):
+            if _is_host_or_subdomain(hostname, 'notion.com') or _is_notion_override(token_url):
                 oauth_config.additional_params["use_basic_auth"] = True
                 oauth_config.additional_params["use_json_body"] = True
                 oauth_config.additional_params["notion_version"] = "2025-09-03"
+            if any(_is_host_or_subdomain(hostname, host) for host in _BASIC_AUTH_ONLY_TOKEN_HOSTS):
+                oauth_config.token_endpoint_auth_method = "client_secret_basic"
         except Exception:
-            # If URL parsing fails, skip the Notion-specific configuration
+            # If URL parsing fails, skip the provider-specific configuration
             pass
 
     return oauth_config
+
+
+# Token endpoints whose providers accept client credentials only in a Basic
+# header: their OAuth metadata lists client_secret_basic and no client_secret_post.
+_BASIC_AUTH_ONLY_TOKEN_HOSTS = ("airtable.com", "zoom.us")
+
+
+def _is_notion_override(token_url: str) -> bool:
+    """A token URL under NOTION_API_BASE_URL (a test stack's stand-in for Notion) is Notion's too."""
+    from app.sources.client.notion.notion import (
+        DEFAULT_NOTION_API_BASE_URL,
+        notion_api_base_url,
+    )
+
+    base = notion_api_base_url()
+    return base != DEFAULT_NOTION_API_BASE_URL and token_url.startswith(f"{base}/")
+
+
+def _is_host_or_subdomain(hostname: str, domain: str) -> bool:
+    # Exact or dot-anchored, so evilnotion.com and notion.com.evil.com don't match.
+    hostname = hostname.lower()
+    return hostname == domain or hostname.endswith(f".{domain}")
 
 
 async def resolve_instance_url(

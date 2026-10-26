@@ -45,8 +45,12 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
     revokeEveryTokenForUser: sinon.stub().resolves(),
     revokeAllTokensForApp: sinon.stub().resolves(),
     countActiveAccessTokensForUser: sinon.stub().resolves(0),
+    revokeDelegatedTokensForActor: sinon.stub().resolves(0),
   };
   const scopeValidator = { validateScopesForApp: sinon.stub() };
+  const delegations = {
+    revokeAllForServiceAccount: sinon.stub().resolves(),
+  };
   return {
     service: new ServiceTokenService(
       logger as any,
@@ -54,9 +58,11 @@ function makeService(overrides: { mcpScopes?: string[] } = {}) {
       config as any,
       tokens as any,
       scopeValidator as any,
+      delegations as any,
     ),
     tokens,
     scopeValidator,
+    delegations,
   };
 }
 

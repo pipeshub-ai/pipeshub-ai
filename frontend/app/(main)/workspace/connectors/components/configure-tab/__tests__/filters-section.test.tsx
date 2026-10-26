@@ -207,6 +207,57 @@ describe('FiltersSection — adding and clearing a sync filter', () => {
   });
 });
 
+describe('FiltersSection — a sync filter with a fallback when it is not set', () => {
+  // Shaped like Slack's "Sync Messages From": when it is not set the connector still
+  // syncs only the last 30 days, which the schema states as `fallbackOperator`.
+  const syncWindow: FilterSchemaField = {
+    name: 'sync_window',
+    displayName: 'Sync Messages From',
+    description: 'If this filter is not set, only the last 30 days are synced.',
+    filterType: 'datetime',
+    operators: ['is_after', 'is_before', 'is_between', 'last_30_days'],
+    defaultOperator: 'last_30_days',
+    fallbackOperator: 'last_30_days',
+  };
+  const fallbackLine = 'Sync Messages From: Last 30 days (default)';
+
+  it('keeps the window and its help text on screen after the filter is cleared', () => {
+    setup({ sync: [syncWindow] });
+    // Seeded from the schema default, so the filter's own card shows the window.
+    expect(screen.getByText('Sync Messages From: Last 30 days')).toBeTruthy();
+    expect(screen.queryByText(fallbackLine)).toBeNull();
+
+    fireEvent.click(screen.getByRole('button', { name: /clear/i }));
+
+    expect(syncValue('sync_window')).toBeNull();
+    expect(screen.getByText(fallbackLine)).toBeTruthy();
+    expect(screen.getByText('If this filter is not set, only the last 30 days are synced.')).toBeTruthy();
+    // "No filters yet" would read as "no limit", the misreading the fallback line fixes.
+    expect(screen.queryByText(/No filters yet/)).toBeNull();
+  });
+
+  it('shows the window when the filter was already cleared before the panel opened', () => {
+    setup({ sync: [syncWindow], syncValues: { sync_window: null } });
+    expect(screen.getByText(fallbackLine)).toBeTruthy();
+    expect(screen.queryByText(/No filters yet/)).toBeNull();
+  });
+
+  it('drops the fallback line once the admin sets the filter again', async () => {
+    setup({ sync: [syncWindow], syncValues: { sync_window: null } });
+
+    fireEvent.keyDown(screen.getByRole('button', { name: /add filter/i }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Sync Messages From' }));
+
+    expect(screen.queryByText(fallbackLine)).toBeNull();
+  });
+
+  it('says nothing extra for a cleared filter that has no fallback', () => {
+    setup({ sync: [{ ...spaces, defaultOperator: 'in' }], syncValues: { space_keys: null } });
+    expect(screen.queryByText(/\(default\)/)).toBeNull();
+    expect(screen.getByText(/No filters yet/)).toBeTruthy();
+  });
+});
+
 describe('FiltersSection — dynamic options', () => {
   const repos: FilterSchemaField = {
     name: 'repo_ids',
@@ -350,6 +401,68 @@ describe('FiltersSection — single choice, free text, booleans, numbers', () =>
     expect(syncValue('folder_ids')).toEqual({ operator: 'in', value: ['f-1', 'f-2'], type: 'list' });
   });
 
+  const folderPaths: FilterSchemaField = {
+    name: 'folder_paths',
+    displayName: 'Folders',
+    filterType: 'list',
+    operators: ['in', 'not_in'],
+    optionSourceType: 'manual',
+    required: true,
+  };
+
+  it('keeps spaces and commas inside a typed folder path', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: 'Finance' } });
+    fireEvent.keyDown(input, { key: ' ' });
+    fireEvent.change(input, { target: { value: 'Finance Reports/Smith' } });
+    fireEvent.keyDown(input, { key: ',' });
+    fireEvent.change(input, { target: { value: 'Finance Reports/Smith, John' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(syncValue('folder_paths')).toEqual({ operator: 'in', value: ['Finance Reports/Smith, John'], type: 'list' });
+  });
+
+  it('does not save a folder on the Enter that confirms an IME candidate', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: [] } } });
+
+    const input = screen.getByRole('textbox');
+    fireEvent.change(input, { target: { value: '財務' } });
+    fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+    fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+    expect((syncValue('folder_paths') as { value: string[] }).value).toEqual([]);
+
+    fireEvent.change(input, { target: { value: '財務 報告' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(syncValue('folder_paths')).toEqual({ operator: 'in', value: ['財務 報告'], type: 'list' });
+  });
+
+  it('splits pasted folder paths on new lines only, keeping paths that differ by case', () => {
+    setup({ sync: [folderPaths], syncValues: { folder_paths: { operator: 'in', value: ['Reports'] } } });
+
+    fireEvent.paste(screen.getByRole('textbox'), {
+      clipboardData: { getData: () => 'Finance Reports/2026\r\nreports\nHR Docs' },
+    });
+
+    expect(syncValue('folder_paths')).toEqual({
+      operator: 'in',
+      value: ['Reports', 'Finance Reports/2026', 'reports', 'HR Docs'],
+      type: 'list',
+    });
+  });
+
+  it('still splits other free-form values on spaces', () => {
+    setup({
+      sync: [{ name: 'folder_ids', displayName: 'Folder IDs', filterType: 'list', operators: ['in'], optionSourceType: 'manual', required: true }],
+      syncValues: { folder_ids: { operator: 'in', value: [] } },
+    });
+
+    fireEvent.paste(screen.getByRole('textbox'), { clipboardData: { getData: () => 'f-1 f-2' } });
+
+    expect(syncValue('folder_ids')).toEqual({ operator: 'in', value: ['f-1', 'f-2'], type: 'list' });
+  });
+
   it('shows a sync boolean with a real default as set, and saves the untick', () => {
     setup({
       sync: [{ name: 'include_archived', displayName: 'Include archived', filterType: 'boolean', defaultValue: true }],
@@ -452,7 +565,7 @@ describe('FiltersSection — dates', () => {
   it('explains that a rolling window has no dates to pick', () => {
     setup({ sync: [modified], syncValues: { modified: { operator: 'last_7_days', value: null } } });
     expect(screen.getByText('This operator uses a rolling window — no fixed dates to set.')).toBeTruthy();
-    expect(screen.getByText('Modified: Last 7 Days')).toBeTruthy();
+    expect(screen.getByText('Modified: Last 7 days')).toBeTruthy();
   });
 
   it('saves a picked date range as timestamps and shows it back', () => {
@@ -469,7 +582,7 @@ describe('FiltersSection — dates', () => {
       type: 'datetime',
     });
     expect(screen.getByTestId('picker-range').textContent).toBe('2026-01-02T10:00|2026-01-05T18:30');
-    expect(screen.getByText('Modified: Is Between · date range')).toBeTruthy();
+    expect(screen.getByText('Modified: Is between · date range')).toBeTruthy();
 
     fireEvent.click(screen.getByText('Clear dates'));
     expect(syncValue('modified')).toEqual({ operator: 'is_between', value: { start: null, end: null }, type: 'datetime' });

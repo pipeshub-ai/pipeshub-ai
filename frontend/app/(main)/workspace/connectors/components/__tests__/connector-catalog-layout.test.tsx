@@ -116,7 +116,7 @@ describe('ConnectorCatalogLayout: configured connectors', () => {
     fireEvent.click(cardFor('Jira'));
     expect(props.onCardClick).toHaveBeenCalledWith(expect.objectContaining({ type: 'Jira' }));
 
-    fireEvent.click(within(cardFor('Jira')).getByRole('button', { name: 'Add Another Instance' }));
+    fireEvent.click(within(cardFor('Jira')).getByRole('button', { name: 'Add another instance' }));
     expect(props.onAddInstance).toHaveBeenCalledWith(expect.objectContaining({ type: 'Jira' }));
     expect(props.onCardClick).toHaveBeenCalledTimes(1);
   });
@@ -167,13 +167,13 @@ describe('ConnectorCatalogLayout: search and tabs', () => {
 describe('ConnectorCatalogLayout: setting up', () => {
   it('starts setup from a connector that has no instances yet', () => {
     const { props } = renderCatalog();
-    fireEvent.click(within(cardFor('Slack')).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(cardFor('Slack')).getByRole('button', { name: /Set up/ }));
     expect(props.onSetup).toHaveBeenCalledWith(slack);
   });
 
   it('shows a lock and does not start setup when the user may not create connectors', () => {
     const { props } = renderCatalog({ setupPermissionDenied: true });
-    const setup = within(cardFor('Slack')).getByRole('button', { name: /Setup/ });
+    const setup = within(cardFor('Slack')).getByRole('button', { name: /Set up/ });
 
     expect(within(setup).getByText('locked')).toBeTruthy();
     fireEvent.click(setup);

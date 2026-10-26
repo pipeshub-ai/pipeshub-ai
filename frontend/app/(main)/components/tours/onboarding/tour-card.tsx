@@ -7,6 +7,7 @@ import { useRouter } from 'next/navigation';
 import { Box, Flex, Text, Heading } from '@radix-ui/themes';
 import { useOnboardingTourStore } from './store';
 import { getTourStatus } from './api';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { PixelLoader } from './pixel-loader';
 import type { TourStepId } from './types';
 
@@ -83,6 +84,7 @@ function TourStepRow({
 export function OnboardingTour() {
   const { t } = useTranslation();
   const router = useRouter();
+  const isMobile = useIsMobile();
   const { isVisible, tourState, showTour, completeStep, dismissTour, hydrateTour } =
     useOnboardingTourStore();
 
@@ -96,7 +98,7 @@ export function OnboardingTour() {
       .catch(() => showTour());
   }, []);
 
-  if (!isVisible || !tourState || tourState.status === 'hidden') return null;
+  if (isMobile || !isVisible || !tourState || tourState.status === 'hidden') return null;
 
   const isCompleted = tourState.status === 'completed';
   // Reserve 10% as the baseline "started" indicator; the API's completionPercentage

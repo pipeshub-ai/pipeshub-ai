@@ -23,6 +23,7 @@ interface ShareableRowProps {
   showRoleDropdown?: boolean;
   /** When provided, suppresses role options in the dropdown (e.g. for chat) */
   noRolesInfo?: { title: string; description: string };
+  roleOptions?: { roles: ShareRole[]; labels?: Record<ShareRole, { label: string; description: string }> };
   /** Whether to show a radio button for selection */
   showRadio?: boolean;
   /** Whether to show "Invite to Pipeshub" link */
@@ -53,6 +54,7 @@ export function ShareableRow({
   showRadio = false,
   showInvite = false,
   noRolesInfo,
+  roleOptions,
   isCurrentUser = false,
   onToggle,
   onRoleChange,
@@ -162,6 +164,8 @@ export function ShareableRow({
           onRemove={onRemove}
           isTeam={type === 'team'}
           noRolesInfo={noRolesInfo}
+          roles={roleOptions?.roles}
+          labels={roleOptions?.labels}
           onOpenChange={onRoleDropdownOpenChange}
         />
       )}

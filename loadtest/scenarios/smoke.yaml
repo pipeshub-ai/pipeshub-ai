@@ -1,0 +1,11 @@
+# Fastest useful run: proves the harness end to end in a couple of minutes.
+# Not for A/B — one connector and 200 records is too small for the numbers to
+# settle. Use it to check wiring, then move to single/fleet.
+name: smoke
+source: minio
+units: 1
+scale: 200
+repeat: 1
+warmup: 0
+profile: true
+sync_timeout: 600

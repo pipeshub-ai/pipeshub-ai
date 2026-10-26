@@ -7,7 +7,6 @@ Production-ready Helm chart for deploying PipesHub-AI with optional enterprise f
 - Kubernetes 1.24+
 - Helm 3.11+
 - (Optional) External Secrets Operator for `secretManagement.externalSecrets`
-- (Optional) Prometheus Operator for `monitoring.serviceMonitor`
 
 ## Configuration presets
 
@@ -162,8 +161,25 @@ By default the chart deploys the bundled Bitnami `redis` subchart in
 `replication` mode (`redis.mode: standalone`) — no extra configuration
 needed.
 
+To point at ElastiCache with cluster mode disabled (one primary, automatic
+failover, and a primary endpoint the app can use as a normal Redis), skip
+in-cluster Redis and set the host. Celery uses the same endpoint:
+
+```bash
+helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
+  ... \
+  --set redis.enabled=false \
+  --set redis.builtin.enabled=false \
+  --set redis.mode=standalone \
+  --set redis.external.enabled=true \
+  --set redis.external.host=master.my-redis.abc.use1.cache.amazonaws.com \
+  --set redis.clientTls.enabled=true \
+  --set redis.auth.password="<the AUTH token>"
+```
+
 To point at a self-hosted Redis Cluster or AWS MemoryDB instead, skip the
-bundled subchart and give the app the external endpoints:
+bundled subchart and give the app the external endpoints. Cluster mode has
+no Celery transport, so also set `celery.brokerUrl` to a standalone Redis:
 
 ```bash
 helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
@@ -180,8 +196,9 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
 |---|---|
 | `redis.enabled` | Set `false` to skip deploying the Bitnami subchart entirely (wired via `condition: redis.enabled` in `Chart.yaml`). Leave `true` for the default bundled Redis. |
 | `redis.mode` | `standalone` (default) or `cluster`. Any other value is resolved via `redis.providerModule`, e.g. an enterprise-only MemoryDB provider that adds IAM auth rotation. |
-| `redis.external.enabled` / `redis.external.clusterEndpoints` | Point at an external cluster instead of the in-cluster Service. Comma-separated `host:port` list. |
-| `redis.clientTls.*` | TLS for the app's *client* connection to `redis.external.clusterEndpoints`. Deliberately not named `redis.tls` — that key is reserved by the Bitnami subchart for its own in-cluster server TLS and configures a different thing. |
+| `redis.external.enabled` / `redis.external.host` | Standalone primary, such as ElastiCache with cluster mode disabled. Requires `redis.mode=standalone`. Do not set `clusterEndpoints` as well. |
+| `redis.external.clusterEndpoints` | External Redis Cluster or MemoryDB. Comma-separated `host:port` list. Requires a cluster-capable `redis.mode`. |
+| `redis.clientTls.*` | TLS for the app's client connection to `redis.external.host` or `redis.external.clusterEndpoints`. Deliberately not named `redis.tls` — that key is reserved by the Bitnami subchart for its own in-cluster server TLS and configures a different thing. |
 | `redis.keyNamespace` | Prefix applied inside key builders (not a client-level prefix) so multiple releases/tenants can share one Redis/MemoryDB. Covers the config KV store and its invalidation channel, the session/app cache, the accessible-records cache, retry counters, leases, and the BullMQ crawling queue. It does **not** cover Redis Streams topic or consumer-group names, so setting it together with `MESSAGE_BROKER=redis` is **rejected at startup** rather than silently letting two releases consume each other's messages. Use a separate Redis per deployment for the stream broker, or `MESSAGE_BROKER=kafka`. |
 | `redis.clusterScaleReads` | `master` (default) \| `slave` \| `all` — cluster-mode read distribution. |
 | `redis.providerModule` | npm/Python module path for a `REDIS_MODE` this chart doesn't know natively (enterprise providers). |
@@ -223,14 +240,60 @@ helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
   --set secretManagement.externalSecrets.remoteRefs.qdrantApiKey="pipeshub/qdrant/api-key"
 ```
 
+## Coding sandbox
+
+`config.sandboxMode` picks where `run_code` executes: `docker` (default),
+`e2b` (off-cluster), or `local` (no isolation, development only, needs
+`config.sandboxAllowLocal=true`). `docker` needs a daemon, and the chart
+refuses to install without one:
+
+- `sandbox.dind.enabled=true` (the `values-eks.yaml` default) adds two sidecars.
+  `dind` is a **privileged** Docker daemon that listens only on a unix socket
+  in the `dind-sock` emptyDir. `docker-proxy` runs `python -m app.docker_proxy_main`
+  from the application image, which is the same policy proxy the Compose
+  stacks use. It listens on `127.0.0.1:<sandbox.dind.port>` (the app's
+  `DOCKER_HOST`) and admits only sandbox-shaped requests: creates from the
+  allowed images (`config.sandboxDockerImage`, or `sandbox.proxy.allowedImages`)
+  with no privileged mode, host mounts, devices or host namespaces, acting
+  only on containers it created. Only `dind` and `docker-proxy` mount
+  `dind-sock`. The application container cannot reach the daemon directly.
+- `config.dockerHost` points at a daemon you run. Put the same proxy in front
+  of it. Never expose a raw dockerd.
+
+Mounting a container-runtime socket into the application container would give
+the app, and any code it runs, root on the node. At render time the chart refuses
+`extraVolumes`/`volumes` and `extraVolumeMounts`/`volumeMounts` that:
+
+- use a `hostPath` of type `Socket`;
+- use a `hostPath` that is a Docker, containerd (including k3s), CRI-O, podman or
+  cri-dockerd socket, or a directory that holds one, such as `/`, `/run` or
+  `/var/run`;
+- name one of those sockets in `mountPath`, `subPath` or `subPathExpr`.
+
+These checks are best-effort, not a security boundary. A runtime socket in an
+unusual place, or one reached through a symlink, is not recognised. Review any
+custom `hostPath`. Where you can, enforce it in the cluster too, for example with
+a Kyverno or Gatekeeper policy that forbids `hostPath` volumes on the application
+pod.
+
+**Image requirement:** the `docker-proxy` sidecar needs an application image
+that contains `app.docker_proxy_main` (the release that added the Compose
+Docker proxy, or later). On an older `image.tag` the sidecar crash-loops and
+`run_code` fails. Upgrade `image.tag`, or set `sandbox.proxy.image` to a newer
+image.
+
 ## High-Value Features
 
 - Secret validation with fail-fast messages
 - Optional startup/readiness/liveness probe tuning
 - Optional extra volumes and mounts
 - Optional service account creation
-- Optional PDB, NetworkPolicy, ServiceMonitor
-- Optional OTLP telemetry env wiring
+- Optional PDB, NetworkPolicy
+- Product telemetry switch: `telemetry.collection.enabled: false` sets `TELEMETRY_COLLECTION_FLAG=false`
+
+## Metrics
+
+The chart exposes no scrape port: the services push product telemetry to the collector (see `telemetry.collection.enabled`) and do not serve `/metrics`. The earlier `metrics`, `monitoring.serviceMonitor` and `telemetry.otlp` values configured nothing and were removed.
 
 ## Validation
 
@@ -267,5 +330,4 @@ SMOKE_VARIANT=arangodb-redis bash deployment/helm/tests/kind_smoke.sh
 - Configure ingress/TLS
 - Enable `podDisruptionBudget` for HA
 - Enable `networkPolicy` with cluster-specific rules
-- Enable `monitoring.serviceMonitor` when Prometheus Operator exists
 - Validate upgrade path in non-production first

@@ -147,7 +147,7 @@ class TestNewFolders:
     async def test_missing_folders_are_created_under_their_real_parents(self, connector):
         folders = {"/Projects": "80", "/Projects/Apollo": "81"}
         connector.data_source.list_directory = AsyncMock(
-            side_effect=lambda user_id, path, depth: _response(
+            side_effect=lambda user_id, path, depth, **_: _response(
                 _propfind(path, folders[path]) if path in folders
                 else _propfind(path, "82", folder=False)
             )
@@ -168,7 +168,7 @@ class TestNewFolders:
     @pytest.mark.asyncio
     async def test_a_folder_already_indexed_is_not_created_again(self, connector):
         connector.data_source.list_directory = AsyncMock(
-            side_effect=lambda user_id, path, depth: _response(
+            side_effect=lambda user_id, path, depth, **_: _response(
                 _propfind(path, "80") if path == "/Projects" else _propfind(path, "82", folder=False)
             )
         )
@@ -216,7 +216,7 @@ class TestUnchangedRecords:
             "etag": '"etag-82"',
         }
         connector.sync_filters = MagicMock(get=MagicMock(return_value=None))
-        connector._cached_date_filters = (None, None, None, None)
+        connector._cached_date_filters = (None, None)
 
         update = await connector._process_nextcloud_entry(
             entry, "alice", "alice@example.com", "alice", ROOT, {}

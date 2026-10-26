@@ -15,6 +15,7 @@ import {
 } from '../../../libs/errors/http.errors';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
+import { revealQuery } from '../../configuration_manager/utils/secretReveal';
 import { executeConnectorCommand, handleBackendError, handleConnectorResponse } from '../../tokens_manager/utils/connector.utils';
 
 const logger = Logger.getInstance({
@@ -764,7 +765,7 @@ export const getToolsetInstance =
       };
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}`,
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}${revealQuery(req)}`,
         HttpMethod.GET,
         headers
       );
@@ -809,6 +810,53 @@ export const updateToolsetInstance =
       next(handleBackendError(error, 'update toolset instance'));
     }
   };
+
+/**
+ * A toolset instance's tool approval rules, passed on to the connector service: everyone reads
+ * them (with whether they may change them); an admin replaces them.
+ */
+const proxyToolsetToolRules =
+  (method: HttpMethod, operation: string) =>
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    const { instanceId } = req.params;
+    try {
+      if (instanceId === undefined || instanceId === '') {
+        throw new BadRequestError('instanceId is required');
+      }
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/tool-rules`,
+        method,
+        { ...(req.headers as Record<string, string>) },
+        method === HttpMethod.PUT ? req.body : undefined,
+      );
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        operation,
+        'Toolset not found',
+      );
+    } catch (error: unknown) {
+      logger.error(`Failed to ${operation}`, {
+        error: error instanceof Error ? error.message : 'unknown error',
+        instanceId,
+      });
+      next(handleBackendError(error, operation));
+    }
+  };
+
+export const getToolsetToolRules = proxyToolsetToolRules(
+  HttpMethod.GET,
+  'get toolset tool approvals',
+);
+export const updateToolsetToolRules = proxyToolsetToolRules(
+  HttpMethod.PUT,
+  'save toolset tool approvals',
+);
 
 /**
  * Delete a toolset instance (admin only).
@@ -857,19 +905,21 @@ export const getMyToolsets =
       const { userId } = req.user || {};
       if (!userId) throw new UnauthorizedError('User authentication required');
 
-      const { search, includeRegistry, page, limit, authStatus, toolsetType } = req.query as {
+      const { search, includeRegistry, page, limit, authStatus, toolsetType, scope } = req.query as {
         search?: string;
         includeRegistry?: boolean | string;
         page?: number | string;
         limit?: number | string;
         authStatus?: string;
         toolsetType?: string;
+        scope?: string;
       };
       const queryParams = new URLSearchParams();
       if (search) queryParams.append('search', String(search));
       if (page !== undefined && page !== null) queryParams.append('page', String(page));
       if (limit !== undefined && limit !== null) queryParams.append('limit', String(limit));
       if (authStatus) queryParams.append('authStatus', String(authStatus));
+      if (scope) queryParams.append('scope', scope);
       if (toolsetType && String(toolsetType).trim()) {
         queryParams.append('toolsetType', String(toolsetType).trim());
       }
@@ -1044,7 +1094,7 @@ export const getInstanceOAuthAuthorizationUrl =
   ): Promise<void> => {
     try {
       const { instanceId } = req.params;
-      const { base_url } = req.query;
+      const { base_url, desktop } = req.query;
 
       if (!instanceId) throw new BadRequestError('instanceId is required');
 
@@ -1056,6 +1106,7 @@ export const getInstanceOAuthAuthorizationUrl =
 
       const queryParams = new URLSearchParams();
       if (base_url) queryParams.append('base_url', String(base_url));
+      if (desktop === 'true') queryParams.append('desktop', 'true');
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/toolsets/instances/${encodeURIComponent(instanceId)}/oauth/authorize?${queryParams.toString()}`,
@@ -1124,7 +1175,7 @@ export const listToolsetOAuthConfigs =
       };
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${encodeURIComponent(toolsetType)}`,
+        `${appConfig.connectorBackend}/api/v1/toolsets/oauth-configs/${encodeURIComponent(toolsetType)}${revealQuery(req)}`,
         HttpMethod.GET,
         headers
       );
@@ -1418,7 +1469,7 @@ export const getAgentToolsetOAuthUrl =
   ): Promise<void> => {
     try {
       const { agentKey, instanceId } = req.params;
-      const { base_url } = req.query;
+      const { base_url, desktop } = req.query;
 
       if (!agentKey) throw new BadRequestError('agentKey is required');
       if (!instanceId) throw new BadRequestError('instanceId is required');
@@ -1431,6 +1482,7 @@ export const getAgentToolsetOAuthUrl =
 
       const queryParams = new URLSearchParams();
       if (base_url) queryParams.append('base_url', String(base_url));
+      if (desktop === 'true') queryParams.append('desktop', 'true');
 
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/toolsets/agents/${encodeURIComponent(agentKey)}/instances/${encodeURIComponent(instanceId)}/oauth/authorize?${queryParams.toString()}`,

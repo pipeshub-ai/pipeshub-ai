@@ -1,11 +1,13 @@
 'use client';
 
 import { useCallback, useEffect } from 'react';
-import { useThreadRuntime } from '@assistant-ui/react';
+import { useAui } from '@assistant-ui/react';
 import { ChatInput } from '../chat-input';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import { useEffectiveAgentId } from '@/chat/hooks/use-effective-agent-id';
 import { fetchModelsForContext } from '@/chat/utils/fetch-models-for-context';
+import { showRemoteRunInProgressToast } from '@/chat/utils/remote-run-toast';
 import { ChatApi } from '@/chat/api';
 import {
   buildAssistantApiFilters,
@@ -30,7 +32,7 @@ let lastEffectiveAgentIdForQueryMode: string | null = null;
  * Must be used inside AssistantRuntimeProvider.
  */
 export function ChatInputWrapper() {
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   const effectiveAgentId = useEffectiveAgentId();
   const isAgentChat = Boolean(effectiveAgentId);
 
@@ -80,14 +82,10 @@ export function ChatInputWrapper() {
     store.setIsSearching(true);
     store.setSearchError(null);
 
-    const streamFilters = buildAssistantApiFilters(store.settings.filters);
     const request: SearchRequest = {
       query,
       limit: 10,
-      filters: {
-        apps: streamFilters.apps,
-        kb: streamFilters.kb,
-      },
+      filters: buildAssistantApiFilters(store.settings.filters),
     };
 
     try {
@@ -95,7 +93,8 @@ export function ChatInputWrapper() {
       store.setSearchResults(
         response.searchResponse.searchResults,
         response.searchId,
-        query
+        query,
+        response,
       );
     } catch (error: unknown) {
       if (isRequestCancelledError(error)) return;
@@ -146,7 +145,7 @@ export function ChatInputWrapper() {
     [effectiveAgentId],
   );
 
-  const handleSend = async (message: string, attachments?: AttachmentRef[]) => {
+  const handleSend = async (message: string, attachments?: AttachmentRef[], mentions?: MentionNode[]) => {
     if (!message.trim() && (!attachments || attachments.length === 0)) return;
 
     const store = useChatStore.getState();
@@ -164,6 +163,10 @@ export function ChatInputWrapper() {
     // the old run's grace timer fires.
     const active = store.activeSlotId ? store.slots[store.activeSlotId] : undefined;
     if (active?.isStreaming && !active.stopping) {
+      return;
+    }
+    if (active?.remoteRunInProgress) {
+      showRemoteRunInProgressToast();
       return;
     }
 
@@ -219,13 +222,14 @@ export function ChatInputWrapper() {
     // Attachments were uploaded the moment they were added to the composer,
     // so by the time we reach here every ref is already server-assigned.
     // Forward verbatim to the runtime; no upload step at send time.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: message }],
       metadata: {
         custom: {
           collections: collectionsAtSendTime.length > 0 ? collectionsAtSendTime : undefined,
           attachments: attachments && attachments.length > 0 ? attachments : undefined,
+          mentionIds: mentions && mentions.length > 0 ? mentions.map((node) => node.id) : undefined,
         },
       },
       startRun: true,
@@ -239,6 +243,7 @@ export function ChatInputWrapper() {
       onDeleteFile={handleDeleteFile}
       isAgentChat={isAgentChat}
       agentId={effectiveAgentId}
+      persistDraft
     />
   );
 }

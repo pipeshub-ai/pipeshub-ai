@@ -2,16 +2,17 @@
 
 import { useMemo } from 'react';
 import { Badge, Flex } from '@radix-ui/themes';
-import { ChatStarIcon } from '@/app/components/ui/chat-star-icon';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { KBD_BADGE_PADDING, ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
+import { ICON_SIZE_DEFAULT } from '@/app/components/sidebar';
 import { useCommandStore } from '@/lib/store/command-store';
 import { useTranslation } from 'react-i18next';
 import { getModifierSymbol } from '@/lib/utils/platform';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { useMobileSidebarStore } from '@/lib/store/mobile-sidebar-store';
 import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import { usePathname, useRouter } from 'next/navigation';
 import { SidebarItem } from './sidebar-item';
 
 // ========================================
@@ -22,6 +23,7 @@ interface NavItem {
   icon: string;
   labelKey: string;
   route: string;
+  beta?: boolean;
 }
 
 /** Primary navigation items — labels resolved via i18n */
@@ -29,33 +31,61 @@ const MAIN_NAV_ITEMS: NavItem[] = [
   // { icon: 'search', labelKey: 'nav.searchChats', route: '/search' },
   { icon: 'folder', labelKey: 'nav.collections', route: '/knowledge-base/' },
   { icon: 'inventory_2', labelKey: 'nav.allRecords', route: '/knowledge-base/?view=all-records' },
+  { icon: 'attachment', labelKey: 'nav.allArtifacts', route: '/artifacts/', beta: true },
 ];
 
 /** Projects nav item — gated behind `ENABLE_PROJECTS`, rendered separately below. */
-const PROJECTS_NAV_ITEM: NavItem = { icon: 'folder_special', labelKey: 'nav.projects', route: '/projects/' };
+const PROJECTS_NAV_ITEM: NavItem = { icon: 'files', labelKey: 'nav.projects', route: '/projects/' };
 
 // ========================================
 // Components
 // ========================================
 
-/** Keyboard shortcut badge */
+/** Inline beta chip so the row stays one link, matching Projects. */
+function BetaNavLabel({ text }: { text: string }) {
+  const { t } = useTranslation();
+  return (
+    <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
+      <span
+        style={{
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          whiteSpace: 'nowrap',
+        }}
+      >
+        {text}
+      </span>
+      <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
+        {t('nav.beta', { defaultValue: 'Beta' })}
+      </Badge>
+    </Flex>
+  );
+}
+
+/** Keyboard shortcut chip, as the design draws it. */
 const KbdBadge = ({ children }: { children: React.ReactNode }) => (
   <span
     style={{
-      background: 'var(--slate-1)',
-      border: '1px solid var(--slate-3)',
-      padding: KBD_BADGE_PADDING,
+      display: 'inline-flex',
+      alignItems: 'center',
+      height: 17,
+      padding: '0 var(--space-1)',
+      background: 'var(--neutral-1)',
+      border: '1px solid var(--neutral-3)',
       borderRadius: 'var(--radius-2)',
       fontSize: 12,
-      lineHeight: 'var(--line-height-1)',
+      lineHeight: '16px',
       letterSpacing: '0.04px',
-      color: 'var(--slate-12)',
+      color: 'var(--neutral-12)',
       fontWeight: 400,
+      whiteSpace: 'nowrap',
     }}
   >
     {children}
   </span>
 );
+
+const NAV_ICON_COLOR = 'var(--neutral-11)';
 
 /**
  * Static navigation section — "New Chat" button, Search, Collections, etc.
@@ -65,56 +95,31 @@ export function StaticNavSection() {
   const { t } = useTranslation();
   const modKey = useMemo(() => getModifierSymbol(), []);
   const isMobile = useIsMobile();
+  const canHover = useCanHover();
   const closeMobileSidebar = useMobileSidebarStore((s) => s.close);
-  const unreadCount = useNotificationStore((s) => s.unreadCount);
-  const toggleNotificationsPanel = useNotificationStore((s) => s.togglePanel);
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const pathname = usePathname();
+  const router = useRouter();
 
-  const notificationLabel = unreadCount > 99 ? '99+' : String(unreadCount);
-  const notificationBadgeSize =
-    notificationLabel.length >= 3 ? 22 : notificationLabel.length === 2 ? 20 : 18;
-
-  const notificationBadge =
-    unreadCount > 0 ? (
-      <span
-        style={{
-          width: notificationBadgeSize,
-          height: notificationBadgeSize,
-          borderRadius: '50%',
-          backgroundColor: 'var(--red-9)',
-          color: 'white',
-          fontSize: notificationLabel.length >= 3 ? 9 : notificationLabel.length === 2 ? 10 : 11,
-          fontWeight: 600,
-          lineHeight: 1,
-          display: 'inline-flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          flexShrink: 0,
-        }}
-      >
-        {notificationLabel}
-      </span>
-    ) : undefined;
+  // Covers links whose pathname does not change (All Records only adds a query), which the shell's route watcher misses.
+  const closeOnMobile = isMobile ? closeMobileSidebar : undefined;
 
   const handleNewChat = () => {
     if (isMobile) closeMobileSidebar();
-    dispatch('newChat');
+    useNotificationStore.getState().closePanel();
+    if (!dispatch('newChat')) router.push('/chat/');
   };
 
   const handleOpenSearch = () => {
-    dispatch('openCommandPalette');
+    if (isMobile) closeMobileSidebar();
+    if (!dispatch('openCommandPalette')) router.push('/chat/');
   };
 
   return (
     <Flex direction="column" gap="1">
       {/* New Chat */}
       <SidebarItem
-        icon={
-          <ChatStarIcon
-            size={ICON_SIZE_DEFAULT}
-            color="var(--accent-a11)"
-          />
-        }
+        icon={<MaterialIcon name="assistant" size={ICON_SIZE_DEFAULT} color="var(--accent-a11)" />}
         label={t('chat.newChat')}
         onClick={handleNewChat}
         textColor="var(--accent-a11)"
@@ -122,56 +127,42 @@ export function StaticNavSection() {
       />
       {/* Search Chats — opens command palette (⌘+K) */}
         <SidebarItem
-          icon={<MaterialIcon name={'search'} size={ICON_SIZE_DEFAULT} />}
+          icon={<MaterialIcon name="search" size={ICON_SIZE_DEFAULT} color={NAV_ICON_COLOR} />}
           label={t('nav.searchChats')}
           onClick={handleOpenSearch}
-          rightSlot={<KbdBadge>{modKey} +K</KbdBadge>}
+          textColor={NAV_ICON_COLOR}
+          rightSlot={canHover ? <KbdBadge>{modKey} + K</KbdBadge> : undefined}
         />
 
-      <div data-ph-notifications-trigger style={{ width: '100%' }}>
+      {projectsEnabled && (
         <SidebarItem
-          icon={<MaterialIcon name="inbox" size={ICON_SIZE_DEFAULT} />}
-          label={t('nav.inbox')}
-          onClick={() => {
-            if (isMobile) closeMobileSidebar();
-            toggleNotificationsPanel();
-          }}
-          rightSlot={notificationBadge}
-        />
-      </div>
-
-      {/* Navigation items — hidden on mobile */}
-      {!isMobile && projectsEnabled && (
-        <SidebarItem
-          icon={<MaterialIcon name={PROJECTS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} />}
-          label={
-            <Flex align="center" gap="2" style={{ minWidth: 0, width: '100%' }}>
-              <span
-                style={{
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
-                }}
-              >
-                {t(PROJECTS_NAV_ITEM.labelKey)}
-              </span>
-              <Badge size="1" color="amber" variant="soft" style={{ flexShrink: 0 }}>
-                {t('nav.beta', { defaultValue: 'Beta' })}
-              </Badge>
-            </Flex>
-          }
+          icon={<MaterialIcon name={PROJECTS_NAV_ITEM.icon} size={ICON_SIZE_DEFAULT} color={NAV_ICON_COLOR} />}
+          textColor={NAV_ICON_COLOR}
+          label={<BetaNavLabel text={t(PROJECTS_NAV_ITEM.labelKey)} />}
           href={PROJECTS_NAV_ITEM.route}
+          onClick={closeOnMobile}
         />
       )}
-      {!isMobile &&
-        MAIN_NAV_ITEMS.map((item) => (
-          <SidebarItem
-            key={item.route}
-            icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} />}
-            label={t(item.labelKey)}
-            href={item.route}
-          />
-        ))}
+      {MAIN_NAV_ITEMS.map((item) => (
+        <SidebarItem
+          key={item.route}
+          icon={<MaterialIcon name={item.icon} size={ICON_SIZE_DEFAULT} color={NAV_ICON_COLOR} />}
+          textColor={NAV_ICON_COLOR}
+          label={
+            item.beta ? (
+              <BetaNavLabel text={t(item.labelKey)} />
+            ) : (
+              t(item.labelKey)
+            )
+          }
+          href={item.route}
+          onClick={closeOnMobile}
+          isActive={
+            item.route.startsWith('/artifacts') &&
+            pathname.startsWith('/artifacts')
+          }
+        />
+      ))}
     </Flex>
   );
 }

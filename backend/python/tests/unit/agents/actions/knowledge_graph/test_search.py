@@ -1,9 +1,10 @@
 """Tests for ``app.agents.actions.knowledge_graph.ops.search``."""
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -20,9 +21,20 @@ from app.agents.actions.knowledge_graph.ops.search import (
 )
 from app.modules.retrieval.entity_permissions import EntityAccessError
 
+if TYPE_CHECKING:
+    from app.utils.pattern_match import PatternMatchCoverage
+
 # ---------------------------------------------------------------------------
 # normalize_source_ids
 # ---------------------------------------------------------------------------
+
+def _flatten_into(records: dict[str, Any], units: list[dict[str, Any]]) -> Any:  # noqa: ANN401
+    """A `get_flattened_results` stand-in that loads `records` and returns `units`."""
+    async def flatten(_results, _blob, _org, _mm, vr_map, *_args, **_kwargs) -> list[dict[str, Any]]:
+        vr_map.update(records)
+        return units
+    return flatten
+
 
 class TestNormalizeSourceIds:
     def test_none(self) -> None:
@@ -325,6 +337,51 @@ class TestExecuteSearchFanOut:
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_fan_out_interleaves_sources_by_rank(self, mock_parse) -> None:
+        """Each source's scores are ranks within its own search, so appending
+        the lists would put every hit of the first source ahead of the next."""
+        def response(vrid: str, scores: list[float]) -> dict:
+            return {
+                "status_code": 200,
+                "searchResults": [
+                    {"score": score, "metadata": {"virtualRecordId": vrid, "blockId": f"{vrid}{i}"}}
+                    for i, score in enumerate(scores)
+                ],
+                "virtual_to_record_map": {vrid: {"id": vrid}},
+            }
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [
+            response("a", [0.9, 0.8, 0.7]),
+            response("b", [0.02, 0.01]),
+        ]
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": [], "kb": ["kb-1", "kb-2"]},
+        }
+        seen: list[list[dict]] = []
+
+        async def capture(search_results, *_a, **_kw) -> list[dict]:
+            seen.append(search_results)
+            raise RuntimeError("stop after the fan-out")
+
+        with patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"), patch(
+            "app.modules.retrieval.context.builder.get_flattened_results",
+            side_effect=capture,
+        ):
+            await execute_search(state, "test query", source_ids=["kb-1", "kb-2"])
+
+        hits = seen[0]
+        assert [h["metadata"]["blockId"] for h in hits] == ["a0", "b0", "a1", "b1", "a2"]
+        assert [h["score"] for h in hits] == sorted((h["score"] for h in hits), reverse=True)
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
     async def test_retrieval_status_202_treated_as_error(self, mock_parse) -> None:
         retrieval = AsyncMock()
         retrieval.search_with_filters.return_value = {
@@ -348,15 +405,15 @@ class TestExecuteSearchFanOut:
 
 class TestExecuteSearchFullPath:
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -371,7 +428,7 @@ class TestExecuteSearchFullPath:
             "searchResults": [search_result],
             "virtual_to_record_map": {"vr1": {"id": "r1"}},
         }
-        mock_flatten.return_value = [search_result]
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
         mock_build_content.return_value = (
             [[{"type": "text", "text": "Block content"}]],
             MagicMock(),
@@ -397,15 +454,15 @@ class TestExecuteSearchFullPath:
         assert "final_results" in state
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="table")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={"r1": (1, 3)})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -420,7 +477,7 @@ class TestExecuteSearchFullPath:
             "searchResults": [search_result],
             "virtual_to_record_map": {"vr1": {"id": "r1"}},
         }
-        mock_flatten.return_value = [search_result]
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
         mock_build_content.return_value = (
             [[{"type": "text", "text": "Content"}]],
             MagicMock(),
@@ -441,18 +498,65 @@ class TestExecuteSearchFullPath:
         }
         result = await execute_search(state, "test query")
         assert "Top 1 block" in result
-        mock_render_cand.assert_called_once()
+        mock_render_cand.assert_called()
+        assert state["fetch_plan"] is plan
 
     @pytest.mark.asyncio
-    @patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="")
-    @patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @pytest.mark.parametrize("read_in_full", [False, True])
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
+    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="table")
+    @patch("app.modules.agents.record_escalation.build_candidates")
+    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={"r1": (1, 3)})
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
+    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_candidate_list_follows_the_chats_full_read_policy(
+        self, mock_parse, mock_shortener, mock_blob, mock_flatten, mock_enrich, mock_build_content,
+        mock_analyze, mock_build_cands, mock_render_cand, mock_render_note, mock_dedupe, mock_compose,
+        read_in_full: bool,
+    ) -> None:
+        from app.agents.agent_loop.answer_rules import READ_RECORDS_IN_FULL_STATE_KEY
+
+        search_result = {"virtual_record_id": "vr1", "block_index": 0}
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [search_result],
+            "virtual_to_record_map": {"vr1": {"id": "r1"}},
+        }
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
+        mock_build_content.return_value = ([[{"type": "text", "text": "Content"}]], MagicMock())
+        plan = MagicMock()
+        plan.has_candidates = True
+        mock_build_cands.return_value = plan
+        state = {
+            "logger": MagicMock(), "retrieval_service": retrieval, "graph_provider": AsyncMock(),
+            "config_service": MagicMock(), "org_id": "o1", "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []}, "final_results": [],
+        }
+        if read_in_full:
+            state[READ_RECORDS_IN_FULL_STATE_KEY] = True
+
+        await execute_search(state, "test query")
+
+        assert mock_render_cand.call_args.kwargs["read_in_full"] is read_in_full
+        assert mock_render_note.call_args.kwargs["read_in_full"] is read_in_full
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
     @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
     @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
     @patch("app.modules.agents.record_escalation.build_candidates")
     @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
-    @patch("app.agents.actions.knowledge_graph.ops.search.build_message_content_array")
-    @patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock)
-    @patch("app.agents.actions.knowledge_graph.ops.search.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
     @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
     @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -467,7 +571,7 @@ class TestExecuteSearchFullPath:
             "searchResults": [search_result],
             "virtual_to_record_map": {"vr1": {"id": "r1"}},
         }
-        mock_flatten.return_value = [search_result]
+        mock_flatten.side_effect = _flatten_into({"vr1": {"id": "r1"}}, [search_result])
         mock_build_content.return_value = (
             [[{"type": "text", "text": "V"}]],
             MagicMock(),
@@ -490,6 +594,69 @@ class TestExecuteSearchFullPath:
         }
         result = await execute_search(state, "test query")
         assert "Top 1 block" in result
+        # The model name says nothing; only the state's flag makes a search multimodal.
+        assert mock_flatten.call_args.args[3] is False
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="")
+    @patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new)
+    @patch("app.modules.agents.record_escalation.render_coverage_note", return_value="")
+    @patch("app.modules.agents.record_escalation.render_candidate_table", return_value="")
+    @patch("app.modules.agents.record_escalation.build_candidates")
+    @patch("app.modules.agents.record_escalation.analyze_coverage", return_value={})
+    @patch("app.modules.retrieval.context.renderer.build_message_content_array")
+    @patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock)
+    @patch("app.modules.retrieval.context.builder.get_flattened_results", new_callable=AsyncMock)
+    @patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage")
+    @patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None)
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_record_written_by_a_parallel_fetch_survives(
+        self, mock_parse, mock_shortener, mock_blob, mock_flatten, mock_enrich,
+        mock_build_content, mock_analyze, mock_build_cands, mock_render_cand,
+        mock_render_note, mock_dedupe, mock_compose,
+    ) -> None:
+        """fetch_record writes into the records map it was handed; a search in
+        the same turn must add to that dict, not swap in a new one."""
+        search_result = {"virtual_record_id": "vr1", "block_index": 0}
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [search_result],
+            "virtual_to_record_map": {"vr1": {"id": "r1"}},
+        }
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict]:
+            vr_map["vr1"] = {"id": "r1"}
+            await asyncio.sleep(0)
+            return [search_result]
+
+        mock_flatten.side_effect = flatten
+        mock_build_content.return_value = ([[{"type": "text", "text": "B"}]], MagicMock())
+        plan = MagicMock()
+        plan.has_candidates = False
+        mock_build_cands.return_value = plan
+
+        live = {"vr-old": {"id": "r-old"}}
+        state = {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+            "final_results": [],
+            "virtual_record_id_to_result": live,
+        }
+
+        async def parallel_fetch() -> None:
+            await asyncio.sleep(0)
+            live["vr-fetched"] = {"id": "r-fetched"}
+
+        await asyncio.gather(execute_search(state, "test query"), parallel_fetch())
+
+        assert state["virtual_record_id_to_result"] is live
+        assert {"vr-old", "vr1", "vr-fetched"} <= live.keys()
 
 
 class TestExecuteSearchException:
@@ -519,21 +686,20 @@ class TestExecuteSearchException:
 
 
 _RENDER_PATCHES = (
-    patch("app.agents.actions.retrieval.retrieval.compose_result_tail", return_value="\n---\n"),
-    patch("app.agents.actions.retrieval.retrieval._dedupe_append_final_results", side_effect=lambda old, new: old + new),
+    patch("app.agents.actions.knowledge_graph.ops.search.compose_result_tail", return_value="\n---\n"),
+    patch("app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results", side_effect=lambda old, new: old + new),
     patch("app.modules.agents.record_escalation.render_coverage_note", return_value=""),
     patch("app.modules.agents.record_escalation.render_candidate_table", return_value=""),
     patch("app.modules.agents.record_escalation.build_candidates", return_value=SimpleNamespace(has_candidates=False)),
     patch("app.modules.agents.record_escalation.analyze_coverage", return_value={}),
     patch(
-        "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+        "app.modules.retrieval.context.renderer.build_message_content_array",
         return_value=([[{"type": "text", "text": "Enterprise pricing strategy 2026"}]], MagicMock()),
     ),
-    patch("app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context", new_callable=AsyncMock),
+    patch("app.modules.retrieval.context.builder.enrich_records_with_graph_context", new_callable=AsyncMock),
     patch(
-        "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
-        new_callable=AsyncMock,
-        return_value=[{"virtual_record_id": "vr1", "block_index": 0}],
+        "app.modules.retrieval.context.builder.get_flattened_results",
+        side_effect=_flatten_into({"vr1": {"id": "r1"}}, [{"virtual_record_id": "vr1", "block_index": 0}]),
     ),
     patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"),
     patch("app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled", return_value=None),
@@ -673,6 +839,223 @@ class TestEmptyNarrowedSearch:
         assert result.startswith("Top 1 block")
         assert "source_ids omitted" not in result
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failure", [RuntimeError("grep blew up"), asyncio.CancelledError()])
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_failing_pattern_match_never_costs_the_semantic_answer(self, mock_parse, failure) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(side_effect=failure)), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "pricing", source_ids=["demo-connector"])
+
+        assert result.startswith("Top 1 block")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_failing_pattern_match_hint_never_costs_the_semantic_answer(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.render_pattern_match_hint", side_effect=KeyError("bad entry")), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "pricing", source_ids=["demo-connector"])
+
+        assert result.startswith("Top 1 block")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_grep_hits_all_dropped_by_the_merge_still_report_an_empty_narrowed_search(
+        self, mock_parse,
+    ) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_empty()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"_key": "r9"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", AsyncMock(return_value=[])), \
+                patch("app.modules.retrieval.context.builder.get_flattened_results", AsyncMock(return_value=[])):
+            parsed = json.loads(
+                await execute_search(_state(retrieval), "pricing", source_ids=["private-kb-app"])
+            )
+
+        assert parsed["result_count"] == 0
+        assert parsed["message"] == NARROWED_SEARCH_EMPTY_MESSAGE
+
+
+class TestSearchThatDidNotCoverEverything:
+    """A search that ran on only part of what was asked says so, and an empty
+    one is not reported as "nothing found"."""
+
+    _INCOMPLETE = "1 of 2 parts of the search index could not be searched, so this search may have missed documents."
+
+    @staticmethod
+    async def _render(state: dict[str, Any], **kwargs: Any) -> str:  # noqa: ANN401
+        with _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            return await execute_search(state, "pricing", **kwargs)
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_results_from_some_sources_name_the_ones_that_failed(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found(), RuntimeError("vector store down")]
+
+        result = await self._render(_state(retrieval), source_ids=["private-kb-app", "wiki"])
+
+        assert "Top 1 block" in result
+        assert "Note: 1 of the sources you named could not be searched; these results come from the rest." in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_results_from_part_of_the_index_say_what_is_missing(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [{**_found(), "searchIncomplete": self._INCOMPLETE}]
+
+        result = await self._render(_state(retrieval))
+
+        assert f"Note: {self._INCOMPLETE}" in result
+        assert "search again before saying it does not" in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_full_search_carries_no_gap_note(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+
+        result = await self._render(_state(retrieval))
+
+        assert "could not be searched" not in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_nothing_found_in_part_of_the_index_is_not_no_results(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [{**_empty(), "searchIncomplete": self._INCOMPLETE}]
+
+        parsed = json.loads(await execute_search(_state(retrieval), "pricing"))
+
+        assert parsed["status"] == "error"
+        assert parsed["message"].startswith(self._INCOMPLETE)
+        assert "No results found" not in parsed["message"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_store_that_did_not_answer_is_an_error_with_its_reason(self, mock_parse) -> None:
+        message = "The search index took too long to respond, so no results are shown. Please try again in a minute."
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [{
+            "status": "search_index_unavailable", "status_code": 503, "message": message,
+            "searchResults": [], "records": [],
+        }]
+
+        parsed = json.loads(await execute_search(_state(retrieval), "pricing"))
+
+        assert parsed == {"status": "error", "status_code": 503, "message": message}
+
+
+class TestGrepHitsDoNotDisplaceLoadedRecords:
+    """A grep hit enters the records map as its graph record, with no blocks.
+    It once replaced the record prefetch had loaded for the same content, so a
+    citation of one of that record's blocks no longer resolved."""
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_loaded_record_survives_a_grep_hit_on_it(self, mock_parse) -> None:
+        loaded = {
+            "id": "rec-1", "virtual_record_id": "vr-1", "record_name": "msa.pdf",
+            "block_containers": {"blocks": [{"index": 0}], "block_groups": []},
+        }
+
+        def graph_record(n: int, name: str) -> dict[str, Any]:
+            return {
+                "_key": f"rec-{n}", "id": f"rec-{n}", "virtualRecordId": f"vr-{n}",
+                "recordName": name, "recordType": "FILE",
+            }
+
+        async def merge(**kwargs) -> list[dict]:
+            kwargs["virtual_record_id_to_result"].update({
+                "vr-1": graph_record(1, "msa.pdf"),
+                "vr-2": graph_record(2, "sow.pdf"),
+            })
+            return [
+                {"virtual_record_id": "vr-1", "source": "pattern_match"},
+                {"virtual_record_id": "vr-2", "source": "pattern_match"},
+            ]
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = _empty()
+        state = {**_state(retrieval), "virtual_record_id_to_result": {"vr-1": loaded}}
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"_key": "r"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=merge), \
+                patch("app.modules.retrieval.context.builder.get_flattened_results", AsyncMock(return_value=[])), \
+                patch(f"{search_mod}.BlobStorage"):
+            await execute_search(state, "annual fee")
+
+        records = state["virtual_record_id_to_result"]
+        assert records["vr-1"] is loaded
+        # A record only grep found stays in the map: fetch and record-page citations resolve it.
+        assert records["vr-2"]["recordName"] == "sow.pdf"
+
+
+class TestRetrievalLayerProvenance:
+    """With the opt-in trace on, each record a search shows is noted with the
+    layer that found it: the semantic search, grep, or both."""
+
+    @staticmethod
+    async def _search(**extra: Any) -> dict[str, Any]:  # noqa: ANN401
+        loaded = {"id": "rec-1", "virtual_record_id": "vr-1", "record_name": "msa.pdf"}
+
+        async def flatten(
+            search_results, blob_store, org_id, is_multimodal_llm, vr_map, *args, **kwargs,
+        ) -> list[dict[str, Any]]:
+            vr_map["vr-1"] = loaded
+            return [{"virtual_record_id": "vr-1", "block_index": 0}]
+
+        async def merge(**kwargs) -> list[dict]:
+            graph_record = {"_key": "rec-2", "virtualRecordId": "vr-2", "recordName": "sow.pdf"}
+            kwargs["virtual_record_id_to_result"]["vr-2"] = graph_record
+            return [{"virtual_record_id": "vr-2", "source": "pattern_match"}]
+
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200,
+            "searchResults": [{"virtual_record_id": "vr-1", "block_index": 0}],
+            "virtual_to_record_map": {},
+        }
+        state = {**_state(retrieval), **extra}
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep_hits = [{"virtual_record_id": "vr-1"}, {"virtual_record_id": "vr-2"}]
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep_hits)), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=merge), \
+                patch("app.modules.retrieval.context.builder.get_flattened_results", side_effect=flatten), \
+                patch(f"{search_mod}.BlobStorage"):
+            await execute_search(state, "annual fee")
+        return state
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_each_record_lists_every_layer_that_found_it(self, mock_parse) -> None:
+        state = await self._search(include_retrieval_context=True)
+
+        provenance = state["retrieved_by"]
+        assert provenance["vr-1"].layers == ["vector", "pattern_match"]
+        assert provenance["vr-2"].layers == ["pattern_match"], "found only by grep"
+        assert (provenance["vr-2"].record_id, provenance["vr-2"].record_name) == ("rec-2", "sow.pdf")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_nothing_is_kept_unless_the_trace_was_asked_for(self, mock_parse) -> None:
+        state = await self._search()
+
+        assert "retrieved_by" not in state
+
 
 # ---------------------------------------------------------------------------
 # resolve_entity_filter_groups + execute_search entity-filter wiring
@@ -742,11 +1125,72 @@ class TestStrictScope:
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_strict_scope_reaches_the_grep_layer(self, mock_parse) -> None:
+        """Grep read an empty strict scope as unscoped and searched every app in the org."""
+        retrieval = _empty_retrieval()
+        state = _entity_search_state(retrieval)
+        state["filters"] = {"apps": [], "kb": [], "strictScope": True}
+        grep = AsyncMock(return_value=[])
+
+        with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
+            await execute_search(state, "roadmap")
+
+        assert grep.await_args.kwargs["filters"]["strictScope"] is True
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
     async def test_no_strict_scope_adds_no_flag(self, mock_parse) -> None:
         retrieval = _empty_retrieval()
         await execute_search(_entity_search_state(retrieval), "roadmap")
         _, kwargs = retrieval.search_with_filters.call_args
         assert "strictScope" not in kwargs["filter_groups"]
+
+
+class TestGrepQuery:
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_grep_is_written_from_the_agent_query_with_the_question_as_context(self, mock_parse) -> None:
+        state = _entity_search_state(_empty_retrieval(), query="Which safeguard was added?", llm=MagicMock())
+        grep = AsyncMock(return_value=[])
+
+        with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
+            await execute_search(state, "min cache TTL cold-start deploy")
+
+        assert grep.await_args.kwargs["query"] == "min cache TTL cold-start deploy"
+        assert grep.await_args.kwargs["user_query"] == "Which safeguard was added?"
+
+
+class TestKeywordSearchBudget:
+    """`keywordSearchBudget: "short"` on the chat request caps how long a
+    search waits for grep after its semantic results; nothing else does."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("requested", "high_accuracy", "expected"), [
+        ("short", None, 5.0),
+        (None, None, None),
+        ("full", None, None),
+        ("short", "true", None),
+    ], ids=["short", "absent-waits-as-before", "full", "high-accuracy-mode-keeps-full"])
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_the_request_sets_the_wait(
+        self, mock_parse, monkeypatch, requested, high_accuracy, expected,
+    ) -> None:
+        if high_accuracy is None:
+            monkeypatch.delenv("HIGH_ACCURACY_MODE", raising=False)
+        else:
+            monkeypatch.setenv("HIGH_ACCURACY_MODE", high_accuracy)
+        state = _entity_search_state(_empty_retrieval(), keyword_search_budget=requested)
+        grep = AsyncMock(return_value=[])
+        waited = AsyncMock(return_value=[])
+
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep), \
+                patch(f"{search_mod}.await_pattern_match", waited):
+            await execute_search(state, "roadmap")
+
+        assert waited.await_args.kwargs["wait_budget"] == expected
+        # What grep finds lands in the dict the wait keeps on a cut-off.
+        assert waited.await_args.kwargs["found_so_far"] is grep.call_args.kwargs["found"]
 
 
 class TestUnknownEntityIds:
@@ -829,23 +1273,25 @@ class TestExecuteSearchEntityFilters:
             retrieval, _kg_entity_id_filter_key={"t1": ("topics", "Context graph governance")},
         )
         with patch(
-            "app.agents.actions.knowledge_graph.ops.search.get_flattened_results",
+            "app.modules.retrieval.context.builder.get_flattened_results",
             new_callable=AsyncMock,
         ) as mock_flatten, patch(
-            "app.agents.actions.knowledge_graph.ops.search.enrich_records_with_graph_context",
+            "app.modules.retrieval.context.builder.enrich_records_with_graph_context",
             new_callable=AsyncMock,
         ), patch(
-            "app.agents.actions.knowledge_graph.ops.search.build_message_content_array",
+            "app.modules.retrieval.context.renderer.build_message_content_array",
         ) as mock_build_content, patch(
             "app.agents.actions.knowledge_graph.ops.search.get_record_id_shortener_if_enabled",
             return_value=None,
         ), patch("app.agents.actions.knowledge_graph.ops.search.BlobStorage"), patch(
             "app.modules.agents.record_escalation.build_candidates",
         ) as mock_build_cands, patch(
-            "app.agents.actions.retrieval.retrieval._dedupe_append_final_results",
+            "app.agents.actions.knowledge_graph.ops.search.dedupe_append_final_results",
             side_effect=lambda old, new: old + new,
         ):
-            mock_flatten.return_value = [{"virtual_record_id": "vr1", "block_index": 0}]
+            mock_flatten.side_effect = _flatten_into(
+                {"vr1": {"id": "r1"}}, [{"virtual_record_id": "vr1", "block_index": 0}],
+            )
             mock_build_content.return_value = (
                 [[{"type": "text", "text": "Fallback content"}]], MagicMock(),
             )
@@ -962,7 +1408,9 @@ class TestExecuteSearchRecordScopedEntities:
             return_value=EntitySearchScope(virtual_ids=["vr-1"], truncated=True),
         ):
             result = await execute_search(state, "roadmap", entity_ids=["rg1"])
-        assert "only its newest accessible records were searched" in json.loads(result)["message"]
+        message = json.loads(result)["message"]
+        assert "only part of its accessible records were searched" in message
+        assert "newest" not in message
 
     @pytest.mark.asyncio
     @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
@@ -1010,3 +1458,148 @@ class TestExecuteSearchRecordScopedEntities:
         await execute_search(state, "test query")
         _, kwargs = retrieval.search_with_filters.call_args
         assert kwargs["virtual_record_ids_from_tool"] is None
+
+
+class TestQueryTextStaysOutOfLogs:
+    """KG-19: a user's query is content; logs carry its length, not its text."""
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_search_logs_no_query_text(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {
+            "status_code": 200, "searchResults": [], "virtual_to_record_map": {},
+        }
+        log = MagicMock()
+        state = {
+            "logger": log, "retrieval_service": retrieval, "graph_provider": AsyncMock(),
+            "config_service": MagicMock(), "org_id": "o1", "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": []},
+        }
+        await execute_search(state, "salary of jane doe")
+        logged = " ".join(
+            str(arg) for method in (log.info, log.debug, log.warning, log.error)
+            for call in method.call_args_list for arg in call.args
+        )
+        assert "jane" not in logged
+
+
+class TestRequestEntityFilter:
+    """The user's entity filter scopes the knowledge-graph content search too."""
+
+    def _state(self, retrieval) -> dict:
+        return {
+            "logger": MagicMock(),
+            "retrieval_service": retrieval,
+            "graph_provider": AsyncMock(),
+            "config_service": MagicMock(),
+            "org_id": "o1",
+            "user_id": "u1",
+            "filters": {"apps": ["app-1"], "kb": [], "entityFilters": {"amount": {"min": -800, "max": -700}}},
+        }
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_the_request_entity_filter_reaches_retrieval(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        await execute_search(self._state(retrieval), "refunds")
+        groups = retrieval.search_with_filters.await_args.kwargs["filter_groups"]
+        assert groups["entityFilters"] == {"amount": {"min": -800, "max": -700}}
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_refused_entity_filter_is_relayed_to_the_model(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {"status_code": 422, "message": "Narrow it."}
+        parsed = json.loads(await execute_search(self._state(retrieval), "refunds"))
+        assert (parsed["status"], parsed["status_code"], parsed["message"]) == ("error", 422, "Narrow it.")
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_grep_does_not_widen_a_search_under_the_request_entity_filter(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.return_value = {"status_code": 200, "searchResults": [], "virtual_to_record_map": {}}
+        grep = AsyncMock(return_value=[{"_key": "r9"}])
+        with patch("app.agents.actions.knowledge_graph.ops.search.run_pattern_match_with_llm_grep", grep):
+            await execute_search(self._state(retrieval), "refunds")
+        grep.assert_not_called()
+
+
+def _grep_that_covers(*, timed_out: set[str], sources: set[str]) -> AsyncMock:
+    """A pattern match that ran over *sources* and reached none of *timed_out*."""
+    async def _run(*, coverage: PatternMatchCoverage, **_kwargs: object) -> list[dict[str, Any]]:
+        coverage.sources.update(sources)
+        coverage.timed_out.update(timed_out)
+        return []
+
+    return AsyncMock(side_effect=_run)
+
+
+class TestIncompleteExactTextSearch:
+    """A keyword search cut short by its time limit used to return what it had
+    with no word about the rest, so the model read "no keyword match" as "the
+    text is not in the corpus"."""
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_result_with_semantic_hits_says_the_keyword_search_was_cut_short(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep = _grep_that_covers(timed_out={"wiki"}, sources={"wiki", "tickets"})
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "p99 latency regression")
+
+        assert result.startswith("Top 1 block")
+        assert "Exact-text search incomplete: searched 1 of 2 sources in full" in result
+        assert "not evidence that the text is absent" in result
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_an_empty_result_says_the_keyword_search_was_cut_short(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_empty()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep = _grep_that_covers(timed_out={"wiki"}, sources={"wiki"})
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep):
+            parsed = json.loads(await execute_search(_state(retrieval), "p99 latency regression"))
+
+        assert parsed["result_count"] == 0
+        assert parsed["message"].startswith("No results found")
+        assert "Exact-text search incomplete: searched 0 of 1 sources in full" in parsed["message"]
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_a_complete_keyword_search_adds_no_note(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_empty()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+        grep = _grep_that_covers(timed_out=set(), sources={"wiki"})
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", grep):
+            parsed = json.loads(await execute_search(_state(retrieval), "p99 latency regression"))
+
+        assert parsed["message"] == "No results found"
+
+    @pytest.mark.asyncio
+    @patch("app.agents.actions.knowledge_graph.ops.time_range.parse_time_range", return_value=({}, None))
+    async def test_records_the_merge_drops_are_said(self, mock_parse) -> None:
+        retrieval = AsyncMock()
+        retrieval.search_with_filters.side_effect = [_found()]
+        search_mod = "app.agents.actions.knowledge_graph.ops.search"
+
+        async def _merge(*, coverage: PatternMatchCoverage, **_kwargs: object) -> list:
+            coverage.records_truncated = True
+            return []
+
+        with patch(f"{search_mod}.run_pattern_match_with_llm_grep", AsyncMock(return_value=[{"virtual_record_id": "vr9"}])), \
+                patch(f"{search_mod}.merge_pattern_match_results", side_effect=_merge), \
+                _RENDER_PATCHES[0], _RENDER_PATCHES[1], _RENDER_PATCHES[2], _RENDER_PATCHES[3], \
+                _RENDER_PATCHES[4], _RENDER_PATCHES[5], _RENDER_PATCHES[6], _RENDER_PATCHES[7], \
+                _RENDER_PATCHES[8], _RENDER_PATCHES[9], _RENDER_PATCHES[10]:
+            result = await execute_search(_state(retrieval), "p99 latency regression")
+
+        assert "more records matched than are listed" in result

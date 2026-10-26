@@ -3,8 +3,10 @@
 import { useCallback, useEffect, useMemo, useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { Button, Dialog, Flex, IconButton } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
+import { EnterpriseFeatureNotice } from '@/config';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ConnectorIcon } from '@/app/components/ui';
 import { WorkspaceRightPanel } from '@/app/(main)/workspace/components/workspace-right-panel';
@@ -40,6 +42,8 @@ import {
 import type { ActionCardCta } from '../components/action-card';
 import { isToolsetOAuthSuccessMessageType } from '@/app/(main)/toolsets/oauth/toolset-oauth-window-messages';
 import { useActionsStore } from '../store';
+import { ApiActionsSection } from '@/app/(main)/workspace/api-toolsets/components';
+import { API_ACTION_FILTERS } from '@/app/(main)/workspace/api-toolsets/toolset-form';
 
 const TEAM_TABS = [
   { value: 'all', labelKey: 'workspace.actions.tabs.all' },
@@ -103,6 +107,7 @@ function TeamActionsPageContent() {
     instanceFilterTab,
     refreshKey,
     enabled: Boolean(isAdmin && toolsetTypeParam),
+    scope: 'org',
   });
 
   useEffect(() => {
@@ -164,6 +169,7 @@ function TeamActionsPageContent() {
         includeRegistry: true,
         limitPerPage: MAX_TOOLSETS_LIST_LIMIT,
         search: debouncedCatalogSearch || undefined,
+        scope: 'org',
       });
       setCatalogRows(toolsets);
     } catch {
@@ -476,6 +482,21 @@ function TeamActionsPageContent() {
         trailingAction={
           <NavigateButton label={t('workspace.actions.trailingYourActions')} onClick={() => router.push('/workspace/actions/personal/')} />
         }
+        leadingSection={
+          <ApiActionsSection
+            manage
+            searchQuery={searchQuery}
+            // An API action exists once added, so it is never "not configured".
+            filter={activeTab === 'not_configured' ? API_ACTION_FILTERS.none : API_ACTION_FILTERS.all}
+          />
+        }
+        itemsHeading={t('workspace.actions.appsHeading')}
+        footer={
+          <EnterpriseFeatureNotice
+            title={t('workspace.actions.enterprise.userActionsTitle')}
+            description={t('workspace.actions.enterprise.userActionsDescription')}
+          />
+        }
         items={tabFilteredCatalog}
         resolveCta={resolveCta}
         onCta={handleCta}
@@ -538,43 +559,20 @@ function TeamActionSetupPanelRoot({
 }
 
 function NavigateButton({ label, onClick }: { label: string; onClick: () => void }) {
-  const [isHovered, setIsHovered] = useState(false);
+  const isMobile = useIsMobile();
+  // Phones get a light text link; wider screens keep the soft button.
   return (
-    <button
-      type="button"
+    <Button
+      size="2"
+      variant={isMobile ? 'ghost' : 'soft'}
+      color="gray"
+      className="touch-hit"
       onClick={onClick}
-      onMouseEnter={() => setIsHovered(true)}
-      onMouseLeave={() => setIsHovered(false)}
-      style={{
-        appearance: 'none',
-        margin: 0,
-        padding: '0 12px',
-        font: 'inherit',
-        outline: 'none',
-        border: 'none',
-        display: 'flex',
-        alignItems: 'center',
-        gap: 8,
-        height: 32,
-        borderRadius: 'var(--radius-2)',
-        backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
-        cursor: 'pointer',
-        transition: 'background-color 150ms ease',
-      }}
+      style={{ cursor: 'pointer' }}
     >
-      <span
-        style={{
-          fontSize: 14,
-          fontWeight: 500,
-          lineHeight: '20px',
-          color: 'var(--gray-11)',
-          whiteSpace: 'nowrap',
-        }}
-      >
-        {label}
-      </span>
+      {label}
       <MaterialIcon name="arrow_forward" size={16} color="var(--gray-11)" />
-    </button>
+    </Button>
   );
 }
 

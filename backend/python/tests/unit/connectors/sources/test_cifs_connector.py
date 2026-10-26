@@ -36,6 +36,13 @@ from tests.unit.connectors.sources.test_network_share_walker import (
     FakeNetworkShareDataSource,
 )
 
+
+@pytest.fixture(autouse=True)
+def _address_check_passes(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The address check has its own tests (test_connector_address_rule.py); these hosts are made up.
+    monkeypatch.setattr("app.sources.client.cifs.cifs.dial_address", lambda server: server)
+
+
 NOW = datetime(2024, 6, 1, tzinfo=timezone.utc)
 SHARE = "public"
 
@@ -520,13 +527,15 @@ class TestCifsConnectorSync:
         assert written["last_sync_time"] == int(NOW.timestamp() * 1000)
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_incomplete_listing_skips_prune(self, mock_filters, cifs_connector, mock_processor):
+    async def test_a_failed_share_root_removes_nothing(self, mock_filters, cifs_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         ds = _ds(fail_dirs={(SHARE, "")})
         cifs_connector.data_source = ds
         cifs_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
         await cifs_connector.run_sync()
-        mock_processor.get_records_by_record_type.assert_not_awaited()
+        mock_processor.on_record_deleted.assert_not_awaited()
         cifs_connector.record_sync_point.update_sync_point.assert_not_awaited()
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
@@ -584,10 +593,12 @@ class TestCifsConnectorSync:
         await cifs_connector.run_sync()
         mock_processor.on_new_app_users.assert_awaited()
         mock_processor.ensure_team_app_edge.assert_not_awaited()
-        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
-        assert perms[0].type == PermissionType.OWNER
-        assert perms[0].entity_type == EntityType.USER
-        assert perms[0].email == "user@test.com"
+        record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms == [] and record.inherit_permissions is True and record.rewrite_permissions is True
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.email) for p in group_perms] == [
+            (PermissionType.OWNER, EntityType.USER, "user@test.com")
+        ]
 
         mock_processor.on_new_app_users.reset_mock()
         team = _connector(
@@ -598,10 +609,12 @@ class TestCifsConnectorSync:
         await team.run_sync()
         mock_processor.ensure_team_app_edge.assert_awaited_with("cifs-1")
         mock_processor.on_new_app_users.assert_not_awaited()
-        _record, perms = mock_processor.on_new_records.await_args.args[0][0]
-        assert perms[0].type == PermissionType.READ
-        assert perms[0].entity_type == EntityType.ORG
-        assert perms[0].external_id == "org-1"
+        record, perms = mock_processor.on_new_records.await_args.args[0][0]
+        assert perms == [] and record.inherit_permissions is True
+        _group, group_perms = mock_processor.on_new_record_groups.await_args.args[0][0]
+        assert [(p.type, p.entity_type, p.external_id) for p in group_perms] == [
+            (PermissionType.READ, EntityType.ORG, "org-1")
+        ]
 
     @patch("app.connectors.sources.cifs.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_incremental_sync_lists_directories_older_than_the_checkpoint(
@@ -655,23 +668,18 @@ class TestCifsConnectorSync:
 
 class TestCifsConnectorStreamAndFilters:
     async def test_sharing_violation_maps_to_stream_error(self, cifs_connector):
-        ds = FakeNetworkShareDataSource()
+        ds = FakeNetworkShareDataSource(stats={(SHARE, "a.doc"): _entry("a.doc", file_id=5)})
         ds.read_file = MagicMock(side_effect=OSError("STATUS_SHARING_VIOLATION"))
         cifs_connector.data_source = ds
         with pytest.raises(HTTPException) as exc:
             await cifs_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.doc", revision="r"))
         assert exc.value.status_code == 500
 
-    async def test_list_shares_drops_ipc_and_admin(self, cifs_connector):
-        cifs_connector.data_source = FakeNetworkShareDataSource(
-            shares=[
-                ShareInfo(name="public", share_type="disk"),
-                ShareInfo(name="IPC$", share_type="ipc"),
-                ShareInfo(name="ADMIN$", share_type="disk"),
-            ]
-        )
-        result = await cifs_connector.get_filter_options("shares")
-        assert [opt.id for opt in result.options] == ["public"]
+    async def test_file_deleted_at_the_source_is_a_404(self, cifs_connector):
+        cifs_connector.data_source = FakeNetworkShareDataSource(stats={(SHARE, "a.doc"): None})
+        with pytest.raises(HTTPException) as exc:
+            await cifs_connector.stream_record(_file_record(ext_id=f"{SHARE}/a.doc", revision="r"))
+        assert exc.value.status_code == 404
 
     def test_reparse_attribute_is_not_a_symlink(self):
         client = CifsClient(server="h", username="u", password="p", remote_name="HOST")
@@ -707,22 +715,11 @@ class TestCifsConnectorStreamAndFilters:
         assert junction.is_reparse is True
         assert junction.is_directory is True
 
-    async def test_filter_options_page_and_enum_fallback(self, cifs_connector):
-        cifs_connector.data_source = FakeNetworkShareDataSource(
-            shares=[
-                ShareInfo(name="a", share_type="disk"),
-                ShareInfo(name="b", share_type="disk"),
-                ShareInfo(name="c", share_type="disk"),
-            ]
-        )
-        page = await cifs_connector.get_filter_options("shares", page=2, limit=1)
-        assert [opt.id for opt in page.options] == ["b"]
-        cifs_connector.data_source = FakeNetworkShareDataSource(shares=ShareListingError("down"))
-        cifs_connector.configured_share = SHARE
-        fallback = await cifs_connector.get_filter_options("shares")
-        assert [opt.id for opt in fallback.options] == [SHARE]
-        with pytest.raises(ValueError):
-            await cifs_connector.get_filter_options("other")
+    async def test_there_are_no_dynamic_filter_options(self, cifs_connector):
+        cifs_connector.data_source = FakeNetworkShareDataSource()
+        for key in ("shares", "folder_paths"):
+            with pytest.raises(ValueError):
+                await cifs_connector.get_filter_options(key)
 
     async def test_reindex_records(self, cifs_connector, mock_processor):
         item = _entry("a.txt", file_id=3, size=10)

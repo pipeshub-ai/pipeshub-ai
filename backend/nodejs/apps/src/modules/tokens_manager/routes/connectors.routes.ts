@@ -23,9 +23,11 @@ import {
 } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
+  ForbiddenError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { VECTOR_STORE_REBUILD_AVAILABLE } from '../../../edition';
 import { AppConfig, loadAppConfig } from '../config/config';
 import { Logger } from '../../../libs/services/logger.service';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
@@ -50,6 +52,8 @@ import {
   saveConnectorInstanceFilterOptions,
   toggleConnectorInstance,
   getConnectorSchema,
+  testConnectorConnection,
+  getConnectorEgressIps,
   getActiveAgentInstances,
   getConnectorStats,
   getRecordContent,
@@ -59,9 +63,9 @@ import {
   reindexVectorStore,
   reindexConnector,
   resyncConnectorRecords,
+  stopConnectorSync,
 } from '../controllers/connector.controllers';
 import { RecordRelationService } from '../../knowledge_base/services/kb.relation.service';
-import { RecordsEventProducer } from '../../knowledge_base/services/records_events.service';
 import { SyncEventProducer } from '../../knowledge_base/services/sync_events.service';
 import { ConnectorsConfig } from '../../configuration_manager/schema/connectors.schema';
 import { GoogleWorkspaceApp, scopeToAppMap } from '../types/connector.types';
@@ -84,7 +88,8 @@ import {
   EventType,
   Event,
 } from '../services/entity_event.service';
-import { ConnectorId, ConnectorIdToNameMap } from '../../../libs/types/connector.types';
+import { integerCheck } from '../../../libs/utils/zod-formats';
+import { ConnectorId, ConnectorIdToNameMap, ConnectorNames } from '../../../libs/types/connector.types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
@@ -166,7 +171,7 @@ const updateConnectorInstanceConfigSchema = z.object({
  */
 const updateConnectorInstanceAuthConfigSchema = z.object({
   body: z.object({
-    auth: z.any(),
+    auth: z.any().optional(),
     baseUrl: z.string().optional(),
   }),
   params: z.object({
@@ -196,6 +201,7 @@ const getOAuthAuthorizationUrlSchema = z.object({
   }),
   query: z.object({
     baseUrl: z.string().optional(),
+    desktop: z.string().optional(),
   }),
 });
 
@@ -216,12 +222,15 @@ const handleOAuthCallbackSchema = z.object({
  */
 const saveConnectorInstanceFilterOptionsSchema = z.object({
   body: z.object({
-    filters: z.any(),
+    filters: z.any().optional(),
   }),
   params: z.object({
     connectorId: z.string().min(1, 'Connector ID is required'),
   }),
 });
+
+// The connector service pages filter options 100 at a time at most.
+const FILTER_OPTIONS_LIMIT_MESSAGE = 'Limit must be between 1 and 100.';
 
 /**
  * Schema for getting filter field options (dynamic with pagination)
@@ -233,10 +242,10 @@ const getFilterFieldOptionsSchema = z.object({
   }),
   query: z.object({
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1, FILTER_OPTIONS_LIMIT_MESSAGE).max(100, FILTER_OPTIONS_LIMIT_MESSAGE))
       .optional(),
     search: z.string().optional(),
     cursor: z.string().optional(),
@@ -296,10 +305,10 @@ const connectorListSchema = z.object({
       })
       .default('team'),
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(200))
       .optional(),
     search: z.string().optional(),
     /** Filter instances by authentication status (instances endpoint only). */
@@ -344,10 +353,13 @@ const resyncConnectorSchema = z.object({
 /**
  * Schema for reindexing connector records
  */
+export const REINDEX_STAGES = ['classify', 'entities'] as const;
+
 export const reindexConnectorSchema = z.object({
   params: z.object({ connectorId: z.string().min(1) }),
   body: z.object({
       statusFilters: z.array(z.string()).optional(),
+      stages: z.array(z.enum(REINDEX_STAGES)).min(1).optional(),
     })
     .optional(),
 });
@@ -360,10 +372,35 @@ const getConnectorStatsSchema = z.object({
 });
 
 /**
- * Schema for getting a record's full parsed content
+ * Schema for getting a record's parsed content. With no query parameters the
+ * whole record is returned, as it always was; any of them asks for a budgeted
+ * read (part of the record, or its Slack thread). Bounds match the query
+ * service's `/records/{record_id}/read`.
  */
 const getRecordContentSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
+  query: z.object({
+    mode: z.enum(['record', 'thread']).optional(),
+    query: z.string().trim().min(1).max(2000).optional(),
+    startBlock: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().check(integerCheck()).min(0),
+      )
+      .optional(),
+    startRecord: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().check(integerCheck()).min(0),
+      )
+      .optional(),
+    maxChars: z
+      .preprocess(
+        (arg) => (arg === '' || arg === undefined ? undefined : Number(arg)),
+        z.number().check(integerCheck()).min(2000).max(140000),
+      )
+      .optional(),
+  }),
 });
 
 /**
@@ -375,15 +412,15 @@ const navigateKnowledgeGraphSchema = z.object({
     // to its record before navigating, so those must be accepted here.
     nodeId: z.string().min(1).max(2048).optional(),
     page: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1))
       .optional(),
     // Floor of 50 matches GraphNavigator._MIN_LIMIT — anything lower would be
     // silently raised, so reject it here rather than ignore it.
     limit: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(50).max(200))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(50).max(200))
       .optional(),
     depth: z
-      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().int().min(1).max(3))
+      .preprocess((arg) => (arg === '' || arg === undefined ? undefined : Number(arg)), z.number().check(integerCheck()).min(1).max(3))
       .optional(),
     nodeTypes: z
       .union([z.string(), z.array(z.string())])
@@ -414,6 +451,22 @@ const lookupRecordSchema = z.object({
   }),
 });
 
+const testConnectorConnectionSchema = z.object({
+  params: z.object({
+    connectorType: z.string().min(1, 'Connector type is required'),
+  }),
+  body: z.object({
+    auth: z.record(z.string(), z.unknown()),
+    connectorId: z
+      .string()
+      .regex(
+        /^[A-Za-z0-9_-]{1,64}$/,
+        'Connector ID must be 1-64 chars of letters, digits, underscore, or hyphen',
+      )
+      .optional(),
+  }),
+});
+
 // ============================================================================
 // Router Factory
 // ============================================================================
@@ -426,6 +479,30 @@ const lookupRecordSchema = z.object({
  * @param crawlingContainer - Crawling-manager DI container for the scheduler.
  * @returns Configured Express router
  */
+/**
+ * Answers 403 on the vector-store rebuild routes when this deployment does not
+ * offer them (`VECTOR_STORE_REBUILD_AVAILABLE` in `edition.ts`). The routes stay
+ * registered either way, so they are matched before `/:connectorId/...`.
+ */
+export const requireVectorStoreRebuild = (
+  available: boolean = VECTOR_STORE_REBUILD_AVAILABLE,
+) =>
+  function vectorStoreRebuildGuard(
+    _req: unknown,
+    _res: Response,
+    next: NextFunction,
+  ): void {
+    if (available) {
+      next();
+      return;
+    }
+    next(
+      new ForbiddenError(
+        'Rebuilding the vector store is not available on this deployment.',
+      ),
+    );
+  };
+
 export function createConnectorRouter(
   container: Container,
   crawlingContainer: Container,
@@ -444,13 +521,9 @@ export function createConnectorRouter(
   const scheduler = crawlingContainer.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
   );
-  const recordsEventProducer = container.get<RecordsEventProducer>(
-    'RecordsEventProducer',
-  );
   const syncEventProducer =
     container.get<SyncEventProducer>('SyncEventProducer');
   const recordRelationService = new RecordRelationService(
-    recordsEventProducer,
     syncEventProducer,
     config.storage,
   );
@@ -481,6 +554,29 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_READ),
     ValidationMiddleware.validate(connectorTypeParamSchema),
     getConnectorSchema(config)
+  );
+
+  /**
+   * POST /registry/:connectorType/test-connection
+   * Try auth settings from the setup form before they are saved
+   */
+  router.post(
+    '/registry/:connectorType/test-connection',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_WRITE),
+    ValidationMiddleware.validate(testConnectorConnectionSchema),
+    testConnectorConnection(config)
+  );
+
+  /**
+   * GET /network/egress-ips
+   * Public IPs connectors connect from, to allow in a firewall
+   */
+  router.get(
+    '/network/egress-ips',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_READ),
+    getConnectorEgressIps(config)
   );
 
   // ============================================================================
@@ -647,6 +743,7 @@ export function createConnectorRouter(
   router.post(
     '/vector-store/cleanup',
     authMiddleware.authenticate,
+    requireVectorStoreRebuild(),
     userAdminCheck,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     cleanupVectorStore(config),
@@ -659,6 +756,7 @@ export function createConnectorRouter(
   router.post(
     '/vector-store/reindex',
     authMiddleware.authenticate,
+    requireVectorStoreRebuild(),
     userAdminCheck,
     requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
     reindexVectorStore(config),
@@ -688,6 +786,18 @@ export function createConnectorRouter(
     requireScopes(OAuthScopeNames.CONNECTOR_WRITE, OAuthScopeNames.KB_WRITE),
     ValidationMiddleware.validate(resyncConnectorSchema),
     resyncConnectorRecords(recordRelationService, config),
+  );
+
+  /**
+   * POST /:connectorId/sync/stop
+   * Request cancellation of the in-flight sync for a connector.
+   */
+  router.post(
+    '/:connectorId/sync/stop',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.CONNECTOR_SYNC),
+    ValidationMiddleware.validate(connectorIdParamSchema),
+    stopConnectorSync(config),
   );
 
   // ============================================================================
@@ -806,6 +916,7 @@ export function createConnectorRouter(
   /**
    * POST /instances/:connectorId/filters
    * Save filter selections for a connector instance
+   * @deprecated Use PUT /:connectorId/config/filters-sync; nothing in the app calls this.
    */
   router.post(
     '/:connectorId/filters',
@@ -999,7 +1110,7 @@ export function createConnectorRouter(
 
         // Find or create connector in database
         let connector = await ConnectorsConfig.findOne({
-          name: ConnectorIdToNameMap[connectorId],
+          name: ConnectorIdToNameMap[connectorId] as ConnectorNames,
           orgId: req.user.orgId,
         });
 
@@ -1057,7 +1168,7 @@ export function createConnectorRouter(
           await connector.save();
 
           connector = await ConnectorsConfig.findOne({
-            name: ConnectorIdToNameMap[connectorId],
+            name: ConnectorIdToNameMap[connectorId] as ConnectorNames,
             orgId: req.user.orgId,
           });
 

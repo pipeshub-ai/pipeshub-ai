@@ -12,8 +12,8 @@ import { Container } from 'inversify';
 import {
   UserAccountController,
   EMAIL_MISMATCH,
-  OAUTH_SIGN_IN_FAILED,
   PROVIDER_SHARED_NO_EMAIL,
+  ACCOUNT_NO_LONGER_ACTIVE,
   SESSION_NO_LONGER_VALID,
   OTP_SEND_FAILED,
   SIGN_IN_ACCOUNT_CHANGED,
@@ -24,8 +24,6 @@ import {
 import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { DISABLED_ACCOUNT_SIGN_IN_MESSAGE } from '../../../../src/modules/auth/utils/generateAuthToken';
 import { SessionService } from '../../../../src/modules/auth/services/session.service';
-import { SamlController } from '../../../../src/modules/auth/controller/saml.controller';
-import { createSamlRouter } from '../../../../src/modules/auth/routes/saml.routes';
 import type { Logger } from '../../../../src/libs/services/logger.service';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
@@ -45,6 +43,7 @@ import type { ICacheService } from '../../../../src/libs/services/cache/cacheSer
 import type { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types';
 import { createMockRedisService } from '../../../helpers/mock-redis';
 import { createMockQuery } from '../../../helpers/mock-mongo';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 // Drives the real controller and the real SessionService through whole
 // sign-ins, step after step, the way the /initAuth and /authenticate routes do.
@@ -148,6 +147,8 @@ type AzureClaims = Awaited<ReturnType<typeof azureAd.validateAzureAdUser>>;
 type AzureIdentity = ReturnType<typeof azureAd.microsoftAccountIdentity>;
 
 describe('UserAccountController sign-in flow', () => {
+  useCommunitySignInLists();
+
   let controller: UserAccountController;
   let sessionService: SessionService;
   let redisStore: Map<string, string>;
@@ -160,8 +161,6 @@ describe('UserAccountController sign-in flow', () => {
     | 'provisionUser'
     | 'extractGoogleUserDetails'
     | 'extractMicrosoftUserDetails'
-    | 'extractOAuthUserDetails'
-    | 'extractSamlUserDetails'
   >;
   let logger: StubbedService<'info' | 'debug' | 'warn' | 'error'>;
   let credentialsByUser: Record<string, CredentialsDoc | undefined>;
@@ -262,8 +261,6 @@ describe('UserAccountController sign-in flow', () => {
       provisionUser: sinon.stub(),
       extractGoogleUserDetails: sinon.stub().returns({ fullName: 'New Person' }),
       extractMicrosoftUserDetails: sinon.stub().returns({ fullName: 'New Person' }),
-      extractOAuthUserDetails: sinon.stub().returns({ fullName: 'New Person' }),
-      extractSamlUserDetails: sinon.stub().returns({ fullName: 'New Person' }),
     };
     logger = {
       info: sinon.stub(),
@@ -296,7 +293,12 @@ describe('UserAccountController sign-in flow', () => {
     sinon.stub(UserCredentials, 'findOne').callsFake(((filter: { userId: string }) =>
       Promise.resolve(credentialsByUser[String(filter.userId)] ?? null)) as unknown as typeof UserCredentials.findOne);
     sinon.stub(UserCredentials, 'findOneAndUpdate').callsFake(((
-      filter: { userId: string; hashedOTP?: string },
+      filter: {
+        userId: string;
+        hashedOTP?: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: { $lt: number };
+      },
       update: {
         $inc?: { wrongCredentialCount?: number };
         $set?: Record<string, unknown>;
@@ -305,6 +307,14 @@ describe('UserAccountController sign-in flow', () => {
     ) => {
       const doc = credentialsByUser[String(filter.userId)];
       if (!doc || ('hashedOTP' in filter && doc.hashedOTP !== filter.hashedOTP)) {
+        return Promise.resolve(null);
+      }
+      // An attempt is only reserved while the account is unlocked and under the limit.
+      if (
+        (filter.isBlocked && doc.isBlocked === true) ||
+        (filter.wrongCredentialCount &&
+          doc.wrongCredentialCount >= filter.wrongCredentialCount.$lt)
+      ) {
         return Promise.resolve(null);
       }
       if (update.$inc?.wrongCredentialCount) {
@@ -316,6 +326,25 @@ describe('UserAccountController sign-in flow', () => {
       }
       return Promise.resolve(doc);
     }) as unknown as typeof UserCredentials.findOneAndUpdate);
+    sinon.stub(UserCredentials, 'updateOne').callsFake(((
+      filter: {
+        userId: string;
+        isBlocked?: { $ne: boolean };
+        wrongCredentialCount?: number;
+      },
+      update: { $set?: Record<string, unknown> },
+    ) => {
+      const doc = credentialsByUser[String(filter.userId)];
+      const matches =
+        doc &&
+        !(filter.isBlocked && doc.isBlocked === true) &&
+        (filter.wrongCredentialCount === undefined ||
+          doc.wrongCredentialCount === filter.wrongCredentialCount);
+      if (matches) {
+        Object.assign(doc, update.$set ?? {});
+      }
+      return Promise.resolve({});
+    }) as unknown as typeof UserCredentials.updateOne);
     configuredSteps = [['password']];
     sinon.stub(Org, 'findOne').callsFake((() =>
       Promise.resolve({ _id: orgId, shortName: 'Acme' })) as unknown as typeof Org.findOne);
@@ -534,26 +563,17 @@ describe('UserAccountController sign-in flow', () => {
   });
 
   describe('the next step tells the browser how to show each provider, without secrets', () => {
-    it('lists every provider for step two and strips the OAuth client secret and server endpoints', async () => {
+    it('lists Google and Microsoft for step two, even from a policy saved before 1.0', async () => {
       await givePassword(alice);
       configService.getConfig.callsFake(async (_b: string, path: string) => {
         if (path.includes('google')) return { data: { clientId: 'g-id' } };
         if (path.includes('microsoft')) return { data: { clientId: 'm-id', tenantId: 't' } };
-        if (path.includes('azureAd')) return { data: { clientId: 'a-id', tenantId: 't' } };
-        return {
-          data: {
-            clientId: 'o-id',
-            providerName: 'Okta',
-            authorizationUrl: 'https://idp/authorize',
-            clientSecret: 'must-not-leak',
-            tokenEndpoint: 'https://idp/token',
-            userInfoEndpoint: 'https://idp/userinfo',
-          },
-        };
+        return { data: { clientId: 'removed-provider', clientSecret: 'must-not-leak' } };
       });
+      // Azure AD is now Microsoft, and generic OAuth is gone.
       const token = await initAuth([
         ['password'],
-        ['google', 'microsoft', 'azureAd', 'oauth'],
+        ['google', 'azureAd', 'oauth'],
       ]);
 
       const { res, error } = await authenticate(token, {
@@ -562,15 +582,10 @@ describe('UserAccountController sign-in flow', () => {
       });
 
       expect(error).to.be.undefined;
+      expect(res.body?.allowedMethods).to.deep.equal(['google', 'microsoft']);
       const providers = res.body?.authProviders ?? {};
-      expect(providers.google).to.deep.equal({ clientId: 'g-id' });
+      expect(Object.keys(providers).sort()).to.deep.equal(['google', 'microsoft']);
       expect(providers.microsoft).to.include({ clientId: 'm-id' });
-      expect(providers.azureAd).to.include({ clientId: 'a-id' });
-      expect(providers.oauth).to.deep.equal({
-        clientId: 'o-id',
-        providerName: 'Okta',
-        authorizationUrl: 'https://idp/authorize',
-      });
       expect(JSON.stringify(res.body)).to.not.include('must-not-leak');
     });
   });
@@ -691,7 +706,7 @@ describe('UserAccountController sign-in flow', () => {
       expect(activities.some((a) => a.loginMode === 'MICROSOFT OAUTH')).to.be.true;
     });
 
-    it('refuses Azure AD when the token shares no usable identity', async () => {
+    it('refuses Microsoft when the token shares no usable identity, also for a policy saved as Azure AD', async () => {
       configService.getConfig.resolves({
         data: { clientId: 'az-client', tenantId: 'tenant-1' },
       });
@@ -702,79 +717,12 @@ describe('UserAccountController sign-in flow', () => {
       const token = await initAuth([['azureAd']]);
 
       const { error } = await authenticate(token, {
-        method: 'azureAd',
+        method: 'microsoft',
         credentials: { idToken: 'az-id-token' },
       });
 
       expect(error).to.be.instanceOf(UnauthorizedError);
       expect(error.message).to.equal(PROVIDER_SHARED_NO_EMAIL);
-    });
-
-    describe('generic OAuth', () => {
-      let fetchStub: sinon.SinonStub;
-      beforeEach(() => {
-        configService.getConfig.resolves({
-          data: { userInfoEndpoint: 'https://idp/userinfo', providerName: 'Okta' },
-        });
-        fetchStub = sinon.stub(globalThis, 'fetch');
-      });
-
-      it('signs in when the provider vouches for the same email', async () => {
-        fetchStub.callsFake(async () =>
-          new Response(JSON.stringify({ email: alice.email }), { status: 200 }),
-        );
-        const token = await initAuth([['oauth']]);
-
-        const { res, error } = await authenticate(token, {
-          method: 'oauth',
-          credentials: { accessToken: 'oauth-access' },
-        });
-
-        expect(error).to.be.undefined;
-        expect(res.body?.message).to.equal('Fully authenticated');
-        expect(fetchStub.firstCall.args[1].headers.Authorization).to.equal(
-          'Bearer oauth-access',
-        );
-      });
-
-      it('refuses when the call is missing its access token', async () => {
-        const token = await initAuth([['oauth']]);
-
-        const { error } = await authenticate(token, {
-          method: 'oauth',
-          credentials: { idToken: 'no-access-token' },
-        });
-
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect(error.message).to.equal(OAUTH_SIGN_IN_FAILED);
-        expect(fetchStub.called).to.be.false;
-      });
-
-      it('refuses when the provider rejects the access token', async () => {
-        fetchStub.resolves(new Response('nope', { status: 401 }));
-        const token = await initAuth([['oauth']]);
-
-        const { error } = await authenticate(token, {
-          method: 'oauth',
-          credentials: { accessToken: 'revoked' },
-        });
-
-        expect(error).to.be.instanceOf(UnauthorizedError);
-        expect(error.message).to.equal(OAUTH_SIGN_IN_FAILED);
-      });
-
-      it('refuses when the provider shares no email, username or subject', async () => {
-        fetchStub.resolves(new Response(JSON.stringify({}), { status: 200 }));
-        const token = await initAuth([['oauth']]);
-
-        const { error } = await authenticate(token, {
-          method: 'oauth',
-          credentials: { accessToken: 'oauth-access' },
-        });
-
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect(error.message).to.equal(PROVIDER_SHARED_NO_EMAIL);
-      });
     });
   });
 
@@ -830,16 +778,122 @@ describe('UserAccountController sign-in flow', () => {
       expect(logger.error.calledWithMatch('Failed to fetch session-invalidating activity on refresh')).to.be.true;
     });
 
-    it('refuses to refresh for a user who has since been deleted', async () => {
-      stubLatestInvalidation(null);
-      iamService.getUserById.resolves({ statusCode: 404, data: null });
+    it('refuses a refresh token issued before the account was deleted, without a lookup', async () => {
+      stubLatestInvalidation({ createdAt: new Date(), activityType: 'ACCOUNT DELETED' });
       const res = makeRes();
       const next = sinon.stub();
 
       await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
 
-      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      expect(next.firstCall.args[0].message).to.equal(SESSION_NO_LONGER_VALID);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(iamService.getUserById.called).to.be.false;
+    });
+
+    it('refuses a refresh token issued in the same second the account was deleted', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'ACCOUNT DELETED' });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+    });
+
+    it('mints no token when the account is deleted while the refresh is running', async () => {
+      // The first check sees nothing; the deletion lands before the token is minted.
+      let checks = 0;
+      stubLatestInvalidation(async () => {
+        checks += 1;
+        return checks === 1 ? null : { createdAt: new Date(), activityType: 'ACCOUNT DELETED' };
+      });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(checks).to.equal(2);
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      expect(res.body).to.be.undefined;
+    });
+
+    it('keeps the one-second allowance for a sign-out in the second the token was issued', async () => {
+      stubLatestInvalidation({ createdAt: new Date(issuedAt * 1000 + 500), activityType: 'LOGOUT' });
+      iamService.getUserById.resolves({ statusCode: 200, data: { ...alice } });
+      credentialsByUser[alice._id] = credentialsDoc({ userId: alice._id, orgId });
+      const res = makeRes();
+      const next = sinon.stub();
+
+      await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+      expect(next.called).to.be.false;
+      expect(res.body?.accessToken).to.be.a('string');
+    });
+
+    // The lookup goes through the real IAM client, so a deleted account reaches
+    // the controller the way production sees it: an axios error for the 404.
+    describe('when the account lookup is the real IAM client', () => {
+      beforeEach(() => {
+        const realIam = new IamService(
+          ...([{ iamBackend: IAM_BACKEND }, logger] as unknown as ConstructorParameters<typeof IamService>),
+        );
+        iamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        stubLatestInvalidation(null);
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers a deleted account with 401 and a plain message, not a server error', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .reply(404, { error: { message: 'User not found' } });
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(UnauthorizedError);
+        expect(error.message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+        expect(res.body).to.be.undefined;
+      });
+
+      it('answers a disabled account with the same 401', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .reply(200, { ...alice, isDisabled: true });
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+        expect(next.firstCall.args[0].message).to.equal(ACCOUNT_NO_LONGER_ACTIVE);
+      });
+
+      it('turns an unreachable users service into a handled error', async () => {
+        nock(IAM_BACKEND)
+          .get(`/api/v1/users/internal/${alice._id}`)
+          .replyWithError('connect ECONNREFUSED');
+        const res = makeRes();
+        const next = sinon.stub();
+
+        await controller.getAccessTokenFromRefreshToken(refreshReq(), fakeResponse(res), next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(InternalServerError);
+        expect(error.message).to.include('refresh your session');
+        expect(error.message).to.not.include('ECONNREFUSED');
+        expect(logger.error.calledWithMatch('Looking up the account to refresh a session failed')).to.be.true;
+      });
     });
   });
 
@@ -1363,264 +1417,6 @@ describe('UserAccountController sign-in flow', () => {
         expect(other.compares).to.equal(1);
       }
       expect(wrong.compares).to.equal(1);
-    });
-  });
-
-  describe('exchanging an OAuth authorization code', () => {
-    let fetchStub: sinon.SinonStub;
-    const oauthConfig = {
-      clientId: 'o-id',
-      clientSecret: 'oauth-client-secret',
-      tokenEndpoint: 'https://idp/token',
-      userInfoEndpoint: 'https://idp/userinfo',
-    };
-
-    function providerAnswers(userInfo: Record<string, unknown> | null) {
-      fetchStub.callsFake(async (url: string) => {
-        if (url === oauthConfig.tokenEndpoint) {
-          return new Response(
-            JSON.stringify({ access_token: 'idp-access', id_token: 'idp-id', token_type: 'Bearer', expires_in: 3600 }),
-            { status: 200 },
-          );
-        }
-        return userInfo
-          ? new Response(JSON.stringify(userInfo), { status: 200 })
-          : new Response('denied', { status: 401 });
-      });
-    }
-
-    async function exchange() {
-      (Org.findOne as unknown as sinon.SinonStub).returns(createMockQuery({ _id: orgId }));
-      const res = makeRes();
-      const next = sinon.stub();
-      await controller.exchangeOAuthToken(
-        fakeRequest({ body: { code: 'auth-code', provider: 'oauth', redirectUri: 'http://app/cb' }, ip: '1.1.1.1' }),
-        fakeResponse(res),
-        next,
-      );
-      return { res, error: next.firstCall?.args[0] as SignInError };
-    }
-
-    beforeEach(() => {
-      fetchStub = sinon.stub(globalThis, 'fetch');
-    });
-
-    it('refuses an unknown person when JIT is off, without creating an account', async () => {
-      configService.getConfig.resolves({ data: { ...oauthConfig, enableJit: false } });
-      providerAnswers({ email: 'stranger@elsewhere.test' });
-
-      const { res, error } = await exchange();
-
-      expect(error).to.be.instanceOf(NotFoundError);
-      expect(jitService.provisionUser.called).to.be.false;
-      expect(res.body).to.be.undefined;
-    });
-
-    it('creates the account when JIT is on, and never sends the client secret back', async () => {
-      configService.getConfig.resolves({ data: { ...oauthConfig, enableJit: true } });
-      providerAnswers({ email: 'newcomer@acme.test', name: 'New Person' });
-      jitService.provisionUser.resolves({ _id: 'new-id' });
-
-      const { res, error } = await exchange();
-
-      expect(error).to.be.undefined;
-      expect(jitService.provisionUser.firstCall.args[0]).to.equal('newcomer@acme.test');
-      expect(jitService.provisionUser.firstCall.args[2]).to.equal(orgId);
-      expect(res.body).to.deep.equal({
-        access_token: 'idp-access',
-        id_token: 'idp-id',
-        token_type: 'Bearer',
-        expires_in: 3600,
-      });
-      const tokenCall = fetchStub.getCalls().find((c) => c.args[0] === oauthConfig.tokenEndpoint)!;
-      expect(String(tokenCall.args[1].body)).to.include('client_secret=oauth-client-secret');
-      expect(JSON.stringify(res.body)).to.not.include('oauth-client-secret');
-    });
-
-    it('refuses when the provider will not share the user profile', async () => {
-      configService.getConfig.resolves({ data: oauthConfig });
-      providerAnswers(null);
-
-      const { error } = await exchange();
-
-      expect(error).to.be.instanceOf(UnauthorizedError);
-      expect(error.message).to.equal(OAUTH_SIGN_IN_FAILED);
-    });
-
-    it('refuses when the profile has no email, username or subject', async () => {
-      configService.getConfig.resolves({ data: oauthConfig });
-      providerAnswers({ name: 'No Email' });
-
-      const { error } = await exchange();
-
-      expect(error).to.be.instanceOf(BadRequestError);
-      expect(error.message).to.equal(PROVIDER_SHARED_NO_EMAIL);
-    });
-  });
-
-  describe('SAML as a later sign-in step', () => {
-    const appConfig = {
-      cmBackend: 'http://cm',
-      frontendUrl: 'http://app',
-      jwtSecret: JWT_SECRET,
-      scopedJwtSecret: SCOPED_SECRET,
-      cookieSecret: 'saml-cookie-secret',
-    };
-
-    // The real callback that runs after passport has checked the IdP's
-    // assertion; passport's output (req.user) is the only thing faked.
-    function samlCallback(): RequestHandler {
-      const container = new Container();
-      const bind = (id: string, value: unknown): void => {
-        container.bind(id).toConstantValue(value);
-      };
-      bind('AppConfig', appConfig);
-      bind('AuthMiddleware', { scopedTokenValidator: () => sinon.stub() });
-      bind('SessionService', sessionService);
-      // These are web sign-ins; the desktop handoff is never reached.
-      bind('SamlDesktopHandoffService', {});
-      bind('IamService', iamService);
-      bind('JitProvisioningService', jitService);
-      bind('ConfigurationManagerService', configService);
-      bind('Logger', logger);
-      bind(
-        'SamlController',
-        new SamlController(appConfig as never, logger as unknown as Logger),
-      );
-      const router = createSamlRouter(container);
-      const layer = (
-        router.stack as unknown as Array<{
-          route?: { path: string; stack: Array<{ handle: RequestHandler }> };
-        }>
-      ).find((l) => l.route?.path === '/signIn/callback');
-      const handlers = layer?.route?.stack ?? [];
-      return handlers[handlers.length - 1]!.handle;
-    }
-
-    async function samlSignsInAs(email: string, sessionToken: string) {
-      const res = {
-        redirect: sinon.stub(),
-        cookie: sinon.stub(),
-      };
-      const relayState = Buffer.from(JSON.stringify({ orgId, sessionToken })).toString('base64');
-      await samlCallback()(
-        fakeRequest({ user: { email, orgId }, body: { RelayState: relayState } }),
-        res as unknown as Response,
-        sinon.stub() as unknown as NextFunction,
-      );
-      return { redirect: String(res.redirect.firstCall?.args[0]), cookies: res.cookie };
-    }
-
-    async function passStepOneAsAlice(steps: string[][] = [['password'], ['samlSso']]) {
-      await givePassword(alice);
-      configService.getConfig.resolves({ data: { enableJit: true, entryPoint: 'https://idp' } });
-      const token = await initAuth(steps);
-      const first = await authenticate(token, {
-        method: 'password',
-        credentials: { password: PASSWORD },
-      });
-      expect(first.res.body).to.include({ status: 'success', nextStep: 1 });
-      return token;
-    }
-
-    it("refuses a SAML login for another member after step one checked Alice's password", async () => {
-      const token = await passStepOneAsAlice();
-
-      const { redirect, cookies } = await samlSignsInAs(mallory.email, token);
-
-      expect(redirect).to.equal(
-        `http://app/login?saml_error=${encodeURIComponent(SIGN_IN_ACCOUNT_CHANGED)}`,
-      );
-      expect(cookies.called).to.be.false;
-      expect(await sessionService.getSession(token)).to.not.equal(null);
-    });
-
-    it('refuses an unknown SAML identity after step one before any account could be created', async () => {
-      const token = await passStepOneAsAlice();
-      const session = await sessionService.getSession(token);
-      await sessionService.updateSession({ ...session!, jitConfig: { saml: true } });
-
-      const { redirect, cookies } = await samlSignsInAs('stranger@elsewhere.test', token);
-
-      expect(redirect).to.include(encodeURIComponent(SIGN_IN_ACCOUNT_CHANGED));
-      expect(jitService.provisionUser.called).to.be.false;
-      expect(cookies.called).to.be.false;
-    });
-
-    it('with password or SAML at step one and a code at step two, never issues tokens for another account', async () => {
-      const token = await passStepOneAsAlice([['password', 'samlSso'], ['otp']]);
-
-      const { redirect, cookies } = await samlSignsInAs(mallory.email, token);
-
-      expect(redirect).to.include(encodeURIComponent(SIGN_IN_ACCOUNT_CHANGED));
-      expect(cookies.called).to.be.false;
-      expect(await sessionService.getSession(token)).to.not.equal(null);
-    });
-
-    it('refuses, without creating an account, a session past step one that names no account', async () => {
-      // A session advanced before step accounts were recorded still says NOT_FOUND.
-      const session = await sessionService.createSession({
-        userId: 'NOT_FOUND',
-        email: alice.email,
-        orgId,
-        authConfig: orgAuthConfig([['password'], ['samlSso']]).authSteps,
-        currentStep: 1,
-        jitConfig: { saml: true },
-      });
-      configuredSteps = [['password'], ['samlSso']];
-      configService.getConfig.resolves({ data: { enableJit: true } });
-
-      const { redirect, cookies } = await samlSignsInAs('stranger@elsewhere.test', String(session.token));
-
-      expect(redirect).to.include(encodeURIComponent(SIGN_IN_ACCOUNT_CHANGED));
-      expect(jitService.provisionUser.called).to.be.false;
-      expect(cookies.called).to.be.false;
-    });
-
-    it('still creates the account on a first-step SAML sign-in when the admin turned JIT on', async () => {
-      configService.getConfig.resolves({ data: { enableJit: true, entryPoint: 'https://idp' } });
-      const token = await initAuth([['samlSso']], '');
-      const newcomer: DirectoryUser = {
-        _id: new mongoose.Types.ObjectId().toHexString(),
-        orgId,
-        email: 'newcomer@acme.test',
-        fullName: 'New Person',
-        hasLoggedIn: false,
-      };
-      jitService.provisionUser.callsFake(async () => {
-        directory[newcomer.email] = newcomer;
-        return newcomer;
-      });
-
-      try {
-        const { redirect, cookies } = await samlSignsInAs(newcomer.email, token);
-
-        expect(jitService.provisionUser.firstCall.args.slice(0, 4)).to.deep.equal([
-          newcomer.email,
-          { fullName: 'New Person' },
-          orgId,
-          'saml',
-        ]);
-        expect(redirect).to.equal('http://app/auth/sign-in/samlSso/success');
-        const access = cookies.getCalls().find((c) => c.args[0] === 'accessToken');
-        expect(
-          (jwt.verify(String(access?.args[1]), JWT_SECRET) as TokenClaims).userId,
-        ).to.equal(newcomer._id);
-      } finally {
-        delete directory[newcomer.email];
-      }
-    });
-
-    it("signs Alice in when the SAML step is Alice's own account", async () => {
-      const token = await passStepOneAsAlice();
-
-      const { redirect, cookies } = await samlSignsInAs(alice.email, token);
-
-      expect(redirect).to.equal('http://app/auth/sign-in/samlSso/success');
-      const access = cookies.getCalls().find((c) => c.args[0] === 'accessToken');
-      expect(
-        (jwt.verify(String(access?.args[1]), JWT_SECRET) as TokenClaims).userId,
-      ).to.equal(alice._id);
     });
   });
 

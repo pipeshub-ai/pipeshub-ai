@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import base64
 import io
+import logging
 import shutil
 import struct
 import tracemalloc
 import zipfile
 import zlib
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -46,6 +48,7 @@ from app.services.parsing.interface import (
 )
 from app.services.parsing.registry import ParserRegistry
 from app.utils import user_errors
+from app.utils.jwt import mint_service_token
 from app.utils.libreoffice_convert import _run_libreoffice, convert_with_libreoffice
 from tests.unit.services.messaging.governor_test_helpers import make_test_governor
 
@@ -630,6 +633,14 @@ class TestBooksThatCannotBeRead:
         assert any(step in message for step in ("upload", "Upload"))
 
 
+SCOPED_SECRET = "scoped-secret-for-tests"
+
+
+class _SecretsConfigService:
+    async def get_config(self, key, **kwargs):
+        return {"jwtSecret": "session-secret-for-tests", "scopedJwtSecret": SCOPED_SECRET}
+
+
 @pytest.mark.usefixtures("no_subprocesses")
 class TestParsingServiceEndToEnd:
     """The parsing service's own route, with the registry parsing_main.py builds for EPUB."""
@@ -641,6 +652,10 @@ class TestParsingServiceEndToEnd:
         app = FastAPI()
         app.state.parser_registry = registry
         app.state.governor = make_test_governor()
+        app.container = SimpleNamespace(
+            logger=lambda: logging.getLogger("test.realfile_epub.parsing"),
+            config_service=_SecretsConfigService,
+        )
         app.include_router(parsing_router)
         return app
 
@@ -648,6 +663,9 @@ class TestParsingServiceEndToEnd:
         return TestClient(self._app())
 
     def _post(self, content: bytes) -> httpx.Response:
+        token = mint_service_token(
+            SCOPED_SECRET, {"scopes": ["document:parse"], "orgId": "org-1"}
+        )
         return self._client().post(
             "/api/v1/parse",
             files={"file": ("book.epub", content, "application/epub+zip")},
@@ -655,6 +673,7 @@ class TestParsingServiceEndToEnd:
                 "record_name": "book.epub", "mime_type": "application/epub+zip",
                 "extension": "epub", "provider": "default",
             },
+            headers={"Authorization": f"Bearer {token}"},
         )
 
     def test_a_real_book_goes_in_and_blocks_come_out(self, no_subprocesses) -> None:
@@ -681,7 +700,10 @@ class TestParsingServiceEndToEnd:
             statuses.append(response.status_code)
 
         app = self._app()
-        client = ParsingClient(service_url="http://parsing.test", max_retries=3, retry_delay=0.0)
+        client = ParsingClient(
+            service_url="http://parsing.test", max_retries=3, retry_delay=0.0,
+            config_service=_SecretsConfigService(),
+        )
         client._make_client = lambda: httpx.AsyncClient(  # type: ignore[method-assign]
             transport=httpx.ASGITransport(app=app), event_hooks={"response": [record]}
         )
@@ -689,6 +711,7 @@ class TestParsingServiceEndToEnd:
             await client.parse(
                 file_content=b"PK\x03\x04 truncated", record_name="book.epub",
                 mime_type="application/epub+zip", extension="epub", provider=ParserProvider.DEFAULT,
+                org_id="org-1",
             )
         assert statuses == [422]
         assert not client.circuit_open
@@ -699,6 +722,7 @@ class TestParsingServiceEndToEnd:
         ok = await client.parse(
             file_content=epub3_book(), record_name="book.epub",
             mime_type="application/epub+zip", extension="epub", provider=ParserProvider.DEFAULT,
+            org_id="org-1",
         )
         assert any("Chapter One: Arrival" in str(block.data) for block in ok.block_container.blocks)
 

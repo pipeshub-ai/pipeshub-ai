@@ -339,14 +339,19 @@ class KnowledgeHub:
                 node_types=node_types,
                 record_types=record_types,
                 connector_ids=use_connector_ids,
-                # The service treats an explicit False as "list, ignore the
-                # query", and an omitted flag plus connector_ids as a search.
+                # The service treats an explicit False as a listing (a query
+                # then only filters it by name), and an omitted flag plus
+                # connector_ids as a search.
                 # Unless the caller chose, search with a query and list without.
                 flattened=flattened if flattened is not None else (None if query else False),
                 record_group_ids=use_record_group_ids,
             )
 
-            remember_record_ids(self.state, _record_ids_in_items(response.items))
+            remember_record_ids(
+                self.state,
+                _record_ids_in_items(response.items),
+                names={item.id: item.name for item in response.items or []},
+            )
             return _format_browse_response(response)
 
         except Exception as e:

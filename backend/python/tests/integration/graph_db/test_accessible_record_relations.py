@@ -1,6 +1,7 @@
 """``filter_accessible_record_ids`` against a real Neo4j and a real ArangoDB.
 
-Requires: docker compose -f tests/integration/compose/graph-db.yml up -d
+Requires: docker compose -f deployment/docker-compose/docker-compose.integration.graph-db.yml up -d
+(from the repository root). The backend-matrix workflow runs this file on both graph backends.
 Run: pytest tests/integration/graph_db/ -m integration
 
 This gates what graph enrichment shows the LLM about records linked to a search
@@ -26,7 +27,7 @@ _DOC_COLLECTIONS = (
 )
 _EDGE_COLLECTIONS = (
     "permission", "belongsTo", "inheritPermissions", "userAppRelation",
-    "authenticatedAs", "recordRelations",
+    "authenticatedAs", "nodeRelations",
 )
 _NEO4J_LABELS = {
     "users": "User", "records": "Record", "recordGroups": "RecordGroup",
@@ -34,7 +35,7 @@ _NEO4J_LABELS = {
 }
 _NEO4J_EDGES = {
     "permission": "PERMISSION", "inheritPermissions": "INHERIT_PERMISSIONS",
-    "userAppRelation": "USER_APP_RELATION", "recordRelations": "RECORD_RELATION",
+    "userAppRelation": "USER_APP_RELATION", "nodeRelations": "NODE_RELATION",
 }
 
 
@@ -49,8 +50,8 @@ async def neo4j_provider():
     from app.services.graph_db.neo4j.neo4j_client import Neo4jClient
     from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
-    uri = os.environ.get("NEO4J_TEST_URI", "bolt://localhost:7699")
-    password = os.environ.get("NEO4J_TEST_PASSWORD", "testpassword")
+    uri = os.environ.get("NEO4J_IT_URI", "bolt://localhost:17687")
+    password = os.environ.get("NEO4J_IT_PASSWORD", "ensure-it-pass")
     logger = _log()
     client = Neo4jClient(
         uri=uri, username="neo4j", password=password, database="neo4j", logger=logger
@@ -74,9 +75,9 @@ async def arango_provider():
     from app.services.graph_db.arango.arango_http_client import ArangoHTTPClient
     from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 
-    url = os.environ.get("ARANGO_TEST_URL", "http://localhost:8539")
-    password = os.environ.get("ARANGO_TEST_PASSWORD", "testpassword")
-    db = os.environ.get("ARANGO_TEST_DB", "es")
+    url = os.environ.get("ARANGO_IT_URL", "http://localhost:18529")
+    password = os.environ.get("ARANGO_IT_PASSWORD", "ensure-it-pass")
+    db = "accessible_record_relations_it"
     logger = _log()
     client = ArangoHTTPClient(
         base_url=url, username="root", password=password, database=db, logger=logger
@@ -133,10 +134,10 @@ class _Graph:
 
         self.nodes += [
             ("users", self.user_key, {"userId": self.user_id, "orgId": ORG}),
-            ("apps", self.app, {"type": "JIRA"}),
-            ("apps", self.lost_app, {"type": "JIRA"}),
+            ("apps", self.app, {"type": "JIRA", "orgId": ORG}),
+            ("apps", self.lost_app, {"type": "JIRA", "orgId": ORG}),
             ("groups", self.group, {"orgId": ORG}),
-            ("recordGroups", self.space, {"orgId": ORG}),
+            ("recordGroups", self.space, {"orgId": ORG, "connectorId": self.app}),
         ]
         self._edge("userAppRelation", ("users", self.user_key), ("apps", self.app))
         self._edge("permission", ("users", self.user_key), ("groups", self.group),
@@ -148,7 +149,10 @@ class _Graph:
         self._record(ids["epic"], 100, direct=True)
         self._record(ids["parent"], 50, direct=True)
         self._record(ids["attachment"], 10, direct=True)
+        # In the space the user's group is granted, and inheriting from it.
         self._record(ids["child_group"], 300)
+        self._edge("nodeRelations", ("recordGroups", self.space), ("records", ids["child_group"]),
+                   relationshipType="PARENT_CHILD")
         self._edge("inheritPermissions", ("records", ids["child_group"]),
                    ("recordGroups", self.space))
         self._record(ids["child_unindexed"], 200, direct=True, indexingStatus="FAILED")
@@ -162,7 +166,7 @@ class _Graph:
 
         self._relation(ids["parent"], ids["epic"], "PARENT_CHILD")
         self._relation(ids["epic"], ids["attachment"], "ATTACHMENT")
-        for name in ("child_group", "child_unindexed", "child_no_ts", "child_denied",
+        for name in ("child_unindexed", "child_no_ts", "child_denied",
                      "child_placeholder", "child_other_org", "child_deleted",
                      "child_lost_connector"):
             self._relation(ids["epic"], ids[name], "PARENT_CHILD")
@@ -171,7 +175,7 @@ class _Graph:
         self.edges.append((coll, frm, to, props))
 
     def _relation(self, frm, to, relation_type) -> None:
-        self._edge("recordRelations", ("records", frm), ("records", to),
+        self._edge("nodeRelations", ("records", frm), ("records", to),
                    relationshipType=relation_type)
 
     def _record(self, rid, modified_at, *, direct=False, **overrides) -> None:

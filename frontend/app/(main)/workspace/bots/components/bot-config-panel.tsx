@@ -4,11 +4,14 @@ import React, { useState, useEffect, useCallback, useContext } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text, TextField, Select, Button, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { ShowStoredValuesButton } from '@/app/components/ui/show-stored-values-button';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { WorkspaceRightPanel, WorkspaceRightPanelBodyPortalContext } from '@/app/(main)/workspace/components/workspace-right-panel';
 import { FormField } from '@/app/(main)/workspace/components/form-field';
 import { DestructiveTypedConfirmationDialog } from '@/app/(main)/workspace/components/destructive-typed-confirmation-dialog';
 import { toast } from '@/lib/store/toast-store';
+import { CONFIG_SECRET_PLACEHOLDER } from '@/lib/constants/config-secret-placeholder';
+import { useRevealScope, useSecretRevealAvailable } from '@/lib/hooks/use-secret-reveal-available';
 import { useBotsStore } from '../store';
 import { BotsApi } from '../api';
 import type { BotType, BotTypeInfo, SlackBotConfig } from '../types';
@@ -272,6 +275,37 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
 
   const isValid = name.trim().length > 0 && botToken.trim().length > 0 && signingSecret.trim().length > 0;
 
+  const revealAvailable = useSecretRevealAvailable(isEditMode);
+
+  const [isRevealing, setIsRevealing] = useState(false);
+  const canReveal =
+    revealAvailable &&
+    Boolean(editingConfig) &&
+    (botToken === CONFIG_SECRET_PLACEHOLDER || signingSecret === CONFIG_SECRET_PLACEHOLDER);
+  const beginReveal = useRevealScope(editingConfig?.id ?? '');
+
+  // Swaps placeholders for the stored values; a field the user already edited is left as typed.
+  const handleReveal = async () => {
+    if (!editingConfig) return;
+    const stillCurrent = beginReveal();
+    setIsRevealing(true);
+    try {
+      const stored = await BotsApi.revealSlackBotConfig(editingConfig.id);
+      if (stored && stillCurrent()) {
+        setBotToken((prev) => (prev === CONFIG_SECRET_PLACEHOLDER ? stored.botToken : prev));
+        setSigningSecret((prev) =>
+          prev === CONFIG_SECRET_PLACEHOLDER ? stored.signingSecret : prev,
+        );
+        setShowBotToken(true);
+        setShowSigningSecret(true);
+      }
+    } catch {
+      // The fields keep their placeholders, which still save correctly.
+    } finally {
+      setIsRevealing(false);
+    }
+  };
+
   const handleSubmit = useCallback(async () => {
     if (!isValid || isSaving) return;
 
@@ -333,6 +367,15 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
           />
         </FormField>
 
+        {canReveal ? (
+          <Flex justify="end">
+            <ShowStoredValuesButton
+              loading={isRevealing}
+              onClick={() => void handleReveal()}
+            />
+          </Flex>
+        ) : null}
+
         <FormField label={t('workspace.bots.form.botToken')}>
           <TextField.Root
             size="2"
@@ -342,7 +385,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
             onChange={(e) => setBotToken(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"
@@ -368,7 +411,7 @@ function SlackBotFormView({ editingConfig, agents, onClose, onSaved, onRequestDe
             onChange={(e) => setSigningSecret(e.target.value)}
           >
             <TextField.Slot side="right">
-              <IconButton
+              <IconButton className="touch-hit"
                 variant="ghost"
                 color="gray"
                 size="1"

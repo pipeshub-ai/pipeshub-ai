@@ -261,7 +261,8 @@ class TestUsageFrom:
         transport = _transport()
         response = _response(input_tokens=100, output_tokens=50, cache_read=10, cache_write=5)
         usage = transport._usage_from(response)
-        assert usage.input_tokens == 100
+        # Anthropic reports only the uncached part; TokenUsage counts all input.
+        assert usage.input_tokens == 115
         assert usage.cache_read_tokens == 10
         assert usage.cache_write_tokens == 5
         assert transport.total_cache_write_tokens == 5
@@ -314,56 +315,130 @@ class TestWrapError:
         assert wrapped.retryable is False
 
 
-class TestApplyPromptCache:
-    def test_noop_when_two_or_fewer_messages(self) -> None:
-        transport = _transport()
-        formatted = [{"role": "user", "content": "hi"}, {"role": "assistant", "content": [{"type": "text", "text": "hi"}]}]
-        transport._apply_prompt_cache(formatted)
-        assert "cache_control" not in formatted[0]
+def _cache_rejection() -> Exception:
+    req = httpx.Request("POST", "https://llm-proxy.example/v1/messages")
+    return anthropic_sdk.BadRequestError(
+        "Error code: 400 - cache_control: Extra inputs are not permitted",
+        response=httpx.Response(status_code=400, request=req), body=None,
+    )
 
-    def test_marks_last_large_tool_result_before_final_two_messages(self) -> None:
+
+class TestCacheRejection:
+    """A proxy that refuses cache markers gets the request once more without
+    them, and no markers after that; anything else is still an error."""
+
+    async def test_complete_resends_without_markers(self) -> None:
+        rejected = MagicMock()
+        transport = _transport(on_cache_rejected=rejected)
+        transport._client.messages.create = AsyncMock(side_effect=[_cache_rejection(), _response(), _response()])
+
+        await transport.complete([UserMessage(content="hi")], system="s",
+                                 tools=[ToolSchema(name="a", description="A", input_schema={})])
+        await transport.complete([UserMessage(content="hi")], system="s")
+
+        sent = [str(call.kwargs) for call in transport._client.messages.create.call_args_list]
+        assert "cache_control" in sent[0]
+        assert all("cache_control" not in s for s in sent[1:])
+        rejected.assert_called_once()
+
+    async def test_structured_resends_without_markers(self) -> None:
         transport = _transport()
-        big_result = "x" * 400
+        tool_use = _block("tool_use", name="structured_output", input={"a": 1}, id="t")
+        transport._client.messages.create = AsyncMock(side_effect=[_cache_rejection(), _response(content=[tool_use])])
+
+        result = await transport.complete_structured([UserMessage(content="hi")], {"type": "object"}, system="s")
+
+        assert result.data == {"a": 1}
+        assert "cache_control" not in str(transport._client.messages.create.call_args.kwargs)
+
+    async def test_stream_resends_without_markers_before_any_delta(self) -> None:
+        transport = _transport()
+        calls = []
+
+        def _stream(**kwargs: object) -> _FakeMessageStream:
+            calls.append(kwargs)
+            if len(calls) == 1:
+                raise _cache_rejection()
+            return _FakeMessageStream(["ok"], _response())
+
+        transport._client.messages.stream = _stream
+        events = [e async for e in transport.stream([UserMessage(content="hi")], system="s")]
+
+        assert isinstance(events[-1], StreamCompleteEvent)
+        assert "cache_control" in str(calls[0]) and "cache_control" not in str(calls[1])
+
+    async def test_another_400_is_raised(self) -> None:
+        transport = _transport()
+        req = httpx.Request("POST", "https://api.anthropic.com/v1/messages")
+        other = anthropic_sdk.BadRequestError("Error code: 400 - messages: field required",
+                                              response=httpx.Response(status_code=400, request=req), body=None)
+        transport._client.messages.create = AsyncMock(side_effect=other)
+
+        with pytest.raises(TransportError):
+            await transport.complete([UserMessage(content="hi")], system="s")
+        assert transport._client.messages.create.await_count == 1
+
+
+class TestMessageCache:
+    """The request's last block is cached: a top-level ``cache_control`` on
+    Anthropic's API, a marker on the last message anywhere else."""
+
+    def test_top_level_on_anthropics_api(self) -> None:
+        formatted = [{"role": "user", "content": "hi"}]
+        assert _transport()._message_cache(formatted) == {"cache_control": {"type": "ephemeral"}}
+        assert formatted == [{"role": "user", "content": "hi"}]
+
+    def test_ttl(self) -> None:
+        assert _transport(cache_ttl="1h")._message_cache([]) == {"cache_control": {"type": "ephemeral", "ttl": "1h"}}
+
+    def test_off(self) -> None:
+        assert _transport(cache_ttl=None)._message_cache([{"role": "user", "content": "hi"}]) == {}
+
+    def test_elsewhere_marks_the_last_block(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-proxy.example")
+        transport = _transport()
         formatted = [
             {"role": "user", "content": "hi"},
-            {"role": "user", "content": [{"type": "tool_result", "content": big_result}]},
-            {"role": "assistant", "content": [{"type": "text", "text": "ok"}]},
-            {"role": "user", "content": "next"},
+            {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "t", "content": "r"}]},
         ]
-        transport._apply_prompt_cache(formatted)
-        assert formatted[1]["content"][0]["cache_control"] == {"type": "ephemeral"}
-        assert "cache_control" not in formatted[2]["content"][0]
+        assert transport._message_cache(formatted) == {}
+        assert formatted[-1]["content"][-1]["cache_control"] == {"type": "ephemeral"}
+        assert "cache_control" not in str(formatted[0])
 
-    def test_small_content_is_not_marked(self) -> None:
-        transport = _transport()
-        formatted = [
-            {"role": "user", "content": [{"type": "tool_result", "content": "small"}]},
-            {"role": "user", "content": "x"},
-            {"role": "user", "content": "y"},
-        ]
-        transport._apply_prompt_cache(formatted)
-        assert "cache_control" not in formatted[0]["content"][0]
+    def test_elsewhere_promotes_a_string(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-proxy.example")
+        formatted = [{"role": "user", "content": "hi"}]
+        _transport()._message_cache(formatted)
+        assert formatted == [{"role": "user", "content": [
+            {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}},
+        ]}]
 
-    def test_already_cached_block_is_skipped(self) -> None:
-        transport = _transport()
-        big = "x" * 400
-        formatted = [
-            {"role": "user", "content": [{"type": "text", "text": big, "cache_control": {"type": "ephemeral"}}]},
-            {"role": "user", "content": [{"type": "tool_result", "content": big}]},
-            {"role": "user", "content": "a"},
-            {"role": "user", "content": "b"},
-        ]
-        transport._apply_prompt_cache(formatted)
-        assert "cache_control" in formatted[1]["content"][0]
+    def test_elsewhere_leaves_an_assistant_turn_alone(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://llm-proxy.example")
+        formatted = [{"role": "assistant", "content": [{"type": "thinking", "thinking": "x"}]}]
+        _transport()._message_cache(formatted)
+        assert "cache_control" not in str(formatted)
 
-    def test_non_list_content_is_skipped(self) -> None:
-        transport = _transport()
-        formatted = [
-            {"role": "user", "content": "plain string"},
-            {"role": "user", "content": "a"},
-            {"role": "user", "content": "b"},
-        ]
-        transport._apply_prompt_cache(formatted)  # must not raise
+    async def test_every_marker_on_one_request(self) -> None:
+        transport = _transport(cache_ttl="1h")
+        transport._client.messages.create = AsyncMock(return_value=_response())
+        await transport.complete(
+            [UserMessage(content="hi")], system_blocks=["stable", "volatile"],
+            tools=[ToolSchema(name="a", description="A", input_schema={}), ToolSchema(name="b", description="B", input_schema={})],
+        )
+        _, kwargs = transport._client.messages.create.call_args
+        one_hour = {"type": "ephemeral", "ttl": "1h"}
+        assert kwargs["cache_control"] == one_hour
+        assert [t.get("cache_control") for t in kwargs["tools"]] == [None, one_hour]
+        assert [b.get("cache_control") for b in kwargs["system"]] == [one_hour, None]
+
+    async def test_off_sends_no_marker(self) -> None:
+        transport = _transport(cache_ttl=None)
+        transport._client.messages.create = AsyncMock(return_value=_response())
+        await transport.complete(
+            [UserMessage(content="hi")], system="s", tools=[ToolSchema(name="a", description="A", input_schema={})],
+        )
+        assert "cache_control" not in str(transport._client.messages.create.call_args)
 
 
 class TestApplyToolCache:
@@ -413,7 +488,8 @@ class TestBuildSystemKwargs:
         transport = _transport()
         result = transport._build_system_kwargs(None, ["stable", "volatile"])
         assert result[0] == {"type": "text", "text": "stable", "cache_control": {"type": "ephemeral"}}
-        assert result[1] == {"type": "text", "text": "volatile"}
+        # Adjacent blocks reach the model with nothing between them.
+        assert result[1] == {"type": "text", "text": "\n\nvolatile"}
 
     def test_system_blocks_skips_empty_entries(self) -> None:
         transport = _transport()
@@ -603,7 +679,7 @@ class TestStream:
         assert kwargs["thinking"] == {"type": "enabled", "budget_tokens": 2000}
         assert kwargs["tools"][-1]["cache_control"] == {"type": "ephemeral"}
         assert kwargs["system"][0]["text"] == "A"
-        assert kwargs["system"][1]["text"] == "B"
+        assert kwargs["system"][1]["text"] == "\n\nB"
 
     async def test_error_raised_by_stream_call_is_wrapped(self) -> None:
         transport = _transport()

@@ -59,6 +59,12 @@ export interface AgentListRecord {
   instructions?: string;
   /** Omitted on some agents (e.g. legacy rows) */
   isServiceAccount?: boolean;
+  /**
+   * The service account this agent searches knowledge as, by `userId`. Absent
+   * or null means it searches as its creator, which is how every service agent
+   * made before binding existed still behaves.
+   */
+  serviceAccountUserId?: string | null;
   /** e.g. `INDIVIDUAL` */
   access_type: string;
   /** e.g. `OWNER` */
@@ -100,6 +106,8 @@ export interface AgentConfiguredModel {
   isDefault: boolean;
   modelType: string;
   modelFriendlyName: string;
+  /** The model's own default effort, when the admin stored one. */
+  defaultReasoningEffort?: ReasoningEffort;
 }
 
 /** Tool definition nested under `toolsets[].tools[]`. */
@@ -148,6 +156,8 @@ export interface AgentMcpServer {
   displayName?: string;
   typeId?: string | null;
   instanceId: string;
+  /** Absent on attachments saved before it existed — those use exactly `tools`. */
+  allTools?: boolean;
   tools: AgentMcpTool[];
 }
 
@@ -179,10 +189,15 @@ export interface AgentDetail {
   name: string;
   id: string;
   isServiceAccount?: boolean;
+  serviceAccountUserId?: string | null;
   _key: string;
   _id: string;
   toolsets: AgentToolset[];
   mcpServers?: AgentMcpServer[];
+  /** The server couldn't read this agent's MCP servers, so `mcpServers` is empty but not the agent's. */
+  mcpServersUnavailable?: boolean;
+  /** API toolset operations the agent may call, each `"<toolsetId>:<toolName>"`. */
+  apiToolsetTools?: string[];
   knowledge: unknown[];
   /** Skills explicitly assigned to this agent (`AGENT_HAS_SKILL` edges) — see `skills.py`'s `linked_skills`. */
   skills?: AgentSkillReference[];
@@ -277,14 +292,23 @@ export interface KnowledgeHubAppNode {
   isInternal: boolean;
 }
 
-/** Pagination envelope from knowledge-hub nodes API */
+/**
+ * Pagination envelope from knowledge-hub nodes API.
+ *
+ * Keyset paging has no page number to report, so `page`/`totalPages` are
+ * optional and only present while the transitional `page` path is used.
+ */
 export interface KnowledgeHubNodesPagination {
-  page: number;
+  page?: number;
   limit: number;
   totalItems: number;
-  totalPages: number;
+  totalPages?: number;
+  startIndex?: number;
+  endIndex?: number;
   hasNext: boolean;
   hasPrev: boolean;
+  nextCursor?: string | null;
+  prevCursor?: string | null;
 }
 
 /** Full response from GET /api/v1/knowledgeBase/knowledge-hub/nodes */

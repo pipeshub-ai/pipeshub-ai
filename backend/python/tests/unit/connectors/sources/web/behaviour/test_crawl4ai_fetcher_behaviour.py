@@ -7,9 +7,16 @@ from collections.abc import Awaitable, Callable
 from types import SimpleNamespace
 
 import pytest
-from web_behaviour_fakes import FakeWeb, Page, browser_crawler_class, html_page
+from web_behaviour_fakes import (
+    DRIVER_GONE,
+    FakeWeb,
+    Page,
+    browser_crawler_class,
+    html_page,
+)
 
-from app.connectors.sources.web import crawl4ai_fetcher
+from app.connectors.sources.web import browser_supervisor, crawl4ai_fetcher
+from app.connectors.sources.web.browser_supervisor import BrowserUnavailableError
 from app.connectors.sources.web.crawl4ai_fetcher import (
     Crawl4AIFetcher,
     get_shared_fetcher,
@@ -125,16 +132,13 @@ async def test_fetch_many_returns_one_result_per_url_and_isolates_failures(
     assert "<title>C</title>" in (results[2].html or "")
 
 
-async def test_fetch_many_reports_every_url_as_failed_when_the_batch_blows_up(
+async def test_fetch_many_reports_every_url_as_failed_when_every_page_blows_up(
     browser: FakeWeb, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    base = browser_crawler_class(browser)
+    async def arun(url: str) -> SimpleNamespace:
+        raise RuntimeError("browser context lost")
 
-    class Broken(base):  # type: ignore[misc,valid-type]
-        async def arun_many(self, *_: object, **__: object) -> list[object]:
-            raise RuntimeError("browser context lost")
-
-    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", Broken)
+    _with_crawler(monkeypatch, arun, browser)
 
     async with Crawl4AIFetcher() as fetcher:
         results = await fetcher.fetch_many(["http://site.test/a", "http://site.test/b"])
@@ -198,3 +202,104 @@ async def test_a_redirect_in_the_browser_reports_where_the_page_ended_up(many: b
             result = await fetcher.fetch("http://site.test/old")
 
     assert result.url == "http://site.test/new"
+
+
+def _pages(browser: FakeWeb, count: int) -> list[str]:
+    urls = [f"http://site.test/p{i}" for i in range(count)]
+    for url in urls:
+        browser.html(url, url)
+    return urls
+
+
+async def test_a_browser_whose_driver_died_is_relaunched_and_the_lost_pages_fetched_again(browser: FakeWeb) -> None:
+    urls = _pages(browser, 3)
+
+    async with Crawl4AIFetcher(concurrency=2) as fetcher:
+        browser.kill_browser()
+        results = await fetcher.fetch_many(urls)
+
+    assert [r.success for r in results] == [True, True, True]
+    assert browser.browser_starts == 2
+
+
+async def test_fetches_that_all_find_the_browser_dead_relaunch_it_once(browser: FakeWeb) -> None:
+    urls = _pages(browser, 5)
+
+    async with Crawl4AIFetcher(concurrency=5) as fetcher:
+        browser.kill_browser()
+        results = await asyncio.gather(*(fetcher.fetch(url) for url in urls))
+
+    assert all(r.success for r in results)
+    assert browser.browser_starts == 2
+
+
+async def test_a_browser_that_cannot_be_relaunched_raises_instead_of_reporting_failed_pages(browser: FakeWeb) -> None:
+    urls = _pages(browser, 2)
+    browser.browser_stays_dead = True
+
+    async with Crawl4AIFetcher() as fetcher:
+        browser.kill_browser()
+        with pytest.raises(BrowserUnavailableError):
+            await fetcher.fetch_many(urls)
+        with pytest.raises(BrowserUnavailableError):
+            await fetcher.fetch(urls[0])
+
+
+async def test_relaunches_that_keep_failing_stop_until_a_cooldown_then_one_more_is_tried(
+    browser: FakeWeb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(browser_supervisor, "_RELAUNCH_FAILURE_THRESHOLD", 2)
+    monkeypatch.setattr(browser_supervisor, "_RELAUNCH_COOLDOWN_SECONDS", 0.2)
+    [url] = _pages(browser, 1)
+    browser.browser_stays_dead = True
+
+    async with Crawl4AIFetcher() as fetcher:
+        browser.kill_browser()
+        for _ in range(2):
+            with pytest.raises(BrowserUnavailableError):
+                await fetcher.fetch(url)
+        launches = browser.browser_starts
+
+        with pytest.raises(BrowserUnavailableError):
+            await fetcher.fetch(url)
+        assert browser.browser_starts == launches
+
+        browser.browser_broken = False
+        await asyncio.sleep(0.25)
+        assert (await fetcher.fetch(url)).success is True
+        assert browser.browser_starts == launches + 1
+
+
+async def test_closing_a_fetcher_whose_browser_died_still_stops_its_thread(
+    browser: FakeWeb, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    base = browser_crawler_class(browser)
+
+    class DiesOnClose(base):  # type: ignore[misc,valid-type]
+        async def close(self) -> None:
+            raise RuntimeError(DRIVER_GONE)
+
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", DiesOnClose)
+    fetcher = Crawl4AIFetcher()
+    await fetcher.start()
+    thread = fetcher._thread
+    assert thread is not None
+
+    await fetcher.close()
+
+    assert not thread.is_alive()
+
+
+async def test_the_browser_is_relaunched_once_it_has_served_its_page_budget(browser: FakeWeb) -> None:
+    urls = _pages(browser, 7)
+
+    async with Crawl4AIFetcher(recycle_after_pages=3) as fetcher:
+        results = [
+            *await fetcher.fetch_many(urls[:3]),
+            *await fetcher.fetch_many(urls[3:6]),
+            await fetcher.fetch(urls[6]),
+        ]
+
+    assert all(r.success for r in results)
+    assert browser.browser_starts == 3
+

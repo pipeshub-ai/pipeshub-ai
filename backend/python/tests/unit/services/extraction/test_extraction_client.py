@@ -3,12 +3,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock, patch
 
-import pytest
 import httpx
+import pytest
 
+from app.config.constants.service import TokenScopes
 from app.models.blocks import BlocksContainer, SemanticMetadata
 from app.services.base_client import ServiceUnavailableError
 from app.services.extraction.client import ExtractionClient, ExtractionClientError
+from app.utils.llm import LLMNotConfiguredError, LLMUnavailableError
 
 
 def _bc() -> BlocksContainer:
@@ -87,6 +89,23 @@ async def test_classify_passes_departments_in_request() -> None:
     payload = call_args[0][1]  # second positional arg = payload dict
     assert payload["departments"] == ["Finance", "HR"]
     assert payload["org_id"] == "org-456"
+    assert payload["record_type"] == ""
+
+
+@pytest.mark.asyncio
+async def test_classify_forwards_record_type() -> None:
+    """The service selects the code prompt from it; dropping it silently
+    downgrades source files to the document prompt."""
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+
+    mock_post = AsyncMock(
+        return_value=_make_response(200, {"success": True, "classification": None})
+    )
+
+    with patch.object(client, "_post_json", new=mock_post):
+        await client.classify(_bc(), "org-456", record_type="CODE_FILE")
+
+    assert mock_post.call_args[0][1]["record_type"] == "CODE_FILE"
 
 
 @pytest.mark.asyncio
@@ -156,3 +175,162 @@ async def test_classify_raises_service_unavailable_on_connection_error() -> None
     ):
         with pytest.raises(ServiceUnavailableError):
             await client.classify(_bc(), "org-123")
+
+
+@pytest.mark.asyncio
+async def test_classify_maps_llm_not_configured_to_typed_error() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    body = {
+        "success": False,
+        "error": "No LLM is configured for this organization",
+        "error_code": "LLM_NOT_CONFIGURED",
+    }
+
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=_make_response(422, body))):
+        with pytest.raises(LLMNotConfiguredError, match="No LLM is configured"):
+            await client.classify(_bc(), "org-123")
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_is_a_typed_error_that_costs_no_retry_or_breaker_failure() -> None:
+    body = {"success": False, "error": "connection refused", "error_code": "LLM_UNAVAILABLE"}
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(424, json=body)
+
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=3, retry_delay=0.0)
+    client._auth_headers = AsyncMock(return_value={})  # type: ignore[method-assign]
+    client._make_client = lambda: httpx.AsyncClient(transport=httpx.MockTransport(handler))  # type: ignore[method-assign]
+
+    with pytest.raises(LLMUnavailableError, match="connection refused"):
+        await client.classify(_bc(), "org-123")
+    assert calls == 1
+    assert client.circuit_breaker._consecutive_failures == 0
+
+
+_UNAVAILABLE = {"success": False, "error": "connection refused", "error_code": "LLM_UNAVAILABLE"}
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_says_how_long_to_wait() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    response = httpx.Response(424, json=_UNAVAILABLE, headers={"Retry-After": "30"})
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=response)), \
+            pytest.raises(LLMUnavailableError) as raised:
+        await client.classify(_bc(), "org-123")
+    assert raised.value.retry_after == 30.0
+
+
+@pytest.mark.asyncio
+async def test_a_provider_outage_without_a_known_cooldown_names_no_wait() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    response = httpx.Response(424, json=_UNAVAILABLE)
+    with patch.object(client, "_post_json", new=AsyncMock(return_value=response)), \
+            pytest.raises(LLMUnavailableError) as raised:
+        await client.classify(_bc(), "org-123")
+    assert raised.value.retry_after is None
+
+
+# ---------------------------------------------------------------------------
+# Service token
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_classify_passes_org_for_token() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    mock_post = AsyncMock(return_value=_make_response(200, {"success": True, "classification": None}))
+
+    with patch.object(client, "_post_json", new=mock_post):
+        await client.classify(_bc(), "org-123")
+
+    assert mock_post.await_args.kwargs["org_id"] == "org-123"
+
+
+def test_extraction_client_uses_document_classify_scope() -> None:
+    config_service = MagicMock()
+    client = ExtractionClient(service_url="http://fake-extraction:8093", config_service=config_service)
+
+    assert client._service_scope is TokenScopes.DOCUMENT_CLASSIFY
+    assert client._config_service is config_service
+
+
+def _extraction_body() -> dict:
+    return {
+        "status": "COMPLETED",
+        "termination_reason": "finish_ok",
+        "strategy": "agent",
+        "entities": [
+            {"kind": "organization", "display_name": "Acme", "norm_key": "org:acme"},
+            {"kind": "url", "display_name": "https://acme.example", "norm_key": "url:https://acme.example"},
+        ],
+        "stats": {"units": 1},
+    }
+
+
+async def _extract(body: dict):
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    with patch.object(
+        client,
+        "_post_json",
+        new=AsyncMock(return_value=_make_response(200, {"success": True, "extraction": body})),
+    ):
+        return await client.extract_entities(_bc(), "org-123")
+
+
+@pytest.mark.asyncio
+async def test_extract_entities_reads_a_newer_service_reply() -> None:
+    body = _extraction_body()
+    body["future_top"] = 1
+    body["stats"]["future_stat"] = 2
+    body["entities"][0]["future_entity"] = 3
+
+    result = await _extract(body)
+
+    assert result.status == "COMPLETED"
+    assert [entity.display_name for entity in result.entities] == ["Acme", "https://acme.example"]
+
+
+@pytest.mark.asyncio
+async def test_extract_entities_drops_only_the_entity_of_an_unknown_kind() -> None:
+    body = _extraction_body()
+    body["entities"][0]["kind"] = "vehicle"
+
+    result = await _extract(body)
+
+    assert [entity.display_name for entity in result.entities] == ["https://acme.example"]
+    assert result.status == "PARTIAL"
+
+
+@pytest.mark.asyncio
+async def test_extract_entities_without_an_extraction_is_failed() -> None:
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    with patch.object(
+        client,
+        "_post_json",
+        new=AsyncMock(return_value=_make_response(200, {"success": True, "extraction": None})),
+    ):
+        result = await client.extract_entities(_bc(), "org-123")
+
+    assert (result.status, result.termination_reason) == ("FAILED", "llm_error")
+
+
+@pytest.mark.asyncio
+async def test_a_busy_extraction_service_is_waited_out_without_tripping_the_breaker() -> None:
+    replies = [
+        httpx.Response(429, headers={"Retry-After": "0"}, json={"success": False, "error": "busy"}),
+        httpx.Response(200, json={"success": True, "extraction": _extraction_body()}),
+    ]
+    client = ExtractionClient(service_url="http://fake-extraction:8093", max_retries=1)
+    client._auth_headers = AsyncMock(return_value={})  # type: ignore[method-assign]
+    client._make_client = lambda: httpx.AsyncClient(  # type: ignore[method-assign]
+        transport=httpx.MockTransport(lambda request: replies.pop(0)),
+    )
+    with patch.object(client.circuit_breaker, "record_failure") as failure:
+        result = await client.extract_entities(_bc(), "org-123")
+
+    assert result.status == "COMPLETED"
+    failure.assert_not_called()

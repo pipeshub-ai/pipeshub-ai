@@ -8,8 +8,11 @@ from http import HTTPStatus
 from google.auth.exceptions import RefreshError
 from googleapiclient.errors import HttpError
 
+from app.connectors.sources.google.common.connector_google_exceptions import (
+    is_missing_scope_error,
+)
+
 _RATE_LIMIT_REASONS = {"rateLimitExceeded", "userRateLimitExceeded", "RATE_LIMIT_EXCEEDED"}
-_SCOPE_REASONS = {"insufficientPermissions", "ACCESS_TOKEN_SCOPE_INSUFFICIENT"}
 
 
 @dataclass(frozen=True)
@@ -30,13 +33,13 @@ def _error_reasons(error: HttpError) -> set[str]:
 
 def google_error_message(error: Exception, action: str, wording: GoogleToolWording) -> str:
     """A failure the agent can relay; never the raw exception, which carries request URLs."""
-    reconnect = f"Reconnect the {wording.toolset} toolset in Settings > Toolsets and try again."
+    reconnect = f"Reconnect {wording.toolset} under Your actions, then try again."
     if isinstance(error, RefreshError):
         return f"Could not {action}: the Google sign-in has expired or was revoked. {reconnect}"
     if not isinstance(error, HttpError):
         return (
             f"Could not {action} because of an unexpected error. Try again, and if it keeps "
-            f"failing, reconnect the {wording.toolset} toolset in Settings > Toolsets."
+            f"failing, reconnect {wording.toolset} under Your actions."
         )
     status = error.resp.status
     reasons = _error_reasons(error)
@@ -46,10 +49,12 @@ def google_error_message(error: Exception, action: str, wording: GoogleToolWordi
         return f"{wording.product} is receiving too many requests right now, so it could not {action}. {wait} and try again."
     if status == HTTPStatus.UNAUTHORIZED:
         return f"Could not {action}: Google did not accept the saved sign-in. {reconnect}"
-    if status == HTTPStatus.FORBIDDEN and reasons & _SCOPE_REASONS:
+    if is_missing_scope_error(error):
         return (
             f"Could not {action}: the connected Google account has not given this app permission to do that. "
-            f"Reconnect the {wording.toolset} toolset in Settings > Toolsets and allow {wording.access}."
+            f"Reconnect {wording.toolset} under Your actions and allow {wording.access}. If Google "
+            f"doesn't ask for it, an admin needs to add that permission to the {wording.toolset} action in "
+            "Workspace > Actions."
         )
     if status == HTTPStatus.NOT_FOUND:
         return f"Could not {action}: {wording.product} could not find {wording.not_found}"

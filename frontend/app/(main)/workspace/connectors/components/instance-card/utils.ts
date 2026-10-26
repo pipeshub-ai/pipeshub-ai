@@ -9,6 +9,16 @@ import type {
   InstanceSyncStatus,
 } from '../../types';
 
+/**
+ * When the connector last finished a sync. Instances whose last run predates that field
+ * fall back to the doc's last write, which any settings change also moves.
+ */
+export function lastSyncedAt(
+  instance: Pick<ConnectorInstance, 'lastSyncFinishedAtTimestamp' | 'updatedAtTimestamp'>,
+): number | undefined {
+  return instance.lastSyncFinishedAtTimestamp ?? instance.updatedAtTimestamp;
+}
+
 // ========================================
 // Config-derived helpers
 // ========================================
@@ -89,7 +99,13 @@ export function deriveSyncStatusState(
   if (instance.status === CONNECTOR_INSTANCE_STATUS.DELETING) {
     return { status: 'sync_disabled', oauthAuthIncompleteForSync };
   }
-  if (instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING) {
+  if (
+    instance.status === CONNECTOR_INSTANCE_STATUS.SYNCING ||
+    instance.status === CONNECTOR_INSTANCE_STATUS.FULL_SYNCING ||
+    // Queued has a sync owed, so it must not fall through to the
+    // stats-derived branch and render as whatever the counters say.
+    instance.status === CONNECTOR_INSTANCE_STATUS.QUEUED
+  ) {
     return { status: 'syncing', oauthAuthIncompleteForSync };
   }
 

@@ -214,10 +214,9 @@ class TestBuildOAuthFlowFromAuthConfig:
 
 class TestBuildCompleteOAuthConfigSharedPath:
     @pytest.mark.asyncio
-    async def test_shared_config_propagates_instance_url_for_ee(self):
-        """GitLab EE with shared OAuth config: instanceUrl from auth_config must
-        be carried into the resulting oauth_flow_config so get_oauth_config()
-        can swap the SaaS host out for the user's instance during refresh."""
+    async def test_instance_url_only_on_auth_config_is_not_used_with_shared_app(self):
+        """With a shared OAuth app, the host for a refresh comes from the app. A value
+        kept only on the connector must not send the app's secret somewhere else."""
         svc, _, _ = _make_service()
         shared_oauth_config = {
             "_id": "oauth-shared-1",
@@ -233,7 +232,7 @@ class TestBuildCompleteOAuthConfigSharedPath:
             "instanceUrl": "https://gitlab.mycompany.com",
         }
         result = await svc._build_complete_oauth_config("conn1", "GITLAB", auth_config)
-        assert result["instanceUrl"] == "https://gitlab.mycompany.com"
+        assert "instanceUrl" not in result
         assert result["clientId"] == "cid"
         assert result["clientSecret"] == "csecret"
 
@@ -282,7 +281,7 @@ class TestBuildCompleteOAuthConfigSharedPath:
         assert result["instanceUrl"] == "https://git.acmecorp.com"
 
     @pytest.mark.asyncio
-    async def test_instance_url_on_auth_config_overrides_shared(self):
+    async def test_instance_url_on_auth_config_does_not_override_shared(self):
         svc, _, _ = _make_service()
         shared_oauth_config = {
             "_id": "oauth-shared-1",
@@ -302,7 +301,7 @@ class TestBuildCompleteOAuthConfigSharedPath:
             "instanceUrl": "https://instance.example.com",
         }
         result = await svc._build_complete_oauth_config("conn1", "GITLAB", auth_config)
-        assert result["instanceUrl"] == "https://instance.example.com"
+        assert result["instanceUrl"] == "https://shared.example.com"
 
 
 # ============================================================================

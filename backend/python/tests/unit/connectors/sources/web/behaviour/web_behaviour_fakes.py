@@ -21,6 +21,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
+import shutil
+import socket
+import sys
+import tempfile
 import threading
 from collections.abc import Awaitable, Callable, Iterator
 from contextlib import asynccontextmanager
@@ -29,15 +34,21 @@ from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin, urlparse
 
+import aiohttp
 from aiohttp import web
 from bs4 import BeautifulSoup
 from requests.adapters import HTTPAdapter
 
+from app.connectors.sources.web import address_guard, crawl4ai_fetcher, fetch_strategy
+from app.services.resource_governor.models import ResourceSnapshot
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
+    import pytest
+
     from app.connectors.sources.web.connector import WebConnector
-    from app.models.entities import Record
+    from app.models.entities import FileRecord, Record
 
 STORAGE_HOST = "storage.test"
 HEAD_HANGS_UP = -1  # a ``head_status`` meaning the site drops HEAD requests without answering
@@ -47,6 +58,11 @@ START_URL = "http://site.test/"
 SITE_ADDRESS = "93.184.215.14"
 INTRANET_HOST = "intranet.test"
 INTRANET_ADDRESS = "10.0.0.7"
+# What crawl4ai reports for every page once Playwright's driver process has exited.
+DRIVER_GONE = (
+    "Unexpected error in _crawl_web at line 565 in wrap_api_call\n"
+    "Error: BrowserContext.new_page: Connection closed while reading from the driver"
+)
 _real_sleep = asyncio.sleep
 
 
@@ -79,6 +95,8 @@ class Page:
     hang_up: bool = False
     # Chromium aborts navigating onto this file (net::ERR_ABORTED), and crawl4ai raises.
     browser_aborts: bool = False
+    # Loading it takes the whole browser down, every time (a renderer bug, or out of memory).
+    kills_browser: bool = False
     # What a HEAD gets instead of the page's usual answer, e.g. 405 from a site without HEAD.
     head_status: int | None = None
     # A cookie ("name=value") the request must carry, else 403: set by an earlier redirect.
@@ -112,6 +130,7 @@ class FakeWeb:
         self._pages: dict[str, Page | list[Page]] = {}
         self._lock = threading.Lock()
         self.requests: list[tuple[str, str]] = []
+        self.user_agents: list[str] = []  # the User-Agent of each request in ``requests``
         self.clients: list[tuple[str, str]] = []  # (fake client, url) for curl_cffi / cloudscraper requests
         self.challenges_solved: list[str] = []
         self.served: list[tuple[str, str, str]] = []  # (client, method, url) for every answered request
@@ -120,6 +139,9 @@ class FakeWeb:
         self.browser_loaded: list[str] = []  # every address the browser requested, redirect hops included
         self.browser_starts = 0
         self.browser_broken = False
+        self.browser_dies_after: int | None = None  # page loads until the running browser dies, once
+        self.browser_stays_dead = False  # ...and no new one can be launched
+        self._browser_dead_up_to = 0
         self.storage_docs: dict[str, bytes] = {}
         self.storage_uploads: list[str] = []
         self.storage_buffer_updates: list[str] = []
@@ -144,8 +166,11 @@ class FakeWeb:
         return sum(1 for method, u in self.requests if method == "GET" and _key(u) == _key(url))
 
     def fetched_urls(self) -> set[str]:
-        """Pages fetched, leaving out the crawler's robots.txt reads."""
-        return {u for method, u in self.requests if method == "GET" and not u.endswith("/robots.txt")}
+        """Pages fetched, leaving out the crawler's robots.txt and sitemap reads."""
+        return {
+            u for method, u in self.requests
+            if method == "GET" and not u.endswith(("/robots.txt", "/sitemap.xml", "/sitemap_index.xml"))
+        }
 
     def _current(self, url: str, consume: bool) -> Page:
         with self._lock:
@@ -167,6 +192,7 @@ class FakeWeb:
         """
         self.requests.append((method, url))
         self.served.append((via, method, url))
+        self.user_agents.append(next((str(v) for k, v in request_headers.items() if k.lower() == "user-agent"), ""))
         page = self._current(url, consume=method == "GET")
         if method == "HEAD" and page.head_status is not None:
             return None if page.head_status == HEAD_HANGS_UP else (page.head_status, {}, b"", page)
@@ -252,6 +278,18 @@ class FakeWeb:
 
     # -- Browser side ----------------------------------------------------
 
+    def kill_browser(self) -> None:
+        """Every browser launched so far loses its driver process."""
+        self._browser_dead_up_to = self.browser_starts
+        if self.browser_stays_dead:
+            self.browser_broken = True
+
+    def browser_is_dead(self, launch: int) -> bool:
+        if self.browser_dies_after is not None and len(self.browser_visits) >= self.browser_dies_after:
+            self.browser_dies_after = None
+            self.kill_browser()
+        return 0 < launch <= self._browser_dead_up_to  # 0: a crawler that was never started
+
     def render(self, url: str) -> tuple[str, Page]:
         """What a browser ends up showing for ``url``, following redirects."""
         for _ in range(10):
@@ -264,15 +302,99 @@ class FakeWeb:
         return url, Page(status=508)
 
 
+def isolate_network(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Only Unix sockets (the fake websites) may be connected to; every host resolves to
+    SITE_ADDRESS except INTRANET_HOST."""
+    real_connect = socket.socket.connect
+    real_connect_ex = socket.socket.connect_ex
+
+    def _guard(sock: socket.socket, address: object) -> None:
+        if sock.family != socket.AF_UNIX:
+            raise AssertionError(f"test tried to reach the network: {address!r}")
+
+    def connect(sock: socket.socket, address: object) -> None:
+        _guard(sock, address)
+        return real_connect(sock, address)
+
+    def connect_ex(sock: socket.socket, address: object) -> int:
+        _guard(sock, address)
+        return real_connect_ex(sock, address)
+
+    monkeypatch.setattr(socket.socket, "connect", connect)
+    monkeypatch.setattr(socket.socket, "connect_ex", connect_ex)
+
+    def resolve_to_fake_site(host: str, port: object, *args: object, **kwargs: object) -> list[tuple]:
+        address = INTRANET_ADDRESS if host == INTRANET_HOST else SITE_ADDRESS
+        return [(socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", (address, 0))]
+
+    monkeypatch.setattr(socket, "getaddrinfo", resolve_to_fake_site)
+    # As if curl_cffi and cloudscraper were not installed: the aiohttp strategy serves every fetch.
+    monkeypatch.setattr(fetch_strategy, "_CURL_PROFILES", [])
+    monkeypatch.setitem(sys.modules, "cloudscraper", None)
+
+
+@asynccontextmanager
+async def serve_fake_web(fake: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
+    """Serve ``fake`` on a Unix socket and point every ``aiohttp.ClientSession`` at it."""
+    app = web.Application()
+    app.router.add_route("*", "/{tail:.*}", fake.handle)
+    runner = web.AppRunner(app, access_log=None)
+    await runner.setup()
+    sock_dir = tempfile.mkdtemp(prefix="webfake-")
+    sock_path = f"{sock_dir}/site.sock"
+    await web.UnixSite(runner, sock_path).start()
+
+    real_session = aiohttp.ClientSession
+
+    async def resolve_as_guarded(request: aiohttp.ClientRequest, handler: aiohttp.ClientHandlerType) -> aiohttp.ClientResponse:
+        await address_guard.resolve_target(str(request.url))
+        return await handler(request)
+
+    def session_on_fake_web(*args: object, **kwargs: object) -> aiohttp.ClientSession:
+        if isinstance(kwargs.get("connector"), aiohttp.TCPConnector):
+            # The Unix socket skips the guarded session's resolver, so make its check here.
+            kwargs["middlewares"] = (*kwargs.get("middlewares", ()), resolve_as_guarded)
+        kwargs["connector"] = aiohttp.UnixConnector(path=sock_path)
+        return real_session(*args, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(aiohttp, "ClientSession", session_on_fake_web)
+    try:
+        yield fake
+    finally:
+        await runner.cleanup()
+        shutil.rmtree(sock_dir, ignore_errors=True)
+
+
+@asynccontextmanager
+async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[FakeWeb]:
+    """crawl4ai's browser renders from ``site``; the shared fetcher starts fresh and is closed after."""
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncWebCrawler", browser_crawler_class(site))
+    monkeypatch.setattr(crawl4ai_fetcher, "AsyncPlaywrightCrawlerStrategy", lambda **kw: SimpleNamespace(**kw, set_hook=lambda *_: None))
+    monkeypatch.setattr(crawl4ai_fetcher, "UndetectedAdapter", lambda: SimpleNamespace())
+    monkeypatch.setattr(crawl4ai_fetcher, "build_probe", FakeMemoryProbe)
+    monkeypatch.setenv("WEB_BROWSER_MAX_PAGES", "5")
+    monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
+    monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
+    monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
+    try:
+        yield site
+    finally:
+        leftover = crawl4ai_fetcher._shared_instance
+        if leftover is not None:
+            await leftover.close()
+
+
 def browser_crawler_class(site: FakeWeb) -> type:
     """A stand-in for ``crawl4ai.AsyncWebCrawler`` that renders from ``site``."""
 
     class FakeBrowserCrawler:
         def __init__(self, *_, **__) -> None:
             self.started = False
+            self.launch = 0
 
         async def start(self) -> None:
             site.browser_starts += 1
+            self.launch = site.browser_starts
             if site.browser_broken:
                 raise RuntimeError("BrowserType.launch: Executable doesn't exist")
             self.started = True
@@ -281,8 +403,15 @@ def browser_crawler_class(site: FakeWeb) -> type:
             self.started = False
 
         async def arun(self, url: str, config: object = None, **_: object) -> SimpleNamespace:
+            if site.browser_is_dead(self.launch):
+                return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
+                                       error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             site.browser_visits.append(url)
             final_url, page = site.render(url)
+            if page.kills_browser:
+                site.kill_browser()
+                return SimpleNamespace(url=url, redirected_url=url, html="", success=False, status_code=None,
+                                       error_message=DRIVER_GONE, crawl_stats=None, js_execution_result=None)
             if page.browser_aborts:
                 raise RuntimeError(f"Failed on navigating ACS-GOTO:\nPage.goto: net::ERR_ABORTED at {url}")
             if page.hang_up:
@@ -321,13 +450,35 @@ def browser_crawler_class(site: FakeWeb) -> type:
     return FakeBrowserCrawler
 
 
+class FakeMemoryProbe:
+    """The container's resources as the browser's sizing and memory gate read them: plenty, unless set."""
+
+    def __init__(self, limit_mb: int = 16_384, used_mb: int = 1_024, cpus: float = 8.0) -> None:
+        self.limit_mb, self.used_mb, self.cpus = limit_mb, used_mb, cpus
+        self.reads = 0
+
+    def snapshot(self) -> ResourceSnapshot:
+        self.reads += 1
+        mb = 1024 * 1024
+        return ResourceSnapshot(
+            cpu_quota=self.cpus, cpu_utilisation=None, cpu_throttled_ratio=None, cpu_pressure=None,
+            mem_limit_bytes=self.limit_mb * mb, mem_working_set_bytes=self.used_mb * mb, source="fake",
+        )
+
+
 class VirtualClock:
     """Stands in for ``asyncio`` inside the connector and fetch modules.
 
     ``sleep`` records the delay and advances a virtual clock instead of
-    waiting; ``get_event_loop().time()`` reads that clock. Everything else is
-    the real ``asyncio``.
+    waiting; ``get_event_loop().time()`` reads that clock alone. Everything
+    else is the real ``asyncio``.
+
+    The clock starts at a fixed time and moves only on ``sleep``: mixed with the
+    loop's real time, a wait computed as ``deadline - now`` came out as
+    14.999999999999972 instead of 15.0 on hosts whose monotonic clock is large.
     """
+
+    START = 1_000.0
 
     def __init__(self) -> None:
         self.offset = 0.0
@@ -336,6 +487,11 @@ class VirtualClock:
     def __getattr__(self, name: str) -> object:
         return getattr(asyncio, name)
 
+    def slept(self, seconds: float) -> bool:
+        """Whether some sleep was ``seconds`` long. Waits are computed as differences of
+        clock readings, so they are compared within float rounding, never exactly."""
+        return any(math.isclose(delay, seconds, abs_tol=1e-6) for delay in self.sleeps)
+
     async def sleep(self, delay: float, result: object = None) -> object:
         self.sleeps.append(delay)
         self.offset += max(delay, 0)
@@ -343,8 +499,7 @@ class VirtualClock:
         return result
 
     def get_event_loop(self) -> SimpleNamespace:
-        loop = asyncio.get_running_loop()
-        return SimpleNamespace(time=lambda: loop.time() + self.offset)
+        return SimpleNamespace(time=lambda: self.START + self.offset)
 
 
 class FakeRecordsDb:
@@ -363,8 +518,14 @@ class FakeRecordsDb:
         self.metadata_updates: list[Record] = []
         self.permission_updates: list[Record] = []
         self.deleted: list[str] = []
+        self.attached: list[tuple[str, list[str]]] = []
         self.record_groups: list[Any] = []
+        self.app_users: list[Any] = []
+        self.team_app_edges: list[str] = []
         self.fail_writes = False
+        self.unreadable_file_records: set[str] = set()
+        # ENABLE_SOFT_DELETE on: a delete keeps the record, marked, and says so.
+        self.soft_delete = False
 
     def _store(self, record: Record) -> None:
         existing = self.records.get(record.external_record_id)
@@ -383,9 +544,31 @@ class FakeRecordsDb:
             return None
         return Record.model_validate(stored.model_dump(include=set(Record.model_fields)))
 
-    async def get_file_record_by_id(self, record_id: str) -> Record | None:
+    async def get_records_by_parent(
+        self, connector_id: str, parent_external_record_id: str, record_type: str | None = None, **_: object,
+    ) -> list[Record]:
+        return [r.model_copy(deep=True) for r in self.records.values() if r.parent_external_record_id == parent_external_record_id]
+
+    async def on_records_attached_to_parent(self, parent_record_id: str, record_ids: list[str]) -> None:
+        self.attached.append((parent_record_id, list(record_ids)))
+
+    async def get_records_in_record_group(
+        self, connector_id: str, external_group_id: str, limit: int, after_key: str | None = None, **_: object,
+    ) -> list[Record]:
+        """One page of the group's records, ordered by id, like the graph stores."""
+        ordered = sorted(
+            (r for r in self.records.values() if r.external_record_group_id == external_group_id),
+            key=lambda r: r.id,
+        )
+        return [r for r in ordered if after_key is None or r.id > after_key][:limit]
+
+    async def get_file_record_by_id(self, record_id: str) -> FileRecord | None:
+        """None only when no file record is stored; a read that fails raises ``GraphQueryError``, as both providers do."""
+        from app.exceptions.graph_db_exceptions import GraphQueryError
         from app.models.entities import FileRecord
 
+        if record_id in self.unreadable_file_records:
+            raise GraphQueryError(f"records database unavailable for {record_id}")
         stored = next((record for record in self.records.values() if record.id == record_id), None)
         return stored.model_copy(deep=True) if isinstance(stored, FileRecord) else None
 
@@ -407,18 +590,25 @@ class FakeRecordsDb:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append(record)
 
-    async def on_record_deleted(self, record_id: str, **_: object) -> None:
+    async def on_record_deleted(self, record_id: str, **_: object) -> bool:
         self.deleted.append(record_id)
+        if self.soft_delete:
+            self.records = {
+                k: v.model_copy(update={"is_deleted": True}) if v.id == record_id else v
+                for k, v in self.records.items()
+            }
+            return True
         self.records = {k: v for k, v in self.records.items() if v.id != record_id}
+        return False
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         self.record_groups.extend(groups)
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        pass
+        self.app_users.extend(users)
 
     async def ensure_team_app_edge(self, connector_id: str) -> None:
-        pass
+        self.team_app_edges.append(connector_id)
 
     async def get_user_by_user_id(self, user_id: str) -> SimpleNamespace:
         return SimpleNamespace(id=user_id, email="owner@example.com", source_user_id=user_id,
@@ -455,8 +645,17 @@ class FakeCheckpointStore:
         self.sync_points.pop(key, None)
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator["FakeCheckpointStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator["FakeCheckpointStore"]:
         yield self
+
+
+def assert_crash_left_no_checkpoint(checkpoints: FakeCheckpointStore) -> None:
+    """A crawl that crashed advanced nothing the next sync resumes from; it only left its report."""
+    import json
+
+    for saved in checkpoints.sync_points.values():
+        assert "timestamp" not in saved and "goneOnce" not in saved
+        assert json.loads(saved["lastRun"])["outcome"] == "failed"
 
 
 class FakeConfigService:
@@ -510,6 +709,21 @@ class FakeResponse:
         pass
 
 
+def _deliver(response: FakeResponse, content_callback: Callable[[bytes], object]) -> FakeResponse:
+    """What curl_cffi does with a content_callback: the body goes to the callback chunk by chunk and
+    not to ``content``, and a callback that answers CURL_WRITEFUNC_ERROR aborts the transfer, which
+    raises with the response read so far (curl error 23)."""
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+    from curl_cffi.requests.exceptions import RequestException
+
+    chunks = list(response.iter_content(16384))
+    response.content = b""
+    for chunk in chunks:
+        if content_callback(chunk) == CURL_WRITEFUNC_ERROR:
+            raise RequestException("Failure writing output to destination", 23, response)
+    return response
+
+
 class FakeRequestsClient:
     """Stands in for a curl_cffi Session (and the base of the cloudscraper fake): a cookie jar and
     a GET that follows redirects unless told not to, answered by the fake site."""
@@ -548,14 +762,16 @@ class FakeRequestsClient:
         return status, response_headers, body
 
     def get(self, url: str, headers: dict | None = None, timeout: object = None,
-            allow_redirects: bool = True, stream: bool = False) -> FakeResponse:
+            allow_redirects: bool = True, stream: bool = False,
+            content_callback: Callable[[bytes], object] | None = None) -> FakeResponse:
         for _ in range(11):
             status, response_headers, body = self._send(url, headers)
             location = response_headers.get("Location")
             if allow_redirects and status in (301, 302, 303, 307, 308) and location:
                 url = urljoin(url, location)
                 continue
-            return FakeResponse(status, response_headers, body, url)
+            response = FakeResponse(status, response_headers, body, url)
+            return response if content_callback is None else _deliver(response, content_callback)
         raise RuntimeError("too many redirects")
 
 

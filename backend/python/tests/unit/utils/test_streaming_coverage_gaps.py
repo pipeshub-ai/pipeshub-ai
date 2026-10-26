@@ -236,12 +236,13 @@ class TestInvokeRowDescriptionsReflection:
 
 @pytest.mark.parametrize("scenario", ["success", "bad_import"])
 def test_opik_module_reload_config_branches(monkeypatch, scenario):
-    """Exercise module-level Opik init via importlib.reload (lines 61–70)."""
+    """Exercise module-level Opik init via importlib.reload."""
 
     import types
 
     monkeypatch.delenv("OPIK_API_KEY", raising=False)
     monkeypatch.delenv("OPIK_WORKSPACE", raising=False)
+    importlib.reload(importlib.import_module("app.utils.opik"))
     importlib.reload(importlib.import_module("app.utils.streaming"))
 
     monkeypatch.setenv("OPIK_API_KEY", "k")
@@ -257,10 +258,10 @@ def test_opik_module_reload_config_branches(monkeypatch, scenario):
         langchain_mod.OpikTracer = MagicMock(return_value=tracer_inst)
     else:
 
-        def _boom(**_kwargs):
+        def _boom(*_args, **_kwargs):
             raise RuntimeError("no opik")
 
-        opik_mod.configure = MagicMock(side_effect=_boom)
+        langchain_mod.OpikTracer = _boom
 
     integrations_mod.langchain = langchain_mod
     opik_mod.integrations = integrations_mod
@@ -273,6 +274,7 @@ def test_opik_module_reload_config_branches(monkeypatch, scenario):
 
     try:
         with patch.dict(sys.modules, mods, clear=False):
+            importlib.reload(importlib.import_module("app.utils.opik"))
             mod = importlib.reload(importlib.import_module("app.utils.streaming"))
             if scenario == "success":
                 assert mod.opik_tracer is tracer_inst
@@ -281,5 +283,6 @@ def test_opik_module_reload_config_branches(monkeypatch, scenario):
     finally:
         monkeypatch.delenv("OPIK_API_KEY", raising=False)
         monkeypatch.delenv("OPIK_WORKSPACE", raising=False)
+        importlib.reload(importlib.import_module("app.utils.opik"))
         importlib.reload(importlib.import_module("app.utils.streaming"))
 

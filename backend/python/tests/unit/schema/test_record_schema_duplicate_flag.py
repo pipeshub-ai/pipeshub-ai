@@ -9,6 +9,13 @@ def test_duplicate_reconcile_pending_is_a_declared_boolean() -> None:
     assert rule["properties"]["duplicateReconcilePending"] == {"type": "boolean"}
 
 
+def test_duplicate_reconcile_attempts_is_declared() -> None:
+    """The retry sweep counts failed reconciles on the record (KG-51)."""
+    rule = record_schema["rule"]
+    assert rule["properties"]["duplicateReconcileAttempts"] == {"type": ["integer", "null"]}
+    assert rule["properties"]["duplicateReconcileDueAt"] == {"type": ["number", "null"]}
+
+
 def test_taxonomy_edges_declare_extracted_name() -> None:
     """The resolver writes extractedName on belongsTo* edges; under the strict
     basic edge schema ArangoDB rejected every one of them (errorNum 1620)."""

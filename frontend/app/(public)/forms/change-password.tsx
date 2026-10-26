@@ -4,6 +4,7 @@ import React, { useRef, useState } from 'react';
 import { Box, Flex } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { LoadingButton } from '@/app/components/ui/loading-button';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { validatePassword } from '@/lib/utils/validators';
 import type { JwtUser } from '@/lib/utils/auth-helpers';
 import AuthTitleSection from '../components/auth-title-section';
@@ -49,6 +50,7 @@ export default function ChangePassword({
   disabled = false,
 }: ChangePasswordProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
@@ -103,8 +105,12 @@ export default function ChangePassword({
         // Business logic error (e.g. "Old and new password cannot be same") —
         // show it inline in the form; this is NOT a token problem.
         setServerError(rawMsg || t('resetPassword.failure.genericLinkInvalidMessage'));
+      } else if (status === undefined || status >= 500) {
+        // The server or the network failed, not the link: nothing was changed and
+        // the same link can be submitted again.
+        setServerError(rawMsg || t('common.errorOccurred'));
       } else if (onInvalidToken) {
-        // 401, 404, or other non-400 errors mean the token is truly invalid or
+        // 401, 404, or other 4xx errors mean the token is truly invalid or
         // expired (cancelled invite, deleted account, stale token). Lift to the
         // parent for the invite-expired / reset-expired failure screen.
         onInvalidToken();
@@ -120,7 +126,13 @@ export default function ChangePassword({
     <Box style={{ width: '100%', maxWidth: '440px', position: 'relative' }}>
       {/* ── User badge (top-right) ─────────────────────────────── */}
       {user && (user.email || user.name) && (
-        <Box style={{ position: 'absolute', top: '-8px', right: 0 }}>
+        <Box
+          style={
+            isMobile
+              ? { marginBottom: 'var(--space-4)', maxWidth: '100%' }
+              : { position: 'absolute', top: '-8px', right: 0 }
+          }
+        >
           <UserBadge user={user} />
         </Box>
       )}

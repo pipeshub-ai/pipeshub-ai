@@ -1,7 +1,7 @@
 import { HttpMethod } from '../../enums/http-methods.enum';
 import { BaseCommand } from '../command.interface';
 import { Logger } from '../../services/logger.service';
-import { logSafeUrl } from '../log-safe-url';
+import { redactSensitiveQueryParams } from '../../utils/log-redaction.utils';
 
 const logger = Logger.getInstance({
   service: 'ConfigurationManagerServiceCommand',
@@ -55,7 +55,7 @@ export class ConfigurationManagerServiceCommand extends BaseCommand<Configuratio
       logger.debug('Configuration Manager service command response', {
         statusCode: response.status,
         statusText: response.statusText,
-        url: logSafeUrl(url),
+        url: redactSensitiveQueryParams(url),
       });
 
       // Assuming the response is JSON; adjust as needed.
@@ -68,7 +68,7 @@ export class ConfigurationManagerServiceCommand extends BaseCommand<Configuratio
     } catch (error: any) {
       logger.error('Configuration Manager service command failed', {
         error: error.message,
-        url: logSafeUrl(url),
+        url: redactSensitiveQueryParams(url),
         // Headers carry the caller's bearer token and bodies carry connector secrets.
         method: this.method,
       });

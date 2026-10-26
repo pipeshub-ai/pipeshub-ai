@@ -6,6 +6,9 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { McpMyServerEntry, McpToolInfo } from '../../types';
 import { McpInstanceRow } from './mcp-instance-row';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -18,6 +21,8 @@ export interface McpServerDetailsHeader {
   displayName: string;
   description: string;
   icon?: string | null;
+  /** Shown under the description, e.g. that the entry was replaced. */
+  notice?: string | null;
 }
 
 interface McpServerDetailsLayoutProps {
@@ -25,7 +30,8 @@ interface McpServerDetailsLayoutProps {
   instances: McpMyServerEntry[];
   isLoading: boolean;
   onBack: () => void;
-  onAddInstance: () => void;
+  /** Absent for an entry that makes no new servers. */
+  onAddInstance?: () => void;
   onManageInstance: (instance: McpMyServerEntry) => void;
   onDeleteInstance: (instance: McpMyServerEntry) => void;
   onAuthenticate: (instance: McpMyServerEntry) => void;
@@ -60,6 +66,7 @@ export function McpServerDetailsLayout({
   toolsState,
   onDiscoverTools,
 }: McpServerDetailsLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
 
   return (
@@ -69,10 +76,9 @@ export function McpServerDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >
@@ -106,7 +112,7 @@ export function McpServerDetailsLayout({
       </Flex>
 
       {/* Header: icon + name + actions */}
-      <Flex justify="between" align="start" gap="4" style={{ width: '100%' }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="4" style={{ width: '100%' }}>
         <Flex align="center" gap="4">
           <HeaderIcon header={header} />
           <Flex direction="column" gap="1">
@@ -116,6 +122,11 @@ export function McpServerDetailsLayout({
             <Text size="2" style={{ color: 'var(--gray-11)' }}>
               {header?.description ?? ''}
             </Text>
+            {header?.notice ? (
+              <Text size="2" style={{ color: 'var(--amber-11)' }}>
+                {header.notice}
+              </Text>
+            ) : null}
           </Flex>
         </Flex>
 
@@ -144,15 +155,17 @@ export function McpServerDetailsLayout({
               {t('workspace.mcpServers.details.refreshAll')}
             </Button>
           ) : null}
-          <Button
-            variant="solid"
-            size="2"
-            onClick={onAddInstance}
-            style={{ cursor: 'pointer' }}
-          >
-            <MaterialIcon name="add" size={16} color="white" />
-            {t('workspace.mcpServers.details.addInstance')}
-          </Button>
+          {onAddInstance ? (
+            <Button
+              variant="solid"
+              size="2"
+              onClick={onAddInstance}
+              style={{ cursor: 'pointer' }}
+            >
+              <MaterialIcon name="add" size={16} color="white" />
+              {t('workspace.mcpServers.details.addInstance')}
+            </Button>
+          ) : null}
         </Flex>
       </Flex>
 

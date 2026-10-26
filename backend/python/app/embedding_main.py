@@ -14,25 +14,33 @@ import os
 import struct
 import threading
 import time
+from collections import deque
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from enum import StrEnum
+from typing import TYPE_CHECKING, Annotated, Any
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Header, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import (
     DEFAULT_EMBEDDING_MODEL,
+    EMBEDDING_PRIORITY_QUERY,
     EMBEDDING_SERVER_PORT,
 )
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
+from app.services.resource_governor.probe import effective_cpu_count, effective_cpu_source
 from app.telemetry.setup import setup_telemetry
-from app.utils.logger import create_logger
+from app.utils.logger import create_logger, install_log_redaction
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncIterator
 
 logger = create_logger("embedding_service")
 
@@ -43,14 +51,31 @@ DEFAULT_NORMALIZE = os.getenv("EMBEDDING_SERVER_NORMALIZE", "true").lower() in (
     "yes",
 )
 _ENV_MAX_CONCURRENT_EMBEDDINGS = (os.getenv("EMBEDDING_SERVER_MAX_CONCURRENCY") or "").strip()
+
+
+def _default_max_concurrent_embeddings() -> int:
+    """Encode slots when not set explicitly: the container's CPUs, at least 2."""
+    return max(2, effective_cpu_count())
+
+
 MAX_CONCURRENT_EMBEDDINGS = (
     int(_ENV_MAX_CONCURRENT_EMBEDDINGS)
     if _ENV_MAX_CONCURRENT_EMBEDDINGS
-    else max(2, os.cpu_count() or 2)
+    else _default_max_concurrent_embeddings()
 )
 if MAX_CONCURRENT_EMBEDDINGS < 1:
     raise ValueError(
         f"EMBEDDING_SERVER_MAX_CONCURRENCY must be at least 1, got {MAX_CONCURRENT_EMBEDDINGS}"
+    )
+# Encode slots bulk (indexing) requests may never take, kept for search
+# queries so a query does not wait for an indexing batch to finish. Capped
+# below the total so bulk always keeps at least one slot; 0 keeps only the
+# ordering (queries ahead of queued bulk requests).
+_ENV_QUERY_RESERVED_SLOTS = (os.getenv("EMBEDDING_SERVER_QUERY_RESERVED_SLOTS") or "").strip()
+QUERY_RESERVED_SLOTS = int(_ENV_QUERY_RESERVED_SLOTS) if _ENV_QUERY_RESERVED_SLOTS else 1
+if QUERY_RESERVED_SLOTS < 0:
+    raise ValueError(
+        f"EMBEDDING_SERVER_QUERY_RESERVED_SLOTS must be at least 0, got {QUERY_RESERVED_SLOTS}"
     )
 
 # Bound any Hub HTTP call so a slow/blocked network can never hang model load
@@ -282,6 +307,146 @@ class PrepareModelRequest(BaseModel):
     trust_remote_code: bool = False
 
 
+class EncodePriority(StrEnum):
+    """Who is waiting on an encode. A search query has a person waiting on
+    it; a bulk request is an indexing batch, which can wait."""
+
+    QUERY = "query"
+    BULK = "bulk"
+
+    @classmethod
+    def from_header(cls, value: str | None) -> "EncodePriority":
+        if value is not None and value.strip().lower() == EMBEDDING_PRIORITY_QUERY:
+            return cls.QUERY
+        return cls.BULK
+
+
+class EncodeGate:
+    """Encode slots shared by search queries and bulk indexing batches.
+
+    A plain semaphore serves requests in arrival order, so while an indexing
+    run keeps every slot busy a search query waits behind every batch queued
+    before it, each one seconds of CPU on a local model. Here a query is
+    admitted ahead of any waiting bulk request, and bulk requests may hold at
+    most ``capacity - reserved_for_queries`` slots, so a query normally starts
+    at once instead of waiting for a batch to finish. Within each class,
+    first come first served.
+
+    Bulk is never shut out. While a bulk request is waiting and no bulk
+    request holds a slot, queries may not take the last free slot, and the
+    next slot a query frees goes to bulk; so a steady stream of queries
+    slows indexing to one encode at a time but cannot stop it. A slot a
+    batch frees goes to a waiting query first, so a steady stream of
+    batches cannot keep queries waiting either. With a single slot the two
+    take turns. Event-loop only; no locking.
+    """
+
+    def __init__(self, capacity: int, reserved_for_queries: int = 1) -> None:
+        if capacity < 1:
+            raise ValueError(f"capacity must be at least 1, got {capacity}")
+        self._capacity = capacity
+        self._bulk_limit = max(1, capacity - max(0, reserved_for_queries))
+        self._in_use = 0
+        self._bulk_in_use = 0
+        self._waiting: dict[EncodePriority, deque[asyncio.Future[None]]] = {
+            EncodePriority.QUERY: deque(),
+            EncodePriority.BULK: deque(),
+        }
+
+    @property
+    def in_use(self) -> int:
+        return self._in_use
+
+    @property
+    def bulk_limit(self) -> int:
+        return self._bulk_limit
+
+    def waiting(self, priority: EncodePriority) -> int:
+        return sum(1 for f in self._waiting[priority] if not f.done())
+
+    def _bulk_shut_out(self) -> bool:
+        """A bulk request is waiting and no bulk request holds a slot."""
+        return self._bulk_in_use == 0 and self.waiting(EncodePriority.BULK) > 0
+
+    def _has_room(self, priority: EncodePriority) -> bool:
+        if self._in_use >= self._capacity:
+            return False
+        if priority is EncodePriority.QUERY:
+            # Leave the last free slot to bulk work that has none.
+            return not (self._bulk_shut_out() and self._in_use >= self._capacity - 1)
+        if self._bulk_in_use == 0:
+            return True
+        return self._in_use < self._bulk_limit and not self.waiting(EncodePriority.QUERY)
+
+    def _take(self, priority: EncodePriority) -> None:
+        self._in_use += 1
+        if priority is EncodePriority.BULK:
+            self._bulk_in_use += 1
+
+    def _grant_next(self, priority: EncodePriority, *, any_free_slot: bool = False) -> bool:
+        queue = self._waiting[priority]
+        while queue and queue[0].done():
+            queue.popleft()
+        if not queue:
+            return False
+        room = self._in_use < self._capacity if any_free_slot else self._has_room(priority)
+        if not room:
+            return False
+        # The slot is taken on the waiter's behalf, so nothing that runs
+        # before it resumes can take it first.
+        self._take(priority)
+        queue.popleft().set_result(None)
+        return True
+
+    def _wake(self, *, bulk_released: bool = False) -> None:
+        if bulk_released:
+            # A finished batch hands its slot to a waiting query first, even
+            # the last free one: otherwise, with batches always queued, the
+            # slot would pass from batch to batch and a query would wait for
+            # the whole queue. Bulk gets the next slot a query frees.
+            self._grant_next(EncodePriority.QUERY, any_free_slot=True)
+        while True:
+            # Bulk first only when it holds nothing; otherwise queries first.
+            order = (
+                (EncodePriority.BULK, EncodePriority.QUERY)
+                if self._bulk_shut_out()
+                else (EncodePriority.QUERY, EncodePriority.BULK)
+            )
+            if not any(self._grant_next(priority) for priority in order):
+                return
+
+    async def acquire(self, priority: EncodePriority) -> None:
+        if not self.waiting(priority) and self._has_room(priority):
+            self._take(priority)
+            return
+        waiter: asyncio.Future[None] = asyncio.get_running_loop().create_future()
+        self._waiting[priority].append(waiter)
+        # Settles the queue at once if there is room after all (its head
+        # was only waiters that have since given up).
+        self._wake()
+        try:
+            await waiter
+        except asyncio.CancelledError:
+            if waiter.done() and not waiter.cancelled():
+                # Granted, then cancelled before it could run: hand it back.
+                self.release(priority)
+            raise
+
+    def release(self, priority: EncodePriority) -> None:
+        self._in_use = max(0, self._in_use - 1)
+        if priority is EncodePriority.BULK:
+            self._bulk_in_use = max(0, self._bulk_in_use - 1)
+        self._wake(bulk_released=priority is EncodePriority.BULK)
+
+    @asynccontextmanager
+    async def slot(self, priority: EncodePriority) -> AsyncIterator[None]:
+        await self.acquire(priority)
+        try:
+            yield
+        finally:
+            self.release(priority)
+
+
 class ModelManager:
     """Thread-safe cache of loaded SentenceTransformer models."""
 
@@ -291,13 +456,14 @@ class ModelManager:
         device: str = DEFAULT_DEVICE,
         normalize_embeddings: bool = DEFAULT_NORMALIZE,
         max_concurrency: int = MAX_CONCURRENT_EMBEDDINGS,
+        query_reserved_slots: int = QUERY_RESERVED_SLOTS,
     ) -> None:
         self._device = device
         self._normalize = normalize_embeddings
         self._models: dict[str, Any] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._global_lock = asyncio.Lock()
-        self._encode_semaphore = asyncio.Semaphore(max_concurrency)
+        self._encode_gate = EncodeGate(max_concurrency, query_reserved_slots)
         self._download_status: dict[str, DownloadStatus] = {}
         self._download_status_lock = threading.Lock()
         self._prepare_tasks: dict[str, asyncio.Task] = {}
@@ -403,9 +569,16 @@ class ModelManager:
             status.updated_at = time.time()
 
             def _load() -> Any:
+                import torch
                 from sentence_transformers import SentenceTransformer
 
-                load_kwargs: dict[str, Any] = {"device": self._device}
+                # transformers 5 loads weights at the dtype in the model's config, so a
+                # repo published in fp16/bf16 would no longer load in fp32 and its vectors
+                # would drift from the ones already stored.
+                load_kwargs: dict[str, Any] = {
+                    "device": self._device,
+                    "model_kwargs": {"dtype": torch.float32},
+                }
                 if trust_remote_code:
                     load_kwargs["trust_remote_code"] = True
 
@@ -482,6 +655,7 @@ class ModelManager:
         texts: list[str],
         *,
         trust_remote_code: bool = False,
+        priority: EncodePriority = EncodePriority.BULK,
     ) -> list[list[float]]:
         model = await self.get_model(
             model_name,
@@ -496,7 +670,7 @@ class ModelManager:
             )
             return embeddings.tolist()
 
-        async with self._encode_semaphore:
+        async with self._encode_gate.slot(priority):
             return await asyncio.to_thread(_encode)
 
 
@@ -529,11 +703,15 @@ def _format_embedding_vector(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    mark_process_non_dumpable()
+    install_log_redaction()
     app.state.model_manager = model_manager
     logger.info(
-        "Starting embedding server warmup for %s (max_concurrency=%d)",
+        "Starting embedding server warmup for %s (max_concurrency=%d, "
+        "slots reserved for search queries=%d)",
         DEFAULT_EMBEDDING_MODEL,
         MAX_CONCURRENT_EMBEDDINGS,
+        min(QUERY_RESERVED_SLOTS, MAX_CONCURRENT_EMBEDDINGS - 1),
     )
     logger.info(
         "Security policy: allow_remote_code=%s, allowed_models=%s",
@@ -601,15 +779,21 @@ async def health_check() -> JSONResponse:
                 "status": status,
                 "loaded_models": loaded,
                 "default_model": DEFAULT_EMBEDDING_MODEL,
+                "cpu": {
+                    "effective_cpus": effective_cpu_count(),
+                    "source": effective_cpu_source(),
+                    "max_concurrent_embeddings": MAX_CONCURRENT_EMBEDDINGS,
+                },
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
-    except Exception as e:
+    except Exception:
+        logger.exception("Health check failed")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
+                "error": "Health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -685,7 +869,10 @@ async def download_progress(model_name: str) -> JSONResponse:
 
 
 @app.post("/v1/embeddings")
-async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+async def create_embeddings(
+    request: EmbeddingRequest,
+    x_embedding_priority: Annotated[str | None, Header()] = None,
+) -> EmbeddingResponse:
     # --- server-side policy checks (fail fast, before any I/O) ---
     if ALLOWED_MODELS is not None and request.model not in ALLOWED_MODELS:
         raise HTTPException(
@@ -709,6 +896,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
             request.model,
             texts,
             trust_remote_code=request.trust_remote_code,
+            priority=EncodePriority.from_header(x_embedding_priority),
         )
     except Exception as exc:
         logger.exception("Embedding failed for model=%s", request.model)

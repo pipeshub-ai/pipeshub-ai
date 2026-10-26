@@ -39,7 +39,7 @@ def artifact_title(kind: str) -> str:
 # the mutation tests create and delete their own issues, so nothing edits this one.
 # Pinned (not "first issue returned by the API") so the reference issue doesn't drift
 # across runs based on whichever issue was most recently updated.
-LINEAR_REFERENCE_ISSUE_IDENTIFIER = "ENG-2"
+LINEAR_REFERENCE_ISSUE_IDENTIFIER = os.getenv("LINEAR_REFERENCE_ISSUE_IDENTIFIER", "ENG-2")
 
 # TC-LINEAR-PH-001 chain: an issue with >= 2 ancestors, itself updated more recently than
 # its two nearest ones. The test derives its own ``modified`` cut from those timestamps, so

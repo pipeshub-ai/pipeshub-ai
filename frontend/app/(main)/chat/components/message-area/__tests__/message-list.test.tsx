@@ -17,15 +17,17 @@ const thread = vi.hoisted(() => ({
 const loadOlder = vi.hoisted(() => vi.fn<(slotId: string) => Promise<void>>());
 
 vi.mock('@assistant-ui/react', () => ({
-  useThread: () => ({ messages: thread.messages }),
-  useThreadRuntime: () => ({ append: thread.append }),
+  useAuiState: (select: (state: unknown) => unknown) => select({ thread: { messages: thread.messages } }),
+  useAui: () => ({ thread: () => ({ append: thread.append }) }),
 }));
 
 vi.mock('../../../streaming', () => ({
   loadOlderMessagesForSlot: (slotId: string) => loadOlder(slotId),
 }));
 
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+const viewport = vi.hoisted(() => ({ isMobile: false }));
+
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => viewport.isMobile }));
 
 vi.mock('@/app/components/ui/lottie-loader', () => ({
   LottieLoader: ({ size }: { size?: number }) => (
@@ -60,8 +62,13 @@ vi.mock('../chat-response', () => ({
     isStreaming: boolean;
     streamingContent?: string;
     unanswered?: boolean;
+    latestArtifactVersions?: Map<string, number>;
   }) => (
-    <article aria-label={props.question} data-streaming={props.isStreaming ? 'yes' : 'no'}>
+    <article
+      aria-label={props.question}
+      data-streaming={props.isStreaming ? 'yes' : 'no'}
+      data-latest-versions={JSON.stringify([...(props.latestArtifactVersions ?? [])])}
+    >
       <h3>{props.question}</h3>
       {props.unanswered ? null : <p>{props.answer}</p>}
       {props.streamingContent ? <p>{props.streamingContent}</p> : null}
@@ -138,6 +145,12 @@ beforeEach(() => {
     if (typeof arg === 'object' && arg?.top !== undefined) this.scrollTop = arg.top;
   } as HTMLElement['scrollTo'];
   HTMLElement.prototype.getBoundingClientRect = function rect(this: HTMLElement) {
+    if (this.classList.contains('chat-message-scroll')) {
+      return {
+        top: 0, bottom: geometry.viewportHeight, height: geometry.viewportHeight,
+        left: 0, right: 0, width: 0, x: 0, y: 0, toJSON: () => ({}),
+      };
+    }
     const question = rowQuestion(this);
     const scroller = this.closest('.chat-message-scroll');
     const offset = scroller instanceof HTMLElement ? scroller.scrollTop : 0;
@@ -284,6 +297,29 @@ describe('MessageList — what the reader sees', () => {
     const earlier = screen.getByRole('article', { name: 'Who approves exceptions?' });
     expect(earlier.getAttribute('data-streaming')).toBe('no');
     expect(earlier.textContent).not.toContain('Enterprise refunds follow the contract');
+  });
+
+  it('counts artifact versions from saved answers and live events, never from the streaming row', () => {
+    thread.messages = [
+      user('u1', 'Make the report'),
+      assistant('a1', 'Done.\n\n::artifact[report.xlsx](record:rec-1){text/csv|d-1|rec-1|SPREADSHEET|1}'),
+      user('u2', 'Update it'),
+      // Model text on the row still streaming: not a saved answer, so its
+      // marker must not feed the version map.
+      assistant('a2', '::artifact[report.xlsx](https://attacker.test/x.exe){text/csv||rec-1||9}'),
+    ];
+    openConversation('conv-1', {
+      isStreaming: true,
+      streamingQuestion: 'Update it',
+      artifacts: [
+        { id: 'rec-1', fileName: 'report.xlsx', mimeType: 'text/csv', sizeBytes: 0, downloadUrl: '', artifactType: 'SPREADSHEET', recordId: 'rec-1', version: 2 },
+      ],
+    });
+
+    render(<MessageList />);
+
+    const row = screen.getByRole('article', { name: 'Make the report' });
+    expect(JSON.parse(row.getAttribute('data-latest-versions') ?? '[]')).toEqual([['rec-1', 2]]);
   });
 
   it('keeps a question that was stopped before any answer arrived', () => {
@@ -548,5 +584,200 @@ describe('MessageList — scrolling', () => {
       flushFrames();
     });
     expect(spacer.style.minHeight).toBe(`${500 - 300}px`);
+  });
+});
+
+describe('MessageList — jump to newest', () => {
+  const jumpButton = () => screen.queryByRole('button', { name: 'Jump to latest message' });
+
+  function openTwoTurns() {
+    thread.messages = TWO_TURNS;
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+  }
+
+  it('is not offered while the latest question is in view', () => {
+    openTwoTurns();
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('is at least 44px square on a phone so a thumb can hit it', () => {
+    viewport.isMobile = true;
+    try {
+      openTwoTurns();
+      scrollTo(100);
+
+      const button = jumpButton() as HTMLElement;
+      expect(button.style.minWidth).toBe('44px');
+      expect(button.style.minHeight).toBe('44px');
+    } finally {
+      viewport.isMobile = false;
+    }
+  });
+
+  it('sits 12px above the composer so it never covers the text box', () => {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? 120 : 0;
+      },
+    });
+    try {
+      thread.messages = TWO_TURNS;
+      geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+      openConversation('conv-1');
+      render(<MessageList composer={<div data-testid="composer" />} />);
+      settle();
+      scrollTo(100);
+
+      const holder = (jumpButton() as HTMLElement).parentElement as HTMLElement;
+      expect(holder.style.bottom).toBe('132px');
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+    }
+  });
+
+  it('does not force a minimum size on desktop', () => {
+    openTwoTurns();
+    scrollTo(100);
+
+    const button = jumpButton() as HTMLElement;
+    expect(button.style.minWidth).toBe('');
+    expect(button.style.minHeight).toBe('');
+  });
+
+  it('is not offered in an empty conversation', () => {
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+    scrollTo(300);
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('appears when the reader scrolls up away from the latest message', () => {
+    openTwoTurns();
+
+    scrollTo(100);
+
+    expect(jumpButton()).not.toBeNull();
+  });
+
+  it('stays hidden for a small scroll that keeps the latest message within reach', () => {
+    openTwoTurns();
+
+    scrollTo(560);
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('goes away again once the reader scrolls back down', () => {
+    openTwoTurns();
+    scrollTo(100);
+    expect(jumpButton()).not.toBeNull();
+
+    scrollTo(600);
+
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('takes the reader to the end of the conversation and then hides', () => {
+    openTwoTurns();
+    scrollTo(100);
+
+    fireEvent.click(jumpButton() as HTMLElement);
+    settle();
+    expect(scroller().scrollTop).toBe(2000 - 500);
+
+    fireEvent.scroll(scroller());
+    expect(jumpButton()).toBeNull();
+  });
+
+  it('does not send anything when used', () => {
+    openTwoTurns();
+    scrollTo(100);
+
+    fireEvent.click(jumpButton() as HTMLElement);
+
+    expect(thread.append).not.toHaveBeenCalled();
+  });
+
+  it('is offered while an answer streams once the reader scrolls up, and following resumes after it is used', () => {
+    thread.messages = [...TWO_TURNS, user('u3', 'Summarise the policy'), assistant('a3', '')];
+    geometry.rowTop = { 'Summarise the policy': 900 };
+    geometry.rowHeight = { 'Summarise the policy': 900 };
+    const slotId = openConversation('conv-1', {
+      isStreaming: true,
+      streamingQuestion: 'Summarise the policy',
+      streamingContent: 'Part one',
+    });
+    render(<MessageList />);
+    settle();
+    expect(jumpButton()).toBeNull();
+
+    fireEvent.wheel(scroller(), { deltaY: -40 });
+    scrollTo(1000);
+    expect(jumpButton()).not.toBeNull();
+
+    fireEvent.click(jumpButton() as HTMLElement);
+    settle();
+    act(() => {
+      geometry.contentHeight = 2600;
+      useChatStore.getState().updateSlot(slotId, { streamingContent: 'Part one. Part two' });
+    });
+
+    expect(scroller().scrollTop).toBe(2600 - 500);
+  });
+
+  it('appears when the latest answer grows below the view while the reader is up-thread', () => {
+    thread.messages = [...TWO_TURNS, user('u3', 'Summarise the policy'), assistant('a3', 'Short')];
+    geometry.rowTop = { 'Summarise the policy': 900 };
+    geometry.rowHeight = { 'Summarise the policy': 200 };
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+    scrollTo(1000);
+    expect(jumpButton()).toBeNull();
+
+    geometry.rowHeight['Summarise the policy'] = 1200;
+    act(() => {
+      for (const cb of [...resizeCallbacks]) cb([], {} as ResizeObserver);
+    });
+    settle();
+
+    expect(jumpButton()).not.toBeNull();
+  });
+
+  it('is gone after switching to an empty conversation', () => {
+    openTwoTurns();
+    scrollTo(100);
+    expect(jumpButton()).not.toBeNull();
+
+    act(() => {
+      thread.messages = [];
+      openConversation('conv-2');
+    });
+    settle();
+
+    expect(jumpButton()).toBeNull();
+  });
+});
+
+describe('MessageList — opening a chat', () => {
+  it('lands on the latest question, with the jump button wrapper around the list', () => {
+    thread.messages = [
+      user('u1', 'What is our refund policy?'), assistant('a1', 'Refunds.'),
+      user('u2', 'Who approves exceptions?'), assistant('a2', 'Finance.'),
+    ];
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    openConversation('conv-1');
+    render(<MessageList />);
+    settle();
+
+    expect(scroller().scrollTop).toBe(600);
   });
 });

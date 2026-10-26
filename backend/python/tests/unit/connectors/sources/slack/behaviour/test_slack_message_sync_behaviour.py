@@ -217,10 +217,6 @@ class TestThreads:
 
         assert store.message_ts_count().get(follow_up) == 1
 
-    @pytest.mark.xfail(strict=True, reason=(
-        "When reading a thread's replies fails, the thread's checkpoint is still moved to its "
-        "latest reply and the channel checkpoint moves past the parent, so those replies are never synced."
-    ))
     async def test_replies_that_could_not_be_read_arrive_on_the_next_sync(self, workspace, store, checkpoints) -> None:
         parent = ts_minutes_ago(300)
         workspace.post(GENERAL, parent, ALICE, "question")
@@ -237,10 +233,6 @@ class TestThreads:
 
 
 class TestCheckpoints:
-    @pytest.mark.xfail(strict=True, reason=(
-        "When a later page of channel history fails, the checkpoint still moves to the newest "
-        "message of the first page, so the older messages on the failed pages are never synced."
-    ))
     async def test_a_failed_later_page_does_not_move_the_checkpoint_past_unread_messages(self, workspace, store, checkpoints) -> None:
         stamps = [ts_minutes_ago(m) for m in (400, 300, 200, 100)]
         for ts in stamps:

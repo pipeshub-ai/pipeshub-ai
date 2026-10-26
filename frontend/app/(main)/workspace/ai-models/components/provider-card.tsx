@@ -11,51 +11,16 @@ import { isRegistryBadgeCapability } from '../types';
 import { aiModelsCapabilityBadge } from '../capability-i18n';
 import { MODEL_ROW_ICON_CONTAINER_STYLE, modelRowCardStyle } from './model-row-layout';
 
-const BADGE_STYLE: Record<
-  string,
-  { border: string; color: string; bg: string }
-> = {
-  text_generation: {
-    border: '1px solid var(--purple-9)',
-    color: 'var(--purple-11)',
-    bg: 'color-mix(in srgb, var(--purple-3) 40%, transparent)',
-  },
-  reasoning: {
-    border: '1px solid var(--orange-9)',
-    color: 'var(--orange-11)',
-    bg: 'color-mix(in srgb, var(--orange-3) 40%, transparent)',
-  },
-  video: {
-    border: '1px solid var(--cyan-9)',
-    color: 'var(--cyan-11)',
-    bg: 'color-mix(in srgb, var(--cyan-3) 40%, transparent)',
-  },
-  embedding: {
-    border: '1px solid var(--blue-9)',
-    color: 'var(--blue-11)',
-    bg: 'color-mix(in srgb, var(--blue-3) 40%, transparent)',
-  },
-  image_generation: {
-    border: '1px solid var(--pink-9)',
-    color: 'var(--pink-11)',
-    bg: 'color-mix(in srgb, var(--pink-3) 40%, transparent)',
-  },
-  tts: {
-    border: '1px solid var(--green-9)',
-    color: 'var(--green-11)',
-    bg: 'color-mix(in srgb, var(--green-3) 40%, transparent)',
-  },
-  stt: {
-    border: '1px solid var(--amber-9)',
-    color: 'var(--amber-11)',
-    bg: 'color-mix(in srgb, var(--amber-3) 40%, transparent)',
-  },
-};
-
-const DEFAULT_BADGE_STYLE = {
-  border: '1px solid var(--gray-8)',
+/** One neutral tag style; colour is kept for state (Default, errors), not for categories. */
+const CAPABILITY_TAG_STYLE: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 500,
+  lineHeight: '18px',
+  padding: '1px 8px',
+  borderRadius: '2px',
   color: 'var(--gray-11)',
-  bg: 'var(--gray-a3)',
+  backgroundColor: 'var(--gray-a3)',
+  whiteSpace: 'nowrap',
 };
 
 interface ProviderRowProps {
@@ -107,26 +72,12 @@ export function ProviderRow({ provider, onConfigure, hideCapabilityBadges = fals
           </Flex>
 
           {hideCapabilityBadges ? null : (
-            <Flex gap="2" wrap="wrap" style={{ marginTop: 2 }}>
+            <Flex gap="1" wrap="wrap" style={{ marginTop: 4 }}>
               {badgeCaps.map((cap) => {
                 const label = aiModelsCapabilityBadge(t, cap);
                 if (!label) return null;
-                const st = BADGE_STYLE[cap] ?? DEFAULT_BADGE_STYLE;
                 return (
-                  <span
-                    key={cap}
-                    style={{
-                      fontSize: 11,
-                      fontWeight: 600,
-                      lineHeight: '18px',
-                      padding: '2px 10px',
-                      borderRadius: "2px",
-                      border: st.border,
-                      color: st.color,
-                      backgroundColor: st.bg,
-                      whiteSpace: 'nowrap',
-                    }}
-                  >
+                  <span key={cap} style={CAPABILITY_TAG_STYLE}>
                     {label}
                   </span>
                 );

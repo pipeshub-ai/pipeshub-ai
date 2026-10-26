@@ -358,6 +358,8 @@ export const KB_ROUTES: KbRoute[] = [
   { method: 'GET', pattern: '/record/:recordId', path: `/record/${RECORD_ID}`, scope: 'kb:read', forwards: `GET /api/v1/records/${RECORD_ID}`, reply: { status: 200, body: { record: { id: RECORD_ID } } } },
   { method: 'PUT', pattern: '/record/:recordId', path: `/record/${RECORD_ID}`, json: { recordName: 'Renamed' }, scope: 'kb:write', forwards: `PUT /api/v1/kb/record/${RECORD_ID}`, reply: { status: 200, body: { updatedRecord: { id: RECORD_ID, recordName: 'Renamed' } } } },
   { method: 'DELETE', pattern: '/record/:recordId', path: `/record/${RECORD_ID}`, scope: 'kb:delete', forwards: `DELETE /api/v1/records/${RECORD_ID}`, reply: { status: 200, body: { success: true } } },
+  { method: 'POST', pattern: '/record/:recordId/restore', path: `/record/${RECORD_ID}/restore`, scope: 'kb:delete', forwards: `POST /api/v1/kb/record/${RECORD_ID}/restore`, reply: { status: 200, body: { success: true, message: 'Restored 1 item(s).', restoredRecords: [{ recordId: RECORD_ID }] } } },
+  { method: 'POST', pattern: '/records/restore', path: '/records/restore', json: { recordIds: [RECORD_ID] }, scope: 'kb:delete', forwards: 'POST /api/v1/kb/records/restore', reply: { status: 200, body: { success: true, restoredCount: 1, failedCount: 0, results: [] } } },
   { method: 'GET', pattern: '/stream/record/:recordId', path: `/stream/record/${RECORD_ID}`, scope: 'kb:read', forwards: `GET /api/v1/stream/record/${RECORD_ID}`, reply: { status: 200, raw: 'file bytes' } },
   { method: 'POST', pattern: '/reindex/record/:recordId', path: `/reindex/record/${RECORD_ID}`, json: {}, scope: 'kb:write', forwards: `POST /api/v1/records/${RECORD_ID}/reindex`, reply: { status: 200, body: { success: true } } },
   { method: 'POST', pattern: '/reindex/record-group/:recordGroupId', path: `/reindex/record-group/${RECORD_GROUP_ID}`, json: {}, scope: 'kb:write', forwards: `POST /api/v1/record-groups/${RECORD_GROUP_ID}/reindex`, reply: { status: 200, body: { success: true } } },
@@ -367,12 +369,17 @@ export const KB_ROUTES: KbRoute[] = [
   { method: 'DELETE', pattern: '/:kbId', path: `/${KB_ID}`, scope: 'kb:delete', forwards: `DELETE /api/v1/kb/${KB_ID}`, reply: { status: 200, body: { success: true } } },
   { method: 'POST', pattern: '/:kbId/upload', path: `/${KB_ID}/upload`, form: () => pdfForm('a.pdf'), scope: 'kb:upload', forwards: `GET /api/v1/kb/${KB_ID}`, reply: { status: 200, body: { id: KB_ID, userRole: 'OWNER' } } },
   { method: 'POST', pattern: '/:kbId/folder', path: `/${KB_ID}/folder`, json: { folderName: 'Specs' }, scope: 'kb:write', forwards: `POST /api/v1/kb/${KB_ID}/folder`, reply: { status: 201, body: { id: FOLDER_ID } } },
+  // The folderId in the URL is a path parameter; the handler must forward it to
+  // the connector subfolder endpoint rather than falling back to the root-folder
+  // endpoint (which would create under the KB root instead of the parent folder).
+  { method: 'POST', pattern: '/:kbId/folder/:folderId/subfolder', path: `/${KB_ID}/folder/${FOLDER_ID}/subfolder`, json: { folderName: 'Child' }, scope: 'kb:write', forwards: `POST /api/v1/kb/${KB_ID}/folder/${FOLDER_ID}/subfolder`, reply: { status: 200, body: { id: 'new-child-id' } } },
   { method: 'PUT', pattern: '/:kbId/folder/:folderId', path: `/${KB_ID}/folder/${FOLDER_ID}`, json: { folderName: 'Specs v2' }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/folder/${FOLDER_ID}`, reply: { status: 200, body: { success: true } } },
   { method: 'DELETE', pattern: '/:kbId/folder/:folderId', path: `/${KB_ID}/folder/${FOLDER_ID}`, scope: 'kb:delete', forwards: `DELETE /api/v1/kb/${KB_ID}/folder/${FOLDER_ID}`, reply: { status: 200, body: { success: true } } },
   { method: 'POST', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, json: { userIds: [MEMBER._id], teamIds: [], role: 'READER' }, scope: 'kb:write', forwards: `POST /api/v1/kb/${KB_ID}/permissions`, reply: { status: 201, body: { success: true } } },
   { method: 'GET', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, scope: 'kb:read', forwards: `GET /api/v1/kb/${KB_ID}/permissions`, reply: { status: 200, body: { permissions: [], totalCount: 0 } } },
   { method: 'PUT', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, json: { userIds: [MEMBER._id], teamIds: [], role: 'WRITER' }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/permissions`, reply: { status: 200, body: { userIds: [MEMBER._id], teamIds: [], newRole: 'WRITER' } } },
   { method: 'DELETE', pattern: '/:kbId/permissions', path: `/${KB_ID}/permissions`, json: { userIds: [MEMBER._id], teamIds: [] }, scope: 'kb:delete', forwards: `DELETE /api/v1/kb/${KB_ID}/permissions`, reply: { status: 200, body: { userIds: [MEMBER._id], teamIds: [] } } },
+  { method: 'GET', pattern: '/:kbId/trash', path: `/${KB_ID}/trash`, scope: 'kb:delete', forwards: `GET /api/v1/kb/${KB_ID}/trash`, reply: { status: 200, body: { success: true, items: [], pagination: { page: 1, limit: 25, totalCount: 0, totalPages: 0 }, retention: { minAgeMs: 1209600000 } } } },
   { method: 'PUT', pattern: '/:kbId/record/:recordId/move', path: `/${KB_ID}/record/${RECORD_ID}/move`, json: { newParentId: FOLDER_ID }, scope: 'kb:write', forwards: `PUT /api/v1/kb/${KB_ID}/record/${RECORD_ID}/move`, reply: { status: 200, body: { success: true } } },
 ]
 

@@ -15,6 +15,9 @@ import {
   getPersonalConnectorRedirectType,
   personalConnectorHref,
 } from '../utils/admin-access-helpers';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ========================================
 // Props
@@ -79,6 +82,7 @@ export function ConnectorDetailsLayout({
   onRefreshInstance,
   renderInstanceActions,
 }: ConnectorDetailsLayoutProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
   const connectorName = connector?.name ?? '';
@@ -143,10 +147,9 @@ export function ConnectorDetailsLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 32,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 32,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >
@@ -180,7 +183,7 @@ export function ConnectorDetailsLayout({
       </Flex>
 
       {/* ── Header: icon + name + actions ── */}
-      <Flex justify="between" align="start" gap="4" style={{ width: '100%' }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="4" style={{ width: '100%' }}>
         <Flex align="center" gap="4">
           <ConnectorTypeIcon connector={connector} />
           <Flex direction="column" gap="1">
@@ -331,7 +334,14 @@ export function ConnectorDetailsLayout({
           </Text>
         </Flex>
       ) : (
-        <Flex direction="column" gap="4">
+        // Two cards per row once there is room for both; one on narrow screens.
+        <Box
+          style={{
+            display: 'grid',
+            gridTemplateColumns: 'repeat(auto-fill, minmax(min(100%, 480px), 1fr))',
+            gap: 'var(--space-4)',
+          }}
+        >
           {instances.map((instance) => (
             <InstanceCard
               key={`${instance._key}-${instance.isAuthenticated ? '1' : '0'}`}
@@ -350,7 +360,7 @@ export function ConnectorDetailsLayout({
               renderExtraActions={renderInstanceActions}
             />
           ))}
-        </Flex>
+        </Box>
       )}
     </Flex>
   );

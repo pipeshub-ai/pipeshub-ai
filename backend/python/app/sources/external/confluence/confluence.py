@@ -63,6 +63,19 @@ def _validate_authorship_value(field: str, value: str) -> str:
     )
 
 
+def _matched_by_something_else(user: dict[str, Any], email: str) -> bool:
+    """Whether a Jira user search for ``email`` could have found this user by name, or found someone else.
+
+    The search also matches display names, which users set themselves, by word prefix.
+    """
+    query = email.lower()
+    shown = (user.get("emailAddress") or "").lower()
+    if shown and shown != query:
+        return True
+    # Substring, not word prefix: "(alice@acme.com)" as a display name must not pass.
+    return query in str(user.get("displayName") or "").lower()
+
+
 class ConfluenceDataSource:
     def __init__(self, client: ConfluenceClient) -> None:
         """Default init for the connector-specific data source."""
@@ -434,6 +447,41 @@ class ConfluenceDataSource:
             method="GET",
             url=url,
             headers=_as_str_dict(_headers),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
+    async def list_space_content_v1(
+        self,
+        space_key: str,
+        content_type: str,
+        status: str = "current",
+        start: int | None = None,
+        limit: int = 100,
+        expand: str | None = None,
+        headers: dict[str, Any] | None = None,
+    ) -> HTTPResponse:
+        """``GET /rest/api/content?spaceKey=&type=&status=`` — a space's pages or blog posts from the database.
+
+        Unlike ``/content/search`` it does not go through the search index, so it
+        is what exists, as far as the caller's account can see.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+
+        url = f"{self._v1_rest_api_base()}/content"
+        _query: dict[str, Any] = {"spaceKey": space_key, "type": content_type, "status": status, "limit": limit}
+        if start is not None:
+            _query["start"] = start
+        if expand:
+            _query["expand"] = expand
+
+        req = HTTPRequest(
+            method="GET",
+            url=url,
+            headers=_as_str_dict(dict(headers or {})),
             path={},
             query=_as_str_dict(_query),
             body=None,
@@ -2836,6 +2884,7 @@ class ConfluenceDataSource:
         page_ids: Optional[List[str]] = None,
         page_ids_operator: Optional[Literal["in", "not_in"]] = None,
         include_children: bool = False,
+        within_ids: Optional[List[str]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2863,6 +2912,7 @@ class ConfluenceDataSource:
             page_ids: Filter specific pages by IDs (includes children if include_children=True)
             page_ids_operator: "in" to include pages, "not_in" to exclude (default: "in")
             include_children: Include child pages of specified page_ids (default: False)
+            within_ids: Only these page ids, on top of any ``page_ids`` filter
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -2901,6 +2951,9 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        if within_ids:
+            cql_parts.append(f"id in ({', '.join(within_ids)})")
 
         # Add page IDs filter with children support
         if page_ids:
@@ -2973,6 +3026,7 @@ class ConfluenceDataSource:
         space_key: Optional[str] = None,
         blogpost_ids: Optional[List[str]] = None,
         blogpost_ids_operator: Optional[Literal["in", "not_in"]] = None,
+        within_ids: Optional[List[str]] = None,
         order_by: Optional[Literal["lastModified", "created", "title"]] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
         expand: Optional[str] = None,
@@ -2998,6 +3052,7 @@ class ConfluenceDataSource:
             space_key: Filter blogposts by specific space key
             blogpost_ids: Filter specific blogposts by IDs
             blogpost_ids_operator: "in" to include blogposts, "not_in" to exclude (default: "in")
+            within_ids: Only these blog post ids, on top of any ``blogpost_ids`` filter
             order_by: CQL sort field - lastModified, created, or title (default: None, API default).
                       Must be specified together with sort_order, or neither.
             sort_order: Sort direction - asc or desc (default: None, API default).
@@ -3036,6 +3091,9 @@ class ConfluenceDataSource:
         # Add space filter if provided
         if space_key:
             cql_parts.append(f"space='{space_key}'")
+
+        if within_ids:
+            cql_parts.append(f"id in ({', '.join(within_ids)})")
 
         # Add blogpost IDs filter (no children for blogposts)
         if blogpost_ids:
@@ -3185,17 +3243,62 @@ class ConfluenceDataSource:
         resp = await self._client.execute(req)
         return resp
 
+    async def get_comments_v1(
+        self,
+        space_key: str,
+        modified_after: Optional[str] = None,
+        start: Optional[int] = None,
+        cursor: Optional[str] = None,
+        limit: Optional[int] = None,
+        time_offset_hours: int = 0,
+        headers: Optional[dict[str, Any]] = None,
+        content_type: str = "comment",
+    ) -> HTTPResponse:
+        """Comments (or attachments) of a space changed after a time, with the page or blog post each is on.
+
+        v1 ``GET .../rest/api/content/search`` with CQL ``type=comment`` (or ``content_type``);
+        ``container`` is expanded so each result names its page.
+        """
+        if self._client is None:
+            raise ValueError("HTTP client is not initialized")
+        if content_type not in ("comment", "attachment"):
+            raise ValueError(f"Unsupported content type: {content_type}")
+        cql_parts = [f"type={content_type}", f'space="{_escape_cql_literal(space_key)}"']
+        if modified_after:
+            formatted_date = _format_cql_date_with_offset(modified_after, time_offset_hours)
+            cql_parts.append(f'lastModified > "{formatted_date}"')
+        _query: dict[str, Any] = {"cql": " AND ".join(cql_parts), "expand": "container,version"}
+        if limit is not None:
+            _query["limit"] = limit
+        if cursor is not None:
+            _query["cursor"] = cursor
+        elif start is not None:
+            _query["start"] = start
+        req = HTTPRequest(
+            method="GET",
+            url=self._v1_rest_api_base() + "/content/search",
+            headers=_as_str_dict(dict(headers or {})),
+            path={},
+            query=_as_str_dict(_query),
+            body=None,
+        )
+        return await self._client.execute(req)
+
     async def get_page_permissions_v1(
         self,
         page_id: str,
         expand: Optional[str] = None,
-        headers: Optional[Dict[str, Any]] = None
+        headers: Optional[dict[str, Any]] = None,
+        start: Optional[int] = None,
+        limit: Optional[int] = None,
     ) -> HTTPResponse:
         """Fetch page permissions using v1 content API.
 
         Args:
             page_id: The page ID
             expand: Properties to expand (default includes user/group details)
+            start: Offset into each operation's user and group lists
+            limit: Most users and most groups per operation in one response (Cloud default 100)
 
         Returns:
             HTTPResponse containing restrictions data
@@ -3208,6 +3311,10 @@ class ConfluenceDataSource:
             _query: Dict[str, Any] = {"expand": expand}
         else:
             _query: Dict[str, Any] = {}
+        if start is not None:
+            _query["start"] = start
+        if limit is not None:
+            _query["limit"] = limit
         _path: Dict[str, Any] = {"id": page_id}
 
         url = self._v1_rest_api_base() + _safe_format_url("/content/{id}/restriction", _path)
@@ -8676,7 +8783,9 @@ class ConfluenceDataSource:
                 parsed = urlparse(self.base_url)
                 # Security: verify domain ends with .atlassian.net (not just contains it)
                 # This prevents URL injection attacks like "evil.com/phishing?.atlassian.net"
-                if parsed.netloc.endswith('.atlassian.net') or parsed.netloc == 'atlassian.net':
+                # hostname, not netloc: netloc carries the port and any userinfo
+                host = (parsed.hostname or '').lower()
+                if host.endswith('.atlassian.net') or host == 'atlassian.net':
                     # Construct Jira URL using verified domain
                     jira_base = f"{parsed.scheme}://{parsed.netloc}"
                     url = f"{jira_base}/rest/api/3/user/search"
@@ -8726,7 +8835,7 @@ class ConfluenceDataSource:
         
         if len(exact_matches) == 1:
             user = exact_matches[0]
-        elif len(results) == 1:
+        elif len(results) == 1 and not _matched_by_something_else(results[0], normalized_email):
             user = results[0]
         else:
             # Multiple results with no exact email match — ambiguous, skip
@@ -8739,7 +8848,10 @@ class ConfluenceDataSource:
         # Only accept "atlassian" accounts or empty string (for compatibility)
         if not account_id or account_type not in ("atlassian", ""):
             return None
-        
+        # A deactivated account must not be linked back to the connector.
+        if not user.get("active", True):
+            return None
+
         return account_id
 
     async def get_group_members(

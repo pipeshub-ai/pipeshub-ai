@@ -1,6 +1,7 @@
 import asyncio
 import json
 import random
+import re
 import threading
 import uuid
 from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
@@ -16,6 +17,9 @@ if TYPE_CHECKING:
 logger = create_logger("redis_store")
 
 T = TypeVar("T")
+
+# Characters SCAN MATCH reads as a glob.
+_GLOB_SPECIAL = re.compile(r"([\\*?\[\]])")
 
 # Retry configuration
 RETRY_BASE_DELAY = 0.5  # seconds
@@ -422,7 +426,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         """List all keys under a specific directory prefix."""
         # Ensure directory ends with appropriate separator
         prefix = directory if directory.endswith("/") else f"{directory}/"
-        pattern = f"{self._key_namespace_prefix}{self.key_prefix}{prefix}*"
+        # A literal *, ?, [ or ] in a key path must not act as a wildcard.
+        pattern = _GLOB_SPECIAL.sub(r"\\\1", f"{self._key_namespace_prefix}{self.key_prefix}{prefix}") + "*"
         logger.debug("Listing keys in directory")
 
         try:

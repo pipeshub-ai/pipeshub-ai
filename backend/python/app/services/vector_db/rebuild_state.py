@@ -7,14 +7,14 @@ lock. Keys live here so indexing does not import the connectors package.
 from __future__ import annotations
 
 import asyncio
-
-from logging import Logger
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from app.services.messaging.config import RedisConfig
-
 if TYPE_CHECKING:
+    from logging import Logger
+
+    from app.config.configuration_service import ConfigurationService
+    from app.services.messaging.config import RedisConfig
     from app.services.redis.connection_provider import RedisClient as Redis
 
 _PHASE_WRITE_ATTEMPTS = 3
@@ -70,7 +70,8 @@ def _redis_from_config(redis_config: RedisConfig) -> "Redis":
 
 
 class RebuildJobLock:
-    """SET NX lock so cleanup and reindex never run together."""
+    """SET NX lock so cleanup and reindex never run together; under another
+    ``key``, any other single-flight job on the vector store."""
 
     def __init__(
         self,
@@ -78,15 +79,17 @@ class RebuildJobLock:
         *,
         ttl_seconds: int = JOB_LOCK_TTL_SECONDS,
         token: str | None = None,
+        key: str = JOB_LOCK_KEY,
     ) -> None:
         self._redis = redis
         self._ttl_seconds = max(1, ttl_seconds)
         self.token = token or str(uuid4())
+        self.key = key
 
     async def try_acquire(self) -> bool:
         return bool(
             await self._redis.set(
-                JOB_LOCK_KEY,
+                self.key,
                 self.token,
                 nx=True,
                 ex=self._ttl_seconds,
@@ -103,14 +106,14 @@ class RebuildJobLock:
             await self._redis.eval(
                 _REFRESH_IF_OWNER_LUA,
                 1,
-                JOB_LOCK_KEY,
+                self.key,
                 self.token,
                 self._ttl_seconds,
             )
         )
 
     async def release(self) -> None:
-        await self._redis.eval(_RELEASE_IF_OWNER_LUA, 1, JOB_LOCK_KEY, self.token)
+        await self._redis.eval(_RELEASE_IF_OWNER_LUA, 1, self.key, self.token)
 
 
 async def get_cleanup_phase(redis: Redis) -> str | None:
@@ -124,13 +127,13 @@ async def set_cleanup_phase(redis: Redis, phase: str) -> None:
     await redis.set(CLEANUP_PHASE_KEY, phase, ex=CLEANUP_PHASE_TTL_SECONDS)
 
 
-async def redis_from_config_service(config_service: Any) -> Redis:
+async def redis_from_config_service(config_service: ConfigurationService) -> Redis:
     redis_config = await config_service.get_redis_config()
     return _redis_from_config(redis_config)
 
 
 async def mark_cleanup_phase(
-    config_service: Any,
+    config_service: ConfigurationService,
     phase: str,
     logger: Logger | None = None,
     redis: Redis | None = None,

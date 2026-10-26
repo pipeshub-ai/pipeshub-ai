@@ -12,18 +12,19 @@ import {
   type InstanceSyncOperationKey,
 } from './instance-status';
 import type { ConnectorConfig, ConnectorInstance } from '../../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 const SYNC_VALUE_COLOR: Record<
   NonNullable<ReturnType<typeof deriveInstanceSyncOperation>>['badgeColor'],
   string
 > = {
   blue: 'var(--blue-11)',
+  amber: 'var(--amber-11)',
   red: 'var(--red-11)',
 };
 
 const ROW_LABEL_STYLE: React.CSSProperties = {
   color: 'var(--gray-10)',
-  width: 164,
   flexShrink: 0,
   textTransform: 'uppercase',
   letterSpacing: '0.04px',
@@ -56,24 +57,29 @@ const SETUP_TOOLTIP_I18N: Record<InstanceSetupStatusKey, string> = {
 const SYNC_I18N: Record<InstanceSyncOperationKey, string> = {
   syncing: 'workspace.connectors.instanceStatus.sync.syncing',
   full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncing',
+  queued: 'workspace.connectors.instanceStatus.sync.queued',
   deleting: 'workspace.connectors.instanceStatus.sync.removing',
 };
 
 const SYNC_TOOLTIP_I18N: Record<InstanceSyncOperationKey, string> = {
   syncing: 'workspace.connectors.instanceStatus.sync.syncingTooltip',
   full_syncing: 'workspace.connectors.instanceStatus.sync.fullSyncingTooltip',
+  queued: 'workspace.connectors.instanceStatus.sync.queuedTooltip',
   deleting: 'workspace.connectors.instanceStatus.sync.removingTooltip',
 };
 
 const SYNC_LABEL_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
   syncing: 'Sync in progress',
   full_syncing: 'Full sync in progress',
+  queued: 'Queued',
   deleting: 'Removing',
 };
 
 const SYNC_TOOLTIP_DEFAULTS: Record<InstanceSyncOperationKey, string> = {
   syncing: 'This connector is syncing new and updated content.',
   full_syncing: 'This connector is running a full re-sync from the source.',
+  queued:
+    'Waiting for a free sync slot. It will start automatically when one frees up.',
   deleting: 'This connector instance is being removed.',
 };
 
@@ -88,7 +94,10 @@ export function InstanceSyncOperationIndicator({ instance }: { instance: Connect
   const tooltipContent = t(SYNC_TOOLTIP_I18N[syncOp.key], {
     defaultValue: SYNC_TOOLTIP_DEFAULTS[syncOp.key],
   });
-  const isInProgress = syncOp.key === 'syncing' || syncOp.key === 'full_syncing';
+  const isInProgress =
+    syncOp.key === 'syncing' ||
+    syncOp.key === 'full_syncing' ||
+    syncOp.key === 'queued';
 
   return (
     <Tooltip content={tooltipContent}>
@@ -121,6 +130,7 @@ export function InstanceSetupStatusRow({
   instance: ConnectorInstance;
   config?: ConnectorConfig;
 }) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const setup = deriveInstanceSetupStatus(instance, config);
   const valueLabel = t(SETUP_I18N[setup.key]);
@@ -128,11 +138,11 @@ export function InstanceSetupStatusRow({
 
   return (
     <Tooltip content={t(SETUP_TOOLTIP_I18N[setup.key])}>
-      <Flex align="center" gap="4" style={{ width: '100%' }}>
+      <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'} style={{ width: '100%' }}>
         <Text
           size="1"
           weight="medium"
-          style={ROW_LABEL_STYLE}
+          style={{ ...ROW_LABEL_STYLE, width: isMobile ? 'auto' : 164 }}
         >
           {t('workspace.connectors.instanceStatus.setup.rowLabel')}
         </Text>

@@ -1,5 +1,7 @@
 """Unit tests for app.services.docling.docling_service."""
 
+import asyncio
+import json
 import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -517,8 +519,35 @@ class TestParsePdfEndpoint:
                 start_page=None,
                 end_page=None,
             )
-            assert resp.success is False
-            assert "parse fail" in resp.error
+            assert resp.status_code == 422
+            body = json.loads(resp.body)
+            assert body["success"] is False
+            assert body["errorCode"] == "PARSE_FAILED"
+            assert body["error"] == "Parsing failed"
+        finally:
+            mod.docling_service = original
+
+    @pytest.mark.asyncio
+    async def test_parse_pdf_endpoint_timeout_is_422_not_success(self) -> None:
+        """A timeout must be distinguishable from success and must not be a 5xx:
+        BaseServiceClient would retry a 5xx, re-running the whole parse budget."""
+        import app.services.docling.docling_service as mod
+        original = mod.docling_service
+        svc = DoclingService()
+        svc.parse_pdf_only = AsyncMock(side_effect=asyncio.TimeoutError())
+        mod.docling_service = svc
+        try:
+            from app.services.docling.docling_service import parse_pdf_endpoint
+            resp = await parse_pdf_endpoint(
+                file=_make_upload_file(b"data"),
+                record_name="test.pdf",
+                start_page=None,
+                end_page=None,
+            )
+            assert resp.status_code == 422
+            body = json.loads(resp.body)
+            assert body["success"] is False
+            assert body["errorCode"] == "PARSE_TIMEOUT"
         finally:
             mod.docling_service = original
 
@@ -550,7 +579,7 @@ class TestParsePdfEndpoint:
                     start_page=None,
                     end_page=None,
                 )
-            assert resp.success is False
+            assert resp.status_code == 422
             mock_release.assert_called_once_with(1)
         finally:
             mod.docling_service = original_svc

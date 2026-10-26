@@ -79,6 +79,15 @@ class TestCatchesMistakes(unittest.TestCase):
         # The real marker is now unassigned too, so both halves of the rename show up.
         self.assertTrue(any("'beta' is in no shard" in p for p in problems), problems)
 
+    def test_an_unassigned_connector_is_reported(self) -> None:
+        workflow = MATRIX + '      CONN_SHARD_1: "alpha"\n      CONN_SHARD_2: "gamma"\n'
+        problems, _ = run(workflow=workflow)
+        self.assertTrue(
+            any("'beta' is in no shard" in p and "Add it to a CONN_SHARD_* line" in p
+                for p in problems),
+            problems,
+        )
+
     def test_a_lopsided_split_is_reported(self) -> None:
         workflow = MATRIX + '      CONN_SHARD_1: "alpha or beta or gamma"\n      CONN_SHARD_2: ""\n'
         problems, _ = run(workflow=workflow)
@@ -223,6 +232,14 @@ class TestThisRepo(unittest.TestCase):
             workflow,
             f"{owner} runs nextcloud/bookstack but does not start selfhosted-sources",
         )
+
+    def test_the_ai_agents_shard_never_runs_on_a_pull_request(self) -> None:
+        """Every ai_agents test costs model calls; the nightly runs them, a PR must not."""
+        workflow = balance.WORKFLOW.read_text(encoding="utf-8")
+        line = balance._MATRIX_LINE.search(workflow).group(0)
+        pr_list = line.split("github.event_name == 'pull_request' && ", 1)[1].split("'", 2)[1]
+        self.assertNotIn("ai_agents", pr_list)
+        self.assertIn("ai_agents", balance.matrix_solo_shards(workflow))
 
 
 if __name__ == "__main__":

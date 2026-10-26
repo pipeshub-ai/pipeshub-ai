@@ -140,12 +140,30 @@ describe('Redis Streams Service', () => {
         expect(producer.maxLen).to.equal(5000);
       });
 
-      it('should default maxLen to 500000 when not specified', () => {
+      it('should not cap streams when maxLen is not specified', async () => {
         class TestP extends BaseRedisStreamsProducerConnection {
           constructor(config: RedisBrokerConfig, logger: any) { super(config, logger); }
         }
         const p = new TestP({ ...defaultConfig, maxLen: undefined }, mockLogger);
-        expect(p.maxLen).to.equal(500000);
+        expect(p.maxLen).to.be.undefined;
+        (p as any).redis = mockRedis;
+        (p as any).initialized = true;
+        await p.publish('test-topic', { key: 'k', value: 'v' });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args).to.not.include('MAXLEN');
+        expect(args[1]).to.equal('*');
+      });
+
+      it('should keep a small fixed cap on the consumer-less health-check stream', async () => {
+        class TestP extends BaseRedisStreamsProducerConnection {
+          constructor(config: RedisBrokerConfig, logger: any) { super(config, logger); }
+        }
+        const p = new TestP({ ...defaultConfig, maxLen: undefined }, mockLogger);
+        (p as any).redis = mockRedis;
+        (p as any).initialized = true;
+        await p.publish('health-check', { key: 'k', value: 'v' });
+        const args = mockRedis.xadd.firstCall.args;
+        expect(args.slice(1, 4)).to.deep.equal(['MAXLEN', '~', '1000']);
       });
 
       it('should report isConnected false before connect', () => {
@@ -1102,8 +1120,25 @@ describe('Redis Streams Service', () => {
         ];
         mockRedis.exists.resolves(0);
         await admin.ensureTopicsExist(topics);
-        // Each topic triggers xgroup CREATE + xgroup DESTROY = 2 calls per topic
-        expect(mockRedis.xgroup.callCount).to.equal(4);
+        // record-events is the base stream plus its eight lanes by default,
+        // as the Python services read it; each stream triggers xgroup CREATE
+        // + xgroup DESTROY = 2 calls.
+        expect(mockRedis.xgroup.callCount).to.equal(2 * (1 + 8 + 1));
+      });
+
+      it('should create only the base stream when laning is off', async () => {
+        const original = process.env.FAIR_SCHEDULING_LANE_COUNT;
+        process.env.FAIR_SCHEDULING_LANE_COUNT = '1';
+        try {
+          mockRedis.exists.resolves(0);
+          await admin.ensureTopicsExist([
+            { topic: 'record-events', numPartitions: 1, replicationFactor: 1 },
+          ]);
+          expect(mockRedis.xgroup.callCount).to.equal(2);
+        } finally {
+          if (original === undefined) delete process.env.FAIR_SCHEDULING_LANE_COUNT;
+          else process.env.FAIR_SCHEDULING_LANE_COUNT = original;
+        }
       });
 
       it('should skip existing streams', async () => {

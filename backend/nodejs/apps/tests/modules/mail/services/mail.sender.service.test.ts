@@ -39,15 +39,15 @@ describe('MailSenderService', () => {
 
   afterEach(() => sinon.restore());
 
-  it('reads SMTP config through the provider so a rebind is picked up', () => {
+  it('reads SMTP config through the provider so a rebind is picked up', async () => {
     // AppConfig is rebound on an SMTP update; a captured config would go stale.
     let current: any = { smtp: { host: 'old-host', port: 25, fromEmail: 'a@b.c' } };
     const sender = new MailSenderService(() => current, mockLogger);
 
-    expect(sender.getSmtpConfig()?.host).to.equal('old-host');
+    expect((await sender.getSmtpConfig())?.host).to.equal('old-host');
 
     current = { smtp: { host: 'new-host', port: 587, fromEmail: 'a@b.c' } };
-    expect(sender.getSmtpConfig()?.host).to.equal('new-host');
+    expect((await sender.getSmtpConfig())?.host).to.equal('new-host');
   });
 
   it('returns null when SMTP has not been configured', () => {
@@ -61,6 +61,15 @@ describe('MailSenderService', () => {
 
     expect(result.status).to.equal('sent');
     expect(sendMailStub.calledOnce).to.be.true;
+  });
+
+  it('passes Reply-To through to the transport, and leaves it unset when none is given', async () => {
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+    await sender.send({ ...body, replyTo: 'person@example.com' }, smtp);
+    await sender.send(body, smtp);
+
+    expect(sendMailStub.firstCall.args[0].replyTo).to.equal('person@example.com');
+    expect(sendMailStub.secondCall.args[0].replyTo).to.equal(undefined);
   });
 
   it('still reports sent when only the audit record fails to save', async () => {
@@ -104,6 +113,34 @@ describe('MailSenderService', () => {
     expect((await sender.send(body, smtp)).status).to.equal('transient');
   });
 
+  it('names a rejected SMTP sign-in so the admin can fix the credentials', async () => {
+    sendMailStub.rejects(Object.assign(new Error('Invalid login: 535 Authentication Credentials Invalid'), {
+      code: 'EAUTH',
+      responseCode: 535,
+    }));
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+
+    expect(await sender.send(body, smtp)).to.include({ status: 'permanent', problem: 'auth' });
+  });
+
+  it('names an unreachable SMTP server only when the message cannot have left', async () => {
+    // A fresh sender each time, so earlier connection failures cannot open the circuit.
+    const problemFor = async (error: Error) => {
+      const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+      sendMailStub.rejects(error);
+      return ((await sender.send(body, smtp)) as { problem?: string }).problem;
+    };
+
+    expect(await problemFor(Object.assign(new Error('connect ECONNREFUSED'), { code: 'ESOCKET', originalCode: 'ECONNREFUSED' }))).to.equal('unreachable');
+    expect(await problemFor(Object.assign(new Error('Connection timeout'), { code: 'ETIMEDOUT', timeoutType: 'CONNECT_TIMEOUT' }))).to.equal('unreachable');
+    expect(await problemFor(Object.assign(new Error('getaddrinfo ENOTFOUND'), { code: 'EDNS' }))).to.equal('unreachable');
+    // These can follow a server that already accepted the message.
+    expect(await problemFor(Object.assign(new Error('Timeout'), { code: 'ETIMEDOUT', timeoutType: 'SOCKET_TIMEOUT' }))).to.equal(undefined);
+    expect(await problemFor(Object.assign(new Error('Connection closed unexpectedly'), { code: 'ECONNECTION' }))).to.equal(undefined);
+    expect(await problemFor(Object.assign(new Error('read ECONNRESET'), { code: 'ESOCKET', originalCode: 'ECONNRESET' }))).to.equal(undefined);
+    expect(await problemFor(Object.assign(new Error('550 mailbox unavailable'), { responseCode: 550 }))).to.equal(undefined);
+  });
+
   it('treats an unknown template as permanent rather than retrying it', async () => {
     const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
     const result = await sender.send(
@@ -132,6 +169,18 @@ describe('MailSenderService', () => {
     expect(opts.socketTimeout, 'socketTimeout').to.equal(60_000);
     // No username configured, so no credentials are offered at all.
     expect(opts.auth, 'auth').to.equal(undefined);
+  });
+
+  it('never lets an attachment read a local file or fetch a URL', async () => {
+    const sender = new MailSenderService(() => ({ smtp }) as any, mockLogger);
+    await sender.send(
+      { ...body, attachments: [{ filename: 'x', path: '/etc/passwd' }] },
+      smtp,
+    );
+
+    const opts = (nodemailer.createTransport as sinon.SinonStub).firstCall.args[0];
+    expect(opts.disableFileAccess, 'disableFileAccess').to.be.true;
+    expect(opts.disableUrlAccess, 'disableUrlAccess').to.be.true;
   });
 
   it('abandons a stalled send at the deadline without dropping the pool', async () => {

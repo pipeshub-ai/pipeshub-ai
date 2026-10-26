@@ -15,15 +15,28 @@ from __future__ import annotations
 import base64
 import difflib
 import logging
+import math
+import os
 import re
+import time
 from collections.abc import AsyncGenerator, Callable, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime, timezone
-from typing import Any
-from urllib.parse import quote
+from typing import TYPE_CHECKING, Any, cast
+from urllib.parse import parse_qs, quote, urlsplit
 
 import httpx
 
-from app.sources.client.github.github import GitHubResponse
+from app.config.constants.http_status_code import HttpStatusCode
+from app.sources.client.github.github import (
+    GitHubResponse,
+    github_retry_after_seconds,
+    is_github_rate_limit,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import Generator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -35,16 +48,118 @@ _SERVER_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 100
 _DEFAULT_PAGE_SIZE = 10
 _LINK_LAST_RE = re.compile(r'[?&]page=(\d+)[^>]*>;\s*rel="last"')
+_LINK_NEXT_RE = re.compile(r'<([^>]*)>;\s*rel="next"')
 
 _TRUNCATION_MARKERS = ("diff too large", "binary file", "file is too large", "large diffs")
 
+# A personal access token's 5,000/hr budget is the user's own: the gh CLI and
+# every other tool on that account draw from it too. Below this share of an
+# hourly pool PipesHub stops sending until the window resets, instead of
+# draining it to zero. The per-minute Search pool is paced in the connector.
+_RESERVED_RESOURCES = frozenset({"core", "graphql"})
+_DEFAULT_RESERVE_PERCENT = 10
+_RESERVE_PERCENT_ENV = "GITHUB_RATE_LIMIT_RESERVE_PERCENT"
+
+# github.com/user-attachments is the web host, not the API: it answers an API token
+# with 404 (verified against github.com, public repository included) and an
+# anonymous request with a redirect to signed storage. The token is therefore never
+# sent there; it would only make every download fail, and it has no business on a
+# host other than the API.
+_ATTACHMENT_HEADERS = {"Accept": "*/*"}
+
+# Set while a record is streamed to a person who opened it: one request they
+# asked for, which the reserve would refuse although GitHub would grant it.
+# Those calls stop only once the pool is actually spent. Streaming to indexing
+# is not exempt; it waits out the reset instead (StreamingHelper.stream_record).
+_reserve_exempt: ContextVar[bool] = ContextVar("github_rate_limit_reserve_exempt", default=False)
+
+
+@contextmanager
+def rate_limit_reserve_exempt() -> Generator[None, None, None]:
+    token = _reserve_exempt.set(True)
+    try:
+        yield
+    finally:
+        _reserve_exempt.reset(token)
+
 
 class GitHubHTTPError(Exception):
-    """Non-2xx REST response; ``status`` mirrors PyGithub's GithubException."""
+    """Non-2xx REST response; ``status`` mirrors PyGithub's GithubException.
 
-    def __init__(self, status: int, message: str) -> None:
+    ``headers`` and ``api_message`` are kept because a 403 is only told apart
+    from a rate limit by GitHub's rate-limit headers and message.
+    """
+
+    def __init__(
+        self,
+        status: int,
+        message: str,
+        *,
+        headers: Mapping[str, str] | None = None,
+        api_message: str | None = None,
+    ) -> None:
         self.status = status
+        self.headers = dict(headers or {})
+        self.api_message = api_message
         super().__init__(f"HTTP {status}: {message}")
+
+    @property
+    def rate_limited(self) -> bool:
+        return is_github_rate_limit(self.status, self.headers, self.api_message)
+
+
+class GitHubRateLimitReserveError(GitHubHTTPError):
+    """Raised before a request is sent, so PipesHub leaves part of the
+    user's hourly budget for their other tools on the same account."""
+
+    def __init__(self, resource: str, remaining: int, limit: int, wait_seconds: int) -> None:
+        reason = "reserve reached" if remaining > 0 else "exhausted"
+        super().__init__(
+            HttpStatusCode.TOO_MANY_REQUESTS.value,
+            f"PipesHub paused GitHub {resource} requests with {remaining} of {limit} left "
+            f"until the limit resets in {wait_seconds}s",
+            headers={"retry-after": str(wait_seconds)},
+            api_message=f"GitHub {resource} rate limit {reason}",
+        )
+
+
+def _resource_for(path: str) -> str:
+    """The ``X-RateLimit-Resource`` pool GitHub will charge ``path`` to."""
+    if path == "/graphql":
+        return "graphql"
+    if path.startswith("/search/code"):
+        return "code_search"
+    if path.startswith("/search/"):
+        return "search"
+    return "core"
+
+
+def _api_message(response: httpx.Response) -> str | None:
+    try:
+        payload: object = response.json()
+    except ValueError:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    message = cast("dict[str, object]", payload).get("message")
+    return message if isinstance(message, str) else None
+
+
+def _resolve_reserve_percent() -> int:
+    raw = os.environ.get(_RESERVE_PERCENT_ENV)
+    if not raw:
+        return _DEFAULT_RESERVE_PERCENT
+    try:
+        value = int(raw)
+        if not 0 <= value < 100:
+            raise ValueError("must be 0-99")
+        return value
+    except ValueError:
+        logger.warning(
+            "Ignoring invalid %s=%r; using default %s%%",
+            _RESERVE_PERCENT_ENV, raw, _DEFAULT_RESERVE_PERCENT,
+        )
+        return _DEFAULT_RESERVE_PERCENT
 
 
 def _parse_iso(value: str) -> datetime | str:
@@ -58,6 +173,19 @@ def _parse_iso(value: str) -> datetime | str:
 def _iso(dt: datetime) -> str:
     aware = dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
     return aware.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _next_cursor(link_header: str) -> str | None:
+    """The ``after`` cursor of a ``Link: rel="next"`` URL, or None.
+
+    Only the cursor is taken, never the URL itself, so the next request still
+    goes to the configured API host.
+    """
+    match = _LINK_NEXT_RE.search(link_header or "")
+    if not match:
+        return None
+    values = parse_qs(urlsplit(match.group(1)).query).get("after")
+    return values[0] if values else None
 
 
 def _wrap(value: Any, key: str | None = None) -> Any:
@@ -123,6 +251,10 @@ class GitHubAsyncRESTClient:
         self._token_provider = token_provider
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
+        self._reserve_percent = _resolve_reserve_percent()
+        # resource -> (limit, lowest remaining seen, reset epoch) for the
+        # window that is running.
+        self._budgets: dict[str, tuple[int, int, int]] = {}
 
     @property
     def token(self) -> str:
@@ -162,15 +294,68 @@ class GitHubAsyncRESTClient:
         json_body: dict[str, Any] | None = None,
         headers: dict[str, str] | None = None,
     ) -> httpx.Response:
+        self._check_reserve(path)
         client = self._ensure_client()
         response = await client.request(
             method, path, params=params, json=json_body, headers=self._headers(headers),
         )
+        self._record_budget(response.headers)
         if response.status_code >= 400:
             # Keep the body short: rate-limit/permission bodies are one-line
             # JSON messages; anything longer is noise in logs.
-            raise GitHubHTTPError(response.status_code, response.text[:300])
+            raise GitHubHTTPError(
+                response.status_code,
+                response.text[:300],
+                headers=response.headers,
+                api_message=_api_message(response),
+            )
         return response
+
+    def _record_budget(self, headers: Mapping[str, str]) -> None:
+        """Keep the lowest remaining count seen in the running window.
+
+        GitHub serves requests from several regions, so a response in the same
+        window can report more remaining than an earlier one, and overlapping
+        calls finish out of order. Taking the latest value would reopen a pool
+        the reserve had closed. Only a window whose reset has passed gives way
+        to the next one; a response from an older window is ignored.
+        """
+        resource = headers.get("x-ratelimit-resource")
+        limit = headers.get("x-ratelimit-limit", "")
+        remaining = headers.get("x-ratelimit-remaining", "")
+        reset = headers.get("x-ratelimit-reset", "")
+        if not (resource and limit.isdigit() and remaining.isdigit() and reset.isdigit()):
+            return
+        seen = (int(limit), int(remaining), int(reset))
+        current = self._budgets.get(resource)
+        if current is None:
+            self._budgets[resource] = seen
+            return
+        current_limit, current_remaining, current_reset = current
+        if seen[2] < current_reset:
+            return
+        if time.time() < current_reset:
+            self._budgets[resource] = (current_limit, min(current_remaining, seen[1]), current_reset)
+        else:
+            self._budgets[resource] = seen
+
+    def _check_reserve(self, path: str) -> None:
+        """Refuse to spend the last ``_reserve_percent`` of an hourly pool.
+
+        Under ``rate_limit_reserve_exempt``, or with the reserve set to 0, only
+        a spent pool is refused: GitHub would reject that request anyway.
+        """
+        exempt = _reserve_exempt.get()
+        resource = _resource_for(path)
+        budget = self._budgets.get(resource) if resource in _RESERVED_RESOURCES else None
+        if budget is None:
+            return
+        limit, remaining, reset = budget
+        wait_seconds = reset - int(time.time())
+        floor = 0 if exempt else math.ceil(limit * self._reserve_percent / 100)
+        if wait_seconds <= 0 or remaining > floor:
+            return
+        raise GitHubRateLimitReserveError(resource, remaining, limit, wait_seconds)
 
     async def get_json(
         self,
@@ -353,7 +538,14 @@ class GitHubAsyncDataSource:
         page: int | None = None,
         sort: str | None = None,
         direction: str | None = None,
+        after: str | None = None,
     ) -> GitHubResponse:
+        """One page of a repository's issues (pull requests included, as GitHub lists them).
+
+        GitHub refuses ``page`` numbers past 10,000 items here (422, "use cursor
+        based pagination"). Pass the previous page's ``next_cursor`` as ``after``
+        to read further; ``page`` is then not sent.
+        """
         params: dict[str, Any] = {"state": state}
         if labels:
             params["labels"] = ",".join(labels)
@@ -366,7 +558,7 @@ class GitHubAsyncDataSource:
         if direction:
             params["direction"] = direction
         return await self._listing(
-            f"/repos/{owner}/{repo}/issues", params, per_page, page,
+            f"/repos/{owner}/{repo}/issues", params, per_page, page, after=after,
         )
 
     async def get_issue(self, owner: str, repo: str, number: int) -> GitHubResponse:
@@ -636,13 +828,29 @@ class GitHubAsyncDataSource:
     # Attachment / image streaming (direct downloads, not the REST API)
     # ------------------------------------------------------------------
 
-    async def get_img_bytes(self, image_url: str) -> GitHubResponse:
-        headers = {"Authorization": f"Bearer {self._rest.token}", "Accept": "*/*"}
+    async def get_img_bytes(self, image_url: str, max_bytes: int | None = None) -> GitHubResponse:
+        """Download an image, refusing (success=False) one over ``max_bytes``.
+
+        Streamed, so an oversized body is abandoned at the limit instead of being
+        read whole into memory first: any upload can be embedded with image
+        syntax, a 100 MB video included.
+
+        Sent without the token: see ``_ATTACHMENT_HEADERS``.
+        """
+        headers = dict(_ATTACHMENT_HEADERS)
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-                resp = await client.get(image_url, headers=headers)
-                resp.raise_for_status()
-                return GitHubResponse(success=True, data=resp.content)
+                async with client.stream("GET", image_url, headers=headers) as resp:
+                    resp.raise_for_status()
+                    declared = resp.headers.get("Content-Length")
+                    if max_bytes is not None and declared and declared.isdigit() and int(declared) > max_bytes:
+                        return GitHubResponse(success=False, error=f"Image at {image_url} is over {max_bytes} bytes")
+                    body = bytearray()
+                    async for chunk in resp.aiter_bytes(chunk_size=65536):
+                        body.extend(chunk)
+                        if max_bytes is not None and len(body) > max_bytes:
+                            return GitHubResponse(success=False, error=f"Image at {image_url} is over {max_bytes} bytes")
+                    return GitHubResponse(success=True, data=bytes(body))
         except httpx.HTTPStatusError as e:
             return GitHubResponse(
                 success=False,
@@ -667,12 +875,8 @@ class GitHubAsyncDataSource:
         on non-2xx rather than returning a response envelope, so the caller's
         eager-first-chunk wrapper can surface it as a clean HTTP error.
         """
-        headers = {
-            "Authorization": f"Bearer {self._rest.token}",
-            "Accept": "application/vnd.github+json",
-        }
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", weburl, headers=headers) as response:
+            async with client.stream("GET", weburl, headers=dict(_ATTACHMENT_HEADERS)) as response:
                 response.raise_for_status()
                 if max_bytes is not None:
                     declared = response.headers.get("Content-Length")
@@ -709,19 +913,32 @@ class GitHubAsyncDataSource:
         params: dict[str, Any] | None,
         per_page: int | None,
         page: int | None,
+        *,
+        after: str | None = None,
     ) -> GitHubResponse:
-        """One page when page args are given, otherwise every page (100 at a time)."""
+        """One page when page args are given, otherwise every page (100 at a time).
+
+        A single page also carries ``next_cursor``, the ``after`` cursor GitHub
+        offers in its ``Link`` header (None when it offers none). Given ``after``,
+        the page is addressed by that cursor instead of by number.
+        """
         try:
-            if per_page is None and page is None:
+            if per_page is None and page is None and after is None:
                 return GitHubResponse(
                     success=True, data=_wrap(await self._list_all(path, params)),
                 )
             _per_page, _page = self._clamp_page_args(per_page, page)
             query = dict(params or {})
-            query.update({"per_page": _per_page, "page": _page})
-            batch = await self._rest.get_json(path, query)
+            query["per_page"] = _per_page
+            if after is not None:
+                query["after"] = after
+            else:
+                query["page"] = _page
+            response = await self._rest.request("GET", path, params=query)
+            batch = response.json()
             return GitHubResponse(
                 success=True, data=_wrap(batch if isinstance(batch, list) else []),
+                next_cursor=_next_cursor(response.headers.get("link", "")),
             )
         except Exception as e:
             return self._err(e)
@@ -752,9 +969,16 @@ class GitHubAsyncDataSource:
 
     @staticmethod
     def _err(e: Exception) -> GitHubResponse:
+        status = getattr(e, "status", None)
+        rate_limited = isinstance(e, GitHubHTTPError) and e.rate_limited
         return GitHubResponse(
             success=False,
             error=str(e)[:500],
-            status_code=getattr(e, "status", None),
+            # A rate-limited 403 is reported as the 429 it is: every caller
+            # (stream status mapping, structural-denial checks) reads 403 as
+            # "not allowed", which a rate limit is not.
+            status_code=HttpStatusCode.TOO_MANY_REQUESTS.value if rate_limited else status,
             exception_type=type(e).__name__,
+            api_message=getattr(e, "api_message", None),
+            retry_after_seconds=github_retry_after_seconds(getattr(e, "headers", None)),
         )

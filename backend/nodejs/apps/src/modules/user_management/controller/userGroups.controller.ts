@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
-import { Users } from '../schema/users.schema';
+import { Users, User } from '../schema/users.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -8,17 +8,67 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
-import { groupTypes, UserGroups } from '../schema/userGroup.schema';
+import { groupTypes, UserGroup, UserGroups } from '../schema/userGroup.schema';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
+const GROUP_EXISTS_MESSAGE = 'Group already exists';
+
+// Two requests can both pass the findOne check; the unique index on
+// (orgId, name) then rejects the second write with code 11000.
+function isDuplicateGroupNameError(error: unknown): boolean {
+  const e = error as
+    | { code?: unknown; keyPattern?: Record<string, unknown> }
+    | null
+    | undefined;
+  return e?.code === 11000 && e.keyPattern?.name !== undefined;
+}
+
+async function saveGroupName<T extends { save(): Promise<T> }>(
+  group: T,
+): Promise<T> {
+  try {
+    return await group.save();
+  } catch (error) {
+    if (isDuplicateGroupNameError(error)) {
+      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
+    }
+    throw error;
+  }
+}
 
 @injectable()
 export class UserGroupController {
   constructor() {}
+
+  // safeParsePagination throws a plain Error for an out-of-range page or limit,
+  // which the error middleware reports as a 500. A bad query string is a 400.
+  private parsePagination(req: AuthenticatedUserRequest): {
+    page: number;
+    limit: number;
+    skip: number;
+  } {
+    try {
+      return safeParsePagination(
+        req.query.page as string,
+        req.query.limit as string,
+        1,
+        25,
+        100,
+      );
+    } catch (error) {
+      throw new BadRequestError(
+        error instanceof Error
+          ? error.message
+          : 'Invalid pagination parameters',
+      );
+    }
+  }
 
   async getAllUsers(
     req: AuthenticatedUserRequest,
@@ -43,6 +93,15 @@ export class UserGroupController {
     if (!type) {
       throw new BadRequestError('type(Type of the Group) is required');
     }
+
+    // The route schema already forces strings. Checked again so a query
+    // operator ({ "$ne": null }) can never reach the lookup below.
+    if (typeof name !== 'string') {
+      throw new BadRequestError('name must be a string');
+    }
+    if (typeof type !== 'string') {
+      throw new BadRequestError('type must be a string');
+    }
     if (RESERVED_GROUP_NAMES.includes(name) || RESERVED_GROUP_NAMES.includes(type)) {
       throw new BadRequestError('Group name or type "admin", "everyone", or "standard" cannot be created');
     }
@@ -58,7 +117,7 @@ export class UserGroupController {
     });
 
     if (groupWithSameName) {
-      throw new BadRequestError('Group already exists');
+      throw new BadRequestError(GROUP_EXISTS_MESSAGE);
     }
 
     const newGroup = new UserGroups({
@@ -68,7 +127,7 @@ export class UserGroupController {
       users: [],
     });
 
-    const group = await newGroup.save();
+    const group = await saveGroupName(newGroup);
 
     res.status(201).json(group);
   }
@@ -78,20 +137,14 @@ export class UserGroupController {
     res: Response,
   ): Promise<void> {
     const orgId = req.user?.orgId;
-    const { page, limit, skip } = safeParsePagination(
-      req.query.page as string,
-      req.query.limit as string,
-      1,
-      25,
-      100,
-    );
+    const { page, limit, skip } = this.parsePagination(req);
     const search = (req.query.search as string)?.trim();
     const createdAfter = (req.query.createdAfter as string)?.trim();
     const createdBefore = (req.query.createdBefore as string)?.trim();
 
     const filter: UserGroupFilter = { orgId, isDeleted: false };
     if (search) {
-      filter.name = { $regex: search, $options: 'i' };
+      filter.name = { $regex: escapeRegExp(search), $options: 'i' };
     }
     if (createdAfter || createdBefore) {
       const dateFilter: Record<string, Date> = {};
@@ -105,12 +158,12 @@ export class UserGroupController {
     }
 
     const [groups, totalCount] = await Promise.all([
-      UserGroups.find(filter)
+      UserGroups.find(asQueryFilter<UserGroup>(filter))
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      UserGroups.countDocuments(filter),
+      UserGroups.countDocuments(asQueryFilter<UserGroup>(filter)),
     ]);
 
     // Return userCount instead of the full users array
@@ -201,13 +254,13 @@ export class UserGroupController {
         isDeleted: false,
       });
       if (groupWithSameName) {
-        throw new BadRequestError('Group already exists');
+        throw new BadRequestError(GROUP_EXISTS_MESSAGE);
       }
     }
 
     group.name = normalizedName;
 
-    await group.save();
+    await saveGroupName(group);
 
     res.status(200).json(group);
   }
@@ -302,13 +355,7 @@ export class UserGroupController {
   ): Promise<void> {
     const { groupId } = req.params;
     const orgId = req.user?.orgId;
-    const { page, limit, skip } = safeParsePagination(
-      req.query.page as string,
-      req.query.limit as string,
-      1,
-      25,
-      100,
-    );
+    const { page, limit, skip } = this.parsePagination(req);
     const search = (req.query.search as string)?.trim();
 
     const group = await UserGroups.findOne({
@@ -326,20 +373,21 @@ export class UserGroupController {
     // Fetch user details with optional search filter
     const userFilter: UserFilter = { _id: { $in: allUserIds }, isDeleted: { $ne: true } };
     if (search) {
+      const escaped = escapeRegExp(search);
       userFilter.$or = [
-        { fullName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
+        { fullName: { $regex: escaped, $options: 'i' } },
+        { email: { $regex: escaped, $options: 'i' } },
       ];
     }
 
     const [userDocs, totalCount] = await Promise.all([
-      Users.find(userFilter)
+      Users.find(asQueryFilter<User>(userFilter))
         .select('fullName firstName lastName email')
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      Users.countDocuments(userFilter),
+      Users.countDocuments(asQueryFilter<User>(userFilter)),
     ]);
 
     // Bulk-fetch DPs for this page of users
@@ -380,11 +428,13 @@ export class UserGroupController {
     const { userId } = req.params;
     const orgId = req.user?.orgId;
 
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('name type');
+    const groups = await UserGroups.find(
+      asQueryFilter<UserGroup>({
+        orgId,
+        users: { $in: [userId] },
+        isDeleted: false,
+      }),
+    ).select('name type');
 
     res.status(200).json(groups);
   }

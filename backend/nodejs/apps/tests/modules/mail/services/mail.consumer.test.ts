@@ -76,6 +76,12 @@ describe('MailConsumer - asynchronous mail delivery', () => {
 
   const deliver = (p: unknown) => (consumer as any).deliver(p);
 
+  it("asks the sender for the SMTP settings of the event's org", async () => {
+    await deliver(payload());
+
+    expect(mockSender.getSmtpConfig.firstCall.args[0]).to.equal(payload().orgId);
+  });
+
   it('sends once and does not notify when delivery succeeds', async () => {
     await deliver(payload());
 

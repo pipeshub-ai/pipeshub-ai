@@ -16,9 +16,25 @@ already-produced result, not prevent it from having run.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import Enum
+from typing import Any
 
-__all__ = ["PreDecision", "PostDecision", "PRE_SEVERITY", "POST_SEVERITY"]
+__all__ = ["PendingApproval", "PreDecision", "PostDecision", "PRE_SEVERITY", "POST_SEVERITY"]
+
+
+@dataclass(frozen=True)
+class PendingApproval:
+    """A call PreToolUse middleware leaves for a person to approve on a later turn, instead of
+    holding the run open to wait (the HIL flow, which needs a long-lived process). The call
+    isn't executed and the model gets `message`; with `end_turn`, the turn ends with `message`
+    as its answer, so the person's decision arrives as the next turn."""
+
+    message: str
+    end_turn: bool = True
+    # What a client needs to ask the person (an id, what would run); carried on the call's
+    # TOOL_BLOCKED event as `approval`.
+    details: dict[str, Any] = field(default_factory=dict)
 
 
 class PreDecision(str, Enum):

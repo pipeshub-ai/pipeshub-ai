@@ -1,17 +1,19 @@
-import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
-
 import asyncio
 import inspect
+import logging
 import os
+from collections.abc import AsyncGenerator, Awaitable, Callable
+from contextlib import asynccontextmanager, suppress
+from functools import partial
+from typing import TYPE_CHECKING, Any, Protocol, TypeVar, cast
 from uuid import uuid4
-from collections.abc import AsyncGenerator, Awaitable
-from contextlib import asynccontextmanager
-from typing import Any, Protocol, TypeVar
 
 import uvicorn
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+import app.utils.runtime_threads  # must precede all ML library imports
+from app.api.middlewares.request_context import RequestContextMiddleware
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -19,23 +21,36 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.modules.indexing.vector_membership_backfill import (
-    run_vector_membership_backfill_loop,
-)
 from app.containers.indexing import initialize_container
 from app.edition_containers import IndexingAppContainer
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
-from app.services.messaging.config import (
-    ConsumerType,
-    Topic,
-    get_message_broker_type,
-    messaging_env,
+from app.edition_services import configure_app
+from app.modules.artifacts.retention import RetentionReport, RevisionRetentionSweep
+from app.modules.artifacts.store import NodeArtifactStore
+from app.modules.indexing.duplicate_reconcile import (
+    DuplicateReconciler,
+    retry_pending_duplicate_reconciles,
 )
-from app.services.messaging.backpressure import (
-    get_default_backpressure_coordinator,
+from app.modules.indexing.entity_index_rebuild import run_entity_index_rebuild_loop
+from app.modules.indexing.lane_upkeep import last_lane_report, run_lane_upkeep
+from app.modules.indexing.named_entity_completion import (
+    record_consumer_loop,
+    run_named_entity_completion_loop,
 )
-from app.services.messaging.distributed_concurrency import (
-    DistributedConcurrencyManager,
+from app.modules.indexing.named_entity_persist_retry import (
+    retry_pending_named_entity_persists,
+)
+from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
+from app.modules.indexing.rate_limit_deferral import deferral_due
+from app.modules.indexing.record_label_repair import run_record_label_repair_loop
+from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.modules.indexing.recovery_budget import (
+    ExhaustedRecordSink,
+    record_handback,
+    recovery_exhausted,
+    recovery_tracking_id,
+)
+from app.modules.indexing.vector_membership_backfill import (
+    run_vector_membership_backfill_loop,
 )
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
@@ -43,12 +58,45 @@ from app.modules.parsers.pdf.docling_processor import (
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
 )
+from app.services.distributed.interface import IDistributedLeaseManager
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
+from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.llm_gateway.gateway import get_llm_gateway
+from app.services.messaging.backpressure import (
+    get_default_backpressure_coordinator,
+)
+from app.services.messaging.config import (
+    ConsumerType,
+    Topic,
+    get_message_broker_type,
+    messaging_env,
+)
+from app.services.messaging.consumer_concurrency import StageAdmission
+from app.services.messaging.distributed_concurrency import (
+    DistributedConcurrencyManager,
+)
+from app.services.messaging.interface.admin import IMessageAdmin
 from app.services.messaging.kafka.utils.utils import KafkaUtils
+from app.services.messaging.lanes.assignment import lane_assignments_in_use
+from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
+from app.services.messaging.worker_loop import WorkerLoop
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
+from app.utils.concurrency import indexing_llm_stats
+from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.logger import install_log_redaction
+from app.utils.loop_lag_monitor import LoopLagMonitor
+from app.utils.loop_share import LoopShare
+from app.utils.process_hardening import mark_process_non_dumpable
+from app.utils.request_context import set_service_suffix
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_errors import (
     CONNECTOR_OFF,
@@ -56,6 +104,11 @@ from app.utils.user_errors import (
     RECOVERY_REQUEUED,
     RECOVERY_RETRY,
 )
+
+if TYPE_CHECKING:
+    from app.modules.indexing.run import IndexingPipeline
+    from app.modules.pipeline.runtime import PipelineRuntime
+    from app.services.messaging.interface.producer import IMessagingProducer
 
 _T = TypeVar("_T")
 
@@ -86,6 +139,15 @@ async def get_initialized_container() -> IndexingAppContainer:
                 setattr(get_initialized_container, "initialized", True)
     return container
 
+def _enrichment_cut_short(record: dict[str, Any]) -> bool:
+    """Indexed, with an enrichment that has not ended (and nothing else in flight)."""
+    return (
+        record.get("indexingStatus") == ProgressStatus.COMPLETED.value
+        and record.get("extractionStatus") == ProgressStatus.IN_PROGRESS.value
+        and record.get("parsingStatus") != ProgressStatus.IN_PROGRESS.value
+    )
+
+
 async def recover_in_progress_records(
     app_container: IndexingAppContainer,
     graph_provider: IGraphDBProvider,
@@ -115,7 +177,7 @@ async def recover_in_progress_records(
     # Semaphore to limit concurrent processing to 5 records
     semaphore = asyncio.Semaphore(5)
     # Track results for final summary
-    results = {"requeued": 0, "skipped": 0, "error": 0}
+    results = {"requeued": 0, "skipped": 0, "exhausted": 0, "error": 0}
     total_records = 0
     recovery_owner = f"recovery:{uuid4().hex}"
     recovery_renewal_task: asyncio.Task[None] | None = None
@@ -135,10 +197,25 @@ async def recover_in_progress_records(
         # container by the time recovery runs) so recovery events go out on the
         # same producer as live retries.
         retry_producer = None
+        retry_tracker = None
+        exhausted_sink: ExhaustedRecordSink | None = None
+        read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None
         consumers = getattr(app_container, "kafka_consumers", [])
         if consumers and len(consumers[0]) > 2:
             retry_producer = consumers[0][2]
             record_consumer = consumers[0][1]
+            retry_tracker = getattr(record_consumer, "retry_manager", None)
+            # The record handler, which the consumer reports abandoned messages to.
+            sink = getattr(record_consumer, "disposition_sink", None)
+            if callable(getattr(sink, "on_recovery_exhausted", None)):
+                exhausted_sink = sink
+            lane_backlog = getattr(record_consumer, "lane_backlog", None)
+            if lane_backlog is not None:
+                # Not through run_coordination: the consumer hops to the loop
+                # that owns its broker client by itself, with its own timeout.
+                # Read at most once per pass, shared by the sweep and the lane
+                # upkeep below.
+                read_backlog = _read_once(partial(lane_backlog, Topic.RECORD_EVENTS.value))
             if concurrency_manager is None:
                 concurrency_manager = getattr(
                     record_consumer, "concurrency_manager", None
@@ -194,8 +271,16 @@ async def recover_in_progress_records(
                     f"Failed to persist recovery status for record {record_id}"
                 )
 
-        async def process_single_record(record: dict[str, Any]) -> bool | None:
-            """Reset one stuck record and re-queue it, with semaphore control."""
+        async def process_single_record(
+            record: dict[str, Any], *, resume_enrichment: bool = False
+        ) -> bool | None:
+            """Reset one stuck record and re-queue it, with semaphore control.
+
+            ``resume_enrichment``: the record is indexed and only its enrichment
+            was cut short. It stays searchable; the republished event re-runs it
+            (the handler does not skip an indexed record whose enrichment is
+            IN_PROGRESS), and its completion promotes its queued duplicates.
+            """
             async with semaphore:
                 record_id = record.get("_key")
                 record_name = record.get("recordName", "Unknown")
@@ -228,12 +313,18 @@ async def recover_in_progress_records(
                         record_id,
                         CollectionNames.RECORDS.value,
                     )
-                    if latest_record is None or not (
-                        latest_record.get("indexingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                        or latest_record.get("parsingStatus")
-                        == ProgressStatus.IN_PROGRESS.value
-                    ):
+                    if latest_record is None:
+                        still_stuck = False
+                    elif resume_enrichment:
+                        # Stale again, not merely cut short: a redelivery that
+                        # is enriching it now has refreshed processingStartedAt.
+                        still_stuck = _enrichment_cut_short(latest_record) and is_stale(latest_record)
+                    else:
+                        still_stuck = (
+                            latest_record.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value
+                            or latest_record.get("parsingStatus") == ProgressStatus.IN_PROGRESS.value
+                        )
+                    if not still_stuck:
                         results["skipped"] += 1
                         return True
                     record = latest_record
@@ -243,12 +334,18 @@ async def recover_in_progress_records(
                         f"🔄 Recovering stale record: {record_name} (ID: {record_id})"
                     )
 
-                    # Check if connector is disabled or deleted
+                    # Check if connector is disabled or deleted. Not for a
+                    # resumed enrichment: the record is searchable, and these
+                    # branches would turn it AUTO_INDEX_OFF and strand its
+                    # QUEUED copies. The republished event reaches the
+                    # handler, which ends the enrichment and releases them.
                     connector_id = record.get("connectorId")
                     origin = record.get("origin")
-                    if connector_id and origin == OriginTypes.CONNECTOR.value:
+                    if connector_id and origin == OriginTypes.CONNECTOR.value and not resume_enrichment:
+                        # A failed read must not look like a deleted connector;
+                        # raising leaves the row for the next pass.
                         connector_instance = await graph_provider.get_document(
-                            connector_id, CollectionNames.APPS.value
+                            connector_id, CollectionNames.APPS.value, raise_on_error=True
                         )
                         if not connector_instance:
                             logger.info(
@@ -286,18 +383,41 @@ async def recover_in_progress_records(
                             results["skipped"] += 1
                             return True
 
-                    # Reconstruct the payload from the record data
+                    tracking_id = recovery_tracking_id(record_id, record.get("version", 0))
+                    # Without a sink to end it (and move its queued copies on),
+                    # the record is recovered with no budget, as before.
+                    if exhausted_sink is not None and await recovery_exhausted(
+                        retry_tracker, tracking_id, logger
+                    ):
+                        await exhausted_sink.on_recovery_exhausted(
+                            record_id, resume_enrichment=resume_enrichment
+                        )
+                        logger.warning(
+                            "Gave up recovering record %s (%s): it kept failing or "
+                            "being cut off after it was re-queued",
+                            record_id,
+                            record_name,
+                        )
+                        results["exhausted"] += 1
+                        return True
+
+                    # Reconstruct the payload from the record data. With the
+                    # connector id the event goes to its connector's own lane;
+                    # without it every recovered record shared the default lane.
                     payload = {
                         "recordId": record_id,
                         "recordName": record.get("recordName"),
                         "orgId": record.get("orgId"),
                         "version": record.get("version", 0),
                         "connectorName": record.get("connectorName", Connectors.KNOWLEDGE_BASE.value),
+                        "connectorId": record.get("connectorId"),
                         "extension": record.get("extension"),
                         "mimeType": record.get("mimeType"),
                         "origin": record.get("origin"),
                         "recordType": record.get("recordType"),
                         "virtualRecordId": record.get("virtualRecordId"),
+                        # Failures of every recovery of this version share one budget.
+                        "_retry_tracking_id": tracking_id,
                     }
 
                     # Determine event type - default to NEW_RECORD for recovery
@@ -313,14 +433,22 @@ async def recover_in_progress_records(
                         event_type = EventTypes.NEW_RECORD.value
                         logger.debug(f"Treating as NEW_RECORD (version={version}, virtualRecordId={virtual_record_id})")
 
-                    reset_fields = {
-                        "parsingStatus": ProgressStatus.NOT_STARTED.value,
-                        "indexingStatus": ProgressStatus.QUEUED.value,
-                        "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
-                        "extractionStatus": ProgressStatus.NOT_STARTED.value,
-                        "processingStartedAt": None,
-                        "reason": RECOVERY_REQUEUED,
-                    }
+                    if resume_enrichment:
+                        # A fresh start time keeps the next scans off it while
+                        # the event waits; if the event is lost it ages out again.
+                        reset_fields = {
+                            "processingStartedAt": get_epoch_timestamp_in_ms(),
+                            "reason": RECOVERY_REQUEUED,
+                        }
+                    else:
+                        reset_fields = {
+                            "parsingStatus": ProgressStatus.NOT_STARTED.value,
+                            "indexingStatus": ProgressStatus.QUEUED.value,
+                            "queuedAtTimestamp": get_epoch_timestamp_in_ms(),
+                            "extractionStatus": ProgressStatus.NOT_STARTED.value,
+                            "processingStartedAt": None,
+                            "reason": RECOVERY_REQUEUED,
+                        }
 
                     async def publish_recovery_event() -> None:
                         nonlocal published
@@ -333,6 +461,9 @@ async def recover_in_progress_records(
                             )
                         )
                         published = True
+                        # Counted here, not after the status write: an event
+                        # in the broker is a hand-back even if that write fails.
+                        await record_handback(retry_tracker, tracking_id, logger)
 
                     if concurrency_manager is not None:
                         # The per-record lease keeps the consumer out until the
@@ -438,7 +569,7 @@ async def recover_in_progress_records(
             except (TypeError, ValueError):
                 return True
 
-        for status_field in ("indexingStatus", "parsingStatus"):
+        for status_field in ("indexingStatus", "parsingStatus", "extractionStatus"):
             offset = 0
             while True:
                 if (
@@ -460,6 +591,7 @@ async def recover_in_progress_records(
                 if not page:
                     break
 
+                resume_enrichment = status_field == "extractionStatus"
                 candidates = [
                     record
                     for record in page
@@ -469,10 +601,14 @@ async def recover_in_progress_records(
                         and record.get("indexingStatus")
                         == ProgressStatus.IN_PROGRESS.value
                     )
+                    and (not resume_enrichment or _enrichment_cut_short(record))
                 ]
 
                 outcomes = await asyncio.gather(
-                    *(process_single_record(record) for record in candidates)
+                    *(
+                        process_single_record(record, resume_enrichment=resume_enrichment)
+                        for record in candidates
+                    )
                 )
                 total_records += sum(outcome is not None for outcome in outcomes)
                 removed_from_result = sum(outcome is True for outcome in outcomes)
@@ -514,6 +650,13 @@ async def recover_in_progress_records(
             run_coordination=run_coordination,
             concurrency_manager=concurrency_manager,
             page_size=page_size,
+            read_backlog=read_backlog,
+        )
+
+        await _upkeep_lanes(
+            graph_provider=graph_provider,
+            read_backlog=read_backlog,
+            logger=logger,
         )
 
         # Vectors whose last referencing record was repointed elsewhere are
@@ -535,6 +678,54 @@ async def recover_in_progress_records(
                 page_size=page_size,
             )
 
+        # A primary whose handler could not copy its taxonomy to promoted
+        # duplicates keeps duplicateReconcilePending; a redelivery finds
+        # nothing QUEUED, so nothing else would retry it.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            total_records += await retry_pending_duplicate_reconciles(
+                graph_provider=graph_provider,
+                reconciler=DuplicateReconciler(
+                    graph_provider=graph_provider,
+                    sink=getattr(event_processor, "sink_orchestrator", None),
+                    sync_vector_membership=event_processor.sync_vector_membership,
+                    logger=logger,
+                ),
+                logger=logger,
+                page_size=page_size,
+            )
+        except Exception as exc:
+            logger.warning(f"Duplicate reconcile retry skipped this pass: {exc}")
+
+        # A named-entity graph write that failed after its own retries left the
+        # record's last good entities in place and a retry marker for this pass.
+        try:
+            event_processor = app_container.event_processor()
+            if inspect.isawaitable(event_processor):
+                event_processor = await event_processor
+            total_records += await retry_pending_named_entity_persists(
+                graph_provider=graph_provider,
+                sink=getattr(event_processor, "sink_orchestrator", None),
+                logger=logger,
+                page_size=page_size,
+                concurrency_manager=concurrency_manager,
+            )
+        except Exception as exc:
+            logger.warning(f"Named-entity persist retry skipped this pass: {exc}")
+        try:
+            total_records += await _sweep_pipeline_stages(app_container, concurrency_manager, logger)
+        except Exception as exc:
+            logger.warning(f"Pipeline stage sweep skipped this pass: {exc}")
+        total_records += await _sweep_retired_revisions(
+            app_container=app_container,
+            graph_provider=graph_provider,
+            logger=logger,
+            lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
+            concurrency_manager=concurrency_manager,
+        )
+
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
             return
@@ -542,7 +733,7 @@ async def recover_in_progress_records(
         logger.info(
             f"✅ Recovery complete. Processed {total_records} stale record(s): "
             f"{results['requeued']} re-queued, {results['skipped']} skipped, "
-            f"{results['error']} errors"
+            f"{results['exhausted']} given up, {results['error']} errors"
         )
 
     except Exception as e:
@@ -566,18 +757,199 @@ async def recover_in_progress_records(
                 )
 
 
+def _read_once(read: Callable[[], Awaitable[_T]]) -> Callable[[], Awaitable[_T]]:
+    """``read``, run on first call only; later calls get the same answer or error."""
+    outcome: list[tuple[_T | None, BaseException | None]] = []
+
+    async def once() -> _T:
+        if not outcome:
+            try:
+                outcome.append((await read(), None))
+            except Exception as e:
+                outcome.append((None, e))
+        value, error = outcome[0]
+        if error is not None:
+            raise error
+        return value  # type: ignore[return-value]
+
+    return once
+
+
+async def _upkeep_lanes(
+    *,
+    graph_provider: IGraphDBProvider,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None,
+    logger: logging.Logger,
+) -> None:
+    """Keep the Redis Streams lane map in step, when producers place by it.
+
+    Never fails the recovery pass: the map only steers placement, and the
+    next pass tries again.
+    """
+    assignments = lane_assignments_in_use(Topic.RECORD_EVENTS.value)
+    if assignments is None:
+        return
+    backlog: LaneBacklog | None = None
+    if read_backlog is not None:
+        try:
+            backlog = await read_backlog()
+        except Exception as e:
+            # The sweep has already said so; upkeep only skips what needs it.
+            logger.debug("Lane upkeep runs without the backlog this pass: %s", e)
+    try:
+        await run_lane_upkeep(
+            assignments=assignments,
+            graph_provider=graph_provider,
+            backlog=backlog,
+            logger=logger,
+        )
+    except Exception as e:
+        logger.warning(
+            "Queue lane upkeep failed this pass; it runs again next minute: %s: %s",
+            type(e).__name__,
+            e,
+        )
+
+
 # How much of virtualRecordToDocIdMapping one recovery tick will walk. Bounded
-# because orphans are rare and every row costs a graph lookup; the cursor below
+# because orphans are rare and every page costs a graph read; the cursor below
 # carries the position forward so successive ticks cover the rest.
 ORPHAN_SCAN_MAX_PAGES_PER_TICK = 4
+# Between pages, while the indexing loop is busy (see LoopShare).
+ORPHAN_SCAN_MAX_PAUSE_SECONDS = 5.0
 _orphan_sweep_cursor = 0
+
+
+
+# Stage sweep thresholds: a claim unpublished this long is re-sent; a running job untouched
+# this long (past the longest stage budget plus a lease term) is reclaimed once its lease is
+# found free, or on age alone without distributed concurrency.
+_STAGE_QUEUED_SWEEP_MS = 120_000
+_STAGE_IN_PROGRESS_SWEEP_MS = 1_800_000
+_STAGE_SWEEP_LIMIT = 200
+_STAGE_SWEEP_OWNER = "pipeline-stage-sweeper"
+
+
+async def _resolve_pipeline_runtime(app_container: IndexingAppContainer) -> "PipelineRuntime":
+    runtime = app_container.pipeline_runtime()
+    if inspect.isawaitable(runtime):
+        runtime = await runtime
+    return runtime
+
+
+async def _sweep_pipeline_stages(
+    app_container: IndexingAppContainer,
+    concurrency_manager: IDistributedLeaseManager | None,
+    logger: logging.Logger,
+) -> int:
+    """Re-publish stage jobs whose claim never reached the broker; reclaim ones whose worker is gone."""
+    try:
+        runtime = await _resolve_pipeline_runtime(app_container)
+    except Exception as exc:
+        logger.warning("Pipeline runtime unavailable for the stage sweep: %s", exc)
+        return 0
+
+    is_job_active: Callable[[str], Awaitable[bool]] | None = None
+    if concurrency_manager is not None:
+        manager = concurrency_manager
+
+        async def job_lease_held(job_id: str) -> bool:
+            # The stage consumer holds this lease while a job runs; if the sweeper can
+            # take it, nobody is running the job.
+            pool = f"record:job:{job_id}"
+            if await manager.try_acquire(pool, _STAGE_SWEEP_OWNER, 1, 5.0):
+                await manager.release(pool, _STAGE_SWEEP_OWNER)
+                return False
+            return True
+
+        is_job_active = job_lease_held
+
+    report = await runtime.coordinator.sweep(
+        queued_older_than_ms=_STAGE_QUEUED_SWEEP_MS,
+        limit=_STAGE_SWEEP_LIMIT,
+        in_progress_older_than_ms=_STAGE_IN_PROGRESS_SWEEP_MS,
+        is_job_active=is_job_active,
+    )
+    if report.republished or report.reclaimed:
+        logger.info(
+            "Pipeline stage sweep: %d re-published, %d reclaimed of %d scanned",
+            report.republished, report.reclaimed, report.scanned,
+        )
+    return report.republished + report.reclaimed
+
+# Pages of virtualRecordToDocIdMapping one recovery tick retires revisions over.
+# Nothing here is urgent (the grace alone is a day), so a pass is spread over
+# many ticks; the cursor carries it forward and restarts at the top at the end.
+RETENTION_MAX_PAGES_PER_TICK = 4
+_retention_cursor: str | None = None
+
+
+async def _sweep_retired_revisions(
+    *,
+    app_container: IndexingAppContainer,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    lease_held: Callable[[], bool],
+    concurrency_manager: IDistributedLeaseManager | None = None,
+) -> int:
+    """Retire artifact sets and stage states of revisions nothing reads any more.
+
+    Under the recovery lease: stops at the next page or delete once it is lost,
+    leaving the cursor on the page it had not finished. Each virtual record is
+    retired under its holders' record leases, which a re-index holds.
+    """
+    global _retention_cursor  # noqa: PLW0603 - the cursor is per process by design
+
+    grace_seconds = messaging_env.revision_retention_grace_seconds
+    if grace_seconds <= 0:
+        return 0
+    try:
+        blob_storage = app_container.blob_storage()
+        if inspect.isawaitable(blob_storage):
+            blob_storage = await blob_storage
+    except Exception as exc:
+        logger.warning("Blob storage unavailable for revision retention: %s", exc)
+        return 0
+    sweep = RevisionRetentionSweep(
+        graph_provider,
+        NodeArtifactStore(blob_storage, logger),
+        logger,
+        grace_ms=int(grace_seconds * 1000),
+        leases=concurrency_manager,
+    )
+    total = RetentionReport()
+    pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
+    for _ in range(RETENTION_MAX_PAGES_PER_TICK):
+        if not lease_held():
+            break
+        try:
+            next_key, report = await sweep.run_page(_retention_cursor, still_leader=lease_held)
+        except Exception as exc:
+            logger.warning("Revision retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
+            break
+        total.add(report)
+        if report.interrupted:
+            break
+        _retention_cursor = next_key
+        if next_key is None:
+            break
+        await pacer.pause()
+    if total.removed or total.failed:
+        logger.info(
+            "Revision retention: %d revision(s) and %d stage state(s) removed, %d revision(s) kept, "
+            "%d virtual record(s) left whole for the trash, %d left for the next pass while a record "
+            "was busy, %d failure(s), of %d scanned",
+            total.revisions_deleted, total.stage_states_deleted, total.revisions_kept,
+            total.skipped_trashed, total.skipped_busy, total.failed, total.scanned,
+        )
+    return total.removed
 
 
 async def _sweep_orphaned_virtual_record_mappings(
     *,
-    graph_provider,
-    pipeline,
-    logger,
+    graph_provider: IGraphDBProvider,
+    pipeline: "IndexingPipeline",
+    logger: logging.Logger,
     page_size: int,
 ) -> int:
     """Clean up VRIDs whose vectors outlived every graph record referencing them.
@@ -592,18 +964,19 @@ async def _sweep_orphaned_virtual_record_mappings(
     records is exactly an orphan. Reusing rewrite_or_delete_virtual_record keeps
     the confirming re-read, so a lagging graph read cannot delete live vectors.
 
-    Orphans are rare but the mapping collection is large, and each row costs a
-    graph lookup, so a full scan per tick would be a standing N+1 for almost no
+    Orphans are rare but the mapping collection is large, and each page costs a
+    graph read, so a full scan per tick would be standing work for almost no
     yield. Instead each tick walks a bounded slice and leaves the cursor where it
     stopped, wrapping at the end: the collection is covered over many ticks
     rather than all at once. The cursor is per-process and resets on restart —
     acceptable, since nothing here is required to be timely.
     """
-    global _orphan_sweep_cursor
+    global _orphan_sweep_cursor  # noqa: PLW0603 - the cursor is per process by design
 
     swept = 0
     offset = _orphan_sweep_cursor
     pages_scanned = 0
+    pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     while pages_scanned < ORPHAN_SCAN_MAX_PAGES_PER_TICK:
         pages_scanned += 1
         page = await graph_provider.get_documents_paginated(
@@ -618,25 +991,37 @@ async def _sweep_orphaned_virtual_record_mappings(
             break
 
         swept_this_page = 0
-        for mapping in page:
-            vrid = mapping.get("_key") or mapping.get("id")
-            if not isinstance(vrid, str) or not vrid:
-                continue
-            try:
-                # The handler below was written for this and could not fire:
-                # the read swallowed its own failure and answered [], which
-                # this loop reads as "no records reference it" and cleans up.
-                records = await graph_provider.get_records_by_virtual_record_id(
-                    vrid, raise_on_error=True
+        vrids = [
+            vrid
+            for mapping in page
+            if isinstance(vrid := mapping.get("_key") or mapping.get("id"), str) and vrid
+        ]
+        try:
+            # One read per page, not one per mapping: the answer is the same,
+            # and on Neo4j each read is a millisecond of the indexing loop.
+            # Raising, not answering empty: an empty answer would read as "no
+            # records reference these" and clean them all up.
+            in_use = await graph_provider.get_virtual_record_ids_in_use(vrids)
+            unreferenced = [vrid for vrid in vrids if vrid not in in_use]
+            # Content still held by a record in the trash is the purge's to
+            # remove; releasing it here would delete a restorable record's
+            # stored content ahead of time.
+            trashed = (
+                await graph_provider.get_virtual_record_ids_in_use(
+                    unreferenced, visibility=RecordVisibility.DELETED
                 )
-            except Exception as exc:
-                logger.warning(
-                    "Could not check virtual record %s for orphaned vectors: %s",
-                    vrid,
-                    exc,
-                )
-                continue
-            if records:
+                if unreferenced
+                else set()
+            )
+        except Exception as exc:
+            logger.warning(
+                "Could not check %d virtual record(s) for orphaned vectors: %s",
+                len(vrids),
+                exc,
+            )
+            unreferenced, trashed = [], set()
+        for vrid in unreferenced:
+            if vrid in trashed:
                 continue
             try:
                 outcome = await pipeline.rewrite_or_delete_vector_membership(vrid)
@@ -650,6 +1035,7 @@ async def _sweep_orphaned_virtual_record_mappings(
             if outcome == "deleted":
                 swept += 1
                 swept_this_page += 1
+        await pacer.pause()
 
         if len(page) < page_size:
             offset = 0
@@ -669,8 +1055,8 @@ async def _sweep_orphaned_virtual_record_mappings(
 
 async def _sweep_queued_records_for_inactive_connectors(
     *,
-    graph_provider,
-    logger,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
     page_size: int,
 ) -> int:
     """Move stranded records on gone/inactive connectors to AUTO_INDEX_OFF.
@@ -688,7 +1074,8 @@ async def _sweep_queued_records_for_inactive_connectors(
     without this they sit for ever.
 
     IN_PROGRESS rows are included past a short grace period. The main scan waits
-    stale_recovery_after_seconds (~32 min by default), which is right for a
+    for `is_stale`'s cutoff — one lease interval with a concurrency manager,
+    else stale_recovery_after_seconds (~122 min) — which is right for a
     pipeline that might still finish and wrong here: the connector has already
     been popped from connectors_map, so nothing in flight can succeed. One lease
     interval is enough to be sure no worker still owns the row.
@@ -808,14 +1195,57 @@ async def _sweep_queued_records_for_inactive_connectors(
     return swept
 
 
+# After each re-send of the same record the wait before the next one doubles,
+# up to this (or the configured minimum age, if that is longer).
+STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS = 24 * 3600.0
+# How far a record's queue time and the broker's timestamp for its event may
+# disagree: the two are stamped by different hosts, and the record is stamped
+# before its event is sent.
+STRANDED_QUEUE_CLOCK_ALLOWANCE_MS = 5 * 60 * 1000
+
+
+def _republishes_since_queued(record: dict[str, Any], enabled_at: object = None) -> int:
+    """How many times the sweep has re-sent this record since it was last put in line.
+
+    ``enabled_at`` is when the connector of a record parked while it was off
+    was turned on again, which puts the record in line again without moving
+    its queuedAtTimestamp.
+    """
+    try:
+        last_republished_at = float(record.get("lastRepublishedAt"))
+    except (TypeError, ValueError):
+        return 0
+    for put_in_line_at in (record.get("queuedAtTimestamp"), enabled_at):
+        try:
+            if float(put_in_line_at) > last_republished_at:
+                # Put in line again since: an earlier wait's re-sends say
+                # nothing about this one.
+                return 0
+        except (TypeError, ValueError):
+            continue
+    try:
+        count = int(record.get("republishCount") or 0)
+    except (TypeError, ValueError):
+        count = 0
+    # A row re-sent before the counter existed has still been re-sent once.
+    return max(1, count)
+
+
+def _republish_wait_ms(after_seconds: float, republishes: int) -> float:
+    cap = max(after_seconds, STRANDED_REPUBLISH_BACKOFF_CAP_SECONDS)
+    # The exponent is clamped only so a corrupt counter cannot overflow.
+    return min(after_seconds * 2 ** min(republishes, 32), cap) * 1000
+
+
 async def _republish_stranded_records(
     *,
-    graph_provider,
-    logger,
-    producer,
-    run_coordination,
-    concurrency_manager,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    producer: "IMessagingProducer",
+    run_coordination: CoordinationRunner,
+    concurrency_manager: DistributedConcurrencyManager | None,
     page_size: int,
+    read_backlog: Callable[[], Awaitable[LaneBacklog]] | None = None,
 ) -> int:
     """Re-publish records that have been waiting on an event that never came.
 
@@ -825,29 +1255,73 @@ async def _republish_stranded_records(
     published because the send failed after the transaction committed — is
     reachable by neither, so it waits for ever.
 
-    Keyed on age rather than on what QUEUED is supposed to mean. That status is
-    written both by the upsert that precedes publishing and by the publish
-    itself, so it cannot distinguish "the event is on the broker" from "the
-    event was never sent"; age can, and it recovers the row either way.
+    The status cannot say which rows those are: QUEUED is written both by the
+    upsert that precedes publishing and by the publish itself. Age alone
+    cannot either, because a record queued behind a long backlog is just as
+    old as one whose event was lost, and re-sending it lengthens the very
+    backlog it is waiting behind. So the broker is asked (``read_backlog``,
+    once per pass, and only if some record is old enough to need it): a record
+    is left alone while a lane its event could be on still holds work at least
+    as old as the record's own queue time, and re-sent once that lane has moved
+    past it with the record still waiting.
 
-    On by default (one hour); STRANDED_RECORD_REPUBLISH_AFTER_SECONDS=0
-    disables it. Keep the threshold comfortably longer than the worst backlog
-    the broker is expected to carry, or healthy records still queued behind it
-    will be re-sent -- harmlessly, since re-publishing is idempotent, but
-    wastefully.
+    STRANDED_RECORD_REPUBLISH_AFTER_SECONDS is the minimum age before a record
+    is looked at at all (one hour by default; 0 disables the sweep). After each
+    re-send the wait before the next doubles, so a record is never re-sent
+    every period for ever -- which is also the whole of the rule on a pass
+    where the broker cannot be read.
 
     Re-publishing is safe to repeat: the handler skips a record that is already
     COMPLETED, and the per-record exclusivity lease stops a republished event
     racing one already in flight.
+
+    Also walked: AUTO_INDEX_OFF with reason CONNECTOR_OFF, parked while its
+    connector was off, on a connector that is on again. Turning it on re-queues
+    these at once (EntityEventService._requeue_records_parked_while_off); this
+    is the net for what that single pass missed -- a refused send, a pass that
+    died -- and for a record parked just after it ran. Such a record keeps its
+    status here, as the others do, so the same age and back-off bound it, and
+    its age also counts from the connector's enabledAtTimestamp, so nothing is
+    sent from here while that re-queue may still be sending it.
+
+    It also ends the wait of a record the handler put back in line because its
+    source rate-limited it (``retryNotBefore``, see
+    ``modules/indexing/rate_limit_deferral.py``): that record is sent again as
+    soon as the time has passed, and not before.
     """
     after_seconds = messaging_env.stranded_record_republish_after_seconds
     if after_seconds <= 0:
         return 0
 
-    cutoff_ms = get_epoch_timestamp_in_ms() - int(after_seconds * 1000)
+    pass_started_ms = get_epoch_timestamp_in_ms()
+    cutoff_ms = pass_started_ms - int(after_seconds * 1000)
     # None means "could not read this pass": see the sibling sweep above.
     connector_active: dict[str, bool | None] = {}
     republished = 0
+    considered = 0
+    still_queued = 0
+    backed_off = 0
+    rate_limited_waiting = 0
+    rate_limited_resent = 0
+    backlog: LaneBacklog | None = None
+    backlog_read = False
+
+    async def _lane_backlog() -> LaneBacklog | None:
+        """The broker's view, read on first use; None if it cannot be read this pass."""
+        nonlocal backlog, backlog_read
+        if not backlog_read:
+            backlog_read = True
+            if read_backlog is not None:
+                try:
+                    backlog = await read_backlog()
+                except Exception as e:
+                    # The type as well: a timeout's own message is empty.
+                    logger.warning(
+                        "Could not read the indexing queue's backlog, so this "
+                        "pass decides on age and back-off alone: %s: %s",
+                        type(e).__name__, e,
+                    )
+        return backlog
 
     async def _is_active(connector_id: str) -> bool:
         if connector_id not in connector_active:
@@ -870,10 +1344,103 @@ async def _republish_stranded_records(
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True
 
-    for status_value in (
-        ProgressStatus.QUEUED.value,
-        ProgressStatus.NOT_STARTED.value,
-    ):
+    async def _resend(
+        record: dict[str, Any],
+        record_key: str,
+        event_type: str,
+        payload: dict[str, object],
+        *,
+        claim: dict[str, Any],
+        undo: dict[str, Any],
+    ) -> bool:
+        """Send the record's event again under its lease; True once it is sent."""
+        record_owner = f"stranded:{uuid4().hex}"
+        record_pool = f"record:{record_key}"
+        lock_held = False
+        try:
+            if concurrency_manager is not None:
+                lock_held = await concurrency_manager.try_acquire(
+                    record_pool,
+                    record_owner,
+                    1,
+                    messaging_env.concurrency_lease_seconds,
+                )
+                if not lock_held:
+                    # Someone is working on it after all.
+                    return False
+
+            # The marker is a durable claim written BEFORE the send, not
+            # a receipt written after it. Written after, a Neo4j failure
+            # following a successful Redis send left the record eligible
+            # again next tick -- one duplicate event per minute, per
+            # record, for as long as the consumer had not yet moved it
+            # out of QUEUED/NOT_STARTED. Under a backlog that is a
+            # feedback loop: every tick inflates the very backlog that
+            # is delaying the consumer. Claiming first bounds it: if the
+            # claim cannot be persisted, nothing is sent this tick.
+            # Deliberately not updatedAtTimestamp: that field means
+            # "when the record last changed" and connectors write it, so
+            # a recovery sweep must not move it.
+            claimed = await graph_provider.update_node(
+                record_key, CollectionNames.RECORDS.value, claim
+            )
+            if not claimed:
+                logger.error(
+                    "Could not record a republish claim for stranded "
+                    "record %s; skipping it this tick rather than risk "
+                    "re-sending it every tick",
+                    record_key,
+                )
+                return False
+
+            try:
+                await run_coordination(
+                    producer.send_event(
+                        topic=Topic.RECORD_EVENTS.value,
+                        event_type=event_type,
+                        payload=payload,
+                        key=str(record_key),
+                    )
+                )
+            except Exception:
+                # The claim is already persisted, so without this the
+                # record would wait out a back-off for a send that
+                # never happened. Putting back what was there (best
+                # effort) lets the next tick retry; if even that fails
+                # the record still only waits one back-off -- bounded
+                # either way.
+                try:
+                    await graph_provider.update_node(
+                        record_key, CollectionNames.RECORDS.value, undo
+                    )
+                except Exception as clear_exc:
+                    logger.warning(
+                        "Could not undo republish claim for %s after a "
+                        "failed send; it will retry after its back-off: %s",
+                        record_key,
+                        clear_exc,
+                    )
+                raise
+            return True
+        except Exception as exc:
+            logger.error(
+                "Failed to re-publish stranded record %s: %s",
+                record_key,
+                exc,
+            )
+            return False
+        finally:
+            if lock_held and concurrency_manager is not None:
+                try:
+                    await concurrency_manager.release(record_pool, record_owner)
+                except Exception as release_exc:
+                    logger.warning(
+                        "Failed to release stranded-record lease for %s: %s",
+                        record_key,
+                        release_exc,
+                    )
+
+    async def _pages_in_status(status_value: str) -> AsyncGenerator[list[dict], None]:
         offset = 0
         while True:
             page = await graph_provider.get_documents_paginated(
@@ -885,16 +1452,122 @@ async def _republish_stranded_records(
                 raise_on_error=False,
             )
             if not page:
-                break
+                return
+            yield page
+            if len(page) < page_size:
+                return
+            # Republished rows keep their status, so the filtered result does
+            # not shrink under the cursor — advance over the whole page.
+            offset += len(page)
 
+    # Per connector that is on: when it was last turned on.
+    enabled_at: dict[str, object] = {}
+
+    async def _pages_parked_while_off() -> AsyncGenerator[list[dict], None]:
+        """Per connector that is on, so neither a paused connector's parked
+        backlog nor a manual-indexing connector's AUTO_INDEX_OFF records
+        (no reason) is read on every pass; each read is a seek in the
+        (connectorId, indexingStatus, reason, key) index."""
+        offset = 0
+        while True:
+            apps = await graph_provider.get_documents_paginated(
+                CollectionNames.APPS.value,
+                skip=offset,
+                limit=page_size,
+                filters={"isActive": True},
+                sort_field="_key",
+                raise_on_error=False,
+            )
+            for app in apps:
+                if key := app.get("_key") or app.get("id"):
+                    enabled_at[key] = app.get("enabledAtTimestamp")
+            if len(apps) < page_size:
+                break
+            offset += len(apps)
+        for connector_id in list(enabled_at):
+            # "" rather than None, so the first page has the key predicate
+            # too: Neo4j uses a composite index only when every property in
+            # it has one.
+            after_key = ""
+            while True:
+                page = await graph_provider.get_documents_paginated(
+                    CollectionNames.RECORDS.value,
+                    limit=page_size,
+                    # Only the turn-off's reason: AUTO_INDEX_OFF from a
+                    # connector's indexing filters has none.
+                    filters={
+                        "connectorId": connector_id,
+                        "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+                        "reason": CONNECTOR_OFF,
+                    },
+                    sort_field="_key",
+                    raise_on_error=False,
+                    after_key=after_key,
+                )
+                if not page:
+                    break
+                yield page
+                after_key = page[-1].get("_key") or page[-1].get("id")
+                if len(page) < page_size or not after_key:
+                    break
+
+    for status_value, pages in (
+        (ProgressStatus.QUEUED.value, _pages_in_status(ProgressStatus.QUEUED.value)),
+        (ProgressStatus.NOT_STARTED.value, _pages_in_status(ProgressStatus.NOT_STARTED.value)),
+        (ProgressStatus.AUTO_INDEX_OFF.value, _pages_parked_while_off()),
+    ):
+        parked_while_off = status_value == ProgressStatus.AUTO_INDEX_OFF.value
+        async for page in pages:
             for record in page:
                 record_key = record.get("_key") or record.get("id")
                 connector_id = record.get("connectorId")
+                if parked_while_off and not is_live_record(record):
+                    continue
+                # Uploads are otherwise left alone: a new one waits on its file
+                # reaching storage. A restored file's content is already there,
+                # and its restore was the only thing that would have queued it.
+                restored_upload = (
+                    status_value == ProgressStatus.NOT_STARTED.value
+                    and bool(record.get(RESTORED_AT_FIELD))
+                    and is_live_record(record)
+                )
                 if (
                     not record_key
                     or not connector_id
-                    or record.get("origin") != OriginTypes.CONNECTOR.value
+                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
+                    # A stub for an ancestor that was never synced: nothing to
+                    # index, and the connector refuses to stream it.
+                    or record.get("isPlaceholder")
                 ):
+                    continue
+
+                # Put back in line by the handler because its source
+                # rate-limited it. Its event was acknowledged then, so neither
+                # the age, the back-off nor the queue's backlog says anything
+                # about it: the not-before time is the whole rule. A record
+                # parked while its connector was off since then keeps the
+                # parked rules below (its turn-on clock), even if the wait's
+                # fields are still on it.
+                due = None if parked_while_off else deferral_due(record, pass_started_ms)
+                if due is not None:
+                    if not due:
+                        rate_limited_waiting += 1
+                    elif await _is_active(connector_id):
+                        event_type, payload = record_event(
+                            record,
+                            record_key=record_key,
+                            connector_id=connector_id,
+                            restored_upload=restored_upload,
+                        )
+                        if await _resend(
+                            record,
+                            record_key,
+                            event_type,
+                            payload,
+                            claim={"lastRepublishedAt": get_epoch_timestamp_in_ms()},
+                            undo={"lastRepublishedAt": record.get("lastRepublishedAt")},
+                        ):
+                            rate_limited_resent += 1
                     continue
 
                 # Aged from the newest of three clocks, so any one being fresh
@@ -909,11 +1582,17 @@ async def _republish_stranded_records(
                 # sends another copy of the same event -- worst precisely when
                 # the consumer is backlogged, which is the case this sweep
                 # exists for.
+                # A record parked while its connector was off is also aged
+                # from when the connector was turned on again: until then the
+                # appEnabled re-queue is sending it, and a copy from here
+                # would reach the consumer twice. Its own clocks are of the
+                # park, often hours older.
                 clocks: list[float] = []
                 for value in (
                     record.get("queuedAtTimestamp"),
                     record.get("updatedAtTimestamp") or record.get("createdAtTimestamp"),
                     record.get("lastRepublishedAt"),
+                    enabled_at.get(connector_id) if parked_while_off else None,
                 ):
                     try:
                         clocks.append(float(value))
@@ -930,142 +1609,85 @@ async def _republish_stranded_records(
                     # The sweep above owns these; moving them here would race it.
                     continue
 
-                # A duplicate parked behind an in-flight twin is legitimately
-                # QUEUED with its message already acked — it is released by the
-                # twin's completion, not by us.
-                if record.get("md5Checksum") and record.get("virtualRecordId"):
+                # A parked copy is released by its twin's completion only while
+                # QUEUED; one parked while its connector was off never is.
+                if not parked_while_off and is_parked_duplicate(record, restored_upload=restored_upload):
                     continue
 
-                record_owner = f"stranded:{uuid4().hex}"
-                record_pool = f"record:{record_key}"
-                lock_held = False
-                try:
-                    if concurrency_manager is not None:
-                        lock_held = await concurrency_manager.try_acquire(
-                            record_pool,
-                            record_owner,
-                            1,
-                            messaging_env.concurrency_lease_seconds,
-                        )
-                        if not lock_held:
-                            # Someone is working on it after all.
-                            continue
+                considered += 1
+                republishes = _republishes_since_queued(
+                    record, enabled_at.get(connector_id) if parked_while_off else None
+                )
+                if pass_started_ms - last_touched_at < _republish_wait_ms(after_seconds, republishes):
+                    backed_off += 1
+                    continue
 
-                    payload = {
-                        "recordId": record_key,
-                        "recordName": record.get("recordName"),
-                        "orgId": record.get("orgId"),
-                        "version": record.get("version", 0),
-                        "connectorName": record.get("connectorName"),
-                        "connectorId": connector_id,
-                        "extension": record.get("extension"),
-                        "mimeType": record.get("mimeType"),
-                        "origin": record.get("origin"),
-                        "recordType": record.get("recordType"),
-                        "virtualRecordId": record.get("virtualRecordId"),
-                    }
-                    version = int(payload.get("version", 0) or 0)
-                    event_type = (
-                        EventTypes.REINDEX_RECORD.value
-                        if version > 0 and payload.get("virtualRecordId")
-                        else EventTypes.NEW_RECORD.value
-                    )
+                event_type, payload = record_event(
+                    record,
+                    record_key=record_key,
+                    connector_id=connector_id,
+                    restored_upload=restored_upload,
+                )
 
-                    # The marker is a durable claim written BEFORE the send, not
-                    # a receipt written after it. Written after, a Neo4j failure
-                    # following a successful Redis send left the record eligible
-                    # again next tick -- one duplicate event per minute, per
-                    # record, for as long as the consumer had not yet moved it
-                    # out of QUEUED/NOT_STARTED. Under a backlog that is a
-                    # feedback loop: every tick inflates the very backlog that
-                    # is delaying the consumer. Claiming first bounds it: if the
-                    # claim cannot be persisted, nothing is sent this tick.
-                    # Deliberately not updatedAtTimestamp: that field means
-                    # "when the record last changed" and connectors write it, so
-                    # a recovery sweep must not move it.
-                    claimed = await graph_provider.update_node(
-                        record_key,
-                        CollectionNames.RECORDS.value,
-                        {"lastRepublishedAt": get_epoch_timestamp_in_ms()},
-                    )
-                    if not claimed:
-                        logger.error(
-                            "Could not record a republish claim for stranded "
-                            "record %s; skipping it this tick rather than risk "
-                            "re-sending it every tick",
-                            record_key,
-                        )
+                # Older work still on a lane this record's event could be on
+                # means the consumer has not got as far as that event yet. A
+                # lane the consumer has paused, or whose head is buffered or in
+                # flight, counts: the broker reports what is not finished, not
+                # what is not delivered.
+                lanes = await _lane_backlog()
+                if lanes is not None:
+                    oldest_waiting = lanes.oldest_waiting_for(payload)
+                    if (
+                        oldest_waiting is not None
+                        and oldest_waiting <= last_touched_at + STRANDED_QUEUE_CLOCK_ALLOWANCE_MS
+                    ):
+                        still_queued += 1
                         continue
 
-                    try:
-                        await run_coordination(
-                            producer.send_event(
-                                topic=Topic.RECORD_EVENTS.value,
-                                event_type=event_type,
-                                payload=payload,
-                                key=str(record_key),
-                            )
-                        )
-                    except Exception:
-                        # The claim is already persisted, so without this the
-                        # record would wait a full interval before its next
-                        # attempt. Clearing it (best effort) lets the next tick
-                        # retry; if even that fails the record still only
-                        # waits one interval -- bounded either way.
-                        try:
-                            await graph_provider.update_node(
-                                record_key,
-                                CollectionNames.RECORDS.value,
-                                {"lastRepublishedAt": None},
-                            )
-                        except Exception as clear_exc:
-                            logger.warning(
-                                "Could not clear republish claim for %s after a "
-                                "failed send; it will retry after the interval: %s",
-                                record_key,
-                                clear_exc,
-                            )
-                        raise
+                if await _resend(
+                    record,
+                    record_key,
+                    event_type,
+                    payload,
+                    claim={
+                        "lastRepublishedAt": get_epoch_timestamp_in_ms(),
+                        "republishCount": republishes + 1,
+                    },
+                    undo={
+                        "lastRepublishedAt": record.get("lastRepublishedAt"),
+                        "republishCount": republishes,
+                    },
+                ):
                     republished += 1
                     logger.warning(
                         "Re-published stranded record %s (%s, status %s, "
-                        "untouched for %.0fs)",
+                        "no consumer picked it up for %.0fs)",
                         record_key,
                         record.get("recordName"),
                         status_value,
                         (get_epoch_timestamp_in_ms() - last_touched_at) / 1000,
                     )
-                except Exception as exc:
-                    logger.error(
-                        "Failed to re-publish stranded record %s: %s",
-                        record_key,
-                        exc,
-                    )
-                finally:
-                    if lock_held and concurrency_manager is not None:
-                        try:
-                            await concurrency_manager.release(
-                                record_pool, record_owner
-                            )
-                        except Exception as release_exc:
-                            logger.warning(
-                                "Failed to release stranded-record lease for %s: %s",
-                                record_key,
-                                release_exc,
-                            )
 
-            if len(page) < page_size:
-                break
-            # Republished rows keep their status, so the filtered result does
-            # not shrink under the cursor — advance over the whole page.
-            offset += len(page)
-
-    if republished:
-        logger.warning(
-            "Re-published %d stranded record(s) whose events never arrived",
-            republished,
+    decided_without_the_queue = backlog_read and backlog is None
+    logger.log(
+        logging.INFO if considered else logging.DEBUG,
+        "Stranded-record sweep: %d considered, %d left alone because their "
+        "queue still holds older work, %d re-published, %d waiting out a "
+        "back-off%s",
+        considered,
+        still_queued,
+        republished,
+        backed_off,
+        " (queue not readable; decided on age alone)" if decided_without_the_queue else "",
+    )
+    if rate_limited_waiting or rate_limited_resent:
+        logger.info(
+            "Stranded-record sweep: %d record(s) waiting out their source's rate "
+            "limit, %d re-sent now that it has passed",
+            rate_limited_waiting,
+            rate_limited_resent,
         )
-    return republished
+    return republished + rate_limited_resent
 
 
 async def run_stale_recovery_loop(
@@ -1092,17 +1714,125 @@ async def run_stale_recovery_loop(
         )
 
 
+class _Closable(Protocol):
+    async def cleanup(self) -> None: ...
+
+
+async def _stop_consumers_then_shared_resources(
+    consumers: list[tuple[Any, ...]],
+    logger: logging.Logger,
+    *,
+    also_close: tuple[_Closable | None, ...] = (),
+    during: str = "",
+) -> None:
+    """Stop every consumer, then close each resource they use, once.
+
+    The record consumer and every stage consumer share one lease manager, retry
+    tracker and retry producer. A consumer that is still stopping renews leases,
+    counts deliveries and re-queues through them, so none may close before the
+    last consumer has stopped.
+    """
+    for item in consumers:
+        name, consumer = item[0], item[1]
+        try:
+            await consumer.stop()
+            logger.info("✅ %s message consumer stopped%s", str(name).title(), during)
+        except Exception as exc:
+            logger.error("❌ Error stopping %s consumer%s: %s", name, during, exc)
+
+    # Injected into the consumers but owned by start_kafka_consumers: consumer.stop()
+    # does not close them (that broke restart).
+    resources: list[tuple[str, _Closable | None]] = []
+    for item in consumers:
+        name, consumer = item[0], item[1]
+        resources.extend(
+            (f"{name} {attr}", cast("_Closable | None", getattr(consumer, attr, None)))
+            for attr in ("concurrency_manager", "retry_manager")
+        )
+        if len(item) > 2:
+            resources.append((f"{name} retry producer", cast("_Closable | None", item[2])))
+    resources.extend(("shared consumer resource", resource) for resource in also_close)
+    closed: set[int] = set()
+    for label, resource in resources:
+        if resource is None or id(resource) in closed:
+            continue
+        closed.add(id(resource))
+        try:
+            await resource.cleanup()
+        except Exception as exc:
+            logger.error("Error closing %s%s: %s", label, during, exc)
+
+
+# The connector service creates the collections on a first start; indexing waits for it.
+_SCHEMA_RETRY_FIRST_S = 2.0
+_SCHEMA_RETRY_MAX_S = 60.0
+# Missing stage topics usually wait on an operator (topic ACLs, or creating them by hand).
+_TOPIC_RETRY_FIRST_S = 30.0
+_TOPIC_RETRY_MAX_S = 300.0
+
+
+async def _ensure_pipeline_schema(graph_provider: IGraphDBProvider, logger: logging.Logger) -> None:
+    """Wait until the graph holds the schema indexing writes against.
+
+    Retries instead of failing the startup: where nothing restarts the process, exiting would
+    stop indexing for good, and where something does it would only repeat the wait.
+    """
+    delay = _SCHEMA_RETRY_FIRST_S
+    while True:
+        try:
+            await graph_provider.ensure_pipeline_schema()
+            logger.info("✅ Graph schema for the indexing pipeline is in place")
+            return
+        except Exception as e:
+            logger.error("❌ Graph schema for the indexing pipeline is not ready (%s); retrying in %.0fs", e, delay)
+        await asyncio.sleep(delay)
+        delay = min(delay * 2, _SCHEMA_RETRY_MAX_S)
+
+
+def _indexing_worker_count() -> int:
+    """Uvicorn worker processes running this service side by side (each with its own consumers)."""
+    return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
+
+
+async def _start_stages_when_topics_exist(
+    admin: IMessageAdmin,
+    topics: list[str],
+    start_stages: Callable[[], Awaitable[None]],
+    logger: logging.Logger,
+) -> None:
+    # ``start_stages`` stops what it started when it fails, so each attempt starts every stage.
+    delay = _TOPIC_RETRY_FIRST_S
+    while True:
+        await asyncio.sleep(delay)
+        try:
+            await admin.ensure_topics_exist(topics)
+        except Exception as e:
+            delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
+            logger.error("❌ Pipeline stage topics %s are still not available (%s); retrying in %.0fs", topics, e, delay)
+            continue
+        try:
+            await start_stages()
+            logger.info("✅ Pipeline stage topics %s are available; stage consumers started", topics)
+            return
+        except Exception as e:
+            delay = min(delay * 2, _TOPIC_RETRY_MAX_S)
+            logger.error("❌ Starting the pipeline stage consumers failed (%s); retrying in %.0fs", e, delay)
+
+
 async def start_kafka_consumers(
     app_container: IndexingAppContainer,
     governor: ResourceGovernor | None = None,
 ) -> list[Any]:
     """Start all message consumers at application level"""
     logger = app_container.logger()
-    consumers = []
+    consumers: list[tuple[str, Any, Any]] = []
     broker_type = get_message_broker_type()
     retry_manager = None
     retry_producer = None
     concurrency_manager = None
+    # Every consumer below runs its handlers on this one loop (see WorkerLoop).
+    worker = WorkerLoop(logger)
+    setattr(app_container, "worker_loop", worker)
 
     try:
         logger.info(f"🚀 Starting Record Consumer (broker: {broker_type})...")
@@ -1158,6 +1888,9 @@ async def start_kafka_consumers(
         record_event_handler = await KafkaUtils.create_record_event_handler(
             app_container, producer=retry_producer
         )
+        connector_off_filter = await app_container.connector_off_filter()
+        # Kept on the container so shutdown can release its Redis client.
+        app_container.record_event_handler = record_event_handler
 
         # Same process-wide singleton the ParsingClient/DoclingClient/
         # EmbeddingServerEmbeddings instances used by this consumer's
@@ -1175,6 +1908,8 @@ async def start_kafka_consumers(
             governor=governor,
             backpressure_coordinator=get_default_backpressure_coordinator(),
             disposition_sink=record_event_handler,
+            connector_off_filter=connector_off_filter,
+            worker=worker,
         )
         consumers.append(("record", record_kafka_consumer, retry_producer))
 
@@ -1186,93 +1921,137 @@ async def start_kafka_consumers(
         await record_kafka_consumer.start(record_message_handler)  # type: ignore[arg-type]
         logger.info("✅ Record message consumer started")
 
+        # Pipeline stages: one consumer per stage topic, each on its own permits and
+        # cluster lease pool, so stage work (classification, entities, ...) never holds an indexing permit.
+        pipeline_runtime = await _resolve_pipeline_runtime(app_container)
+        # A stage writes the stored record under the record's exclusivity lease, as its re-index does.
+        pipeline_runtime.record_leases.bind(concurrency_manager)
+        record_event_handler.record_leases = pipeline_runtime.record_leases  # lets the abandon sink tell a dead holder from a live one
+        registry = pipeline_runtime.registry
+        stage_topics = [registry.topic_for(name) for name in registry.names()]
+        stage_producer = retry_producer
+        main_loop = asyncio.get_running_loop()
+
+        async def start_stage_consumers() -> None:
+            # Bound only once the topics exist: Kafka holds a send to a missing topic for its
+            # metadata timeout, and the record handler's hand-off would wait with it.
+            pipeline_runtime.publisher.bind(stage_producer, main_loop)
+            started: list[tuple[str, Any, Any]] = []
+            try:
+                for stage_name in registry.names():
+                    topic = registry.topic_for(stage_name)
+                    stage_config = await MessagingUtils.create_consumer_config(
+                        app_container,
+                        f"pipeline_{stage_name}_client",
+                        f"pipeline_{stage_name}_group",
+                        [topic],
+                        is_indexing=True,
+                    )
+                    stage_consumer = MessagingFactory.create_consumer(
+                        broker_type=broker_type,
+                        logger=logger,
+                        config=stage_config,
+                        consumer_type=ConsumerType.INDEXING,
+                        retry_manager=retry_manager,
+                        producer=stage_producer,
+                        concurrency_manager=concurrency_manager,
+                        backpressure_coordinator=get_default_backpressure_coordinator(),
+                        disposition_sink=pipeline_runtime.handler,
+                        # Its cluster lease pool is sized for every worker process, as the record
+                        # leases are.
+                        stage_admission=StageAdmission(
+                            stage=stage_name,
+                            limit=pipeline_runtime.stage_limits[stage_name],
+                            workers=_indexing_worker_count(),
+                        ),
+                        worker=worker,
+                    )
+                    # The retry producer is owned by the record consumer's entry, so it is closed once.
+                    entry = (topic, stage_consumer, None)
+                    consumers.append(entry)
+                    started.append(entry)
+                    await stage_consumer.start(pipeline_runtime.handler)  # type: ignore[arg-type]
+                    logger.info("✅ Pipeline stage consumer started: %s", topic)
+            except Exception:
+                # Stopped and dropped, so a retry starts each stage once.
+                for entry in started:
+                    consumers.remove(entry)
+                    try:
+                        await entry[1].stop()
+                    except Exception as exc:
+                        logger.error("Error stopping %s consumer after a failed start: %s", entry[0], exc)
+                raise
+
+        admin = MessagingFactory.create_admin(logger, producer_config, broker_type)
+        try:
+            await admin.ensure_topics_exist(stage_topics)
+        except Exception as e:
+            # Records stay indexable without the stage topics; only the stages wait.
+            logger.error(
+                "❌ Pipeline stage topics %s are not available (%s). Records are still indexed and "
+                "searchable; the pipeline stages wait until the topics exist. Create them, or allow this "
+                "client to create topics. Retrying in the background.",
+                stage_topics,
+                e,
+            )
+            setattr(
+                app_container,
+                "stage_startup_task",
+                asyncio.create_task(
+                    _start_stages_when_topics_exist(admin, stage_topics, start_stage_consumers, logger)
+                ),
+            )
+            return consumers
+        await start_stage_consumers()
+
         return consumers
     except Exception as e:
         logger.error(f"❌ Error starting message consumers: {str(e)}")
-        # Cleanup any started consumers and producers
-        consumer_cleanup_failed = False
-        for item in consumers:
-            name = item[0]
-            consumer = item[1]
-            producer = item[2] if len(item) > 2 else None
-            try:
-                await consumer.stop()
-                logger.info(f"Stopped {name} consumer during cleanup")
-            except Exception as cleanup_error:
-                consumer_cleanup_failed = True
-                logger.error(f"Error stopping {name} consumer during cleanup: {cleanup_error}")
-            if producer:
-                try:
-                    await producer.cleanup()
-                    logger.info(f"Stopped {name} retry producer during cleanup")
-                except Exception as cleanup_error:
-                    logger.error(f"Error stopping {name} retry producer during cleanup: {cleanup_error}")
-        if not consumers or consumer_cleanup_failed:
-            if concurrency_manager:
-                try:
-                    await concurrency_manager.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing distributed concurrency during cleanup: %s",
-                        cleanup_error,
-                    )
-            if retry_manager:
-                try:
-                    await retry_manager.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing retry manager during cleanup: %s",
-                        cleanup_error,
-                    )
-            if retry_producer:
-                try:
-                    await retry_producer.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing retry producer during cleanup: %s",
-                        cleanup_error,
-                    )
+        # The started consumers first, then what they share (owned here, whether or
+        # not any consumer had started).
+        await _stop_consumers_then_shared_resources(
+            consumers,
+            logger,
+            also_close=(concurrency_manager, retry_manager, retry_producer),
+            during=" during cleanup",
+        )
+        # After every consumer that ran on it.
+        await worker.aclose()
         raise
 
-async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
+async def _close_worker_loop(container: IndexingAppContainer) -> None:
+    """Close the shared worker loop, once every consumer and loop-bound client on it is done."""
+    worker = getattr(container, "worker_loop", None)
+    if isinstance(worker, WorkerLoop):
+        await worker.aclose()
+        setattr(container, "worker_loop", None)
+
+
+async def stop_kafka_consumers(container: IndexingAppContainer, *, close_worker_loop: bool = True) -> None:
     """Stop all Kafka consumers and their associated producers"""
 
     logger = container.logger()
+    # A stage start still waiting for its topics must not start consumers once these stop.
+    stage_startup = getattr(container, "stage_startup_task", None)
+    if isinstance(stage_startup, asyncio.Task) and not stage_startup.done():
+        _ = stage_startup.cancel()
+        with suppress(asyncio.CancelledError):
+            await stage_startup
     consumers = getattr(container, 'kafka_consumers', [])
-    for item in consumers:
-        name = item[0]
-        consumer = item[1]
-        producer = item[2] if len(item) > 2 else None
+    await _stop_consumers_then_shared_resources(consumers, logger)
 
+    # Closed only once every consumer running on it has stopped; the lifespan closes it later,
+    # after the clients bound to it.
+    if close_worker_loop:
+        await _close_worker_loop(container)
+
+    handler = getattr(container, "record_event_handler", None)
+    aclose = getattr(handler, "aclose", None)
+    if inspect.iscoroutinefunction(aclose):
         try:
-            await consumer.stop()
-            logger.info(f"✅ {name.title()} message consumer stopped")
+            await aclose()
         except Exception as e:
-            logger.error(f"❌ Error stopping {name} consumer: {str(e)}")
-
-        # concurrency_manager/retry_manager are injected into the consumer but
-        # owned here (created in start_kafka_consumers) — consumer.stop() no
-        # longer closes them (that broke restart), so close them unconditionally,
-        # regardless of whether consumer.stop() above succeeded.
-        for resource_name in ("concurrency_manager", "retry_manager"):
-            resource = getattr(consumer, resource_name, None)
-            if resource is not None:
-                try:
-                    await resource.cleanup()
-                except Exception as cleanup_error:
-                    logger.error(
-                        "Error closing %s for %s consumer: %s",
-                        resource_name,
-                        name,
-                        cleanup_error,
-                    )
-
-        if producer:
-            try:
-                await producer.cleanup()
-                logger.info(f"✅ {name.title()} retry producer stopped")
-            except Exception as e:
-                logger.error(f"❌ Error stopping {name} retry producer: {str(e)}")
+            logger.error(f"❌ Error closing record event handler: {str(e)}")
 
     # Clear the consumers list
     if hasattr(container, 'kafka_consumers'):
@@ -1281,6 +2060,8 @@ async def stop_kafka_consumers(container: IndexingAppContainer) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
+    install_log_redaction()
 
     app_container = await get_initialized_container()
     app.container = app_container
@@ -1298,6 +2079,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Indexing writes stage states and record fields declared by the connector service's schema
+    # bootstrap, which may not have run yet (a first start, or an older connector image).
+    await _ensure_pipeline_schema(cast(IGraphDBProvider, graph_provider), logger)
+
     # One governor per process: derives parse/index ceilings from cgroup/CPU
     # limits (falling back to the operator's MAX_CONCURRENT_* when set) and
     # adapts the effective limits within them as load changes. Shared by
@@ -1307,7 +2092,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger=logger,
         env_parse=messaging_env.env_max_concurrent_parsing,
         env_index=messaging_env.env_max_concurrent_indexing,
-        worker_count=max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1"))),
+        worker_count=_indexing_worker_count(),
+        heavy_parse_slots_dir=shared_slots_directory(
+            "pipeshub-indexing-heavy-parse-slots"
+        ),
         reserve_embedding_cpus=await is_local_cpu_embedding_configured(
             app_container.config_service(), logger
         ),
@@ -1320,6 +2108,10 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
+    # Large text, code and CSV files are parsed in worker processes
+    # sized from this governor, so they cannot stall the consumer's loop.
+    from app.modules.parsers import parse_pool
+    parse_pool.set_resource_governor(governor)
 
     # This service flips records to COMPLETED, which is when a KB record first
     # becomes searchable — the query service's cached map must be dropped then.
@@ -1339,6 +2131,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     try:
         consumers = await start_kafka_consumers(app_container, governor)
         app_container.kafka_consumers = consumers
+        app.state.pipeline_runtime = await _resolve_pipeline_runtime(app_container)
         logger.info("✅ All message consumers started successfully")
     except Exception as e:
         logger.error(f"❌ Failed to start message consumers: {str(e)}")
@@ -1364,12 +2157,46 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             run_vector_membership_backfill_loop(app_container, graph_provider),
             worker_loop,
         )
+        app.state.entity_index_future = asyncio.run_coroutine_threadsafe(
+            run_entity_index_rebuild_loop(app_container, graph_provider),
+            worker_loop,
+        )
+        app.state.label_repair_future = asyncio.run_coroutine_threadsafe(
+            run_record_label_repair_loop(app_container, graph_provider),
+            worker_loop,
+        )
+        app.state.named_entity_sweep_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_sweep_loop(app_container, graph_provider),
+            worker_loop,
+        )
     else:
         app.state.recovery_task = asyncio.create_task(
             run_stale_recovery_loop(app_container, graph_provider)
         )
         app.state.backfill_task = asyncio.create_task(
             run_vector_membership_backfill_loop(app_container, graph_provider)
+        )
+        app.state.entity_index_task = asyncio.create_task(
+            run_entity_index_rebuild_loop(app_container, graph_provider)
+        )
+        app.state.label_repair_task = asyncio.create_task(
+            run_record_label_repair_loop(app_container, graph_provider)
+        )
+        app.state.named_entity_sweep_task = asyncio.create_task(
+            run_named_entity_sweep_loop(app_container, graph_provider)
+        )
+
+    # On every store, not only Neo4j: on the loop records are indexed on, beside the
+    # consumers whose slot use (process-wide, see LLMGateway) it yields to.
+    completion_loop = record_consumer_loop(consumers)
+    if completion_loop is not None:
+        app.state.named_entity_completion_future = asyncio.run_coroutine_threadsafe(
+            run_named_entity_completion_loop(app_container, graph_provider),
+            completion_loop,
+        )
+    else:
+        app.state.named_entity_completion_task = asyncio.create_task(
+            run_named_entity_completion_loop(app_container, graph_provider)
         )
 
     yield
@@ -1432,9 +2259,97 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Error during vector membership backfill future shutdown: {str(e)}")
 
-    # Stop message consumers
+    entity_index_task = getattr(app.state, "entity_index_task", None)
+    if entity_index_task:
+        if not entity_index_task.done():
+            entity_index_task.cancel()
+        try:
+            await entity_index_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during entity index rebuild shutdown: {str(e)}")
+
+    entity_index_future = getattr(app.state, "entity_index_future", None)
+    if entity_index_future:
+        if not entity_index_future.done():
+            entity_index_future.cancel()
+        try:
+            await asyncio.wrap_future(entity_index_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during entity index rebuild future shutdown: {str(e)}")
+
+    label_repair_task = getattr(app.state, "label_repair_task", None)
+    if label_repair_task:
+        if not label_repair_task.done():
+            label_repair_task.cancel()
+        try:
+            await label_repair_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during record label repair shutdown: {str(e)}")
+
+    label_repair_future = getattr(app.state, "label_repair_future", None)
+    if label_repair_future:
+        if not label_repair_future.done():
+            label_repair_future.cancel()
+        try:
+            await asyncio.wrap_future(label_repair_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during record label repair future shutdown: {str(e)}")
+
+    sweep_task = getattr(app.state, "named_entity_sweep_task", None)
+    if sweep_task:
+        if not sweep_task.done():
+            sweep_task.cancel()
+        try:
+            await sweep_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity sweep shutdown: {str(e)}")
+
+    sweep_future = getattr(app.state, "named_entity_sweep_future", None)
+    if sweep_future:
+        if not sweep_future.done():
+            sweep_future.cancel()
+        try:
+            await asyncio.wrap_future(sweep_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity sweep future shutdown: {str(e)}")
+
+    completion_task = getattr(app.state, "named_entity_completion_task", None)
+    if completion_task:
+        if not completion_task.done():
+            completion_task.cancel()
+        try:
+            await completion_task
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity completion shutdown: {str(e)}")
+
+    completion_future = getattr(app.state, "named_entity_completion_future", None)
+    if completion_future:
+        if not completion_future.done():
+            completion_future.cancel()
+        try:
+            await asyncio.wrap_future(completion_future)
+        except (asyncio.CancelledError, RuntimeError):
+            pass
+        except Exception as e:
+            logger.error(f"❌ Error during named entity completion future shutdown: {str(e)}")
+
+    # Stop message consumers; the worker loop stays up for the clients bound to it, closed below.
     try:
-        await stop_kafka_consumers(app_container)
+        await stop_kafka_consumers(app_container, close_worker_loop=False)
     except Exception as e:
         logger.error(f"❌ Error during application shutdown: {str(e)}")
 
@@ -1465,15 +2380,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
 
-    # Shut down the PDF OCR process-pool (no-op if it was never initialised).
-    # atexit registered inside the pool factory is the safety net for unclean
-    # exits; this call handles the normal graceful shutdown path.
+    # After the clients bound to it (the accessible-records cache's, above): LoopLocal can
+    # close a resource only on a loop that is still running.
     try:
-        from app.events.events import shutdown_pdf_ocr_pool
-        if shutdown_pdf_ocr_pool():
-            logger.info("✅ PDF OCR detection process pool shut down")
+        await _close_worker_loop(app_container)
     except Exception as e:
-        logger.error(f"❌ Error shutting down PDF OCR detection pool: {e}")
+        logger.error(f"❌ Error closing the shared worker loop: {e}")
 
     try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool
@@ -1482,9 +2394,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     except Exception as e:
         logger.error(f"❌ Error shutting down PDF rasterization pool: {e}")
 
+    try:
+        from app.modules.parsers.parse_pool import shutdown_parse_pool
+        if shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down parse worker pool: {e}")
 
-from app.api.middlewares.request_context import RequestContextMiddleware
-from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-is")
 
@@ -1494,6 +2410,7 @@ app = FastAPI(
     description="API for semantic search and document retrieval with message consumer",
     version="1.0.0",
 )
+configure_app(app, "indexing")
 
 # Trace context — outermost.
 app.add_middleware(RequestContextMiddleware)
@@ -1518,32 +2435,69 @@ async def health_check(request: Request) -> JSONResponse:
             except Exception as stats_error:
                 # Observability failure must not fail the liveness probe —
                 # the service itself is still healthy.
-                content["resource_governor"] = {"error": str(stats_error)}
+                container.logger().warning("Resource governor stats failed: %s", stats_error)
+                content["resource_governor"] = {"error": "unavailable"}
         # Per-tier dispatch admission: a heavy tier pinned at its ceiling with
         # light idle is attachments queueing on heavy parse, which is fine as
         # long as light keeps moving; both pinned means the node is full.
         dispatch: dict[str, Any] = {}
+        loop_lag: dict[str, Any] = {}
         for entry in getattr(container, "kafka_consumers", None) or []:
             consumer = entry[1] if len(entry) > 1 else None
+            # Late wake-ups on the worker loop: every record on it was stalled
+            # that long, which reads as slow I/O everywhere else.
+            lag_monitor = getattr(consumer, "loop_lag_monitor", None)
+            if isinstance(lag_monitor, LoopLagMonitor):
+                loop_lag[str(entry[0])] = lag_monitor.stats()
             stats = getattr(consumer, "dispatch_stats", None)
             if not callable(stats):
                 continue
             try:
                 dispatch[str(entry[0])] = stats()
             except Exception as stats_error:
-                dispatch[str(entry[0])] = {"error": str(stats_error)}
+                container.logger().warning("Dispatch stats failed for %s: %s", entry[0], stats_error)
+                dispatch[str(entry[0])] = {"error": "unavailable"}
         if dispatch:
             content["dispatch"] = dispatch
+        if loop_lag:
+            content["worker_loop_lag"] = loop_lag
+        # The gateway's cap: its use, wait and hold time, rate-limit retries.
+        content["indexing_llm"] = indexing_llm_stats()
+        # Which connector is on which Redis Streams lane, from the last lane
+        # upkeep this replica ran (the one holding the recovery lock).
+        lane_report = last_lane_report(Topic.RECORD_EVENTS.value)
+        if lane_report is not None:
+            content["lanes"] = lane_report.as_dict()
+        runtime: PipelineRuntime | None = getattr(request.app.state, "pipeline_runtime", None)
+        if runtime is not None:
+            try:
+                content["stages"] = runtime.stats()
+            except Exception as stats_error:
+                container.logger().warning("Pipeline stage stats failed: %s", stats_error)
+                content["stages"] = {"error": "unavailable"}
+        try:
+            content["llm_gateway"] = get_llm_gateway().stats()
+        except Exception as stats_error:
+            container.logger().warning("LLM gateway stats failed: %s", stats_error)
+            content["llm_gateway"] = {"error": "unavailable"}
+        worker = getattr(container, "worker_loop", None)
+        failure = worker.failure if isinstance(worker, WorkerLoop) else None
+        if failure is not None:
+            # Its consumers stopped themselves; nothing on this node indexes until the process
+            # restarts. The type only: the traceback is in the CRITICAL log line.
+            content["status"] = "unhealthy"
+            content["worker_loop_failure"] = type(failure).__name__
         return JSONResponse(
-            status_code=200,
+            status_code=503 if failure is not None else 200,
             content=content,
         )
-    except Exception as e:
+    except Exception:
+        container.logger().exception("Health check failed")
         return JSONResponse(
             status_code=500,
             content={
                 "status": "unhealthy",
-                "error": str(e),
+                "error": "Health check failed",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )
@@ -1567,6 +2521,7 @@ def run(host: str = "0.0.0.0", port: int = 8091, workers: int | None = None, *, 
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

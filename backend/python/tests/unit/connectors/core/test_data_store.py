@@ -1,8 +1,8 @@
 """Tests for DataStore abstract classes: DataStoreProvider, BaseDataStore, TransactionStore."""
 
 import logging
-from typing import AsyncContextManager, Dict, List, Optional
-from unittest.mock import AsyncMock, MagicMock
+from typing import AsyncContextManager
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,7 +24,7 @@ class ConcreteDataStoreProvider(DataStoreProvider):
         super().__init__(logger)
         self._mock_tx = MagicMock()
 
-    async def transaction(self) -> AsyncContextManager["TransactionStore"]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncContextManager["TransactionStore"]:
         return self._mock_tx
 
     async def execute_in_transaction(self, func, *args, **kwargs) -> None:
@@ -53,11 +53,14 @@ class ConcreteTransactionStore(TransactionStore):
     async def rollback(self):
         self._rolled_back = True
 
-    async def get_record_by_key(self, key):
+    async def get_record_by_key(self, key, *, raise_on_error=False):
         return self._records.get(key)
 
     async def get_record_by_external_id(self, connector_id, external_id):
         return None
+
+    async def take_back_kept_record_group(self, group_id) -> bool:
+        return True
 
     async def get_record_by_external_revision_id(self, connector_id, external_revision_id):
         return None
@@ -73,6 +76,9 @@ class ConcreteTransactionStore(TransactionStore):
 
     async def get_record_path(self, record_id):
         return None
+
+    async def get_record_path_segments(self, record_id):
+        return []
 
     async def get_records_by_status(self, org_id, connector_id, status_filters, limit=None, offset=0, after_key=None, exclude_statuses=None):
         return []
@@ -98,6 +104,21 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_people(self, people):
         pass
 
+    async def get_person_by_email(self, email, org_id):
+        return None
+
+    async def upsert_person_by_email(self, person):
+        return None
+
+    async def ensure_app_membership(
+        self, principal_id, principal_collection, connector_id, *,
+        is_external, source_user_id=None,
+    ):
+        pass
+
+    async def reap_stale_external_app_relations(self, connector_id):
+        return 0
+
     async def get_users(self, org_id, active=True):
         return []
 
@@ -114,9 +135,6 @@ class ConcreteTransactionStore(TransactionStore):
         return None
 
     async def remove_user_access_to_record(self, connector_id, external_id, user_id):
-        pass
-
-    async def delete_record_group_by_external_id(self, connector_id, external_id):
         pass
 
     async def delete_user_group_by_id(self, group_id):
@@ -146,18 +164,6 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_upsert_orgs(self, orgs):
         pass
 
-    async def batch_upsert_domains(self, domains):
-        pass
-
-    async def batch_upsert_anyone(self, anyone):
-        pass
-
-    async def batch_upsert_anyone_with_link(self, anyone_with_link):
-        pass
-
-    async def batch_upsert_anyone_same_org(self, anyone_same_org):
-        pass
-
     async def create_record_relation(self, from_record_id, to_record_id, relation_type):
         pass
 
@@ -182,7 +188,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def get_edges_from_node_with_target_name(self, from_node_id, edge_collection):
         return []
 
-    async def get_edge(self, from_id, from_collection, to_id, to_collection, collection):
+    async def get_edge(self, from_id, from_collection, to_id, to_collection, collection, *, raise_on_error=False):
         return None
 
     async def delete_edge(self, from_id, from_collection, to_id, to_collection, collection):
@@ -206,7 +212,7 @@ class ConcreteTransactionStore(TransactionStore):
     async def find_slack_burst_record_by_ts(self, connector_id, channel_id, ts):
         return None
 
-    async def get_user_by_user_id(self, user_id):
+    async def get_user_by_user_id(self, user_id, *, raise_on_error=False) -> None:
         return None
 
     async def get_user_group_by_external_id(self, connector_id, external_id, *, raise_on_error=False):
@@ -230,11 +236,26 @@ class ConcreteTransactionStore(TransactionStore):
     async def batch_create_edges(self, edges, collection):
         pass
 
+    async def create_edges_if_absent(self, edges: list[dict], collection: str) -> None:
+        pass
+
     async def delete_edges_between_collections(self, from_id, from_collection, edge_collection, to_collection):
         pass
 
     async def get_record_by_weburl(self, weburl, org_id=None):
         return None
+
+    async def get_org_apps(self, org_id) -> list:
+        return []
+
+    async def get_records_by_weburls(self, weburls, org_id) -> list:
+        return []
+
+    async def get_issue_sites(self, org_id, connector_names) -> list:
+        return []
+
+    async def get_records_linking_to_weburls(self, weburls, org_id, connector_names, limit=100, after=None) -> list:
+        return []
 
     async def delete_records_and_relations(self, record_key, hard_delete=False):
         pass
@@ -409,7 +430,6 @@ class TestBaseDataStoreCannotBeInstantiated:
 
 class TestBaseDataStoreFindSlackBurstRecord:
     def test_abstract_method_exists(self):
-        import inspect
         assert hasattr(BaseDataStore, "find_slack_burst_record_by_ts")
         method = getattr(BaseDataStore, "find_slack_burst_record_by_ts")
         assert getattr(method, "__isabstractmethod__", False) is True

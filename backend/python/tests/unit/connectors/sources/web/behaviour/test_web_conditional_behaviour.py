@@ -39,6 +39,29 @@ async def test_an_unchanged_document_is_not_downloaded_again(
     assert db.content_updates == []
 
 
+async def test_a_document_whose_stored_validators_cannot_be_read_keeps_its_stored_copy(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    site.html(START_URL, "Home", "/manual.pdf")
+    site.add(PDF, Page(body=b"%PDF-1.4 v1", content_type="application/pdf", etag='"v1"'))
+    connector = await make_connector()
+    await connector.run_sync()
+    first = db.pages()[PDF]
+    db.unreadable_file_records.add(first.id)
+    site.add(PDF, Page(body=b"%PDF-1.4 v2", content_type="application/pdf"))
+
+    await connector.run_sync()
+
+    again = db.pages()[PDF]
+    assert (again.id, again.etag, again.external_revision_id) == (first.id, '"v1"', first.external_revision_id)
+    assert db.deleted == []
+
+    db.unreadable_file_records.clear()
+    await connector.run_sync()
+
+    assert [r.weburl for r in db.content_updates] == [PDF]
+
+
 async def test_a_changed_document_is_downloaded_and_re_indexed(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
@@ -285,6 +308,23 @@ async def test_a_moved_file_whose_new_address_is_gone_is_removed_from_its_old_ad
     assert old not in db.pages() or not db.pages()[old].storage_document_id
 
 
+async def test_a_gone_file_moved_to_the_trash_keeps_its_stored_copy(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    """The trash entry owns the stored copy until the purge removes both."""
+    old = "http://site.test/old.pdf"
+    connector = await _two_stored_files(site, make_connector)
+    stale = db.pages()[old]
+    db.soft_delete = True
+
+    for _ in range(2):
+        _moved_file_whose_304_does_not_match(site, Page(status=404, body=b"gone"))
+        await connector.run_sync()
+
+    assert stale.id in db.deleted
+    assert site.storage_docs[stale.storage_document_id] == b"%PDF-1.4 v2"
+
+
 async def test_a_moved_file_whose_new_address_never_answers_keeps_its_old_copy(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
 ) -> None:
@@ -298,3 +338,22 @@ async def test_a_moved_file_whose_new_address_never_answers_keeps_its_old_copy(
 
     assert stale.id not in db.deleted
     assert site.storage_docs[db.pages()[old].storage_document_id] == b"%PDF-1.4 v2"
+
+
+async def test_an_unchanged_page_migrated_from_an_older_address_keeps_its_stored_html(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector
+) -> None:
+    guide = "http://site.test/guide"
+    site.html(START_URL, "Home", "/guide")
+    site.html(guide, "Guide", text="The same words as the stored copy")
+    connector = await make_connector()
+    await connector.run_sync()
+    # As an older version stored it: no trailing slash, the same content hash.
+    stored = db.records.pop(guide + "/")
+    db.records[guide] = stored.model_copy(update={"external_record_id": guide})
+
+    await connector.run_sync()
+
+    migrated = next(r for r in db.records.values() if r.id == stored.id)
+    assert migrated.external_record_id == guide + "/"
+    assert b"<" in site.storage_docs[migrated.storage_document_id], "the page's HTML, not its bare text"

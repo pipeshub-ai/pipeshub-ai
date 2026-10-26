@@ -19,8 +19,12 @@ export interface TableSkeletonProps {
   columns?: TableSkeletonColumnShape[];
   /** Whether to reserve space for a row-action menu (⋯) column. Default: true */
   hasRowActions?: boolean;
+  /** Width of the actions column. Default: 80 */
+  actionsWidth?: number;
   /** Whether to reserve space for a leading checkbox column. Default: true */
   hasCheckbox?: boolean;
+  /** Width of the checkbox column. Default: 38 */
+  checkboxWidth?: number;
   /** Row height in px. Default: 60 (matches EntityDataTable) */
   rowHeight?: number;
 }
@@ -38,7 +42,9 @@ export function TableSkeleton({
   columns = [{ width: '20%', minWidth: '160px' }, { barWidth: 0.8 }, { width: '120px' }, { width: '140px' }],
   hasRowActions = true,
   hasCheckbox = true,
+  checkboxWidth = 38,
   rowHeight = 60,
+  actionsWidth = 80,
 }: TableSkeletonProps) {
   return (
     <Box aria-busy="true" aria-live="polite" style={{ width: '100%' }}>
@@ -56,7 +62,7 @@ export function TableSkeleton({
             <Flex
               align="center"
               justify="center"
-              style={{ width: 38, flexShrink: 0, padding: '0 8px' }}
+              style={{ width: checkboxWidth, flexShrink: 0, padding: '0 8px', boxSizing: 'border-box' }}
             >
               <Box
                 style={{
@@ -88,6 +94,7 @@ export function TableSkeleton({
                   style={{
                     height: 12,
                     width: `${Math.round(barWidth * 100)}%`,
+                    maxWidth: '100%',
                     borderRadius: 4,
                     backgroundColor: 'var(--olive-4)',
                     animation: 'shimmer-pulse 1.4s ease-in-out infinite',
@@ -99,7 +106,7 @@ export function TableSkeleton({
           })}
 
           {hasRowActions && (
-            <Box style={{ width: 80, flexShrink: 0 }} />
+            <Box style={{ width: actionsWidth, flexShrink: 0 }} />
           )}
         </Flex>
       ))}

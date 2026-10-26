@@ -18,10 +18,19 @@ classify -> resolve_entities -> record summary -> blob -> enrich (graph + entity
 
 Both the service path (`app/events/events.py`) and the legacy pipeline
 (`app/modules/transformers/pipeline.py`) call
-`SinkOrchestrator.resolve_entities(ctx)`. The resolver mutates
-`record.semantic_metadata` to canonical names and attaches an
+`SinkOrchestrator.resolve_entities(ctx)`. The resolver attaches an
 `EntityResolution` to the transform context; `GraphDBTransformer` reads it to
-pick the nodes.
+pick the node each name links to, looking the name up by the record's own
+spelling.
+
+`record.semantic_metadata` keeps the names extracted from the record's own
+content. The resolver only cleans them: blank, invalid and repeated names are
+dropped, the subcategory chain stops at the first missing level, and
+languages take their ISO form. It never writes a canonical node's name into
+a record, because that name is the spelling of whichever record created the
+node. The summary, the stored copy and everything rendered from them (the
+`Topics:` and `Category:` lines of search and agent results) therefore show
+only the record's own words.
 
 ## The three tiers
 
@@ -42,9 +51,13 @@ pick the nodes.
    new. Every answer is validated: a target must be the offered winner, an
    in-record pointer must be of the same kind, anything else becomes new. A
    cleaned display form for a new name (`canonical_name`) is kept only when it
-   differs from the extracted name in case, punctuation or whitespace alone;
-   one that adds or drops words is ignored (`rejected_canonical`), since it
-   would otherwise merge into an existing node the model was never offered.
+   differs from the extracted name in case, whitespace or punctuation alone
+   (`normalizer.spelling_key`); one that adds or drops words is ignored
+   (`rejected_canonical`), since it would otherwise merge into an existing node
+   the model was never offered. Combining marks, digits and symbols count as
+   spelling ("दिन" is not "दीन", "C++" is not "C#"), and so does punctuation
+   inside a number or at the start of a name, including after an opening
+   bracket or quote ("3.11" is not "311", ".NET" and "(.NET)" are not "NET").
 
 Languages go through a static ISO table and skip tiers 2 and 3. Departments
 keep their exact match against the org's department list. Record and
@@ -60,19 +73,372 @@ record-group entities are identities and are never merged.
   new aliases are written before the record's graph transaction opens: both
   writes are idempotent, and inside two open ArangoDB stream transactions two
   inserts of the same key conflict and fail one record's enrichment.
-- Every `belongsTo*` edge the resolver writes carries `extractedName`, the raw
-  string the model produced for that record. A wrong merge can be undone per
-  record from it. Edges copied onto a deduplicated record by
-  `copy_document_relationships` carry only `createdAtTimestamp`.
+- Every `belongsTo*` edge the resolver writes carries `extractedNames`, every
+  raw string the model produced for that record that resolved to the node
+  (two spellings of one record can share a node), and `extractedName`, the
+  first of them. A wrong merge can be undone per record from them, and they
+  are how the record's own spellings of a node are read back (see "What users
+  see"). An edge keeps the spellings it was first written with, in order.
+  When a record is indexed again and its edge to a node already exists, the
+  edge keeps its other fields (`createdAtTimestamp`, `mergedFrom`,
+  `migratedFrom`) and:
+  - records no spelling (copied by an earlier release): gets the record's
+    spellings;
+  - has an `extractedNames` list: gains the record's spellings it lacks
+    (compared ignoring case, spacing and surrounding punctuation), after the
+    stored ones;
+  - has only `extractedName` (written before the list existed): gains the
+    record's other spellings when the record has more than one, and is left
+    as it is otherwise.
+  Readers treat a lone `extractedName` as a one-spelling list.
+- `copy_document_relationships` adds to a deduplicated record only the edges
+  it does not already have, with the source edge's spellings, since the copy
+  has the same content. An edge the record already has keeps its own
+  spellings. Copies made by earlier releases carry only
+  `createdAtTimestamp` until the record is indexed again.
 - The entity vector point for a node keeps its id and is embedded from the
   canonical name only, so the vector never drifts as merges accumulate.
-  Aliases are payload only: shown to the merge model and in
-  `search_entities` results, never embedded. A point is rewritten only when
+  Aliases are payload only: shown to the merge model, never embedded and
+  never shown to users. A point is rewritten only when
   its payload or membership changed.
+
+Aliases are written only to a node of the writing org: a legacy node (no
+`orgId`) or another org's node is left unchanged, so one tenant's spellings
+never reach another's entity search. A deduplicated record is projected
+from the nodes its copied edges reach. Its own org's nodes keep their
+aliases, nodes without an org (legacy, or global departments) are projected
+without aliases, and another org's node is skipped.
 
 Subcategories only resolve within their own level, and per-org nodes never
 link across orgs. Legacy global nodes created before the feature are not
-migrated; a reindex moves a record onto canonical nodes.
+migrated automatically; a reindex moves a record onto canonical nodes, and an
+operator can migrate them (see Consolidation).
+
+## What users see
+
+A canonical node keeps every record's spelling: its `name` is the first and
+its `aliases` are the rest. Users are only shown spellings of records they
+can open.
+
+- A record's labels are its own (see "Where it runs").
+- A record's details (`check_record_access_with_details` on both providers)
+  name each category, subcategory, topic and language by the record's own
+  spellings, read from its edge, and list a node the record spelled two ways
+  under both. Spellings come from
+  `app.services.graph_db.taxonomy.record_spellings`: the edge's
+  `extractedNames` (or `extractedName`); without them, a legacy node's name
+  (legacy nodes were created from the exact name their records extracted) or
+  the name of a node an edge was migrated onto from a legacy node of the
+  same name. An item whose edge records no spelling is left out.
+- `search_entities` names a taxonomy entity by a spelling of a record the
+  user can read, taken from those records' edges with
+  `IGraphDBProvider.get_record_taxonomy_links`: the node's name when one of
+  them spells it that way, otherwise the newest such record's spelling. When
+  none of the readable records the access check found spells the node (they
+  can be copies made by earlier releases), the walk continues through the
+  entity's readable records, in windows that widen like the access check's
+  and then stay at the widest, until one spells it, they run out, or the
+  search deadline passes. An entity no readable record spells is left out,
+  and so is one the deadline stopped, which is logged as
+  `left ... entities unnamed at the deadline`. A
+  failed lookup fails the call, as a failed access check does. `find_records_by_entity` reuses the
+  name `search_entities` showed.
+- The node's stored name is still what the graph's name filters match.
+  `search(entity_ids=[...])` keeps it internally for the filter it builds, so
+  filtering by an entity reaches every record linked to the node; it is not
+  shown.
+- The merge model is shown a candidate's name and aliases. Its output is a
+  decision about ids and never reaches a user.
+
+## Restoring stored labels
+
+Records enriched by releases that wrote canonical names into
+`semantic_metadata` keep those names in their stored copy. The indexing
+service restores them in the background
+(`app/modules/indexing/record_label_repair.py`), with no extraction or model
+call, from the spellings on each record's own edges. The record summary
+vector is embedded from the summary alone and carries no labels, so only the
+stored copy is rewritten.
+
+- One connector (app document) at a time, keyset-paged by record key, one
+  page per tick, under the Redis leader `record_label_repair:leader`. The
+  cursor and counters are on the app document
+  (`recordLabelRepairState`, `...AfterKey`, `...Repaired`, `...Skipped`,
+  `...Failures`, `...Attempts`, `...Exhausted`); a connector is done when
+  `recordLabelRepairState` equals `REPAIR_VERSION`. Connectors being deleted
+  are skipped. The loop ends once every connector is done, and runs again on
+  the next start for connectors added since.
+- The resolver stamps every record it indexes with `own_labels: true` in
+  `semantic_metadata`: its labels are the names extracted from its own
+  content. The repair never changes a stored copy that carries the stamp.
+- Only a record whose edges spell a node differently from the node's name is
+  read from storage. In an unmarked stored copy every label was written
+  either by the earlier rewrite, as the name of a node the record links to,
+  or before resolution existed, as the record's own word on a legacy node.
+  Each slot's labels are taken in stored order. A label is matched to a
+  linked node not yet matched whose name equals it (ignoring case, spacing
+  and surrounding punctuation), failing that to one whose name differs only
+  in other punctuation, as merges and migrations move edges only between
+  such names. A matched label is replaced, in place, by every spelling the
+  record's edge to that node records; a label that matches no node stays.
+  Spellings of linked nodes no label named are appended, and repeats are
+  dropped.
+- Only a change is written, and it carries the stamp, so the record is not
+  rewritten again. Rewriting the stored copy of a virtual record id that
+  another record wrote is left to that record.
+- A record extracted after the pass started, or being indexed
+  (`processingStartedAt` set), is left alone: indexing writes its own labels.
+  The record is read again just before the write and skipped if it changed.
+  Run it once every indexing replica runs this release; a record indexed by
+  an older replica afterwards keeps its labels until it is indexed again, or
+  until `recordLabelRepairState` is cleared on its connector.
+- A record with an edge to a canonical node that does not carry the spelling
+  (an edge copied onto a deduplicated record by an earlier release) is
+  counted in `recordLabelRepairSkipped`, logged, and left for a reindex,
+  which writes the record's spellings onto that edge. Its stored copy is
+  usually its source record's, which is repaired with the source.
+- `...Repaired`, `...Skipped` and `...Failures` describe the latest pass:
+  each pass, first or retried, starts them at zero. A record restored by an
+  earlier pass is unchanged in a later one and not counted again; each pass
+  is logged. `...Attempts` counts the passes that had failures.
+- A pass with failures is retried from the start twice, then marked done
+  with `recordLabelRepairExhausted: true` and its failure count kept.
+- Progress is logged under `record_label_repair:`.
+- Answers already saved in conversations are not changed.
+
+## Consolidation
+
+Nodes that should have been one (created while the model was unavailable, or
+by two instances at once) stay separate until merged. Legacy nodes stay
+shared until migrated. Both are operator commands, dry runs unless `--apply`
+is given:
+
+```
+python -m app.scripts.kg_taxonomy duplicates --org ORG
+python -m app.scripts.kg_taxonomy consolidate --org ORG [--collection topics] [--apply]
+python -m app.scripts.kg_taxonomy merge|unmerge ...
+python -m app.scripts.kg_taxonomy legacy --org ORG
+python -m app.scripts.kg_taxonomy migrate-legacy --org ORG [--apply]
+python -m app.scripts.kg_taxonomy unmigrate-legacy ...
+```
+
+- `consolidate` only merges nodes of one org and collection whose names share
+  a spelling key: they differ in case, spacing or punctuation, never in words.
+  The oldest node wins.
+- A merge is a redirect, not a delete:
+  - the loser keeps its data and gets `mergedInto` and `mergedAt`;
+  - its record edges move to the winner with `extractedName` kept and
+    `mergedFrom` set;
+  - the winner learns the loser's spellings as aliases.
+- Lookups, the entity index and the stale-point sweep skip merged nodes.
+- A newly extracted name whose deterministic key is a merged node resolves
+  to the node it was merged into. Otherwise the record would link back to the
+  hidden node whenever the winner's alias list is full.
+- Merges record `mergedFrom` on the edges they move and migrations record
+  `migratedFrom`, so undoing one never hides the other's edges. An edge keeps
+  the origin of its first move, and a merge re-points older redirects at the
+  new winner. Chained merges (A into B, then B into C) therefore undo one node
+  at a time, and undo follows redirects to wherever the edges are now.
+- `unmerge` moves the marked edges back.
+- `migrate-legacy` moves one org's edges from a legacy node onto that org's
+  canonical node for the same name, created if absent. Other orgs keep the
+  legacy node.
+- Entity points are refreshed as each change is made. If that fails, the
+  command reports `index_refreshed: false` and exits 1. The background sweep
+  repairs live org nodes but skips merged and legacy ones, so re-run the merge
+  or the unmigrate.
+- Edges only move onto a node of the same org; undoing a migration is the one
+  move allowed back onto a legacy node.
+- Finding legacy nodes walks the legacy nodes in key order and counts each
+  one's records of the org, so run it off-peak on large installs. A move reads
+  and moves its edges 5,000 at a time.
+- Dry runs only read, so they work with a read-only graph user; `--apply`
+  first applies the graph schema.
+- Exit codes: 0 done; 1 some items failed or left the index unrefreshed; 2
+  invalid request; 3 a single-item command failed, or the graph or its schema
+  was unavailable before anything was written. Bulk commands carry on past a
+  failed item or collection, print it with `error`, and exit 1; each item is
+  idempotent, so a re-run finishes it.
+- Known limits:
+  - `unmerge` restores only edges that moved. When a record linked to both
+    nodes, the loser's edge (and its `extractedName`) is dropped rather than
+    duplicated, so it is not recreated.
+  - Undoing the middle of a chain (B in A into B into C) leaves A redirecting
+    to C.
+  - A loser spelling that did not fit in the winner's alias list can still
+    become a new node when a later record extracts it, unless it is the
+    loser's own name.
+  - Aliases the winner learned are kept after `unmerge`. On Neo4j, the alias
+    nodes then point at both nodes.
+  - Indexing that resolved to the loser just before the merge can link to it
+    after the merge finished; re-running the merge moves those edges.
+  - Category hierarchy edges are not moved; nothing reads them today.
+
+## Entity index rebuild
+
+The `entities` collection is a projection of the graph. The indexing service
+rebuilds it in the background (`app/modules/indexing/entity_index_rebuild.py`),
+without extraction or model calls other than embedding:
+
+- **Per connector** (app document): its record groups, then its indexed,
+  non-deleted, named records, written as on the index path.
+- **Per org** (org document): its canonical taxonomy nodes and its
+  departments (including global ones). Membership is read from the graph and
+  replaces the stored one; a node no record reaches has its point deleted.
+- **Sweep, per org every 24 hours:** the org's taxonomy, department and
+  record-group points are checked against the graph in batches. A point is
+  deleted when its node is gone or belongs to another org. Points of legacy
+  nodes without an org are kept, because records still link to them. Record
+  points are not swept; single-record delete removes them, and a
+  knowledge-base record's delete also removes the taxonomy points no other
+  record reaches (see "Operational notes").
+
+A document is done when its `entityIndexState` equals
+`v<ENTITY_INDEX_VERSION>@<stamp>:<provider>:<model>:<dimension>`, so changing
+the embedding model re-runs every pass. (The stamp identifies the collection
+the document was projected into; see "An index emptied from outside" below.)
+Each point also records the model that
+embedded it (`metadata.embeddingModel`). A write re-embeds a point from
+another model, or one written before this field existed, even when its text
+is unchanged. Indexing therefore repairs whatever a pass missed. The first
+rebuild after an upgrade re-embeds every entity point once.
+
+Every service's entity store follows a model change without a restart. It
+checks the embedding config on each call against `ConfigurationService`'s
+cache, which the change notification clears, and reads the stored config at
+least once a minute in case a notification is missed. A config that cannot be
+read keeps the current model. On a change the store rebuilds its client, so
+the next write, search and rebuild tick use the new model and the marker
+moves.
+
+Writes are also checked against the stored config, not only the cache: just
+before it upserts, each written batch re-reads the config from the key-value
+store, as the records path does per record. A batch embedded with a model
+the stored config no longer names is refused, and so is one whose model
+changed in this process while it was embedding. This covers an indexing
+replica that missed the notification and still holds the old model while
+another has already recreated the collection. If that re-read fails, the
+write is refused as well, because the store cannot tell whether the
+collection now belongs to another model. Searches and initialisation keep
+the current model on a failed read. The passes write a refused entity again.
+
+A store checks the collection against its new model: the collection's
+dimension, and the model recorded on one stored point. The collection does
+not match when the dimension differs, or when the dimension is the same but
+that point was embedded by another model. At the same dimension, the old
+vectors would otherwise answer new-model queries with no error. Points from
+before `metadata.embeddingModel` existed are not counted as a mismatch; they
+are re-embedded in place.
+
+- Only the rebuild leader drops and recreates a collection that does not
+  match and holds entities, at the start of a tick while it holds
+  `entity_index_rebuild:leader`. The passes then refill it. Two replicas
+  dropping in turn would lose the points the first one had refilled.
+- A collection of another dimension that holds no entities (only its stamp,
+  or nothing) is dropped and recreated by any indexing replica, on its next
+  entity call. This is a fresh install: the rebuild's first tick creates the
+  collection with the default model before an admin configures one. Nothing
+  is lost, so writes do not wait for the leader.
+- A store that keeps a collection per org applies both rules to each org's
+  collection when it first uses it after a model change. The leader drops
+  one that holds entities when the rebuild reaches that org
+  (`recreate_stale_collection`); any indexing replica recreates one that
+  holds none, such as an org's collection emptied by deletes.
+- Every drop and re-create, the leader's included, runs under a Redis lock
+  per collection (`entity_collection:recreate:<collection>`, 2 minutes), so
+  recreating one org's collection never waits on another's. The vector
+  stores delete a collection by name only: without the lock, a replica
+  acting on a stale read would drop a collection another had just recreated
+  and written to.
+  Under the lock the store reads the collection again and keeps it if
+  another replica has already recreated it for the new model. It also reads
+  the embedding config from the key-value store, not its cache: a process
+  that missed the change notification would otherwise judge the new
+  collection against the old model and drop it. Such a process drops
+  nothing and takes the stored model instead. A store that cannot take the
+  lock, or cannot reach Redis, drops nothing; its call fails and a later
+  one tries again (for the shared collection, the first after the
+  30-second retry window). "Holds" is what a
+  filtered scroll sees: on OpenSearch, points written since the last refresh do not count,
+  and those have the old dimension anyway.
+- Two replicas creating the collection at the same moment is not an error:
+  the one whose create fails uses the collection the other made when it has
+  the right dimension.
+- While the rebuild loop waits between ticks, it checks the configured model
+  every 5 seconds (a cache read) and ends the wait on a change. When the
+  change notification reaches the leader, it recreates within seconds of the
+  switch, even when nothing is being indexed. If the notification is missed,
+  the leader sees the change only at its next stored-config read, up to a
+  minute later.
+- Every other store fails entity calls with the mismatch (`The indexing
+  service recreates it`). That includes the query and connector services and
+  the other indexing replicas, which also log an error naming the rebuild
+  leader. The retry is driven by calls, not a timer: for
+  30 seconds after a failed initialisation, entity calls fail without
+  retrying, and the first call after that tries again.
+  After a restart that finds a mismatched collection holding entities,
+  entity writes fail until the leader's first tick, which comes after a
+  60-second startup grace.
+- If the stored point cannot be read, the switch fails, and the first entity
+  call more than 30 seconds later tries again. The store does not adopt the
+  new model on an unread collection.
+
+Points of legacy nodes without an org are not projected, so after a recreate
+they return only when their records are reindexed.
+
+### An index emptied from outside
+
+The entity index is not part of "Delete all embeddings", nor of the records
+rebuild that an embedding model change runs. Both go through
+`CollectionRegistry.recreate_records_collections`, which drops and recreates
+records collections only. That holds even where the collection manifest lists
+`entities`: an earlier release adopted it into the manifest on some
+deployments, and there the cleanup dropped it. On a model change the entity
+store recreates and refills its own collection, as described above.
+
+Nothing else would notice an entities collection that was emptied anyway
+(dropped by hand, or by that earlier cleanup), because every document still
+says done. Counting its points does not help: indexing writes record points
+back into a recreated collection within minutes, and from then on it only
+looks partly filled. So the collection carries a **stamp**:
+
+- The stamp is a short random token stored in the collection as a point of
+  its own (`EntityVectorStore.collection_stamp`). It has no org and no entity
+  type, so no search, sweep, listing or delete matches it. It is gone exactly
+  when the collection's points are gone: dropped, recreated or wiped.
+- The rebuild leader reads it on every tick, one read by id, after the step
+  that may recreate the collection for a new model. A collection without a
+  stamp is set up again (created if missing, its payload indexes ensured) and
+  given a new one.
+- The stamp is part of the marker. A document done under another stamp, or
+  under none, was projected into a collection that no longer exists, so its
+  pass runs again. A pass under way starts over.
+- A new stamp is written only when there is none, and it is written before
+  any pass runs under it. A deployment with nothing to index therefore holds
+  just its stamp and stays idle. A read that fails is not a missing stamp:
+  the tick fails and is retried.
+
+Collections from before stamps have none, so every deployment projects its
+graph once more after upgrading. Points whose text, membership and model are
+unchanged are not rewritten or re-embedded. This is what repairs a deployment
+whose entity index an earlier cleanup emptied. A model change costs one run,
+not two: the collection is recreated and stamped in the same tick.
+
+The rebuild runs on one indexing replica at a time (Redis leader
+`entity_index_rebuild:leader`), one page per tick. It resumes from the cursor
+on the document after a restart. The cursor is valid only for the marker in
+`entityIndexTarget`; under a new marker the pass starts over.
+
+- A pass with write failures is retried from the start twice.
+- After that, the document is marked done with `entityIndexExhausted: true`
+  and its failure count kept.
+- A document whose pages raise on 10 consecutive ticks is also given up, so
+  it cannot hold the loop.
+- A sweep that fails 3 times waits for the next interval. On the Redis vector
+  backend, a sweep cannot page past 10,000 points of one org and stops there.
+
+Progress is logged under `entity_index_rebuild:` with the app or org key,
+phase and cursor.
 
 ## Modes
 
@@ -84,13 +450,34 @@ Shadow decisions are logged as `entity_resolution shadow ... decisions=[...]`.
 
 ## Failure policy
 
+A lookup that could not run is never read as "no match": answering it with a
+new node is how duplicates get minted. Every vector or graph lookup of the
+resolver (exact match, winner search, winner check, merge redirect) is retried
+once after 0.5 s; if it still fails, the resolver raises
+`EntityLookupUnavailableError` before anything is written. The error is always
+retryable (`MessageErrorClassifier`), so the consumer redelivers the record
+with its usual backoff and the enrichment runs again (the record is indexed
+with `extractionStatus` still `IN_PROGRESS`, which is how a resumed enrichment
+is recognised). The last attempt ends the enrichment `FAILED` and the record
+stays searchable. Only one quick retry runs in place: under a timeout storm
+each attempt can last the store's whole timeout, so more would only add load.
+
 | Failure | Behaviour |
 | --- | --- |
-| Vector store unavailable | Names become new nodes; `vector_error` fallback counter |
-| Model unavailable or malformed | Every name in that call becomes new; `model_error` counter |
+| Vector store unavailable | Retried once, then the record's resolution is deferred to redelivery; no name becomes new |
+| Winner check against the graph fails | Same as the vector store |
+| Exact-match or merge-redirect lookup fails | Same; shadow mode only logs it |
+| A lookup that ran and found nothing | The name becomes a new node, as before |
+| Model unavailable or malformed | Every name in that call becomes new; `model_error` counter; the cached model is rebuilt from config for the next record |
+| Model call slower than 60 s | Same as unavailable. The bound applies to each provider call (and each reflection retry), not to the wait for the shared indexing model slot, which is backpressure |
 | Model returns an id it was not offered | That name becomes new; `rejected_target` counter |
-| Winner check against the graph fails | No winner offered for that kind; `winner_check_error` counter |
-| Graph lookup fails | Apply mode: enrichment fails as today, no point is written. Shadow mode: logged |
+
+Failed lookups are counted in
+`pipeshub_entity_resolution_lookup_errors_total{lookup,outcome}`: `failed` for
+each attempt that raised, `deferred` for each resolution given up for this
+delivery. The per-record stats keep `vector_failures` and `graph_failures`
+(failed attempts, so a record that resolved after one retry shows 1), and a
+deferred record logs `entity_resolution deferred: ...` with them.
 
 Metrics live in `app/telemetry/modules/entity_resolution_metrics.py`:
 names by outcome, model calls by result, fallbacks by reason and per-record
@@ -99,6 +486,67 @@ line.
 
 ## Operational notes
 
+- Entity index writes are counted in
+  `pipeshub_entity_index_writes_total{operation,outcome}` (written,
+  membership_only, unchanged, skipped, failed). The ids of entities not
+  written are logged at warning, capped at 20 plus a count. A rising
+  `failed` count means the vector store is refusing entity writes; the
+  rebuild repairs the points once it recovers.
+- Deleting a connector or a KB publishes `deleteConnectorEntities`, and the
+  indexing service removes the connector's entity points:
+  - shared taxonomy points lose the connector and its record groups, and the
+    rest are deleted;
+  - a failure is retried, then dead-lettered;
+  - before any graph row goes, the deleting service records the cleanup in
+    the KV store (`/services/entityCleanup/pending/<connectorId>`) and does not
+    delete if it cannot; the event's handler clears it when the cleanup
+    finishes. The rebuild loop reads the intents every 5 minutes and runs any
+    older than 15 minutes (a lost publish, a dead-lettered message) once the
+    connector's app document is gone, backing off on failure; a failed read
+    of the app document never counts as gone. An intent whose app still
+    exists a day later (its delete was reverted) is dropped;
+  - each page is re-read by id and written by id, so a record indexed on the
+    same indexing instance during the cleanup keeps its connector (the locks
+    are per process; another instance's write can still be lost until that
+    record is reindexed or the rebuild repairs the point);
+  - deploy the indexing service before the connector service: an older
+    indexing service dead-letters `deleteConnectorEntities`, and those
+    messages then need replaying.
+- Deleting a knowledge-base record (a file, the files under a deleted folder,
+  a bulk delete, or the trash purge of any of them) removes the taxonomy
+  points only that record reached:
+  - the delete reads the record's `belongsTo*` links (category, subcategory,
+    topic, language and department) before it removes the edges, and its
+    `deleteRecord` event names them in `taxonomyRefs`. A failed read never
+    fails the delete; the event then names none. A global department's point
+    is per org like every other, so only the org's own records keep it;
+  - the indexing service asks the graph which of them no non-deleted record of
+    the org reaches any more (`get_unreached_taxonomy_entities`) and deletes
+    those points. Another record of the same knowledge base, a record of
+    another knowledge base or connector, and a copy of the record (a duplicate
+    keeps its own copied edges) each keep a point; a record in the trash does
+    not. Each entity stops at its first live record, so a language most of the
+    org links to costs one edge read;
+  - a point still reached keeps its membership. It is a recall hint every
+    search re-checks against the graph, and narrowing it exactly would read
+    every record linked to the entity;
+  - the check runs under the entities' locks, so a record indexed on the same
+    indexing instance meanwhile keeps its point; another instance's can be lost
+    until that record is indexed again, as with connector cleanup;
+  - a failure is retried, then dead-lettered. A lost publish leaves the points,
+    as it leaves the record's vectors;
+  - moving a record to the trash changes nothing: the graph already ignores
+    trashed records, and a restore keeps everything. The purge cleans up;
+  - the graph's taxonomy nodes stay, as on connector delete. Named entities
+    need nothing here: the delete removes the record's `mentionsEntity` edges,
+    and the orphan sweep removes the nodes and their points
+    (`named-entity-extraction.md`, "Cleanup");
+  - connector record deletes name no `taxonomyRefs` yet
+    (`cleans_taxonomy_points`). An older indexing service ignores the field, so
+    the services deploy in any order.
+- Embedding runs before the per-entity locks are taken. The locks only cover
+  the read, merge and write, so records sharing a popular entity do not wait
+  on each other's embedding call.
 - The `entities` vector collection has a `metadata.level` payload index. The
   store ensures its payload indexes on every start (index creation is
   idempotent on every backend), so an existing collection picks it up too.

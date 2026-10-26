@@ -49,3 +49,29 @@ class TestRetryAsync:
     async def test_rejects_non_positive_max_attempts(self):
         with pytest.raises(ValueError):
             await retry_async(AsyncMock(), max_attempts=0)
+
+    @pytest.mark.asyncio
+    async def test_should_retry_false_raises_at_once(self) -> None:
+        error = ValueError("bad request")
+        func = AsyncMock(side_effect=error)
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+            with pytest.raises(ValueError) as raised:
+                await retry_async(func, max_attempts=3, should_retry=lambda e: False)
+        assert raised.value is error
+        func.assert_awaited_once()
+        mock_sleep.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_should_retry_is_asked_about_each_failure(self) -> None:
+        func = AsyncMock(side_effect=[ConnectionError("down"), ValueError("bad"), "ok"])
+        seen: list[Exception] = []
+
+        def _should_retry(error: Exception) -> bool:
+            seen.append(error)
+            return isinstance(error, ConnectionError)
+
+        with patch("app.utils.retry.asyncio.sleep", new_callable=AsyncMock):
+            with pytest.raises(ValueError):
+                await retry_async(func, max_attempts=3, should_retry=_should_retry)
+        assert func.await_count == 2
+        assert [type(e) for e in seen] == [ConnectionError, ValueError]

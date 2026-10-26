@@ -83,6 +83,8 @@ export interface McpServerReference {
   name: string;
   displayName?: string;
   typeId?: string;
+  /** Every tool the server offers at chat time, including ones added later; `tools` is then just the snapshot shown. */
+  allTools?: boolean;
   tools?: McpToolRef[];
 }
 
@@ -101,9 +103,17 @@ export interface AgentFormPayload {
   tags: string[];
   shareWithOrg?: boolean;
   isServiceAccount?: boolean;
+  /**
+   * The service account this agent searches knowledge as, by `userId`. Null
+   * clears the binding and sends it back to searching as its creator. Only
+   * sent for a service agent; omitted entirely means "leave as it is".
+   */
+  serviceAccountUserId?: string | null;
   knowledge?: KnowledgeReference[];
   toolsets?: ToolsetReference[];
   mcpServers?: McpServerReference[];
+  /** Sent only when changed — see `changedAttachments`. */
+  apiToolsetTools?: string[];
   skills?: SkillReference[];
   webSearch?: AgentWebSearchAttachment | null;
   /** Fallback applied when a chat request against this agent omits its own reasoningEffort. */

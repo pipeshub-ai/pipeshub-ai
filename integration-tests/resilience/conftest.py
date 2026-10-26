@@ -5,6 +5,10 @@ MongoDB, kill the indexing process, cut the app off from its AI provider, or
 make blob storage unwritable, while the product is busy. That disturbs anything else using the
 stack, so they carry their own marker and run on their own, after the rest of
 the suite (see the integration workflow).
+
+The Labs rebuild tests live here for the same reason: deleting all embeddings
+drops the vector collection for the whole deployment, and an embedding model
+change rebuilds it at another size.
 """
 
 from __future__ import annotations

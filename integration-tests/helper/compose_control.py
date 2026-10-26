@@ -106,8 +106,11 @@ class ComposeStack:
     def start(self, service: str) -> None:
         self._run(["start", service])
 
-    def exec(self, service: str, command: Sequence[str]) -> subprocess.CompletedProcess[str]:
-        return self._run(["exec", "-T", service, *command])
+    def exec(
+        self, service: str, command: Sequence[str], *, user: str | None = None,
+    ) -> subprocess.CompletedProcess[str]:
+        user_args = ["-u", user] if user else []
+        return self._run(["exec", "-T", *user_args, service, *command])
 
     def container_id(self, service: str) -> str:
         container = self._run(["ps", "-q", service]).stdout.strip()

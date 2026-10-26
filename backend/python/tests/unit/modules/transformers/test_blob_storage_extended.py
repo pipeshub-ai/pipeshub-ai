@@ -134,7 +134,10 @@ class TestSaveRecordPayloadFields:
             )
 
         add_field_calls = fake_form_data.add_field.call_args_list
-        assert len(add_field_calls) >= 6
+        # file, documentName, documentPath, isVersionedFile, extension — the
+        # buffer-update redesign dropped the recordId field (keyed by
+        # virtualRecordId instead), so this is 5, not the old 6.
+        assert len(add_field_calls) >= 5
 
         # First add_field call contains encoded upload JSON payload.
         file_call = add_field_calls[0]

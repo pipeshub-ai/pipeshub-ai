@@ -103,24 +103,6 @@
       "requires_processing": false,
       "sub_type": "synced_block",
       "type": "text_section"
-    },
-    {
-      "children": {
-        "block_group_ranges": [],
-        "block_ranges": [
-          {
-            "end": 16,
-            "start": 15
-          }
-        ]
-      },
-      "comments": [],
-      "data": "PHIT-ChildRefTarget",
-      "format": "txt",
-      "index": 5,
-      "requires_processing": false,
-      "sub_type": "nested_block",
-      "type": "text_section"
     }
   ],
   "blocks": [
@@ -313,7 +295,6 @@
       "data": "PHIT-ChildRefTarget",
       "format": "txt",
       "index": 15,
-      "parent_index": 5,
       "source_type": "child_page",
       "sub_type": "child_record",
       "table_row_metadata": {
@@ -328,18 +309,9 @@
     },
     {
       "comments": [],
-      "data": "Child reference target.",
-      "format": "markdown",
-      "index": 16,
-      "parent_index": 5,
-      "sub_type": "paragraph",
-      "type": "text"
-    },
-    {
-      "comments": [],
       "data": "PHIT-ChildRefDB",
       "format": "txt",
-      "index": 17,
+      "index": 16,
       "source_type": "child_database",
       "sub_type": "child_record",
       "table_row_metadata": {

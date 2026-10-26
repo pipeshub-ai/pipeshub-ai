@@ -18,9 +18,17 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import functools
 import logging
 import random
-from dataclasses import dataclass, replace
+import socket
+import sys
+import threading
+import time
+import traceback
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from http import HTTPStatus
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -46,9 +54,11 @@ from app.utils.url_fetcher import (
     _pinned_requests_adapter,
     _require_pinned_peer,
 )
+from app.utils.url_redaction import redact_urls_in_text
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
+    from contextlib import AbstractContextManager
 
 # ---------------------------------------------------------------------------
 # Unified response wrapper
@@ -59,10 +69,110 @@ REQUEST_TIMEOUT = 15
 # asyncio.sleep yields to the event loop, so other concurrent domain fetches are
 # never blocked while one URL is backing off.
 MAX_RATE_LIMIT_BACKOFF = 300  # 5 minutes
+# All the waiting one fetch may do on 429/503 answers, across every strategy and attempt. Longer
+# waits are the crawl's per-site retry's to make, which go on crawling other pages meanwhile.
+RATE_LIMIT_WAIT_BUDGET = 60.0
+
+
+def _hop_deadline(timeout: float) -> float:
+    """How long to wait for a request on a fetch thread to answer. curl ends a whole transfer at
+    ``timeout`` by itself, and requests ends each socket read there, so a request that has given
+    no answer at twice the timeout has wedged or is trickling its headers."""
+    return 2 * timeout
+
+
+# The slowest a cloudscraper body may arrive and still be read to the end. requests' timeout covers
+# each socket read, not the transfer, so only the rate tells a slow link from a trickle. At this
+# rate a body at the 100 MB size cap takes under 2 hours.
+_MIN_BODY_RATE = 16 * 1024  # bytes a second
+
+
+def _max_queue_wait(timeout: float) -> float:
+    """How long a request may wait for a free fetch thread. Most requests end well inside one hop
+    deadline, so a queue that hasn't moved for two means the threads are held by transfers that
+    won't end soon. Pages are fetched one at a time, so the page goes on without the threads
+    rather than waiting any longer."""
+    return 2 * _hop_deadline(timeout)
+
+
+class _UrlRedactingLogger:
+    """Logs through *logger* with every URL cut to scheme, host and path: a feed or
+    page URL can carry a token in its query string or user info."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - forwards the rest of the Logger API
+        return getattr(self._logger, name)
+
+    def _log(self, level: int, msg: object, *args: object, exc_info: object = None, **kwargs: Any) -> None:  # noqa: ANN401
+        if self._logger.isEnabledFor(level):
+            text = str(msg) % args if args else str(msg)
+            if exc_info:
+                # Formatted here: the traceback ends with the exception's text, which can hold the URL.
+                if isinstance(exc_info, BaseException):
+                    exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+                elif not isinstance(exc_info, tuple):
+                    exc_info = sys.exc_info()
+                if exc_info[0] is not None:
+                    text = f"{text}\n{''.join(traceback.format_exception(*exc_info)).rstrip()}"
+            self._logger.log(level, redact_urls_in_text(text), **kwargs)
+
+    def debug(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.DEBUG, msg, *args, **kwargs)
+
+    def info(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.INFO, msg, *args, **kwargs)
+
+    def warning(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.WARNING, msg, *args, **kwargs)
+
+    def error(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.ERROR, msg, *args, **kwargs)
+
+    def exception(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        kwargs.setdefault("exc_info", True)
+        self._log(logging.ERROR, msg, *args, **kwargs)
+
+
+class FetchPoolBusy(Exception):
+    """No fetch thread came free in time. Every strategy that needs one is skipped for the page."""
+
+
+# The strategies whose requests run on the fetch threads.
+_POOLED_STRATEGIES = {"curl_cffi(H2)", "cloudscraper"}
+
+# Blocking requests run here rather than in the loop's default executor. A request that wedges
+# keeps its thread past its deadline, and must not take one of the threads that DNS lookups and
+# every other connector in the process share.
+_FETCH_THREADS = ThreadPoolExecutor(max_workers=32, thread_name_prefix="web-fetch")
 
 # ---------------------------------------------------------------------------
 # Shared stealth headers
 # ---------------------------------------------------------------------------
+
+
+# Who the crawler says it is when not asked to look like a browser; robots.txt groups for "PipesHub" apply to it.
+PIPESHUB_USER_AGENT = "Mozilla/5.0 (compatible; PipesHub/1.0; +https://docs.pipeshub.com/connectors/web)"
+
+
+def build_crawler_headers(
+    url: str, referer: str | None = None, extra: dict | None = None, *, browser_like: bool = True,
+) -> dict:
+    """The request headers for a crawl: a browser's, or PipesHub's own."""
+    if browser_like:
+        return build_stealth_headers(url, referer=referer, extra=extra)
+    parsed = urlparse(url)
+    headers = {
+        "User-Agent": PIPESHUB_USER_AGENT,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Encoding": "gzip, deflate, br",
+        "Referer": referer or f"{parsed.scheme}://{parsed.netloc}/",
+    }
+    if extra:
+        headers.update(extra)
+    return headers
 
 
 def build_stealth_headers(url: str, referer: Optional[str] = None, extra: Optional[dict] = None) -> dict:
@@ -213,6 +323,7 @@ class _HopWalk:
     allow_hop: Callable[[str], Awaitable[bool]] | None
     validators_for: Callable[[str], Awaitable[dict | None]] | None
     max_bytes: int | None
+    browser_like: bool = True
 
 
 class _RequestsLike(Protocol):
@@ -252,10 +363,149 @@ def _declared_too_large(headers: Mapping[str, str], max_bytes: int | None) -> bo
     return max_bytes is not None and bool(length) and str(length).isdigit() and int(length) > max_bytes
 
 
-def _read_capped(chunks: Iterable[bytes], max_bytes: int | None) -> tuple[bytes, bool]:
+class _Abandoned(Exception):
+    pass
+
+
+class _HopWatch:
+    """What the coroutine waiting on a request knows of its progress, and how it tells the
+    request's thread to stop."""
+
+    def __init__(self) -> None:
+        self.queued_at = time.monotonic()
+        self.started: float | None = None
+        self.body_started: float | None = None
+        self.received = 0
+        self._stopped = threading.Event()
+        self._lock = threading.Lock()
+        self._socket: socket.socket | None = None
+
+    @property
+    def stopped(self) -> bool:
+        return self._stopped.is_set()
+
+    def begin(self) -> None:
+        """Called by the fetch thread before the request is sent: its deadline counts from here."""
+        with self._lock:
+            if self._stopped.is_set():
+                raise _Abandoned
+            self.started = time.monotonic()
+
+    def hold(self, sock: socket.socket) -> None:
+        """The socket a stop shuts, which ends any read blocked on it."""
+        with self._lock:
+            self._socket = sock
+            if self._stopped.is_set():
+                self._shut()
+
+    def release(self) -> None:
+        with self._lock:
+            self._socket = None
+
+    def stop(self) -> None:
+        with self._lock:
+            self._stopped.set()
+            self._shut()
+
+    def _shut(self) -> None:
+        if self._socket is not None:
+            with contextlib.suppress(OSError):
+                # The plain socket call: SSLSocket.shutdown would also drop its SSL object under
+                # the reading thread.
+                socket.socket.shutdown(self._socket, socket.SHUT_RDWR)
+
+    def overdue(self, now: float, timeout: float) -> str | None:
+        """Why to give up on the request now, or None to keep waiting. Not asked while queued."""
+        if self.started is None:
+            return None
+        if self.body_started is None:
+            deadline = _hop_deadline(timeout)
+            return f"{deadline:g} seconds without an answer" if now - self.started > deadline else None
+        reading = now - self.body_started
+        # One chunk of slack: a chunk is counted once it is complete.
+        if reading > timeout and self.received + _READ_CHUNK < _MIN_BODY_RATE * reading:
+            return f"{reading:.0f} seconds reading a body arriving at under {_MIN_BODY_RATE // 1024} KB a second"
+        return None
+
+
+# The watch of the request running on this thread, for the connections it opens.
+_thread_watch = threading.local()
+
+
+@functools.cache
+def _watched_pools() -> dict[str, type]:
+    """urllib3 pools whose connections hand their socket to the running request's watch before
+    waiting for the answer, so a stop also ends a wait for headers, and a body cloudscraper reads
+    itself to look for a challenge."""
+    from urllib3.connection import HTTPConnection, HTTPSConnection
+    from urllib3.connectionpool import HTTPConnectionPool, HTTPSConnectionPool
+
+    def watched(base: type[HTTPConnection]) -> type[HTTPConnection]:
+        class Watched(base):  # type: ignore[valid-type,misc]
+            def getresponse(self, *args: Any, **kwargs: Any) -> Any:  # noqa: ANN401
+                watch = getattr(_thread_watch, "watch", None)
+                if watch is not None and self.sock is not None:
+                    watch.hold(self.sock)
+                return super().getresponse(*args, **kwargs)
+
+        return Watched
+
+    class Pool(HTTPConnectionPool):
+        ConnectionCls = watched(HTTPConnection)
+
+    class TLSPool(HTTPSConnectionPool):
+        ConnectionCls = watched(HTTPSConnection)
+
+    return {"http": Pool, "https": TLSPool}
+
+
+async def _hop_in_thread(
+    url: str, timeout: int, logger: logging.Logger, strategy: str, hop: Callable[..., _Hop],
+) -> _Hop:
+    """Run ``hop`` on a fetch thread until it ends or ``_HopWatch.overdue`` gives up on it. Then the
+    hop is told to stop, and TimeoutError is raised, which the strategies handle as a request
+    that timed out. FetchPoolBusy is raised instead when no thread took the hop in time."""
+    watch = _HopWatch()
+
+    def run() -> _Hop:
+        watch.begin()
+        return hop(watch=watch)
+
+    running = asyncio.get_running_loop().run_in_executor(_FETCH_THREADS, run)
+    check_every = min(1.0, _hop_deadline(timeout) / 8)
+    try:
+        while not running.done():
+            await asyncio.wait({running}, timeout=check_every)
+            if running.done():
+                break
+            now = time.monotonic()
+            waited = now - watch.queued_at
+            if watch.started is None and waited > _max_queue_wait(timeout):
+                watch.stop()
+                running.cancel()  # drops it if still queued; if a thread just took it, begin() refuses
+                raise FetchPoolBusy(f"no web fetch thread came free for {waited:.0f} seconds")
+            reason = watch.overdue(now, timeout)
+            if reason is not None:
+                watch.stop()
+                running.cancel()  # drops it if still queued; if a thread just took it, begin() refuses
+                logger.warning("⚠️ [%s] Gave up on %s after %s", strategy, url, reason)
+                raise TimeoutError(reason)
+    except asyncio.CancelledError:
+        watch.stop()
+        raise
+    return running.result()
+
+
+def _read_capped(
+    chunks: Iterable[bytes], max_bytes: int | None, watch: _HopWatch | None = None,
+) -> tuple[bytes, bool]:
     """Read a streamed body, stopping as soon as it passes ``max_bytes``."""
     body = bytearray()
     for chunk in chunks:
+        if watch is not None:
+            if watch.stopped:
+                raise _Abandoned
+            watch.received += len(chunk)
         body.extend(chunk)
         if max_bytes is not None and len(body) > max_bytes:
             return b"", True
@@ -276,7 +526,9 @@ async def _walk_hops(
             pin = await resolve_target(current)
         except UnsafeAddressError:
             return unsafe_address_response(current)
-        headers = build_stealth_headers(current, referer=walk.referer, extra=walk.extra_headers)
+        headers = build_crawler_headers(
+            current, referer=walk.referer, extra=walk.extra_headers, browser_like=walk.browser_like,
+        )
         if walk.validators_for is not None:
             headers.update(await walk.validators_for(current) or {})
         hop = await get(current, headers, pin)
@@ -364,25 +616,135 @@ async def _hops_aiohttp(
 
 
 def _sync_hop(
-    client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None,
-    pin: PublicTarget | None = None,
+    client: _RequestsLike, busy: AbstractContextManager[object], url: str, headers: dict, timeout: int,
+    max_bytes: int | None, watch: _HopWatch | None = None,
 ) -> _Hop:
-    """One GET on a requests-style client (curl_cffi Session, cloudscraper), redirects not followed.
-    With ``pin``, the answer must have come from that address (curl reports it as ``primary_ip``)."""
+    """One GET on a cloudscraper scraper, redirects not followed.
+
+    requests' ``timeout`` limits each socket read, not the whole transfer, so a site that trickles
+    its headers or body would keep this reading until ``watch`` shuts the socket.
+    """
+    with busy:
+        _thread_watch.watch = watch
+        try:
+            return _read_sync_hop(client, url, headers, timeout, max_bytes, watch)
+        finally:
+            _thread_watch.watch = None
+            if watch is not None:
+                watch.release()
+
+
+def _read_sync_hop(
+    client: _RequestsLike, url: str, headers: dict, timeout: int, max_bytes: int | None,
+    watch: _HopWatch | None,
+) -> _Hop:
     response = client.get(url, headers=headers, timeout=timeout, allow_redirects=False, stream=True)
     try:
-        if pin is not None:
-            _require_pinned_peer(response.primary_ip, pin)
         hop_headers = dict(response.headers)
         answered_by = str(response.url) if getattr(response, "url", None) else None
         if response.status_code in _HEAD_REDIRECT_CODES:
             return _Hop(response.status_code, hop_headers, url=answered_by)
         if _declared_too_large(hop_headers, max_bytes):
             return _Hop(response.status_code, hop_headers, too_large=True, url=answered_by)
-        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes)
+        if watch is not None:
+            watch.body_started = time.monotonic()
+        body, too_large = _read_capped(response.iter_content(_READ_CHUNK), max_bytes, watch)
         return _Hop(response.status_code, hop_headers, body, too_large, url=answered_by)
     finally:
         response.close()
+
+
+def _curl_hop(
+    session: _RequestsLike, busy: AbstractContextManager[object], url: str, headers: dict, timeout: int,
+    max_bytes: int | None, pin: PublicTarget, watch: _HopWatch | None = None,
+) -> _Hop:
+    """One GET on a curl_cffi Session, redirects not followed. The answer must have come from
+    ``pin``'s address (curl reports it as ``primary_ip``).
+
+    Not streamed: in curl_cffi 0.14 a streamed request that fails before its headers arrive (a
+    timeout, a refused connection) resets one curl handle from two threads at once, which
+    corrupts the heap and aborts the whole connector service. A declared size past the cap is
+    refused by curl itself at the headers (CURLOPT_MAXFILESIZE); an undeclared one is capped as
+    it arrives. Once ``watch`` is stopped, the next bytes to arrive stop the transfer.
+    """
+    from curl_cffi.const import CurlECode, CurlOpt
+    from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+
+    body = bytearray()
+    too_large = False
+    options = dict(session.curl_options or {})
+    if max_bytes is None:
+        options.pop(CurlOpt.MAXFILESIZE_LARGE, None)
+    else:
+        options[CurlOpt.MAXFILESIZE_LARGE] = max_bytes
+    session.curl_options = options
+
+    def collect(chunk: bytes) -> int:
+        nonlocal too_large
+        if watch is not None and watch.stopped:
+            return CURL_WRITEFUNC_ERROR
+        body.extend(chunk)
+        if max_bytes is not None and len(body) > max_bytes:
+            too_large = True
+            return CURL_WRITEFUNC_ERROR  # curl stops the transfer and the request raises
+        return len(chunk)
+
+    with busy:
+        try:
+            response = session.get(
+                url, headers=headers, timeout=timeout, allow_redirects=False, content_callback=collect,
+            )
+        except Exception as e:
+            response = getattr(e, "response", None)
+            too_large = too_large or getattr(e, "code", None) == CurlECode.FILESIZE_EXCEEDED
+            if not too_large or response is None:
+                raise
+        peer_ip = response.primary_ip
+        hop_headers = dict(response.headers)
+        status_code = response.status_code
+    _require_pinned_peer(peer_ip, pin)
+    if status_code in _HEAD_REDIRECT_CODES:
+        return _Hop(status_code, hop_headers)
+    if too_large or _declared_too_large(hop_headers, max_bytes):
+        return _Hop(status_code, hop_headers, too_large=True)
+    return _Hop(status_code, hop_headers, bytes(body))
+
+
+class _SessionGuard:
+    """Entered while a request runs on a session; closes the session once none does.
+
+    ``close_when_idle`` never waits: with a request running, the close is left to that request's
+    exit, however late it comes. The close always runs under the guard's lock, so no request
+    can start on the session while it is being closed, and none starts after it is asked for.
+    """
+
+    def __init__(self, session: _RequestsLike) -> None:
+        self._session = session
+        self._lock = threading.Lock()
+        self._running = False
+        self._close_wanted = False
+
+    def __enter__(self) -> None:
+        with self._lock:
+            if self._close_wanted:
+                raise _Abandoned
+            self._running = True
+
+    def __exit__(self, *_: object) -> None:
+        with self._lock:
+            self._running = False
+            if self._close_wanted:
+                self._close()
+
+    def close_when_idle(self) -> None:
+        with self._lock:
+            self._close_wanted = True
+            if not self._running:
+                self._close()
+
+    def _close(self) -> None:
+        with contextlib.suppress(Exception):
+            self._session.close()
 
 
 async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
@@ -400,30 +762,36 @@ async def _hops_curl_cffi(walk: _HopWalk, timeout: int, logger: logging.Logger) 
     for profile in random.sample(_CURL_PROFILES, min(3, len(_CURL_PROFILES))):
         # No environment proxy: it would resolve the host again, past the pin.
         session = Session(impersonate=profile, timeout=timeout, trust_env=False)
+        # Entered while a request runs on the session's curl handle, so it is never closed under one.
+        busy = _SessionGuard(session)
         # curl keeps a host's connection open across hops, so a host keeps its first address.
         pins: dict[tuple[str, int], PublicTarget] = {}
 
         async def get(
             url: str, headers: dict, pin: PublicTarget | None,
-            session: Any = session, pins: dict[tuple[str, int], PublicTarget] = pins,  # noqa: ANN401
+            session: Any = session, busy: _SessionGuard = busy,  # noqa: ANN401
+            pins: dict[tuple[str, int], PublicTarget] = pins,
         ) -> _Hop:
             if pin is None:
                 raise ConnectionError(f"{url} did not resolve")
             pin = pins.setdefault((pin.host, pin.port), pin)
             request_url, session.curl_options = _curl_pinned_request(url, pin)
-            hop = await loop.run_in_executor(
-                None, _sync_hop, session, request_url, headers, timeout, walk.max_bytes, pin,
-            )
             # request_url is only the pinned spelling of url; curl never moves on its own here.
-            return replace(hop, url=None)
+            return await _hop_in_thread(
+                url, timeout, logger, "curl_cffi",
+                functools.partial(_curl_hop, session, busy, request_url, headers, timeout, walk.max_bytes, pin),
+            )
 
         try:
             return await _walk_hops(walk, get, f"curl_cffi({profile}, h2=True)")
+        except FetchPoolBusy:
+            raise  # another profile would wait for the same threads
         except Exception:
             continue  # TLS error, connection reset -> next profile, from the start of the chain
         finally:
-            with contextlib.suppress(Exception):
-                session.close()
+            # Off the event loop, as freeing curl's handle is a call into libcurl. Not on the fetch
+            # threads: they may be the ones that are all busy, and the guard never waits.
+            loop.run_in_executor(None, busy.close_when_idle)
     logger.warning(f"⚠️ [curl_cffi(h2=True)] All profiles exhausted for {walk.url}")
     return None
 
@@ -432,9 +800,13 @@ def _pin_scraper(scraper: Any, tls_adapter: Any, pin: PublicTarget) -> None:  # 
     """Send every request the scraper makes, a solved challenge's own follow-up included, to
     ``pin``'s address. https keeps cloudscraper's TLS context, which carries its cipher suite."""
     scraper.trust_env = False  # a proxy would resolve the host again, past the pin
-    scraper.mount("http://", _pinned_requests_adapter(pin))
     tls = {"ssl_context": tls_adapter.ssl_context} if hasattr(tls_adapter, "ssl_context") else {}
-    scraper.mount("https://", _pinned_requests_adapter(pin, type(tls_adapter), **tls))
+    for prefix, adapter in (
+        ("http://", _pinned_requests_adapter(pin)),
+        ("https://", _pinned_requests_adapter(pin, type(tls_adapter), **tls)),
+    ):
+        adapter.poolmanager.pool_classes_by_scheme = _watched_pools()
+        scraper.mount(prefix, adapter)
 
 
 async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logger) -> FetchResponse | None:
@@ -446,7 +818,6 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
     except ImportError:
         logger.error("❌ [cloudscraper] Not installed")
         return None
-    loop = asyncio.get_running_loop()
     try:
         scraper = cloudscraper.create_scraper(
             browser={"browser": "chrome", "platform": "windows", "mobile": False}
@@ -454,21 +825,27 @@ async def _hops_cloudscraper(walk: _HopWalk, timeout: int, logger: logging.Logge
     except Exception:
         return None
     tls_adapter = scraper.adapters["https://"]
+    # Entered while a request runs on the scraper, so it is never closed under one.
+    busy = _SessionGuard(scraper)
 
     async def get(url: str, headers: dict, pin: PublicTarget | None) -> _Hop:
         if pin is None:
             raise ConnectionError(f"{url} did not resolve")
         _pin_scraper(scraper, tls_adapter, pin)
-        return await loop.run_in_executor(None, _sync_hop, scraper, url, headers, timeout, walk.max_bytes)
+        return await _hop_in_thread(
+            url, timeout, logger, "cloudscraper",
+            functools.partial(_sync_hop, scraper, busy, url, headers, timeout, walk.max_bytes),
+        )
 
     try:
         return await _walk_hops(walk, get, "cloudscraper")
+    except FetchPoolBusy:
+        raise
     except Exception:
         logger.warning(f"⚠️ [cloudscraper] Failed for {walk.url}")
         return None
     finally:
-        with contextlib.suppress(Exception):
-            scraper.close()
+        asyncio.get_running_loop().run_in_executor(None, busy.close_when_idle)
 
 
 # ---------------------------------------------------------------------------
@@ -488,6 +865,8 @@ async def fetch_url_with_fallback(
     preferred_strategy: Optional[str] = None,
     allow_hop: Callable[[str], Awaitable[bool]] | None = None,
     validators_for: Callable[[str], Awaitable[dict | None]] | None = None,
+    browser_like: bool = True,
+    rate_limit_wait_s: float = RATE_LIMIT_WAIT_BUDGET,
 ) -> Optional[FetchResponse]:
     """
     Fetch a URL using a multi-strategy fallback chain.
@@ -528,10 +907,16 @@ async def fetch_url_with_fallback(
                                    fetches to the same strategy that worked for the parent page.
                                    If the name doesn't match any known strategy the full chain is
                                    used as a safety net.
+        browser_like:              Look like a browser: its headers, the impersonating strategies, and
+                                   another try past a 403. False sends PipesHub's own headers through
+                                   aiohttp only, and takes a 403 as the site's answer.
+        rate_limit_wait_s:         How long this fetch may wait out 429/503s and bot blocks in total;
+                                   past it the last answer is returned for the caller to handle.
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
-    headers = build_stealth_headers(url, referer=referer, extra=extra_headers)
+    logger = _UrlRedactingLogger(logger)  # type: ignore[assignment]
+    headers = build_crawler_headers(url, referer=referer, extra=extra_headers, browser_like=browser_like)
 
     if max_size_mb is not None:
         max_size_bytes = max_size_mb * 1024 * 1024
@@ -567,12 +952,17 @@ async def fetch_url_with_fallback(
         url=url, referer=referer, extra_headers=extra_headers, allow_hop=allow_hop,
         validators_for=validators_for,
         max_bytes=max_size_mb * 1024 * 1024 if max_size_mb is not None else None,
+        browser_like=browser_like,
     )
     all_strategies: List[Tuple[str, Callable[..., Coroutine[Any, Any, Optional[FetchResponse]]]]] = [
         ("curl_cffi(H2)", lambda: _hops_curl_cffi(walk, timeout, logger)),
         ("cloudscraper", lambda: _hops_cloudscraper(walk, timeout, logger)),
         ("aiohttp", lambda: _hops_aiohttp(session, walk, timeout, logger)),
     ]
+
+    if not browser_like:
+        # The other strategies exist to pass for a browser.
+        all_strategies = [(name, fn) for name, fn in all_strategies if name == "aiohttp"]
 
     # When a preferred strategy is given (e.g. from a cached page-level fetch),
     # use ONLY that strategy — no fallback — to avoid wasted attempts.
@@ -598,8 +988,14 @@ async def fetch_url_with_fallback(
     # hard connection failure), this lets callers inspect the status code and
     # decide whether to queue the URL for a post-crawl retry.
     last_failed_result: FetchResponse | None = None
+    pool_busy = False
+    wait_left = rate_limit_wait_s
 
     for strategy_name, strategy_fn in strategies:
+        if pool_busy and strategy_name in _POOLED_STRATEGIES:
+            continue
+        rate_limited_out = False
+        no_answer = False
         for attempt in range(max_retries_per_strategy):
             if attempt > 0:
                 # Backoff between retries of same strategy: 1s, 2s, ...
@@ -614,14 +1010,26 @@ async def fetch_url_with_fallback(
             # asyncio.sleep yields to the event loop, so other domain fetches are never blocked.
             _rl_attempt = 0
             while True:
-                result = await strategy_fn()
+                try:
+                    result = await strategy_fn()
+                except FetchPoolBusy as e:
+                    logger.warning(
+                        "⚠️ [%s] Gave up waiting for a thread to fetch %s: %s. "
+                        "Skipping curl_cffi and cloudscraper for this page.",
+                        strategy_name, url, e,
+                    )
+                    pool_busy = True
+                    break
 
                 # Strategy returned nothing (import missing, all profiles exhausted, connection error)
                 if result is None:
                     logger.debug(
                         f"🔄 [{strategy_name}] No result on attempt {attempt + 1}/{max_retries_per_strategy}"
                     )
-                    break  # exit backoff loop, go to next strategy attempt
+                    # A site that didn't answer this client likely won't on a second try either:
+                    # the next strategy is the retry, and the crawl's per-site retry comes later.
+                    no_answer = True
+                    break
 
                 status = result.status_code
 
@@ -655,12 +1063,13 @@ async def fetch_url_with_fallback(
                         result.retry_after = delay
                         return result
 
-                    if exp_delay >= MAX_RATE_LIMIT_BACKOFF:
+                    if exp_delay >= MAX_RATE_LIMIT_BACKOFF or delay > wait_left:
                         logger.warning(
-                            "⚠️ [%s] HTTP %s persists after max backoff (%.0fs) for %s, trying next strategy",
-                            strategy_name, status, exp_delay, url,
+                            "⚠️ [%s] HTTP %s persists for %s after this fetch's back-off; trying next strategy",
+                            strategy_name, status, url,
                         )
                         last_failed_result = result
+                        rate_limited_out = True
                         break
 
                     logger.warning(
@@ -668,9 +1077,14 @@ async def fetch_url_with_fallback(
                         strategy_name, status, url, delay, _rl_attempt + 1,
                     )
                     await asyncio.sleep(delay)
+                    wait_left -= delay
 
                     _rl_attempt += 1
                     continue
+
+                # Without disguises there is nothing new to try: a refusal is the site's answer.
+                if status == HTTPStatus.FORBIDDEN and not browser_like:
+                    return result
 
                 # ---- Bot detection (403, 999, 520-530) -> backoff, then try next strategy attempt ----
                 if status in _BOT_DETECTION_CODES:
@@ -681,11 +1095,13 @@ async def fetch_url_with_fallback(
                     retry_after = result.headers.get("Retry-After") or result.headers.get("retry-after")
                     server_delay = parse_retry_after(retry_after)
                     delay = server_delay if server_delay else 2.0
-                    if delay > MAX_RATE_LIMIT_BACKOFF:
+                    if delay > MAX_RATE_LIMIT_BACKOFF or delay > wait_left:
+                        # Longer than this fetch may still wait: the crawl's per-site retry waits instead.
                         result.retry_after = delay
                         last_failed_result = result
                         break
                     await asyncio.sleep(delay)
+                    wait_left -= delay
                     last_failed_result = result
                     break  # break backoff loop, go to next strategy attempt
 
@@ -708,6 +1124,15 @@ async def fetch_url_with_fallback(
                 if status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value and status not in _BOT_DETECTION_CODES and status not in _RATE_LIMIT_CODES:
                     logger.error(f"❌ [{strategy_name}] Server error {status} for {url}")
                     return result
+
+            if rate_limited_out and last_failed_result is not None and (
+                last_failed_result.status_code == HTTPStatus.TOO_MANY_REQUESTS or not browser_like
+            ):
+                # Another client is no answer to "slow down" (only a 503 challenge page may pass a
+                # disguise): the crawl's per-site retry and pacing take it from here.
+                return last_failed_result
+            if pool_busy or rate_limited_out or no_answer:
+                break  # another attempt of the same strategy would meet the same limit, or the same silence
 
         logger.debug(f"🔄 [{strategy_name}] Exhausted all {max_retries_per_strategy} attempts for {url}")
 

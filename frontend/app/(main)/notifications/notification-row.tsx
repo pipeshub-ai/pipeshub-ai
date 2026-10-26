@@ -17,11 +17,28 @@ export type NotificationRowAction =
   | 'dismiss';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
+/**
+ * An absolute http(s) URL, or a protocol-relative one (`//host`, and `/\host`, which browsers
+ * read the same way): it leaves the app, so it opens in a new tab and is never handled in-app.
+ */
+export function isExternalNotificationHref(href: string): boolean {
+  return /^(?:https?:)?[/\\]{2}/i.test(href);
+}
+
 function notificationHref(redirectLink: string): string | null {
   const trimmed = redirectLink.trim();
   if (!trimmed) return null;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (isExternalNotificationHref(trimmed)) return trimmed;
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+/** The conversation an in-app chat link such as `/chat/?conversationId=…` opens, or null. */
+export function chatConversationIdFromHref(href: string): string | null {
+  if (!href.startsWith('/') || isExternalNotificationHref(href)) return null;
+  const url = new URL(href, 'http://app.invalid');
+  if (url.origin !== 'http://app.invalid') return null;
+  if (url.pathname.replace(/\/+$/, '') !== '/chat') return null;
+  return url.searchParams.get('conversationId') || null;
 }
 
 function formatRelativeTime(
@@ -106,7 +123,7 @@ function NotificationTitle({
           data-ph-notification-row-title-link=""
           style={{ ...titleWrapStyle, ...style }}
           onClick={onNavigate}
-          {...(/^https?:\/\//i.test(href)
+          {...(isExternalNotificationHref(href)
             ? { target: '_blank', rel: 'noopener noreferrer' }
             : {})}
         >
@@ -193,8 +210,11 @@ export function NotificationRow({
   dismissLabel,
   compactTime = false,
   pendingAction = null,
+  onOpenLink,
 }: {
   notification: NotificationListItem;
+  /** Called before an in-app link navigates, including to the page already open. */
+  onOpenLink?: (href: string) => void;
   onMarkRead: (n: NotificationListItem) => void;
   onMarkUnread: (n: NotificationListItem) => void;
   onArchive: (n: NotificationListItem) => void;
@@ -295,6 +315,7 @@ export function NotificationRow({
                 style={titleStyle}
                 onNavigate={() => {
                   if (!isRead) onMarkRead(n);
+                  if (href && href.startsWith('/') && !isExternalNotificationHref(href)) onOpenLink?.(href);
                 }}
               />
             </Box>

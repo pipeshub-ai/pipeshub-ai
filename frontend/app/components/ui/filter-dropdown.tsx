@@ -6,6 +6,7 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { Flex, Box, Text, Badge, Button, Popover, Checkbox, RadioGroup, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 /**
  * Option item for the filter dropdown
@@ -133,7 +134,7 @@ export function FilterDropdown({
   onSelectionChange,
   searchable = false,
   disabled = false,
-  pluralLabel: _pluralLabel,
+  pluralLabel: pluralLabelProp,
   onSearch,
   onLoadMore,
   isLoadingMore = false,
@@ -149,6 +150,8 @@ export function FilterDropdown({
   selectionMode = 'multiple',
 }: FilterDropdownProps) {
   const { t } = useTranslation();
+  // Phones get 44px option rows.
+  const isMobile = useIsMobile();
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   /** Labels for selected values — kept when server-side option lists refresh after close */
@@ -161,6 +164,7 @@ export function FilterDropdown({
   const isSingleSelect = selectionMode === 'single';
   const isServerSearch = !!onSearch;
   const selectionVerb = isSingleSelect ? t('filterDropdown.is') : t('filterDropdown.isAnyOf');
+  const pluralLabel = pluralLabelProp ?? label;
 
   // Remember labels at selection time so chips stay human-readable after paginated refetch
   useEffect(() => {
@@ -358,130 +362,126 @@ export function FilterDropdown({
             clearSelectionButton()
           ) : null}
         </Flex>
-      ) : (
-        <Popover.Trigger>
-          {hasSelection ? (
-            <Flex
-              align="center"
-              wrap="wrap"
-              style={{
-                minHeight: 26,
-                border: '1px solid var(--gray-a7)',
-                borderRadius: 'var(--radius-2)',
-                backgroundColor: 'var(--gray-a3)',
-                cursor: 'pointer',
-                overflow: 'hidden',
-                maxWidth: '100%',
-              }}
-            >
-              {/* Segment 1: icon + label */}
+      ) : hasSelection ? (
+        <Flex align="center" style={{ flexShrink: 0 }}>
+          <Popover.Trigger>
+            <div style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
               <Flex
                 align="center"
+                gap="1"
                 style={{
-                  padding: icon ? '0 8px 0 8px' : '0 8px',
-                  borderRight: '1px solid var(--gray-a7)',
-                  alignSelf: 'stretch',
-                  minHeight: 26,
-                  gap: '4px',
+                  height: 28,
+                  padding: '0 10px',
+                  backgroundColor: 'var(--gray-a3)',
+                  border: '1px solid var(--gray-a7)',
+                  borderRadius: 'var(--radius-2) 0 0 var(--radius-2)',
+                  boxSizing: 'border-box',
                 }}
               >
-                {icon && (
-                  <MaterialIcon name={icon} size={14} color="var(--gray-11)" />
-                )}
-                <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
+                {icon && <MaterialIcon name={icon} size={14} color="var(--neutral-11)" />}
+                <Text size="1" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '18px', whiteSpace: 'nowrap' }}>
                   {label}
                 </Text>
               </Flex>
-
-              {/* Segment 2: verb phrase */}
-              <Flex
-                align="center"
-                style={{
-                  padding: '0 8px',
-                  borderRight: '1px solid var(--gray-a7)',
-                  alignSelf: 'stretch',
-                }}
-              >
-                <Text size="1" style={{ color: 'var(--gray-11)', whiteSpace: 'nowrap' }}>
-                  {selectionVerb}
-                </Text>
-              </Flex>
-
-              {/* Segment 3: one chip per selected value (label), legacy parity */}
-              <Flex
-                align="center"
-                wrap="wrap"
-                gap="2"
-                style={{
-                  padding: '4px 8px',
-                  borderRight: '1px solid var(--gray-a7)',
-                  flex: 1,
-                  minWidth: 0,
-                  alignSelf: 'stretch',
-                }}
-              >
-                {selectedValues.map((val) => {
-                  const text = optionLabelByValue.get(val) ?? val;
-                  return (
-                    <Badge
-                      key={val}
-                      color="jade"
-                      variant="soft"
-                      size="1"
-                      title={text}
-                      style={{
-                        maxWidth: 220,
-                        overflow: 'hidden',
-                        textOverflow: 'ellipsis',
-                        whiteSpace: 'nowrap',
-                      }}
-                    >
-                      {text}
-                    </Badge>
-                  );
-                })}
-              </Flex>
-
-              {/* Segment 4: clear button */}
               <Flex
                 align="center"
                 justify="center"
-                onClick={clearSelection}
                 style={{
-                  padding: '0 4px',
-                  alignSelf: 'stretch',
-                  minHeight: 26,
-                  cursor: 'pointer',
+                  height: 28,
+                  padding: '0 10px',
+                  backgroundColor: 'var(--gray-a3)',
+                  borderTop: '1px solid var(--gray-a7)',
+                  borderBottom: '1px solid var(--gray-a7)',
+                  borderRight: '1px solid var(--gray-a7)',
+                  boxSizing: 'border-box',
                 }}
               >
-                <MaterialIcon name="close" size={14} color="var(--gray-11)" />
+                <Text size="1" style={{ color: 'var(--neutral-11)', fontWeight: 400, lineHeight: '18px', whiteSpace: 'nowrap' }}>
+                  {selectionVerb}
+                </Text>
               </Flex>
-            </Flex>
-          ) : (
-            <Button
-              variant="outline"
-              size="1"
-              radius="medium"
-              color="gray"
-              disabled={disabled}
-              style={{
-                height: '24px',
-                gap: '4px',
-                cursor: disabled ? 'not-allowed' : 'pointer',
-                borderRadius: 'var(--radius-2)',
-                opacity: disabled ? 0.5 : 1,
-              }}
-            >
-              {icon && (
-                <MaterialIcon
-                  name={icon}
-                  size={14}
-                  color="var(--slate-11)"
-                />
-              )}
-              <Text size="1">{label}</Text>
-            </Button>
-          )}
+              <Flex
+                align="center"
+                gap="2"
+                style={{
+                  height: 28,
+                  padding: '0 10px',
+                  backgroundColor: 'var(--gray-a3)',
+                  borderTop: '1px solid var(--gray-a7)',
+                  borderBottom: '1px solid var(--gray-a7)',
+                  boxSizing: 'border-box',
+                }}
+              >
+                <Flex
+                  align="center"
+                  justify="center"
+                  style={{
+                    minWidth: 16,
+                    height: 16,
+                    padding: '0 5px',
+                    borderRadius: 'var(--radius-2)',
+                    backgroundColor: 'var(--accent-a3)',
+                  }}
+                >
+                  <Text size="1" weight="medium" style={{ color: 'var(--accent-a11)', lineHeight: '16px' }}>
+                    {selectedValues.length}
+                  </Text>
+                </Flex>
+                <Text size="1" weight="medium" style={{ color: 'var(--neutral-11)', lineHeight: '18px', whiteSpace: 'nowrap' }}>
+                  {pluralLabel}
+                </Text>
+              </Flex>
+            </div>
+          </Popover.Trigger>
+          <Flex
+            align="center"
+            justify="center"
+            role="button"
+            aria-label={t('filterDropdown.clear', { label, defaultValue: 'Clear {{label}} filter' })}
+            onClick={clearSelection}
+            style={{
+              width: 28,
+              height: 28,
+              backgroundColor: 'var(--gray-a3)',
+              border: '1px solid var(--gray-a7)',
+              borderRadius: '0 var(--radius-2) var(--radius-2) 0',
+              cursor: 'pointer',
+              boxSizing: 'border-box',
+              flexShrink: 0,
+            }}
+          >
+            <MaterialIcon name="close" size={14} color="var(--neutral-11)" />
+          </Flex>
+        </Flex>
+      ) : (
+        <Popover.Trigger>
+          <Button
+            variant="outline"
+            size="1"
+            radius="medium"
+            color="gray"
+            disabled={disabled}
+            style={{
+              height: 28,
+              padding: '0 6px 0 10px',
+              gap: 6,
+              cursor: disabled ? 'not-allowed' : 'pointer',
+              borderRadius: 'var(--radius-2)',
+              border: '1px solid var(--olive-4)',
+              boxShadow: 'none',
+              opacity: disabled ? 0.5 : 1,
+            }}
+          >
+            {icon && (
+              <MaterialIcon
+                name={icon}
+                size={14}
+                color="var(--neutral-11)"
+              />
+            )}
+            <Text size="1" style={{ fontWeight: 400, lineHeight: '18px', color: 'var(--neutral-11)' }}>{label}</Text>
+            <MaterialIcon name="expand_more" size={14} color="var(--neutral-11)" />
+          </Button>
         </Popover.Trigger>
       )}
 
@@ -525,7 +525,7 @@ export function FilterDropdown({
           gap="1"
           className="no-scrollbar"
           onScroll={handleScroll}
-          style={{ maxHeight: '200px', overflowY: 'auto' }}
+          style={{ maxHeight: isMobile ? '320px' : '200px', overflowY: 'auto' }}
         >
           {isLoadingOptions && filteredOptions.length === 0 ? (
             <Flex align="center" justify="center" gap="2" style={{ padding: '20px 12px' }}>
@@ -568,6 +568,7 @@ export function FilterDropdown({
                   onClick={() => selectOption(option.value)}
                   style={{
                     padding: '6px 8px',
+                    minHeight: isMobile ? 44 : undefined,
                     borderRadius: 'var(--radius-1)',
                     cursor: 'pointer',
                     backgroundColor: selectedValues.includes(option.value)
@@ -604,6 +605,7 @@ export function FilterDropdown({
                 onClick={() => selectOption(option.value)}
                 style={{
                   padding: '6px 8px',
+                  minHeight: isMobile ? 44 : undefined,
                   borderRadius: 'var(--radius-1)',
                   cursor: 'pointer',
                   backgroundColor: selectedValues.includes(option.value)

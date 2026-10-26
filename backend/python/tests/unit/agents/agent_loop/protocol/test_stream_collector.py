@@ -191,8 +191,13 @@ class TestErrorResponse:
             ("llm_not_configured", 424),
             ("toolset_config_missing", 424),
             ("mcp_server_config_missing", 424),
+            # A rejected key or missing model is the admin's to fix, not a PipesHub fault.
+            ("auth_error", 424),
+            ("model_not_found", 424),
             ("rate_limit", 429),
             ("content_filter", 422),
+            ("selection_too_large", 422),
+            ("selection_not_ready", 422),
             ("request_too_large", 413),
             ("invalid_request", 400),
             ("server_error", 502),

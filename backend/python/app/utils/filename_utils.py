@@ -1,4 +1,6 @@
+import os
 import re
+from pathlib import Path
 
 
 def sanitize_filename_for_content_disposition(
@@ -41,3 +43,11 @@ def upload_extension(filename: str | None, allowed: frozenset[str]) -> str | Non
         return None
     ext = ext.lower()
     return ext if ext in allowed else None
+
+
+def temp_path_for(directory: str, name: str | None, fallback: str = "file") -> str:
+    """Where to write a file called ``name`` inside ``directory``. Only the last component
+    of the name is kept, so a name that carries a path cannot land outside the directory.
+    """
+    base = Path(name).name if name else ""
+    return os.path.join(directory, base if base not in ("", "..") else fallback)

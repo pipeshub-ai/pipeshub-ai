@@ -2,22 +2,61 @@
 
 import importlib.abc
 import importlib.machinery
+import ipaddress
 import logging
 import os
 import sys
+import tempfile
+from collections.abc import Iterator
 from types import ModuleType
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 os.environ.setdefault("SECRET_KEY", "test-secret-key-for-unit-tests-only-0123456789abcdef")
+from app.utils.process_hardening import disable_vendor_telemetry
+
+# Before the optional-package probes below load onnxruntime, whose telemetry uploader is native code.
+disable_vendor_telemetry()
+# The suite exercises the real metrics backend whatever the edition default.
+os.environ.setdefault("TELEMETRY_COLLECTION_FLAG", "true")
+
+# Tests never send traces to a real Opik account. Blank values (not removed ones) also stop a
+# later `load_dotenv()` from filling them in from a checkout's `.env`, and the empty config file
+# keeps the SDK from reading a developer's `~/.opik.config`.
+for _opik_var in ("OPIK_API_KEY", "OPIK_WORKSPACE", "OPIK_URL_OVERRIDE", "OPIK_PROJECT_NAME"):
+    os.environ[_opik_var] = ""
+os.environ["OPIK_TRACK_DISABLE"] = "true"
+_EMPTY_OPIK_CONFIG = os.path.join(tempfile.gettempdir(), f"pipeshub-tests-empty-opik-{getattr(os, "getuid", os.getpid)()}.config")
+with open(_EMPTY_OPIK_CONFIG, "w", encoding="utf-8") as _opik_config:
+    _opik_config.write("[opik]\n")
+os.environ["OPIK_CONFIG_PATH"] = _EMPTY_OPIK_CONFIG
+
+
+@pytest.fixture(autouse=True)
+def _fresh_lane_assignments(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The lane maps producers share are process-wide. One a test left behind
+    # made every later stale-recovery pass run lane upkeep against a Redis
+    # that is not there, seconds per pass.
+    from app.services.messaging.lanes import assignment
+
+    monkeypatch.setattr(assignment, "_shared", {})
+
+
+def pytest_sessionfinish(session: pytest.Session, exitstatus: int) -> None:
+    # The forced exit below must report the run's own outcome.
+    session.config._exitcode = int(exitstatus)
 
 
 def pytest_unconfigure(config):
     """Force-exit the process when running under xdist to prevent hangs
     caused by unawaited async coroutines keeping worker threads alive."""
     if os.environ.get("PYTEST_XDIST_WORKER") or getattr(config.option, "numprocesses", None):
-        os._exit(getattr(config, "_exitcode", 0))
+        # os._exit skips the interpreter's own flush, which dropped the summary.
+        sys.stdout.flush()
+        sys.stderr.flush()
+        # A run that never reached sessionfinish did not pass.
+        os._exit(getattr(config, "_exitcode", pytest.ExitCode.INTERNAL_ERROR))
 
 # ---------------------------------------------------------------------------
 # Auto-mock optional third-party modules that may not be installed in the
@@ -251,6 +290,29 @@ def _reset_default_backpressure_coordinator():
     set_default_backpressure_coordinator(None)
 
 
+@pytest.fixture(autouse=True)
+def _reset_narrow_access_memo() -> Iterator[None]:
+    """Search remembers, per process, scopes its container filter could not
+    serve. A scope marked in one test must not route another test's search."""
+    retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
+    if retrieval is not None:
+        retrieval.narrow_access_memo.clear()
+    yield
+    retrieval = sys.modules.get("app.modules.retrieval.retrieval_service")
+    if retrieval is not None:
+        retrieval.narrow_access_memo.clear()
+
+
+@pytest.fixture(autouse=True)
+def _no_dns_for_model_endpoints(monkeypatch):
+    """A model health check looks its endpoint's name up before calling it; unit tests must
+    not reach a resolver, so every name resolves to a public address. Tests of the lookup
+    set their own answers."""
+    aimodels = sys.modules.get("app.utils.aimodels")
+    if aimodels is not None:
+        monkeypatch.setattr(aimodels, "_resolved_addresses", lambda host: [ipaddress.ip_address("93.184.216.34")])
+
+
 @pytest.fixture
 def logger():
     """Provide a silent logger for tests."""
@@ -266,7 +328,10 @@ def logger():
 @pytest.fixture
 def mock_graph_provider():
     """Mock IGraphDBProvider with common async methods."""
-    from app.services.graph_db.interface.graph_db_provider import AccessibleContainers
+    from app.services.graph_db.interface.graph_db_provider import (
+        AccessCheck,
+        AccessibleContainers,
+    )
 
     provider = AsyncMock()
     provider.get_accessible_virtual_record_ids = AsyncMock(return_value={})
@@ -280,7 +345,10 @@ def mock_graph_provider():
     provider.get_accessible_containers = AsyncMock(
         return_value=AccessibleContainers(fallback_reason="not stubbed in this test")
     )
-    provider.filter_accessible_virtual_record_ids = AsyncMock(return_value={})
+    # Admits every node it is asked about; a test of a denial stubs it.
+    provider.check_access = AsyncMock(
+        side_effect=lambda _user_key, _org_id, *, node_ids=(), **_kwargs: AccessCheck(node_ids=frozenset(node_ids)),
+    )
     return provider
 
 
@@ -304,6 +372,7 @@ def mock_vector_db_service():
         caps.supports_server_side_text_search = False
     service.get_capabilities = _MagicMock(return_value=caps)
     service.get_service_name = _MagicMock(return_value="mock")
+    service.transient_search_error = _MagicMock(return_value=None)
     return service
 
 

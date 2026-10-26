@@ -19,6 +19,7 @@ from app.sources.client.mariadb.mariadb import MariaDBClient
 from app.sources.external.mariadb.mariadb_ import MariaDBDataSource
 from app.utils.conversation_tasks import register_task
 from app.connectors.core.constants import IconPaths
+from app.services.artifact_registry.models import artifact_owner_id
 logger = logging.getLogger(__name__)
 
 
@@ -492,7 +493,7 @@ class MariaDB:
                     blob_store=blob_store,
                     graph_provider=self.chat_state.get("graph_provider"),
                     org_id=org_id,
-                    user_id=self.chat_state.get("user_id"),
+                    user_id=artifact_owner_id(self.chat_state),
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,

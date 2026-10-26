@@ -56,6 +56,7 @@ from app.connectors.core.registry.connector_builder import (
     SyncStrategy,
 )
 from app.connectors.core.constants import CONNECTOR_EMAIL_IDENTITY_INFO
+from app.connectors.sources.salesforce.common.auth_fields import salesforce_login_url_field
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
@@ -63,6 +64,7 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.sources.salesforce.common.apps import SalesforceApp
+from app.exceptions.graph_db_exceptions import GraphQueryError
 from app.models.entities import (
     AppRole,
     AppUser,
@@ -91,6 +93,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.http.address_guard import AddressNotAllowedError, guarded_async_client
 from app.sources.client.salesforce.salesforce import (
     SalesforceClient,
     SalesforceConfig,
@@ -98,6 +101,7 @@ from app.sources.client.salesforce.salesforce import (
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.utils.html_utils import embed_html_images_as_base64
 from app.sources.external.salesforce.salesforce_data_source import SalesforceDataSource
+from app.services.cache.invalidation_hooks import notify_connector_permissions_changed
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import epoch_ms_to_iso, get_epoch_timestamp_in_ms, parse_timestamp
 
@@ -751,11 +755,15 @@ def _ts_in_bounds(
                 AuthField(
                     name="instance_url",
                     display_name="Salesforce Instance URL",
-                    placeholder="https://login.salesforce.com",
-                    description="The base URL of your Salesforce instance",
+                    placeholder="https://yourcompany.my.salesforce.com",
+                    description=(
+                        "Your org's My Domain URL, shown in Salesforce Setup under My Domain. "
+                        "Don't use login.salesforce.com: it only handles sign-in, and API calls to it fail."
+                    ),
                     field_type="TEXT",
                     max_length=2048
                 ),
+                salesforce_login_url_field(),
                 CommonFields.client_id("Salesforce Connected App"),
                 CommonFields.client_secret("Salesforce Connected App")
             ],
@@ -1029,7 +1037,7 @@ class SalesforceConnector(BaseConnector):
             self.data_source = SalesforceDataSource(client)
             self.salesforce_instance_url = instance_url
 
-            self._http_client = httpx.AsyncClient()
+            self._http_client = guarded_async_client()
 
             self.logger.info("Salesforce client initialized successfully.")
             return True
@@ -1188,7 +1196,7 @@ class SalesforceConnector(BaseConnector):
         path = f"/services/data/v{api_version}/sobjects/ContentVersion/{record.external_revision_id}/VersionData"
         url = f"{base}{path}"
         timeout = httpx.Timeout(FILE_STREAM_TIMEOUT_TOTAL_S, connect=FILE_STREAM_CONNECT_TIMEOUT_S)
-        http_client = self._http_client or httpx.AsyncClient()
+        http_client = self._http_client or guarded_async_client()
         owns_client = http_client is not self._http_client
         try:
             async with http_client.stream(
@@ -1210,7 +1218,7 @@ class SalesforceConnector(BaseConnector):
                     )
                 async for chunk in response.aiter_bytes(STREAM_CHUNK_SIZE):
                     yield chunk
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, AddressNotAllowedError) as e:
             self.logger.error(f"Error streaming Salesforce file {record.id}: {e}")
             raise to_stream_error(e, connector=self.display_name) from e
         finally:
@@ -1292,7 +1300,7 @@ class SalesforceConnector(BaseConnector):
                     return None
                 headers["Authorization"] = f"Bearer {access_token}"
 
-            http_client = self._http_client or httpx.AsyncClient()
+            http_client = self._http_client or guarded_async_client()
             response = await http_client.get(full_url, headers=headers, follow_redirects=True)
 
             # If public fetch 404s, retry once with an auth token
@@ -1832,13 +1840,15 @@ class SalesforceConnector(BaseConnector):
     
     async def _process_html_images(self, html_content: str) -> str:
         """Embed Salesforce public-asset images as inline base64 data URIs."""
-        return await embed_html_images_as_base64(
-            html_content,
-            self._http_client,
-            self.logger,
-            # Only inline images hosted on Salesforce public file-asset URLs.
-            url_filter=lambda src: bool(re.search(r"/file-asset-public/[^?]+", src)),
-        )
+        # Whoever writes the record chooses these URLs, so they may only reach public addresses.
+        async with guarded_async_client(allow_private=False) as http_client:
+            return await embed_html_images_as_base64(
+                html_content,
+                http_client,
+                self.logger,
+                # Only inline images hosted on Salesforce public file-asset URLs.
+                url_filter=lambda src: bool(re.search(r"/file-asset-public/[^?]+", src)),
+            )
 
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
         """
@@ -2255,10 +2265,13 @@ class SalesforceConnector(BaseConnector):
         user_email: str,
         record_ids: List[str],
         api_version: str,
-    ) -> AsyncGenerator[Tuple[str, str, str], None]:
+        incomplete: set | None = None,
+    ) -> AsyncGenerator[tuple[str, str, str], None]:
         """
         Yields (record_id, user_email, access_level) tuples for a given user,
-        streaming results as each composite batch resolves.
+        streaming results as each composite batch resolves. A batch that failed
+        adds the user's email to ``incomplete``: what was yielded is then not the
+        user's full access.
         """
         unique_ids = list(set(rid for rid in record_ids if rid))
         if not unique_ids or not user_id:
@@ -2268,6 +2281,8 @@ class SalesforceConnector(BaseConnector):
             safe_user_id = _sanitize_soql_id(user_id)
         except ValueError:
             self.logger.warning("Invalid Salesforce user ID in access check: %r", user_id)
+            if incomplete is not None:
+                incomplete.add(user_email)
             return
 
         SOQL_BATCH_SIZE = 200
@@ -2302,10 +2317,14 @@ class SalesforceConnector(BaseConnector):
                 )
                 if not response.success or not response.data:
                     self.logger.error(f"Composite access check failed: {response.error}")
+                    if incomplete is not None:
+                        incomplete.add(user_email)
                     continue
 
                 for item in response.data.get("compositeResponse") or []:
                     if item.get("httpStatusCode") != 200:
+                        if incomplete is not None:
+                            incomplete.add(user_email)
                         continue
 
                     for row in (item.get("body") or {}).get("records") or []:
@@ -2328,6 +2347,37 @@ class SalesforceConnector(BaseConnector):
                     f"Error processing access batch {i} for user {user_email}: {e}",
                     exc_info=True
                 )
+                if incomplete is not None:
+                    incomplete.add(user_email)
+
+    async def _authenticated_user_id(self) -> Optional[str]:
+        """The user id that ends the identity URL Salesforce returns with every token."""
+        config = await self.config_service.get_config(f"/services/connectors/{self.connector_id}/config")
+        identity_url = ((config or {}).get("credentials") or {}).get("id")
+        if not isinstance(identity_url, str) or not identity_url:
+            self.logger.debug(
+                "Salesforce connector %s: the stored token has no identity URL yet; "
+                "it arrives with the next token refresh or reconnect", self.connector_id,
+            )
+            return None
+        return _sanitize_soql_id(identity_url.rstrip("/").rsplit("/", 1)[-1])
+
+    async def _register_authenticated_identity(self, api_version: str) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector."""
+        try:
+            user_id = await self._authenticated_user_id()
+            if not user_id:
+                return
+            user = await self._fetch_first_record(
+                api_version=api_version,
+                soql=f"SELECT Id, Email FROM User WHERE Id = '{user_id}'",
+            )
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated Salesforce user: %s", e)
+            return
+        user = user or {}
+        await self.register_authenticated_source_user(user.get("Email"), user.get("Id"))
 
     async def run_sync(self) -> None:
             """
@@ -2381,6 +2431,7 @@ class SalesforceConnector(BaseConnector):
                     )
 
                 api_version = await self._get_api_version()
+                await self._register_authenticated_identity(api_version)
 
                 # Step 1: Incremental sync for users
                 self.logger.info("Syncing users (incremental)...")
@@ -4485,6 +4536,7 @@ class SalesforceConnector(BaseConnector):
 
                         person = self._create_person(
                             email=email,
+                            org_id=org_id,
                             first_name=contact.FirstName,
                             last_name=contact.LastName,
                             phone=contact.Phone,
@@ -4523,8 +4575,21 @@ class SalesforceConnector(BaseConnector):
                 if not contact_with_edges:
                     continue
 
+                email_to_contact_ids: DefaultDict[str, List[str]] = defaultdict(list)
+                for p, dup_contact_edge, _ in contact_with_edges:
+                    email_to_contact_ids[p.email.lower()].append(
+                        dup_contact_edge.get("externalId") if dup_contact_edge else None
+                    )
+                for dup_email, dup_contact_ids in email_to_contact_ids.items():
+                    if len(dup_contact_ids) > 1:
+                        self.logger.warning(
+                            "Multiple Salesforce Contacts %s share email %r. If only some of them "
+                            "changed, their CONTACT/MEMBER_OF edges may be dropped this sync.",
+                            dup_contact_ids, dup_email,
+                        )
+
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _, _ in contact_with_edges]
+                    all_emails = [p.email.lower() for p, _, _ in contact_with_edges]
                     all_account_names = list({
                         moe.get("accountName")
                         for _, sce, moe in contact_with_edges
@@ -4550,7 +4615,7 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people_result or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
@@ -4566,7 +4631,7 @@ class SalesforceConnector(BaseConnector):
                     unchanged_emails: set = set()
                     delete_tasks = []
                     for person, contact_edge, _ in contact_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             stored_updated = node.get("updatedAtTimestamp")
@@ -4576,7 +4641,7 @@ class SalesforceConnector(BaseConnector):
                                 and incoming_updated is not None
                                 and stored_updated == incoming_updated
                             ):
-                                unchanged_emails.add(person.email)
+                                unchanged_emails.add(person.email.lower())
                                 continue
                             delete_tasks.append(tx_store.delete_edges_to(
                                 to_id=person.id,
@@ -4595,7 +4660,7 @@ class SalesforceConnector(BaseConnector):
                     changed_contacts = [
                         (p, sce, moe)
                         for p, sce, moe in contact_with_edges
-                        if p.email not in unchanged_emails
+                        if p.email.lower() not in unchanged_emails
                     ]
                     if changed_contacts:
                         await tx_store.batch_upsert_people([p for p, _, _ in changed_contacts])
@@ -4695,6 +4760,7 @@ class SalesforceConnector(BaseConnector):
                             continue
                         person = self._create_person(
                             email=lead_email,
+                            org_id=org_id,
                             first_name=lead.FirstName,
                             last_name=lead.LastName,
                             phone=lead.Phone,
@@ -4710,7 +4776,7 @@ class SalesforceConnector(BaseConnector):
                     continue
 
                 async with self.data_store_provider.transaction() as tx_store:
-                    all_emails = [p.email for p, _ in lead_with_edges]
+                    all_emails = [p.email.lower() for p, _ in lead_with_edges]
                     existing_people = await tx_store.get_nodes_by_field_in(
                         collection=CollectionNames.PEOPLE.value,
                         field="email",
@@ -4718,14 +4784,14 @@ class SalesforceConnector(BaseConnector):
                     )
                     parent_org_id = self._get_parent_org_id()
                     email_map = {
-                        node.get("email"): node
+                        (node.get("email") or "").lower(): node
                         for node in (existing_people or [])
                         if parent_org_id is None or node.get("orgId") == parent_org_id
                     }
 
                     ids_to_delete = []
                     for person, _ in lead_with_edges:
-                        node = email_map.get(person.email)
+                        node = email_map.get(person.email.lower())
                         if node:
                             person.id = node.get("id") or node.get("_key")
                             ids_to_delete.append(person.id)
@@ -5511,6 +5577,10 @@ class SalesforceConnector(BaseConnector):
     async def _handle_record_updates(self, record_update: RecordUpdate) -> None:
         """
         Handle different types of record updates (content changed, metadata changed).
+
+        A failed write is re-raised: the files checkpoint is saved after this
+        returns, so swallowing it would move the checkpoint past a change that
+        was never stored.
         """
         try:
             if record_update.is_deleted and record_update.external_record_id:
@@ -5529,6 +5599,7 @@ class SalesforceConnector(BaseConnector):
                     await self.data_entities_processor.on_record_metadata_update(record_update.record)
         except Exception as e:
             self.logger.error(f"Error handling record updates: {e}", exc_info=True)
+            raise
 
     async def _sync_files(
         self,
@@ -5812,9 +5883,13 @@ class SalesforceConnector(BaseConnector):
                         or getattr(existing, "weburl", None) != rec.weburl
                     )
                     if not metadata_changed:
-                        # The lookup above returns a base Record, which has no extension. If the
-                        # file record can't be read, the file can't be shown unchanged, so update it.
-                        existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        # The lookup above returns a base Record, which has no extension. If the file
+                        # record is missing or can't be read, the file can't be shown unchanged, so update it.
+                        try:
+                            existing_file = await self.data_entities_processor.get_file_record_by_id(existing.id)
+                        except GraphQueryError as read_error:
+                            self.logger.warning(f"Updating {ext_id}: its stored file record could not be read: {read_error}")
+                            existing_file = None
                         metadata_changed = existing_file is None or existing_file.extension != rec.extension
                     if content_changed or metadata_changed:
                         rec.id = existing.id
@@ -5856,6 +5931,8 @@ class SalesforceConnector(BaseConnector):
            (API calls only — no DB writes during collection).
         3. Replace all stale permission edges with fresh ones in a single batch
            transaction: O(records + groups) deletes + 2 batch_create_edges calls.
+           Only when every user's access was read in full: if any read failed, the
+           stored edges are kept and the fresh ones are added (unknown is not empty).
         """
         # 1. Fetch all active Salesforce users (streamed; bounded by user count
         #    which is the natural cardinality of this query — capping pages here
@@ -5925,6 +6002,8 @@ class SalesforceConnector(BaseConnector):
         # 4. Collect all permission tuples from Salesforce API concurrently (no DB writes)
         MAX_CONCURRENT_USERS = 5
         semaphore = asyncio.Semaphore(MAX_CONCURRENT_USERS)
+
+        incomplete_users: set = set()
         tasks = [
             self._sync_permissions_for_user(
                 user=user,
@@ -5932,10 +6011,10 @@ class SalesforceConnector(BaseConnector):
                 salesforce_record_group_external_ids=salesforce_rg_external_ids,
                 api_version=api_version,
                 semaphore=semaphore,
+                incomplete=incomplete_users,
             )
             for user in sf_users
         ]
-
         results = await asyncio.gather(*tasks, return_exceptions=True)
         all_permission_tuples: List[Tuple[str, str, str, bool]] = []
         for i, result in enumerate(results):
@@ -5944,6 +6023,7 @@ class SalesforceConnector(BaseConnector):
                     "Failed to collect permissions for user %s: %s",
                     sf_users[i].get("Email"), result,
                 )
+                incomplete_users.add(sf_users[i].get("Email"))
             else:
                 all_permission_tuples.extend(result)  # type: ignore[arg-type]
 
@@ -5953,70 +6033,81 @@ class SalesforceConnector(BaseConnector):
         #    Deleting by target record/group (not by user) is O(records + groups) instead
         #    of O(users × records).  SALESFORCE_ORG record groups carry no ORG-level
         #    permission edges, so wiping all PERMISSION edges to them is safe.
-        all_record_internal_ids = list(ext_id_to_record_id.values())
-        all_rg_internal_ids = list(ext_id_to_rg_id.values())
+        delete_targets = [
+            (rid, CollectionNames.RECORDS.value) for rid in ext_id_to_record_id.values()
+        ] + [
+            (rgid, CollectionNames.RECORD_GROUPS.value) for rgid in ext_id_to_rg_id.values()
+        ]
+        if incomplete_users:
+            # The edges are rebuilt from scratch, so a user whose read failed would lose
+            # all access. Add-only this run; access that was revoked stays until a pass
+            # in which every user is read in full.
+            self.logger.warning(
+                "Access of %d user(s) could not be read in full; keeping stored permission "
+                "edges and only adding (revocations wait for a complete pass).",
+                len(incomplete_users),
+            )
+            delete_targets = []
+        org_by_node_id: dict[str, str | None] = {
+            (n.get("id") or n.get("_key")): n.get("orgId")
+            for n in salesforce_records + salesforce_record_groups
+        }
+        narrowed_orgs: set[str | None] = set()
+        try:
+            async with self.data_store_provider.transaction() as tx_store:
+                for node_id, collection in delete_targets:
+                    if await tx_store.delete_edges_to(
+                        node_id, collection, CollectionNames.PERMISSION.value
+                    ):
+                        narrowed_orgs.add(org_by_node_id.get(node_id))
 
-        async with self.data_store_provider.transaction() as tx_store:
-            delete_tasks = [
-                tx_store.delete_edges_to(
-                    rid,
-                    CollectionNames.RECORDS.value,
-                    CollectionNames.PERMISSION.value,
-                )
-                for rid in all_record_internal_ids
-            ] + [
-                tx_store.delete_edges_to(
-                    rgid,
-                    CollectionNames.RECORD_GROUPS.value,
-                    CollectionNames.PERMISSION.value,
-                )
-                for rgid in all_rg_internal_ids
-            ]
-            if delete_tasks:
-                for _del in delete_tasks:
-                    await _del
-
-            record_edges: List[Dict] = []
-            rg_edges: List[Dict] = []
-            for email, ext_id, access_level, is_group in all_permission_tuples:
-                user_internal_id = email_to_user_id.get(email)
-                if not user_internal_id:
-                    self.logger.debug("Skipping permission: no DB user for email %s", email)
-                    continue
-                try:
-                    perm_type = PermissionType(access_level)
-                except ValueError:
-                    self.logger.warning(
-                        "Unknown access level %r for user %s, skipping", access_level, email
-                    )
-                    continue
-
-                permission = Permission(email=email, type=perm_type, entity_type=EntityType.USER)
-                if is_group:
-                    target_id = ext_id_to_rg_id.get(ext_id)
-                    if not target_id:
+                record_edges: List[Dict] = []
+                rg_edges: List[Dict] = []
+                for email, ext_id, access_level, is_group in all_permission_tuples:
+                    user_internal_id = email_to_user_id.get(email)
+                    if not user_internal_id:
+                        self.logger.debug("Skipping permission: no DB user for email %s", email)
                         continue
-                    rg_edges.append(permission.to_arango_permission(
-                        from_id=user_internal_id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=target_id,
-                        to_collection=CollectionNames.RECORD_GROUPS.value,
-                    ))
-                else:
-                    target_id = ext_id_to_record_id.get(ext_id)
-                    if not target_id:
+                    try:
+                        perm_type = PermissionType(access_level)
+                    except ValueError:
+                        self.logger.warning(
+                            "Unknown access level %r for user %s, skipping", access_level, email
+                        )
                         continue
-                    record_edges.append(permission.to_arango_permission(
-                        from_id=user_internal_id,
-                        from_collection=CollectionNames.USERS.value,
-                        to_id=target_id,
-                        to_collection=CollectionNames.RECORDS.value,
-                    ))
 
-            if record_edges:
-                await tx_store.batch_create_edges(record_edges, collection=CollectionNames.PERMISSION.value)
-            if rg_edges:
-                await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
+                    permission = Permission(email=email, type=perm_type, entity_type=EntityType.USER)
+                    if is_group:
+                        target_id = ext_id_to_rg_id.get(ext_id)
+                        if not target_id:
+                            continue
+                        rg_edges.append(permission.to_arango_permission(
+                            from_id=user_internal_id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=CollectionNames.RECORD_GROUPS.value,
+                        ))
+                    else:
+                        target_id = ext_id_to_record_id.get(ext_id)
+                        if not target_id:
+                            continue
+                        record_edges.append(permission.to_arango_permission(
+                            from_id=user_internal_id,
+                            from_collection=CollectionNames.USERS.value,
+                            to_id=target_id,
+                            to_collection=CollectionNames.RECORDS.value,
+                        ))
+
+                if record_edges:
+                    await tx_store.batch_create_edges(record_edges, collection=CollectionNames.PERMISSION.value)
+                if rg_edges:
+                    await tx_store.batch_create_edges(rg_edges, collection=CollectionNames.PERMISSION.value)
+        finally:
+            # Even when the write raised: on Neo4j without explicit transactions each
+            # delete commits on its own, and a rerun finds nothing left to delete.
+            fallback_org = self.data_entities_processor.org_id or None
+            for org_id in {org or fallback_org for org in narrowed_orgs}:
+                await notify_connector_permissions_changed(self.connector_id, org_id)
 
         self.logger.info(
             "Permission sync complete: %d record edges and %d record group edges written.",
@@ -6030,7 +6121,8 @@ class SalesforceConnector(BaseConnector):
         salesforce_record_group_external_ids: List[str],
         api_version: str,
         semaphore: asyncio.Semaphore,
-    ) -> List[Tuple[str, str, str, bool]]:
+        incomplete: set | None = None,
+    ) -> list[tuple[str, str, str, bool]]:
         """
         Collect all permission tuples for one user via the Salesforce UserRecordAccess
         API.  Returns a list of (email, external_id, access_level, is_record_group)
@@ -6049,6 +6141,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_external_ids,
                 api_version=api_version,
+                incomplete=incomplete,
             ):
                 collected.append((email, rec_id, access_level, False))
 
@@ -6057,6 +6150,7 @@ class SalesforceConnector(BaseConnector):
                 user_email=user_email,
                 record_ids=salesforce_record_group_external_ids,
                 api_version=api_version,
+                incomplete=incomplete,
             ):
                 collected.append((email, rg_id, access_level, True))
 

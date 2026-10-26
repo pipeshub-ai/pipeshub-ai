@@ -78,8 +78,8 @@ describe('Connector routes: legacy Google Workspace endpoints', () => {
 
       const r = await call(h, 'POST', '/getTokenFromCode', sessionToken(h, member), { tempCode: 'consent-code' })
 
-      expect(r.status).to.be.within(400, 499)
-      expect(errorMessage(r)).to.equal('Admin access required')
+      expect(r.status).to.equal(403)
+      expect(errorMessage(r)).to.equal('You need admin access to do this. Ask an admin in your organisation.')
       expect(google.isDone()).to.equal(false)
       expect(h.backend.calls).to.have.length(0)
     })

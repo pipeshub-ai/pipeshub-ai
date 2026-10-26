@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, PropertyMock
 
 import pytest
 
+from app.modules.transformers.entity_vectorstore import EntityWriteOutcome
 from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.models.entities import EntityRecord, EntityType
 
@@ -41,7 +42,7 @@ def _make_orchestrator(
     vector_store.apply = AsyncMock(return_value=vector_result)
     graph_provider = AsyncMock()
     graph_provider.get_document = AsyncMock(return_value=graph_doc)
-    graph_provider.batch_upsert_nodes = AsyncMock(return_value=True)
+    graph_provider.batch_update_nodes = AsyncMock(return_value=True)
 
     orch = SinkOrchestrator(
         graphdb=graphdb,
@@ -82,18 +83,18 @@ class TestApply:
             await orch.apply(ctx)
 
     @pytest.mark.asyncio
-    async def test_completed_skips_vector_still_enriches(self):
-        """index() skips vector when already COMPLETED; enrich() still runs."""
+    async def test_completed_skips_vector_and_does_not_classify(self) -> None:
+        """index() skips vector when already COMPLETED; classification is a pipeline stage."""
         orch = _make_orchestrator(graph_doc={"indexingStatus": "COMPLETED"})
         ctx = _make_ctx()
 
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_not_awaited()
-        orch.graphdb.apply.assert_awaited_once_with(ctx)
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_not_completed_runs_vector_and_graph(self):
+    async def test_not_completed_runs_vector_only(self) -> None:
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=None,  # None is not False, so processing continues
@@ -103,10 +104,10 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once_with(ctx)
-        orch.graphdb.apply.assert_awaited_once_with(ctx)
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_missing_indexing_status_runs_vector_and_graph(self):
+    async def test_missing_indexing_status_runs_vector_only(self) -> None:
         """If the document has no indexingStatus field it is not 'COMPLETED'."""
         orch = _make_orchestrator(
             graph_doc={"someOtherField": "x"},
@@ -117,7 +118,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graphdb.apply.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_vector_store_returns_false_fails_pipeline(self):
@@ -136,7 +137,7 @@ class TestApply:
         orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_vector_store_returns_true_continues_to_graph(self):
+    async def test_vector_store_returns_true_completes_indexing(self) -> None:
         orch = _make_orchestrator(
             graph_doc={"indexingStatus": "NOT_STARTED"},
             vector_result=True,
@@ -146,7 +147,7 @@ class TestApply:
         await orch.apply(ctx)
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graphdb.apply.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_graph_provider_called_with_correct_args(self):
@@ -165,12 +166,12 @@ class TestApply:
             graph_doc={"indexingStatus": "IN_PROGRESS"},
             vector_result=True,
         )
-        orch.graph_provider.batch_upsert_nodes.return_value = False
+        orch.graph_provider.batch_update_nodes.return_value = False
 
         await orch.index(_make_ctx())
 
         orch.vector_store.apply.assert_awaited_once()
-        orch.graph_provider.batch_upsert_nodes.assert_awaited()
+        orch.graph_provider.batch_update_nodes.assert_awaited()
 
 
 class TestSkipBlob:
@@ -187,7 +188,7 @@ class TestSkipBlob:
 
         orch.blob_storage.apply.assert_not_awaited()
         orch.vector_store.apply.assert_awaited_once_with(ctx)
-        orch.graph_provider.batch_upsert_nodes.assert_awaited()
+        orch.graph_provider.batch_update_nodes.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_skip_blob_reindexes_even_if_completed(self):
@@ -234,10 +235,10 @@ class TestEnrichEntitySync:
 
 
 # =========================================================================
-# _sync_record_group_entity (Phase 2 — Layer-0 RecordGroup sync)
+# _sync_record_identity_entities (record title and record group points)
 # =========================================================================
 class TestSyncRecordGroupEntity:
-    """Tests for SinkOrchestrator._sync_record_group_entity."""
+    """Tests for SinkOrchestrator._sync_record_identity_entities."""
 
     def _make_ctx_with_group(self, record_group_id="rg-1", org_id="org-1", connector_id="conn-1"):
         record = MagicMock()
@@ -245,6 +246,7 @@ class TestSyncRecordGroupEntity:
         record.record_group_id = record_group_id
         record.org_id = org_id
         record.connector_id = connector_id
+        record.record_name = ""
         ctx = MagicMock()
         ctx.record = record
         return ctx
@@ -253,6 +255,7 @@ class TestSyncRecordGroupEntity:
         graph_provider = AsyncMock()
         graph_provider.get_record_group_by_id = AsyncMock(return_value=group_doc)
         entity_vector_store = AsyncMock()
+        entity_vector_store.upsert_entities_batch = AsyncMock(return_value=EntityWriteOutcome())
         orch = SinkOrchestrator(
             graphdb=AsyncMock(),
             blob_storage=AsyncMock(),
@@ -265,6 +268,30 @@ class TestSyncRecordGroupEntity:
         return orch
 
     @pytest.mark.asyncio
+    async def test_title_and_group_are_written_in_one_batch(self) -> None:
+        orch = self._make_orchestrator_with_evs(group_doc={"groupName": "Engineering"})
+        ctx = self._make_ctx_with_group(record_group_id="rg-1")
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
+        entities = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        assert [e.entity_type for e in entities] == [EntityType.RECORD, EntityType.RECORD_GROUP]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_lookup_still_writes_the_title(self) -> None:
+        orch = self._make_orchestrator_with_evs()
+        orch.graph_provider.get_record_group_by_id = AsyncMock(side_effect=RuntimeError("boom"))
+        ctx = self._make_ctx_with_group()
+        ctx.record.record_name = "Q3 plan.pdf"
+
+        await orch._sync_record_identity_entities(ctx)
+
+        (entity,) = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        assert entity.entity_type == EntityType.RECORD
+
+    @pytest.mark.asyncio
     async def test_no_entity_vector_store_is_noop(self):
         orch = SinkOrchestrator(
             graphdb=AsyncMock(),
@@ -274,7 +301,7 @@ class TestSyncRecordGroupEntity:
             logger=MagicMock(),
             config_service=MagicMock(),
         )
-        await orch._sync_record_group_entity(self._make_ctx_with_group())
+        await orch._sync_record_identity_entities(self._make_ctx_with_group())
         # No exception, and no graph provider lookup attempted.
         orch.graph_provider.get_record_group_by_id.assert_not_called()
 
@@ -283,7 +310,7 @@ class TestSyncRecordGroupEntity:
         orch = self._make_orchestrator_with_evs()
         ctx = self._make_ctx_with_group(record_group_id=None)
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.graph_provider.get_record_group_by_id.assert_not_awaited()
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
@@ -293,7 +320,7 @@ class TestSyncRecordGroupEntity:
         orch = self._make_orchestrator_with_evs(group_doc=None)
         ctx = self._make_ctx_with_group()
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
@@ -304,7 +331,7 @@ class TestSyncRecordGroupEntity:
         )
         ctx = self._make_ctx_with_group(record_group_id="rg-42", org_id="org-9")
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.graph_provider.get_record_group_by_id.assert_awaited_once_with("rg-42")
         orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
@@ -329,10 +356,10 @@ class TestSyncRecordGroupEntity:
         ctx = self._make_ctx_with_group(record_group_id="rg-new")
         ctx.record.record_name = "Q3 plan.pdf"
 
-        await orch._sync_record_name_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         call = orch.entity_vector_store.upsert_entities_batch.call_args
-        (entity,) = call[0][0]
+        (entity,) = [e for e in call[0][0] if e.entity_type == EntityType.RECORD]
         assert entity.entity_type == EntityType.RECORD
         assert entity.record_group_ids == ["rg-new"]
         assert call.kwargs == {"merge_membership": False}
@@ -342,7 +369,7 @@ class TestSyncRecordGroupEntity:
         orch = self._make_orchestrator_with_evs(group_doc={"groupName": "   "})
         ctx = self._make_ctx_with_group()
 
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
@@ -355,7 +382,7 @@ class TestSyncRecordGroupEntity:
         ctx = self._make_ctx_with_group()
 
         # Must not raise — this is best-effort.
-        await orch._sync_record_group_entity(ctx)
+        await orch._sync_record_identity_entities(ctx)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
 
@@ -438,14 +465,33 @@ class TestSyncEntitiesForDuplicate:
         orch.graph_provider.get_taxonomy_entities_for_record.assert_awaited_once_with(
             "rec-dup-1"
         )
-        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once()
-        synced = orch.entity_vector_store.upsert_entities_batch.call_args[0][0]
+        taxonomy_call = orch.entity_vector_store.upsert_entities_batch.call_args_list[0]
+        synced = taxonomy_call.args[0]
+        assert taxonomy_call.kwargs.get("merge_membership", True) is True
         taxonomy_entities = [e for e in synced if e.entity_type != EntityType.RECORD]
         assert len(taxonomy_entities) == 2
         for entity in taxonomy_entities:
             assert entity.org_id == "org-9"
             assert entity.connector_ids == ["conn-b"]
             assert entity.record_group_ids == ["rg-2"]
+
+    @pytest.mark.asyncio
+    async def test_record_and_group_points_replace_membership(self) -> None:
+        """Merged with the taxonomy batch they would keep a moved record's old
+        group, and a failed state read would skip them with the batch."""
+        orch = self._make_orchestrator(
+            taxonomy_rows=[{"entityId": "cat-1", "entityType": "category", "name": "Finance"}],
+            group_doc={"groupName": "Finance Drive"},
+        )
+
+        await orch.sync_entities_for_duplicate(self._RECORD_DOC)
+
+        taxonomy_call, identity_call = orch.entity_vector_store.upsert_entities_batch.call_args_list
+        assert {e.entity_type for e in taxonomy_call.args[0]} == {EntityType.CATEGORY}
+        assert {e.entity_type for e in identity_call.args[0]} == {
+            EntityType.RECORD, EntityType.RECORD_GROUP,
+        }
+        assert identity_call.kwargs["merge_membership"] is False
 
     @pytest.mark.asyncio
     async def test_malformed_taxonomy_row_is_skipped(self):
@@ -533,3 +579,203 @@ class TestSyncEntitiesForDuplicate:
         await orch.sync_entities_for_duplicate(self._RECORD_DOC)
 
         orch.entity_vector_store.upsert_entities_batch.assert_not_awaited()
+
+
+class TestIndexedWriteWhenEnrichmentFollows:
+    """No reader may see a record indexed with an extractionStatus that looks final:
+    a duplicate copies it as its own, before the taxonomy exists."""
+
+    @pytest.mark.asyncio
+    async def test_marks_enrichment_queued_in_the_same_write_for_the_classify_stage(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.settings = {"enrichment_follows": True}
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["indexingStatus"] == "COMPLETED"
+        assert row["extractionStatus"] == "QUEUED"
+        # An indexed record was parsed, whichever pipeline parsed it.
+        assert row["parsingStatus"] == "COMPLETED"
+        # Nothing on the record path is still running; the stage runtime owns the rest.
+        assert row["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_without_a_stage_to_follow_extraction_is_left_alone(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert "extractionStatus" not in row
+        assert row["processingStartedAt"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_vlm_ocr_parse_is_recorded_with_the_indexed_write(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+        ctx.record.is_vlm_ocr_processed = True
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["isVLMOcrProcessed"] is True
+
+
+class TestStageEnrichment:
+    """What the classify stage calls: resolve, then summary, taxonomy and entity points,
+    never extractionStatus and never named entities."""
+
+    @pytest.mark.asyncio
+    async def test_resolution_keeps_unknown_lists_unknown(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        metadata = SemanticMetadata(summary="only a summary", categories=[])
+
+        async def resolve(ctx) -> None:
+            ctx.record.semantic_metadata.topics = []
+            ctx.record.semantic_metadata.languages = []
+
+        orch.entity_resolver = MagicMock()
+        orch.entity_resolver.resolve = AsyncMock(side_effect=resolve)
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = metadata
+
+        await orch.prepare_enrichment(ctx)
+
+        assert metadata.topics is None and metadata.languages is None
+
+    @pytest.mark.asyncio
+    async def test_writes_summary_taxonomy_and_entity_points_without_status(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.entity_vector_store = AsyncMock()
+        touched = [MagicMock()]
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=touched)
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        orch.persist_named_entities = AsyncMock()
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.", topics=["VPN"])
+
+        await orch.write_enrichment(ctx)
+
+        orch.vector_store.index_record_summary.assert_awaited_once()
+        orch.graphdb.write_taxonomy.assert_awaited_once()
+        orch.graphdb.apply.assert_not_awaited()
+        orch.entity_vector_store.upsert_entities_batch.assert_awaited_once_with(touched)
+        orch.persist_named_entities.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_other_records_of_the_content_share_the_owners_summary(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        ctx = _make_ctx("rec-2")
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.")
+
+        await orch.write_enrichment(ctx, index_summary=False)
+
+        orch.vector_store.index_record_summary.assert_not_awaited()
+        orch.graphdb.write_taxonomy.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_the_summary_point_alone_is_written_for_a_restored_classification(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="A plan.")
+
+        await orch.write_summary_point(ctx)
+
+        orch.vector_store.index_record_summary.assert_awaited_once()
+        orch.graphdb.write_taxonomy.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_summary_point_without_a_summary(self) -> None:
+        from app.models.blocks import SemanticMetadata
+
+        orch = _make_orchestrator()
+        for metadata in (None, SemanticMetadata(summary="  ")):
+            ctx = _make_ctx()
+            ctx.record.semantic_metadata = metadata
+            await orch.write_summary_point(ctx)
+
+        orch.vector_store.index_record_summary.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_summary_embedding_time_is_counted_once(self) -> None:
+        """index_record_summary times its own embed and upsert steps, so a stage
+        wrapped around the whole call would count that time twice."""
+        import asyncio
+        import time
+
+        from app.models.blocks import SemanticMetadata
+        from app.utils import indexing_timing as timing
+
+        async def embed_summary(*_args, **_kwargs) -> None:
+            with timing.stage("embed.dense"):
+                await asyncio.sleep(0.05)
+
+        orch = _make_orchestrator()
+        orch.vector_store.index_record_summary = AsyncMock(side_effect=embed_summary)
+        orch.graphdb.write_taxonomy = AsyncMock(return_value=[])
+        orch.graphdb.resolution_of = MagicMock(return_value=None)
+        ctx = _make_ctx()
+        ctx.record.semantic_metadata = SemanticMetadata(summary="Timed summary")
+
+        timeline, token = timing.begin_record("rec-123")
+        started = time.perf_counter()
+        try:
+            await orch.write_enrichment(ctx)
+        finally:
+            wall = time.perf_counter() - started
+            timing.end_record(timeline, token, outcome="ok")
+
+        busy = sum(total for _count, total, _max in timeline.stage_totals().values())
+        assert busy <= wall
+        assert timeline.stage_totals()["embed.dense"][0] == 1
+
+
+class TestIndexedCopyFlag:
+    """Completing a record marks it as holding an indexed copy, which keeps it in
+    search when an edit queues it again."""
+
+    @pytest.mark.asyncio
+    async def test_the_completed_write_marks_an_indexed_copy(self) -> None:
+        orch = _make_orchestrator()
+        ctx = _make_ctx()
+
+        await orch._update_indexing_status(ctx)
+
+        (row,) = orch.graph_provider.batch_update_nodes.await_args.args[0]
+        assert row["indexingStatus"] == "COMPLETED"
+        assert row["hasIndexedCopy"] is True
+
+
+class TestIndexedWriteWhenRecordWasDeleted:
+    """A record deleted while it was being indexed must stay deleted: recreated
+    as a bare node, it keeps its vectors from the orphan sweep for good."""
+
+    @pytest.mark.asyncio
+    async def test_does_not_recreate_or_announce_the_record(self, monkeypatch) -> None:
+        notify = AsyncMock()
+        monkeypatch.setattr(
+            "app.modules.transformers.sink_orchestrator.notify_record_indexed", notify
+        )
+        orch = _make_orchestrator()
+        orch.graph_provider.batch_update_nodes.return_value = False
+        ctx = _make_ctx()
+
+        await orch._update_indexing_status(ctx)
+
+        orch.graph_provider.batch_upsert_nodes.assert_not_awaited()
+        notify.assert_not_awaited()
+        assert ctx.record.indexing_status != "COMPLETED"

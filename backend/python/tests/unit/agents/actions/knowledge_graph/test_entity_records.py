@@ -19,6 +19,8 @@ from app.modules.retrieval.entity_permissions import (
     EntityAccessError,
     EntityRecordPage,
 )
+from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
 CONTEXT = EntityAccessContext(
     org_id="org-1",
@@ -125,6 +127,51 @@ class TestFindRecordsByEntity:
         assert kwargs["limit"] == 50
 
     @pytest.mark.asyncio
+    async def test_listed_records_are_noted_as_found_by_entity(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", virtualRecordId="vr-1")], next_cursor=None,
+        )
+        state = _state(include_retrieval_context=True)
+
+        await execute_find_records_by_entity(state, "t1", entity_type="topic")
+
+        provenance = state["retrieved_by"]["vr-1"]
+        assert (provenance.layers, provenance.record_id, provenance.record_name) == (
+            ["entity"], "r1", "doc r1",
+        )
+
+    @pytest.mark.asyncio
+    async def test_hidden_urls_are_not_shown(self, patched) -> None:
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", webUrl="https://x/secret", hideWeburl=True)], next_cursor=None,
+        )
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        assert ok is True
+        assert "secret" not in text and "url=" not in text
+
+    @pytest.mark.asyncio
+    async def test_relative_urls_resolve_against_the_frontend(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(
+            entity_records, "resolve_frontend_url", AsyncMock(return_value="https://app.example/"),
+        )
+        patched[1].return_value = EntityRecordPage(
+            records=[_row("r1", webUrl="/record/r1"), _row("r2", webUrl="https://x/2")], next_cursor=None,
+        )
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        assert ok is True
+        assert "url=https://app.example/record/r1" in text
+        assert "url=https://x/2" in text
+
+    @pytest.mark.asyncio
+    async def test_unresolvable_relative_urls_are_dropped(self, patched, monkeypatch) -> None:
+        monkeypatch.setattr(entity_records, "resolve_frontend_url", AsyncMock(return_value=None))
+        patched[1].return_value = EntityRecordPage(records=[_row("r1", webUrl="/record/r1")], next_cursor=None)
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+        assert ok is True
+        assert "url=" not in text
+
+
+    @pytest.mark.asyncio
     async def test_shortened_record_id_is_resolved(self, patched) -> None:
         state = _state(enable_record_id_shortening=True)
         from app.utils.chat_helpers import get_record_id_shortener_if_enabled
@@ -173,12 +220,14 @@ class TestResolveEntityVirtualIds:
         assert scope.truncated is True
 
     @pytest.mark.asyncio
-    async def test_entities_past_the_cap_are_reported_as_truncated(self, patched) -> None:
+    async def test_entities_past_the_cap_are_counted_as_skipped(self, patched) -> None:
+        """Reported apart from ``truncated``, which is about one entity's
+        records, so the search note names what was actually left out."""
         entities = [(f"rg-{i}", "record_group") for i in range(SEARCH_SCOPE_MAX_ENTITIES + 1)]
 
         scope = await resolve_entity_virtual_ids(_state(), entities)
 
-        assert scope.truncated is True
+        assert scope.entities_skipped == 1
         assert patched[1].await_count == SEARCH_SCOPE_MAX_ENTITIES
 
 
@@ -228,3 +277,28 @@ class TestEmptyWindow:
         assert text not in (NO_ACCESSIBLE_RECORDS_MSG, NO_FURTHER_RECORDS_MSG)
         assert 'cursor="1000"' in text
         assert 'entity_id="t1"' in text
+
+
+def test_candidate_rows_carry_the_hide_url_flag() -> None:
+    assert "hideWeburl" in Neo4jProvider._ENTITY_CANDIDATE_RECORD_PROJECTION
+    assert "hideWeburl" in ArangoHTTPProvider._ENTITY_CANDIDATE_RECORD_FIELDS
+
+
+class TestUploadDates:
+    @pytest.mark.asyncio
+    async def test_a_knowledge_base_upload_is_listed_by_its_upload_time(self, patched) -> None:
+        uploaded = 1_792_090_099_000  # 2026-10-15
+        patched[1].return_value = EntityRecordPage(
+            records=[_row(
+                "r1", connectorId="kb-1", connectorName="KB", origin="UPLOAD",
+                createdAtTimestamp=uploaded, sourceCreatedAtTimestamp=uploaded - 30,
+                sourceLastModifiedTimestamp=uploaded - 30,
+            )],
+            next_cursor=None,
+        )
+
+        ok, text = await execute_find_records_by_entity(_state(), "t1", entity_type="topic")
+
+        assert ok is True
+        assert "uploaded: 2026-10-15" in text
+        assert "modified:" not in text

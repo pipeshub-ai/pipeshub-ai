@@ -18,7 +18,11 @@
 #   graph-arango  — ArangoDB          (with DATA_STORE=arangodb)
 #   kv-etcd       — etcd              (with KV_STORE_TYPE=etcd)
 #   broker-kafka  — Zookeeper + Kafka (with MESSAGE_BROKER=kafka)
-#   sandbox       — coding-sandbox image pull (SANDBOX_MODE=docker)
+#   sandbox       — coding-sandbox image pull + Docker API proxy (SANDBOX_MODE=docker)
+#   search-searxng — SearXNG metasearch (then add SearXNG at http://searxng:8080 under
+#                    Workspace → Web search)
+#   fetch-crawl4ai — Crawl4AI page reader for JavaScript-heavy sites (then add Crawl4AI at
+#                    http://crawl4ai:11235 with CRAWL4AI_API_TOKEN as its token)
 #
 # Full stack: DATA_STORE=neo4j, KV_STORE_TYPE=etcd, MESSAGE_BROKER=kafka and
 # COMPOSE_PROFILES=graph-neo4j,kv-etcd,broker-kafka,sandbox
@@ -34,8 +38,11 @@ services:
   # PipesHub AI — the all-in-one application container
   # ---------------------------------------------------------------------------
   pipeshub-ai:
-    image: pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}
+    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
     restart: always
+    # Node drains in-flight requests for up to 8s before closing Mongo, Redis
+    # and the brokers; Docker's 10s default would leave too little for that.
+    stop_grace_period: 30s
     # build: is used only when `docker compose up --build` (or install.sh --build) is run.
     # It is ignored for the default prebuilt-image path. context is the repo root.
     build:
@@ -45,6 +52,8 @@ services:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
         RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-pipeshubai/pipeshub-ai-base:runtime}
+        APP_VERSION: ${APP_VERSION:-}
+        GIT_COMMIT: ${GIT_COMMIT:-}
       shm_size: 4gb
       ulimits:
         memlock:
@@ -80,6 +89,10 @@ services:
     # int(os.getenv(KEY, default)) and crashes on "". Unset blanks so the key
     # is absent (slim uses its built-in default; new Python sizes from CPU).
     # A numeric value in .env is kept as an operator cap.
+    # Then hand over to the image entrypoint, which drops to the unprivileged
+    # user; images from earlier releases have none and start as before, as
+    # root. Those can leave root-owned files, so drop the markers that let the
+    # entrypoint skip its full ownership pass.
     entrypoint:
       - /bin/sh
       - -c
@@ -90,7 +103,12 @@ services:
         v=$$(printenv "$$k" || true);
         [ -z "$$v" ] && unset "$$k";
         done;
-        exec /app/process_monitor.sh
+        if [ -x /usr/local/bin/docker-entrypoint.sh ];
+        then exec /usr/local/bin/docker-entrypoint.sh /app/process_monitor.sh;
+        else rm -f /data/pipeshub/.pipeshub-ownership-v1
+        /root/.local/.pipeshub-ownership-v1
+        /root/.cache/huggingface/.pipeshub-ownership-v1;
+        exec /app/process_monitor.sh; fi
     logging:
       driver: local
       options:
@@ -104,8 +122,12 @@ services:
       - LOG_LEVEL=${LOG_LEVEL:-info}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-}
       - WEB_CONNECTOR_ALLOWED_HOSTS=${WEB_CONNECTOR_ALLOWED_HOSTS:-}
+      - CONNECTOR_EGRESS_IPS=${CONNECTOR_EGRESS_IPS:-}
+      - PIPESHUB_BLOCK_PRIVATE_ADDRESSES=${PIPESHUB_BLOCK_PRIVATE_ADDRESSES:-}
+      - PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP=${PIPESHUB_NEXTCLOUD_ALLOW_INSECURE_HTTP:-}
       - STRICT_MODE=${STRICT_MODE:-false}
       - SKIP_DOMAIN_CHECK=${SKIP_DOMAIN_CHECK:-false}
+      - TELEMETRY_COLLECTION_FLAG=${TELEMETRY_COLLECTION_FLAG:-}
       - SAML_SP_ENTITY_ID=${SAML_SP_ENTITY_ID:-}
       - SECRET_KEY=${SECRET_KEY:-}
       - JWT_SECRET=${JWT_SECRET:-}
@@ -137,6 +159,11 @@ services:
       - NEO4J_USERNAME=${NEO4J_USERNAME:-neo4j}
       - NEO4J_PASSWORD=${NEO4J_PASSWORD:-}
       - NEO4J_DATABASE=${NEO4J_DATABASE:-neo4j}
+      # false: agent, team and knowledge-base creates follow NEO4J_EXPLICIT_TRANSACTIONS
+      # (one auto-commit per query while that is off)
+      # NEO4J_EXPLICIT_TRANSACTIONS defaults to true: a failed multi-statement write rolls back.
+      # Set it to false for one auto-commit per query.
+      - NEO4J_CREATE_TRANSACTIONS=${NEO4J_CREATE_TRANSACTIONS:-true}
 
       # Key-value store: "redis" (default, no extra container) | "etcd"
       - KV_STORE_TYPE=${KV_STORE_TYPE:-redis}
@@ -149,6 +176,12 @@ services:
       # Message broker: "redis" (default, uses Redis Streams) | "kafka"
       - MESSAGE_BROKER=${MESSAGE_BROKER:-redis}
       - REDIS_STREAMS_MAXLEN=${REDIS_STREAMS_MAXLEN:-500000}
+      - REDIS_STREAMS_RETENTION_MODE=${REDIS_STREAMS_RETENTION_MODE:-after_ack}
+      # Indexing lanes on Redis Streams: how many (every service must agree), and
+      # how a connector is given one: "assigned" (the least busy lane, recorded
+      # once) or "hash", which switches assigned lanes off.
+      - FAIR_SCHEDULING_LANE_COUNT=${FAIR_SCHEDULING_LANE_COUNT:-8}
+      - FAIR_SCHEDULING_LANE_ASSIGNMENT=${FAIR_SCHEDULING_LANE_ASSIGNMENT:-assigned}
 
       # Kafka (active when MESSAGE_BROKER=kafka)
       - KAFKA_BROKERS=${KAFKA_BROKERS:-kafka-1:9092}
@@ -197,6 +230,7 @@ services:
       # Qdrant
       - QDRANT_API_KEY=${QDRANT_API_KEY:-}
       - QDRANT_HOST=qdrant
+      - QDRANT_MEMORY_LIMIT=${QDRANT_MEMORY_LIMIT:-6G}
       - QDRANT_GRPC_PORT=6334
       - QDRANT_PORT=6333
 
@@ -216,12 +250,13 @@ services:
       - TRUST_PROXY=${TRUST_PROXY:-}
 
       # Security
-      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-true}
+      - HIDE_SECRET_CONFIG=${HIDE_SECRET_CONFIG:-false}
 
       # Auth / tokens
-      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,team:read,user:read,config:read,agent:read,agent:execute,connector:read}
+      - MCP_SCOPES=${MCP_SCOPES:-openid,profile,email,offline_access,semantic:write,conversation:write,conversation:chat,kb:read,kb:write,kb:upload,team:read,user:read,usergroup:read,config:read,agent:read,agent:execute,connector:read,code:read}
       - ACCESS_TOKEN_EXPIRY=${ACCESS_TOKEN_EXPIRY:-24h}
       - REFRESH_TOKEN_EXPIRY=${REFRESH_TOKEN_EXPIRY:-720h}
+      - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-20m}
       # RFC 7591 DCR is off unless "true". RFC 8628 device grant is on unless "false".
       - PIPESHUB_ENABLE_DCR=${PIPESHUB_ENABLE_DCR:-}
       - PIPESHUB_ENABLE_DEVICE_GRANT=${PIPESHUB_ENABLE_DEVICE_GRANT:-}
@@ -247,6 +282,7 @@ services:
       - GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU=${GOVERNOR_LIGHT_PARSE_SLOTS_PER_CPU:-}
       - INDEXING_SPLIT_LEASE_POOLS=${INDEXING_SPLIT_LEASE_POOLS:-}
       - GOVERNOR_LIGHT_PARSE_MAX=${GOVERNOR_LIGHT_PARSE_MAX:-}
+      - PARSE_MAX_ORG_SHARE=${PARSE_MAX_ORG_SHARE:-}
       - GOVERNOR_INDEX_HEADROOM=${GOVERNOR_INDEX_HEADROOM:-}
       - GOVERNOR_INDEX_MAX=${GOVERNOR_INDEX_MAX:-}
       - GOVERNOR_INDEX_HEAVY_WORKING_SET_GB=${GOVERNOR_INDEX_HEAVY_WORKING_SET_GB:-}
@@ -262,6 +298,8 @@ services:
       # only — the shrink brake always reads true cgroup occupancy.
       - GOVERNOR_BASELINE_MEMORY_MB=${GOVERNOR_BASELINE_MEMORY_MB:-}
       - MAX_PENDING_INDEXING_TASKS=${MAX_PENDING_INDEXING_TASKS:-}
+      - RECORD_PROCESSING_TIMEOUT=${RECORD_PROCESSING_TIMEOUT:-}
+      - PDF_RECORD_PROCESSING_TIMEOUT=${PDF_RECORD_PROCESSING_TIMEOUT:-}
       - QUERY_UVICORN_WORKERS=${QUERY_UVICORN_WORKERS:-}
       # Query-service runtime tuning. Defaults reproduce current behaviour:
       # langchain transport, accessible-records cache on, signed-URL cache off.
@@ -269,7 +307,45 @@ services:
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE:-}
       - PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=${PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL:-300}
       - PIPESHUB_SIGNED_URL_CACHE_SECONDS=${PIPESHUB_SIGNED_URL_CACHE_SECONDS:-0}
+      # Most characters one agent turn may stream before it is stopped as a
+      # runaway. Blank keeps the built-in 1000000; 0 removes the limit.
+      - PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=${PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS:-}
+      # true: features that trade some compute or tokens per question for
+      # better answers (keyword hits merged by rank fusion, search results
+      # with the most relevant record first, answer composition and
+      # multi-step rules, reading an answer's records in full). Off by
+      # default. A feature's own switch below, when set to true or false,
+      # overrides it for that feature; blank follows it.
+      # It also turns on named-entity extraction while indexing, and the
+      # entity tools, whatever the Labs flag ENABLE_NAMED_ENTITY_EXTRACTION says.
+      - HIGH_ACCURACY_MODE=${HIGH_ACCURACY_MODE:-false}
+      - GREP_RANK_FUSION=${GREP_RANK_FUSION:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - KEYWORD_SEARCH_QUERIES=${KEYWORD_SEARCH_QUERIES:-}
+      # Opt-in only: knowledge-base uploads take the dates their content
+      # states (true: instead of upload times; all: also of file times).
+      - CONTENT_DOCUMENT_DATES=${CONTENT_DOCUMENT_DATES:-}
+      - RELEVANCE_ORDERED_CONTEXT=${RELEVANCE_ORDERED_CONTEXT:-}
+      - FUSION_RECORD_CUT=${FUSION_RECORD_CUT:-}
+      - ANSWER_COMPOSITION_RULES=${ANSWER_COMPOSITION_RULES:-}
+      - THOROUGH_RETRIEVAL=${THOROUGH_RETRIEVAL:-}
+      - MULTI_STEP_ANSWER_RULES=${MULTI_STEP_ANSWER_RULES:-}
+      - ENTITY_SEARCH_TOOL=${ENTITY_SEARCH_TOOL:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TIMELINE_SUMMARIES=${TIMELINE_SUMMARIES:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - DATE_FILTER_SAFETY_NET=${DATE_FILTER_SAFETY_NET:-}
+      - FETCH_SIZE_BY_CHARS=${FETCH_SIZE_BY_CHARS:-}
+      # On unless set to false; HIGH_ACCURACY_MODE does not change it.
+      - TARGETED_RETRIEVAL=${TARGETED_RETRIEVAL:-}
+      # Opt-in only: HIGH_ACCURACY_MODE does not turn this one on.
+      - SEARCH_SOURCE_DIVERSITY=${SEARCH_SOURCE_DIVERSITY:-}
+
+      # Storage config
+      - BLOB_STORAGE_COMPRESSION=${BLOB_STORAGE_COMPRESSION:-false}
+
       - INDEXING_UVICORN_WORKERS=${INDEXING_UVICORN_WORKERS:-1}
+      - UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS=${UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS:-60}
       - PARSING_UVICORN_WORKERS=${PARSING_UVICORN_WORKERS:-1}
       - DOCLING_UVICORN_WORKERS=${DOCLING_UVICORN_WORKERS:-1}
       # Raising this above 1 gives /stream/record requests more headroom
@@ -279,11 +355,40 @@ services:
       - CONNECTOR_UVICORN_WORKERS=${CONNECTOR_UVICORN_WORKERS:-1}
       - LOCAL_DOCLING_PARSE_WORKERS=${LOCAL_DOCLING_PARSE_WORKERS:-1}
       - PDF_OCR_DETECTION_WORKERS=${PDF_OCR_DETECTION_WORKERS:-1}
+      - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
+      # CONNECTOR_SYNC_MAX_CONCURRENT caps how many syncs run at once.
+      - CONNECTOR_SYNC_MAX_CONCURRENT=${CONNECTOR_SYNC_MAX_CONCURRENT:-8}
+      # How long a delete waits for a running sync to stop.
+      - CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC=${CONNECTOR_SYNC_DELETE_STOP_WAIT_SEC:-15}
       - MAX_TABLE_ROWS_FOR_LLM=${MAX_TABLE_ROWS_FOR_LLM:-1000}
       - EXCEL_MAX_TABLE_ROWS_TO_INDEX=${EXCEL_MAX_TABLE_ROWS_TO_INDEX:-20000}
       - EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT=${EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT:-500}
+      # Largest file from a code repository that is read as code or as plain
+      # text, in MB (default 5). Larger ones are marked "not supported" with
+      # the reason; CSV, JSON and YAML files keep their own parsers' limits.
+      - CODE_FILE_MAX_SIZE_MB=${CODE_FILE_MAX_SIZE_MB:-}
+      # Code graph (O-12). Empty keeps the default in brackets: sweep for owed
+      # edge builds every N s [600]; full rebuild of each repo every N s
+      # [604800]; builds at once per process [2] and per org [1]; largest repo
+      # one build loads, in blocks [300000]; failed attempts before a build is
+      # marked failed [6]. CODE_GRAPH_ENABLED=false turns the code graph off
+      # [true]; CODE_GRAPH_BACKFILL=true re-indexes repos indexed before the
+      # current code-graph version on the next start [false].
+      - CODE_GRAPH_ENABLED=${CODE_GRAPH_ENABLED:-true}
+      - CODE_GRAPH_BACKFILL=${CODE_GRAPH_BACKFILL:-false}
+      - CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS=${CODE_EDGE_BUILD_RECONCILE_INTERVAL_SECONDS:-}
+      - CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS=${CODE_EDGE_FULL_REBUILD_INTERVAL_SECONDS:-}
+      - CODE_EDGE_BUILD_MAX_CONCURRENT=${CODE_EDGE_BUILD_MAX_CONCURRENT:-}
+      - CODE_EDGE_BUILD_MAX_PER_ORG=${CODE_EDGE_BUILD_MAX_PER_ORG:-}
+      - CODE_EDGE_BUILD_MAX_BLOCKS=${CODE_EDGE_BUILD_MAX_BLOCKS:-}
+      - CODE_EDGE_BUILD_MAX_FAILURES=${CODE_EDGE_BUILD_MAX_FAILURES:-}
+      # Worker processes that parse large text, code and CSV files off the
+      # indexing event loop. Empty derives it from the CPU limit (1 on a
+      # 4-CPU host, at most 4); 0 parses in threads instead.
+      - PARSE_POOL_WORKERS=${PARSE_POOL_WORKERS:-}
       - EMBEDDING_SERVER_ALLOW_REMOTE_CODE=${EMBEDDING_SERVER_ALLOW_REMOTE_CODE:-false}
       - EMBEDDING_SERVER_MAX_CONCURRENCY=${EMBEDDING_SERVER_MAX_CONCURRENCY:-}
+      - EMBEDDING_SERVER_QUERY_RESERVED_SLOTS=${EMBEDDING_SERVER_QUERY_RESERVED_SLOTS:-}
       - EMBEDDING_BATCH_CONCURRENCY=${EMBEDDING_BATCH_CONCURRENCY:-}
       # Skip per-sentence embeddings unless the block has more than this many
       # words (default 100). Set 0 to split every multi-sentence block.
@@ -298,9 +403,28 @@ services:
       - OPIK_API_KEY=${OPIK_API_KEY:-}
       - OPIK_WORKSPACE=${OPIK_WORKSPACE:-}
 
+      # Custom (non-catalog) STDIO MCP servers run an admin-entered command on this
+      # host as the app user, with its network access. Off unless "true"; catalog
+      # and remote (HTTP) MCP servers are unaffected.
+      - MCP_ALLOW_CUSTOM_STDIO=${MCP_ALLOW_CUSTOM_STDIO:-false}
+
       # Code sandbox
       - SANDBOX_MODE=${SANDBOX_MODE:-docker}
+      # SANDBOX_MODE=local is refused unless this is "true" (single-user dev only).
+      - SANDBOX_ALLOW_LOCAL=${SANDBOX_ALLOW_LOCAL:-false}
+      # Generated code gets no network unless set to true; even then private,
+      # link-local and cloud-metadata addresses are firewalled. CIDRs in
+      # SANDBOX_EGRESS_ALLOW_CIDRS (comma-separated, e.g. a pip mirror) are exempt.
+      - SANDBOX_ALLOW_NETWORK=${SANDBOX_ALLOW_NETWORK:-false}
+      - SANDBOX_EGRESS_ALLOW_CIDRS=${SANDBOX_EGRESS_ALLOW_CIDRS:-}
+      # Per-run writable-layer cap (default 10g; 0 disables). Enforced only where
+      # the storage driver supports it; logs a warning once otherwise.
+      - SANDBOX_DISK_QUOTA=${SANDBOX_DISK_QUOTA:-10g}
       - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      # The app never sees the Docker socket; sandbox containers are created
+      # through docker-socket-proxy, which only admits sandbox-shaped requests.
+      - DOCKER_HOST=tcp://docker-socket-proxy:2375
       # Eval deploy type skips the Slack bot process inside the app container.
       - PIPESHUB_SKIP_SLACKBOT=${PIPESHUB_SKIP_SLACKBOT:-false}
 
@@ -309,8 +433,7 @@ services:
       - EXTRACTION_SERVICE_URL=http://localhost:8093
       # Set to "true" to route indexing through the standalone parsing/extraction services
       - USE_PARSING_SERVICE=${USE_PARSING_SERVICE:-false}
-      # Set to "true" to defer graph enrichment until after vectordb indexing completes
-      - DEFER_EXTRACTION=${DEFER_EXTRACTION:-false}
+      - CODE_FILE_CLASSIFICATION=${CODE_FILE_CLASSIFICATION:-true}
 
       - VECTOR_COLLECTION_STRATEGY=${VECTOR_COLLECTION_STRATEGY:-single}
 
@@ -339,15 +462,24 @@ services:
       sandbox-image:
         condition: service_completed_successfully
         required: false
+      docker-socket-proxy:
+        # Not service_healthy: an older image (rollback.sh) has no proxy
+        # module, and that must cost run_code, not the whole app.
+        condition: service_started
+        required: false
+
+    security_opt:
+      - no-new-privileges:true
 
     volumes:
       - pipeshub_data:/data/pipeshub
       - pipeshub_root_local:/root/.local
       - pipeshub_hf_cache:/root/.cache/huggingface
-      - /var/run/docker.sock:/var/run/docker.sock
 
     networks:
       - pipeshub
+      - sandbox-control
+      - web-gateway
 
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -367,6 +499,44 @@ services:
       timeout: 10s
       retries: 5
       start_period: 300s
+
+  # The only container with the Docker socket. It forwards just the calls the
+  # coding sandbox makes, refuses any container create that would reach the
+  # host (privileged, binds, devices, host namespaces, other images or
+  # networks), and only acts on containers it created. See
+  # backend/python/app/sandbox/docker_proxy.py.
+  docker-socket-proxy:
+    profiles: ["sandbox"]
+    image: ${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}:${IMAGE_TAG:-latest}
+    restart: always
+    # Root only to open the root-owned socket; it holds no capabilities.
+    user: "0:0"
+    working_dir: /app/python
+    # Bypasses the image entrypoint, which drops privileges for the app and
+    # needs capabilities this container deliberately does not have.
+    entrypoint: ["python", "-m", "app.docker_proxy_main"]
+    environment:
+      - SANDBOX_DOCKER_IMAGE=${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}
+      - SANDBOX_EGRESS_NETWORK=${SANDBOX_EGRESS_NETWORK:-pipeshub_sandbox_egress}
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+    networks:
+      - sandbox-control
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:2375/_ping', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
   # ---------------------------------------------------------------------------
   # Always-on stateful services
@@ -442,7 +612,10 @@ services:
       resources:
         limits:
           cpus: '4'
-          memory: 6G
+          # Search slows sharply once the index outgrows this; size it from
+          # docs/deployment/vector-db-sizing.md. QDRANT_MEMORY_LIMIT also tells
+          # the app the figure, for the warning on the Services page.
+          memory: ${QDRANT_MEMORY_LIMIT:-6G}
         reservations:
           cpus: '2'
           memory: 2G
@@ -475,6 +648,52 @@ services:
     command: ["sh", "-c", "echo 'sandbox image ready'"]
     networks:
       - pipeshub
+
+  # ---------------------------------------------------------------------------
+  # Web search and page reading — profiles: search-searxng, fetch-crawl4ai
+  # Both fetch whatever the web search or a page link points them at, so they sit on
+  # web-readers only, with the internet and the gateway: they can't reach the app or the
+  # databases. The app reaches them through the gateway as http://searxng:8080 and
+  # http://crawl4ai:11235.
+  # ---------------------------------------------------------------------------
+  web-readers-gateway:
+    profiles: ["search-searxng", "fetch-crawl4ai"]
+    image: nginx:1.27.5-alpine
+    restart: always
+    volumes:
+      - ./web-readers-gateway/nginx.conf:/etc/nginx/nginx.conf:ro
+    networks:
+      web-gateway:
+        aliases: [searxng, crawl4ai]
+      web-readers: {}
+
+  searxng:
+    profiles: ["search-searxng"]
+    image: searxng/searxng:2026.9.30-a9d990033
+    restart: always
+    environment:
+      # Required: SearXNG refuses to start with its default key. A required-variable check here
+      # would fail every stack, since Compose fills in variables before it drops unused profiles.
+      - SEARXNG_SECRET=${SEARXNG_SECRET:-}
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    networks:
+      web-readers:
+        aliases: [searxng-reader]
+
+  crawl4ai:
+    profiles: ["fetch-crawl4ai"]
+    # 0.9.4 or later: earlier servers let anyone who can reach them run code or reach internal addresses.
+    image: unclecode/crawl4ai:0.9.4
+    restart: always
+    environment:
+      - CRAWL4AI_API_TOKEN=${CRAWL4AI_API_TOKEN:-}
+    # Refuse to start without a token, so the server never runs open to the other reader.
+    command: ["bash", "-c", "test -n \"$$CRAWL4AI_API_TOKEN\" || { echo 'Set CRAWL4AI_API_TOKEN in .env' >&2; exit 1; }; exec bash entrypoint.sh"]
+    shm_size: 1g
+    networks:
+      web-readers:
+        aliases: [crawl4ai-reader]
 
   # ---------------------------------------------------------------------------
   # Graph DB — profile: graph-arango  (set DATA_STORE=arangodb)
@@ -596,7 +815,10 @@ services:
       - KAFKA_TRANSACTION_STATE_LOG_MIN_ISR=1
       - KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR=1
       - KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0
-      - KAFKA_CREATE_TOPICS=record-events:1:1,entity-events:1:1,sync-events:1:1
+      # The cp-kafka image does not read this; the app creates its topics at
+      # startup (record-events with 32 partitions, KAFKA_TOPIC_PARTITIONS to
+      # change it). Kept in step with that for anyone reading it here.
+      - KAFKA_CREATE_TOPICS=record-events:32:1,entity-events:1:1,sync-events:1:1
       - KAFKA_LOG_RETENTION_HOURS=24
       - KAFKA_NUM_NETWORK_THREADS=3
       - KAFKA_NUM_IO_THREADS=8
@@ -644,4 +866,17 @@ volumes:
 
 networks:
   pipeshub:
+    driver: bridge
+  # App <-> docker-socket-proxy only. Internal: no route out, and nothing else
+  # can reach the proxy.
+  sandbox-control:
+    driver: bridge
+    internal: true
+  # App <-> web-readers-gateway only. Internal: no route out.
+  web-gateway:
+    driver: bridge
+    internal: true
+  # web-readers-gateway <-> the optional web search and page-reading servers, which need
+  # the internet. The app is not on it.
+  web-readers:
     driver: bridge

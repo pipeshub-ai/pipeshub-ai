@@ -388,7 +388,7 @@ export function UploadProgressTracker() {
           position: 'fixed',
           bottom: '24px',
           right: '24px',
-          width: '360px',
+          width: 'min(360px, calc(100vw - 32px))',
           background: 'var(--olive-2)',
           border: '1px solid var(--olive-3)',
           borderRadius: 'var(--radius-2)',

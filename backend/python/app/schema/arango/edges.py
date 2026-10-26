@@ -12,7 +12,7 @@ def _get_enum_values(enum_class: Type[Enum]) -> List[str]:
     return [item.value for item in enum_class]
 
 
-record_relations_schema = {
+node_relations_schema = {
     "rule": {
         "type": "object",
         "properties": {
@@ -33,6 +33,31 @@ record_relations_schema = {
     },
     "level": "strict",
     "message": "Document does not match the file relations schema.",
+}
+
+# Links only: a hierarchy type can never land here.
+record_links_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "relationshipType": {
+                "type": "string",
+                "enum": [
+                    t for t in _get_enum_values(RecordRelations)
+                    if t not in (RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value)
+                ],
+            },
+            "constraintName": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+        },
+        "required": ["relationshipType"],
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the record links schema.",
 }
 
 entity_relations_schema = {
@@ -306,7 +331,9 @@ permissions_schema = {
             "_from": {"type": "string", "minLength": 1},
             "_to": {"type": "string", "minLength": 1},
             "externalPermissionId": {"type": ["string", "null"]},
-            "type": {"type": ["string", "null"], "enum": ["USER", "GROUP", "DOMAIN","TEAM", "ORG", "ROLE"]},
+            # ORGANIZATION: the org's read grant on a service account's chat upload
+            # (utils/record_access.py), kept apart from ORG so it grants nothing else.
+            "type": {"type": ["string", "null"], "enum": ["USER", "GROUP", "DOMAIN", "TEAM", "ORG", "ROLE", "ORGANIZATION"]},
             "role": {
                 "type": "string",
                 "enum": [
@@ -340,6 +367,9 @@ user_app_relation_schema = {
             },
             "lastSyncUpdate": {"type": "number"},
             "sourceUserId": {"type": "string"},
+            # Set on principals who reached this app only through a share, not through
+            # app membership. Gates the browse-hoisting branches.
+            "isExternalUser": {"type": "boolean"},
             "createdAtTimestamp": {"type": "number"},
             "updatedAtTimestamp": {"type": "number"},
         },
@@ -386,6 +416,33 @@ basic_edge_schema = {
     "message": "Document does not match the basic edge schema.",
 }
 
+mentions_entity_schema = {
+    "rule": {
+        "type": "object",
+        "properties": {
+            "_from": {"type": "string", "minLength": 1},
+            "_to": {"type": "string", "minLength": 1},
+            "orgId": {"type": "string"},
+            "createdAtTimestamp": {"type": "number"},
+            "updatedAtTimestamp": {"type": "number"},
+            "mentionCount": {"type": "integer"},
+            "maxEvidence": {"type": "number"},
+            "extractors": {"type": "array", "items": {"type": "string"}},
+            "extractedNames": {"type": "array", "items": {"type": "string"}},
+            "blockIndexes": {"type": "array", "items": {"type": "integer"}},
+            "blockIds": {"type": "array", "items": {"type": "string"}},
+            "extractorVersion": {"type": "string"},
+            "mergedFrom": {"type": ["string", "null"]},
+            "migratedFrom": {"type": ["string", "null"]},
+        },
+        "required": ["orgId", "createdAtTimestamp", "mentionCount"],
+        # Open, as nodeRelations and entityRelations are: see named_entity_schema.
+        "additionalProperties": True,
+    },
+    "level": "strict",
+    "message": "Document does not match the mentionsEntity schema.",
+}
+
 # Record -> category / subcategory / language / topic. Carries the raw name the
 # model extracted for that record, so a wrong merge can be undone per record.
 taxonomy_edge_schema = {
@@ -396,6 +453,13 @@ taxonomy_edge_schema = {
             "_to": {"type": "string", "minLength": 1},
             "createdAtTimestamp": {"type": "number"},
             "extractedName": {"type": ["string", "null"]},
+            # Every spelling the record used for the node, extractedName first.
+            "extractedNames": {"type": ["array", "null"], "items": {"type": "string"}},
+            # The node this edge was moved from by a taxonomy merge or
+            # migration (app.modules.entity_resolution.consolidation).
+            "mergedFrom": {"type": ["string", "null"]},
+            # The legacy node a migration moved this edge from.
+            "migratedFrom": {"type": ["string", "null"]},
         },
         "required": ["createdAtTimestamp"],
         "additionalProperties": False,

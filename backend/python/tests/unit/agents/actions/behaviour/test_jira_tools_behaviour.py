@@ -498,7 +498,7 @@ class TestFailuresInPlainLanguage:
 
         assert ok is False
         message = assert_safe_error(data)
-        assert "did not accept the saved sign-in" in message and "Reconnect the Jira toolset" in message
+        assert "did not accept the saved sign-in" in message and "Reconnect Jira under Your actions" in message
 
     async def test_missing_issue_says_how_to_find_it(self, jira, api) -> None:
         ok, data = result(await jira.get_comments("PA-404"))
@@ -784,6 +784,32 @@ class TestReadingIssues:
         assert "customfield_10099" not in fields
         assert data["data"]["url"] == f"{SITE}/browse/PA-7"
         assert fields["epic_link"] == "PA-1"
+
+    async def test_issue_details_include_the_ticket_description_but_not_nested_ones(self, jira, api) -> None:
+        adf = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Steps"}]}]}
+        api.on("GET", "/issue/PA-7", {
+            **issue("PA-7", description=adf, status={"name": "Open", "description": "The issue is open."}),
+            "renderedFields": {"description": "<p>Steps</p>"},
+        })
+        api.on("GET", "/field", [])
+
+        ok, data = result(await jira.get_issue("PA-7"))
+
+        assert ok is True
+        assert api.calls("GET", "/issue/PA-7")[0].query["expand"] == "renderedFields"
+        assert data["data"]["fields"]["description"] == "<p>Steps</p>"
+        assert "description" not in data["data"]["fields"]["status"]
+        assert "renderedFields" not in data["data"]
+
+    async def test_issue_description_falls_back_to_the_document_when_not_rendered(self, jira, api) -> None:
+        adf = {"type": "doc", "version": 1, "content": [{"type": "paragraph", "content": [{"type": "text", "text": "Steps"}]}]}
+        api.on("GET", "/issue/PA-7", issue("PA-7", description=adf))
+        api.on("GET", "/field", [])
+
+        ok, data = result(await jira.get_issue("PA-7"))
+
+        assert ok is True
+        assert data["data"]["fields"]["description"] == adf
 
     async def test_jql_resolution_unresolved_is_rewritten_and_reported(self, jira, api) -> None:
         api.on("POST", SEARCH, search_pages((["PA-1"], None)))

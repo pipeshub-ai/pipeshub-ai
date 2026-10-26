@@ -9,6 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import AbstractContextManager, ExitStack
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 from fastapi import HTTPException
 
@@ -16,12 +17,15 @@ from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.drupal_wiki.connector import (
+    DrupalWikiAuthError,
     DrupalWikiConnector,
     DrupalWikiSyncError,
 )
 from app.models.entities import Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationType
 from app.sources.external.drupal_wiki.graphql import DrupalWikiGraphQLError
+from app.utils.url_fetcher import HostCheckError
 
 BASE_URL = "https://wiki.example.com"
 
@@ -146,6 +150,17 @@ class TestInit:
         assert connector.data_source is not None
         assert connector.graphql is not None
 
+    @pytest.mark.asyncio
+    async def test_a_wiki_address_the_deployment_refuses_fails_init(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        with self._patched_init(MagicMock()), patch(
+            "app.connectors.sources.drupal_wiki.connector.check_wiki_address",
+            AsyncMock(side_effect=HostCheckError('"169.254.169.254" is a cloud metadata address')),
+        ):
+            with pytest.raises(ConnectorInitError, match="cloud metadata"):
+                await connector.init()
+
     @staticmethod
     def _patched_init(graphql_client: MagicMock) -> AbstractContextManager[MagicMock]:
         """Patch the client, data source and GraphQL client used by ``init``."""
@@ -160,6 +175,9 @@ class TestInit:
         stack.enter_context(patch(
             "app.connectors.sources.drupal_wiki.connector.DrupalWikiClient.build_from_services",
             AsyncMock(return_value=client),
+        ))
+        stack.enter_context(patch(
+            "app.connectors.sources.drupal_wiki.connector.check_wiki_address", AsyncMock(),
         ))
         stack.enter_context(patch(
             "app.connectors.sources.drupal_wiki.connector.DrupalWikiDataSource",
@@ -190,6 +208,17 @@ class TestConnectionTest:
             await connector.test_connection_and_access()
 
     @pytest.mark.asyncio
+    async def test_a_login_page_answering_200_fails_the_test(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.client = MagicMock()
+        connector.data_source.list_users = AsyncMock(return_value=non_json())
+        connector.data_source.list_spaces = AsyncMock(return_value=non_json())
+
+        with pytest.raises(ConnectorInitError, match="login or proxy page"):
+            await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
     async def test_forbidden_reports_missing_access(self, connector: DrupalWikiConnector) -> None:
         connector.client = MagicMock()
         connector.client.get_client.return_value = MagicMock()
@@ -208,6 +237,7 @@ class TestUsersAndGroups:
             response(spring_page([
                 {"id": 1, "email": "a@example.com", "userName": "a", "status": "ENABLED"},
                 {"id": 2, "email": "", "userName": "ghost"},
+                {"id": 4, "email": "d@example.com", "userName": "d", "status": "DISABLED"},
             ], last=False)),
             response(spring_page([{"id": 3, "email": "c@example.com", "userName": "c", "status": "ENABLED"}])),
         ])
@@ -215,8 +245,9 @@ class TestUsersAndGroups:
         users_by_id = await connector._sync_users()
 
         assert set(users_by_id) == {"1", "3"}
-        # Disabled accounts are excluded by the wiki, not by us.
-        assert connector.data_source.list_users.await_args.kwargs["only_active"] is True
+        # Everyone is listed, so the disabled accounts are known; they are not written.
+        assert connector.data_source.list_users.await_args.kwargs["only_active"] is False
+        assert connector._disabled_emails == {"d@example.com"}
         # Each page is written as it arrives rather than accumulated into one call.
         assert [
             [user.email for user in call.args[0]]
@@ -829,6 +860,17 @@ class TestFilterOptions:
         assert result.has_more is True
 
     @pytest.mark.asyncio
+    async def test_a_login_page_is_a_failed_lookup_not_an_error(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_spaces = AsyncMock(return_value=non_json())
+
+        result = await connector.get_filter_options("space_ids")
+
+        assert result.success is False
+        assert "login or proxy page" in (result.message or "")
+
+    @pytest.mark.asyncio
     async def test_unknown_filter_key_is_rejected(self, connector: DrupalWikiConnector) -> None:
         result = await connector.get_filter_options("unknown_key")
         assert result.success is False
@@ -862,9 +904,15 @@ class TestHelpers:
 
     @pytest.mark.asyncio
     async def test_page_listing_raises_on_error_status(self, connector: DrupalWikiConnector) -> None:
-        connector.data_source.list_pages = AsyncMock(return_value=response(status=500))
+        connector.data_source.list_pages = AsyncMock(return_value=response(
+            {"status": 500, "title": "Internal Server Error", "detail": "Search index unavailable"}, status=500,
+        ))
 
-        with pytest.raises(DrupalWikiSyncError, match=r"error \(500\)"):
+        # The wiki's own reason, not just the status.
+        with pytest.raises(
+            DrupalWikiSyncError,
+            match=r"pages of space 12: Internal Server Error: Search index unavailable \(HTTP 500\)",
+        ):
             [page async for page in connector._fetch_pages(12, None)]
 
     @pytest.mark.asyncio
@@ -1218,3 +1266,348 @@ class TestSyncFailureNotification:
         assert preview.startswith("- space 0\n- space 1")
         assert preview.endswith("- ...and 2 more")
         assert preview.count("\n") == 10
+
+
+def non_json(status: int = 200) -> MagicMock:
+    """A 200 from a proxy or SSO page in front of the wiki."""
+    resp = MagicMock()
+    resp.status = status
+    resp.json.side_effect = ValueError("Expecting value")
+    return resp
+
+
+async def run_with_no_filters(connector: DrupalWikiConnector) -> None:
+    with patch(
+        "app.connectors.sources.drupal_wiki.connector.load_connector_filters",
+        AsyncMock(return_value=(FilterCollection(), FilterCollection())),
+    ):
+        await connector.run_sync()
+
+
+class TestDisabledMembers:
+    """A private space's member list names disabled accounts too (it is not filtered)."""
+
+    @staticmethod
+    def _private_space(connector: DrupalWikiConnector, *emails: str) -> None:
+        connector.graphql.get_space_members = AsyncMock(return_value={
+            "users": [{"id": str(i), "email": email} for i, email in enumerate(emails)],
+            "groups": [],
+        })
+        connector.data_source.list_spaces = AsyncMock(return_value=response(spring_page([
+            {"id": 12, "name": "HR", "type": "BASIC", "accessStatus": "PRIVATE"},
+        ])))
+
+    @pytest.mark.asyncio
+    async def test_a_disabled_member_gets_no_grant(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector._disabled_emails = {"dave@example.com"}
+        self._private_space(connector, "alice@example.com", "Dave@Example.com")
+
+        await connector._sync_spaces()
+
+        _, permissions = processor.on_new_record_groups.await_args.args[0][0]
+        assert [p.email for p in permissions] == ["alice@example.com"]
+
+    @pytest.mark.asyncio
+    async def test_without_a_directory_nobody_is_dropped(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        # No definite answer from the wiki, so no grant is taken away on a guess.
+        connector._disabled_emails = None
+        self._private_space(connector, "alice@example.com", "dave@example.com")
+
+        await connector._sync_spaces()
+
+        _, permissions = processor.on_new_record_groups.await_args.args[0][0]
+        assert {p.email for p in permissions} == {"alice@example.com", "dave@example.com"}
+
+    @pytest.mark.asyncio
+    async def test_an_address_an_enabled_account_also_uses_is_kept(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([
+            {"id": 1, "email": "shared@example.com", "userName": "old", "status": "DISABLED"},
+            {"id": 2, "email": "Shared@example.com", "userName": "new", "status": "ENABLED"},
+        ])))
+
+        await connector._sync_users()
+
+        assert connector._disabled_emails == set()
+
+    @pytest.mark.asyncio
+    async def test_a_new_run_forgets_the_last_runs_directory(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector._disabled_emails = {"dave@example.com"}
+        connector.notify = AsyncMock()
+        connector._sync_users = AsyncMock(side_effect=RuntimeError("directory down"))
+        connector._sync_spaces = AsyncMock(return_value={})
+
+        await run_with_no_filters(connector)
+
+        assert connector._disabled_emails is None
+
+
+class TestFullSyncCoverage:
+    def test_a_clean_run_read_everything(self, connector: DrupalWikiConnector) -> None:
+        assert connector.full_sync_coverage().complete is True
+
+    def test_a_run_that_skipped_anything_did_not(self, connector: DrupalWikiConnector) -> None:
+        # Otherwise the platform unlinks everything the run skipped.
+        connector._fail("Could not read who has access to the Drupal Wiki space 'HR'")
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_a_dead_phase_makes_the_run_incomplete(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.notify = AsyncMock()
+        connector._sync_users = AsyncMock(return_value={})
+        connector._sync_groups = AsyncMock()
+        connector._sync_spaces = AsyncMock(side_effect=RuntimeError("spaces down"))
+
+        await run_with_no_filters(connector)
+
+        assert connector.full_sync_coverage().complete is False
+
+    @pytest.mark.asyncio
+    async def test_coverage_is_reset_by_the_next_run(self, connector: DrupalWikiConnector) -> None:
+        connector._fail("left over from the last run")
+        connector._sync_users = AsyncMock(return_value={})
+        connector._sync_groups = AsyncMock()
+        connector._sync_spaces = AsyncMock(return_value={})
+
+        await run_with_no_filters(connector)
+
+        assert connector.full_sync_coverage().complete is True
+
+
+class TestOneFailureStaysLocal:
+    @pytest.mark.asyncio
+    async def test_a_timeout_listing_one_space_does_not_stop_the_next(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        async def list_pages(space_id: int, **_: object) -> MagicMock:
+            if space_id == 12:
+                raise httpx.ReadTimeout("")
+            return response(spring_page([page_payload(2, space_id=13)]))
+
+        connector.data_source.list_pages = AsyncMock(side_effect=list_pages)
+        connector.data_source.list_attachments = AsyncMock(return_value=response([]))
+
+        await connector._sync_pages({12: {"name": "Slow"}, 13: {"name": "Fine"}})
+
+        written = [r.external_record_id for r, _ in processor.on_new_records.await_args.args[0]]
+        assert written == ["page:2"]
+        assert connector._failures == [
+            "Could not sync the pages of the Drupal Wiki space 'Slow': ReadTimeout"
+        ]
+        # Only the failed space's checkpoint stays put.
+        keys = [c.args[0] for c in connector.record_sync_point.update_sync_point.await_args_list]
+        assert keys == ["WEBPAGE/space/13"]
+
+    @pytest.mark.asyncio
+    async def test_a_timeout_reading_one_group_does_not_stop_the_next(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector.data_source.list_groups = AsyncMock(return_value=response(spring_page([
+            {"id": 5, "name": "Slow"}, {"id": 6, "name": "Fine"},
+        ])))
+        connector.data_source.get_group = AsyncMock(side_effect=[
+            httpx.ReadTimeout(""), response({"id": 6, "members": []}),
+        ])
+
+        await connector._sync_groups({})
+
+        groups = processor.on_new_user_groups.await_args.args[0]
+        assert [group.source_user_group_id for group, _ in groups] == ["6"]
+        assert connector._failures == ["Could not read the members of group 5: ReadTimeout"]
+
+    @pytest.mark.asyncio
+    async def test_a_phase_error_without_a_message_names_its_type(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        async def times_out() -> None:
+            raise TimeoutError
+
+        await connector._run_phase("spaces", times_out())
+
+        assert connector._failures == ["Could not sync spaces from Drupal Wiki: TimeoutError"]
+
+
+class TestRevokedToken:
+    @pytest.mark.asyncio
+    async def test_a_401_fails_the_run_with_an_auth_notification(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.notify = AsyncMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(status=401))
+        connector.data_source.list_spaces = AsyncMock()
+
+        with pytest.raises(DrupalWikiAuthError, match="rejected the personal access token"):
+            await run_with_no_filters(connector)
+
+        connector.notify.assert_awaited_once()
+        assert connector.notify.await_args.kwargs["type"] == NotificationType.CONNECTOR_AUTH_ERROR
+        # Nothing else is tried with a token the wiki has refused.
+        connector.data_source.list_spaces.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_401_on_one_group_is_not_skipped_like_a_failed_group(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_groups = AsyncMock(return_value=response(spring_page([{"id": 5}])))
+        connector.data_source.get_group = AsyncMock(return_value=response(status=401))
+
+        with pytest.raises(DrupalWikiAuthError):
+            await connector._sync_groups({})
+
+    @pytest.mark.asyncio
+    async def test_a_401_listing_attachments_stops_the_run(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_pages = AsyncMock(
+            return_value=response(spring_page([page_payload(1)]))
+        )
+        connector.data_source.list_attachments = AsyncMock(return_value=response(status=401))
+
+        with pytest.raises(DrupalWikiAuthError):
+            await connector._sync_pages({12: {"name": "Team"}})
+
+    @pytest.mark.asyncio
+    async def test_a_403_is_still_one_failed_phase(self, connector: DrupalWikiConnector) -> None:
+        # A token without the right to list people is not a revoked token.
+        connector.notify = AsyncMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(status=403))
+        connector._sync_spaces = AsyncMock(return_value={})
+
+        await run_with_no_filters(connector)
+
+        types = [call.kwargs["type"] for call in connector.notify.await_args_list]
+        assert NotificationType.CONNECTOR_AUTH_ERROR not in types
+        assert connector._failures
+
+
+class TestErrorsCarryTheWikisReason:
+    """Every failure names the operation and says what the wiki answered."""
+
+    PROBLEM_401 = {"status": 401, "title": "Unauthorized",
+                   "detail": "Invalid or missing personal access token"}
+
+    @pytest.mark.asyncio
+    async def test_connection_test_says_why_the_token_was_rejected(
+        self, connector: DrupalWikiConnector, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connector.client = MagicMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(self.PROBLEM_401, status=401))
+
+        with pytest.raises(ConnectorInitError, match="Invalid or missing personal access token"):
+            await connector.test_connection_and_access()
+
+        assert "Invalid or missing personal access token (HTTP 401)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_connection_test_says_why_spaces_failed(self, connector: DrupalWikiConnector) -> None:
+        connector.client = MagicMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(spring_page([])))
+        connector.data_source.list_spaces = AsyncMock(return_value=response(
+            {"status": 503, "title": "Service Unavailable", "detail": "Maintenance until 22:00"},
+            status=503,
+        ))
+
+        with pytest.raises(ConnectorInitError, match="Maintenance until 22:00 \\(HTTP 503\\)"):
+            await connector.test_connection_and_access()
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_token_mid_sync_says_what_the_wiki_said(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.notify = AsyncMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(self.PROBLEM_401, status=401))
+
+        with pytest.raises(DrupalWikiAuthError, match="reading the list of people"):
+            await run_with_no_filters(connector)
+
+        assert "Invalid or missing personal access token" in connector.notify.await_args.kwargs["message"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_group_fetch_names_the_group_and_the_reason(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_groups = AsyncMock(return_value=response(spring_page([{"id": 5}])))
+        connector.data_source.get_group = AsyncMock(return_value=response(
+            {"status": 404, "title": "Not Found", "detail": "Group 5 does not exist"}, status=404,
+        ))
+
+        await connector._sync_groups({})
+
+        assert connector._failures == [
+            "Drupal Wiki refused reading the members of group 5: "
+            "Not Found: Group 5 does not exist (HTTP 404)"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_cannot_be_built_says_why(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_pages = AsyncMock(return_value=response(spring_page([page_payload(1)])))
+        connector.data_source.list_attachments = AsyncMock(return_value=response([]))
+        connector._build_page_records = AsyncMock(side_effect=KeyError("homeSpace"))
+
+        await connector._sync_pages({12: {"name": "Team"}})
+
+        assert connector._failures == [
+            "Could not read the Drupal Wiki page 'Page 1' (KeyError: 'homeSpace'). "
+            "It will be tried again on the next sync."
+        ]
+
+    @pytest.mark.asyncio
+    async def test_opening_a_page_logs_the_wikis_reason(
+        self, connector: DrupalWikiConnector, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connector.data_source.get_page = AsyncMock(return_value=response(
+            {"status": 403, "title": "Forbidden", "detail": "No right to read node 733"}, status=403,
+        ))
+
+        with pytest.raises(HTTPException):
+            await connector.stream_record(stored_record(733))
+
+        assert "page 733 failed: Forbidden: No right to read node 733 (HTTP 403)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_reindex_logs_the_wikis_reason(
+        self, connector: DrupalWikiConnector, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connector.data_source.get_page = AsyncMock(return_value=response(
+            {"status": 502, "title": "Bad Gateway", "detail": "Upstream wiki node down"}, status=502,
+        ))
+
+        await connector.reindex_records([stored_record(733)])
+
+        assert "page:733" in caplog.text
+        assert "Bad Gateway: Upstream wiki node down (HTTP 502)" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_filter_options_say_why_spaces_could_not_be_listed(
+        self, connector: DrupalWikiConnector
+    ) -> None:
+        connector.data_source.list_spaces = AsyncMock(return_value=response(self.PROBLEM_401, status=401))
+
+        result = await connector.get_filter_options("space_ids")
+
+        assert result.success is False
+        assert "Invalid or missing personal access token (HTTP 401)" in (result.message or "")
+
+    @pytest.mark.asyncio
+    async def test_no_log_line_carries_the_token(
+        self, connector: DrupalWikiConnector, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connector.client = MagicMock()
+        connector.data_source.list_users = AsyncMock(return_value=response(self.PROBLEM_401, status=401))
+
+        with pytest.raises(ConnectorInitError):
+            await connector.test_connection_and_access()
+
+        assert "Bearer" not in caplog.text
+        assert "pat:" not in caplog.text

@@ -37,6 +37,7 @@ import {
   DocumentInfoResponse,
   extractUserId,
   normalizeExtension,
+  toObjectId,
   validateFileAndDocumentName,
   writeToStorage,
 } from '../utils/utils';
@@ -256,7 +257,7 @@ export class UploadDocumentService {
         }
       }
       await DocumentModel.deleteOne({
-        _id: documentId,
+        _id: documentId as mongoose.Types.ObjectId,
         [this.storageVendor]: { $exists: false },
       });
     } catch (error) {
@@ -291,9 +292,9 @@ export class UploadDocumentService {
     const documentInfo: Partial<Document> = {
       documentName,
       alternateDocumentName,
-      orgId: new mongoose.Types.ObjectId(orgId),
+      orgId: toObjectId(orgId, 'organization'),
       isVersionedFile: isVersioned,
-      initiatorUserId: userId ? new mongoose.Types.ObjectId(userId) : null,
+      initiatorUserId: userId ? toObjectId(userId, 'user') : null,
       permissions,
       sizeInBytes: size,
       customMetadata,

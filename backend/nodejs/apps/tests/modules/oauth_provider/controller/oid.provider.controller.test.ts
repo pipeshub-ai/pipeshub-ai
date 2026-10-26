@@ -34,11 +34,14 @@ describe('OIDCProviderController', () => {
     mockFirstPartyDeviceAppService = {
       getOrCreate: sinon.stub().resolves('pipeshub-agent'),
     }
+    // Built as the Enterprise edition does, so the shared discovery logic is
+    // exercised; the Community answer has its own test below.
     controller = new OIDCProviderController(
       mockOAuthTokenService,
       mockScopeValidatorService,
       mockAppConfig,
       mockFirstPartyDeviceAppService,
+      true,
     )
     mockRes = { json: sinon.stub(), status: sinon.stub().returnsThis(), setHeader: sinon.stub() }
     mockNext = sinon.stub()
@@ -60,6 +63,10 @@ describe('OIDCProviderController', () => {
       expect(config.userinfo_endpoint).to.include('/userinfo')
       expect(config.response_types_supported).to.deep.equal(['code'])
       expect(config.grant_types_supported).to.include('authorization_code')
+      // Advertised where delegation exists.
+      expect(config.grant_types_supported).to.include(
+        'urn:ietf:params:oauth:grant-type:token-exchange',
+      )
       expect(config.grant_types_supported).to.include(
         'urn:ietf:params:oauth:grant-type:device_code',
       )
@@ -68,6 +75,27 @@ describe('OIDCProviderController', () => {
         '/device_authorization',
       )
       expect(config.token_endpoint_auth_methods_supported).to.include('none')
+    })
+
+    it('does not advertise delegation where the edition does not offer it', async () => {
+      const community = new OIDCProviderController(
+        mockOAuthTokenService,
+        mockScopeValidatorService,
+        mockAppConfig,
+        mockFirstPartyDeviceAppService,
+        false,
+      )
+
+      await community.openidConfiguration({} as any, mockRes, mockNext)
+      const config = mockRes.json.firstCall.args[0]
+
+      // Listing a grant the token endpoint will always refuse would send an
+      // integrator down a road that ends in an error.
+      expect(config.grant_types_supported).to.not.include(
+        'urn:ietf:params:oauth:grant-type:token-exchange',
+      )
+      // The rest of discovery is unchanged.
+      expect(config.grant_types_supported).to.include('authorization_code')
       expect(config.code_challenge_methods_supported).to.deep.equal(['S256'])
       expect(config.pipeshub_device_client_id).to.equal('pipeshub-agent')
     })

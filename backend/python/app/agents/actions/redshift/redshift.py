@@ -18,6 +18,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.redshift.redshift import RedshiftClient
 from app.sources.external.redshift.redshift_ import RedshiftDataSource
 from app.utils.conversation_tasks import register_task
+from app.services.artifact_registry.models import artifact_owner_id
 
 logger = logging.getLogger(__name__)
 
@@ -655,7 +656,7 @@ class Redshift:
                     blob_store=blob_store,
                     graph_provider=self.chat_state.get("graph_provider"),
                     org_id=org_id,
-                    user_id=self.chat_state.get("user_id"),
+                    user_id=artifact_owner_id(self.chat_state),
                     conversation_id=conversation_id,
                     columns=raw_columns,
                     rows=raw_rows,

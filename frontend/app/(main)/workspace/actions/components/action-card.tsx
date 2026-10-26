@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 import { ConnectorIcon } from '@/app/components/ui';
 import type { ActionCatalogItem } from '../types';
 
@@ -27,8 +28,10 @@ export function ActionCard({
   onCta,
   onCardClick,
 }: ActionCardProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [isHovered, setIsHovered] = useState(false);
+  const [isCtaHovered, setIsCtaHovered] = useState(false);
 
   const isMergedType = item.rowKind === 'byToolsetType';
   const authenticatedCount = isMergedType ? item.instances.filter((i) => i.isAuthenticated).length : 0;
@@ -146,6 +149,8 @@ export function ActionCard({
         <button
           type="button"
           disabled={cta === 'unavailable'}
+          onMouseEnter={() => setIsCtaHovered(true)}
+          onMouseLeave={() => setIsCtaHovered(false)}
           onClick={(e) => {
             e.stopPropagation();
             if (cta !== 'unavailable') onCta?.(item);
@@ -154,11 +159,12 @@ export function ActionCard({
             appearance: 'none',
             margin: 0,
             width: '100%',
-            height: 32,
+            height: isMobile ? 44 : 32,
             borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--gray-a6)',
-            backgroundColor: 'var(--gray-a3)',
-            color: cta === 'unavailable' ? 'var(--gray-9)' : 'var(--gray-12)',
+            border: 'none',
+            backgroundColor: isCtaHovered && cta !== 'unavailable' ? 'var(--gray-a4)' : 'var(--gray-a3)',
+            color: cta === 'unavailable' ? 'var(--gray-9)' : 'var(--gray-11)',
+            transition: 'background-color 150ms ease',
             fontSize: 14,
             fontWeight: 500,
             cursor: cta === 'unavailable' ? 'not-allowed' : 'pointer',
@@ -189,6 +195,7 @@ function ToolsetInstanceSummaryBar({
   onAdd: (e: React.MouseEvent) => void;
   onBadgeClick: (e: React.MouseEvent) => void;
 }) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const [isAddHovered, setIsAddHovered] = useState(false);
   const onlyOnePill = (authenticatedCount > 0) !== (needsAuthCount > 0);
@@ -261,8 +268,8 @@ function ToolsetInstanceSummaryBar({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            width: 32,
-            height: 32,
+            width: isMobile ? 44 : 32,
+            height: isMobile ? 44 : 32,
             borderRadius: 'var(--radius-2)',
             backgroundColor: isAddHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
             cursor: 'pointer',

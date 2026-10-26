@@ -16,6 +16,7 @@ import {
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useGroupsStore } from '../store';
 import { GroupsApi } from '../api';
+import { groupSaveRefusalMessage } from '../save-error';
 import { hasLockedGroupName, isSystemGroup } from '../types';
 import type { GroupUser } from '../types';
 import { usePaginatedUserOptions } from '../../hooks/use-paginated-user-options';
@@ -204,13 +205,14 @@ export function GroupDetailSidebar({
 
       exitEditMode();
       onUpdateSuccess?.();
-    } catch {
+    } catch (error) {
       addToast({
         variant: 'error',
         title: t(
           'workspace.groups.edit.saveError',
           'Failed to update group'
         ),
+        description: groupSaveRefusalMessage(error),
         duration: 5000,
       });
     } finally {
@@ -265,7 +267,7 @@ export function GroupDetailSidebar({
       loadingLabel={t('workspace.groups.edit.deleting', 'Deleting...')}
       style={{ flexShrink: 0 }}
     >
-      {t('workspace.groups.edit.deleteButton', 'Delete Group')}
+      {t('workspace.groups.edit.deleteButton', 'Delete group')}
     </LoadingButton>
   );
 
@@ -280,7 +282,7 @@ export function GroupDetailSidebar({
       primaryLabel={
         isEditMode
           ? t('workspace.groups.edit.save', 'Save Edits')
-          : t('workspace.groups.edit.edit', 'Edit Group')
+          : t('workspace.groups.edit.edit', 'Edit group')
       }
       secondaryLabel={t('workspace.groups.edit.cancel', 'Cancel')}
       primaryDisabled={isEditMode && (isSavingEdit || isNameEmpty)}
@@ -422,12 +424,12 @@ export function GroupDetailSidebar({
             weight="medium"
             style={{ color: 'var(--slate-12)' }}
           >
-            {t('workspace.groups.detail.accessPermissions', 'Access Permissions')}
+            {t('workspace.groups.detail.accessPermissions', 'Access permissions')}
           </Text>
           <Text size="2" style={{ color: 'var(--slate-11)' }}>
             {t(
               'workspace.groups.detail.accessComingSoon',
-              'Access Permissions Coming Soon'
+              'Access permissions coming soon'
             )}
           </Text>
         </Box>

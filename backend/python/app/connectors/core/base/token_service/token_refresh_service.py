@@ -23,7 +23,11 @@ from app.connectors.core.base.token_service.oauth_service import (
 )
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.utils.oauth_config import get_oauth_config
+from app.utils.oauth_config import (
+    carry_oauth_url_settings,
+    get_oauth_config,
+    pin_oauth_urls,
+)
 from app.utils.request_context import (
     new_system_root,
     reset_context,
@@ -161,10 +165,12 @@ class TokenRefreshService:
             self.logger.debug(f"Could not check credentials for connector {connector_id}: {e}")
             return False
 
+    _OAUTH_AUTH_TYPES = ('OAUTH', 'OAUTH_ADMIN_CONSENT')
+
     def _is_oauth_connector(self, connector: dict[str, any]) -> bool:
         """Check if connector uses OAuth authentication."""
         auth_type = connector.get('authType', '')
-        return auth_type in ['OAUTH', 'OAUTH_ADMIN_CONSENT']
+        return auth_type in self._OAUTH_AUTH_TYPES
 
     async def _filter_authenticated_oauth_connectors(
         self,
@@ -237,8 +243,14 @@ class TokenRefreshService:
     async def _refresh_all_tokens_internal(self) -> None:
         """Internal method to refresh tokens (called with lock held)"""
         try:
-            # 1. Get all connectors from database
-            connectors = await self.graph_provider.get_all_documents("apps")
+            # 1. Get the OAuth connectors from database. Only they hold a token; a
+            # tenant can have thousands of collection Apps, and loading every App
+            # here would stall this service's event loop on each pass.
+            connectors = []
+            for auth_type in self._OAUTH_AUTH_TYPES:
+                connectors.extend(await self.graph_provider.get_nodes_by_filters(
+                    CollectionNames.APPS.value, {"authType": auth_type},
+                ))
 
             # 2. Filter for authenticated OAuth connectors
             authenticated_connectors = await self._filter_authenticated_oauth_connectors(connectors)
@@ -279,11 +291,15 @@ class TokenRefreshService:
                 if oauth_cfg.get("_id") == oauth_config_id:
                     return oauth_cfg
 
-            self.logger.warning(f"OAuth config {oauth_config_id} not found in list")
+            self.logger.warning("Referenced OAuth config not found in the list for connector type %s", connector_type)
             return {}
 
         except Exception as e:
-            self.logger.warning(f"Error fetching shared OAuth config {oauth_config_id}: {e}")
+            self.logger.warning(
+                "Error fetching shared OAuth config for connector type %s: %s",
+                connector_type,
+                type(e).__name__,
+            )
             return {}
 
     def _enrich_from_registry(
@@ -425,6 +441,10 @@ class TokenRefreshService:
         # auth_config.
         if config_data.get(AuthFieldKeys.INSTANCE_URL):
             oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = config_data[AuthFieldKeys.INSTANCE_URL]
+        # A Salesforce refresh must go to the login host that issued the token.
+        if config_data.get(AuthFieldKeys.LOGIN_URL):
+            oauth_flow_config[AuthFieldKeys.LOGIN_URL] = config_data[AuthFieldKeys.LOGIN_URL]
+        carry_oauth_url_settings(connector_type, config_data, oauth_flow_config)
 
         # Add optional infrastructure fields if present
         if OAuthConfigKeys.TOKEN_ACCESS_TYPE in shared_oauth_config:
@@ -475,6 +495,8 @@ class TokenRefreshService:
             base_config[AuthFieldKeys.REDIRECT_URI] = auth_config.get(AuthFieldKeys.REDIRECT_URI, "")
         if not base_config.get(OAuthConfigKeys.SCOPES):
             base_config[OAuthConfigKeys.SCOPES] = auth_config.get(OAuthConfigKeys.SCOPES, [])
+        if not base_config.get(AuthFieldKeys.LOGIN_URL) and auth_config.get(AuthFieldKeys.LOGIN_URL):
+            base_config[AuthFieldKeys.LOGIN_URL] = auth_config[AuthFieldKeys.LOGIN_URL]
 
         return base_config
 
@@ -520,12 +542,6 @@ class TokenRefreshService:
                 if client_id and client_secret:
                     oauth_flow_config[AuthFieldKeys.CLIENT_ID] = client_id
                     oauth_flow_config[AuthFieldKeys.CLIENT_SECRET] = client_secret
-                    # Self-managed connectors (e.g. GitLab EE) store the user's
-                    # instance host in auth_config.instanceUrl. Propagate so
-                    # get_oauth_config() can redirect SaaS-default OAuth URLs
-                    # to the user's instance during token refresh.
-                    if auth_config.get(AuthFieldKeys.INSTANCE_URL):
-                        oauth_flow_config[AuthFieldKeys.INSTANCE_URL] = auth_config[AuthFieldKeys.INSTANCE_URL]
                     self.logger.info(f"Using shared OAuth config for connector {connector_id}")
                     return oauth_flow_config
 
@@ -776,6 +792,8 @@ class TokenRefreshService:
             connector_type,
             auth_config
         )
+        carry_oauth_url_settings(connector_type, auth_config, oauth_flow_config)
+        pin_oauth_urls(connector_type, oauth_flow_config)
         oauth_config = get_oauth_config(oauth_flow_config)
 
         from app.connectors.core.base.token_service.oauth_service import OAuthProvider

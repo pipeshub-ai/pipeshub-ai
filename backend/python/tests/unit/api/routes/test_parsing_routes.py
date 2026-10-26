@@ -3,13 +3,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from unittest.mock import AsyncMock, MagicMock
+import time
+import uuid
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
 
+import jwt
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
-from httpx import ASGITransport, AsyncClient
+from httpx import ASGITransport, AsyncClient, Response
 
+from app.api.middlewares.auth import authMiddleware
+from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
+from app.api.middlewares.request_context import RequestContextMiddleware
 from app.api.routes.parsing import router as parsing_router
 from app.models.blocks import BlocksContainer
 from app.services.parsing.interface import (
@@ -61,6 +68,15 @@ def _make_governor(*, heavy_limit: int = 5, light_limit: int | None = None) -> R
     return governor
 
 
+async def _authenticated_as_indexing(request: Request) -> Request:
+    request.state.user = {
+        "token_type": "scoped",
+        "scopes": ["document:parse"],
+        "orgId": "org-123",
+    }
+    return request
+
+
 def _build_app(
     registry: ParserRegistry, heavy_limit: int = 5, light_limit: int | None = None
 ) -> FastAPI:
@@ -69,6 +85,7 @@ def _build_app(
     # Mirrors the governor set up in parsing_main.py's lifespan.
     app.state.governor = _make_governor(heavy_limit=heavy_limit, light_limit=light_limit)
     app.include_router(parsing_router)
+    app.dependency_overrides[authMiddleware] = _authenticated_as_indexing
 
     @app.get("/health")
     async def health_check() -> dict:
@@ -230,22 +247,34 @@ def test_parse_endpoint_invalid_provider() -> None:
     assert body["success"] is False
 
 
-def test_parse_endpoint_unexpected_exception() -> None:
+def test_parse_endpoint_unexpected_exception(caplog: pytest.LogCaptureFixture) -> None:
+    """The 500 body names the failure without echoing the exception text,
+    which stays in the service's own log with its traceback."""
     registry = MagicMock(spec=ParserRegistry)
     mock_parser = MagicMock()
-    mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom"))
+    mock_parser.parse = AsyncMock(side_effect=RuntimeError("Boom /srv/secret token=abc"))
     registry.resolve = MagicMock(return_value=mock_parser)
 
     app = _build_app(registry)
     client = TestClient(app)
 
-    response = client.post(
-        "/api/v1/parse",
-        files={"file": ("test.pdf", b"data", "application/pdf")},
-        data={"mime_type": "application/pdf", "provider": "default"},
-    )
+    with caplog.at_level(logging.ERROR, logger="app.api.routes.parsing"):
+        response = client.post(
+            "/api/v1/parse",
+            files={"file": ("test.pdf", b"data", "application/pdf")},
+            data={"mime_type": "application/pdf", "provider": "default"},
+        )
 
     assert response.status_code == 500
+    body = response.json()
+    assert body["success"] is False
+    assert body["error"]["code"] == "PARSE_FAILED"
+    assert body["error"]["message"] == "Unexpected error while parsing the document"
+    assert body["error"]["details"] == {"requestId": "-"}
+    assert "RuntimeError" not in response.text
+    assert "Boom" not in response.text
+    assert "/srv/secret" not in response.text
+    assert any(r.exc_info and "Boom" in str(r.exc_info[1]) for r in caplog.records)
 
 
 # ---------------------------------------------------------------------------
@@ -459,3 +488,192 @@ async def test_health_stays_responsive_while_parse_in_flight() -> None:
 
         release_event.set()
         await parse_task
+
+
+# ---------------------------------------------------------------------------
+# Service-token enforcement (real signed tokens, real auth middleware)
+# ---------------------------------------------------------------------------
+
+JWT_SECRET = "session-secret-for-tests"
+SCOPED_SECRET = "scoped-secret-for-tests"
+
+
+class _SecretsConfigService:
+    async def get_config(self, key, **kwargs):
+        return {"jwtSecret": JWT_SECRET, "scopedJwtSecret": SCOPED_SECRET}
+
+
+def _sign(claims: dict, secret: str = SCOPED_SECRET) -> str:
+    now = int(time.time())
+    return jwt.encode({"iat": now, "exp": now + 3600, **claims}, secret, algorithm="HS256")
+
+
+def _parse_token(**claims) -> str:
+    return _sign({"scopes": ["document:parse"], **claims})
+
+
+def _real_auth_client(parser: MagicMock | None = None) -> TestClient:
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=parser)
+    registry.list_all_formats = MagicMock(return_value={"csv": ["default"]})
+    app = _build_app(registry)
+    app.dependency_overrides.clear()
+    app.container = SimpleNamespace(
+        logger=lambda: logging.getLogger("test.parsing_routes.auth"),
+        config_service=_SecretsConfigService,
+    )
+    return TestClient(app)
+
+
+def _ok_parser() -> MagicMock:
+    parser = MagicMock()
+    parser.parse = AsyncMock(return_value=_ok_result())
+    return parser
+
+
+def _post_parse(client: TestClient, token: str | None, org_id: str | None = None) -> Response:
+    data = {"record_name": "test.csv", "mime_type": "text/csv", "extension": "csv", "provider": "default"}
+    if org_id is not None:
+        data["org_id"] = org_id
+    return client.post(
+        "/api/v1/parse",
+        files={"file": ("test.csv", b"a,b\n1,2", "text/csv")},
+        data=data,
+        headers={"Authorization": f"Bearer {token}"} if token else {},
+    )
+
+
+def test_parse_without_token_is_401_and_parser_not_called() -> None:
+    parser = _ok_parser()
+
+    response = _post_parse(_real_auth_client(parser), token=None)
+
+    assert response.status_code == 401
+    parser.parse.assert_not_awaited()
+
+
+def test_parse_with_user_token_is_403() -> None:
+    parser = _ok_parser()
+    session = _sign(
+        {"userId": "user-1", "orgId": "org-123", "role": "admin", "jti": uuid.uuid4().hex},
+        JWT_SECRET,
+    )
+
+    with patch(
+        "app.api.middlewares.auth.fetch_caller_role",
+        new_callable=AsyncMock,
+        return_value=CallerRole(CallerRoleStatus.VALID, "admin"),
+    ):
+        response = _post_parse(_real_auth_client(parser), session)
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "This route requires a service token"
+    parser.parse.assert_not_awaited()
+
+
+def test_parse_with_classify_scope_is_403() -> None:
+    parser = _ok_parser()
+    token = _sign({"scopes": ["document:classify"], "orgId": "org-123"})
+
+    response = _post_parse(_real_auth_client(parser), token)
+
+    assert response.status_code == 403
+    parser.parse.assert_not_awaited()
+
+
+def test_parse_with_unaccepted_scope_is_401() -> None:
+    parser = _ok_parser()
+    token = _sign({"scopes": ["mail:send"], "orgId": "org-123"})
+
+    response = _post_parse(_real_auth_client(parser), token)
+
+    assert response.status_code == 401
+    parser.parse.assert_not_awaited()
+
+
+def test_parse_with_parse_token_succeeds() -> None:
+    parser = _ok_parser()
+
+    response = _post_parse(_real_auth_client(parser), _parse_token(orgId="org-123"), org_id="org-123")
+
+    assert response.status_code == 200
+    assert response.json()["success"] is True
+    parser.parse.assert_awaited_once()
+
+
+def test_parse_token_without_org_is_401() -> None:
+    parser = _ok_parser()
+
+    response = _post_parse(_real_auth_client(parser), _parse_token(), org_id="org-123")
+
+    assert response.status_code == 401
+    assert response.json()["detail"] == "Token missing orgId"
+    parser.parse.assert_not_awaited()
+
+
+def test_parse_form_org_mismatch_is_403_and_parser_not_called() -> None:
+    parser = _ok_parser()
+
+    response = _post_parse(_real_auth_client(parser), _parse_token(orgId="org-123"), org_id="org-other")
+
+    assert response.status_code == 403
+    assert response.json()["detail"] == "org_id does not match the service token"
+    parser.parse.assert_not_awaited()
+
+
+def test_providers_without_token_is_401() -> None:
+    response = _real_auth_client().get("/api/v1/parse/providers")
+
+    assert response.status_code == 401
+
+
+def test_providers_with_orgless_parse_token_is_200() -> None:
+    response = _real_auth_client().get(
+        "/api/v1/parse/providers",
+        headers={"Authorization": f"Bearer {_parse_token()}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {"csv": ["default"]}
+
+
+@pytest.mark.asyncio
+async def test_a_parse_already_braked_in_this_memory_is_not_braked_again(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The all-in-one image: indexing braked the parse, so parsing admits it up to its
+    ceiling instead of queueing it behind its own braked limit."""
+    import app.api.routes.parsing as parsing_routes
+    import app.services.resource_governor.memory_domain as memory_domain_module
+
+    monkeypatch.setattr(parsing_routes, "PARSE_QUEUE_WAIT_WARN_SECONDS", 0.02)
+    monkeypatch.setattr(parsing_routes, "PARSE_GATE_TIMEOUT_SECONDS", 0.1)
+    monkeypatch.setattr(memory_domain_module, "memory_domain_id", lambda: "dom-1")
+
+    release_event = asyncio.Event()
+    registry = MagicMock(spec=ParserRegistry)
+    registry.resolve = MagicMock(return_value=_slow_parser(release_event, hold_seconds=1.0))
+    app = _build_app(registry, heavy_limit=4)
+    # As parsing_main installs it: it reads the stamp an upstream service sent.
+    app.add_middleware(RequestContextMiddleware)
+    # Braked below its ceiling by memory pressure.
+    app.state.governor._registry.set(Pool.HEAVY_PARSE, 1)
+    pdf = {"file": ("a.pdf", b"%PDF-1.4", "application/pdf")}
+    form = {"mime_type": "application/pdf", "extension": "pdf", "provider": "default"}
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        first = asyncio.create_task(client.post("/api/v1/parse", files=pdf, data=form))
+        await asyncio.sleep(0.05)  # the first request holds the one braked slot
+        braked_elsewhere = await client.post(
+            "/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-2"}
+        )
+        braked_here = asyncio.create_task(
+            client.post("/api/v1/parse", files=pdf, data=form, headers={"x-pipeshub-admitted-in": "dom-1"})
+        )
+        await asyncio.sleep(0.2)
+        release_event.set()
+        first_response, same_memory_response = await asyncio.gather(first, braked_here)
+
+    assert first_response.status_code == 200
+    assert braked_elsewhere.status_code == 429
+    assert same_memory_response.status_code == 200

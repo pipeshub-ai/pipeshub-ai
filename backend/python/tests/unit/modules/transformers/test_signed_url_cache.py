@@ -25,7 +25,6 @@ fakeredis_aioredis = pytest.importorskip("fakeredis.aioredis")
 from app.modules.transformers import blob_storage as bs
 from app.modules.transformers.blob_storage import BlobStorage, signed_url_cache_seconds
 from app.services.cache.interface import NoopSignedUrlCache
-from app.services.cache.redis_signed_url_cache import RedisSignedUrlCache
 
 
 @pytest.fixture(autouse=True)

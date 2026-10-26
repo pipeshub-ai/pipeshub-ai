@@ -85,7 +85,8 @@ from app.models.entities import (
     RecordType,
     User,
 )
-from app.models.permission import EntityType, Permission, PermissionType
+from app.models.permission import Permission
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.notification.types import (
     NotificationSeverity,
     NotificationType,
@@ -93,6 +94,7 @@ from app.services.notification.types import (
 from app.utils.filename_utils import sanitize_filename_for_content_disposition
 from app.utils.jwt import generate_jwt
 from app.utils.time_conversion import get_epoch_timestamp_in_ms, parse_timestamp
+from app.utils.user_messages import action_failed
 
 from .models import (
     LocalFsFileEvent,
@@ -721,17 +723,7 @@ class LocalFsConnector(BaseConnector):
             preview_renderable=False,
         )
 
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return folder_record, perms
+        return folder_record, []
 
     def _build_parent_folder_records(
         self,
@@ -912,14 +904,14 @@ class LocalFsConnector(BaseConnector):
         """The storage blob a push-flow record points at, or None.
 
         Only a FileRecord carries ``path``; the external-id lookup answers a base
-        Record, so the file record is read by id. Every Local FS record is a
-        file or folder, so a found record whose file record comes back empty is a
-        read that failed. Deleting it anyway would lose the only pointer to its blob.
+        Record, so the file record is read by id. A read that fails raises, and
+        the caller keeps the id owed. None means the files row itself is gone,
+        and with it the only pointer to a blob, so there is nothing to clean up.
         """
         if not isinstance(record, FileRecord) and record.record_type == RecordType.FILE:
             file_record = await self.data_entities_processor.get_file_record_by_id(record.id)
             if file_record is None:
-                raise LocalFsRecordUnreadableError(record.external_record_id)
+                return None
             record = file_record
         return self._storage_document_id_from_path(getattr(record, "path", None))
 
@@ -1334,17 +1326,7 @@ class LocalFsConnector(BaseConnector):
         ):
             file_record.indexing_status = ProgressStatus.AUTO_INDEX_OFF.value
 
-        effective_owner = owner or self._owner_user_for_permissions
-        perms: List[Permission] = []
-        if effective_owner:
-            perms.append(
-                Permission(
-                    email=effective_owner.email,
-                    type=PermissionType.OWNER,
-                    entity_type=EntityType.USER,
-                )
-            )
-        return file_record, perms
+        return file_record, []
 
     async def _ensure_owner_and_record_group(
         self,
@@ -1371,21 +1353,9 @@ class LocalFsConnector(BaseConnector):
             connector_id=self.connector_id,
             group_type=RecordGroupType.DRIVE,
             web_url=f"file://{root}",
+            inherit_permissions=True,
         )
-        await self.data_entities_processor.on_new_record_groups(
-            [
-                (
-                    record_group,
-                    [
-                        Permission(
-                            email=owner.email,
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER,
-                        )
-                    ],
-                )
-            ]
-        )
+        await self.data_entities_processor.on_new_record_groups([(record_group, [])])
 
         return owner, rg_external
 
@@ -1423,10 +1393,11 @@ class LocalFsConnector(BaseConnector):
             try:
                 if record is not None:
                     document_id = await self._storage_document_id_of(record)
-                    await self.data_entities_processor.on_record_deleted(
+                    in_trash = await self.data_entities_processor.on_record_deleted(
                         record_id=record.id,
                     )
-                    if document_id:
+                    # A record in the trash keeps its stored copy; the purge removes both.
+                    if document_id and not in_trash:
                         await self._delete_storage_document(document_id)
                 elif ids_known_to_exist:
                     # This id came from the sync point, so a record for it did
@@ -1554,7 +1525,8 @@ class LocalFsConnector(BaseConnector):
                     # longer one of this run's live records.
                     seen_external_ids.discard(old_ext_id)
                     seen_external_ids.add(record.external_record_id)
-            await self.data_entities_processor.on_records_moved(list(move_buffer))
+            # Each move carries the record's full permission list, as for a new record.
+            await self.data_entities_processor.on_records_moved(list(move_buffer), permissions_fetched=True)
             processed += self._count_processed_file_records(
                 [(record, perms) for _old_ext_id, record, perms in move_buffer]
             )
@@ -1770,9 +1742,9 @@ class LocalFsConnector(BaseConnector):
         payload: JsonValue | bytes | bytearray,
     ) -> bytes:
         """
-        The storage service's GET /buffer route returns
-        ``res.json(buffer)``. Across local / S3 / Azure providers, that
-        always serializes a Node Buffer as ``{"type":"Buffer","data":[...]}``.
+        The storage service's GET /buffer route returns the raw bytes. Older
+        versions returned ``res.json(buffer)``, a Node Buffer serialised as
+        ``{"type":"Buffer","data":[...]}``, which is still accepted.
 
         Some legacy callers wrap it once more as ``{"data": <buffer>}``.
         """
@@ -1820,7 +1792,8 @@ class LocalFsConnector(BaseConnector):
                             response.status, record.record_name, (await response.text())[:500],
                         )
                         raise internal_service_status(response.status)
-                    raw_text = await response.text()
+                    is_raw = "application/octet-stream" in response.headers.get("Content-Type", "").lower()
+                    raw = await response.read()
         except asyncio.TimeoutError as exc:
             raise HTTPException(
                 status_code=HttpStatusCode.GATEWAY_TIMEOUT.value,
@@ -1843,11 +1816,12 @@ class LocalFsConnector(BaseConnector):
                 ),
             ) from exc
 
-        payload: JsonValue | bytes
-        try:
-            payload = json.loads(raw_text) if raw_text else {}
-        except json.JSONDecodeError:
-            payload = raw_text.encode("utf-8")
+        payload: JsonValue | bytes = raw
+        if not is_raw:
+            try:
+                payload = json.loads(raw) if raw else {}
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                payload = raw
 
         body = self._decode_storage_buffer_payload(payload)
         media = record.mime_type or "application/octet-stream"
@@ -1935,21 +1909,29 @@ class LocalFsConnector(BaseConnector):
                     status_code=HttpStatusCode.NOT_FOUND.value,
                     detail=f"Local FS content unavailable: {exc}",
                 ) from exc
+            self.logger.warning(
+                "Local FS desktop could not serve content for record %s: %s",
+                record.id, exc, exc_info=True,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=f"Local FS desktop could not serve content: {exc}",
+                detail=action_failed("open this file from the desktop app"),
             ) from exc
         except LocalFsDesktopOfflineError as exc:
             # 503 classifies as TRANSIENT for the indexing consumer, so the
             # record is retried once the machine is back rather than failed.
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=str(exc),
+                detail=str(exc),  # user-written message
             ) from exc
         except LocalFsDesktopError as exc:
+            self.logger.warning(
+                "Local FS desktop is not available for record %s: %s",
+                record.id, exc, exc_info=True,
+            )
             raise HTTPException(
                 status_code=HttpStatusCode.SERVICE_UNAVAILABLE.value,
-                detail=f"Local FS desktop is not available: {exc}",
+                detail=action_failed("open this file from the desktop app"),
             ) from exc
 
         safe_filename = sanitize_filename_for_content_disposition(
@@ -2074,11 +2056,14 @@ class LocalFsConnector(BaseConnector):
         listed: dict[str, Record] = {}
         offset = 0
         while True:
+            # Every record, trash included: the retire path decides what a trashed
+            # one needs, and a listing that hid it would leave it behind for good.
             records = await self.data_entities_processor.get_records_by_status(
                 self.connector_id,
                 status_filters,
                 limit=FULL_SYNC_RESET_BATCH_SIZE,
                 offset=offset,
+                visibility=RecordVisibility.ALL,
             )
             if not records:
                 break

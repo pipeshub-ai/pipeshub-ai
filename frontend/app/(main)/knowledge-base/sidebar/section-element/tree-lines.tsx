@@ -2,11 +2,7 @@
 
 import React from 'react';
 import { Box } from '@radix-ui/themes';
-import {
-  TREE_INDENT_PER_LEVEL,
-  TREE_BASE_PADDING,
-  TREE_LINE_OFFSET,
-} from '@/app/components/sidebar';
+import { TREE_LINE_OFFSET, TREE_LINE_OPACITY_CSS_VAR, treeIndentOffset } from '@/app/components/sidebar';
 
 /**
  * Renders vertical tree-indent lines for nested sidebar items.
@@ -29,11 +25,12 @@ export function renderTreeLines(depth: number, startDepth: number = 0): React.Re
         key={`line-${i}`}
         style={{
           position: 'absolute',
-          left: `${TREE_BASE_PADDING + i * TREE_INDENT_PER_LEVEL + TREE_LINE_OFFSET}px`,
+          left: treeIndentOffset(i, TREE_LINE_OFFSET),
           top: 0,
           bottom: 0,
           width: '1px',
           backgroundColor: 'var(--slate-6)',
+          opacity: `var(${TREE_LINE_OPACITY_CSS_VAR}, 1)`,
           pointerEvents: 'none',
         }}
       />

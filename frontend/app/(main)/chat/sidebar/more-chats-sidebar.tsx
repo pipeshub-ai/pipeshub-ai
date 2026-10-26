@@ -15,6 +15,7 @@ import { ChatApi } from '@/chat/api';
 import { ChatSectionElement } from './chat-section-element';
 import { MORE_CHATS_PAGE_SIZE } from '../constants';
 import { buildChatHref } from '@/chat/build-chat-url';
+import { orderPinnedFirst, withPinned } from '@/chat/utils/pinned-conversations';
 import { useDebouncedSearch } from '@/knowledge-base/hooks/use-debounced-search';
 import type { Conversation } from '@/chat/types';
 
@@ -203,6 +204,9 @@ export const MoreChatsSidebar = React.memo(function MoreChatsSidebar({ sectionTy
                 conversation={conv}
                 isActive={currentConversationId === conv.id}
                 onClick={() => handleSelect(conv.id)}
+                onPinnedChange={(pinned) =>
+                  setRows((prev) => orderPinnedFirst(withPinned(prev, conv.id, pinned)))
+                }
               />
             ))
           ) : (

@@ -12,13 +12,24 @@ import logging
 import time
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
-from app.config.constants.arangodb import CollectionNames
+from app.config.constants.arangodb import HIERARCHY_RELATION_TYPES, CollectionNames
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
 from app.models.entities import AppMetadata, AppRole, Record
-from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
+from app.services.graph_db.arango.arango_http_provider import (
+    EDGE_COLLECTIONS,
+    NODE_COLLECTIONS,
+    ArangoHTTPProvider,
+)
 
 logger = logging.getLogger("test-graph-provider")
+
+
+def _relation_collection(relation_type: str) -> str:
+    """Hierarchy is in nodeRelations; every other relation type is a link."""
+    if relation_type in HIERARCHY_RELATION_TYPES:
+        return CollectionNames.NODE_RELATIONS.value
+    return CollectionNames.RECORD_LINKS.value
 
 
 def _app_role_from_arango(doc: dict, connector_id: str) -> AppRole:
@@ -188,12 +199,17 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         return len(result) if result else 0
 
     async def count_parent_child_edges(self, connector_id: str) -> int:
-        """Count parent/child folder edges (RECORD_RELATION with relationshipType PARENT_CHILD)."""
+        """Count parent/child edges between records (nodeRelations with relationshipType PARENT_CHILD).
+
+        A record group holds its top-level records through the same edge; those
+        are not counted.
+        """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         query = f"""
-            FOR e IN {CollectionNames.RECORD_RELATIONS.value}
+            FOR e IN {CollectionNames.NODE_RELATIONS.value}
                 FILTER e.relationshipType == 'PARENT_CHILD'
+                FILTER NOT IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', e._from)
                 LET from_doc = DOCUMENT(e._from)
                 LET to_doc = DOCUMENT(e._to)
                 FILTER from_doc.connectorId == @cid AND to_doc.connectorId == @cid
@@ -476,7 +492,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                 FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
                     FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
                     LIMIT 1
-                    RETURN g.name
+                    RETURN g.groupName
         """
         result = await self.http_client.execute_aql(query, {"cid": connector_id, "name": record_name})
         return result[0] if result else None
@@ -693,7 +709,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                     LET path_parts = (
                         FOR v, e, p IN 0..5 OUTBOUND g {CollectionNames.BELONGS_TO.value}
                             FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', v)
-                            RETURN NOT_NULL(v.name, '')
+                            RETURN NOT_NULL(v.groupName, '')
                     )
                     LET filtered_parts = (FOR part IN path_parts FILTER part != '' RETURN part)
                     RETURN LENGTH(filtered_parts) > 0 ? CONCAT_SEPARATOR('/', filtered_parts) : null
@@ -844,6 +860,135 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return dict(result[0]) if result else None
 
+    async def record_belongs_to_external_group(
+        self,
+        connector_id: str,
+        external_record_id: str,
+        external_group_id: str,
+    ) -> bool:
+        """True if Record has BELONGS_TO → RecordGroup with the given externalGroupId."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR g, e IN OUTBOUND r {CollectionNames.BELONGS_TO.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', g)
+                    FILTER g.externalGroupId == @gid
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "gid": str(external_group_id),
+            },
+        )
+        return bool(result) and len(result) > 0
+
+    async def user_has_direct_record_permission(
+        self,
+        connector_id: str,
+        user_email: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if User -[:PERMISSION]-> Record for this connector external id."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR u, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', u)
+                    FILTER LOWER(u.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query,
+            {
+                "cid": connector_id,
+                "eid": str(external_record_id),
+                "email": user_email,
+            },
+        )
+        return bool(result) and len(result) > 0
+
+    async def group_has_record_permission(
+        self,
+        connector_id: str,
+        external_group_id: str,
+        external_record_id: str,
+    ) -> bool:
+        """True if the connector's group (by externalGroupId) has PERMISSION on the record."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR g, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.GROUPS.value}', g)
+                    FILTER g.connectorId == @cid AND LOWER(g.externalGroupId) == LOWER(@gid)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": str(external_record_id), "gid": str(external_group_id)}
+        )
+        return bool(result)
+
+    async def principal_record_permission_label(
+        self,
+        connector_id: str,
+        email: str,
+        external_record_id: str,
+    ) -> Optional[str]:
+        """``"User"`` or ``"Person"`` when that email holds a direct PERMISSION on the record, else None."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid AND r.externalRecordId == @eid
+                LIMIT 1
+                FOR p, e IN INBOUND r {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', p)
+                        OR IS_SAME_COLLECTION('{CollectionNames.PEOPLE.value}', p)
+                    FILTER LOWER(p.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN IS_SAME_COLLECTION('{CollectionNames.USERS.value}', p) ? "User" : "Person"
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "eid": str(external_record_id), "email": email}
+        )
+        return str(result[0]) if result else None
+
+    async def principal_app_relation(
+        self,
+        connector_id: str,
+        email: str,
+    ) -> Optional[Dict[str, Any]]:
+        """The USER_APP_RELATION from this email's User/Person to the connector's App, or None."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR e IN {CollectionNames.USER_APP_RELATION.value}
+                FILTER e._to == CONCAT('{CollectionNames.APPS.value}/', @cid)
+                LET p = DOCUMENT(e._from)
+                FILTER p != null AND LOWER(p.email) == LOWER(@email)
+                LIMIT 1
+                RETURN {{
+                    label: STARTS_WITH(e._from, '{CollectionNames.USERS.value}/') ? "User" : "Person",
+                    isExternalUser: e.isExternalUser == true
+                }}
+        """
+        result = await self.http_client.execute_aql(query, {"cid": connector_id, "email": email})
+        return dict(result[0]) if result else None
+
     async def get_app_metadata_by_connector_id(
         self, connector_id: str
     ) -> Optional[AppMetadata]:
@@ -893,6 +1038,27 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             query, {"cid": connector_id, "gid": external_group_id}
         )
         return len(result) if result else 0
+
+    async def group_has_member(
+        self, connector_id: str, external_group_id: str, user_email: str
+    ) -> bool:
+        """Whether this user has the connector's group-membership PERMISSION edge to the group."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        query = f"""
+            FOR g IN {CollectionNames.GROUPS.value}
+                FILTER g.connectorId == @cid AND g.externalGroupId == @gid
+                LIMIT 1
+                FOR v IN INBOUND g {CollectionNames.PERMISSION.value}
+                    FILTER IS_SAME_COLLECTION('{CollectionNames.USERS.value}', v)
+                    FILTER LOWER(v.email) == LOWER(@email)
+                    LIMIT 1
+                    RETURN 1
+        """
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "gid": external_group_id, "email": user_email}
+        )
+        return bool(result)
 
     async def fetch_records_by_type(
         self, connector_id: str, record_type: str, *, scoped: bool = False
@@ -977,12 +1143,13 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     async def count_record_relation_edges(
         self, connector_id: str, relation_type: str
     ) -> int:
-        """Count RECORD_RELATIONS edges with a specific relationshipType."""
+        """Count record-to-record edges with a specific relationshipType."""
         if not self.http_client:
             raise RuntimeError("Provider not connected")
         query = f"""
-            FOR e IN {CollectionNames.RECORD_RELATIONS.value}
+            FOR e IN {_relation_collection(relation_type)}
                 FILTER e.relationshipType == @rtype
+                FILTER NOT IS_SAME_COLLECTION('{CollectionNames.RECORD_GROUPS.value}', e._from)
                 LET from_doc = DOCUMENT(e._from)
                 LET to_doc = DOCUMENT(e._to)
                 FILTER from_doc.connectorId == @cid AND to_doc.connectorId == @cid
@@ -1024,11 +1191,13 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             )
         return len(result) if result else 0
 
-    async def count_user_app_relation_edges(self, connector_id: str) -> int:
+    async def count_user_app_relation_edges(
+        self, connector_id: str, *, external: bool | None = None,
+    ) -> int:
         """Count USER_APP_RELATION edges to the App linked to this connector.
 
-        Log-only: this edge is typically created at user/app registration, not by
-        connector sync. Returns 0 if no users are registered against the app.
+        ``external`` narrows to people outside the source directory (``True``) or to
+        directory users only (``False``); ``None`` counts both.
         """
         if not self.http_client:
             raise RuntimeError("Provider not connected")
@@ -1039,15 +1208,18 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
                     FILTER IS_SAME_COLLECTION('{CollectionNames.APPS.value}', v)
                     LIMIT 1
                     FOR u, ue IN INBOUND v {CollectionNames.USER_APP_RELATION.value}
+                        FILTER @external == null OR (ue.isExternalUser == true) == @external
                         RETURN 1
         """
-        result = await self.http_client.execute_aql(query, {"cid": connector_id})
+        result = await self.http_client.execute_aql(
+            query, {"cid": connector_id, "external": external}
+        )
         return len(result) if result else 0
 
     async def get_record_outgoing_relations(
         self, connector_id: str, external_record_id: str, relation_type: str
     ) -> List[str]:
-        """Return externalRecordIds of records reachable via outbound RECORD_RELATIONS of the given type.
+        """Return externalRecordIds of records reachable via an outbound edge of the given type.
 
         For parent_child / attachment edges, the connector emits ``parent -> child``
         so this returns the **children**. To resolve the parent, use
@@ -1059,7 +1231,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid AND r.externalRecordId == @eid
                 LIMIT 1
-                FOR v, e IN OUTBOUND r {CollectionNames.RECORD_RELATIONS.value}
+                FOR v, e IN OUTBOUND r {_relation_collection(relation_type)}
                     FILTER e.relationshipType == @rtype
                     RETURN v.externalRecordId
         """
@@ -1072,7 +1244,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
     async def get_record_incoming_relations(
         self, connector_id: str, external_record_id: str, relation_type: str
     ) -> List[str]:
-        """Return externalRecordIds of records pointing TO this record via RECORD_RELATIONS of the given type.
+        """Return externalRecordIds of records pointing TO this record via an edge of the given type.
 
         Inverse of :meth:`get_record_outgoing_relations`. For parent_child / attachment
         edges, this returns the parent (since the connector stores the edge
@@ -1084,7 +1256,7 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
             FOR r IN {CollectionNames.RECORDS.value}
                 FILTER r.connectorId == @cid AND r.externalRecordId == @eid
                 LIMIT 1
-                FOR v, e IN INBOUND r {CollectionNames.RECORD_RELATIONS.value}
+                FOR v, e IN INBOUND r {_relation_collection(relation_type)}
                     FILTER e.relationshipType == @rtype
                     RETURN v.externalRecordId
         """
@@ -1216,3 +1388,76 @@ class TestArangoHTTPProvider(ArangoHTTPProvider):
         )
         return list(result) if result else []
 
+    # =========================================================================
+    # Delete footprints. A handle is the document _id ("<collection>/<key>").
+    # Edges are found by their _from/_to, so an edge left pointing at a deleted
+    # node is still counted; walking out from surviving nodes would miss it.
+    # =========================================================================
+
+    async def connector_node_handles(self, connector_id: str) -> List[str]:
+        """Every node a connector (or knowledge base) owns: documents carrying its
+        connectorId, the document keyed by the connector id, and its records' type docs."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        handles: set = set()
+        for collection, _schema in NODE_COLLECTIONS:
+            if not await self.http_client.has_collection(collection):
+                continue
+            rows = await self.http_client.execute_aql(
+                "FOR d IN @@c FILTER d.connectorId == @cid OR d._key == @cid RETURN d._id",
+                {"@c": collection, "cid": connector_id},
+            )
+            handles.update(rows or [])
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r.connectorId == @cid
+                FOR t IN 1..1 OUTBOUND r {CollectionNames.IS_OF_TYPE.value}
+                    RETURN DISTINCT t._id
+            """,
+            {"cid": connector_id},
+        )
+        handles.update(rows or [])
+        return sorted(handles)
+
+    async def record_node_handles(self, record_ids: Iterable[str]) -> List[str]:
+        """The given records and their type documents (files, mails, ...)."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {CollectionNames.RECORDS.value}
+                FILTER r._key IN @ids
+                LET types = (FOR t IN 1..1 OUTBOUND r {CollectionNames.IS_OF_TYPE.value} RETURN t._id)
+                FOR h IN APPEND([r._id], types)
+                    RETURN DISTINCT h
+            """,
+            {"ids": list(record_ids)},
+        )
+        return sorted(rows or [])
+
+    async def count_existing_nodes(self, handles: Iterable[str]) -> int:
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        rows = await self.http_client.execute_aql(
+            "FOR h IN @handles FILTER DOCUMENT(h) != null COLLECT WITH COUNT INTO c RETURN c",
+            {"handles": list(handles)},
+        )
+        return int(rows[0]) if rows else 0
+
+    async def count_edges_touching(self, handles: Iterable[str], *, excluding: Iterable[str] = ()) -> int:
+        """Edges in any edge collection but *excluding* with either end on one of these nodes."""
+        if not self.http_client:
+            raise RuntimeError("Provider not connected")
+        wanted = list(handles)
+        skipped = set(excluding)
+        seen: set = set()
+        for collection, _schema in EDGE_COLLECTIONS:
+            if collection in skipped or not await self.http_client.has_collection(collection):
+                continue
+            rows = await self.http_client.execute_aql(
+                "FOR e IN @@c FILTER e._from IN @h OR e._to IN @h RETURN e._id",
+                {"@c": collection, "h": wanted},
+            )
+            seen.update(rows or [])
+        return len(seen)

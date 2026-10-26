@@ -64,9 +64,8 @@ const userCredentialSchema = new Schema<IUserCredentials>(
 // Pre-hooks to enforce validation on update methods
 userCredentialSchema.pre(
   'findOneAndUpdate',
-  function (this: mongoose.Query<any, IUserCredentials>, next) {
+  function (this: mongoose.Query<any, IUserCredentials>) {
     this.setOptions({ runValidators: true });
-    next();
   },
 );
 

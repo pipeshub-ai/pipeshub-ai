@@ -1,0 +1,26 @@
+{
+  "gpt-5.6-luna": {
+    "mode": "chat",
+    "litellm_provider": "openai",
+    "max_input_tokens": 1,
+    "supports_vision": false,
+    "supports_function_calling": false
+  },
+  "openai/gpt-5.6-luna": {
+    "mode": "chat",
+    "litellm_provider": "openai",
+    "max_input_tokens": 922000,
+    "supports_vision": true,
+    "supports_function_calling": true,
+    "supports_reasoning": true
+  },
+  "text-embedding-3-small": {
+    "mode": "embedding",
+    "litellm_provider": "openai",
+    "max_input_tokens": 8191
+  },
+  "omni-moderation-latest": {
+    "mode": "moderation",
+    "litellm_provider": "openai"
+  }
+}

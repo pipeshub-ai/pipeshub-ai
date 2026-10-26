@@ -122,6 +122,10 @@ from app.connectors.sources.local_fs.connector import (
 )
 from app.connectors.sources.local_fs.models import LocalFsFileEvent, LocalFsPullBatch
 from app.models.entities import AppMetadata, FileRecord, Record, User
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    matches_visibility,
+)
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from tests.unit.connectors.sources.test_connector_workflow_integration import (
     MockArangoProvider,
@@ -155,7 +159,7 @@ class _GraphProviderView:
     def __init__(self, store) -> None:
         self._s = store
 
-    async def get_document(self, document_key, collection, transaction=None) -> dict | None:
+    async def get_document(self, document_key, collection, transaction=None, *, raise_on_error=False) -> dict | None:
         return self._s.get_node(collection, document_key)
 
     async def get_documents_paginated(
@@ -208,7 +212,7 @@ class LocalFsTransactionStore(MockTransactionStore):
         doc = self._s.get_node(CollectionNames.APPS.value, connector_id)
         return AppMetadata.from_db_document(doc) if doc is not None else None
 
-    async def get_user_by_user_id(self, user_id: str) -> User | None:
+    async def get_user_by_user_id(self, user_id: str, *, raise_on_error: bool = False) -> User | None:
         doc = self._s.get_node(CollectionNames.USERS.value, user_id)
         if doc is None:
             return None
@@ -231,6 +235,7 @@ class LocalFsTransactionStore(MockTransactionStore):
         is_placeholder=None,
         after_key=None,
         exclude_statuses=None,
+        visibility=RecordVisibility.LIVE,
     ) -> list:
         docs = [
             d
@@ -238,6 +243,7 @@ class LocalFsTransactionStore(MockTransactionStore):
             if d.get("orgId") == org_id
             and d.get("connectorId") == connector_id
             and d.get("indexingStatus") in status_filters
+            and matches_visibility(d, visibility)
         ]
         if exclude_statuses:
             docs = [d for d in docs if d.get("indexingStatus") not in exclude_statuses]
@@ -252,9 +258,11 @@ class LocalFsTransactionStore(MockTransactionStore):
             docs = docs[:limit]
         return [await self.get_file_record_by_id(d["_key"]) or self._doc_to_record(d) for d in docs]
 
-    async def batch_upsert_records(self, records: list[Record]) -> None:
+    async def batch_upsert_records(
+        self, records: list[Record], *, release_trashed_external_ids: bool = False
+    ) -> None:
         """The base document plus a files document, as both graph providers write a FileRecord."""
-        await super().batch_upsert_records(records)
+        await super().batch_upsert_records(records, release_trashed_external_ids=release_trashed_external_ids)
         for record in records:
             if isinstance(record, FileRecord):
                 self._s.upsert_node(CollectionNames.FILES.value, record.to_arango_record())
@@ -275,7 +283,7 @@ class LocalFsTransactionStore(MockTransactionStore):
 
 class LocalFsDataStoreProvider(MockDataStoreProvider):
     @asynccontextmanager
-    async def transaction(self) -> AsyncIterator[LocalFsTransactionStore]:
+    async def transaction(self, explicit: bool | None = None) -> AsyncIterator[LocalFsTransactionStore]:
         yield LocalFsTransactionStore(self._store)
 
 
@@ -544,6 +552,23 @@ class TestRunSync:
         assert connector._external_record_id_for_rel_path("kept.txt") in remaining
         assert connector._external_record_id_for_rel_path("stale.txt") not in remaining
 
+    async def test_full_run_prunes_a_vanished_record_that_is_in_the_trash(
+        self, connector: LocalFsConnector, graph_store
+    ) -> None:
+        # The prune lists every record, trash included; a LIVE listing would
+        # never retire a trashed record whose file is gone.
+        await _seed_files(connector, "stale.txt", "kept.txt")
+        stale_id = connector._external_record_id_for_rel_path("stale.txt")
+        for doc in _records_snapshot(graph_store).values():
+            if doc.get("externalRecordId") == stale_id:
+                graph_store.collections[CollectionNames.RECORDS.value][doc["_key"]]["isDeleted"] = True
+
+        await self._run(connector, [(_events_for("kept.txt"), False)])
+
+        remaining = {doc.get("externalRecordId") for doc in _records_snapshot(graph_store).values()}
+        assert connector._external_record_id_for_rel_path("kept.txt") in remaining
+        assert stale_id not in remaining
+
     @staticmethod
     def _resume_point() -> dict[str, Any]:
         """A sync point left by a previous run, which makes the next one INCREMENTAL."""
@@ -742,28 +767,42 @@ class TestRunSync:
         assert guessable["mimeType"] == "text/plain"
         assert opaque["mimeType"] == MimeTypes.UNKNOWN.value
 
-    async def test_records_carry_an_owner_permission_edge(
-        self, connector: LocalFsConnector, graph_store
+    async def test_records_reach_the_owner_through_the_app(
+        self, connector: LocalFsConnector, processor, graph_store
     ) -> None:
-        # Without this edge the file is indexed but invisible to the only
-        # person who can see it, which no record-count assertion would catch.
-        await self._run(connector, [(_events_for("nested/a.txt"), False)])
+        # Records carry no grant of their own: each inherits up to the app, and
+        # the owner is the app's only user. A broken link anywhere in that chain
+        # leaves the file indexed but invisible to the only person who can see it.
+        linked = AsyncMock(wraps=processor.on_new_app_users)
+        with patch.object(processor, "on_new_app_users", linked):
+            await self._run(connector, [(_events_for("nested/a.txt"), False)])
 
-        perm_edges = graph_store.edges.get(CollectionNames.PERMISSION.value, [])
-        owner_ref = f"{CollectionNames.USERS.value}/{OWNER.id}"
-        # The synthesized parent folder needs one too, or the tree it hangs in
+        [app_users] = linked.await_args.args
+        assert [(u.source_user_id, u.email) for u in app_users] == [(OWNER.id, OWNER.email)]
+
+        inherits = {
+            edge["_from"]: edge["_to"]
+            for edge in graph_store.edges.get(CollectionNames.INHERIT_PERMISSIONS.value, [])
+        }
+        granted_to = {edge.get("_to") for edge in graph_store.edges.get(CollectionNames.PERMISSION.value, [])}
+        app_ref = f"{CollectionNames.APPS.value}/{CONNECTOR_ID}"
+        # The synthesized parent folder is part of the chain, or the tree it hangs in
         # is unreachable.
         for rel_path in ("nested/a.txt", "nested"):
             doc = _record_for(connector, graph_store, rel_path)
             assert doc is not None, f"{rel_path} was not indexed"
-            record_ref = f"{CollectionNames.RECORDS.value}/{doc['_key']}"
-            granted = [
-                edge
-                for edge in perm_edges
-                if edge.get("_to") == record_ref and edge.get("_from") == owner_ref
-            ]
-            assert granted, f"{rel_path} has no owner permission edge"
-            assert granted[0]["role"] == "OWNER"
+            node = f"{CollectionNames.RECORDS.value}/{doc['_key']}"
+            assert node not in granted_to, f"{rel_path} carries a grant of its own"
+            if rel_path == "nested/a.txt":
+                folder = _record_for(connector, graph_store, "nested")
+                assert folder is not None, "nested was not indexed"
+                assert inherits.get(node) == f"{CollectionNames.RECORDS.value}/{folder['_key']}", (
+                    f"{rel_path} does not inherit from its folder"
+                )
+            chain = [node]
+            while chain[-1] in inherits and len(chain) < 10:
+                chain.append(inherits[chain[-1]])
+            assert chain[-1] == app_ref, f"{rel_path} does not inherit up to the app: {chain}"
 
     async def test_owner_device_comes_from_the_app_document(
         self, connector: LocalFsConnector, graph_store

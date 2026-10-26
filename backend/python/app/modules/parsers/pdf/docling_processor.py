@@ -36,6 +36,9 @@ from app.utils.worker_scaling import scaled
 
 SUCCESS_STATUS = "success"
 
+# The only formats callers hand to DoclingProcessor (see LocalDoclingParser).
+DOCLING_ROUTED_FORMATS = (InputFormat.PDF, InputFormat.DOCX, InputFormat.PPTX, InputFormat.MD)
+
 # Wired by each service's lifespan (see parsing_main.py/indexing_main.py/
 # docling_main.py) once a ResourceGovernor is constructed for that process —
 # mirrors pdf_rasterizer.py's identical singleton and for the same reason:
@@ -103,11 +106,17 @@ def _get_converter() -> DocumentConverter:
         table_batch_size=1,
         queue_max_size=10,
     )
-    return DocumentConverter(format_options={
-        InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
-        InputFormat.DOCX: WordFormatOption(),
-        InputFormat.MD: MarkdownFormatOption(),
-    })
+    # Docling picks the backend from the bytes before the file name, so without this
+    # list a record routed here as PDF/DOCX/PPTX/MD could reach the JSON, METS, HTML
+    # or LaTeX backends just by looking like one of those formats.
+    return DocumentConverter(
+        allowed_formats=list(DOCLING_ROUTED_FORMATS),
+        format_options={
+            InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options, backend=PyPdfiumDocumentBackend),
+            InputFormat.DOCX: WordFormatOption(),
+            InputFormat.MD: MarkdownFormatOption(),
+        },
+    )
 
 
 def _parse_document_in_worker(

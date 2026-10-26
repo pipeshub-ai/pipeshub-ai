@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.models.blocks import SemanticMetadata
 
 
 # ---------------------------------------------------------------------------
@@ -13,7 +14,10 @@ from app.config.constants.arangodb import CollectionNames
 
 def _make_graph_provider():
     """Return a mock IGraphDBProvider."""
-    return AsyncMock()
+    provider = AsyncMock()
+    # A sync predicate: an AsyncMock answer would be a truthy coroutine.
+    provider.is_write_conflict = MagicMock(return_value=False)
+    return provider
 
 
 def _make_tx_store():
@@ -228,7 +232,7 @@ class TestSaveMetadataToDb:
         # Edge already exists in reconciliation lookup
         dept_to = f"{CollectionNames.DEPARTMENTS.value}/dept-key-1"
 
-        async def edges_side_effect(record_from, edge_collection):
+        async def edges_side_effect(record_from, edge_collection, **_kwargs):
             if edge_collection == CollectionNames.BELONGS_TO_DEPARTMENT.value:
                 return [{"_to": dept_to, "name": "Engineering"}]
             return []
@@ -274,7 +278,7 @@ class TestSaveMetadataToDb:
         # Second call: categories (return empty - category doesn't exist)
         call_count = 0
 
-        async def side_effect(collection, filters):
+        async def side_effect(collection, filters, **_kwargs):
             nonlocal call_count
             call_count += 1
             return []
@@ -296,7 +300,7 @@ class TestSaveMetadataToDb:
         # Languages exist
         lang_call_idx = [0]
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.LANGUAGES.value:
                 return [{"_key": "lang-en", "name": "English"}]
             return []
@@ -321,7 +325,7 @@ class TestSaveMetadataToDb:
     async def test_handles_topics(self):
         tx_store = _make_tx_store()
 
-        async def nodes_side_effect(collection, filters):
+        async def nodes_side_effect(collection, filters, **_kwargs):
             if collection == CollectionNames.TOPICS.value:
                 return [{"_key": "topic-1", "name": "AI"}]
             return []
@@ -416,3 +420,142 @@ class TestSaveMetadataToDb:
         metadata = _make_semantic_metadata()
         with pytest.raises(Exception, match="DB connection lost"):
             await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+
+class TestRecordWriteRetriesConflicts:
+    """KG-32: the record's graph write is re-run when it collides with
+    another record's write; every attempt starts from a fresh read."""
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_reruns_the_write_without_duplicating_entities(self, monkeypatch) -> None:
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        provider = _make_graph_provider()
+        provider.is_write_conflict = MagicMock(side_effect=lambda e: "1200" in str(e))
+        transformer = _make_transformer(graph_provider=provider)
+        store = _make_tx_store()
+        store.batch_create_edges = AsyncMock(side_effect=[RuntimeError("[1200] write-write conflict"), None, None, None])
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn, **_: store,
+        )
+        metadata = SemanticMetadata(categories=["Finance"], topics=["Budget"], languages=[], departments=[])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert store.get_record_by_key.await_count == 2
+        assert sorted(e.name for e in entities) == ["Budget", "Finance"]
+        store.rollback.assert_awaited_once()
+        store.commit.assert_awaited_once()
+
+
+class TestDepartmentLookupIsOrgAware:
+    """KG-23: a department name links to the record's org's department, else
+    the global one, never another org's; ties resolve the same way each time."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("candidates", "expected"),
+        [
+            ([{"_key": "d-other", "orgId": "org-b"}, {"_key": "d-global", "orgId": None}], "d-global"),
+            ([{"_key": "d-global", "orgId": None}, {"_key": "d-mine", "orgId": "org-a"}], "d-mine"),
+            ([{"_key": "d-z", "orgId": None}, {"_key": "d-a", "orgId": None}], "d-a"),
+            ([{"_key": "d-other", "orgId": "org-b"}], None),
+        ],
+    )
+    async def test_the_right_department_is_linked(self, monkeypatch, candidates, expected) -> None:
+        transformer = _make_transformer()
+        store = _make_tx_store()
+        store.get_record_by_key = AsyncMock(return_value={"_key": "rec-1", "orgId": "org-a"})
+        store.get_nodes_by_filters = AsyncMock(
+            side_effect=lambda collection, filters, **_kwargs: candidates if collection == "departments" else []
+        )
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn, **_: store,
+        )
+        metadata = SemanticMetadata(categories=[], topics=[], languages=[], departments=["Engineering"])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        departments = [e.entity_id for e in entities if e.entity_type.value == "department"]
+        assert departments == ([expected] if expected else [])
+
+
+def _neo4j_node(properties: dict, collection: str) -> dict:
+    """What the Neo4j provider returns for a node with these properties."""
+    from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+    return Neo4jProvider._neo4j_to_arango_node(MagicMock(), properties, collection)
+
+
+class TestTaxonomyNodeWithoutKey:
+    """A taxonomy node with no `id` property (Neo4j) has no key. Linking to it
+    wrote an edge to "<collection>/None" and an entity with no id, which
+    failed the record's metadata save."""
+
+    @staticmethod
+    def _store(monkeypatch, nodes_for) -> AsyncMock:
+        store = _make_tx_store()
+        store.get_nodes_by_filters = AsyncMock(
+            side_effect=lambda collection, filters, **_kwargs: nodes_for(collection, filters),
+        )
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.GraphTransactionStore",
+            lambda provider, txn, **_kwargs: store,
+        )
+        return store
+
+    @staticmethod
+    def _edge_targets(store) -> list[str]:
+        return [
+            f"{edge['to_collection']}/{edge['to_id']}"
+            for call in store.batch_create_edges.call_args_list
+            for edge in call.args[0]
+        ]
+
+    @pytest.mark.asyncio
+    async def test_no_edge_or_entity_for_a_node_without_a_key(self, monkeypatch) -> None:
+        logger = MagicMock()
+        transformer = _make_transformer(logger=logger)
+        store = self._store(
+            monkeypatch,
+            lambda collection, filters: [_neo4j_node({"name": filters.get("name")}, collection)],
+        )
+        metadata = SemanticMetadata(
+            categories=["Finance"], sub_category_level_1="Budget",
+            topics=["Tax"], languages=["English"], departments=[],
+        )
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert entities == []
+        assert not [t for t in self._edge_targets(store) if t.endswith("/None")]
+        assert store.batch_create_edges.await_count == 0
+        # A keyless match is not replaced by a new node of the same name.
+        assert all(
+            call.args[1] == CollectionNames.RECORDS.value
+            for call in store.batch_upsert_nodes.call_args_list
+        )
+        assert store.batch_update_nodes.call_args.args[0][0]["extractionStatus"] == "COMPLETED"
+        logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("keyed", [
+        {"_key": "cat-1", "name": "Finance"},
+        _neo4j_node({"id": "cat-1", "name": "Finance"}, CollectionNames.CATEGORIES.value),
+    ], ids=["arangodb", "neo4j"])
+    async def test_a_keyed_node_of_the_same_name_is_linked(self, monkeypatch, keyed) -> None:
+        transformer = _make_transformer()
+        keyless = _neo4j_node({"name": "Finance"}, CollectionNames.CATEGORIES.value)
+        store = self._store(
+            monkeypatch,
+            lambda collection, filters: (
+                [keyless, keyed] if collection == CollectionNames.CATEGORIES.value else []
+            ),
+        )
+        metadata = SemanticMetadata(categories=["Finance"], topics=[], languages=[], departments=[])
+
+        entities = await transformer.save_metadata_to_db("rec-1", metadata, "vr-1")
+
+        assert [e.entity_id for e in entities] == ["cat-1"]
+        assert self._edge_targets(store) == [f"{CollectionNames.CATEGORIES.value}/cat-1"]

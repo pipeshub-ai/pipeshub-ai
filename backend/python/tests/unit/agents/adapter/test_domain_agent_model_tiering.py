@@ -16,16 +16,16 @@ from app.agents.agent_loop.domain_agents import (
     register_domain_agents,
 )
 from tests.unit.agents.adapter.conftest import make_context
-from tests.unit.agents.adapter.test_domain_agents import FakeTool
+from tests.unit.agents.adapter.test_domain_agents import FakeAppTool
 
 
 def _definitions(*, tiered_model: str | None) -> tuple[DomainAgentDefinition, ...]:
     return (
         DomainAgentDefinition(
-            name="calculator_agent",
-            domain="calculation",
-            description="calc",
-            app_names=frozenset({"calculator"}),
+            name="tracker_agent",
+            domain="issue tracking",
+            description="tracker",
+            app_names=frozenset({"jira"}),
             model=tiered_model,
         ),
         DomainAgentDefinition(
@@ -39,8 +39,8 @@ def _definitions(*, tiered_model: str | None) -> tuple[DomainAgentDefinition, ..
 
 def _registry() -> ToolRegistry:
     registry = ToolRegistry()
-    registry.register_tool(FakeTool("calculator_evaluate", app_name="calculator"))
-    registry.register_tool(FakeTool("dynamic_web_search", app_name="dynamic"))
+    registry.register_tool(FakeAppTool("jira", "search_issues"))
+    registry.register_tool(FakeAppTool("dynamic", "web_search"))
     return registry
 
 
@@ -59,7 +59,7 @@ class TestDomainAgentModelTiering:
             plan, registry, runtime, make_context(),
             provider="scripted", model_name="scripted-big-model",
         )
-        assert _spec_of(registry, "calculator_agent").model == ModelSpec(
+        assert _spec_of(registry, "tracker_agent").model == ModelSpec(
             provider="scripted", model="scripted-big-model",
         )
         # An unrelated domain with no override is unaffected either way.
@@ -75,7 +75,7 @@ class TestDomainAgentModelTiering:
             plan, registry, runtime, make_context(),
             provider="scripted", model_name="scripted-big-model",
         )
-        assert _spec_of(registry, "calculator_agent").model == ModelSpec(
+        assert _spec_of(registry, "tracker_agent").model == ModelSpec(
             provider="scripted", model="scripted-cheap-model",
         )
         # web_agent has no override — stays on the request's own model_name.
@@ -93,4 +93,4 @@ class TestDomainAgentModelTiering:
             plan, registry, runtime, make_context(),
             provider="scripted", model_name="scripted-big-model",
         )
-        assert _spec_of(registry, "calculator_agent").model.provider == "scripted"
+        assert _spec_of(registry, "tracker_agent").model.provider == "scripted"

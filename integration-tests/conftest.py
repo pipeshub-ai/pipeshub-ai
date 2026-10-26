@@ -128,6 +128,7 @@ from local_auth import (  # noqa: E402
     obtain_user_session_token,
 )
 from pipeshub_client import PipeshubClient  # noqa: E402
+from helper.simulator_addresses import allow_the_simulators  # noqa: E402
 from helper.clients.agents_client import AgentsClient  # noqa: E402
 from helper.clients.ai_models_client import AIModelsClient  # noqa: E402
 from helper.clients.auth_client import AuthClient, UserAccountClient  # noqa: E402
@@ -149,7 +150,10 @@ from helper.http.request_id import (  # noqa: E402
     set_current_test,
 )
 from helper.http.session_client import SessionClient  # noqa: E402
-from sample_data import ensure_sample_data_files_root  # noqa: E402
+from sample_data import (  # noqa: E402
+    ensure_sample_data_files_root,
+    ensure_sample_data_google_drive_it_files_root,
+)
 
 # Module-level refs so pytest_runtest_logreport can merge even when report.config is missing
 _integration_test_reports_by_nodeid: Dict[str, TestReportEntry] = {}
@@ -228,25 +232,36 @@ def _merge_phase_report(
             stderr_captured=existing.stderr_captured or stderr_captured,
         )
 
-    if when == "call":
-        if report.outcome == "skipped":
-            return TestReportEntry(
-                nodeid=existing.nodeid,
-                outcome="skipped",
-                duration=new_dur,
-                err_full=existing.err_full,
-                stdout_captured=existing.stdout_captured or stdout_captured,
-                stderr_captured=existing.stderr_captured or stderr_captured,
-            )
-        if report.outcome == "passed":
-            return TestReportEntry(
-                nodeid=existing.nodeid,
-                outcome="passed",
-                duration=new_dur,
-                err_full=existing.err_full,
-                stdout_captured=existing.stdout_captured or stdout_captured,
-                stderr_captured=existing.stderr_captured or stderr_captured,
-            )
+    # Fixture/setup skips never emit a call phase — treat skip in any phase like JUnit.
+    if report.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="skipped",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if existing.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="skipped",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
+
+    if when == "call" and report.outcome == "passed":
+        return TestReportEntry(
+            nodeid=existing.nodeid,
+            outcome="passed",
+            duration=new_dur,
+            err_full=existing.err_full,
+            stdout_captured=existing.stdout_captured or stdout_captured,
+            stderr_captured=existing.stderr_captured or stderr_captured,
+        )
 
     # setup/teardown passed (or other): keep call outcome, extend duration, merge streams
     return TestReportEntry(
@@ -279,16 +294,16 @@ def _initial_entry_from_phase(
             stdout_captured=stdout_captured,
             stderr_captured=stderr_captured,
         )
+    if report.outcome == "skipped":
+        return TestReportEntry(
+            nodeid=report.nodeid,
+            outcome="skipped",
+            duration=duration,
+            err_full=None,
+            stdout_captured=stdout_captured,
+            stderr_captured=stderr_captured,
+        )
     if when == "call":
-        if report.outcome == "skipped":
-            return TestReportEntry(
-                nodeid=report.nodeid,
-                outcome="skipped",
-                duration=duration,
-                err_full=None,
-                stdout_captured=stdout_captured,
-                stderr_captured=stderr_captured,
-            )
         return TestReportEntry(
             nodeid=report.nodeid,
             outcome="passed",
@@ -322,9 +337,11 @@ def _tag_requests_with_test_id(request: pytest.FixtureRequest) -> Generator[None
 def local_oauth_credentials() -> None:
     """
     When running in local mode without CLIENT_ID/CLIENT_SECRET, obtain them from the backend
-    (initAuth -> authenticate -> create OAuth app) and set in env so PipeshubClient works.
+    (initAuth -> authenticate -> create OAuth app) and set them in env for the tests that
+    exercise client_credentials. The app acts as a service account; PipeshubClient itself
+    signs in as the admin test user on the local stack.
     """
-    if os.getenv("PIPESHUB_TEST_ENV") != "local":
+    if os.getenv("PIPESHUB_TEST_ENV", "").strip().lower() != "local":
         return
     if os.getenv("CLIENT_ID") and os.getenv("CLIENT_SECRET"):
         return
@@ -414,7 +431,8 @@ def user_session_client(pipeshub_client: PipeshubClient) -> SessionClient:
     """The test user logged in with a password, for session-only routes.
 
     OAuth client management, OAuth consent and personal access tokens refuse
-    the client-credentials token ``pipeshub_client`` holds (#3626).
+    OAuth and personal access tokens (#3626). Against a remote instance
+    ``pipeshub_client`` holds a client-credentials token.
     """
     if not (os.getenv("PIPESHUB_TEST_USER_EMAIL") and os.getenv("PIPESHUB_TEST_USER_PASSWORD")):
         pytest.skip(
@@ -456,6 +474,12 @@ def sample_data_root() -> Path:
 
 
 @pytest.fixture(scope="session")
+def drive_blocks_sample_root() -> Path:
+    """Session-scoped path to google-drive-it-files sample data from GitHub."""
+    return ensure_sample_data_google_drive_it_files_root()
+
+
+@pytest.fixture(scope="session")
 def ai_models_configured(
     request: pytest.FixtureRequest,
     tmp_path_factory: pytest.TempPathFactory,
@@ -482,8 +506,11 @@ def ai_models_configured(
     embedding is also written to org config via the same API call path; indexing
     services load it from Configuration Manager, not from this fixture object.
 
-    On teardown, both models are DELETEd via the providers endpoint so no test
-    residue is left on the backend.
+    An embedding model the org already embeds with (same provider and model) is
+    reused rather than added again, and teardown leaves it. On teardown the
+    models this fixture added are DELETEd via the providers endpoint; PipesHub
+    refuses to delete an embedding model whose vectors are stored, so that one
+    stays for the next session on the stack to reuse.
 
     These models are org-wide singletons, so under ``-n`` they are seeded once
     per run and shared by every worker rather than once per worker session.
@@ -737,6 +764,7 @@ def pytest_configure(config: pytest.Config) -> None:
     global _IS_XDIST_WORKER
     # Before any session fixture or pytest_sessionstart makes its first call.
     install_requests_hook()
+    allow_the_simulators()
     _IS_XDIST_WORKER = hasattr(config, "workerinput")
     _integration_test_reports_by_nodeid = {}
     _integration_test_report_order = []

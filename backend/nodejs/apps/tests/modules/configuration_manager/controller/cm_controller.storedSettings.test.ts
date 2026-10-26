@@ -20,6 +20,7 @@ import { configPaths } from '../../../../src/modules/configuration_manager/paths
 import { EncryptionService } from '../../../../src/libs/encryptor/encryptor';
 import { CONFIG_SECRET_PLACEHOLDER } from '../../../../src/modules/configuration_manager/utils/maskConfigSecrets';
 import { InternalServerError } from '../../../../src/libs/errors/http.errors';
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import type { NextFunction, Response } from 'express';
 import type { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types';
 import type { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service';
@@ -364,6 +365,33 @@ describe('Configuration manager stored settings', () => {
       ]);
     });
 
+    it('never makes a provider that only reads pages the default', async () => {
+      const reader = await run(addWebSearchProvider(store(), appConfig), {
+        body: { provider: 'crawl4ai', configuration: { baseUrl: 'http://crawl4ai:11235' } },
+      });
+      const searcher = await run(addWebSearchProvider(store(), appConfig), {
+        body: { provider: 'searxng', configuration: { baseUrl: 'http://searxng:8080' } },
+      });
+
+      expect(reader.res.body?.details?.isDefault).to.be.false;
+      expect(searcher.res.body?.details?.isDefault).to.be.true;
+      expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+        ['crawl4ai', false],
+        ['searxng', true],
+      ]);
+    });
+
+    it('refuses to set a provider that only reads pages as the default', async () => {
+      const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader] }));
+
+      const { res } = await run(updateDefaultWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-crawl' } });
+
+      expect(res.statusCode).to.equal(400);
+      expect(healthChecks).to.have.length(0);
+      expect(stored().providers.map((p) => p.isDefault)).to.deep.equal([serper.isDefault, false]);
+    });
+
     it('keeps the stored key when the form sends the masked placeholder back', async () => {
       kv.values.set(configPaths.webSearch, seal({ providers: [serper, tavily] }));
 
@@ -430,6 +458,27 @@ describe('Configuration manager stored settings', () => {
       expect(res.statusCode).to.equal(200);
       expect(res.body?.details).to.include({ provider: 'serper', wasDefault: true });
       expect(stored().providers).to.deep.equal([{ ...tavily, isDefault: true }]);
+    });
+
+    it('hands the default past a page reader to the next search provider', async () => {
+      const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader, tavily] }));
+
+      await run(deleteWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-serper' } });
+
+      expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([
+        ['crawl4ai', false],
+        ['tavily', true],
+      ]);
+    });
+
+    it('leaves DuckDuckGo as the default when only a page reader is left', async () => {
+      const reader = { provider: 'crawl4ai', providerKey: 'key-crawl', configuration: { baseUrl: 'http://c:1' }, isDefault: false };
+      kv.values.set(configPaths.webSearch, seal({ providers: [serper, reader] }));
+
+      await run(deleteWebSearchProvider(store(), appConfig), { params: { providerKey: 'key-serper' } });
+
+      expect(stored().providers.map((p) => [p.provider, p.isDefault])).to.deep.equal([['crawl4ai', false]]);
     });
 
     it('still deletes when the agent-usage check cannot be reached', async () => {
@@ -505,6 +554,39 @@ describe('Configuration manager stored settings', () => {
       expect(JSON.stringify(res.body)).to.not.include('real-key');
       expect(res.body?.providers?.map((p) => p.provider)).to.deep.equal(['duckduckgo', 'serper', 'tavily']);
       expect(res.body?.providers?.[0]?.isDefault).to.be.false;
+    });
+
+    describe('self-hosted server addresses', () => {
+      const crawl4ai = {
+        provider: 'crawl4ai',
+        configuration: { baseUrl: 'http://crawl4ai:11235', apiKey: 'crawl-token' },
+        isDefault: false,
+      };
+      const signedIn = { user: { userId: 'u1', orgId: 'o1' } };
+
+      it('hides them from members, who only need the provider list', async () => {
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+        kv.values.set(configPaths.webSearch, seal({ providers: [serper, crawl4ai] }));
+
+        const { res } = await run(getWebSearchProviders(store()), signedIn);
+
+        const listed = res.body?.providers?.find((p) => p.provider === 'crawl4ai');
+        expect(listed?.configuration.baseUrl).to.equal(CONFIG_SECRET_PLACEHOLDER);
+        expect(JSON.stringify(res.body)).to.not.include('crawl4ai:11235');
+        expect(JSON.stringify(res.body)).to.not.include('crawl-token');
+      });
+
+      it('shows them to admins, even when secrets are hidden', async () => {
+        process.env.HIDE_SECRET_CONFIG = 'true';
+        sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+        kv.values.set(configPaths.webSearch, seal({ providers: [crawl4ai] }));
+
+        const { res } = await run(getWebSearchProviders(store()), signedIn);
+
+        const listed = res.body?.providers?.find((p) => p.provider === 'crawl4ai');
+        expect(listed?.configuration.baseUrl).to.equal('http://crawl4ai:11235');
+        expect(JSON.stringify(res.body)).to.not.include('crawl-token');
+      });
     });
 
     it('answers a failing store with an error, not an empty provider list', async () => {

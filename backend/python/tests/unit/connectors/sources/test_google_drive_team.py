@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, PropertyMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, PropertyMock, patch
 
 import pytest
 from fastapi import HTTPException
@@ -31,6 +31,9 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
 )
+from app.connectors.sources.google.drive.team.connector import GoogleDriveTeamConnector
+from app.connectors.sources.google.drive.team.drive_access import permission_is_direct
+from app.connectors.sources.google.drive.team.user_status import UserStatusChange
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.models.entities import (
     AppUser,
@@ -125,67 +128,6 @@ def _make_record(record_id="rec-1", external_id="file-1", record_name="test.txt"
     r.record_type = RecordType.FILE
     r.connector_id = "drive-fc-1"
     return r
-
-
-@pytest.fixture
-def connector():
-    with patch(
-        "app.connectors.sources.google.drive.team.connector.GoogleClient"
-    ), patch(
-        "app.connectors.sources.google.drive.team.connector.SyncPoint"
-    ) as MockSyncPoint:
-        mock_sync_point = AsyncMock()
-        mock_sync_point.read_sync_point = AsyncMock(return_value=None)
-        mock_sync_point.update_sync_point = AsyncMock()
-        MockSyncPoint.return_value = mock_sync_point
-
-        from app.connectors.sources.google.drive.team.connector import (
-            GoogleDriveTeamConnector,
-        )
-
-        logger = _make_logger()
-        dep = AsyncMock()
-        dep.org_id = "org-1"
-        dep.on_new_app_users = AsyncMock()
-        dep.on_new_record_groups = AsyncMock()
-        dep.on_new_records = AsyncMock()
-        dep.on_record_deleted = AsyncMock()
-        dep.on_record_metadata_update = AsyncMock()
-        dep.on_record_content_update = AsyncMock()
-        dep.on_updated_record_permissions = AsyncMock()
-        dep.add_permission_to_record = AsyncMock()
-        dep.get_all_active_users = AsyncMock(return_value=[])
-        dep.reindex_existing_records = AsyncMock()
-        dep.get_record_by_external_id = AsyncMock(return_value=None)
-        provider = _make_mock_data_store_provider()
-
-        config_svc = AsyncMock()
-        config_svc.get_config = AsyncMock(return_value={
-            "auth": {
-                "adminEmail": "admin@example.com",
-                "type": "service_account",
-            }
-        })
-
-        c = GoogleDriveTeamConnector(
-            logger=logger,
-            data_entities_processor=dep,
-            data_store_provider=provider,
-            config_service=config_svc,
-            connector_id="drive-fc-1",
-            scope="personal",
-            created_by="test-user-id",
-        )
-        c.admin_data_source = AsyncMock()
-        c.drive_data_source = AsyncMock()
-        async def execute(operation):
-            return operation()
-        c.drive_data_source.execute = AsyncMock(side_effect=execute)
-        c.admin_client = MagicMock()
-        c.drive_client = MagicMock()
-        c.sync_filters = FilterCollection()
-        c.indexing_filters = FilterCollection()
-        yield c
 
 
 class TestInit:
@@ -383,13 +325,16 @@ class TestProcessGroup:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_lookup_in_synced_users(self, connector):
         connector.synced_users = [
             AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c1", source_user_id="m1",
-                    email="m1@t.com", full_name="Member One", source_created_at=1000)
+                    email="m1@t.com", full_name="Member One", source_created_at=1000, is_active=True)
         ]
         connector._fetch_group_members = AsyncMock(return_value=[
             {"type": "USER", "email": "m1@t.com", "id": "m1"},
@@ -418,7 +363,10 @@ class TestProcessGroup:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 class TestFetchGroupMembers:
@@ -458,7 +406,7 @@ class TestMapDriveRoleToPermissionType:
         assert connector._map_drive_role_to_permission_type("fileOrganizer") == PermissionType.WRITE
 
     def test_commenter(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -475,16 +423,7 @@ class TestMapDrivePermissionTypeToEntityType:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_domain(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_anyone(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_anyone_with_link(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
-
-    def test_anyone_with_link_underscore(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_unknown_defaults_user(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("xyz") == EntityType.USER
@@ -542,7 +481,7 @@ class TestFetchPermissions:
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert perms == []
 
     @pytest.mark.asyncio
@@ -551,15 +490,16 @@ class TestFetchPermissions:
         resp.status = 500
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
-        assert is_fallback is False
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
-        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_anyone_adds_fallback_for_user(self, connector):
@@ -643,7 +583,7 @@ class TestSyncRecordGroups:
         connector._create_and_sync_shared_drive_record_group = AsyncMock()
         connector._create_personal_record_group = AsyncMock()
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         connector.synced_users = [user]
         result = await connector._sync_record_groups()
         assert len(result) == 1
@@ -695,7 +635,7 @@ class TestCreatePersonalRecordGroup:
                 MockDDS.return_value = mock_dds
 
                 user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                               email="u@t.com", full_name="User One")
+                               email="u@t.com", full_name="User One", is_active=True)
                 await connector._create_personal_record_group(user)
                 connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
                 args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
@@ -720,7 +660,7 @@ class TestCreatePersonalRecordGroup:
                 MockDDS.return_value = mock_dds
 
                 user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                               email="u@t.com", full_name="User One")
+                               email="u@t.com", full_name="User One", is_active=True)
                 with pytest.raises(Exception):
                     await connector._create_personal_record_group(user)
 
@@ -1162,9 +1102,9 @@ class TestProcessUsersInBatches:
     @pytest.mark.asyncio
     async def test_filters_active_users(self, connector):
         active = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                         email="u1@t.com", full_name="U1")
+                         email="u1@t.com", full_name="U1", is_active=True)
         inactive = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u2",
-                           email="u2@t.com", full_name="U2")
+                           email="u2@t.com", full_name="U2", is_active=True)
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[active])
         connector._run_sync_with_yield = AsyncMock()
         await connector._process_users_in_batches([active, inactive])
@@ -1658,6 +1598,43 @@ class TestStreamRecord:
             result = await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
             mock_stream.assert_called_once()
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name", ["file.docx", "../../file.docx", "/etc/file.docx"])
+    async def test_stream_regular_file_to_pdf_writes_inside_temp_dir(self, connector, file_name):
+        record = MagicMock(spec=Record)
+        record.external_record_id = "file-1"
+        record.record_name = file_name
+        record.id = "rec-1"
+
+        mock_service = MagicMock()
+        connector._get_drive_service_for_user = AsyncMock(return_value=mock_service)
+        connector._get_file_metadata_from_drive = AsyncMock(return_value={
+            "mimeType": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        })
+        connector._convert_to_pdf = AsyncMock(return_value="/tmp/test_dir/file.pdf")
+
+        user_perm = MagicMock()
+        user_perm.email = "u@t.com"
+        connector.data_store_provider = _make_mock_data_store_provider(user_with_perm=user_perm)
+
+        status = MagicMock()
+        status.progress.return_value = 1.0
+        with patch(
+            "app.connectors.sources.google.drive.team.connector.MediaIoBaseDownload"
+        ) as mock_download, patch(
+            "app.connectors.sources.google.drive.team.connector.create_stream_record_response"
+        ) as mock_stream, patch("builtins.open", MagicMock()), patch(
+            "tempfile.mkdtemp", return_value="/tmp/test_dir"
+        ):
+            mock_download.return_value.next_chunk.return_value = (status, True)
+            mock_stream.return_value = MagicMock()
+
+            await connector.stream_record(record, convertTo=MimeTypes.PDF.value)
+
+            path, temp_dir = connector._convert_to_pdf.await_args.args
+            assert temp_dir == "/tmp/test_dir"
+            assert os.path.dirname(path) == temp_dir
+
 
 class TestGetDriveServiceForUser:
     @pytest.mark.asyncio
@@ -1755,7 +1732,7 @@ class TestSyncPersonalDrive:
     @pytest.mark.asyncio
     async def test_full_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.about_get = AsyncMock(return_value={"user": {"permissionId": "p1", "emailAddress": "u@t.com"}})
         user_dds.files_get = AsyncMock(return_value={"id": "root-1"})
@@ -1775,7 +1752,7 @@ class TestSyncPersonalDrive:
     @pytest.mark.asyncio
     async def test_incremental_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.changes_list = AsyncMock(return_value={
             "changes": [],
@@ -1794,12 +1771,40 @@ class TestSyncPersonalDrive:
         await connector.sync_personal_drive(user, user_dds, "p1", "root-1")
         connector.drive_delta_sync_point.update_sync_point.assert_awaited_once()
 
+    @pytest.mark.asyncio
+    async def test_full_sync_leaves_shared_drive_items_to_their_drive(self, connector):
+        """A shared drive item in the personal listing must not be filed under My Drive."""
+        user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
+                       email="u@t.com", full_name="U", is_active=True)
+        user_dds = AsyncMock()
+        user_dds.changes_get_start_page_token = AsyncMock(return_value={"startPageToken": "tok123"})
+        user_dds.files_list = AsyncMock(return_value={"files": [
+            {"id": "my-file", "name": "mine.txt"},
+            {"id": "sd-folder", "name": "common", "driveId": "sd-1", "parents": ["sd-1"]},
+        ]})
+
+        connector.drive_delta_sync_point = AsyncMock()
+        connector.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.drive_delta_sync_point.update_sync_point = AsyncMock()
+
+        connector._process_drive_files_batch = AsyncMock(return_value=([], 0, 0))
+        connector._process_remaining_batch_records = AsyncMock(return_value=([], 0))
+        connector._delete_trashed_records = AsyncMock()
+        connector.sync_shared_with_me = AsyncMock()
+
+        await connector.sync_personal_drive(user, user_dds, "p1", "root-1")
+
+        connector._process_drive_files_batch.assert_awaited_once()
+        kwargs = connector._process_drive_files_batch.await_args.kwargs
+        assert kwargs["drive_id"] == "root-1"
+        assert [f["id"] for f in kwargs["files"]] == ["my-file"]
+
 
 class TestSyncSharedDrives:
     @pytest.mark.asyncio
     async def test_no_shared_drives(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={"drives": []})
         await connector.sync_shared_drives(user, user_dds, "p1")
@@ -1807,7 +1812,7 @@ class TestSyncSharedDrives:
     @pytest.mark.asyncio
     async def test_with_shared_drives_full_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={
             "drives": [{"id": "sd1", "name": "Shared"}]
@@ -1828,7 +1833,7 @@ class TestSyncSharedDrives:
     @pytest.mark.asyncio
     async def test_team_drive_membership_required_skip(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={
             "drives": [{"id": "sd1", "name": "NoAccess"}]
@@ -1847,7 +1852,7 @@ class TestRunSyncWithYield:
     @pytest.mark.asyncio
     async def test_calls_personal_and_shared(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
@@ -2017,6 +2022,11 @@ def connector():
         c.drive_client = MagicMock()
         c.sync_filters = FilterCollection()
         c.indexing_filters = FilterCollection()
+        # Collaborators the run safety fixes call: account status, groups, access withdrawal.
+        c._user_status = MagicMock(compare=AsyncMock(return_value=UserStatusChange()), save=AsyncMock())
+        dep.get_all_user_groups = AsyncMock(return_value=[])
+        dep.remove_user_access_to_connector = AsyncMock(return_value=0)
+        dep.on_new_user_groups = AsyncMock()
         yield c
 
 
@@ -2215,13 +2225,16 @@ class TestProcessGroupFullCoverage:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
     @pytest.mark.asyncio
     async def test_process_group_member_lookup_in_synced_users(self, connector):
         connector.synced_users = [
             AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c1", source_user_id="m1",
-                    email="m1@t.com", full_name="Member One", source_created_at=1000)
+                    email="m1@t.com", full_name="Member One", source_created_at=1000, is_active=True)
         ]
         connector._fetch_group_members = AsyncMock(return_value=[
             {"type": "USER", "email": "m1@t.com", "id": "m1"},
@@ -2250,7 +2263,10 @@ class TestProcessGroupFullCoverage:
         ])
         group = {"email": "grp@t.com", "name": "Grp"}
         await connector._process_group(group)
-        connector.data_entities_processor.on_new_user_groups.assert_not_awaited()
+        # Stored all the same, with no direct user members.
+        connector.data_entities_processor.on_new_user_groups.assert_awaited_once()
+        [(_, members)] = connector.data_entities_processor.on_new_user_groups.call_args[0][0]
+        assert members == []
 
 
 class TestFetchGroupMembersFullCoverage:
@@ -2290,7 +2306,7 @@ class TestMapDriveRoleToPermissionTypeFullCoverage:
         assert connector._map_drive_role_to_permission_type("fileOrganizer") == PermissionType.WRITE
 
     def test_commenter(self, connector):
-        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.COMMENT
+        assert connector._map_drive_role_to_permission_type("commenter") == PermissionType.READ
 
     def test_reader(self, connector):
         assert connector._map_drive_role_to_permission_type("reader") == PermissionType.READ
@@ -2307,16 +2323,7 @@ class TestMapDrivePermissionTypeToEntityTypeFullCoverage:
         assert connector._map_drive_permission_type_to_entity_type("group") == EntityType.GROUP
 
     def test_domain(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("domain") == EntityType.DOMAIN
-
-    def test_anyone(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone") == EntityType.ANYONE
-
-    def test_anyone_with_link(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyoneWithLink") == EntityType.ANYONE_WITH_LINK
-
-    def test_anyone_with_link_underscore(self, connector):
-        assert connector._map_drive_permission_type_to_entity_type("anyone_with_link") == EntityType.ANYONE_WITH_LINK
+        assert connector._map_drive_permission_type_to_entity_type("domain") is None
 
     def test_unknown_defaults_user(self, connector):
         assert connector._map_drive_permission_type_to_entity_type("xyz") == EntityType.USER
@@ -2374,7 +2381,7 @@ class TestFetchPermissionsFullCoverage:
         http_err.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
         perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert is_fallback is False
+        assert is_fallback is True, "a failed read keeps the stored grants"
         assert perms == []
 
     @pytest.mark.asyncio
@@ -2383,15 +2390,16 @@ class TestFetchPermissionsFullCoverage:
         resp.status = 500
         http_err = HttpError(resp, b"Server Error")
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=http_err)
-        perms, is_fallback, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
-        assert is_fallback is False
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(HttpError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_file_generic_error(self, connector):
         connector.drive_data_source.permissions_list = AsyncMock(side_effect=RuntimeError("oops"))
-        perms, _, _ = await connector._fetch_permissions("file-1", is_drive=False)
-        assert perms == []
+        # A failed read is not an empty ACL: it raises, so the item is read again.
+        with pytest.raises(RuntimeError):
+            await connector._fetch_permissions("file-1", is_drive=False)
 
     @pytest.mark.asyncio
     async def test_fetch_permissions_anyone_adds_fallback_for_user(self, connector):
@@ -2475,7 +2483,7 @@ class TestSyncRecordGroupsFullCoverage:
         connector._create_and_sync_shared_drive_record_group = AsyncMock()
         connector._create_personal_record_group = AsyncMock()
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         connector.synced_users = [user]
         result = await connector._sync_record_groups()
         assert len(result) == 1
@@ -2527,7 +2535,7 @@ class TestCreatePersonalRecordGroupFullCoverage:
                 MockDDS.return_value = mock_dds
 
                 user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                               email="u@t.com", full_name="User One")
+                               email="u@t.com", full_name="User One", is_active=True)
                 await connector._create_personal_record_group(user)
                 connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
                 args = connector.data_entities_processor.on_new_record_groups.call_args[0][0]
@@ -2552,7 +2560,7 @@ class TestCreatePersonalRecordGroupFullCoverage:
                 MockDDS.return_value = mock_dds
 
                 user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                               email="u@t.com", full_name="User One")
+                               email="u@t.com", full_name="User One", is_active=True)
                 with pytest.raises(Exception):
                     await connector._create_personal_record_group(user)
 
@@ -2994,9 +3002,9 @@ class TestProcessUsersInBatchesFullCoverage:
     @pytest.mark.asyncio
     async def test_filters_active_users(self, connector):
         active = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                         email="u1@t.com", full_name="U1")
+                         email="u1@t.com", full_name="U1", is_active=True)
         inactive = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u2",
-                           email="u2@t.com", full_name="U2")
+                           email="u2@t.com", full_name="U2", is_active=True)
         connector.data_entities_processor.get_all_active_users = AsyncMock(return_value=[active])
         connector._run_sync_with_yield = AsyncMock()
         await connector._process_users_in_batches([active, inactive])
@@ -3339,7 +3347,7 @@ class TestSyncPersonalDriveFullCoverage:
     @pytest.mark.asyncio
     async def test_full_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.about_get = AsyncMock(return_value={"user": {"permissionId": "p1", "emailAddress": "u@t.com"}})
         user_dds.files_get = AsyncMock(return_value={"id": "root-1"})
@@ -3359,7 +3367,7 @@ class TestSyncPersonalDriveFullCoverage:
     @pytest.mark.asyncio
     async def test_incremental_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.changes_list = AsyncMock(return_value={
             "changes": [],
@@ -3383,7 +3391,7 @@ class TestSyncSharedDrivesFullCoverage:
     @pytest.mark.asyncio
     async def test_no_shared_drives(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={"drives": []})
         await connector.sync_shared_drives(user, user_dds, "p1")
@@ -3391,7 +3399,7 @@ class TestSyncSharedDrivesFullCoverage:
     @pytest.mark.asyncio
     async def test_with_shared_drives_full_sync(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={
             "drives": [{"id": "sd1", "name": "Shared"}]
@@ -3412,7 +3420,7 @@ class TestSyncSharedDrivesFullCoverage:
     @pytest.mark.asyncio
     async def test_team_drive_membership_required_skip(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         user_dds = AsyncMock()
         user_dds.drives_list = AsyncMock(return_value={
             "drives": [{"id": "sd1", "name": "NoAccess"}]
@@ -3431,7 +3439,7 @@ class TestRunSyncWithYieldFullCoverage:
     @pytest.mark.asyncio
     async def test_calls_personal_and_shared(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
         ) as MockGC:
@@ -3478,6 +3486,195 @@ class TestSharedWithMeFromSharedDrive:
         assert result.record.is_shared is True
 
     @pytest.mark.asyncio
+    async def test_grant_keeps_an_item_a_member_filed_under_its_drive(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # This run's admin drive listing missed sd-1 (a new drive), so the grantee's
+        # pass sees it as an unsynced drive. A member's pass already filed the folder
+        # under sd-1; the grant only adds the grantee's 0S: group.
+        existing = _make_record(external_id="folder-1", external_record_group_id="sd-1")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id is None
+        assert result.record.parent_record_type is None
+        assert result.record.shared_with_me_record_group_ids == ["0S:grantee@t.com"]
+        assert connector._fetch_permissions.await_args.kwargs["inherits_from_drive"] is True
+
+    @pytest.mark.asyncio
+    async def test_grant_keeps_the_parent_folder_of_a_nested_item(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(parents=["folder-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id == "folder-1"
+
+    @pytest.mark.asyncio
+    async def test_grant_keeps_the_stored_parent_when_drive_hides_it(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # The grantee cannot see the folder above the file, so Drive sends no `parents`.
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        existing.parent_record_type = RecordType.FILE
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata()
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id == "folder-1"
+        assert result.record.parent_record_type == RecordType.FILE
+
+    @pytest.mark.asyncio
+    async def test_grant_into_an_enumerated_drive_keeps_the_hidden_parent(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # sd-1 is in this run's listing, so the grantee's pass runs as a shared drive
+        # pass; Drive still sends no `parents` because the grantee cannot see the folder.
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        existing.parent_record_type = RecordType.FILE
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata()
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "sd-1", is_shared_drive=True, force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id == "folder-1"
+        assert result.record.parent_record_type == RecordType.FILE
+        assert result.metadata_changed is False
+
+    @pytest.mark.asyncio
+    async def test_a_real_move_in_the_drive_is_still_a_metadata_change(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        existing = _make_record(
+            external_id="file-1", external_record_group_id="sd-1", parent_external_record_id="folder-1"
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(parents=["folder-2"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "sd-1", is_shared_drive=True, force_shared_with_me=True
+        )
+
+        assert result.metadata_changed is True
+        assert result.record.parent_external_record_id == "folder-2"
+
+    @pytest.mark.asyncio
+    async def test_member_pass_files_a_standalone_item_under_its_drive(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # The grantee synced first, while the run's admin listing missed sd-1, and
+        # stored the folder standalone with the drive id as its parent.
+        existing = _make_record(
+            external_id="folder-1", external_record_group_id=None, parent_external_record_id="sd-1"
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "member@t.com", "sd-1", is_shared_drive=True
+        )
+
+        assert result.is_updated is True
+        assert result.metadata_changed is True
+        assert result.record.external_record_group_id == "sd-1"
+        assert result.record.parent_external_record_id is None
+
+    @pytest.mark.asyncio
+    async def test_sharee_pass_on_a_my_drive_item_is_not_a_placement_change(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        # The owner's pass files it under their My Drive; the sharee's pass must not
+        # count its own standalone placement as a change, or the two passes would
+        # keep moving the item.
+        existing = _make_record(external_record_group_id="owner-root", parent_external_record_id="parent-1")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(parents=["parent-1"], owners=[{"emailAddress": "owner@t.com"}])
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(meta, "uid", "sharee@t.com", "sharee-root")
+
+        assert result.record.external_record_group_id is None
+        assert result.metadata_changed is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_group", [None, "root-1", "sd-other"])
+    async def test_grant_still_leaves_an_item_not_filed_under_its_drive_standalone(
+        self, connector: GoogleDriveTeamConnector, stored_group: str | None
+    ) -> None:
+        existing = _make_record(external_id="folder-1", external_record_group_id=stored_group)
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id is None
+        assert result.record.parent_external_record_id == "sd-1"
+
+    @pytest.mark.asyncio
+    async def test_grant_into_a_drive_the_filter_now_excludes_is_standalone(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        drive_filter = MagicMock()
+        drive_filter.is_empty.return_value = False
+        drive_filter.value = ["sd-1"]
+        drive_filter.get_operator.return_value = MagicMock(value=FilterOperator.NOT_IN)
+        connector.sync_filters = MagicMock()
+        connector.sync_filters.get = MagicMock(
+            side_effect=lambda k: drive_filter if k == SyncFilterKey.DRIVE_IDS else None
+        )
+        existing = _make_record(external_id="folder-1", external_record_group_id="sd-1")
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        meta = _make_file_metadata(file_id="folder-1", parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(
+            meta, "uid", "grantee@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id is None
+
+    @pytest.mark.asyncio
     async def test_without_force_flag_no_shared_with_me_group(self, connector):
         meta = _make_file_metadata(owners=[{"emailAddress": "owner@other-tenant.com"}])
         meta["driveId"] = "foreign-drive"
@@ -3490,7 +3687,7 @@ class TestSharedWithMeFromSharedDrive:
     @pytest.mark.asyncio
     async def test_sweep_skips_member_drives_and_personal_shares(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
 
         personal_share = _make_file_metadata(file_id="personal-share")
         member_item = _make_file_metadata(file_id="member-item")
@@ -3523,7 +3720,7 @@ class TestSharedWithMeFromSharedDrive:
         # A drive with a record group must not be detached by an individual grant: the
         # record stays filed under the drive and gains the grantee 0S: group on top.
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         connector._synced_drive_ids = {"known-drive"}
 
         in_known_drive = _make_file_metadata(file_id="in-known-drive")
@@ -3561,8 +3758,10 @@ class TestSharedWithMeFromSharedDrive:
         # edge. Only their direct USER edge is dropped, so group- and drive-derived
         # access is untouched, and a stale grant is the worse way to be wrong.
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         connector._synced_drive_ids = {"known-drive"}
+        # A drive the run enumerates is always in the admin listing.
+        connector._listed_shared_drive_ids = {"known-drive"}
 
         user_dds = AsyncMock()
         user_dds.changes_list = AsyncMock(return_value={
@@ -3581,14 +3780,14 @@ class TestSharedWithMeFromSharedDrive:
         await connector.sync_personal_drive(user, user_dds, "p1", "root-1")
 
         connector.data_entities_processor.delete_permission_from_record.assert_awaited_once_with(
-            record_id="rec-1", user_email="u@t.com"
+            record_id="rec-1", user_email="u@t.com", connector_id="drive-fc-1"
         )
 
     @pytest.mark.asyncio
     async def test_removal_ignored_for_non_file_changes(self, connector):
         # changeType "drive" changes carry no fileId, so they must not reach the handler.
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
 
         user_dds = AsyncMock()
         user_dds.changes_list = AsyncMock(return_value={
@@ -3609,7 +3808,7 @@ class TestSharedWithMeFromSharedDrive:
     @pytest.mark.asyncio
     async def test_removal_still_revokes_shared_with_me_records(self, connector):
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
         connector._synced_drive_ids = {"known-drive"}
 
         user_dds = AsyncMock()
@@ -3620,6 +3819,9 @@ class TestSharedWithMeFromSharedDrive:
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(
             return_value=_make_record(external_record_group_id=None)
         )
+        # Only this user lost access: the owner still has the file and another synced user can open it.
+        connector._owner_reports_file_gone = AsyncMock(return_value=False)
+        connector._another_synced_user_can_open = AsyncMock(return_value=True)
         connector.drive_delta_sync_point = AsyncMock()
         connector.drive_delta_sync_point.read_sync_point = AsyncMock(
             return_value={"pageToken": "old-tok-123456789012345"}
@@ -3636,7 +3838,7 @@ class TestSharedWithMeFromSharedDrive:
         # delivers the descendants too - but sharedWithMeTime marks only the folder
         # that was actually shared. Filtering on that field drops the contents.
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
 
         shared_folder = _make_file_metadata(
             file_id="shared-folder", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
@@ -3685,7 +3887,7 @@ class TestSharedWithMeFromSharedDrive:
         # sync_personal_drive. It must stay per-user: folding it into _synced_drive_ids
         # would let one member of a drive suppress another user's grant into it.
         user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="u1",
-                       email="u@t.com", full_name="U")
+                       email="u@t.com", full_name="U", is_active=True)
 
         with patch(
             "app.connectors.sources.google.drive.team.connector.GoogleClient"
@@ -3733,7 +3935,7 @@ class TestSharedFolderExpansion:
         )
         child = _make_file_metadata(file_id="child-1")
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             # The user corpus is tried first, since corpora=drive needs membership.
             assert drive_scoped is False
             yield [child]
@@ -3758,7 +3960,7 @@ class TestSharedFolderExpansion:
         )
         attempts = []
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             attempts.append(drive_scoped)
             return
             yield  # pragma: no cover - makes this an async generator
@@ -3782,7 +3984,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(HttpStatusCode.NOT_FOUND.value)
             yield  # pragma: no cover - makes this an async generator
 
@@ -3803,7 +4005,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
             http_err.error_details = [{"reason": "insufficientFilePermissions"}]
             raise http_err
@@ -3827,7 +4029,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped) -> AsyncIterator[list]:
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None) -> AsyncIterator[list]:
             raise _make_http_error(HttpStatusCode.FORBIDDEN.value)
             yield  # pragma: no cover - makes this an async generator
 
@@ -3850,7 +4052,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             http_err = _make_http_error(HttpStatusCode.FORBIDDEN.value)
             http_err.error_details = [{"reason": "rateLimitExceeded"}]
             raise http_err
@@ -3875,7 +4077,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise RuntimeError("no access")
             yield  # pragma: no cover - makes this an async generator
 
@@ -3894,7 +4096,7 @@ class TestSharedFolderExpansion:
             file_id="fold-1", name="fold", mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value
         )
 
-        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped):
+        async def fake_children(folder_id, seen_ids, provider, *, fields, drive_scoped, walk=None):
             raise _make_http_error(500)
             yield  # pragma: no cover - makes this an async generator
 
@@ -3951,3 +4153,184 @@ class TestEmptyPermissionFallback:
 
         assert perms == []
         assert is_fallback is False
+
+
+class TestShortcutTargetsInOtherDrives:
+    @pytest.mark.asyncio
+    async def test_target_in_another_synced_drive_is_left_to_that_drive(self, connector):
+        """A My Drive shortcut to a shared drive folder must not file the folder under My Drive."""
+        own = {"id": "mine", "name": "mine.txt"}
+        target = {"id": "common", "name": "common", "driveId": "sd-1", "parents": ["sd-1"],
+                  "mimeType": "application/vnd.google-apps.folder"}
+        child = {"id": "readme", "name": "README.md", "driveId": "sd-1", "parents": ["common"]}
+        unsynced = {"id": "other", "name": "other.txt", "driveId": "sd-unsynced"}
+        connector._synced_drive_ids = {"sd-1"}
+        connector._materialize_shortcuts = AsyncMock(return_value=[own, target, child, unsynced])
+        connector._process_drive_item = AsyncMock(return_value=None)
+
+        async for _ in connector._process_drive_items_generator([own], "uid", "u@t.com", "my-drive"):
+            pass
+        processed = [c.args[0]["id"] for c in connector._process_drive_item.await_args_list]
+        assert processed == ["mine", "other"]
+
+        connector._process_drive_item.reset_mock()
+        async for _ in connector._process_drive_items_generator(
+            [target], "uid", "u@t.com", "sd-1", is_shared_drive=True
+        ):
+            pass
+        processed = [c.args[0]["id"] for c in connector._process_drive_item.await_args_list]
+        assert processed == ["mine", "common", "readme", "other"]
+
+
+class TestPlacementByOwnership:
+    @pytest.mark.asyncio
+    async def test_item_owned_by_someone_else_goes_to_shared_with_me_even_when_not_shared(self, connector: GoogleDriveTeamConnector) -> None:
+        # Drive reports shared=false for an item nested in a shared folder.
+        meta = _make_file_metadata(shared=False, owners=[{"emailAddress": "owner@t.com"}])
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
+
+        assert result.record.external_record_group_id is None
+        assert result.record.shared_with_me_record_group_ids == ["0S:u@t.com"]
+
+    @pytest.mark.asyncio
+    async def test_owned_item_stays_in_my_drive_whatever_the_email_case(self, connector: GoogleDriveTeamConnector) -> None:
+        meta = _make_file_metadata(shared=True, owners=[{"emailAddress": "U@T.com"}])
+        connector._fetch_permissions = AsyncMock(return_value=([], False, []))
+
+        result = await connector._process_drive_item(meta, "uid", "u@t.com", "d1")
+
+        assert result.record.external_record_group_id == "d1"
+        assert result.record.shared_with_me_record_group_ids == []
+
+
+def _drive_perm(perm_id: str, email: str, *, inherited: bool, role: str = "reader") -> dict:
+    return {
+        "id": perm_id, "type": "user", "role": role, "emailAddress": email,
+        "permissionDetails": [{"permissionType": "file", "role": role, "inherited": inherited}],
+    }
+
+
+class TestInheritedFileGrants:
+    def test_inherited_file_entry_is_not_direct(self) -> None:
+        assert permission_is_direct(_drive_perm("p", "a@t.com", inherited=True)) is False
+        assert permission_is_direct(_drive_perm("p", "a@t.com", inherited=False)) is True
+        assert permission_is_direct({"id": "p", "type": "user"}) is None
+
+    @pytest.mark.asyncio
+    async def test_limited_access_child_drops_parent_folder_sharees(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            _drive_perm("p1", "parent-sharee@t.com", inherited=True),
+            _drive_perm("p2", "direct@t.com", inherited=False),
+        ]})
+        connector.synced_user_emails = {"parent-sharee@t.com", "direct@t.com"}
+
+        perms, is_fallback, individually_shared = await connector._fetch_permissions(
+            "file-1", inherited_permissions_disabled=True
+        )
+
+        assert [p.email for p in perms] == ["direct@t.com"]
+        assert is_fallback is False
+        assert individually_shared == ["direct@t.com"]
+
+    @pytest.mark.asyncio
+    async def test_item_from_an_unsynced_drive_keeps_its_members(self, connector: GoogleDriveTeamConnector) -> None:
+        """No record group stands for the drive, so its members have nothing to inherit from."""
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "user", "role": "organizer", "emailAddress": "manager@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "organizer", "inherited": True}]},
+            _drive_perm("p2", "direct@t.com", inherited=False, role="writer"),
+        ]})
+        meta = _make_file_metadata(parents=["sd-unsynced"])
+        meta["driveId"] = "sd-unsynced"
+
+        result = await connector._process_drive_item(
+            meta, "uid", "direct@t.com", "root-1", force_shared_with_me=True
+        )
+
+        assert result.record.external_record_group_id is None
+        assert {(p.email, p.type) for p in result.new_permissions} == {
+            ("manager@t.com", PermissionType.OWNER),
+            ("direct@t.com", PermissionType.WRITE),
+        }
+        assert result.record.inherit_permissions is False
+        assert result.permissions_changed is True
+
+    @pytest.mark.asyncio
+    async def test_item_filed_in_its_drive_stores_only_direct_grants(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "user", "role": "organizer", "emailAddress": "manager@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "organizer", "inherited": True}]},
+            _drive_perm("p2", "direct@t.com", inherited=False, role="writer"),
+        ]})
+        meta = _make_file_metadata(parents=["sd-1"])
+        meta["driveId"] = "sd-1"
+
+        result = await connector._process_drive_item(meta, "uid", "direct@t.com", "sd-1", is_shared_drive=True)
+
+        assert [p.email for p in result.new_permissions] == ["direct@t.com"]
+        assert result.record.inherit_permissions is True
+
+    @pytest.mark.asyncio
+    async def test_limited_access_item_from_an_unsynced_drive_still_drops_parent_folder_sharees(
+        self, connector: GoogleDriveTeamConnector
+    ) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            _drive_perm("p1", "parent-sharee@t.com", inherited=True),
+            _drive_perm("p2", "direct@t.com", inherited=False),
+        ]})
+
+        perms, _, _ = await connector._fetch_permissions(
+            "file-1", inherited_permissions_disabled=True, inherits_from_drive=False
+        )
+
+        assert [p.email for p in perms] == ["direct@t.com"]
+
+
+class TestAnyoneLinkKeepsTheReadList:
+    @pytest.mark.asyncio
+    async def test_unlisted_syncing_user_is_added_to_the_read_list(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "group", "role": "writer", "emailAddress": "team@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "writer", "inherited": True}]},
+            {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        ]})
+
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
+
+        assert is_fallback is False
+        assert perms.saw_permission_details is True
+        assert [(p.email, p.type) for p in perms if p.entity_type == EntityType.USER] == [
+            ("u@t.com", PermissionType.READ)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_listed_user_with_other_case_gets_no_duplicate_grant(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "u1", "type": "user", "role": "writer", "emailAddress": "U@T.com"},
+            {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        ]})
+
+        perms, is_fallback, _ = await connector._fetch_permissions("file-1", user_email="u@t.com")
+
+        assert is_fallback is False
+        assert [(p.email, p.type) for p in perms] == [("U@T.com", PermissionType.WRITE)]
+
+    @pytest.mark.asyncio
+    async def test_new_shared_drive_record_keeps_its_inheritance(self, connector: GoogleDriveTeamConnector) -> None:
+        connector.drive_data_source.permissions_list = AsyncMock(return_value={"permissions": [
+            {"id": "m1", "type": "group", "role": "writer", "emailAddress": "team@t.com",
+             "permissionDetails": [{"permissionType": "member", "role": "writer", "inherited": True}]},
+            {"id": "anyoneWithLink", "type": "anyone", "role": "reader"},
+        ]})
+        connector.data_entities_processor.inheritance_when_unreadable = AsyncMock(return_value=False)
+        meta = _make_file_metadata()
+        meta["driveId"] = "sd-1"
+
+        result = await connector._process_drive_item(meta, "", "u@t.com", "sd-1", is_shared_drive=True)
+
+        assert result.record.inherit_permissions is True
+        assert result.permissions_changed is True
+        assert any(p.email == "u@t.com" for p in result.new_permissions)
+        connector.data_entities_processor.inheritance_when_unreadable.assert_not_awaited()

@@ -130,8 +130,9 @@ class Tenant:
         cloud.on("GET", "/v1.0/groups", lambda _r: json_response(page(self.groups)))
         cloud.on("GET", GROUPS_DELTA_PATH, self.groups_delta)
 
-    def add_user(self, user_id: str, email: str, name: str) -> TokenFeed:
-        self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email, "accountEnabled": True})
+    def add_user(self, user_id: str, email: str, name: str, user_type: str = "Member") -> TokenFeed:
+        self.users.append({"id": user_id, "displayName": name, "mail": email, "userPrincipalName": email,
+                           "accountEnabled": True, "userType": user_type})
         self.db.add_active_user(email)
         drive = f"drive-{user_id.removeprefix('u-')}"
         self.cloud.on("GET", f"/v1.0/users/{user_id}/drive", {"id": drive, "webUrl": f"https://acme-my.sharepoint.com/personal/{user_id}"})
@@ -239,7 +240,13 @@ async def unshared_folder_scenario(
     tenant.share("f1", shared)
     connector = await ready_connector(db, checkpoints)
     await connector.run_sync()
-    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+    # The file keeps the list OneDrive returned. Matching the folder is not inheritance.
+    assert db.records["f1"].inherit_permissions is False
+    assert perms(db, "f1") == {
+        (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+        (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+    }
+    assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "d1")
     tenant.share("d1", [user_grant("u-ana", "ana@acme.com", "owner")])
     cloud.on("GET", f"/v1.0/drives/{DRIVE}/items/d1/children", page([drive_item("f1", "plan.pdf", parent="d1")]))
     return connector
@@ -519,6 +526,43 @@ class TestDriveDeltaSync:
         (changed,) = db.content_updates
         assert changed.quick_xor_hash == "hash-2"
 
+    async def test_a_changed_file_whose_stored_record_cannot_be_read_is_held_then_read_again(self, cloud, tenant, db, checkpoints) -> None:
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        feed.by_token[None] = page([drive_item("f1", "one.pdf")], delta_link=delta_link("u-ana", "D1"))
+        feed.by_token["D1"] = page([drive_item("f1", "one.pdf", etag="v2", quick_xor="hash-2")], delta_link=delta_link("u-ana", "D2"))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        db.unreadable_file_records.add(db.records["f1"].id)
+
+        await connector.run_sync()
+
+        assert db.content_updates == []
+        assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
+
+        db.unreadable_file_records.clear()
+        await connector.run_sync()
+
+        (changed,) = db.content_updates
+        assert changed.quick_xor_hash == "hash-2"
+        assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D2")
+
+    async def test_a_file_whose_stored_record_keeps_failing_is_skipped_after_five_attempts(self, cloud, tenant, db, checkpoints) -> None:
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        feed.by_token[None] = page([drive_item("f1", "one.pdf")], delta_link=delta_link("u-ana", "D1"))
+        feed.by_token["D1"] = page([drive_item("f1", "one.pdf", etag="v2", quick_xor="hash-2")], delta_link=delta_link("u-ana", "D2"))
+        connector = await ready_connector(db, checkpoints)
+        await connector.run_sync()
+        db.unreadable_file_records.add(db.records["f1"].id)
+
+        for _ in range(4):
+            await connector.run_sync()
+            assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
+        await connector.run_sync()
+
+        assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D2")
+        assert db.content_updates == []
+        assert db.records["f1"].external_revision_id != "v2"
+
     async def test_one_malformed_item_does_not_stop_the_rest_of_the_page(self, cloud, tenant, db, checkpoints) -> None:
         broken = drive_item("f-bad", "bad.pdf")
         del broken["createdDateTime"]
@@ -585,12 +629,48 @@ class TestSharing:
         assert perms(db, "f1") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.GROUP, "g-eng", "eng@acme.com", PermissionType.WRITE),
-            (EntityType.ANYONE_WITH_LINK, "anyone_with_link", None, PermissionType.READ),
-            (EntityType.ORG, "anyone_in_org", None, PermissionType.READ),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
             (EntityType.GROUP, "g-ops", None, PermissionType.READ),
-        }
+        }, "a link grants only the people it lists: the anonymous and organization links list nobody"
         assert db.records["f1"].is_shared is True
+
+    async def test_an_organization_link_as_graph_returns_it_grants_no_one(self, cloud, tenant, db, checkpoints) -> None:
+        """Graph's organization link carries roles and scope only: organization links track no grantees."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"}},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}, \
+            "the link opens the file to no colleague and to no organization-wide group"
+        assert "tenant-members" not in db.user_groups
+
+    async def test_people_graph_lists_on_an_organization_link_are_granted(self, cloud, tenant, db, checkpoints) -> None:
+        """Should Graph list identities on an organization link, those people, and only they, get its role."""
+        feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        tenant.add_user("u-ben", "ben@acme.com", "Ben")
+        tenant.add_user("u-gus", "gus@partner.com", "Gus", user_type="Guest")
+        feed.by_token[None] = page([drive_item("f1", "notes.loop", shared=True)], delta_link=delta_link("u-ana", "D1"))
+        tenant.share("f1", [
+            user_grant("u-ana", "ana@acme.com", "owner"),
+            {"id": "p-org", "roles": ["write"], "link": {"scope": "organization", "type": "edit"},
+             "grantedToIdentitiesV2": [{"user": {"id": "u-ben", "email": "ben@acme.com"}}]},
+        ])
+        connector = await ready_connector(db, checkpoints)
+
+        await connector.run_sync()
+
+        assert perms(db, "f1") == {
+            (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+            (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.WRITE),
+        }, "an edit link carries write access, for the person it lists only"
+        assert "tenant-members" not in db.user_groups
 
     async def test_new_sharing_on_a_stored_file_replaces_its_access(self, cloud, tenant, db, checkpoints) -> None:
         feed = tenant.add_user("u-ana", "ana@acme.com", "Ana")
@@ -785,7 +865,10 @@ class TestSharing:
 
         for _ in range(4):
             await connector.run_sync()
-            assert (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ) in perms(db, "f1")
+            assert perms(db, "f1") == {
+                (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
+                (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
+            }
         await connector.run_sync()
 
         assert perms(db, "f1") == {(EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER)}
@@ -808,10 +891,12 @@ class TestSharing:
 
         await connector.run_sync()
 
+        # A failed folder read must not replace the file's stored grants.
         assert perms(db, "f2") == {
             (EntityType.USER, "u-ana", "ana@acme.com", PermissionType.OWNER),
             (EntityType.USER, "u-ben", "ben@acme.com", PermissionType.READ),
         }
+        assert db.records["f2"].inherit_permissions is False
         assert db.records["d1"].is_shared is True
         assert drive_checkpoint(checkpoints)["deltaLink"] == delta_link("u-ana", "D1")
 
@@ -943,6 +1028,61 @@ class TestGroups:
 
         assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
         assert db.user_groups == {"g-eng": ["ana@acme.com"]}
+
+    async def test_a_member_removal_the_database_refuses_is_tried_again_while_the_rest_of_the_page_is_applied(self, cloud, tenant, db, checkpoints) -> None:
+        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-ben", "ben@acme.com")])
+        tenant.add_group("g-old", "Old", [member("u-cal", "cal@acme.com")])
+        tenant.groups_delta.by_token["G1"] = page([
+            {"id": "g-eng", "displayName": "Eng", "members@delta": [{"id": "u-ben", "@removed": {"reason": "deleted"}}]},
+            {"id": "g-old", "@removed": {"reason": "deleted"}},
+        ], delta_link=groups_link("G2"))
+        cloud.on("GET", "/v1.0/users/u-ben", {"id": "u-ben", "mail": "ben@acme.com"})
+        connector = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(403, "Authorization_RequestDenied", "hidden membership"))
+        db.fail_member_removal.add(("g-eng", "ben@acme.com"))
+
+        await connector._sync_user_groups()
+
+        assert db.user_groups == {"g-eng": ["ana@acme.com", "ben@acme.com"]}, "Ben is still a member, and the group after his was deleted"
+        assert db.deleted_groups == ["g-old"]
+        held = groups_checkpoint(checkpoints)
+        assert (held["deltaLink"], held["heldPage"], held["heldPageAttempts"]) == (groups_link("G1"), groups_link("G1"), 1)
+
+        db.fail_member_removal.clear()
+        await connector._sync_user_groups()
+
+        assert db.user_groups == {"g-eng": ["ana@acme.com"]}
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
+
+    async def test_a_member_removal_the_database_keeps_refusing_leaves_a_full_group_sync_owed(self, cloud, tenant, db, checkpoints) -> None:
+        tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com"), member("u-ben", "ben@acme.com")])
+        tenant.groups_delta.by_token["G1"] = page(
+            [{"id": "g-eng", "displayName": "Eng", "members@delta": [{"id": "u-ben", "@removed": {"reason": "deleted"}}]}],
+            delta_link=groups_link("G2"),
+        )
+        tenant.groups_delta.by_token["G2"] = page([], delta_link=groups_link("G3"))
+        cloud.on("GET", "/v1.0/users/u-ben", {"id": "u-ben", "mail": "ben@acme.com"})
+        connector = await ready_connector(db, checkpoints)
+        await connector._sync_user_groups()
+        cloud.on("GET", "/v1.0/groups/g-eng/members", graph_error(403, "Authorization_RequestDenied", "hidden membership"))
+        db.fail_member_removal.add(("g-eng", "ben@acme.com"))
+
+        for _ in range(4):
+            await connector._sync_user_groups()
+            assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G1")
+        await connector._sync_user_groups()
+
+        assert groups_checkpoint(checkpoints)["deltaLink"] == groups_link("G2")
+        assert groups_checkpoint(checkpoints)["fullSyncIncomplete"] is True
+        assert db.user_groups == {"g-eng": ["ana@acme.com", "ben@acme.com"]}
+
+        # The full sync that is owed reads the members again, which takes Ben out.
+        cloud.on("GET", "/v1.0/groups/g-eng/members", page([member("u-ana", "ana@acme.com")]))
+        await connector._sync_user_groups()
+
+        assert db.user_groups == {"g-eng": ["ana@acme.com"]}
+        assert groups_checkpoint(checkpoints)["fullSyncIncomplete"] is False
 
     async def test_a_failed_member_read_during_delta_keeps_the_groups_stored_members(self, cloud, tenant, db, checkpoints) -> None:
         tenant.add_group("g-eng", "Eng", [member("u-ana", "ana@acme.com")])

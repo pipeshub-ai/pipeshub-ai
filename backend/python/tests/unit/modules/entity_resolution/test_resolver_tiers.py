@@ -1,12 +1,20 @@
 """EntityResolver tiers: name collection, exact match, winner lookup, model call."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.config.constants.arangodb import CollectionNames
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.models import ResolutionMode
+
+if TYPE_CHECKING:
+    from app.modules.entity_resolution.models import EntityResolution
+
 
 TOPICS = CollectionNames.TOPICS.value
 CATEGORIES = CollectionNames.CATEGORIES.value
@@ -110,9 +118,10 @@ class TestCollection:
     ) -> None:
         model = scripted_model()
         resolver = make_resolver()
-        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon"])
+        meta = metadata_factory(languages=["english", "en-US", "Français", "Klingon", "Python"])
         resolution = await resolver.resolve(ctx_factory("r1", "acme", meta))
-        assert meta.languages == ["English", "French", "Klingon"]
+        # Not natural languages: extraction also reports code and made-up ones.
+        assert meta.languages == ["English", "French"]
         assert fake_store.match_calls == []
         assert model.calls == []
         assert resolution.stats.names_deduped == 1
@@ -135,7 +144,8 @@ class TestTier0:
         assert resolution.stats.tier0_hits == 1
         assert fake_store.match_calls == []
         assert model.calls == []
-        assert meta.topics == ["Bug bash testing"]
+        assert meta.topics == ["BUG BASH TESTING"]
+        assert resolution.get(TOPICS, "BUG BASH TESTING").key == key
 
     async def test_hit_carries_existing_aliases(
         self, make_resolver, fake_graph, metadata_factory, ctx_factory, scripted_model
@@ -164,7 +174,7 @@ class TestTier0:
     ) -> None:
         scripted_model()
         fake_graph.fail_find = True
-        with pytest.raises(RuntimeError):
+        with pytest.raises(EntityLookupUnavailableError):
             await make_resolver("apply").resolve(
                 ctx_factory("r1", "acme", metadata_factory(topics=["x y"]))
             )
@@ -217,20 +227,56 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         (items,) = model.calls
-        assert items[0]["match"] == {"id": "k-bug", "name": "Bug bash testing", "aliases": ["bbt"]}
+        (match,) = items[0]["matches"]
+        assert match["name"] == "Bug bash testing" and match["aliases"] == ["bbt"]
+        assert match["id"] != "k-bug" and len(match["id"]) == 8
         assert resolution.stats.winners_offered == 1
+        assert resolution.get("topics", "Bug bash testing session").key == "k-bug"
 
-    async def test_store_failure_falls_back_to_new_without_raising(
+    async def test_store_failure_defers_instead_of_making_names_new(
         self, make_resolver, fake_store, metadata_factory, ctx_factory, scripted_model
     ) -> None:
         model = scripted_model()
         fake_store.fail_matches = True
-        resolver = make_resolver()
-        resolution = await resolver.resolve(
-            ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash"]))
+        ctx = ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash"]))
+        with pytest.raises(EntityLookupUnavailableError):
+            await make_resolver().resolve(ctx)
+        assert len(fake_store.match_calls) == 2  # one retry
+        assert model.calls == []
+        assert ctx.entity_resolution is None
+
+    async def test_one_failed_search_is_retried_and_counted(
+        self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        from app.models.entities import EntityRecord, EntityType
+
+        await fake_store.upsert_entities_batch([
+            EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
+        ])
+        fake_graph.nodes[(TOPICS, "k-bug")] = {
+            "name": "Bug bash testing", "normalizedName": "bug bash testing", "orgId": "acme", "aliases": [],
+        }
+        scripted_model({"bug bash testing session": ("same", "Bug bash testing")})
+        fake_store.fail_next_matches = 1
+        resolution = await make_resolver().resolve(
+            ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         assert resolution.stats.vector_failures == 1
+        assert resolution.stats.new_nodes == 0
+        assert resolution.get(TOPICS, "Bug bash testing session").key == "k-bug"
+
+    async def test_a_search_that_answers_nothing_still_makes_the_name_new(
+        self, make_resolver, metadata_factory, ctx_factory, scripted_model
+    ) -> None:
+        model = scripted_model()
+        store = MagicMock()
+        store.find_candidates = AsyncMock(return_value=[[]])
+        resolution = await make_resolver(store=store).resolve(
+            ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash"]))
+        )
+        assert resolution.stats.vector_failures == 0
         assert resolution.stats.new_nodes == 1
+        assert resolution.get(TOPICS, "Bug bash").is_new
         assert model.calls == []
 
     async def test_mismatched_type_or_level_from_store_is_discarded(
@@ -238,14 +284,15 @@ class TestTier1:
     ) -> None:
         model = scripted_model()
         store = MagicMock()
-        store.find_best_matches = AsyncMock(return_value=[
-            {"entityId": "k", "entityType": "category", "name": "Legal", "aliases": [], "level": None}
+        store.find_candidates = AsyncMock(return_value=[
+            [{"entityId": "k", "entityType": "category", "name": "Legal", "aliases": [], "level": None}]
         ])
         resolver = make_resolver(store=store)
         resolution = await resolver.resolve(
             ctx_factory("r1", "acme", metadata_factory(topics=["Legal"]))
         )
         assert resolution.stats.winners_offered == 0
+        assert resolution.stats.vector_failures == 0
         assert model.calls == []
 
     async def test_no_store_wired_skips_tier1(
@@ -268,7 +315,7 @@ class TestTier1:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash", "Bug bash testing"]))
         )
         assert len(model.calls) == 1
-        assert [i["match"] for i in model.calls[0]] == [None, None]
+        assert [i["matches"] for i in model.calls[0]] == [[], []]
 
 
 class TestTier2:
@@ -281,8 +328,12 @@ class TestTier2:
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
             EntityRecord(entity_id="k-legal", entity_type=EntityType.CATEGORY, name="Legal", org_id="acme"),
         ])
+        from app.modules.entity_resolution.models import MergeDecision, MergeDecisions
+
         get_llm = AsyncMock(return_value=(MagicMock(name="llm"), {}))
-        invoke = AsyncMock(return_value=None)
+        # A usable answer: after a failed or empty one the client is rebuilt on
+        # purpose (test_resolver_model_call_and_winner_check), so reuse is about success.
+        invoke = AsyncMock(return_value=MergeDecisions(decisions=[MergeDecision(i=0, same=False)]))
         with patch("app.modules.entity_resolution.resolver.get_llm_for_role", new=get_llm), patch(
             "app.modules.entity_resolution.resolver.invoke_with_structured_output_and_reflection",
             new=invoke,
@@ -329,25 +380,28 @@ class TestTier2:
             ctx_factory("r1", "acme", metadata_factory(topics=["Bug bash testing session"]))
         )
         assert resolution.stats.model_failures == 1
-        assert resolver._llm is None
+        assert "acme" not in resolver._llms
         assert resolution.entries[(TOPICS, "bug bash testing session")].is_new
 
     async def test_a_hung_model_call_times_out_and_falls_back(
         self, make_resolver, fake_store, metadata_factory, ctx_factory, monkeypatch
     ) -> None:
-        """A hung call would hold the record's indexing slot indefinitely."""
+        """A hung call would hold the record's indexing slot indefinitely. The
+        bound is applied by the real helper around the provider call."""
         import asyncio
 
         from app.models.entities import EntityRecord, EntityType
         from app.modules.entity_resolution import resolver as resolver_module
+        from app.utils import streaming
 
-        async def _hang(*_args, **_kwargs):
-            await asyncio.sleep(10)
+        class _HungLlm:
+            async def ainvoke(self, _messages: list) -> None:
+                await asyncio.sleep(10)
 
         monkeypatch.setattr(resolver_module, "MERGE_CALL_TIMEOUT_SECONDS", 0.01)
-        monkeypatch.setattr(resolver_module, "invoke_with_structured_output_and_reflection", _hang)
+        monkeypatch.setattr(streaming, "_apply_structured_output", lambda llm, schema: llm)
         monkeypatch.setattr(
-            resolver_module, "get_llm_for_role", AsyncMock(return_value=(MagicMock(), {})),
+            resolver_module, "get_llm_for_role", AsyncMock(return_value=(_HungLlm(), {})),
         )
         await fake_store.upsert_entities_batch([
             EntityRecord(entity_id="k-bug", entity_type=EntityType.TOPIC, name="Bug bash testing", org_id="acme"),
@@ -412,7 +466,7 @@ class TestWinnerCheckedAgainstTheGraph:
             EntityRecord(entity_id=entity_id, entity_type=EntityType.TOPIC, name=name, org_id=org),
         ])
 
-    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic):
+    async def _resolve(self, make_resolver, metadata_factory, ctx_factory, topic) -> EntityResolution | None:
         return await make_resolver().resolve(
             ctx_factory("r1", "acme", metadata_factory(topics=[topic]))
         )
@@ -457,17 +511,16 @@ class TestWinnerCheckedAgainstTheGraph:
         assert model.calls == []
         assert not any(name == "add_taxonomy_aliases" for name, _ in fake_graph.calls)
 
-    async def test_a_failed_check_offers_no_winner_and_does_not_raise(
+    async def test_a_failed_check_defers_instead_of_making_the_name_new(
         self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
     ) -> None:
         await self._seed_point(fake_store, "k-bug", "Bug bash testing")
         fake_graph.fail_node_lookup = True
-        scripted_model()
+        model = scripted_model()
 
-        resolution = await self._resolve(make_resolver, metadata_factory, ctx_factory, "Bug bash testing session")
-
-        assert resolution.entries[(TOPICS, "bug bash testing session")].is_new is True
-        assert resolution.stats.winners_offered == 0
+        with pytest.raises(EntityLookupUnavailableError):
+            await self._resolve(make_resolver, metadata_factory, ctx_factory, "Bug bash testing session")
+        assert model.calls == []
 
     async def test_check_is_one_batched_call_per_kind(
         self, make_resolver, fake_graph, fake_store, metadata_factory, ctx_factory, scripted_model
@@ -480,8 +533,10 @@ class TestWinnerCheckedAgainstTheGraph:
             "r1", "acme", metadata_factory(topics=["Bug bash session", "Release checklist v2"]),
         ))
 
+        # The first lookup is the winner check; a second may follow for the
+        # merge-redirect check of names that ended up new.
         lookups = [args for name, args in fake_graph.calls if name == "get_nodes_by_field_in"]
-        assert len(lookups) == 1
+        assert 1 <= len(lookups) <= 2
         collection, field, ids = lookups[0]
         assert (collection, field) == (TOPICS, "id")
         assert set(ids) <= {"k-bug", "k-rel"}

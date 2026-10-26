@@ -4,20 +4,110 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import io
 from unittest.mock import MagicMock, patch
 
 import pytest
+from PIL import Image
 
 from app.utils.image_utils import (
     EXT_TO_MIME,
     _fetch_image_as_base64,
+    downscale_to_limits,
     get_extension_from_mimetype,
     get_image_info_from_url,
     get_mime_type_from_base64,
     mime_to_extension,
     normalize_image_to_base64,
     supported_mime_types,
+    is_below_content_size,
+    is_extreme_aspect_ratio,
+    is_decorative_image,
+    to_llm_image_format, 
 )
+
+_RASTERIZE = "app.modules.parsers.image_parser.image_parser.ImageParser.svg_base64_to_png_base64"
+
+
+def _svg_uri(svg: bytes) -> str:
+    return "data:image/svg+xml;base64," + base64.b64encode(svg).decode()
+
+
+class TestDownscaleToLimits:
+    def test_a_transparent_image_is_laid_on_white_not_black(self) -> None:
+        source = Image.new("RGBA", (3000, 20), (0, 0, 0, 0))
+        source.paste((200, 30, 30, 255), (0, 0, 40, 20))
+        buffer = io.BytesIO()
+        source.save(buffer, format="PNG")
+        uri = downscale_to_limits(
+            "data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode(),
+            max_long_edge_px=2048, max_bytes=10 * 1024 * 1024,
+        )
+
+        assert uri.startswith("data:image/jpeg;base64,")
+        out = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1]))).convert("RGB")
+        assert min(out.getpixel((out.width - 5, out.height // 2))) > 240
+        assert out.getpixel((5, out.height // 2))[0] > 150
+
+
+class TestToLlmImageFormat:
+    def test_svg_is_rasterized_at_the_models_long_edge(self) -> None:
+        uri = _svg_uri(b'<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="1500"></svg>')
+        with patch(_RASTERIZE, return_value="UE5H") as rasterize:
+            assert to_llm_image_format(uri, max_long_edge_px=1500) == "data:image/png;base64,UE5H"
+        kwargs = rasterize.call_args.kwargs
+        assert (kwargs["output_width"], kwargs["output_height"]) == (1500, 750)
+
+    def test_line_wrapped_svg_is_still_rasterized(self) -> None:
+        uri = _svg_uri(b'<svg xmlns="http://www.w3.org/2000/svg" width="30" height="15"></svg>')
+        header, payload = uri.split(",", 1)
+        wrapped = header + "," + "\n".join(payload[i:i + 8] for i in range(0, len(payload), 8))
+        with patch(_RASTERIZE, return_value="UE5H"):
+            assert to_llm_image_format(wrapped, max_long_edge_px=1568) == "data:image/png;base64,UE5H"
+
+    def test_svg_that_cannot_be_rasterized_is_unsendable(self) -> None:
+        uri = _svg_uri(b'<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>')
+        with patch(_RASTERIZE, side_effect=RuntimeError("bad svg")):
+            assert to_llm_image_format(uri, max_long_edge_px=1568) is None
+
+    def test_bmp_is_converted_to_png(self) -> None:
+        pillow = pytest.importorskip("PIL.Image")
+        import io
+
+        buffer = io.BytesIO()
+        pillow.new("RGB", (4, 3)).save(buffer, format="BMP")
+        uri = "data:image/bmp;base64," + base64.b64encode(buffer.getvalue()).decode()
+        converted = to_llm_image_format(uri, max_long_edge_px=1568)
+        assert converted.startswith("data:image/png;base64,iVBORw0KGgo")
+
+    def test_oversized_bmp_is_bounded_to_the_long_edge(self) -> None:
+        pillow = pytest.importorskip("PIL.Image")
+        import io
+
+        buffer = io.BytesIO()
+        pillow.new("RGB", (400, 200)).save(buffer, format="BMP")
+        uri = "data:image/bmp;base64," + base64.b64encode(buffer.getvalue()).decode()
+        converted = to_llm_image_format(uri, max_long_edge_px=100)
+        with pillow.open(io.BytesIO(base64.b64decode(converted.split(",", 1)[1]))) as out:
+            assert out.size == (100, 50)
+
+    def test_unrecognizable_bytes_declared_as_svg_are_unsendable(self) -> None:
+        uri = "data:image/svg+xml;base64," + base64.b64encode(b"\x1f\x8b\x08" + b"\x00" * 40).decode()
+        assert to_llm_image_format(uri, max_long_edge_px=1568) is None
+
+    def test_mislabeled_raster_is_relabeled(self) -> None:
+        jpeg_b64 = base64.b64encode(b"\xff\xd8\xff\xe0" + b"\x00" * 20).decode()
+        assert (
+            to_llm_image_format(f"data:image/png;base64,{jpeg_b64}", max_long_edge_px=1568)
+            == f"data:image/jpeg;base64,{jpeg_b64}"
+        )
+
+    @pytest.mark.parametrize("uri", [
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwC",
+        "https://example.com/photo.svg",
+    ])
+    def test_supported_images_and_urls_pass_through(self, uri: str) -> None:
+        assert to_llm_image_format(uri, max_long_edge_px=1568) == uri
 
 
 class TestNormalizeImageToBase64:
@@ -312,3 +402,94 @@ class TestNormalizeImageToBase64DataUri:
 
     def test_charset_is_enforced_inside_a_base64_data_uri(self) -> None:
         assert normalize_image_to_base64("data:image/png;base64,<not base64>") is None
+
+class TestImageBelowContentSize:
+    """Test Image for identifying images that fall below minimum content dimensions."""
+
+    @pytest.mark.parametrize(
+        ("width", "height"),
+        [
+            pytest.param(None, None, id="missing-both-dimensions"),
+            pytest.param(None, 100, id="missing-width"),
+            pytest.param(0, 100, id="zero-width"),
+            pytest.param(0, 0, id="zero-dimensions"),
+        ],
+    )
+    def test_missing_or_zero_dimensions_are_not_too_small(
+        self, width: int | None, height: int | None
+    ) -> None:
+        assert is_below_content_size(width, height) is False
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(63, 200, True, id="below-minimum-short-edge"),
+            pytest.param(200, 64, False, id="at-minimum-short-edge"),
+        ],
+    )
+    def test_short_edge_threshold(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_below_content_size(width, height) is expected
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(80, 100, True, id="below-minimum-area"),
+            pytest.param(100, 100, False, id="at-minimum-area"),
+            pytest.param(120, 90, False, id="above-minimum-area"),
+        ],
+    )
+    def test_content_area_threshold(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_below_content_size(width, height) is expected
+
+class TestImageExtremeAspectRatio:
+    """Tests for extreme image aspect ratios and boundary conditions."""
+
+    @pytest.mark.parametrize(
+        ("width", "height"),
+        [
+            pytest.param(None, None, id="missing-both-dimensions"),
+            pytest.param(None, 10, id="missing-width"),
+            pytest.param(0, 90, id="zero-width"),
+            pytest.param(100, 0, id="zero-height"),
+        ],
+    )
+    def test_missing_or_zero_dimensions_are_not_extreme(
+        self, width: int | None, height: int | None
+    ) -> None:
+        assert is_extreme_aspect_ratio(width, height) is False
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(200, 20, False, id="ratio-at-maximum"),
+            pytest.param(201, 20, True, id="ratio-above-maximum"),
+            pytest.param(10, 140, True, id="portrait-ratio-above-maximum"),
+            pytest.param(1000, 50, True, id="landscape-ratio-above-maximum"),
+        ],
+    )
+    def test_aspect_ratio_threshold(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_extreme_aspect_ratio(width, height) is expected
+
+class TestDecorativeImage:
+    """Tests for decorative image classification based on size and aspect ratio."""
+
+    @pytest.mark.parametrize(
+        ("width", "height", "expected"),
+        [
+            pytest.param(100, 100, False, id="normal-content-image"),
+            pytest.param(10, 10, True, id="image-below-minimum-size"),
+            pytest.param(1000, 50, True, id="decorative-landscape-image"),
+            pytest.param(1100, 100, True, id="extreme-landscape-ratio"),
+            pytest.param(100, 1100, True, id="extreme-portrait-ratio"),
+        ],
+    )
+    def test_decorative_image_classification(
+        self, width: int, height: int, expected: bool
+    ) -> None:
+        assert is_decorative_image(width, height) is expected

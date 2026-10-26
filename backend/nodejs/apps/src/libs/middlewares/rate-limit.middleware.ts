@@ -1,5 +1,8 @@
+import { createSecretKey, KeyObject } from 'node:crypto';
 import { Request, Response, RequestHandler } from 'express';
 import rateLimit, { Options, ipKeyGenerator } from 'express-rate-limit';
+import jwt from 'jsonwebtoken';
+import { TokenScopes } from '../enums/token-scopes.enum';
 import { Logger } from '../services/logger.service';
 import { TooManyRequestsError } from '../errors/http.errors';
 import { AuthenticatedUserRequest, AuthenticatedServiceRequest } from './types';
@@ -19,8 +22,52 @@ function getClientIpKey(req: Request): string {
   return ipKeyGenerator(getClientIp(req));
 }
 
+export const CALLER_ROLE_LOOKUP_PATH = '/api/v1/users/me/role';
+export const SERVICE_AUTHORIZATION_HEADER = 'x-service-authorization';
+
+/**
+ * A Python service asking about one of its callers, proven by a service token
+ * signed with the scoped secret and scoped to exactly this lookup. Every
+ * user's lookup leaves from the same few service addresses, so counting them
+ * per address would throttle every user at once. The route still checks the
+ * user's own token; only the counting is skipped.
+ */
+function isVerifiedCallerRoleLookup(
+  req: Request,
+  key: KeyObject | null,
+): boolean {
+  if (!key || req.method !== 'GET' || req.path !== CALLER_ROLE_LOOKUP_PATH) {
+    return false;
+  }
+  const header = req.headers[SERVICE_AUTHORIZATION_HEADER];
+  if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
+    return false;
+  }
+  try {
+    const claims = jwt.verify(header.slice('Bearer '.length), key, {
+      algorithms: ['HS256'],
+    });
+    const scopes: unknown =
+      typeof claims === 'object'
+        ? (claims as { scopes?: unknown }).scopes
+        : undefined;
+    return Array.isArray(scopes) && scopes.includes(TokenScopes.CALLER_ROLE);
+  } catch {
+    return false;
+  }
+}
+
 // Single global rate limiter
-export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: number): RequestHandler {
+export function createGlobalRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute: number,
+  scopedJwtSecret?: string,
+): RequestHandler {
+  // Built once: given a raw string, jsonwebtoken re-parses the key on every call.
+  const serviceKey =
+    scopedJwtSecret !== undefined && scopedJwtSecret !== ''
+      ? createSecretKey(Buffer.from(scopedJwtSecret))
+      : null;
   const config: Partial<Options> = {
     windowMs: 60 * 1000,
     max: maxRequestsPerMinute,
@@ -41,6 +88,9 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
     },
 
     skip: (req: Request): boolean => {
+      if (isVerifiedCallerRoleLookup(req, serviceKey)) {
+        return true;
+      }
       // Internal routes (/…/internal/…) are service-to-service calls protected
       // by scopedTokenValidator. That middleware runs AFTER the global rate
       // limiter (route middleware executes later than app.use middleware), so
@@ -73,7 +123,9 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
         retryAfter,
       });
 
-      const error = new TooManyRequestsError('Too many requests. Please try again later.');
+      const error = new TooManyRequestsError(
+        'Too many requests. Please try again later.',
+      );
       res.status(429).json({
         error: {
           code: error.code,
@@ -99,10 +151,16 @@ export function createGlobalRateLimiter(logger: Logger, maxRequestsPerMinute: nu
   return rateLimit(config);
 }
 
+export function slackEventsRateLimitPerMinute(): number {
+  const parsed = Number(process.env.SLACK_EVENTS_RATE_LIMIT_PER_MINUTE);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 300;
+}
+
 export interface KeyedRateLimiterOptions {
   prefix: string;
   maxRequestsPerMinute: number;
   message: string;
+  countOnlyFailures?: boolean;
 }
 
 /**
@@ -115,7 +173,12 @@ export function createKeyedRateLimiter(
   logger: Logger,
   options: KeyedRateLimiterOptions,
 ): RequestHandler {
-  const { prefix, maxRequestsPerMinute, message } = options;
+  const {
+    prefix,
+    maxRequestsPerMinute,
+    message,
+    countOnlyFailures = false,
+  } = options;
 
   const keyFor = (req: Request): string => {
     const authenticatedUserReq = req as AuthenticatedUserRequest;
@@ -130,6 +193,7 @@ export function createKeyedRateLimiter(
     max: maxRequestsPerMinute,
     standardHeaders: true,
     legacyHeaders: false,
+    skipSuccessfulRequests: countOnlyFailures,
     keyGenerator: keyFor,
     handler: (req: Request, res: Response): void => {
       const retryAfter = res.getHeader('Retry-After');
@@ -200,5 +264,28 @@ export function createAuthRateLimiter(
     prefix: 'auth',
     maxRequestsPerMinute,
     message: 'Too many authentication requests. Please try again later.',
+  });
+}
+
+/**
+ * Public /slack/events entry. Slack deliveries are anonymous, so this keys on
+ * the client IP. Mount it on the Express gateway only: the bot process behind
+ * it sees every org's traffic from the gateway's address, so a limiter there
+ * would be one bucket shared by all orgs.
+ *
+ * Only responses of 400 or above count. Every org's real deliveries arrive from
+ * Slack's few egress addresses, so counting them would let one busy workspace
+ * throttle all the others, and a 429 makes Slack redeliver and add more load.
+ * Bad signatures (the bot's 401) still fill the bucket.
+ */
+export function createSlackEventsRateLimiter(
+  logger: Logger,
+  maxRequestsPerMinute = slackEventsRateLimitPerMinute(),
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'slack-events',
+    maxRequestsPerMinute,
+    message: 'Too many Slack event deliveries.',
+    countOnlyFailures: true,
   });
 }

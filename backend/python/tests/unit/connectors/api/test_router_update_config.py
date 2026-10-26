@@ -253,11 +253,13 @@ class TestUpdateConfigOAuthWithConfigId:
         assert cfg["auth"]["scopes"] == ["https://www.googleapis.com/auth/drive"]
         assert cfg["auth"]["redirectUri"] == "https://app.example.com/oauth/callback"
         assert cfg["auth"]["authType"] == "OAUTH"
-        # Credentials cleared on auth update
-        assert cfg["credentials"] is None
-        assert cfg["oauth"] is None
-        # set_config was called
+        # Credentials cleared in the store on auth update, and never sent back
         config_service.set_config.assert_awaited_once()
+        saved = config_service.set_config.await_args.args[1]
+        assert saved["credentials"] is None
+        assert saved["oauth"] is None
+        assert "credentials" not in cfg
+        assert "oauth" not in cfg
 
     @pytest.mark.asyncio
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
@@ -400,10 +402,12 @@ class TestUpdateConfigRedirectUri:
     @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
     @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
     async def test_redirect_uri_with_base_url(self, mock_get_inst, mock_ts):
-        """When baseUrl is provided in the request body, use it for redirect URI."""
+        """A baseUrl matching the configured frontend is used for the redirect URI."""
         mock_get_inst.return_value = _instance(auth_type="OAUTH")
 
-        config_service = _build_config_service()
+        config_service = _build_config_service(
+            endpoints={"frontend": {"publicEndpoint": "https://custom.example.com"}},
+        )
         registry = _build_connector_registry()
         container = _build_container(config_service)
 
@@ -504,7 +508,9 @@ class TestUpdateConfigOAuthAdminConsent:
     async def test_admin_consent_merges_metadata(self, mock_get_inst, mock_ts):
         mock_get_inst.return_value = _instance(auth_type="OAUTH_ADMIN_CONSENT")
 
-        config_service = _build_config_service()
+        config_service = _build_config_service(
+            endpoints={"frontend": {"publicEndpoint": "https://admin.example.com"}},
+        )
         registry = _build_connector_registry()
         container = _build_container(config_service)
 
@@ -574,6 +580,21 @@ class TestUpdateConfigAuthTypeChange:
         with pytest.raises(HTTPException) as exc:
             await update_connector_instance_config("conn1", request)
         assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("auth", ["token", ["a"], 5, None])
+    @patch(f"{_ROUTER}.get_epoch_timestamp_in_ms", return_value=1234567890)
+    @patch(f"{_ROUTER}.get_validated_connector_instance", new_callable=AsyncMock)
+    async def test_auth_that_is_not_an_object_is_a_400(self, mock_get_inst, mock_ts, auth) -> None:
+        mock_get_inst.return_value = _instance(auth_type="API_TOKEN")
+        config_service = _build_config_service()
+        request = _mock_request(container=_build_container(config_service), body={"auth": auth})
+
+        with pytest.raises(HTTPException) as exc:
+            await update_connector_instance_config("conn1", request)
+        assert exc.value.status_code == HttpStatusCode.BAD_REQUEST.value
+        assert exc.value.detail == "Auth configuration must be an object."
+        config_service.set_config.assert_not_awaited()
 
 
 # ============================================================================
@@ -1089,8 +1110,8 @@ class TestUpdateConfigNonOAuthAuthType:
         # No OAuth URLs should be present
         assert "authorizeUrl" not in result["config"].get("auth", {})
         assert "tokenUrl" not in result["config"].get("auth", {})
-        # get_connector_metadata should NOT have been called
-        registry.get_connector_metadata.assert_not_awaited()
+        saved_auth = config_service.set_config.await_args.args[1]["auth"]
+        assert not {"authorizeUrl", "tokenUrl", "scopes", "redirectUri"} & saved_auth.keys()
 
 
 # ============================================================================
@@ -1137,7 +1158,7 @@ class TestStreamRecordInternalGoogleDrivePaths:
             "isActive": True,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance
@@ -1267,7 +1288,7 @@ class TestDownloadFileErrorPaths:
             "isActive": True,
         }
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             if collection == CollectionNames.ORGS.value:
                 return org_doc
             return connector_instance_doc
@@ -1387,7 +1408,7 @@ class TestDownloadFileErrorPaths:
 
         call_count = 0
 
-        async def _get_doc(doc_id, collection):
+        async def _get_doc(doc_id, collection, *, raise_on_error=False):
             nonlocal call_count
             call_count += 1
             if collection == "orgs":

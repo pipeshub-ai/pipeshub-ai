@@ -26,7 +26,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
@@ -350,9 +349,9 @@ class TestConvertToPermissions:
         link.type = "read"
         perm.link = link
 
+        # An anonymous link names no grantee, so it yields no permission.
         permissions = await connector._convert_to_permissions([perm])
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert permissions == []
 
     @pytest.mark.asyncio
     async def test_organization_link_permission(self):
@@ -367,8 +366,7 @@ class TestConvertToPermissions:
         perm.link = link
 
         permissions = await connector._convert_to_permissions([perm])
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []  # an organization link alone is not a grant
 
 
 # ===========================================================================
@@ -2120,7 +2118,7 @@ class TestProcessDeltaItemCoverage:
 # ===========================================================================
 
 
-class TestConvertToPermissionsCoverage:
+class TestConvertToPermissionsIdentitiesAndRoles:
 
     @pytest.mark.asyncio
     async def test_granted_to_identities_v2_group(self):
@@ -2187,9 +2185,9 @@ class TestConvertToPermissionsCoverage:
         good_perm.link.type = "read"
 
         result = await connector._convert_to_permissions([bad_perm, good_perm])
-        # bad_perm may or may not produce a permission depending on exact failure point,
-        # but good_perm should always produce one
-        assert any(p.entity_type == EntityType.ANYONE_WITH_LINK for p in result)
+        # Neither yields a permission: bad_perm fails, and an anonymous link
+        # names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_user_no_additional_data(self):
@@ -2235,7 +2233,7 @@ class TestConvertToPermissionsCoverage:
 # ===========================================================================
 
 
-class TestPermissionsEqualCoverage:
+class TestPermissionsEqualOrdering:
 
     def test_same_perms_different_order(self):
         connector = _make_connector_cov()
@@ -4406,9 +4404,9 @@ class TestConvertToPermissionsCoverage:
         perm.link.type = "view"
         perm.roles = []
 
+        # An anonymous link names no grantee, so it yields no permission.
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link_permission(self):
@@ -4422,8 +4420,7 @@ class TestConvertToPermissionsCoverage:
         perm.roles = []
 
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_permission_conversion_error_skipped(self):

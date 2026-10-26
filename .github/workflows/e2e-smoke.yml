@@ -35,7 +35,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
 
@@ -53,7 +53,7 @@ jobs:
           } >> "$GITHUB_ENV"
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: '20'
 
@@ -63,10 +63,20 @@ jobs:
           npm ci
           npx playwright install chromium --with-deps
 
+      # From GHCR so CI neither spends nor inflates Docker Hub pulls; the compose
+      # build reads the exported names. Docker Hub is the fallback per image.
       - name: Pull pre-built base images
         run: |
-          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
-          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
+              image="$hub"
+              docker pull "$image" || true
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
 
       - name: Build stack images
         working-directory: deployment/docker-compose
@@ -103,8 +113,32 @@ jobs:
             if [ "$delay" -gt 64 ]; then delay=64; fi
           done
 
+      # The first admin's sign-up and onboarding, on the stack before any org
+      # exists. It creates the account the steps below sign in with. If it fails
+      # before that, the next step creates the account through the API instead,
+      # so the other browser tests still run; its failure is reported after them.
+      - name: Sign up and onboard in the browser (fresh install)
+        id: first_run
+        continue-on-error: true
+        working-directory: frontend
+        env:
+          CI: 'true'
+          PLAYWRIGHT_NO_SERVER: 'true'
+          E2E_FIRST_RUN: 'true'
+          BASE_URL: http://localhost:3000
+          NEXT_PUBLIC_API_BASE_URL: http://localhost:3000
+          TEST_USER_EMAIL: ${{ env.PIPESHUB_TEST_USER_EMAIL }}
+          TEST_USER_PASSWORD: ${{ env.PIPESHUB_TEST_USER_PASSWORD }}
+          # Its own folders: the smoke run below clears test-results/ when it starts.
+          PLAYWRIGHT_HTML_REPORT: playwright-report-first-run
+        run: npx playwright test --project=first-run --output=test-results-first-run 2>&1
+
       - name: Create organization and admin user
         run: |
+          if curl -sf "${PIPESHUB_BASE_URL}/api/v1/org/exists" | jq -e '.exists == true' > /dev/null; then
+            echo "The browser sign-up already created the organization."
+            exit 0
+          fi
           # jq reads the credentials from the environment, so quotes or backslashes
           # in a secret stay valid JSON and never appear on a command line.
           jq -n --arg name "Smoke Test" --arg short "SMOKE" '{
@@ -159,6 +193,12 @@ jobs:
           SMTP_PORT: '1025'
         run: npm run test:e2e:smoke 2>&1
 
+      - name: Report the sign-up and onboarding result
+        if: ${{ !cancelled() && steps.first_run.outcome == 'failure' }}
+        run: |
+          echo "::error::The fresh-install sign-up and onboarding browser test failed. Its report is playwright-report-first-run in the e2e-smoke-report artifact."
+          exit 1
+
       - name: Dump docker logs
         if: failure()
         working-directory: deployment/docker-compose
@@ -166,12 +206,14 @@ jobs:
 
       - name: Upload smoke report
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: e2e-smoke-report
           path: |
             frontend/playwright-report
             frontend/test-results
+            frontend/playwright-report-first-run
+            frontend/test-results-first-run
             frontend/docker-logs.txt
           retention-days: 7
 

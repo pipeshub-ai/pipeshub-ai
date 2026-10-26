@@ -44,6 +44,32 @@ async def test_an_issue_streams_with_its_description_images_comments_and_attachm
     assert base64.b64encode(PNG + b"2").decode() in comment["data"]
 
 
+async def test_an_issue_and_a_merge_request_with_a_dash_or_cjk_title_still_stream(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    gitlab.add_issue(WEB, 1, "Login — 登录 fails", "2026-09-01T10:00:00Z", author=ALICE, description="Steps")
+    gitlab.add_merge_request(WEB, 1, "Fix login — 修复", "2026-09-01T11:00:00Z", description="Fixes it")
+    connector = await harness.sync()
+
+    issue = await connector.stream_record(db.records["11001"])
+    merge_request = await connector.stream_record(db.records[next(iter(web_mr_ids(1)))])
+
+    assert issue.headers["content-disposition"] == 'attachment; filename="Login   fails"'
+    assert json.loads(await body_of(issue))["block_groups"][0]["data"].startswith("# Login — 登录 fails")
+    assert merge_request.headers["content-disposition"].startswith('attachment; filename="Fix login')
+    mr_groups = json.loads(await body_of(merge_request))["block_groups"]
+    assert "Fix login — 修复" in mr_groups[0]["data"], mr_groups[0]["data"][:80]
+
+
+async def test_a_title_with_a_quote_or_a_backslash_is_escaped_in_the_download_name(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    gitlab.add_issue(WEB, 1, 'Fix "login" on C:\\app', "2026-09-01T10:00:00Z", author=ALICE, description="Steps")
+    connector = await harness.sync()
+
+    response = await connector.stream_record(db.records["11001"])
+
+    assert response.headers["content-disposition"] == 'attachment; filename="Fix \\"login\\" on C:\\\\app"'
+
+
 async def test_an_attachment_streams_its_bytes(harness, gitlab, db) -> None:
     build_acme(gitlab)
     gitlab.uploads[SPEC] = b"%PDF-1.7 spec"
@@ -80,9 +106,37 @@ async def test_a_merge_request_streams_comments_file_changes_and_commits(harness
     assert "Comment by bob on merge request 1" in names
     assert "System Comment by alice on merge request 1" in names
     change = next(g for g in groups if g["name"] == "block for file src/app.py")
-    assert "print('app')" in change["data"]
+    # The diff describes the change; the file itself is not indexed again.
+    assert change["data"] == "Existing file\n\nDiff content\n\n@@ -1 +1 @@"
     assert change["comments"][0][0]["text"] == "Rename this"
     assert [b["data"] for b in blocks["blocks"]] == ["Fix login bug"]
+
+
+async def test_a_merge_request_fetches_only_the_files_gitlab_gives_no_diff_for(harness, gitlab, db) -> None:
+    build_acme(gitlab)
+    diffed = [{"new_path": path, "old_path": path, "diff": "@@ -1 +1 @@\n-old\n+new", "new_file": False,
+               "deleted_file": False, "too_large": False} for path in ("README.md", "src/app.py", "src/util/helpers.py")]
+    too_large = {"new_path": ".gitignore", "old_path": ".gitignore", "diff": "", "new_file": False,
+                 "deleted_file": False, "too_large": True}
+    gitlab.add_merge_request(WEB, 1, "Touch four files", "2026-09-01T11:00:00Z", changes=[*diffed, too_large])
+    connector = await harness.sync()
+    seen_before = len(gitlab.requests)
+
+    blocks = json.loads(await body_of(await connector.stream_record(db.records[next(iter(web_mr_ids(1)))])))
+
+    streamed = gitlab.requests[seen_before:]
+    file_fetches = [r.path for r in streamed if "/repository/files/" in r.path]
+    mr_fetches = [r for r in streamed if r.method == "GET" and r.path == f"/api/v4/projects/{WEB}/merge_requests/1"]
+    assert file_fetches == [f"/api/v4/projects/{WEB}/repository/files/.gitignore"]
+    # Without raw diffs GitLab empties every patch over 10% of its hard limit
+    # on a multi-file merge request, which would leave those files diff-less.
+    changes_calls = [r for r in streamed if r.path.endswith("/merge_requests/1/changes")]
+    assert [r.params.get("access_raw_diffs") for r in changes_calls] == ["true"]
+    assert len(mr_fetches) == 1
+    groups = {g["name"]: g["data"] for g in blocks["block_groups"]}
+    assert "print('app')" not in groups["block for file src/app.py"]
+    assert "*.pyc" in groups["block for file .gitignore"]
+    assert groups["block for file .gitignore"].endswith("[TRUNCATED] Diff")
 
 
 async def test_reindex_refreshes_changed_issues_and_requeues_everything_else(harness, gitlab, db) -> None:

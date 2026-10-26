@@ -8,6 +8,22 @@ import pytest
 from fastapi import HTTPException
 
 
+@pytest.fixture(autouse=True)
+def _credential_instance_and_schema():
+    """The credential handlers look the instance and its declared fields up in the
+    registry. These tests are about what the handlers do once they have them; the
+    lookups themselves are covered in test_toolset_credential_fields.py."""
+    with patch(
+        "app.api.routes.toolsets._declared_auth_fields",
+        return_value={"apiToken", "username", "password", "email", "baseUrl"},
+    ), patch(
+        "app.api.routes.toolsets._instance_for_credential_update",
+        new_callable=AsyncMock,
+        return_value={"_id": "i1", "orgId": "o1", "authType": "API_TOKEN", "toolsetType": "jira"},
+    ):
+        yield
+
+
 # ---------------------------------------------------------------------------
 # Shared helpers for route-handler tests
 # ---------------------------------------------------------------------------

@@ -47,6 +47,24 @@ describe('AuthorizationCodeService', () => {
       expect(createStub.calledOnce).to.be.true
     })
 
+    it('stores the limit the user agreed to and returns it on exchange', async () => {
+      const knowledgeLimit = { apps: [], recordGroups: ['g1'], records: [] }
+      const createStub = sinon.stub(AuthorizationCode, 'create').resolves({} as any)
+      await service.generateCode(
+        'client-1', new Types.ObjectId().toString(), new Types.ObjectId().toString(),
+        'https://example.com/cb', ['org:read'], undefined, undefined, knowledgeLimit,
+      )
+      expect((createStub.firstCall.args[0] as any).knowledgeLimit).to.deep.equal(knowledgeLimit)
+
+      sinon.stub(AuthorizationCode, 'findOne').resolves({
+        _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId(),
+        redirectUri: 'https://example.com/cb', scopes: ['org:read'], knowledgeLimit,
+        expiresAt: new Date(Date.now() + 600000), isUsed: false, save: sinon.stub().resolves(),
+      } as any)
+      const result = await service.exchangeCode('c', 'client-1', 'https://example.com/cb', undefined, true)
+      expect(result.knowledgeLimit).to.deep.equal(knowledgeLimit)
+    })
+
     it('should store PKCE challenge when provided', async () => {
       const createStub = sinon.stub(AuthorizationCode, 'create').resolves({} as any)
 

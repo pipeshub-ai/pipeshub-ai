@@ -12,8 +12,12 @@ from app.connectors.core.registry.folder_scope import (
     CleanupResult,
     FolderScope,
     clean_up_scope,
+    folder_path_problems,
+    listed_record_ids,
+    remove_records_not_listed,
     remove_records_outside_scope,
 )
+from app.services.graph_db.common.record_visibility import RecordVisibility, matches_visibility
 
 
 def folders(values, operator=ListOperator.IN) -> FilterCollection:
@@ -108,9 +112,34 @@ class TestRemoveRecordsOutsideScope:
             processor, "conn-1", "b1", FolderScope(("reports/2026/",)), logging.getLogger("t")
         )
 
-        processor.get_records_in_record_group.assert_awaited_once_with("conn-1", "b1", 500, None)
+        processor.get_records_in_record_group.assert_awaited_once_with(
+            "conn-1", "b1", 500, None, visibility=RecordVisibility.ALL
+        )
         deleted = [c.args[0] for c in processor.on_record_deleted.await_args_list]
         assert sorted(deleted) == ["drop-file", "drop-folder"]
+        assert removed == CleanupResult(removed=2, failed=0)
+
+    @pytest.mark.asyncio
+    async def test_a_trashed_record_outside_the_scope_is_removed_too(self) -> None:
+        trashed = self.record("trashed-file", "b1/legal/old.pdf")
+        trashed.is_deleted = True
+        live = self.record("live-file", "b1/legal/new.pdf")
+        live.is_deleted = False
+        processor = MagicMock()
+        # Answers as both graph stores do: live records only unless asked for more.
+        processor.get_records_in_record_group = AsyncMock(
+            side_effect=lambda *_a, visibility=RecordVisibility.LIVE: [
+                r for r in (live, trashed) if matches_visibility(r, visibility)
+            ]
+        )
+        processor.on_record_deleted = AsyncMock()
+
+        removed = await remove_records_outside_scope(
+            processor, "conn-1", "b1", FolderScope(("reports/",)), logging.getLogger("t")
+        )
+
+        deleted = [c.args[0] for c in processor.on_record_deleted.await_args_list]
+        assert sorted(deleted) == ["live-file", "trashed-file"]
         assert removed == CleanupResult(removed=2, failed=0)
 
     @pytest.mark.asyncio
@@ -169,7 +198,7 @@ class TestCleanUpScope:
     @staticmethod
     def processor(delete_side_effect=None):
         processor = MagicMock()
-        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a: [
+        processor.get_records_in_record_group = AsyncMock(side_effect=lambda *a, **kw: [
             MagicMock(id="r1", external_record_id="b1/other/x.pdf", mime_type="application/pdf"),
         ])
         processor.on_record_deleted = AsyncMock(side_effect=delete_side_effect)
@@ -309,6 +338,59 @@ class TestCleanUpScope:
         assert FolderScope(("a/", "b/")).key() != FolderScope(("a/", "b/"), exclude=True).key()
 
 
+class TestRemoveRecordsNotListed:
+    def test_a_listed_object_keeps_the_folders_above_it(self) -> None:
+        assert listed_record_ids("b1", "a/b/c.txt") == {"b1/a", "b1/a/b", "b1/a/b/c.txt"}
+        assert listed_record_ids("b1", "a/b/") == {"b1/a", "b1/a/b", "b1/a/b/"}
+        assert listed_record_ids("b1", "/top.txt") == {"b1/top.txt"}
+        assert listed_record_ids("b1", "") == set()
+
+    @pytest.mark.asyncio
+    async def test_removes_only_what_the_listed_prefix_no_longer_holds(self) -> None:
+        record = TestRemoveRecordsOutsideScope.record
+        processor = MagicMock()
+        processor.get_records_in_record_group = AsyncMock(return_value=[
+            record("kept", "b1/reports/q1.pdf"),
+            record("kept-folder", "b1/reports", folder=True),
+            record("gone", "b1/reports/q2.pdf"),
+            record("other-prefix", "b1/legal/contract.pdf"),
+            record("other-folder", "b1/other/x.pdf"),
+        ])
+        processor.on_record_deleted = AsyncMock()
+        listed = listed_record_ids("b1", "reports/q1.pdf")
+
+        result = await remove_records_not_listed(processor, "c", "b1", ["reports/"], listed, logging.getLogger("t"))
+
+        assert [c.args[0] for c in processor.on_record_deleted.await_args_list] == ["gone"]
+        assert result == CleanupResult(removed=1, failed=0)
+
+
+    @pytest.mark.asyncio
+    async def test_a_record_gone_at_the_source_has_its_vectors_deleted(self, monkeypatch) -> None:
+        """PP-103: the removal pass reaches the processor's delete, which asks indexing to drop the vectors."""
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled",
+            AsyncMock(return_value=False),
+        )
+        gone = MagicMock(id="gone", external_record_id="b1/q2.pdf", mime_type="application/pdf", is_deleted=False)
+        processor = TestCleanUpScope.real_processor(pages=[[gone]])
+        del processor.on_record_deleted  # the processor's own delete, not the helper's stand-in
+        tx = await processor.data_store_provider.transaction().__aenter__()
+        tx.get_record_by_key = AsyncMock(return_value={"_key": "gone", "isDeleted": False})
+        tx.delete_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"payloads": [{"recordId": "gone", "virtualRecordId": "vr-gone", "orgId": "org-1"}]},
+        })
+
+        result = await remove_records_not_listed(processor, "c", "b1", [""], set(), logging.getLogger("t"))
+
+        assert result == CleanupResult(removed=1, failed=0)
+        tx.delete_single_record.assert_awaited_once_with("gone")
+        event = processor.messaging_producer.send_message.await_args[0][1]
+        assert event["eventType"] == "deleteRecord"
+        assert event["payload"]["virtualRecordId"] == "vr-gone"
+
+
 class TestFilterField:
     def test_is_a_free_text_list_defaulting_to_include(self):
         from app.connectors.core.registry.connector_builder import CommonFields
@@ -321,3 +403,19 @@ class TestFilterField:
         assert field.option_source_type == OptionSourceType.MANUAL
         assert field.default_operator == ListOperator.IN.value
         assert "container" in field.description
+
+
+class TestFolderPathProblems:
+    @pytest.mark.parametrize("value", ["../etc", "a/../../b", "a\\..\\b", ["ok", ".."], " .. /x"])
+    def test_a_path_that_climbs_out_is_refused(self, value: object) -> None:
+        problems = folder_path_problems({"folder_paths": {"operator": "in", "value": value}})
+
+        assert len(problems) == 1
+        assert "without" in problems[0]
+
+    @pytest.mark.parametrize("value", ["finance/restricted", "/reports/", ["a", "b/c"], "a..b/c", "", None])
+    def test_paths_inside_are_fine(self, value: object) -> None:
+        assert folder_path_problems({"folder_paths": {"operator": "in", "value": value}}) == []
+
+    def test_no_folder_filter_is_fine(self) -> None:
+        assert folder_path_problems({}) == []

@@ -43,8 +43,8 @@ from app.agent_loop_lib.transport.opik_tracing import (
 
 class _FakeSpan(SimpleNamespace):
     """Stand-in for opik's `SpanData` — a plain attribute bag, same shape
-    the real `_guarded_cm.__enter__()` value gets `.output`/`.usage`/
-    `.model` assigned onto."""
+    the real `_guarded_cm.__enter__()` value gets `.output`/`.model`
+    assigned onto."""
 
 
 @contextlib.contextmanager
@@ -363,7 +363,7 @@ class TestOpikTracingTransportComplete:
         assert kwargs["provider"] == "fake"
         assert kwargs["model"] == "fake-model"
 
-    async def test_records_tool_calls_and_usage_on_span(self) -> None:
+    async def test_records_tool_calls_but_not_usage_on_span(self) -> None:
         from app.agent_loop_lib.core.messages import ToolCall
 
         response = _response("", tool_calls=[ToolCall(id="1", name="search", arguments={"q": "x"})])
@@ -384,8 +384,9 @@ class TestOpikTracingTransportComplete:
         span = captured_span["span"]
         assert span.output["stop_reason"] == "tool_use"
         assert span.output["content"]["tool_calls"][0]["name"] == "search"
-        assert span.usage["prompt_tokens"] == 10
-        assert span.usage["completion_tokens"] == 5
+        # Usage belongs to the nested OpikTracer callback span alone — Opik sums
+        # span usage per trace, so reporting it here too doubles every token count.
+        assert not hasattr(span, "usage")
 
     async def test_opik_failure_does_not_break_the_llm_call(self) -> None:
         """Tracing must never be able to take down a real LLM call — see

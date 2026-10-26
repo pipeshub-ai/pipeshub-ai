@@ -1,0 +1,457 @@
+"""A record id that does not resolve gets pointed back at the ids the model was shown.
+
+The 2026-10-09 nightly demo run asked for "call notes" by an id whose first
+three groups were right and the rest invented; the reply gave the model
+nothing to recover with. These tests drive `execute_fetch_record` through the
+real `_fetch_multiple_records_impl`, against a fake graph that answers the
+access check the way the real stores do: no details for a record that is
+missing and no details for one this person may not read.
+"""
+from __future__ import annotations
+
+import json
+from types import SimpleNamespace
+from typing import TYPE_CHECKING, Any
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from app.agents.actions.knowledge_graph.ops.fetch import execute_fetch_record
+from app.agents.actions.knowledge_graph.views import (
+    _row_line,
+    render_lookup_result_with_ids,
+    render_navigation_view_with_ids,
+)
+from app.modules.agents.qna.chat_state import remember_record_ids
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+    from pathlib import Path
+
+    from app.agent_loop_lib.tools.base import ToolOutput
+
+MISTYPED = "8a2cfb7d-04fc-4647-8d43-5d0527800009"
+REAL = "8a2cfb7d-04fc-4647-a5db-4602ab67b1f0"
+OTHER = "3f9c2e10-7b44-4d21-9e0a-1c2b3d4e5f60"
+UNRELATED = "c0ffee00-1111-4222-8333-944445555666"
+
+TODAYS_MESSAGE = (
+    "None of the requested records were available.\n\n"
+    f"Note: '{MISTYPED}': not available"
+)
+
+
+class _Graph:
+    """Answers like Neo4j/Arango: `None` for a record that is missing and for
+    one the user may not read. Records every call so the two cases can be
+    shown to take the same path."""
+
+    def __init__(self, readable_by: dict[str, set[str]] | None = None) -> None:
+        self._readable_by = readable_by or {}
+        self.calls: list[str] = []
+        self.config_service = None
+
+    async def check_record_access_with_details(
+        self, user_id: str, org_id: str, record_id: str,
+    ) -> dict[str, Any] | None:
+        self.calls.append("check_record_access_with_details")
+        if user_id in self._readable_by.get(record_id, set()):
+            return {"_key": record_id}
+        return None
+
+    async def get_document(self, document_key: str, collection: str) -> dict[str, Any] | None:
+        self.calls.append("get_document")
+        return None
+
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict[str, Any]:
+        self.calls.append("get_user_by_user_id")
+        return {"_key": user_id, "id": user_id}
+
+    async def check_access(
+        self, user_key: str, org_id: str, *, node_ids: Iterable[str] = (), **_: object,
+    ) -> AccessCheck:
+        self.calls.append("check_access")
+        return AccessCheck(node_ids=frozenset(
+            node_id for node_id in node_ids if user_key in self._readable_by.get(node_id, set())
+        ))
+
+
+def _context(tool_state: dict[str, Any], graph: _Graph | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        org_id="org-1",
+        user_id="user-1",
+        graph_provider=graph or _Graph(),
+        full_records_fetched=set(),
+        tool_state=tool_state,
+        is_multimodal_llm=False,
+        context_length=128_000,
+        query="",
+        retrieval_service=None,
+    )
+
+
+async def _fetch(
+    record_ids: list[str], tool_state: dict[str, Any], graph: _Graph | None = None,
+) -> ToolOutput:
+    output, _ = await execute_fetch_record(
+        context=_context(tool_state, graph),
+        virtual_records={},
+        citation_ref_mapper=None,
+        record_ids=record_ids,
+    )
+    return output
+
+
+def _shown(names: dict[str, str]) -> dict[str, Any]:
+    state: dict[str, Any] = {}
+    remember_record_ids(state, list(names), names=names)
+    return state
+
+
+@pytest.mark.asyncio
+class TestUnknownIdRecovery:
+    async def test_lists_earlier_records_and_names_the_closest(self) -> None:
+        state = _shown({OTHER: "Q3 roadmap", REAL: "Call notes"})
+
+        output = await _fetch([MISTYPED], state)
+
+        assert output.success is False
+        assert output.error.startswith(TODAYS_MESSAGE)
+        assert "Records returned earlier in this conversation:" in output.error
+        assert f"- {REAL} (Call notes)" in output.error
+        assert f"- {OTHER} (Q3 roadmap)" in output.error
+        assert f"The closest to the id you used is {REAL} (Call notes)." in output.error
+
+    async def test_no_earlier_records_keeps_todays_message(self) -> None:
+        output = await _fetch([MISTYPED], {})
+
+        assert output.success is False
+        assert output.error == TODAYS_MESSAGE
+
+    async def test_missing_and_unreadable_ids_get_byte_identical_replies(self) -> None:
+        """Otherwise the hint becomes a way to learn that a hidden record exists."""
+        missing_graph = _Graph()
+        unreadable_graph = _Graph(readable_by={MISTYPED: {"someone-else"}})
+
+        missing = await _fetch([MISTYPED], _shown({REAL: "Call notes"}), missing_graph)
+        unreadable = await _fetch([MISTYPED], _shown({REAL: "Call notes"}), unreadable_graph)
+
+        assert missing.error.encode() == unreadable.error.encode()
+        assert missing.success is unreadable.success is False
+        assert missing_graph.calls == unreadable_graph.calls
+
+    async def test_list_holds_only_the_twenty_most_recent(self) -> None:
+        ids = [f"{i:08x}-0000-4000-8000-000000000000" for i in range(30)]
+        state: dict[str, Any] = {}
+        for i, rid in enumerate(ids):
+            remember_record_ids(state, [rid], names={rid: f"Doc {i}"})
+
+        output = await _fetch([UNRELATED], state)
+
+        listed = [line for line in output.error.splitlines() if line.startswith("- ")]
+        assert listed == [f"- {ids[i]} (Doc {i})" for i in range(29, 9, -1)]
+
+    async def test_one_long_listing_keeps_its_top_rows(self) -> None:
+        """A navigate page shows 50 rows and its Next hint points at the first
+        ones; a cap that kept the tail would drop exactly those."""
+        ids = [f"{i:02x}{REAL[2:]}" if i else REAL for i in range(50)]
+        state = _shown({rid: f"Row {i}" for i, rid in enumerate(ids)})
+
+        output = await _fetch([MISTYPED], state)
+
+        bullets = [line[2:] for line in output.error.splitlines() if line.startswith("- ")]
+        assert bullets == [f"{ids[i]} (Row {i})" for i in range(20)]
+        assert f"The closest to the id you used is {REAL} (Row 0)." in output.error
+
+    async def test_a_closest_id_is_always_one_of_the_listed(self) -> None:
+        state: dict[str, Any] = {}
+        remember_record_ids(state, [REAL], names={REAL: "Call notes"})
+        for i in range(25):
+            rid = f"{i:08x}-0000-4000-8000-000000000000"
+            remember_record_ids(state, [rid], names={rid: f"Doc {i}"})
+
+        output = await _fetch([MISTYPED], state)
+
+        assert REAL not in output.error
+        assert "closest" not in output.error
+
+    async def test_an_unrelated_id_names_no_closest(self) -> None:
+        state = _shown({OTHER: "Q3 roadmap", REAL: "Call notes"})
+
+        output = await _fetch([UNRELATED], state)
+
+        assert f"- {REAL} (Call notes)" in output.error
+        assert "closest" not in output.error
+
+    async def test_a_one_character_slip_anywhere_is_named(self) -> None:
+        slipped = "9" + REAL[1:]
+        state = _shown({OTHER: "Q3 roadmap", REAL: "Call notes"})
+
+        output = await _fetch([slipped], state)
+
+        assert f"The closest to the id you used is {REAL} (Call notes)." in output.error
+
+    async def test_two_equally_close_ids_name_neither(self) -> None:
+        twin = "8a2cfb7d-04fc-4647-ffff-000000000000"
+        state = _shown({REAL: "Call notes", twin: "Call notes (copy)"})
+
+        output = await _fetch([MISTYPED], state)
+
+        assert "closest" not in output.error
+
+    async def test_shortened_ids_are_listed_as_the_model_saw_them(self) -> None:
+        state = _shown({REAL: "Call notes"})
+        shortener = MagicMock()
+        shortener.resolve = MagicMock(side_effect=lambda rid: rid)
+        shortener.shorten_if_known = MagicMock(
+            side_effect=lambda rid: "R1" if rid == REAL else rid,
+        )
+
+        with patch(
+            "app.utils.chat_helpers.get_record_id_shortener_if_enabled",
+            return_value=shortener,
+        ):
+            output = await _fetch([MISTYPED], state)
+
+        assert "- R1 (Call notes)" in output.error
+        assert "The closest to the id you used is R1 (Call notes)." in output.error
+        assert REAL not in output.error
+
+    async def test_a_partly_read_batch_points_the_failed_id_elsewhere(self) -> None:
+        state = _shown({OTHER: "Q3 roadmap", REAL: "Call notes"})
+        read_now = {"id": OTHER, "record_name": "Q3 roadmap", "virtual_record_id": "vr-1"}
+        ref_mapper = MagicMock()
+
+        with patch(
+            "app.utils.chat_helpers.record_to_message_content",
+            return_value=([{"type": "text", "text": "content"}], ref_mapper),
+        ):
+            output, _ = await execute_fetch_record(
+                # A record in the retrieved map is still checked: this user may read it.
+                context=_context(state, _Graph(readable_by={OTHER: {"user-1"}})),
+                virtual_records={"vr-1": read_now},
+                citation_ref_mapper=ref_mapper,
+                record_ids=[OTHER, MISTYPED],
+            )
+
+        assert output.success is True
+        assert f"The closest to the id you used is {REAL} (Call notes)." in output.data
+        assert f"- {OTHER}" not in output.data
+
+    async def test_a_record_still_indexing_gets_no_suggestions(self) -> None:
+        """The id was right; pointing elsewhere would mislead."""
+        state = _shown({REAL: "Call notes"})
+        fake_tool = MagicMock()
+
+        async def _result(**_: object) -> dict[str, Any]:
+            return {
+                "ok": False,
+                "error": "None of the requested records were available.",
+                "not_available_ids": [MISTYPED],
+                "unavailable_reasons": {MISTYPED: "not_indexed_yet"},
+            }
+
+        fake_tool.coroutine = _result
+        with patch(
+            "app.utils.fetch_full_record.create_fetch_full_record_tool",
+            return_value=fake_tool,
+        ):
+            output = await _fetch([MISTYPED], state)
+
+        assert "Records returned earlier" not in output.error
+
+
+def _view_with_a_cut_tail() -> tuple[Any, list[Any], str]:
+    """A 200-row view whose last row, `linked`, the 25KB cap cuts, while kept
+    text still spells out its id: the viewed record's `* Linked Record ID:`
+    line, a row summary with `record_id=`, and a row name that even carries
+    the cut row's whole rendered line."""
+    from app.agents.actions.knowledge_graph.models import (
+        NavigationView,
+        NodeRef,
+        NodeRow,
+    )
+
+    linked = "ffffffff-1111-4222-8333-944445555666"
+    cut_row = NodeRow(
+        id=linked, name="Hidden", node_type="record", sub_type="TICKET",
+        is_record=True, has_children=False, detail=None,
+    )
+    rows = [
+        NodeRow(
+            id=f"{i:08x}-1111-4222-8333-944445555666", name=f"Story {i}", node_type="record",
+            sub_type="TICKET", is_record=True, has_children=False, detail=None,
+            web_url="https://example.atlassian.net/browse/" + "x" * 300,
+        )
+        for i in range(200)
+    ]
+    rows[0].context_summary = f"Follows up on record_id={linked}"
+    rows[1].name = f"Copy of record_id={linked}"
+    rows[2].name = f"\n{_row_line(cut_row)}\n"
+    rows.append(cut_row)
+    view = NavigationView(
+        current=NodeRef(id=REAL, name="Call notes", node_type="record", sub_type="TICKET", is_record=True),
+        breadcrumbs=[], rows=rows, related=[], pagination=None, web_url=None,
+        indexing_status=None, connector=None,
+        context_block=f"Record ID: {REAL}\nName: Call notes\n* Linked Record ID: {linked}",
+    )
+    return view, rows, linked
+
+
+class TestEmittedIds:
+    def test_an_id_spelled_out_by_other_rows_does_not_count_as_emitted(self) -> None:
+        """Only the row the renderer emitted counts, not a name or summary
+        that mentions its id, however exactly."""
+        view, rows, linked = _view_with_a_cut_tail()
+
+        text, emitted = render_navigation_view_with_ids(view, page=1)
+
+        assert len(rows[2].name) <= 80 and f"\n{_row_line(rows[-1])}\n" in text
+        assert linked not in emitted
+        assert emitted[:4] == [REAL, rows[0].id, rows[1].id, rows[2].id]
+        assert all(f"record_id={rid}" in text for rid in emitted[1:])
+
+    def test_shortened_ids_are_reported_by_their_full_id(self) -> None:
+        from app.utils.chat_helpers import RecordIdShortener
+
+        view, rows, linked = _view_with_a_cut_tail()
+
+        _, emitted = render_navigation_view_with_ids(view, page=1, shortener=RecordIdShortener())
+
+        assert emitted[:4] == [REAL, rows[0].id, rows[1].id, rows[2].id]
+        assert linked not in emitted
+
+    def test_an_untruncated_view_emits_every_row(self) -> None:
+        from app.agents.actions.knowledge_graph.models import NavigationView, NodeRow
+
+        rows = [
+            NodeRow(id=rid, name=name, node_type="record", sub_type="TICKET",
+                    is_record=True, has_children=False, detail=None)
+            for rid, name in ((REAL, "Call notes"), (OTHER, "Q3 roadmap"))
+        ]
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=rows, related=[], pagination=None,
+            web_url=None, indexing_status=None, connector=None,
+        )
+
+        assert render_navigation_view_with_ids(view, page=1)[1] == [REAL, OTHER]
+
+    def test_a_lookup_match_cut_by_the_cap_is_not_emitted(self) -> None:
+        from app.agents.actions.knowledge_graph.models import LookupMatch, LookupResult
+
+        def match(rid: str, block: str) -> LookupMatch:
+            return LookupMatch(
+                id=rid, name="x", record_type="TICKET", connector_name="JIRA", web_url=None,
+                indexing_status="COMPLETED", identifier_used=rid, context_block=block,
+            )
+
+        result = LookupResult(matches=[
+            match(REAL, f"Record ID: {REAL}\nName: Call notes\n* Linked Record ID: {OTHER}\n" + "y" * 30_000),
+            match(OTHER, f"Record ID: {OTHER}\nName: Q3 roadmap"),
+        ], not_found_identifiers=[], ambiguous=False, searched_connectors={})
+
+        text, emitted = render_lookup_result_with_ids(result)
+
+        assert OTHER in text and "Q3 roadmap" not in text
+        assert emitted == [REAL]
+
+
+class _StorageGraph:
+    """The two calls `find_records` makes, answered like the real stores:
+    only readable records come back from the access check, keyed by
+    `_key` as `_neo4j_to_arango_node` returns them."""
+
+    def __init__(self, readable: dict[str, tuple[str, str]]) -> None:
+        self._readable = readable  # virtual record id -> (record id, name)
+
+    async def filter_accessible_virtual_record_ids(
+        self, virtual_record_ids: list[str], user_id: str, org_id: str, **_: object,
+    ) -> dict[str, str]:
+        return {v: self._readable[v][0] for v in virtual_record_ids if v in self._readable}
+
+    async def get_records_by_record_ids(self, record_ids: list[str], org_id: str) -> list[dict[str, Any]]:
+        by_id = dict(self._readable.values())
+        return [{"_key": rid, "recordName": by_id[rid]} for rid in record_ids if rid in by_id]
+
+
+def _seed(tmp_path: Path, vrid: str, text: str) -> None:
+    """A stored record file in the shape `_record_search_text` ranks by."""
+    folder = tmp_path / vrid
+    folder.mkdir()
+    stored = {"isCompressed": False, "record": {"block_containers": {"blocks": [{"data": text}]}}}
+    (folder / f"record_{vrid}.json").write_text(json.dumps(stored))
+
+
+async def _storage_search(
+    tmp_path: Path, readable: dict[str, tuple[str, str]], **kwargs: int,
+) -> tuple[dict[str, Any], str]:
+    from app.agents.actions.storage_search.storage_search import StoragePatternMatch
+
+    state: dict[str, Any] = {
+        "org_id": "org-1", "user_id": "user-1", "graph_provider": _StorageGraph(readable),
+    }
+    tool = StoragePatternMatch(state)
+
+    async def _connector_dir(_connector_id: str) -> tuple[str, None]:
+        return str(tmp_path), None
+
+    tool._resolve_connector_path = _connector_dir  # type: ignore[method-assign]
+    ok, output = await tool.find_records("c", 'grep -rl "marker" .', **kwargs)
+    assert ok is True
+    return state, output
+
+
+VRID_A = "aaaaaaaa-0000-4000-8000-000000000001"
+VRID_B = "bbbbbbbb-0000-4000-8000-000000000002"
+VRID_HIDDEN = "cccccccc-0000-4000-8000-000000000003"
+
+
+@pytest.mark.asyncio
+class TestStorageSearchRecovery:
+    async def test_a_storage_search_hit_is_suggested(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker call notes")
+
+        state, _ = await _storage_search(tmp_path, {VRID_A: (REAL, "Call notes")})
+        output = await _fetch([MISTYPED], state)
+
+        assert f"- {REAL} (Call notes)" in output.error
+        assert f"The closest to the id you used is {REAL} (Call notes)." in output.error
+
+    async def test_a_hit_cut_by_max_results_is_not_suggested(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker")
+        _seed(tmp_path, VRID_B, "marker marker marker")
+        readable = {VRID_A: (REAL, "Call notes"), VRID_B: (OTHER, "Q3 roadmap")}
+
+        state, shown = await _storage_search(tmp_path, readable, max_results=1)
+        output = await _fetch([MISTYPED], state)
+
+        assert json.loads(shown)["records"] == [
+            {"record_id": OTHER, "record_name": "Q3 roadmap", "virtual_record_id": VRID_B,
+             "matched_terms": "1", "match_count": "3", "match_preview": "marker marker marker"},
+        ]
+        assert f"- {OTHER} (Q3 roadmap)" in output.error
+        assert REAL not in output.error
+        assert "closest" not in output.error
+
+    async def test_a_hit_the_user_cannot_read_is_not_suggested(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker")
+        _seed(tmp_path, VRID_HIDDEN, "marker")
+
+        state, _ = await _storage_search(tmp_path, {VRID_A: (OTHER, "Q3 roadmap")})
+
+        assert list(state["known_record_names"]) == [OTHER]
+
+    async def test_missing_and_unreadable_ids_stay_byte_identical(self, tmp_path: Path) -> None:
+        _seed(tmp_path, VRID_A, "marker call notes")
+        missing_graph = _Graph()
+        unreadable_graph = _Graph(readable_by={MISTYPED: {"someone-else"}})
+
+        missing_state, _ = await _storage_search(tmp_path, {VRID_A: (REAL, "Call notes")})
+        unreadable_state, _ = await _storage_search(tmp_path, {VRID_A: (REAL, "Call notes")})
+        missing = await _fetch([MISTYPED], missing_state, missing_graph)
+        unreadable = await _fetch([MISTYPED], unreadable_state, unreadable_graph)
+
+        assert f"- {REAL} (Call notes)" in missing.error
+        assert missing.error.encode() == unreadable.error.encode()
+        assert missing_graph.calls == unreadable_graph.calls

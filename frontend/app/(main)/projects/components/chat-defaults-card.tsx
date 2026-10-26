@@ -1,14 +1,19 @@
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import { Badge, Box, Dialog, Flex, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import {
   ModelSelectorPanel,
-  getReasoningEffortLabel,
+  getAppliedReasoningEffortLabel,
 } from '@/chat/components/chat-panel/expansion-panels/model-selector/model-selector-panel';
-import { useChatStore, ASSISTANT_CTX, isModelReasoningCapable } from '@/chat/store';
-import { DEFAULT_REASONING_EFFORT, type ModelOverride } from '@/chat/types';
+import {
+  useChatStore,
+  ASSISTANT_CTX,
+  isModelReasoningCapable,
+  getModelDefaultReasoningEffort,
+} from '@/chat/store';
+import type { ModelOverride } from '@/chat/types';
 import { PanelCard, PanelHeader, PanelRow } from './panel-section';
 
 export function ChatDefaultsCard() {
@@ -17,12 +22,6 @@ export function ChatDefaultsCard() {
 
   const settings = useChatStore((s) => s.settings);
   const setSelectedModelForCtx = useChatStore((s) => s.setSelectedModelForCtx);
-  const hydrateReasoningEffortForCtx = useChatStore((s) => s.hydrateReasoningEffortForCtx);
-
-  useEffect(() => {
-    hydrateReasoningEffortForCtx(ASSISTANT_CTX);
-  }, [hydrateReasoningEffortForCtx]);
-
   const displayModel = settings.selectedModels[ASSISTANT_CTX] ?? settings.defaultModels[ASSISTANT_CTX] ?? null;
   const displayModelLabel = displayModel
     ? displayModel.modelFriendlyName || displayModel.modelName
@@ -31,7 +30,10 @@ export function ChatDefaultsCard() {
   const supportsReasoning = isModelReasoningCapable(ASSISTANT_CTX, displayModel);
   const reasoningEffortOverride = settings.reasoningEffort[ASSISTANT_CTX] ?? null;
   const reasoningEffortLabel = supportsReasoning
-    ? getReasoningEffortLabel(t, reasoningEffortOverride ?? DEFAULT_REASONING_EFFORT)
+    ? getAppliedReasoningEffortLabel(t, {
+        picked: reasoningEffortOverride,
+        modelDefault: getModelDefaultReasoningEffort(ASSISTANT_CTX, displayModel),
+      })
     : null;
 
   const handleModelSelect = (model: ModelOverride) => {

@@ -23,7 +23,7 @@ import pytest
 import yaml
 
 import app.connectors.sources.demo.connector as demo_connector
-from app.connectors.sources.demo.harness.kb_harness import score
+from app.connectors.sources.demo.harness.kb_harness import mentions, score
 
 FIXTURE = Path(demo_connector.__file__).resolve().parent / "fixture" / "acme-corp.yaml"
 RESERVED_DOMAIN = "acme-demo.example"
@@ -95,6 +95,45 @@ def test_expectations_name_records_that_exist(fx: dict) -> None:
     assert not {k: v for k, v in missing.items() if v}, missing
 
 
+CONTENT_KEYS = ("answer_must_state", "answer_must_not_state")
+
+
+def _content_claim_problems(q: dict) -> list[str]:
+    """What is wrong with a question's facts for the answer judge, if anything."""
+    problems = []
+    for key in CONTENT_KEYS:
+        if key not in q:
+            continue
+        claims = q[key]
+        if not isinstance(claims, list) or not claims:
+            problems.append(f"{key} must be a non-empty list")
+            continue
+        problems += [f"{key}[{i}] must be a non-empty string" for i, c in enumerate(claims) if not isinstance(c, str) or not c.strip()]
+    return problems
+
+
+def test_facts_for_the_answer_judge_are_lists_of_plain_sentences(fx: dict) -> None:
+    questions = list(fx["questions"]) + [q for qs in (fx.get("pack_questions") or {}).values() for q in qs]
+    problems = {q["id"]: p for q in questions if (p := _content_claim_problems(q))}
+    assert not problems, problems
+
+
+@pytest.mark.parametrize(
+    ("q", "ok"),
+    [
+        ({"answer_must_state": ["A purchase of up to and including $250 needs no approval."]}, True),
+        ({"answer_must_not_state": ["Every purchase needs manager approval."]}, True),
+        ({}, True),
+        ({"answer_must_state": "A purchase of up to $250 needs no approval."}, False),
+        ({"answer_must_state": []}, False),
+        ({"answer_must_state": ["  "]}, False),
+        ({"answer_must_not_state": [None]}, False),
+    ],
+)
+def test_the_fact_schema_check_rejects_what_the_judge_cannot_read(q: dict, ok: bool) -> None:
+    assert (not _content_claim_problems(q)) is ok
+
+
 def test_only_the_pricing_committee_can_see_pricing(fx: dict) -> None:
     people = {p["id"]: p for p in fx["people"]}
     groups = {g["id"]: g for g in fx["groups"]}
@@ -119,8 +158,8 @@ def test_restricted_facts_come_only_from_restricted_records(fx: dict) -> None:
     inside = " ".join(r["body"] for r in fx["records"] if r["id"] in restricted_ids or r.get("thread") in restricted_ids).lower()
     group_of_record = _group_of_record(fx)
     outside = " ".join(r["body"] for r in fx["records"] if group_of_record[r["id"]] != "pricing-committee").lower()
-    assert [f for f in facts if f.lower() not in inside] == []
-    assert [f for f in facts if f.lower() in outside] == []
+    assert [f for f in facts if not mentions(inside, f)] == []
+    assert [f for f in facts if mentions(outside, f)] == []
 
 
 @pytest.mark.parametrize(

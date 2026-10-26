@@ -12,14 +12,14 @@ Wires together:
 from __future__ import annotations
 
 from dependency_injector import containers, providers  # type: ignore
-from dotenv import load_dotenv  # type: ignore
+from dotenv import find_dotenv, load_dotenv  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
 from app.config.providers.encrypted_store import EncryptedKeyValueStore
 from app.containers.container import BaseAppContainer
 from app.utils.logger import create_logger
 
-load_dotenv(override=True)
+load_dotenv(find_dotenv(usecwd=True), override=True)
 
 
 class ParsingAppContainer(BaseAppContainer):

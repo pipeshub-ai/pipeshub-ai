@@ -1,5 +1,6 @@
 'use client';
 
+import { asRecord } from '@/lib/utils/safe';
 import { useCallback, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Badge, Box, Button, Dialog, Flex, Tabs, Text, TextField, VisuallyHidden } from '@radix-ui/themes';
@@ -222,7 +223,7 @@ function ImportPreviewCard({
   onDiscard: () => void;
 }) {
   const { t } = useTranslation();
-  const resourceCount = Object.keys(preview.resources).length;
+  const resourceCount = Object.keys(asRecord(preview.resources)).length;
   const nameError = importName.length > 0 && !isValidSkillName(importName)
     ? t('workspace.skills.import.nameInvalid')
     : undefined;

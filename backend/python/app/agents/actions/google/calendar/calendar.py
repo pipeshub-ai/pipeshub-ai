@@ -24,6 +24,7 @@ from app.connectors.core.registry.tool_builder import (
     ToolsetCategory,
 )
 from app.connectors.core.registry.types import DocumentationLink
+from app.connectors.sources.google.common.scopes import GOOGLE_TOOLSET_SCOPES
 from app.sources.client.google.google import GoogleClient
 from app.sources.external.google.calendar.gcalendar import GoogleCalendarDataSource
 
@@ -257,11 +258,7 @@ class CreateMeetLinkInput(BaseModel):
             scopes=OAuthScopeConfig(
                 personal_sync=[],
                 team_sync=[],
-                agent=[
-                    "https://www.googleapis.com/auth/calendar",
-                    "https://www.googleapis.com/auth/calendar.events",
-                    "https://www.googleapis.com/auth/gmail.send"
-                ]
+                agent=list(GOOGLE_TOOLSET_SCOPES["calendar"]),
             ),
             token_access_type="offline",
             additional_params={
@@ -308,11 +305,13 @@ class GoogleCalendar:
         short_description="Get upcoming calendar events",
         description=(
             "Retrieve calendar events from Google Calendar with optional filters. "
-            "Supports filtering by time range, search query, calendar ID, and ordering."
+            "Supports filtering by time range, search query, calendar ID, and ordering. "
+            "Pass the nextPageToken from a previous response as page_token to fetch the next page."
         ),
         parameters=[
             ToolParameter(name="calendar_id", type=ParameterType.STRING, description="The ID of the calendar to use (default: 'primary')", required=False),
             ToolParameter(name="max_results", type=ParameterType.INTEGER, description="Maximum number of events to return", required=False),
+            ToolParameter(name="page_token", type=ParameterType.STRING, description="Token from a previous response's nextPageToken, to fetch the next page of events", required=False),
             ToolParameter(name="time_min", type=ParameterType.STRING, description="Lower bound for event start time (RFC3339 format)", required=False),
             ToolParameter(name="time_max", type=ParameterType.STRING, description="Upper bound for event start time (RFC3339 format)", required=False),
             ToolParameter(name="order_by", type=ParameterType.STRING, description="Order by (e.g., 'startTime' or 'updated')", required=False),
@@ -331,6 +330,7 @@ class GoogleCalendar:
         self,
         calendar_id: Optional[str] = None,
         max_results: Optional[int] = None,
+        page_token: Optional[str] = None,
         time_min: Optional[str] = None,
         time_max: Optional[str] = None,
         order_by: Optional[str] = None,
@@ -344,6 +344,7 @@ class GoogleCalendar:
         Args:
             calendar_id: The ID of the calendar to use
             max_results: Maximum number of events to return
+            page_token: Token from a previous response's nextPageToken, to fetch the next page
             time_min: Lower bound for event start time
             time_max: Upper bound for event start time
             order_by: Order by key
@@ -359,6 +360,7 @@ class GoogleCalendar:
             events = await self.client.events_list(
                 calendarId=calendar_id or "primary",
                 maxResults=max_results,
+                pageToken=page_token,
                 timeMin=_parse_time(time_min, zone).isoformat() if time_min else None,
                 timeMax=_parse_time(time_max, zone).isoformat() if time_max else None,
                 orderBy=order_by,
@@ -400,7 +402,7 @@ class GoogleCalendar:
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The timezone for the event", required=False, default="UTC"),
             ToolParameter(name="event_all_day", type=ParameterType.BOOLEAN, description="Whether the event is an all-day event", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
         args_summary=lambda args: (
             f'Creating calendar event "{args["event_title"]}"' if args.get("event_title") else "Creating calendar event"
         ),
@@ -508,7 +510,7 @@ class GoogleCalendar:
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The new timezone for the event", required=False, default="UTC"),
             ToolParameter(name="event_all_day", type=ParameterType.BOOLEAN, description="Whether the event should be an all-day event", required=False, default=False),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def update_calendar_event(
         self,
@@ -622,7 +624,7 @@ class GoogleCalendar:
             ToolParameter(name="event_attendees_emails", type=ParameterType.LIST, description="List of email addresses for event attendees", required=False),
             ToolParameter(name="event_timezone", type=ParameterType.STRING, description="The timezone for the event", required=False, default="UTC"),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def create_meet_link(
         self,
@@ -708,7 +710,7 @@ class GoogleCalendar:
         parameters=[
             ToolParameter(name="event_id", type=ParameterType.STRING, description="The actual event ID from Google Calendar", required=True),
         ],
-        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="write")],
+        tags=[Tag(key="category", value="calendar"), Tag(key="type", value="destructive")],
     )
     async def delete_calendar_event(
         self,

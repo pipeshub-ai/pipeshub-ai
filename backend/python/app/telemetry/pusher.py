@@ -12,6 +12,7 @@ import aiohttp
 
 from app.telemetry.backend import METRICS_BACKEND
 from app.telemetry.event_buffer import event_buffer
+from app.telemetry.flag import TELEMETRY_COLLECTION_FLAG, telemetry_enabled
 from app.telemetry.modules.collection_metrics import set_metric_collection_enabled
 from app.utils.request_context import (
     HEADER_REQUEST_ID,
@@ -88,6 +89,12 @@ class MetricsPusher:
         self._waiting_for_config_logged = False
 
     async def start(self) -> None:
+        if not telemetry_enabled():
+            self._log_with_context(
+                f"Telemetry disabled ({TELEMETRY_COLLECTION_FLAG} is not 'true'); "
+                f"pusher for '{self._service_name}' will not start"
+            )
+            return
         if self._task is None or self._task.done():
             self._task = asyncio.create_task(self._run())
             self._log_with_context(

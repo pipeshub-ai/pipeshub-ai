@@ -3,7 +3,8 @@ import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController } from '../../../../src/modules/user_management/controller/users.controller';
+import { UserController, USER_DELETE_NOT_RECORDED } from '../../../../src/modules/user_management/controller/users.controller';
+import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -11,6 +12,7 @@ import { UserDisplayPicture } from '../../../../src/modules/user_management/sche
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { UserActivities } from '../../../../src/modules/auth/schema/userActivities.schema';
 import { Org } from '../../../../src/modules/user_management/schema/org.schema';
+import { DEFAULT_BRAND, setBrandResolver } from '../../../../src/libs/branding';
 import { NotificationContainer } from '../../../../src/modules/notification/container/notification.container';
 import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
 import {
@@ -528,6 +530,34 @@ describe('UserController', () => {
       expect(filter.$and[1].$or).to.be.an('array').with.length(2); // hasLoggedIn + blocked
     });
 
+    it('escapes regex metacharacters in the user search query (OT-9)', async () => {
+      req.query = { search: 'a(b).*' };
+
+      sinon.stub(Users, 'find').returns({
+        sort: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({
+                exec: sinon.stub().resolves([]),
+              }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0 as any);
+
+      await controller.getAllUsers(req, res);
+
+      const filter = Users.find.firstCall.args[0];
+      const rx = filter.$or[0].fullName.$regex;
+      // Metacharacters are escaped, so search is matched literally (no 500, no match-all).
+      expect(rx).to.equal('a\\(b\\)\\.\\*');
+      expect(filter.$or[1].email.$regex).to.equal(rx);
+      const re = new RegExp(rx, 'i');
+      expect(re.test('a(b).*')).to.be.true;
+      expect(re.test('anybody')).to.be.false;
+    });
+
     it('should apply groupIds filter and restrict users to group members', async () => {
       const g1 = '507f1f77bcf86cd7994390a1';
       const u1 = '507f1f77bcf86cd7994390b1';
@@ -936,17 +966,60 @@ describe('UserController', () => {
   });
 
   describe('checkUserExistsByEmail', () => {
-    it('should return users found by email', async () => {
+    const lookup = (exec: () => Promise<unknown>) =>
+      ({ select: () => ({ lean: () => ({ exec }) }) }) as any;
+
+    it('should return users found by the email the token was minted for', async () => {
       req.body = { email: 'test@test.com' };
+      req.tokenPayload = { email: 'test@test.com' };
       const mockUsers = [{ _id: 'u1', email: 'test@test.com' }];
 
-      sinon.stub(Users, 'find').resolves(mockUsers as any);
+      const find = sinon.stub(Users, 'find').returns(lookup(async () => mockUsers));
 
       await controller.checkUserExistsByEmail(req, res, next);
 
+      expect(find.firstCall.args[0]).to.deep.equal({ email: 'test@test.com', isDeleted: false });
       expect(res.json.calledWith(mockUsers)).to.be.true;
     });
+
+    it('should refuse an email other than the token\'s without querying', async () => {
+      req.body = { email: 'victim@test.com' };
+      req.tokenPayload = { email: 'caller@test.com' };
+      const find = sinon.stub(Users, 'find');
+
+      await controller.checkUserExistsByEmail(req, res, next);
+
+      expect(find.called).to.be.false;
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403);
+    });
+
+    it('should refuse a token that carries no email without querying', async () => {
+      req.body = { email: 'test@test.com' };
+      req.tokenPayload = { userId: 'u1', orgId: 'o1' };
+      const find = sinon.stub(Users, 'find');
+
+      await controller.checkUserExistsByEmail(req, res, next);
+
+      expect(find.called).to.be.false;
+      expect(next.firstCall.args[0]).to.have.property('statusCode', 403);
+    });
   });
+
+  describe('checkUserExistsByEmail org scoping', () => {
+    it('confines the lookup to the token org when the token carries one', async () => {
+      req.body = { email: 'me@test.com' }
+      req.tokenPayload = { email: 'me@test.com', orgId: 'org-a' }
+      const find = sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: () => Promise.resolve([]) }) }),
+      } as any)
+
+      await controller.checkUserExistsByEmail(req, res, next)
+
+      expect(find.firstCall.args[0]).to.deep.equal({
+        email: 'me@test.com', isDeleted: false, orgId: 'org-a',
+      })
+    })
+  })
 
   describe('createUser', () => {
     it('should create a user and publish event', async () => {
@@ -1680,6 +1753,7 @@ describe('UserController', () => {
       sinon.stub(UserGroups, 'updateMany').resolves({} as any);
       stubOAuthAppsForDeletedUser([]);
       sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      const recordActivity = sinon.stub(UserActivities, 'create').resolves({} as any);
 
       await controller.deleteUser(req, res, next);
 
@@ -1688,6 +1762,46 @@ describe('UserController', () => {
       expect(mockUser.save.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledWith({ message: 'User deleted successfully' })).to.be.true;
+      expect(
+        recordActivity.calledWithMatch({
+          userId: mockUser._id,
+          orgId: mockUser.orgId,
+          activityType: userActivitiesType.ACCOUNT_DELETED,
+        }),
+        'the deletion is recorded as ending the account\'s sessions',
+      ).to.be.true;
+      // Recorded before anything is changed, so a deletion always leaves one.
+      expect(recordActivity.calledBefore(UserGroups.updateMany as sinon.SinonStub)).to.be.true;
+      expect(recordActivity.calledBefore(mockUser.save)).to.be.true;
+    });
+
+    it('deletes nothing, and says to retry, when the deletion cannot be recorded', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      const mockUser = {
+        _id: new mongoose.Types.ObjectId('507f1f77bcf86cd799439011'),
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        isDeleted: false,
+        role: 'member',
+        save: sinon.stub().resolves(),
+      };
+      sinon.stub(Users, 'findOne').resolves(mockUser as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      stubOAuthAppsForDeletedUser([]);
+      sinon.stub(UserCredentials, 'updateOne').resolves({} as any);
+      sinon.stub(UserActivities, 'create').rejects(new Error('mongo timeout'));
+
+      await controller.deleteUser(req, res, next);
+
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ServiceUnavailableError);
+      expect(error.message).to.equal(USER_DELETE_NOT_RECORDED);
+      expect(mockUser.isDeleted).to.be.false;
+      expect(mockUser.save.called).to.be.false;
+      expect((UserGroups.updateMany as sinon.SinonStub).called).to.be.false;
+      expect((UserCredentials.updateOne as sinon.SinonStub).called).to.be.false;
+      expect(mockEventService.publishEvent.called).to.be.false;
+      expect(res.json.called).to.be.false;
     });
   });
 
@@ -2032,8 +2146,11 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail (additional)', () => {
     it('should return empty array when no users found', async () => {
       req.body = { email: 'notfound@test.com' };
+      req.tokenPayload = { email: 'notfound@test.com' };
 
-      sinon.stub(Users, 'find').resolves([]);
+      sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: () => ({ exec: async () => [] }) }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -2042,6 +2159,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should call next with BadRequestError when userId or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2232,6 +2355,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser (additional cases)', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id or orgId is missing', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -2292,14 +2421,6 @@ describe('UserController', () => {
       await controller.removeUserDisplayPicture(req, res, next);
 
       expect(next.calledOnce).to.be.true;
-    });
-  });
-
-  describe('extractSamlUserDetails', () => {
-    it('should be a private method on the controller', () => {
-      // extractSamlUserDetails is a private method, so not accessible via public interface
-      // but exists at runtime on the instance
-      expect((controller as any).extractSamlUserDetails).to.be.a('function');
     });
   });
 
@@ -2557,41 +2678,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('provisionSamlUser', () => {
-    it('should create user, add to group, and publish event', async () => {
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-        orgId: 'org1',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: 'new-user-id',
-          email: 'saml@test.com',
-          fullName: 'SAML User',
-        }),
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      sinon.stub(Users.prototype, 'toObject').returns(mockNewUser.toObject());
-      Object.defineProperty(Users.prototype, '_id', { get: () => 'new-user-id', configurable: true });
-      Object.defineProperty(Users.prototype, 'fullName', { get: () => 'SAML User', configurable: true });
-      Object.defineProperty(Users.prototype, 'email', { get: () => 'saml@test.com', configurable: true });
-
-      try {
-        await controller.provisionSamlUser(
-          'saml@test.com',
-          { firstName: 'SAML', lastName: 'User' },
-          'org1',
-          mockLogger,
-        );
-      } catch (err) {
-        // May fail due to prototype manipulation; that's fine - we're testing the flow
-      }
-    });
-  });
-
   describe('provisionJitUser', () => {
     it('should throw BadRequestError for deleted user with same email', async () => {
       sinon.stub(Users, 'findOne').resolves({ _id: 'deleted-user', isDeleted: true } as any);
@@ -2608,101 +2694,6 @@ describe('UserController', () => {
       } catch (error: any) {
         expect(error.message).to.include('deleted by admin');
       }
-    });
-  });
-
-  describe('extractSamlUserDetails', () => {
-    it('should extract details from standard SAML claims', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { firstName: 'John', lastName: 'Doe', displayName: 'John Doe' },
-        'john@test.com',
-      );
-      expect(result.fullName).to.equal('John Doe');
-      expect(result.firstName).to.equal('John');
-      expect(result.lastName).to.equal('Doe');
-    });
-
-    it('should use SAML claim URIs as fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname': 'Jane',
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname': 'Smith',
-        },
-        'jane@test.com',
-      );
-      expect(result.firstName).to.equal('Jane');
-      expect(result.lastName).to.equal('Smith');
-      expect(result.fullName).to.equal('Jane Smith');
-    });
-
-    it('should use OID-based SAML attributes as fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'urn:oid:2.5.4.42': 'Bob',
-          'urn:oid:2.5.4.4': 'Jones',
-        },
-        'bob@test.com',
-      );
-      expect(result.firstName).to.equal('Bob');
-      expect(result.lastName).to.equal('Jones');
-    });
-
-    it('should use display name SAML OID attribute', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'urn:oid:2.16.840.1.113730.3.1.241': 'Display Name',
-        },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Display Name');
-    });
-
-    it('should fall back to email prefix when no name info', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {},
-        'fallback@test.com',
-      );
-      expect(result.fullName).to.equal('fallback');
-    });
-
-    it('should use givenName as firstName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { givenName: 'Given' },
-        'user@test.com',
-      );
-      expect(result.firstName).to.equal('Given');
-    });
-
-    it('should use surname as lastName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { surname: 'Surname' },
-        'user@test.com',
-      );
-      expect(result.lastName).to.equal('Surname');
-    });
-
-    it('should use sn as lastName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { sn: 'SN' },
-        'user@test.com',
-      );
-      expect(result.lastName).to.equal('SN');
-    });
-
-    it('should use name attribute for display name', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { name: 'Name Attr' },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Name Attr');
-    });
-
-    it('should use fullName attribute for display name', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { fullName: 'Full Name Attr' },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Full Name Attr');
     });
   });
 
@@ -2881,6 +2872,50 @@ describe('UserController', () => {
       }
     });
 
+    it('records the restore before bringing a deleted account back', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      const deletedUser = { _id: 'du1', email: 'deleted@test.com', isDeleted: true };
+      sinon.stub(Users, 'find')
+        .onFirstCall().resolves([deletedUser] as any)
+        .onSecondCall().resolves([{ ...deletedUser, isDeleted: false }] as any);
+      const order: string[] = [];
+      const record = sinon.stub(UserActivities, 'insertMany').callsFake((async () => {
+        order.push('restore recorded');
+        return [];
+      }) as any);
+      sinon.stub(Users, 'updateMany').callsFake((async () => {
+        order.push('account restored');
+        return {};
+      }) as any);
+      sinon.stub(Users, 'create').resolves([] as any);
+      sinon.stub(UserGroups, 'updateMany').resolves({} as any);
+      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(order).to.deep.equal(['restore recorded', 'account restored']);
+      const [docs] = record.firstCall.args as any[];
+      expect(docs).to.have.lengthOf(1);
+      expect(docs[0]).to.include({ userId: 'du1', activityType: 'ACCOUNT RESTORED' });
+    });
+
+    it('restores nothing when the restore cannot be recorded', async () => {
+      req.body = { emails: ['deleted@test.com'], groupIds: [] };
+      stubActorAsOrgAdmin();
+      sinon.stub(Org, 'findOne').resolves({ registeredName: 'Test Org' } as any);
+      sinon.stub(Users, 'find').resolves([{ _id: 'du1', email: 'deleted@test.com', isDeleted: true }] as any);
+      sinon.stub(UserActivities, 'insertMany').rejects(new Error('mongo timeout'));
+      const restore = sinon.stub(Users, 'updateMany').resolves({} as any);
+
+      await controller.addManyUsers(req, res, next);
+
+      expect(restore.called).to.be.false;
+      expect(next.called).to.be.true;
+    });
+
     it('should return error message when all emails already have active accounts', async () => {
       req.body = {
         emails: ['existing@test.com'],
@@ -3030,6 +3065,8 @@ describe('UserController', () => {
 
   describe('addManyUsers - promote restored/pending to admin', () => {
     it('should set role admin on restored and pending users when inviteRole is admin', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
       const pendingId = new mongoose.Types.ObjectId();
 
@@ -3095,6 +3132,8 @@ describe('UserController', () => {
     });
 
     it('should not promote users to admin when inviteRole is member', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       const deletedId = new mongoose.Types.ObjectId();
 
       req.body = {
@@ -3267,6 +3306,12 @@ describe('UserController', () => {
   });
 
   describe('deleteUser - admin check', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw BadRequestError when deleting admin user', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
 
@@ -3550,57 +3595,6 @@ describe('UserController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // provisionSamlUser - success flow
-  // -----------------------------------------------------------------------
-  describe('provisionSamlUser - success', () => {
-    it('should create user and publish event', async () => {
-      const saveStub = sinon.stub().resolves();
-      const toObjectStub = sinon.stub().returns({
-        _id: 'new-u1',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-      });
-      sinon.stub(Users.prototype, 'save').callsFake(saveStub);
-      sinon.stub(Users.prototype, 'toObject').callsFake(toObjectStub);
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML', lastName: 'User' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      expect(saveStub.calledOnce).to.be.true;
-      expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      expect(result).to.have.property('fullName');
-    });
-
-    it('should handle event publish failure gracefully', async () => {
-      sinon.stub(Users.prototype, 'save').resolves();
-      sinon.stub(Users.prototype, 'toObject').returns({
-        _id: 'new-u1',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-      });
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML', lastName: 'User' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      // Should still succeed even if event fails
-      expect(result).to.have.property('fullName');
-      expect(mockEventService.stop.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // provisionJitUser - success flow
   // -----------------------------------------------------------------------
   describe('provisionJitUser - success', () => {
@@ -3654,6 +3648,13 @@ describe('UserController', () => {
   // createUser - success
   // -----------------------------------------------------------------------
   describe('createUser - success', () => {
+    // A demo address first clears this org's removed sample account; none here.
+    beforeEach(() => {
+      sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: async () => [] }),
+      } as any);
+    });
+
     it('should create a user, add to group, and publish event', async () => {
       req.body = {
         email: 'newuser@test.com',
@@ -3970,8 +3971,54 @@ describe('UserController', () => {
 
       await controller.updateUserDisplayPicture(req, res, next);
 
-      // sharp will throw when given null, so next should be called
       expect(next.calledOnce).to.be.true;
+    });
+  });
+
+  describe('updateUserDisplayPicture - file bytes', () => {
+    const svg = Buffer.from(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8"/></svg>',
+    );
+
+    it('rejects SVG bytes labelled as PNG and does not store them', async () => {
+      req.body = {
+        fileBuffer: { buffer: svg, mimetype: 'image/png' },
+      };
+      const update = sinon.stub(UserDisplayPicture, 'findOneAndUpdate');
+
+      await controller.updateUserDisplayPicture(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal(
+        'Profile photo must be a PNG, JPEG, WebP or GIF image',
+      );
+      expect(update.called).to.be.false;
+    });
+
+    it('stores a JPEG for a real PNG', async () => {
+      const sharp = require('sharp');
+      const png = await sharp({
+        create: {
+          width: 8,
+          height: 8,
+          channels: 3,
+          background: { r: 10, g: 20, b: 30 },
+        },
+      })
+        .png()
+        .toBuffer();
+      req.body = { fileBuffer: { buffer: png, mimetype: 'image/png' } };
+      sinon.stub(UserDisplayPicture, 'findOneAndUpdate').resolves({} as any);
+
+      await controller.updateUserDisplayPicture(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(res.status.calledWith(201)).to.be.true;
+      expect(res.setHeader.calledWith('Content-Type', 'image/jpeg')).to.be.true;
+      const sent = res.send.firstCall.args[0] as Buffer;
+      expect(sent.subarray(0, 3).equals(Buffer.from([0xff, 0xd8, 0xff]))).to.equal(
+        true,
+      );
     });
   });
 
@@ -3998,6 +4045,12 @@ describe('UserController', () => {
   // deleteUser - full success flow
   // -----------------------------------------------------------------------
   describe('deleteUser - full success flow', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should soft delete user, remove from groups, clear password, and publish event', async () => {
       req.params = { id: '507f1f77bcf86cd799439013' };
 
@@ -4032,6 +4085,12 @@ describe('UserController', () => {
   // deleteUser - OAuth apps soft-delete cascade
   // -----------------------------------------------------------------------
   describe('deleteUser - OAuth apps cascade', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     function stubOAuthAppQueryChain(appsFromExec: unknown[]) {
       const chain = {
         select: sinon.stub(),
@@ -4299,11 +4358,16 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('checkUserExistsByEmail - found', () => {
     it('should return found users', async () => {
-      sinon.stub(Users, 'find').resolves([
-        { _id: 'u1', email: 'exists@test.com' },
-      ] as any);
+      sinon.stub(Users, 'find').returns({
+        select: () => ({
+          lean: () => ({
+            exec: async () => [{ _id: 'u1', email: 'exists@test.com' }],
+          }),
+        }),
+      } as any);
 
       req.body = { email: 'exists@test.com' };
+      req.tokenPayload = { email: 'exists@test.com' };
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -4622,6 +4686,24 @@ describe('UserController', () => {
       expect(notice.templateData.newEmail).to.equal('alice@new.example');
       // The notice carries no link: nothing in it can be used to complete or undo the change.
       expect(notice.templateData.link).to.be.undefined;
+    });
+
+    it('names the configured product in both subjects', async () => {
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'Acme' } as any);
+      setBrandResolver(() => ({ ...DEFAULT_BRAND, productName: 'Acme Search' }));
+      try {
+        await controller.sendValidateEmailIdEmail(user(), 'alice@new.example');
+      } finally {
+        setBrandResolver(() => DEFAULT_BRAND);
+      }
+
+      const subjects = mockMailService.sendMail.args.map(
+        (a: [{ subject: string }, ...unknown[]]) => a[0].subject,
+      );
+      expect(subjects).to.deep.equal([
+        'Acme Search | Verify your email !',
+        'Acme Search | Your email address is being changed',
+      ]);
     });
 
     it('still succeeds when the notice to the current address cannot be sent', async () => {
@@ -5249,6 +5331,12 @@ describe('UserController', () => {
   // Branch coverage: deleteUser - userId/orgId null check
   // -----------------------------------------------------------------------
   describe('deleteUser - userId/orgId branches', () => {
+    // The deletion is recorded before anything else changes; these tests are
+    // about what follows, so the record succeeds.
+    beforeEach(() => {
+      sinon.stub(UserActivities, 'create').resolves({} as any);
+    });
+
     it('should throw NotFoundError when user._id is falsy', async () => {
       req.params.id = '507f1f77bcf86cd799439011';
       sinon.stub(Users, 'findOne').resolves({
@@ -5323,39 +5411,6 @@ describe('UserController', () => {
       } catch (error: any) {
         expect(error.message).to.include('User account deleted by admin');
       }
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Branch coverage: provisionSamlUser - event publish error
-  // -----------------------------------------------------------------------
-  describe('provisionSamlUser - event publish error', () => {
-    it('should continue when event publishing fails', async () => {
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ _id: 'new-user-id' }),
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      (mockNewUser as any).constructor = Users;
-      sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.start.resolves();
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-      mockEventService.stop.resolves();
-
-      // The method should not throw despite event publishing failure
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      expect(mockLogger.error.called).to.be.true;
-      expect(mockEventService.stop.called).to.be.true;
     });
   });
 
@@ -5464,6 +5519,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored accounts mail error branches', () => {
     it('should return the specific error code when mail fails for restored users with password enabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5504,6 +5561,8 @@ describe('UserController', () => {
     });
 
     it('should return the specific error code when mail fails for restored users with password disabled', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5544,6 +5603,8 @@ describe('UserController', () => {
     });
 
     it('should skip restored user without email', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['valid@test.com'],
         groupIds: ['g1'],
@@ -5690,7 +5751,12 @@ describe('UserController', () => {
   describe('checkUserExistsByEmail - error handling', () => {
     it('should call next on database error', async () => {
       req.body = { email: 'test@test.com' };
-      sinon.stub(Users, 'find').rejects(new Error('DB error'));
+      req.tokenPayload = { email: 'test@test.com' };
+      sinon.stub(Users, 'find').returns({
+        select: () => ({
+          lean: () => ({ exec: () => Promise.reject(new Error('DB error')) }),
+        }),
+      } as any);
 
       await controller.checkUserExistsByEmail(req, res, next);
 
@@ -5703,6 +5769,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - restored user missing userId throws', () => {
     it('should throw when restored user has no _id', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],
@@ -5745,6 +5813,8 @@ describe('UserController', () => {
   // -----------------------------------------------------------------------
   describe('addManyUsers - auth method fetch error for restored users', () => {
     it('should throw when passwordMethodEnabled returns non-200 for restored users', async () => {
+      // A re-invite records the restore before bringing the account back.
+      sinon.stub(UserActivities, 'insertMany').resolves([] as any);
       req.body = {
         emails: ['restored@test.com'],
         groupIds: ['g1'],

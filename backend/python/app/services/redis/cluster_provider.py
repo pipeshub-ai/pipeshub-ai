@@ -17,6 +17,8 @@ from typing import Any, AsyncIterator, Optional
 
 from redis.asyncio import Redis
 from redis.asyncio.cluster import ClusterNode, RedisCluster
+from redis.asyncio.retry import Retry
+from redis.backoff import default_backoff
 from redis.crc import key_slot
 
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
@@ -72,6 +74,13 @@ class ClusterRedisProvider(IRedisConnectionProvider):
             "socket_connect_timeout": options.socket_connect_timeout_seconds,
             "read_from_replicas": self._config.scale_reads in ("slave", "all"),
             "require_full_coverage": True,
+            # At least 1: redis-py's cluster pipeline loops this many times,
+            # and with 0 it never sends and raises UnboundLocalError.
+            "cluster_error_retry_attempts": max(1, options.retry_attempts),
+            # Not connection_error_retry_attempts: later redis-py releases
+            # dropped it, and RedisCluster raises TypeError on it. A Retry is
+            # what that argument built in 5.x.
+            "retry": Retry(default_backoff(), max(1, options.retry_attempts)),
         }
         if self._config.username:
             kwargs["username"] = self._config.username
@@ -155,6 +164,8 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         kwargs.pop("read_from_replicas", None)
         kwargs.pop("require_full_coverage", None)
         kwargs.pop("address_remap", None)
+        kwargs.pop("cluster_error_retry_attempts", None)
+        kwargs.pop("retry", None)
         # A subscriber sits idle waiting for messages; any finite
         # socket_timeout kills the connection during that wait.
         kwargs["socket_timeout"] = None

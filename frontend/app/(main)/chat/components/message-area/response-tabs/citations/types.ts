@@ -25,6 +25,8 @@ export interface CitationData {
   connector: string;
   /** Connector instance the record came from; absent on older saved answers */
   connectorId?: string;
+  /** Name the admin gave that instance, e.g. "Marketing Drive"; absent on older saved answers */
+  connectorInstanceName?: string;
   /** Record type e.g. "FILE" */
   recordType: string;
   /** Direct URL to the source document */
@@ -85,6 +87,7 @@ export interface StreamingCitationData {
     origin: CitationOrigin;
     connector: string;
     connectorId?: string;
+    connectorInstanceName?: string;
     blockText: string;
     blockType: string;
     bounding_box?: Array<{ x: number; y: number }>;
@@ -95,6 +98,7 @@ export interface StreamingCitationData {
     webUrl?: string;
     previewRenderable: boolean;
     hideWeburl: boolean;
+    updatedAt?: string;
   };
   citationType: string;
 }
@@ -103,8 +107,10 @@ export interface StreamingCitationData {
  * Connector display configuration for icons and labels.
  */
 export interface ConnectorConfig {
-  /** Friendly display name */
+  /** Readable connector type, e.g. "Sharepoint Online" */
   label: string;
+  /** Where the record came from: the instance name when known, else `label` */
+  sourceLabel: string;
   /** Path to the connector SVG icon */
   icon: string;
 }

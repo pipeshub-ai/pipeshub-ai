@@ -21,11 +21,13 @@ import { FileProcessingType } from '../../../libs/middlewares/file_processor/fp.
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { Users } from '../schema/users.schema';
 import {
-  BadRequestError,
+  ForbiddenError,
   NotFoundError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
 import {
+  ADMIN_ACCESS_REQUIRED_MESSAGE,
+  OWN_ADMIN_CHECK_ONLY_MESSAGE,
   findOrgAdminUserIds,
   getActiveUserOrgRole,
   isUserOrgAdmin,
@@ -38,6 +40,7 @@ import { MailProducer } from '../../mail/services/mail.producer';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { emailCheck } from '../../../libs/utils/zod-formats';
 
 const UserIdUrlParams = z.object({
   id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
@@ -51,8 +54,15 @@ const UserIdValidationSchema = z.object({
 });
 const MultipleUserBody = z.object({
   userIds: z
-    .array(z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid MongoDB ObjectId'))
-    .min(1, 'At least one userId is required'),
+    .array(
+      z
+        .string()
+        .regex(
+          /^[a-fA-F0-9]{24}$/,
+          'Each user ID must be a 24-character user ID. Remove any empty or incomplete IDs and try again.',
+        ),
+    )
+    .min(1, 'Send at least one user ID to look up.'),
 });
 const MultipleUserValidationSchema = z.object({
   body: MultipleUserBody,
@@ -63,7 +73,7 @@ const MultipleUserValidationSchema = z.object({
 
 const createUserBody = z.object({
   fullName: z.string().min(1, 'Full name is required'),
-  email: z.string().email('Invalid email'),
+  email: z.string().check(emailCheck('Invalid email')),
   mobile: z
     .string()
     .optional()
@@ -80,7 +90,7 @@ const createUserBody = z.object({
 
 const updateUserBody = z.object({
   fullName: z.string().optional(),
-  email: z.string().email('Invalid email').optional(),
+  email: z.string().check(emailCheck('Invalid email')).optional(),
   mobile: z
     .string()
     .optional()
@@ -140,7 +150,7 @@ const updateLastNameBody = z.object({
 });
 
 const updateEmailBody = z.object({
-  email: z.string().email('Valid email is required'),
+  email: z.string().check(emailCheck('Valid email is required')),
 });
 
 const updateUserFullNameValidationSchema = z.object({
@@ -296,8 +306,8 @@ export function createUserRouter(container: Container) {
   );
 
   // The caller's own live role. No OAuth scope: it discloses only the bearer's role.
-  // Internal services use it to resolve OAuth/PAT roles and to learn that a token was
-  // revoked or its user deleted (authenticate answers 401 in those cases).
+  // Internal services use it to resolve OAuth/PAT roles and to learn that a session
+  // has ended, a token was revoked or its user deleted (authenticate answers 401).
   router.get(
     '/me/role',
     authMiddleware.authenticate,
@@ -411,9 +421,7 @@ export function createUserRouter(container: Container) {
       next: NextFunction,
     ) => {
       try {
-        // orgId from token payload OR query param (allows migration to pass per-org id)
-        const orgId =
-          req.tokenPayload?.orgId;
+        const orgId = req.tokenPayload?.orgId;
         if (!orgId) {
           res.status(400).json({ error: 'Organization ID is required' });
           return;
@@ -452,7 +460,7 @@ export function createUserRouter(container: Container) {
           throw new NotFoundError('Account not found');
         }
         if (String(tokenUserId) !== String(pathUserId)) {
-          throw new BadRequestError('Admin access required');
+          throw new ForbiddenError(OWN_ADMIN_CHECK_ONLY_MESSAGE);
         }
 
         const isAdmin = await isUserOrgAdmin(
@@ -460,7 +468,7 @@ export function createUserRouter(container: Container) {
           String(orgId),
         );
         if (!isAdmin) {
-          throw new BadRequestError('Admin access required');
+          throw new ForbiddenError(ADMIN_ACCESS_REQUIRED_MESSAGE);
         }
 
         res.status(200).json({ message: 'User has admin access' });

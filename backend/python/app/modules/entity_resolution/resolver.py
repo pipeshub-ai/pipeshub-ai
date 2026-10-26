@@ -1,13 +1,16 @@
 """``EntityResolver``: map extracted taxonomy names to canonical per-org nodes.
 
-Runs once per record, after classification and before any write, so the
-blob, the graph and the entity vector points all see canonical names. See
-the package docstring for the three tiers.
+Runs once per record, after classification and before any write. The
+record keeps the names extracted from its own content; the resolution decides
+which canonical node each of them links to in the graph and the entity index.
+See the package docstring for the three tiers.
 
-Failure policy: a vector-store or model failure never fails the record. The
-names involved simply become new nodes and a counter is bumped. A graph
-failure in the exact-match tier raises in ``APPLY`` mode, because the graph
-write that follows would fail anyway; in ``SHADOW`` mode it is logged.
+Failure policy: a lookup that could not run is never read as "no match".
+A vector or graph lookup that still fails after one retry raises
+``EntityLookupUnavailableError`` before anything is written, and the record's
+enrichment is redelivered (``app.modules.entity_resolution.lookup``); in
+``SHADOW`` mode it is logged. A model failure never fails the record: the names
+of that call become new nodes and a counter is bumped.
 """
 
 from __future__ import annotations
@@ -15,12 +18,14 @@ from __future__ import annotations
 import asyncio
 import json
 import time
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypeVar
 
 from langchain_core.messages import HumanMessage
 
+from app.exceptions.indexing_exceptions import EntityLookupUnavailableError
 from app.modules.entity_resolution.keys import taxonomy_node_key
 from app.modules.entity_resolution.languages import canonical_language
+from app.modules.entity_resolution.lookup import run_lookup
 from app.modules.entity_resolution.models import (
     CATEGORY,
     LANGUAGE,
@@ -43,13 +48,15 @@ from app.modules.entity_resolution.normalizer import (
     normalize_name,
     spelling_key,
 )
-from app.modules.entity_resolution.prompt import build_prompt
+from app.modules.entity_resolution.prompt import build_prompt, candidate_handles
+from app.services.graph_db.taxonomy import MAX_MERGE_REDIRECT_HOPS, MERGED_INTO_FIELD
 from app.telemetry.modules import entity_resolution_metrics as metrics
 from app.utils.llm import get_llm_for_role
 from app.utils.streaming import invoke_with_structured_output_and_reflection
 
 if TYPE_CHECKING:
     import logging
+    from collections.abc import Awaitable, Callable
 
     from langchain_core.language_models import BaseChatModel
 
@@ -59,11 +66,19 @@ if TYPE_CHECKING:
     from app.modules.transformers.transformer import TransformContext
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
+T = TypeVar("T")
+
 LLM_ROLE = "indexing"
 
-# A hung model call would hold the record's indexing slot; past this the names
-# become new, as on any other model failure.
+# Bounds each provider call of the merge decision, not the wait for the shared
+# indexing model slot: a busy slot is backpressure, and timing it out would make
+# every unresolved name of the record a new node for good.
 MERGE_CALL_TIMEOUT_SECONDS = 60.0
+
+# Existing nodes offered to the model per unresolved name. Measured on the
+# resolution eval: the right node is first 90% of the time and within the
+# top 3 every time (tests/evals/entity_resolution, KG-12).
+MERGE_CANDIDATES = 3
 
 
 class EntityResolver:
@@ -89,7 +104,8 @@ class EntityResolver:
         self.entity_vector_store = entity_vector_store
         self.mode = ResolutionMode(mode)
         self.max_aliases = max_aliases
-        self._llm: BaseChatModel | None = None
+        # Keyed by org: each org can configure its own model for this role.
+        self._llms: dict[str, BaseChatModel] = {}
         self._llm_lock = asyncio.Lock()
 
     # ------------------------------------------------------------------
@@ -99,9 +115,11 @@ class EntityResolver:
     async def resolve(self, ctx: TransformContext) -> EntityResolution | None:
         """Resolve ``ctx.record.semantic_metadata``.
 
-        In ``APPLY`` mode the metadata is rewritten to canonical names and the
-        resolution is attached to ``ctx.entity_resolution``. Returns the
-        resolution (also in shadow mode) or ``None`` when nothing ran.
+        In ``APPLY`` mode the metadata keeps the record's own cleaned names
+        (blank, invalid and repeated ones dropped, languages in their ISO
+        form) and the resolution is attached to ``ctx.entity_resolution``.
+        Returns the resolution (also in shadow mode) or ``None`` when nothing
+        ran.
         """
         mode = self.mode
         if mode is ResolutionMode.OFF:
@@ -112,10 +130,23 @@ class EntityResolver:
         if metadata is None or not org_id:
             return None
 
+        if mode is ResolutionMode.APPLY:
+            # The labels are this record's own words whether or not
+            # resolution succeeds, and they are stored either way.
+            metadata.own_labels = True
         started = time.monotonic()
         stats = ResolutionStats()
         try:
-            resolution = await self._resolve(org_id, metadata, mode, stats)
+            names, resolution = await self._resolve(org_id, metadata, mode, stats)
+        except EntityLookupUnavailableError:
+            self.logger.warning(
+                "entity_resolution deferred: a lookup could not run mode=%s org=%s record=%s %s",
+                mode.value, org_id, getattr(record, "id", "?"),
+                " ".join(f"{k}={v}" for k, v in stats.as_dict().items()),
+            )
+            if mode is ResolutionMode.SHADOW:
+                return None
+            raise
         except Exception:
             if mode is ResolutionMode.SHADOW:
                 self.logger.warning(
@@ -128,7 +159,7 @@ class EntityResolver:
         metrics.record_latency(mode.value, time.monotonic() - started)
 
         if mode is ResolutionMode.APPLY:
-            self._rewrite_metadata(metadata, resolution)
+            self._keep_own_names(metadata, names)
             ctx.entity_resolution = resolution
         else:
             self.logger.info(
@@ -153,11 +184,11 @@ class EntityResolver:
         metadata: SemanticMetadata,
         mode: ResolutionMode,
         stats: ResolutionStats,
-    ) -> EntityResolution:
+    ) -> tuple[list[ExtractedName], EntityResolution]:
         resolution = EntityResolution(org_id=org_id, mode=mode, stats=stats)
         names = self._collect_names(metadata, stats)
 
-        existing = await self._tier0(org_id, names)
+        existing = await self._tier0(org_id, names, stats)
         unresolved: list[ExtractedName] = []
         for name in names:
             node = existing.get((name.kind.collection, name.normalized))
@@ -173,12 +204,81 @@ class EntityResolver:
             entity = self._existing_entity(resolution, name.kind, node, decision="exact")
             self._attach(resolution, name, entity)
 
-        winners = await self._tier1(org_id, unresolved, stats)
-        decisions = await self._tier2(metadata, unresolved, winners, stats)
-        await self._apply_decisions(org_id, resolution, unresolved, winners, decisions)
+        candidates = await self._tier1(org_id, unresolved, stats)
+        decisions = await self._tier2(org_id, metadata, unresolved, candidates, stats)
+        await self._apply_decisions(org_id, resolution, unresolved, candidates, decisions)
+        await self._follow_merge_redirects(org_id, resolution, names)
 
         self._record_outcomes(resolution)
-        return resolution
+        return names, resolution
+
+    async def _follow_merge_redirects(
+        self, org_id: str, resolution: EntityResolution, names: list[ExtractedName],
+    ) -> None:
+        """Send a new name whose deterministic key is a merged-away node to
+        the node it was merged into.
+
+        Tier 0 skips merged nodes, so their names come back as new, with the
+        merged node's own key; creating "it" would be a no-op and the record
+        would link to the hidden node. One lookup per collection with new
+        names; one that cannot run raises, since keeping the names new would
+        link the record to a hidden node.
+        """
+        new_by_collection: dict[str, list[ResolvedEntity]] = {}
+        for entity in resolution.entries.values():
+            if entity.is_new:
+                new_by_collection.setdefault(entity.kind.collection, []).append(entity)
+        by_index = {name.index: name for name in names}
+        for collection, entities in new_by_collection.items():
+            targets = await self._graph_lookup(
+                "redirect",
+                lambda collection=collection, entities=entities: self._redirect_targets(
+                    org_id, collection, [e.key for e in entities],
+                ),
+                resolution.stats,
+            )
+            for entity in entities:
+                winner = targets.get(entity.key)
+                if winner is None:
+                    continue
+                resolution.entries.pop((collection, entity.normalized), None)
+                resolution.stats.new_nodes -= 1
+                resolution.stats.merge_redirects += 1
+                target = self._existing_entity(resolution, entity.kind, winner, decision="redirect")
+                for index, assigned in list(resolution.assignments.items()):
+                    if assigned is entity and index in by_index:
+                        self._attach(resolution, by_index[index], target)
+
+    async def _redirect_targets(
+        self, org_id: str, collection: str, keys: list[str],
+    ) -> dict[str, dict[str, Any]]:
+        """``{key: winner node}`` for the ``keys`` that are merged nodes of
+        ``org_id`` whose redirect chain ends at a live node of the org."""
+        fields = ["id", "name", "aliases", "orgId", MERGED_INTO_FIELD]
+        rows = await self.graph_provider.get_nodes_by_field_in(
+            collection, "id", sorted(set(keys)), return_fields=fields, raise_on_error=True,
+        )
+        out: dict[str, dict[str, Any]] = {}
+        for row in rows or []:
+            key = str(row.get("id") or row.get("_key") or "")
+            hop = row.get(MERGED_INTO_FIELD)
+            if not key or not hop or row.get("orgId") != org_id:
+                continue
+            seen = {key}
+            while hop and hop not in seen and len(seen) <= MAX_MERGE_REDIRECT_HOPS:
+                seen.add(hop)
+                (node,) = (
+                    await self.graph_provider.get_nodes_by_field_in(
+                        collection, "id", [hop], return_fields=fields, raise_on_error=True,
+                    )
+                ) or [None]
+                if node is None or node.get("orgId") != org_id:
+                    break
+                if not node.get(MERGED_INTO_FIELD):
+                    out[key] = {**node, "id": hop}
+                    break
+                hop = node.get(MERGED_INTO_FIELD)
+        return out
 
     # ---- collection --------------------------------------------------
 
@@ -236,28 +336,40 @@ class EntityResolver:
             add(TOPIC, topic)
 
         for raw in metadata.languages or []:
-            if isinstance(raw, str):
-                add(LANGUAGE, canonical_language(raw) or raw)
+            if isinstance(raw, str) and (language := canonical_language(raw)):
+                add(LANGUAGE, language)
         return names
 
     # ---- tier 0 ------------------------------------------------------
 
+    async def _graph_lookup(
+        self, lookup: str, call: Callable[[], Awaitable[T]], stats: ResolutionStats,
+    ) -> T:
+        def failed() -> None:
+            stats.graph_failures += 1
+
+        return await run_lookup(call, lookup=lookup, logger=self.logger, on_failure=failed)
+
     async def _tier0(
-        self, org_id: str, names: list[ExtractedName]
+        self, org_id: str, names: list[ExtractedName], stats: ResolutionStats,
     ) -> dict[tuple[str, str], dict[str, Any]]:
         by_collection: dict[str, list[str]] = {}
         for name in names:
             by_collection.setdefault(name.kind.collection, []).append(name.normalized)
-        return await self._lookup_existing(org_id, by_collection)
+        return await self._lookup_existing(org_id, by_collection, stats)
 
     async def _lookup_existing(
-        self, org_id: str, by_collection: dict[str, list[str]]
+        self, org_id: str, by_collection: dict[str, list[str]], stats: ResolutionStats,
     ) -> dict[tuple[str, str], dict[str, Any]]:
         found: dict[tuple[str, str], dict[str, Any]] = {}
         for collection, normalized_names in by_collection.items():
             wanted = set(normalized_names)
-            rows = await self.graph_provider.find_taxonomy_nodes(
-                collection, org_id, sorted(wanted)
+            rows = await self._graph_lookup(
+                "exact",
+                lambda collection=collection, wanted=wanted: self.graph_provider.find_taxonomy_nodes(
+                    collection, org_id, sorted(wanted),
+                ),
+                stats,
             )
             nodes: list[tuple[dict[str, Any], str | None, list[str]]] = []
             for row in rows or []:
@@ -272,10 +384,13 @@ class EntityResolver:
                 normalized = row.get("normalizedName")
                 alias_forms = [str(a) for a in (row.get("normalizedAliases") or []) if a]
                 nodes.append((node, str(normalized) if normalized else None, alias_forms))
-            # A node reached by its own name wins over one reached by an alias.
+            # A node reached by its own name wins over one reached by an alias;
+            # among nodes sharing an alias the lowest key wins, whatever order
+            # the provider returned them in.
+            nodes.sort(key=lambda entry: entry[0]["id"])
             for node, normalized, _alias_forms in nodes:
                 if normalized in wanted:
-                    found[(collection, normalized)] = node
+                    found.setdefault((collection, normalized), node)
             for node, _normalized, alias_forms in nodes:
                 for alias in alias_forms:
                     if alias in wanted:
@@ -286,74 +401,84 @@ class EntityResolver:
 
     async def _tier1(
         self, org_id: str, unresolved: list[ExtractedName], stats: ResolutionStats
-    ) -> dict[int, WinnerCandidate | None]:
-        winners: dict[int, WinnerCandidate | None] = {n.index: None for n in unresolved}
+    ) -> dict[int, tuple[WinnerCandidate, ...]]:
+        """Up to ``MERGE_CANDIDATES`` live nodes per unresolved name, best
+        first. The right node is often second (KG-12), so one is not enough.
+        Raises ``EntityLookupUnavailableError`` when a search or the winner
+        check cannot run: those names are not known to be new."""
+        offered: dict[int, tuple[WinnerCandidate, ...]] = {n.index: () for n in unresolved}
         if self.entity_vector_store is None or not unresolved:
-            return winners
+            return offered
 
         groups: dict[tuple[str, str | None], list[ExtractedName]] = {}
         for name in unresolved:
             groups.setdefault((name.kind.entity_type.value, name.kind.level), []).append(name)
 
+        store = self.entity_vector_store
+
+        def vector_failed() -> None:
+            stats.vector_failures += 1
+
         for (entity_type, level), group in groups.items():
-            try:
-                matches = await self.entity_vector_store.find_best_matches(
-                    [n.display for n in group], org_id, entity_type, level=level,
-                )
-            except Exception:
-                stats.vector_failures += 1
-                metrics.record_fallback("vector_error", len(group))
-                self.logger.warning(
-                    "entity_resolution: winner lookup failed for %s/%s; treating %d "
-                    "names as new", entity_type, level, len(group), exc_info=True,
-                )
-                continue
-            candidates: dict[int, WinnerCandidate] = {}
-            for name, match in zip(group, matches):
-                winner = self._winner_from_match(match, entity_type, level)
-                if winner is not None:
-                    candidates[name.index] = winner
-            if not candidates:
+            matches = await run_lookup(
+                lambda group=group, entity_type=entity_type, level=level: store.find_candidates(
+                    [n.display for n in group], org_id, entity_type, level=level, k=MERGE_CANDIDATES,
+                ),
+                lookup="candidates",
+                logger=self.logger,
+                on_failure=vector_failed,
+            )
+            found: dict[int, list[WinnerCandidate]] = {}
+            for name, name_matches in zip(group, matches):
+                for match in name_matches or []:
+                    winner = self._winner_from_match(match, entity_type, level)
+                    if winner is not None:
+                        found.setdefault(name.index, []).append(winner)
+            if not found:
                 continue
             live = await self._live_node_ids(
-                org_id, group[0].kind.collection, {w.entity_id for w in candidates.values()},
+                org_id, group[0].kind.collection,
+                {w.entity_id for winners in found.values() for w in winners},
+                stats,
             )
-            for index, winner in candidates.items():
-                if winner.entity_id in live:
+            for index, winners in found.items():
+                kept = tuple(w for w in winners if w.entity_id in live)
+                stats.stale_winners += len(winners) - len(kept)
+                if kept:
                     stats.winners_offered += 1
-                    winners[index] = winner
-                else:
-                    stats.stale_winners += 1
-        return winners
+                    offered[index] = kept
+        return offered
 
-    async def _live_node_ids(self, org_id: str, collection: str, ids: set[str]) -> set[str]:
+    async def _live_node_ids(
+        self, org_id: str, collection: str, ids: set[str], stats: ResolutionStats,
+    ) -> set[str]:
         """The ``ids`` that are canonical nodes of ``org_id`` in the graph.
 
         The vector store can point at a node that was deleted, or at a legacy
         node shared across orgs (created before resolution, or copied onto a
         duplicate); merging into either would write this org's aliases where
-        they do not belong. A failed check offers no winner, like a failed
-        vector lookup.
+        they do not belong. A check that cannot run raises like a failed
+        vector lookup, and is counted as an error rather than as stale winners.
         """
-        try:
-            rows = await self.graph_provider.get_nodes_by_field_in(
-                collection, "id", sorted(ids), return_fields=["id", "orgId", "normalizedName"],
-            )
-        except Exception:
-            metrics.record_fallback("winner_check_error", len(ids))
-            self.logger.warning(
-                "entity_resolution: winner check failed for %s; offering no winners",
-                collection, exc_info=True,
-            )
-            return set()
+        rows = await self._graph_lookup(
+            "winner_check",
+            lambda: self.graph_provider.get_nodes_by_field_in(
+                collection, "id", sorted(ids),
+                return_fields=["id", "orgId", "normalizedName", "mergedInto"],
+                raise_on_error=True,
+            ),
+            stats,
+        )
         live = {
             str(row.get("id") or row.get("_key"))
             for row in rows or []
             if (row.get("id") or row.get("_key"))
             and row.get("orgId") == org_id
             and row.get("normalizedName")
+            and not row.get("mergedInto")
         }
-        metrics.record_fallback("stale_winner", len(ids - live))
+        if ids - live:
+            metrics.record_fallback("stale_winner", len(ids - live))
         return live
 
     @staticmethod
@@ -378,9 +503,9 @@ class EntityResolver:
     # ---- tier 2 ------------------------------------------------------
 
     def _needs_model(
-        self, unresolved: list[ExtractedName], winners: dict[int, WinnerCandidate | None]
+        self, unresolved: list[ExtractedName], candidates: dict[int, tuple[WinnerCandidate, ...]]
     ) -> bool:
-        if any(winners.get(n.index) is not None for n in unresolved):
+        if any(candidates.get(n.index) for n in unresolved):
             return True
         per_kind: dict[str, int] = {}
         for name in unresolved:
@@ -389,49 +514,68 @@ class EntityResolver:
 
     async def _tier2(
         self,
+        org_id: str,
         metadata: SemanticMetadata,
         unresolved: list[ExtractedName],
-        winners: dict[int, WinnerCandidate | None],
+        candidates: dict[int, tuple[WinnerCandidate, ...]],
         stats: ResolutionStats,
     ) -> dict[int, MergeDecision]:
-        if not unresolved or not self._needs_model(unresolved, winners):
+        if not unresolved or not self._needs_model(unresolved, candidates):
             return {}
         stats.model_calls += 1
-        prompt = build_prompt(metadata.summary, unresolved, winners)
+        prompt = build_prompt(metadata.summary, unresolved, candidates)
         try:
-            llm = await self._get_llm()
-            response = await asyncio.wait_for(
-                invoke_with_structured_output_and_reflection(
-                    llm, [HumanMessage(content=prompt)], MergeDecisions,
-                ),
-                timeout=MERGE_CALL_TIMEOUT_SECONDS,
+            llm = await self._get_llm(org_id)
+            response = await invoke_with_structured_output_and_reflection(
+                llm, [HumanMessage(content=prompt)], MergeDecisions,
+                call_timeout=MERGE_CALL_TIMEOUT_SECONDS,
             )
         except Exception:
             response = None
-            self._llm = None
             self.logger.warning("entity_resolution: merge model call raised", exc_info=True)
         if response is None:
+            # Rebuilt from current config on the next record, so a replaced or
+            # re-keyed indexing model is picked up without a restart.
+            self._llms.pop(org_id, None)
             stats.model_failures += 1
             metrics.record_model_call("failed")
             metrics.record_fallback("model_error", len(unresolved))
             return {}
-        metrics.record_model_call("ok")
         valid_indexes = {n.index for n in unresolved}
+        node_ids = {handle: node_id for node_id, handle in candidate_handles(unresolved, candidates).items()}
         decisions: dict[int, MergeDecision] = {}
-        for decision in response.decisions:
-            if decision.i in valid_indexes and decision.i not in decisions:
-                decisions[decision.i] = decision
+        for answer in response.decisions:
+            if answer.i in valid_indexes and answer.i not in decisions:
+                decisions[answer.i] = answer.model_copy(
+                    update={"target": node_ids.get(answer.target, answer.target)},
+                )
+        if not decisions:
+            # Parsed, but answered nothing it was asked: every name falls back
+            # to new, and the model is rebuilt, exactly as when the call fails.
+            self._llms.pop(org_id, None)
+            stats.model_failures += 1
+            metrics.record_model_call("empty")
+            metrics.record_fallback("model_empty", len(unresolved))
+            return {}
+        metrics.record_model_call("ok")
         return decisions
 
-    async def _get_llm(self) -> BaseChatModel:
-        if self._llm is not None:
-            return self._llm
+    async def _get_llm(self, org_id: str) -> BaseChatModel:
+        llm = self._llms.get(org_id)
+        if llm is not None:
+            return llm
         async with self._llm_lock:
-            if self._llm is None:
-                self._llm, _ = await get_llm_for_role(
-                    self.config_service, LLM_ROLE, reasoning_effort="low",
-                )
-        return self._llm
+            llm = self._llms.get(org_id)
+            if llm is None:
+                llm = await self._load_llm(org_id)
+                self._llms[org_id] = llm
+        return llm
+
+    async def _load_llm(self, org_id: str) -> BaseChatModel:
+        llm, _ = await get_llm_for_role(
+            self.config_service, LLM_ROLE, reasoning_effort="low",
+        )
+        return llm
 
     # ---- decisions ---------------------------------------------------
 
@@ -440,7 +584,7 @@ class EntityResolver:
         org_id: str,
         resolution: EntityResolution,
         unresolved: list[ExtractedName],
-        winners: dict[int, WinnerCandidate | None],
+        candidates: dict[int, tuple[WinnerCandidate, ...]],
         decisions: dict[int, MergeDecision],
     ) -> None:
         stats = resolution.stats
@@ -466,7 +610,18 @@ class EntityResolver:
             if decision is None:
                 proposed_new[name.index] = ""
                 continue
-            if decision.same and decision.same_as_item >= 0:
+            if not decision.same:
+                proposed_new[name.index] = decision.canonical_name or ""
+                continue
+            # The offered node is the stronger answer: an item pointer only
+            # groups names that still need a node.
+            winner = next(
+                (c for c in candidates.get(name.index, ()) if c.entity_id == decision.target), None,
+            )
+            if winner is not None:
+                merged_to_winner[name.index] = winner
+                continue
+            if decision.same_as_item >= 0:
                 other = by_index.get(decision.same_as_item)
                 if other is None or other.index == name.index or other.kind != name.kind:
                     stats.rejected_decisions += 1
@@ -475,16 +630,9 @@ class EntityResolver:
                     continue
                 union(name.index, other.index)
                 continue
-            if decision.same:
-                winner = winners.get(name.index)
-                if winner is not None and decision.target == winner.entity_id:
-                    merged_to_winner[name.index] = winner
-                    continue
-                stats.rejected_decisions += 1
-                metrics.record_fallback("rejected_target")
-                proposed_new[name.index] = ""
-                continue
-            proposed_new[name.index] = decision.canonical_name or ""
+            stats.rejected_decisions += 1
+            metrics.record_fallback("rejected_target")
+            proposed_new[name.index] = ""
 
         # Group members follow their component leader.
         components: dict[int, list[ExtractedName]] = {}
@@ -506,7 +654,7 @@ class EntityResolver:
             if (head.kind.collection, normalized) not in resolution.entries:
                 pending_lookup.setdefault(head.kind.collection, []).append(normalized)
         looked_up = (
-            await self._lookup_existing(org_id, pending_lookup) if pending_lookup else {}
+            await self._lookup_existing(org_id, pending_lookup, stats) if pending_lookup else {}
         )
 
         for leader, group in sorted(components.items()):
@@ -514,10 +662,9 @@ class EntityResolver:
             head = members[0]
             winner_members = [m for m in members if m.index in merged_to_winner]
             if winner_members:
+                # Each name holds one pointer and a winner member holds none,
+                # so a component reaches at most one winner member.
                 winner = merged_to_winner[winner_members[0].index]
-                if len({merged_to_winner[m.index].entity_id for m in winner_members}) > 1:
-                    stats.rejected_decisions += 1
-                    metrics.record_fallback("conflicting_targets")
                 entity = self._existing_entity(
                     resolution, head.kind,
                     {"id": winner.entity_id, "name": winner.name, "aliases": list(winner.aliases)},
@@ -619,6 +766,7 @@ class EntityResolver:
     ) -> None:
         stats = resolution.stats
         resolution.assignments[name.index] = entity
+        resolution.by_extracted[(name.kind.collection, name.normalized)] = entity
         entity.extracted_names.append(name.raw)
         if name.normalized == entity.normalized:
             return
@@ -643,24 +791,23 @@ class EntityResolver:
 
     # ---- apply -------------------------------------------------------
 
-    def _rewrite_metadata(
-        self, metadata: SemanticMetadata, resolution: EntityResolution
-    ) -> None:
-        """Replace extracted names with canonical ones, in place."""
+    @staticmethod
+    def _keep_own_names(metadata: SemanticMetadata, names: list[ExtractedName]) -> None:
+        """Write back the record's own names, cleaned, in place: a canonical
+        node's name is the spelling of whichever record created it, not
+        necessarily this one's."""
         by_slot: dict[str, list[str]] = {}
-        for index in sorted(resolution.assignments):
-            entity = resolution.assignments[index]
-            bucket = by_slot.setdefault(entity.kind.slot, [])
-            if entity.name not in bucket:
-                bucket.append(entity.name)
+        for name in names:
+            by_slot.setdefault(name.kind.slot, []).append(name.display)
 
-        metadata.categories = by_slot.get(CATEGORY.slot, [])
+        metadata.categories = by_slot.get(CATEGORY.slot, [])[:1]
         chain = [by_slot.get(kind.slot, [None])[0] for kind in SUBCATEGORY_CHAIN]
         metadata.sub_category_level_1 = chain[0] or None
         metadata.sub_category_level_2 = (chain[1] if chain[0] else None) or None
         metadata.sub_category_level_3 = (chain[2] if chain[0] and chain[1] else None) or None
         metadata.topics = by_slot.get(TOPIC.slot, [])
         metadata.languages = by_slot.get(LANGUAGE.slot, [])
+        metadata.own_labels = True
 
 
 __all__ = ["LLM_ROLE", "EntityResolver"]
