@@ -69940,6 +69940,15 @@ paths:
                   - $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Missing, invalid or expired bearer token
+          headers:
+            WWW-Authenticate:
+              description: |
+                `Bearer resource_metadata="<oauth issuer>/.well-known/oauth-protected-resource/mcp"`,
+                naming the protected-resource metadata an MCP client starts OAuth from (RFC 9728
+                section 5.1). Sent on every `401` of this route: no token, and an expired, revoked or
+                invalid one.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -70070,6 +70079,15 @@ paths:
                 $ref: '#/components/schemas/McpTransportError'
         '401':
           description: Unauthorized
+          headers:
+            WWW-Authenticate:
+              description: |
+                `Bearer resource_metadata="<oauth issuer>/.well-known/oauth-protected-resource/mcp"`,
+                naming the protected-resource metadata an MCP client starts OAuth from (RFC 9728
+                section 5.1). Sent on every `401` of this route: no token, and an expired, revoked or
+                invalid one.
+              schema:
+                type: string
           content:
             application/json:
               schema:
