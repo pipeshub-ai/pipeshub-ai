@@ -79,7 +79,7 @@ class DbConfig:
             service=service,
             dsn=env.get("PG_CORE_URL", ""),
             jobs_dsn=env.get("PG_JOBS_URL", ""),
-            pooler=env.get("PG_POOLER", "pgbouncer_txn"),  # type: ignore[arg-type]
+            pooler=(env.get("PG_POOLER") or "pgbouncer_txn").strip(),  # type: ignore[arg-type]
             strict=env.get("PG_STRICT", "true").strip().lower() not in ("0", "false", "no"),
             pool_max=int(env.get("PG_POOL_MAX") or 10),
             jobs_pool_max=int(env.get("PG_JOBS_POOL_MAX") or 3),
