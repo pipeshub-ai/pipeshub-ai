@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import stat
 from datetime import datetime, timezone
@@ -1047,3 +1048,74 @@ class TestSmbConnectorEditionSeams:
 
         assert await smb_connector.init() is True
         assert smb_connector.data_source is replacement
+
+
+def _extension_filters(operator: MultiselectOperator, values: list[str]):
+    return (
+        FilterCollection(
+            filters=[
+                Filter(
+                    key="file_extensions",
+                    value=values,
+                    type=FilterType.MULTISELECT,
+                    operator=operator,
+                )
+            ]
+        ),
+        FilterCollection(),
+    )
+
+
+def _synced_names(mock_processor) -> list[str]:
+    return sorted(
+        record.record_name
+        for call in mock_processor.on_new_records.await_args_list
+        for record, _perms in call.args[0]
+        if record.is_file
+    )
+
+
+class TestSmbExtensionFilter:
+    def test_the_schema_offers_archive_and_database_types(self):
+        fields = SmbConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+        field = next(f for f in fields if f["name"] == "file_extensions")
+        ids = [o.id for o in field["options"]]
+        assert "zip" in ids
+        assert "db" in ids
+        assert "pdf" in ids
+        assert len(ids) == len(set(ids))
+        # What the options API sends: plain JSON with an id and a label per option.
+        wire = json.loads(json.dumps([o.to_dict() for o in field["options"]]))
+        assert all(isinstance(o["id"], str) and isinstance(o["label"], str) for o in wire)
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_not_in_skips_the_excluded_types_and_keeps_the_rest(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _extension_filters(MultiselectOperator.NOT_IN, ["zip", "db"])
+        smb_connector.data_source = _ds(
+            tree={
+                (SHARE, ""): [
+                    _entry("a.zip", file_id=1),
+                    _entry("b.db", file_id=2),
+                    _entry("c.pdf", file_id=3),
+                ]
+            }
+        )
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        assert _synced_names(mock_processor) == ["c.pdf"]
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_in_still_keeps_only_the_listed_types(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _extension_filters(MultiselectOperator.IN, ["pdf"])
+        smb_connector.data_source = _ds(
+            tree={
+                (SHARE, ""): [
+                    _entry("a.zip", file_id=1),
+                    _entry("c.pdf", file_id=3),
+                    _entry("d.txt", file_id=4),
+                ]
+            }
+        )
+        smb_connector.configured_share = SHARE
+        await smb_connector.run_sync()
+        assert _synced_names(mock_processor) == ["c.pdf"]

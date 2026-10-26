@@ -15,8 +15,14 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.core.base.connector.connector_service import ConnectorInitError
-from app.connectors.core.registry.filters import FilterCollection
+from app.connectors.core.registry.filters import (
+    Filter,
+    FilterCollection,
+    FilterType,
+    MultiselectOperator,
+)
 from app.connectors.sources.drupal_wiki.connector import (
+    PAGE_SIZE,
     DrupalWikiAuthError,
     DrupalWikiConnector,
     DrupalWikiSyncError,
@@ -1611,3 +1617,167 @@ class TestErrorsCarryTheWikisReason:
 
         assert "Bearer" not in caplog.text
         assert "pat:" not in caplog.text
+
+
+def _extension_filter(operator: MultiselectOperator, values: list[str]) -> FilterCollection:
+    return FilterCollection(
+        filters=[
+            Filter(
+                key="file_extensions",
+                value=values,
+                type=FilterType.MULTISELECT,
+                operator=operator,
+            )
+        ]
+    )
+
+
+ATTACHMENTS = [
+    {"id": 1, "fileName": "a.zip", "lastModified": 1001},
+    {"id": 2, "fileName": "b.pdf", "lastModified": 1001},
+    {"id": 3, "fileName": "README", "lastModified": 1001},
+    {"id": 4, "fileName": "C.PDF", "lastModified": 1001},
+]
+
+
+def _written(processor: MagicMock) -> list:
+    return [r for call in processor.on_new_records.await_args_list for r, _ in call.args[0]]
+
+
+class TestAttachmentExtensionFilter:
+    def _stub_source(self, connector: DrupalWikiConnector) -> None:
+        connector.data_source.list_pages = AsyncMock(
+            return_value=response(spring_page([page_payload(733)]))
+        )
+        connector.data_source.list_attachments = AsyncMock(return_value=response(ATTACHMENTS))
+        connector.data_source.get_attachment = AsyncMock()
+        connector.data_source.download_attachment = MagicMock()
+
+    def test_the_schema_has_the_filter_and_explains_it_is_for_attachments(self) -> None:
+        fields = DrupalWikiConnector._connector_metadata["config"]["filters"]["sync"]["schema"]["fields"]
+        field = next(f for f in fields if f["name"] == "file_extensions")
+        assert "attachments only" in field["description"]
+        ids = [o.id for o in field["options"]]
+        assert {"pdf", "zip", "db"} <= set(ids)
+        assert len(ids) == len(set(ids))
+
+    @pytest.mark.asyncio
+    async def test_not_in_skips_a_zip_without_a_record_or_a_download(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self._stub_source(connector)
+        connector.sync_filters = _extension_filter(MultiselectOperator.NOT_IN, ["zip"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        written = _written(processor)
+        assert [r.external_record_id for r in written] == [
+            "page:733", "attachment:2", "attachment:3", "attachment:4",
+        ]
+        connector.data_source.download_attachment.assert_not_called()
+        connector.data_source.get_attachment.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_in_keeps_only_the_listed_types_and_never_filters_pages(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self._stub_source(connector)
+        connector.sync_filters = _extension_filter(MultiselectOperator.IN, ["pdf"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        written = _written(processor)
+        # The page has no extension of its own and is still written; a file with
+        # no extension is dropped by In; matching ignores case.
+        assert [r.external_record_id for r in written] == [
+            "page:733", "attachment:2", "attachment:4",
+        ]
+        connector.data_source.download_attachment.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_file_without_an_extension_is_kept_by_not_in(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self._stub_source(connector)
+        connector.sync_filters = _extension_filter(MultiselectOperator.NOT_IN, ["pdf", "zip"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert [r.external_record_id for r in _written(processor)] == ["page:733", "attachment:3"]
+
+    @pytest.mark.asyncio
+    async def test_with_no_filter_every_attachment_is_synced(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        self._stub_source(connector)
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert [r.external_record_id for r in _written(processor)] == [
+            "page:733", "attachment:1", "attachment:2", "attachment:3", "attachment:4",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_matching_ignores_case_and_a_leading_dot(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector.data_source.list_pages = AsyncMock(
+            return_value=response(spring_page([page_payload(733)]))
+        )
+        connector.data_source.list_attachments = AsyncMock(return_value=response([
+            {"id": 1, "fileName": "A.ZIP"},
+            {"id": 2, "fileName": "b.Zip"},
+            {"id": 3, "fileName": "c.pdf"},
+        ]))
+        connector.sync_filters = _extension_filter(MultiselectOperator.NOT_IN, [".ZIP"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        assert [r.external_record_id for r in _written(processor)] == ["page:733", "attachment:3"]
+
+    @pytest.mark.asyncio
+    async def test_the_file_name_wins_over_name_and_name_is_the_fallback(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        connector.data_source.list_pages = AsyncMock(
+            return_value=response(spring_page([page_payload(733)]))
+        )
+        connector.data_source.list_attachments = AsyncMock(return_value=response([
+            {"id": 1, "name": "only-name.zip"},
+            {"id": 2, "fileName": "report", "name": "report.zip"},
+            {"id": 3},
+        ]))
+        connector.sync_filters = _extension_filter(MultiselectOperator.NOT_IN, ["zip"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        # 1 is dropped via its name; 2 has no extension by fileName, as its own record does.
+        assert [r.external_record_id for r in _written(processor)] == [
+            "page:733", "attachment:2", "attachment:3",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_every_listing_page_of_attachments_is_filtered(
+        self, connector: DrupalWikiConnector, processor: MagicMock
+    ) -> None:
+        total = 2 * PAGE_SIZE + 7
+        everything = [
+            {"id": i, "fileName": f"f{i}.{'zip' if i % 3 == 0 else 'pdf'}"}
+            for i in range(1, total + 1)
+        ]
+        connector.data_source.list_pages = AsyncMock(
+            return_value=response(spring_page([page_payload(733)]))
+        )
+
+        async def listing(page_id: int, page: int, size: int) -> MagicMock:
+            return response(everything[page * size:(page + 1) * size])
+
+        connector.data_source.list_attachments = AsyncMock(side_effect=listing)
+        connector.data_source.download_attachment = MagicMock()
+        connector.sync_filters = _extension_filter(MultiselectOperator.NOT_IN, ["zip"])
+
+        await connector._sync_pages({12: {"id": 12}})
+
+        kept = {r.external_record_id for r in _written(processor) if r.external_record_id.startswith("attachment:")}
+        assert kept == {f"attachment:{i}" for i in range(1, total + 1) if i % 3 != 0}
+        connector.data_source.download_attachment.assert_not_called()
