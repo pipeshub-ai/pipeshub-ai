@@ -53,8 +53,11 @@ export class ListenHub {
     this.subs.add(sub);
     const n = this.channels.get(channel) ?? 0;
     this.channels.set(channel, n + 1);
-    if (this.client === undefined) await this.connect();
-    else if (n === 0) await this.listen(channel);
+    if (this.client === undefined) {
+      if (this.timer) clearTimeout(this.timer); // connecting now supersedes the pending backoff
+      this.timer = undefined;
+      await this.connect();
+    } else if (n === 0) await this.listen(channel);
     else onReconnect?.(); // joining a live connection: re-read what may have been missed before this subscriber existed
     return async () => {
       if (!this.subs.delete(sub)) return;
@@ -82,7 +85,8 @@ export class ListenHub {
   }
 
   private async doConnect(): Promise<void> {
-    if (this.subs.size === 0) return;
+    // a retry timer armed by an earlier loss can fire after an on-demand connect has already made a client: keep that one
+    if (this.subs.size === 0 || this.client !== undefined) return;
     const client = new Client({
       connectionString: this.url,
       application_name: 'pipeshub-listen',

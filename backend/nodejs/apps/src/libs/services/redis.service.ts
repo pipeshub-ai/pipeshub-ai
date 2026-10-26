@@ -213,9 +213,13 @@ export class InProcessCacheService implements ICacheService {
     return e;
   }
 
+  private lastSweep = Number.NEGATIVE_INFINITY;
+
   private sweep(): void {
-    if (this.entries.size < 1000) return;
     const now = Date.now();
+    // a full scan on every write would block the event loop once the map is large: at most one scan a minute
+    if (this.entries.size < 1000 || now - this.lastSweep < 60_000) return;
+    this.lastSweep = now;
     for (const [k, e] of this.entries)
       if (e.expiresAt <= now) this.entries.delete(k);
   }

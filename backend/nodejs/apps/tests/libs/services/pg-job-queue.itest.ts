@@ -73,6 +73,23 @@ type D = { n?: number; tag?: string }
     expect(ids).to.not.include('dropped')
   })
 
+  it('a failed completion write does not retry the finished job or mark it failed', async () => {
+    const queue = new PgJobQueue<D>(q, { attempts: 3 })
+    let ran = 0
+    const failed: string[] = []
+    const errors: unknown[] = []
+    const w = worker(async () => { ran++ })
+    ;(w as unknown as { complete: () => Promise<boolean> }).complete = () => Promise.reject(new Error('completion write lost'))
+    w.on('failed', (j: PgJob<D>) => failed.push(j.id))
+    w.on('error', (e: unknown) => errors.push(e))
+    const job = await queue.add('done-but-unrecorded', { n: 1 }, { jobId: 'unrecorded' })
+    await until(() => errors.length >= 1)
+    await sleep(300)
+    expect(ran).to.equal(1)
+    expect(failed).to.deep.equal([])
+    expect(await job.getState()).to.equal('active')                          // left to stalled-job recovery, not retried or failed
+  })
+
   it('runs a one-time delayed job once, and a job id that is taken adds nothing', async () => {
     const queue = new PgJobQueue<D>(q, { attempts: 1 })
     const ran: number[] = []

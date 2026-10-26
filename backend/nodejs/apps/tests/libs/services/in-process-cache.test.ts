@@ -35,6 +35,22 @@ describe('InProcessCacheService', () => {
     expect(await c.increment('n', { ttl: 10 })).to.equal(1)
   })
 
+  it('scans for expired entries at most once a minute, not on every write', async () => {
+    const c = new InProcessCacheService()
+    const size = () => (c as unknown as { entries: Map<string, unknown> }).entries.size
+    for (let i = 0; i < 1100; i++) await c.set(`a${i}`, i, { ttl: 1 })
+    clock.tick(61_000)
+    await c.set('trigger', 1)                       // a minute after the last scan: the 1,100 expired entries go
+    expect(size()).to.equal(1)
+    for (let i = 0; i < 1100; i++) await c.set(`b${i}`, i, { ttl: 1 })
+    clock.tick(2_000)
+    await c.set('again', 1)                         // within the minute: no scan, the expired ones are still held
+    expect(size()).to.be.greaterThan(1000)
+    clock.tick(61_000)
+    await c.set('later', 1)
+    expect(size()).to.be.lessThan(10)
+  })
+
   it('is chosen when no Redis is configured', () => {
     const saved = { ...process.env }
     try {

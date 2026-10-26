@@ -32,6 +32,21 @@ async function until(cond: () => boolean, ms = 15000): Promise<void> {
     expect(hub.connections).to.equal(0)
   })
 
+  it('a pending retry does not replace a connection that an on-demand connect already made', async () => {
+    const hub = ListenHub.forUrl(URL)
+    const internals = hub as unknown as { client: unknown; subs: Set<unknown>; doConnect(): Promise<void> }
+    const live = { sentinel: true }
+    internals.client = live
+    internals.subs.add({ channel: 'pipeshub_kv_changed', onNotify: () => undefined })
+    try {
+      await internals.doConnect()
+      expect(internals.client).to.equal(live)
+    } finally {
+      internals.client = undefined
+      internals.subs.clear()
+    }
+  })
+
   it('replaces a connection that stops answering, tells subscribers to re-read, and listens again', async () => {
     const u = new globalThis.URL(URL)
     let frozenBefore = 0

@@ -105,7 +105,7 @@ jobs:
         working-directory: backend/python
         run: |
           sudo sed -i 's/ \(peer\|scram-sha-256\|md5\)$/ trust/' "/etc/postgresql/${{ matrix.pg }}/main/pg_hba.conf"
-          sudo systemctl start "postgresql@${{ matrix.pg }}-main"
+          sudo systemctl restart "postgresql@${{ matrix.pg }}-main"
           # the runner image already has a cluster on 5432, so a newly installed one is on another port
           PG_PORT="$(pg_lsclusters -h | awk -v v="${{ matrix.pg }}" '$1 == v && $2 == "main" {print $3}')"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
@@ -161,7 +161,7 @@ jobs:
         working-directory: backend/nodejs/apps
         run: |
           sudo sed -i 's/ \(peer\|scram-sha-256\|md5\)$/ trust/' "/etc/postgresql/${{ matrix.pg }}/main/pg_hba.conf"
-          sudo systemctl start "postgresql@${{ matrix.pg }}-main"
+          sudo systemctl restart "postgresql@${{ matrix.pg }}-main"
           PG_PORT="$(pg_lsclusters -h | awk -v v="${{ matrix.pg }}" '$1 == v && $2 == "main" {print $3}')"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_RUNTIME_ROLE=node "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           npm run test:pg-services -- --reporter xunit --reporter-option output="$RUNNER_TEMP/node-services-junit.xml"

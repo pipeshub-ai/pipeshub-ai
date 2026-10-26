@@ -588,23 +588,52 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
     const key = [this.queueName, job.id, job.attemptsMade];
     try {
       await this.processor(job);
-      const done = await unit(true, async (tx) => {
-        const r = await tx.query(SQL.complete, [
-          ...key,
-          Date.now(),
-          JSON.stringify(100),
-        ]);
-        if (r.rows.length > 0)
-          await this.trim(
-            tx,
-            'completed',
-            job.opts.removeOnComplete ?? this.defaults.removeOnComplete,
-            job.id,
-          );
-        return r.rows.length > 0;
-      });
-      if (done) this.emit('completed', job, undefined);
     } catch (error) {
+      try {
+        await this.onProcessorError(job, key, error);
+      } finally {
+        this.inFlight.delete(job.id);
+        this.poke();
+      }
+      return;
+    }
+    try {
+      const done = await this.complete(job, key);
+      if (done) this.emit('completed', job, undefined);
+    } catch (e) {
+      // the run succeeded; a failed completion write must not retry it or mark it failed. The claim lapses and stalled-job
+      // recovery decides, as BullMQ does when moveToCompleted fails
+      this.emit('error', e);
+    } finally {
+      this.inFlight.delete(job.id);
+      this.poke();
+    }
+  }
+
+  private complete(job: PgJob<D>, key: (string | number)[]): Promise<boolean> {
+    return unit(true, async (tx) => {
+      const r = await tx.query(SQL.complete, [
+        ...key,
+        Date.now(),
+        JSON.stringify(100),
+      ]);
+      if (r.rows.length > 0)
+        await this.trim(
+          tx,
+          'completed',
+          job.opts.removeOnComplete ?? this.defaults.removeOnComplete,
+          job.id,
+        );
+      return r.rows.length > 0;
+    });
+  }
+
+  private async onProcessorError(
+    job: PgJob<D>,
+    key: (string | number)[],
+    error: unknown,
+  ): Promise<void> {
+    {
       const err = error instanceof Error ? error : new Error(String(error));
       const attempts = job.opts.attempts ?? this.defaults.attempts ?? 1;
       const backoff = job.opts.backoff ?? this.defaults.backoff;
@@ -639,9 +668,6 @@ export class PgJobWorker<D = Record<string, unknown>> extends EventEmitter {
         this.emit('error', e);
       }
       this.emit('failed', job, err);
-    } finally {
-      this.inFlight.delete(job.id);
-      this.poke();
     }
   }
 
