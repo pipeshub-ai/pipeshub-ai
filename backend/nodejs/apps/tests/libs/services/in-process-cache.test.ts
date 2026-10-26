@@ -42,6 +42,16 @@ describe('InProcessCacheService', () => {
     expect(await c.increment('plain')).to.equal(2)
   })
 
+  it('a counter created without a ttl takes the first ttl it is given, and then keeps that expiry', async () => {
+    const c = new InProcessCacheService()
+    expect(await c.increment('late')).to.equal(1)
+    expect(await c.increment('late', { ttl: 10 })).to.equal(2)
+    clock.tick(6_000)
+    expect(await c.increment('late', { ttl: 10 })).to.equal(3)
+    clock.tick(5_000)
+    expect(await c.increment('late', { ttl: 10 })).to.equal(1)
+  })
+
   it('scans for expired entries at most once a minute, not on every write', async () => {
     const c = new InProcessCacheService()
     const size = () => (c as unknown as { entries: Map<string, unknown> }).entries.size
