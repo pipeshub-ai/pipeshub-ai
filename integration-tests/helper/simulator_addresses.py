@@ -31,20 +31,32 @@ SIMULATOR_URL_SETTINGS = (
 _LOOPBACK_NAMES = {"localhost": "127.0.0.1"}
 
 
+def _origin(url: str) -> tuple[str, str, int] | None:
+    """``url``'s scheme, host and port, or None when it can't be read (a bad port, a stray bracket)."""
+    try:
+        parts = urlsplit(url)
+        port = parts.port
+    except ValueError:
+        return None
+    if port is None:
+        port = 443 if parts.scheme == "https" else 80
+    return parts.scheme, (parts.hostname or "").lower(), port
+
+
 def simulator_origins() -> dict[tuple[str, str, int], str]:
     """Each configured simulator origin on loopback, with the address it is pinned to."""
     origins: dict[tuple[str, str, int], str] = {}
     for name in SIMULATOR_URL_SETTINGS:
-        parts = urlsplit(os.getenv(name) or "")
-        host = (parts.hostname or "").lower()
-        address = _LOOPBACK_NAMES.get(host, host)
+        origin = _origin(os.getenv(name) or "")
+        if origin is None or origin[2] == 0:
+            continue
+        address = _LOOPBACK_NAMES.get(origin[1], origin[1])
         try:
             if not ipaddress.ip_address(address).is_loopback:
                 continue
         except ValueError:
             continue
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-        origins[(parts.scheme, host, port)] = address
+        origins[origin] = address
     return origins
 
 
@@ -56,12 +68,10 @@ def allow_the_simulators() -> None:
     real = url_fetcher.resolve_public_http_target
 
     def resolve(url: str, **policy: bool) -> url_fetcher.PublicTarget:
-        parts = urlsplit(url)
-        host = (parts.hostname or "").lower()
-        port = parts.port or (443 if parts.scheme == "https" else 80)
-        address = origins.get((parts.scheme, host, port))
-        if address is not None:
-            return url_fetcher.PublicTarget(parts.scheme, host, port, (ipaddress.ip_address(address),))
+        origin = _origin(url)
+        address = origins.get(origin) if origin else None
+        if origin and address is not None:
+            return url_fetcher.PublicTarget(*origin, (ipaddress.ip_address(address),))
         return real(url, **policy)
 
     # The guard's two lookups: the httpx transport (through url_guard) and the requests adapter.

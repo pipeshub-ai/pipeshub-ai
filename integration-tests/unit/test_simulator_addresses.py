@@ -88,6 +88,7 @@ def test_only_loopback_simulator_settings_become_exceptions(monkeypatch: pytest.
     monkeypatch.setenv("NOTION_API_BASE_URL", "http://127.0.0.1:8103/v1")
     monkeypatch.setenv("JIRA_TEST_BASE_URL", "https://lumenfold.atlassian.net")
     monkeypatch.setenv("GMAIL_SIM_URL", "not a url")
+    monkeypatch.setenv("NOTION_TEST_RESET_URL", "http://localhost:bad/_sim/reset")
     assert simulator_origins() == {
         ("http", "localhost", 8101): "127.0.0.1",
         ("http", "127.0.0.1", 8103): "127.0.0.1",
@@ -98,3 +99,9 @@ def test_with_no_simulator_configured_the_guard_is_untouched() -> None:
     before = address_guard.resolve_public_http_target, url_guard.resolve_public_http_target
     allow_the_simulators()
     assert (address_guard.resolve_public_http_target, url_guard.resolve_public_http_target) == before
+
+
+def test_a_port_of_zero_is_not_taken_for_the_default(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("JIRA_TEST_BASE_URL", "http://localhost:0")
+    monkeypatch.setenv("NOTION_API_BASE_URL", "http://[::1/v1")
+    assert simulator_origins() == {}
