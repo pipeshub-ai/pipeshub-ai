@@ -663,6 +663,9 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
     # A stage that does not apply to this record (policy off, nothing to process).
     SKIPPED = "SKIPPED"
+    # The file needs a password to open. Terminal: only a new version of the
+    # file (or, later, a password) changes the outcome, so nothing retries it.
+    PASSWORD_PROTECTED = "PASSWORD_PROTECTED"
 
 
 class DeleteSource(str, Enum):
