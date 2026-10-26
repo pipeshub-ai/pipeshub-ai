@@ -164,6 +164,12 @@ from app.services.graph_db.common.utils import (
     trash_purge_row,
     uploaded_document_id,
 )
+from app.services.graph_db.dated_scope import (
+    DatedRow,
+    frozen_filters,
+    read_within,
+    scope_for,
+)
 from app.services.graph_db.entity_index_queries import (
     APP_STATUS_DELETING,
     ENTITY_INDEX_SOURCES,
@@ -300,6 +306,27 @@ _RETIRED_ROLES_CYPHER = "[" + ", ".join(f"'{r}'" for r in sorted(RETIRED_ROLES))
 
 # What a member gets from a team's grant; the matches name the edges team_grant and team_member.
 _TEAM_GRANT_ROLE_CYPHER = cypher_team_grant_role("team_grant", "team_member")
+
+# The dates a time range bounds, read beside each record of a shared timeline
+# walk (``dated_scope``): as columns, as fields of a collected pair, and back
+# out of the pair.
+_DATED_COLUMNS = (
+    ", r.sourceCreatedAtTimestamp AS created, r.sourceLastModifiedTimestamp AS updated,"
+    f" r.{SOURCE_TIMESTAMP_ORIGIN_FIELD} AS origin"
+)
+_DATED_PAIR_FIELDS = (
+    ", created: r.sourceCreatedAtTimestamp, updated: r.sourceLastModifiedTimestamp,"
+    f" origin: r.{SOURCE_TIMESTAMP_ORIGIN_FIELD}"
+)
+_DATED_PAIR_COLUMNS = ", pair.created AS created, pair.updated AS updated, pair.origin AS origin"
+
+
+def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
+    return [
+        DatedRow(r.get("virtualId"), r.get("recordId"), r.get("created"), r.get("updated"), r.get("origin"))
+        for r in results or []
+    ]
+
 
 # Only an org-wide share's edge types grant access through the organization: a
 # domain or "anyone" edge left by an older version grants nothing.
@@ -7661,9 +7688,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector with all permission paths.
+
+        With ``with_dates``, every row the walk reached instead, with the dates
+        its time bounds read, for a shared timeline walk (``dated_scope``).
 
         The records that inherit, at any depth, from a record or record group granted
         to the user, or from the App when the user passes its gate. A prefilter:
@@ -7754,13 +7785,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               AND {live_record}
               AND r.virtualRecordId IS NOT NULL AND r.id IS NOT NULL
               {metadata_filter_clause}{time_range_filter_clause}
-            RETURN r.virtualRecordId AS virtualId, r.id AS recordId
+            RETURN r.virtualRecordId AS virtualId, r.id AS recordId{_DATED_COLUMNS if with_dates else ""}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
+            if with_dates:
+                return _dated_rows(results)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -7792,9 +7825,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
+        With ``with_dates``, every row instead, with its dates (``dated_scope``).
 
         Args:
             user_id: The userId field value
@@ -7849,7 +7884,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS directKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id{_DATED_PAIR_FIELDS if with_dates else ""}}}) AS directKbRecords
             }}
 
             CALL {{
@@ -7864,7 +7899,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                   AND {live_record}
                   AND r.origin = "UPLOAD"
                   {metadata_filter_clause}{time_range_filter_clause}
-                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id}}) AS teamKbRecords
+                RETURN collect(DISTINCT {{virtualId: r.virtualRecordId, recordId: r.id{_DATED_PAIR_FIELDS if with_dates else ""}}}) AS teamKbRecords
             }}
 
             // Union all pairs and filter out nulls
@@ -7872,13 +7907,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             UNWIND allPairs AS pair
             WITH pair
             WHERE pair IS NOT NULL AND pair.virtualId IS NOT NULL AND pair.recordId IS NOT NULL
-            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId
+            RETURN pair.virtualId AS virtualId, pair.recordId AS recordId{_DATED_PAIR_COLUMNS if with_dates else ""}
             """
 
             parameters.update(metadata_parameters)
 
             # Execute query
             results = await self.client.execute_query(query, parameters=parameters)
+            if with_dates:
+                return _dated_rows(results)
 
             # Build virtualRecordId -> recordId map (first seen wins for dedup)
             virtual_id_to_record_id: dict[str, str] = {}
@@ -8485,11 +8522,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 and not time_range
             )
 
+            # A dated read inside a timeline takes its records from one walk
+            # over the timeline's span, shared by all its searches (dated_scope).
+            shared = scope_for(time_range) if not use_cache else None
+
             def connector_task(connector_id: str) -> "Awaitable[dict[str, str]]":
                 if use_cache:
                     return self._get_connector_virtual_ids_cached(
                         user_id, org_id, connector_id, app_permission_map.get(connector_id),
                         raise_on_error=raise_on_error,
+                    )
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("connector", user_id, org_id, connector_id, frozen_filters(metadata_filters)),
+                        lambda: self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
                     )
                 return self._get_virtual_ids_for_connector(
                     user_id, org_id, connector_id, metadata_filters, time_range=time_range,
@@ -8500,6 +8551,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 if use_cache:
                     return self._get_kb_virtual_ids_cached(
                         user_id, org_id, kb_filter, raise_on_error=raise_on_error
+                    )
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("kb", user_id, org_id, tuple(kb_filter or ()), frozen_filters(metadata_filters)),
+                        lambda: self._get_kb_virtual_ids(
+                            user_id, org_id, kb_filter, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
                     )
                 return self._get_kb_virtual_ids(
                     user_id, org_id, kb_filter, metadata_filters, time_range=time_range,

@@ -211,6 +211,12 @@ from app.services.graph_db.common.utils import (
     trash_purge_row,
     uploaded_document_id,
 )
+from app.services.graph_db.dated_scope import (
+    DatedRow,
+    frozen_filters,
+    read_within,
+    scope_for,
+)
 from app.services.graph_db.entity_index_queries import (
     APP_STATUS_DELETING,
     ENTITY_INDEX_SOURCES,
@@ -656,6 +662,28 @@ _INDEXED_SINCE_INDEX = "records_connector_status_indexed_at"
 _STAGE_STATE_PAGE_FIELDS = ["connectorId", "stage", "status", "_key"]
 # Blocks per batch when deleting a connector's or a record set's blocks.
 BLOCK_DELETE_BATCH_SIZE = 1000
+
+
+# The dates a time range bounds, read beside each pair of a shared timeline
+# walk (``dated_scope``). Such a walk keeps every pair, in walk order, and the
+# first in range wins per virtual id once the range is applied, where the live
+# read keeps the first pair of each virtual id that passed its own bounds.
+_AQL_DATED_FIELDS = (
+    ", created: record.sourceCreatedAtTimestamp, updated: record.sourceLastModifiedTimestamp,"
+    f" origin: record.{SOURCE_TIMESTAMP_ORIGIN_FIELD}"
+)
+_AQL_DEDUPED_RETURN = """COLLECT virtualRecordId = pair.virtualRecordId INTO groups
+                LET recordId = FIRST(groups).pair.recordId
+                FILTER recordId != null
+                RETURN {virtualRecordId: virtualRecordId, recordId: recordId}"""
+_AQL_DATED_RETURN = "RETURN pair"
+
+
+def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
+    return [
+        DatedRow(r.get("virtualRecordId"), r.get("recordId"), r.get("created"), r.get("updated"), r.get("origin"))
+        for r in results or [] if r
+    ]
 
 
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
@@ -23955,7 +23983,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId for a specific connector covering all permission paths.
 
@@ -24138,18 +24167,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER {aql_searchable_record("record")}
                         FILTER {live_record}
                         {metadata_filter_clause}
-                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
+                        RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key{_AQL_DATED_FIELDS if with_dates else ""}}}
             )
             FOR pair IN allPairs
                 FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
-                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
-                LET recordId = FIRST(groups).pair.recordId
-                FILTER recordId != null
-                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+                {_AQL_DATED_RETURN if with_dates else _AQL_DEDUPED_RETURN}
             """
 
             query_start = time.time()
             results = await self.execute_query(query, bind_vars=bind_vars)
+            if with_dates:
+                return _dated_rows(results)
             elapsed = time.time() - query_start
             virtual_id_to_record_id = {
                 r["virtualRecordId"]: r["recordId"]
@@ -24179,7 +24207,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         time_range: dict[str, int] | None = None,
         *,
         raise_on_error: bool = False,
-    ) -> dict[str, str]:
+        with_dates: bool = False,
+    ) -> dict[str, str] | list[DatedRow]:
         """
         Get a mapping of virtualRecordId -> recordId from Knowledge Bases (RecordGroups).
 
@@ -24315,7 +24344,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER {aql_searchable_record("record")}
                     FILTER {live_record}
                     {metadata_filter_clause}
-                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key{_AQL_DATED_FIELDS if with_dates else ""}}}
             )
 
             LET teamKbRecords = (
@@ -24333,20 +24362,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     FILTER {aql_searchable_record("record")}
                     FILTER {live_record}
                     {metadata_filter_clause}
-                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key}}
+                    RETURN {{virtualRecordId: record.virtualRecordId, recordId: record._key{_AQL_DATED_FIELDS if with_dates else ""}}}
             )
 
             LET allKbPairs = UNION(directKbRecords, teamKbRecords)
             FOR pair IN allKbPairs
                 FILTER pair != null AND pair.virtualRecordId != null AND pair.recordId != null
-                COLLECT virtualRecordId = pair.virtualRecordId INTO groups
-                LET recordId = FIRST(groups).pair.recordId
-                FILTER recordId != null
-                RETURN {{virtualRecordId: virtualRecordId, recordId: recordId}}
+                {_AQL_DATED_RETURN if with_dates else _AQL_DEDUPED_RETURN}
             """
 
             query_start = time.time()
             results = await self.execute_query(query, bind_vars=bind_vars)
+            if with_dates:
+                return _dated_rows(results)
             elapsed = time.time() - query_start
             kb_filter_info = f"filtered: {len(kb_ids)} KBs" if kb_ids else "all KBs"
             virtual_id_to_record_id = {
@@ -24563,13 +24591,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 )
                 return {}
 
+            # A dated read inside a timeline takes its records from one walk
+            # over the timeline's span, shared by all its searches (dated_scope).
+            shared = scope_for(time_range)
+
             def connector_task(connector_id: str) -> "Awaitable[dict[str, str]]":
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("connector", user_id, org_id, connector_id, frozen_filters(metadata_filters)),
+                        lambda: self._get_virtual_ids_for_connector(
+                            user_id, org_id, connector_id, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
+                    )
                 return self._get_virtual_ids_for_connector(
                     user_id, org_id, connector_id, metadata_filters, time_range=time_range,
                     raise_on_error=raise_on_error,
                 )
 
             def kb_task(kb_filter: list[str] | None) -> "Awaitable[dict[str, str]]":
+                if shared is not None:
+                    return read_within(
+                        shared,
+                        ("kb", user_id, org_id, tuple(kb_filter or ()), frozen_filters(metadata_filters)),
+                        lambda: self._get_kb_virtual_ids(
+                            user_id, org_id, kb_filter, metadata_filters, time_range=shared.span,
+                            raise_on_error=True, with_dates=True,
+                        ),
+                        time_range, raise_on_error=raise_on_error, logger=self.logger,
+                    )
                 return self._get_kb_virtual_ids(
                     user_id, org_id, kb_filter, metadata_filters, time_range=time_range,
                     raise_on_error=raise_on_error,
