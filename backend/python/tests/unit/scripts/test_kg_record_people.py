@@ -33,7 +33,7 @@ def _graph(pages: list[list[str]], failing: frozenset[str] = frozenset()) -> Mag
         return {i: _mail(i) for i in ids}
 
     graph.get_typed_records_batch = AsyncMock(side_effect=_records)
-    graph.get_user_by_email = AsyncMock(side_effect=lambda email: SimpleNamespace(id=email.split("@")[0]))
+    graph.get_user_by_email = AsyncMock(side_effect=lambda email, **_: SimpleNamespace(id=email.split("@")[0]))
     graph.get_user_by_source_id = AsyncMock(return_value=None)
     return graph
 

@@ -1,4 +1,4 @@
-"""Record -> member edges (KG-13 slice 1): who a record names, resolved to
+"""Record -> member edges: who a record names, resolved to
 existing users only, written idempotently, never bcc."""
 from __future__ import annotations
 
@@ -35,10 +35,10 @@ SOURCE_MEMBERS = {"src-ann": "u-ann", "src-dan": "u-dan"}
 def _store() -> MagicMock:
     store = MagicMock()
     store.get_user_by_email = AsyncMock(
-        side_effect=lambda email: SimpleNamespace(id=MEMBERS[email]) if email in MEMBERS else None,
+        side_effect=lambda email, **_: SimpleNamespace(id=MEMBERS[email]) if email in MEMBERS else None,
     )
     store.get_user_by_source_id = AsyncMock(
-        side_effect=lambda sid, connector_id: SimpleNamespace(id=SOURCE_MEMBERS[sid]) if sid in SOURCE_MEMBERS else None,
+        side_effect=lambda sid, connector_id, **_: SimpleNamespace(id=SOURCE_MEMBERS[sid]) if sid in SOURCE_MEMBERS else None,
     )
     store.delete_edges_from = AsyncMock()
     store.batch_create_entity_relations = AsyncMock()
@@ -159,17 +159,38 @@ class TestWriteBehaviour:
         assert await link_record_people(file_record, store, logging.getLogger("t")) == 0
         store.delete_edges_from.assert_not_awaited()
 
-    async def test_a_failed_lookup_skips_that_person_only_and_logs_no_address(self, caplog) -> None:
+    async def test_a_failed_lookup_keeps_the_existing_edges_and_logs_no_address(self, caplog) -> None:
         store = _store()
-        store.get_user_by_email.side_effect = lambda email: (
+        store.get_user_by_email.side_effect = lambda email, **_: (
             (_ for _ in ()).throw(RuntimeError("db")) if email == "bob@acme.com" else SimpleNamespace(id=MEMBERS[email])
         )
         with caplog.at_level(logging.WARNING, logger="t"):
-            await link_record_people(
+            written = await link_record_people(
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
             )
-        assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}
+        assert written == 0
+        store.delete_edges_from.assert_not_awaited()
+        store.batch_create_entity_relations.assert_not_awaited()
         assert "bob" not in caplog.text
+
+    async def test_lookups_ask_for_errors_to_be_raised_not_answered_as_no_user(self) -> None:
+        store = _store()
+        ticket = TicketRecord(
+            record_type=RecordType.TICKET, assignee_email="ann@acme.com", reporter_source_id="src-ann",
+            is_email_hidden=False, **BASE,
+        )
+        await link_record_people(ticket, store, logging.getLogger("t"))
+        assert store.get_user_by_email.await_args.kwargs == {"raise_on_error": True}
+        hidden = TicketRecord(
+            record_type=RecordType.TICKET, is_email_hidden=True, assignee_source_id=["src-ann"], **BASE,
+        )
+        await link_record_people(hidden, store, logging.getLogger("t"))
+        assert store.get_user_by_source_id.await_args.kwargs == {"raise_on_error": True}
+
+    async def test_a_genuinely_missing_user_still_lets_the_edges_be_replaced(self) -> None:
+        store = _store()
+        await link_record_people(_mail(from_email="stranger@else.com"), store, logging.getLogger("t"))
+        store.delete_edges_from.assert_awaited_once()
 
     async def test_the_number_of_edges_per_record_is_capped(self, monkeypatch) -> None:
         monkeypatch.setattr(record_people, "MAX_LINKED_PEOPLE", 2)
@@ -275,6 +296,7 @@ class TestFailuresTheCallerMustSee:
         store.get_user_by_email = AsyncMock(side_effect=RuntimeError("boom"))
         written = await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
         assert written == 0
+        store.delete_edges_from.assert_not_awaited()
 
 
 def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:
