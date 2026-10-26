@@ -417,12 +417,37 @@ class TestCommitDateFailures:
                        "pageInfo": {"endCursor": "abc 0"}},
             })
 
-        c, rest_paths, batches = self._connector(graphql)
+        c, rest_paths, _batches = self._connector(graphql)
+
+        # The backfill's read: the path is left out, so it stays undated and is asked again.
+        dates, failure = await ReposSync(c).timestamps._fetch_commit_dates(
+            "acme", "widgets", ["src/a.py", "src/b.py"],
+        )
+
+        assert dates == {"src/b.py": (1704412800000, 1704412800000)}
+        assert failure is None
+        assert rest_paths == []
+
+    async def test_the_sync_dates_a_path_whose_oldest_commit_query_failed_over_rest(self) -> None:
+        """The incremental sync keeps stored dates for a missing path, and the
+        backfill never revisits a dated record, so the sync's read fills it in."""
+        def graphql(query: str) -> object:
+            if "after:" in query:
+                return failed_response("HTTP 502: <html>", status_code=502)
+            return _graphql_response({
+                "p0": {"totalCount": 3, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+                "p1": {"totalCount": 1, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+            })
+
+        c, rest_paths, _batches = self._connector(graphql)
 
         dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", ["src/a.py", "src/b.py"])
 
-        assert dates == {"src/b.py": (1704412800000, 1704412800000)}
-        assert rest_paths == []
+        assert set(dates) == {"src/a.py", "src/b.py"}
+        assert dates["src/a.py"] == (1704412800000, 1704412800000)
+        assert rest_paths == ["src/a.py"]
 
     def test_failure_detail_redacts_urls(self) -> None:
         from app.connectors.sources.github_teams.timestamps import _classify_failure

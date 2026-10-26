@@ -279,8 +279,17 @@ class TimestampBackfill:
         path. Also used by the incremental sync to stamp exact dates on changed
         files at sync time. A path GitHub's rate limit kept from being asked
         about is left out; the backfill dates it later.
+
+        A path left out for any other reason (its oldest-commit query failed)
+        is dated over REST here. The incremental sync keeps a file's stored
+        dates when a path is missing, and the backfill only revisits records
+        with no dates, so a changed file would keep its old modified date.
         """
-        results, _failure = await self._fetch_commit_dates(owner, name, paths)
+        results, failure = await self._fetch_commit_dates(owner, name, paths)
+        if failure is None:
+            missing = [path for path in paths if path not in results]
+            if missing:
+                results.update(await self._fetch_dates_rest(owner, name, missing))
         return results
 
     async def _fetch_commit_dates(
