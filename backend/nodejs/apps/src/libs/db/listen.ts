@@ -220,6 +220,7 @@ export class ListenHub {
 /** LISTEN on one channel through the shared connection. Same shape as before: `start()` then `stop()`. */
 export class PgListener {
   private unsubscribe: (() => Promise<void>) | undefined;
+  private starting: Promise<void> | undefined;
 
   constructor(
     private readonly url: string,
@@ -229,7 +230,12 @@ export class PgListener {
     private readonly onLost?: () => void,
   ) {}
 
-  async start(): Promise<void> {
+  start(): Promise<void> {
+    this.starting = this.subscribe();
+    return this.starting;
+  }
+
+  private async subscribe(): Promise<void> {
     this.unsubscribe = await ListenHub.forUrl(this.url).subscribe(
       this.channel,
       this.onNotify,
@@ -244,6 +250,9 @@ export class PgListener {
   }
 
   async stop(): Promise<void> {
+    // A stop that arrives while start() is still subscribing must wait for it: the unsubscribe function exists only afterwards, and
+    // without it the closed listener would stay subscribed on the shared connection for ever.
+    await this.starting?.catch(() => undefined);
     const u = this.unsubscribe;
     this.unsubscribe = undefined;
     await u?.();
