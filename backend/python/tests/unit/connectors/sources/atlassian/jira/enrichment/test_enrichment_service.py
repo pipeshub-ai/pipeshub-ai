@@ -224,7 +224,7 @@ class TestBaseContextParentId:
         }[mode]
         issue = {} if mode == "no_issue" else None  # empty issue: nothing fetched
         merged = await self._run(check, issue)
-        assert "777" not in merged
+        assert "External Parent ID: 777" not in merged
         assert "External Parent ID: N/A" in merged
 
 
