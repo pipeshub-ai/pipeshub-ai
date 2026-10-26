@@ -112,7 +112,7 @@
     "sharp": "^0.35.5",
     "text-fragments-polyfill": "^6.7.0",
     "typescript": "^5.9.2",
-    "vitest": "^4.1.12"
+    "vitest": "^5.0.5"
   },
   "overrides": {
     "postcss": "^8.5.23",
