@@ -22,7 +22,7 @@ const GUARDS: Record<string, { pattern: RegExp; exempt: string[]; hint: string }
     hint: 'Start it inside spawnDetached (libs/context/orgContext.ts).',
   },
   'direct_org_reads': {
-    pattern: /\breq\.user[?!]?\.orgId\b/g,
+    pattern: /\breq\.user(?:[?!]?\.orgId\b|[?!]?\.?\[\s*['\"]orgId['\"]\s*\])/g,
     exempt: ['libs/middlewares/auth.middleware.ts'],
     hint: 'Read the org from currentOrgContext() instead of the request user.',
   },
@@ -51,8 +51,8 @@ function scan(): Record<string, Record<string, number>> {
 
 describe('org context CI ratchets', () => {
   it('direct_org_reads counts plain, optional and non-null-asserted reads', () => {
-    const hits = ['req.user.orgId', 'req.user?.orgId', 'req.user!.orgId'].map((t) => (t.match(GUARDS.direct_org_reads.pattern) ?? []).length)
-    expect(hits).to.deep.equal([1, 1, 1])
+    const hits = ['req.user.orgId', 'req.user?.orgId', 'req.user!.orgId', "req.user['orgId']", 'req.user?.["orgId"]'].map((t) => (t.match(GUARDS.direct_org_reads.pattern) ?? []).length)
+    expect(hits).to.deep.equal([1, 1, 1, 1, 1])
   })
 
   const found = scan()
