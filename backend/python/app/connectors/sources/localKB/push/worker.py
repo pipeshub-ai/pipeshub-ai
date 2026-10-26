@@ -243,10 +243,12 @@ class PushWorker:
             await asyncio.wait_for(self._lease.acquire(), self.lease_wait_s)
         except TimeoutError:
             raise PushRefusal(503, "PUSH_BUSY", "The server is busy with other pushes.", extra={"retryAfter": 2}) from None
+        sent = received = False
         try:
             await self._ensure()
             self._tasks += 1
             conn, proc = self._conn, self._proc
+            sent = True
             await asyncio.to_thread(conn.send, (in_path, out_path, schema_id, schema))
             started = time.monotonic()
             ready = await asyncio.to_thread(conn.poll, self.kill_after_s)
@@ -263,6 +265,7 @@ class PushWorker:
                 if code is not None and code < 0 and signal.Signals(-code) in _DEATH_SIGNALS:
                     raise PushRefusal(413, "PAYLOAD_TOO_LARGE", "The body is too complex to parse.", extra={"limit": "complexity"}) from None
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The validation worker stopped.", extra={"retryAfter": 5}) from None
+            received = True
             logger.debug("push validated in %.2fs", time.monotonic() - started)
             if kind == "ok":
                 return payload
@@ -270,7 +273,13 @@ class PushWorker:
                 raise refusal_from_dict(payload)
             raise RuntimeError(f"push worker failed: {payload}")
         finally:
-            self._lease.release()
+            try:
+                if sent and not received:
+                    # Cancelled (or failed) with the task still running: its result would be
+                    # the next lease holder's answer. Shielded so a second cancel cannot skip the release.
+                    await asyncio.shield(self._stop())
+            finally:
+                self._lease.release()
 
     async def close(self) -> None:
         await self._stop()

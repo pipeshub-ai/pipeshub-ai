@@ -1,5 +1,5 @@
 """Measure task 1 (validate_body) on one body in a fresh process, from ONE baseline that includes the
-structural pass (review round 7, R7-3). Not collected by pytest. Usage:
+structural pass. Not collected by pytest. Usage:
 
     nice -n 19 python -I tests/unit/connectors/sources/localKB/push/bench_push_worst.py <body.json> [schema|none]
 

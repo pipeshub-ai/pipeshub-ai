@@ -3271,7 +3271,7 @@ class TestFolderDepthLimit:
 
 
 class TestPushedRecordFileReplace:
-    """T18b: a pushed record's file cannot be replaced; a rename can."""
+    """A pushed record's file cannot be replaced; a rename can."""
 
     async def _service(self, revision: str) -> tuple[KnowledgeBaseService, AsyncMock]:
         graph = AsyncMock()

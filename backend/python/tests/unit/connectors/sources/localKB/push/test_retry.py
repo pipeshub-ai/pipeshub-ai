@@ -1,4 +1,4 @@
-"""Which graph errors the push retries, and the bound on the one retry loop (QA-08a-8, -9)."""
+"""Which graph errors the push retries, and the bound on the one retry loop."""
 
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def test_lost_transactions_are_recognised(error: Exception) -> None:
 @pytest.mark.parametrize("error", [
     FakeArangoError(1210), FakeArangoError(1501, 400), FakeArangoError(None, 500), CodedNeo4jError("Neo.ClientError.Schema.ConstraintValidationFailed"),
     RuntimeError("x"), Exception("Item 0: [1210] unique constraint violated"), TimeoutError(),
-    # a bracketed number that is not an ArangoDB error code: QA-08a-13
+    # a bracketed number that is not an ArangoDB error code: 
     ValueError("blocks[0].citation_metadata.page_number [18] invalid"), RuntimeError("budget [29] exceeded"),
     CodedNeo4jError("Neo.ClientError.Schema.ConstraintValidationFailed: value 'Q3 [1200] report' already exists"),
     Exception("Item 0: [1200] timeout waiting to lock key"),  # right number, not the provider's batch wording
@@ -159,7 +159,7 @@ def test_the_batch_wording_is_matched_only_in_full() -> None:
 
 
 async def test_a_commit_whose_outcome_is_unknown_leaves_the_document_to_the_sweep() -> None:
-    """QA-08a-12: the store may apply a commit after the client gave up, so the document is not deleted."""
+    """the store may apply a commit after the client gave up, so the document is not deleted."""
     class CommitTimeout(Exception):
         commit_outcome_unknown = True
 

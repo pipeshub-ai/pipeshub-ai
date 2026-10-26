@@ -1,4 +1,4 @@
-"""The push routes called on Python directly (T8, T11, T22-T24, T55) and admission (T51)."""
+"""The push routes called on Python directly and admission."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from app.connectors.sources.localKB.push import api as push_api
 from app.connectors.sources.localKB.push import gate
 from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.service import KbPushService, PushResult
+from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
 
 from .bodies import envelope, raw
@@ -80,6 +81,14 @@ class Harness:
         return svc
 
 
+@pytest.fixture(autouse=True)
+def _bound_org() -> Iterator[None]:
+    """The auth dependency binds the request's org; tests that call a route function directly bind it here."""
+    token = org_context.push(org_context.OrgContext("org1", "writer", "user", "jwt", "-"))
+    yield
+    org_context.pop(token)
+
+
 @pytest.fixture
 def h(monkeypatch) -> Harness:
     harness = Harness()
@@ -109,6 +118,7 @@ def client(h) -> TestClient:
     @app.middleware("http")
     async def inject_user(request, call_next) -> Response:
         request.state.user = {"userId": h.user, "orgId": "org1"}
+        org_context.set_request_context(org_context.OrgContext("org1", h.user, "user", "jwt", "-"))
         return await call_next(request)
 
     return TestClient(app)
@@ -236,7 +246,7 @@ async def test_a_disconnect_after_the_last_body_byte_does_not_cancel_the_push(h)
     await asyncio.wait_for(finished.wait(), 2)
 
 
-# ---- admission (T51) -----------------------------------------------------------------------------------
+# ---- admission -----------------------------------------------------------------------------------
 
 class Clock:
     def __init__(self) -> None:
@@ -297,7 +307,7 @@ async def test_a_full_set_of_slots_gives_503_after_the_wait() -> None:
     await first
 
 
-# ---- schema routes (T8, T11) ------------------------------------------------------------------------------
+# ---- schema routes ------------------------------------------------------------------------------
 
 TEAM = {"name": "team", "type": "STRING", "displayLabel": "Team", "filterable": True, "facetable": True}
 TIER = {"name": "tier", "type": "ENUM", "displayLabel": "Tier", "enumValues": ["P0", "P1"], "filterable": True}
@@ -383,7 +393,7 @@ async def test_the_flag_defaults_to_off() -> None:
     assert await is_kb_push_enabled(config) is False
 
 
-# ---- QA-08a-4: the deadline is a timer, and one push per caller covers the whole push ----------------------------
+# ---- the deadline is a timer, and one push per caller covers the whole push ----------------------
 
 async def never_more() -> AsyncIterator[bytes]:
     yield b"{"
@@ -491,7 +501,7 @@ async def test_a_cancelled_request_releases_the_slot_only_when_its_push_ends(h) 
     assert h.admission._in_flight == set()
 
 
-# ---- QA round 2: slots always come back; a disconnect mid-body is a client error ---------------------------------
+# ---- slots always come back; a disconnect mid-body is a client error -----------------------------
 
 async def test_a_client_disconnect_mid_body_is_a_400_not_a_logged_500(h, caplog) -> None:
     from starlette.requests import ClientDisconnect

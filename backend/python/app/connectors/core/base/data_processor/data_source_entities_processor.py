@@ -3201,6 +3201,12 @@ class DataSourceEntitiesProcessor:
         moved_virtual_record_ids: list[tuple[str, str | None]] = []
         narrowed_connectors: set[str] = set()
         async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as tx_store:
+            if getattr(tx_store, "explicit", False) is not True:
+                # Without one transaction the claim commits alone, and two creates of a key can both win it.
+                raise RuntimeError(
+                    "A pushed record needs a real graph transaction; enable explicit transactions "
+                    "(NEO4J_EXPLICIT_TRANSACTIONS or NEO4J_CREATE_TRANSACTIONS)."
+                )
             claim = await tx_store.claim_push_record(
                 kb_id=record.connector_id, org_id=record.org_id, key=record.id, expected=expected, new=new,
             )
@@ -3213,7 +3219,13 @@ class DataSourceEntitiesProcessor:
             )
             if processed is None:
                 raise PushRecordSkipped(record.id)
-            if expected is not None and not content_changed and existing is not None:
+            if content_changed and processed.indexing_status != ProgressStatus.NOT_STARTED.value:
+                # An identical re-push that stores a new document keeps the stored revision, so the
+                # upload branch of _process_record carried the stored status (FAILED) over and stamped nothing.
+                processed.indexing_status = ProgressStatus.NOT_STARTED.value
+                self._stamp_queued_at(processed)
+                await tx_store.batch_upsert_records([processed])
+            elif expected is not None and not content_changed and existing is not None:
                 # A rename or version bump: indexing owns its state, which the upsert must not reset.
                 self._preserve_indexing_state(processed, Record.from_arango_base_record(existing))
                 await tx_store.batch_upsert_records([processed])

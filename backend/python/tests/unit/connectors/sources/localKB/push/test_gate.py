@@ -1,4 +1,4 @@
-"""ENABLE_KB_PUSH off: the app answers exactly like an app built without the push routes (QA-08a-1, -2)."""
+"""ENABLE_KB_PUSH off: the app answers exactly like an app built without the push routes."""
 
 from __future__ import annotations
 
@@ -118,7 +118,7 @@ def test_flag_on_the_same_limited_token_reaches_the_connection_check() -> None:
 
 
 def test_flag_on_without_the_gate_dependency_order_would_differ() -> None:
-    """Negative control for QA-08a-1: a dependency-based gate (flag checked after the router's
+    """Negative control for a dependency-based gate (flag checked after the router's
     connection check) lets the limited token's request reach the graph; the route-matching gate does not."""
     app, graph = build_app(with_push=True, flag=False, user="limited")
     ask(app, "PUT", PATHS[3])

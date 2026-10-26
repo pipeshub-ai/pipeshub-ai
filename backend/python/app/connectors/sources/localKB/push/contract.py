@@ -80,10 +80,14 @@ class PushRefusal(Exception):
 
 class _M(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
+    #: Required fields whose empty value is real data, not an absent field.
+    KEEP_EMPTY: ClassVar[frozenset[str]] = frozenset()
 
     @model_validator(mode="after")
     def _empty_is_absent(self) -> Self:
         for name in type(self).model_fields:
+            if name in self.KEEP_EMPTY:
+                continue
             v = getattr(self, name)
             if v == [] or v == {} or (
                 isinstance(v, BaseModel) and v.model_dump(exclude_none=True, exclude_defaults=True) == {}
@@ -325,6 +329,7 @@ Value = (
 
 class Meta(_M):
     PASS_KIND: ClassVar[str] = "Meta"
+    KEEP_EMPTY: ClassVar[frozenset[str]] = frozenset({"values"})
     schemaId: _str(300, 1)
     values: Annotated[dict[_str(64), Value], Field(max_length=MAX_VALUES)]
 

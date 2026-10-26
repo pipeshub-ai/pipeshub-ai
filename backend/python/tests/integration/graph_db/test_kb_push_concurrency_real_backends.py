@@ -1,12 +1,12 @@
-"""Concurrency of pushes on real Neo4j and Arango (ported from the QA round-1 probe).
+"""Concurrency of pushes on real Neo4j and Arango.
 
 PUSH_IT_SEEDS="a,b" (base seeds, default 0), PUSH_IT_RUNS_PER_SEED (default 3; the gate runs 20).
 
 Runs against the integration graph stores like the other graph ITs (backend-matrix discovers it by
 this environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD; it skips when
 the variable is unset and the store is down, and fails when the variable is set and the store is not).
-- the T37 race at fresh seeds, through one service and through two services on two graph connections;
-- push vs trash (T41 is 8a' scope; run here as a probe): trash before the claim, while the push's
+- the create/update race at fresh seeds, through one service and through two services on two graph connections;
+- push vs trash: trash before the claim, while the push's
   transaction is open, after the commit; and free-running with random delays.
 """
 from __future__ import annotations

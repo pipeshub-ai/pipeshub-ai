@@ -1,4 +1,4 @@
-"""The push service's decisions and the record it hands to the processor (T33b md5 control)."""
+"""The push service's decisions and the record it hands to the processor."""
 
 from __future__ import annotations
 
@@ -56,3 +56,41 @@ async def test_a_content_change_hands_over_a_record_without_the_checksum() -> No
 async def test_a_metadata_only_change_keeps_the_stored_document_and_revision() -> None:
     record = await run_update("metadata", md5="abc123")
     assert record.external_record_id == "doc-old" and record.external_revision_id.startswith("pb1:" + "c")
+
+
+def _service(graph: MagicMock) -> KbPushService:
+    return KbPushService(
+        graph_provider=graph, kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
+        storage=MagicMock(), worker=MagicMock(), spool=MagicMock(), publish_event=AsyncMock(), sleep=AsyncMock(),
+    )
+
+
+def _stored(tag: str) -> dict:
+    return {
+        "id": "rid", "orgId": "o", "connectorId": "kb", "version": 2, "indexingStatus": "COMPLETED",
+        "externalRecordId": "doc", "externalRevisionId": f"{tag}:{'a' * 64}:{'b' * 16}",
+    }
+
+
+async def test_a_retag_that_lost_to_a_concurrent_push_decides_again() -> None:
+    """The retag matches nothing when the revision moved; answering ``unchanged`` then reports a stale revision."""
+    graph = MagicMock()
+    graph.get_document = AsyncMock(side_effect=[_stored("pb0"), _stored("pb1")])
+    svc = _service(graph)
+    svc._retag = AsyncMock(return_value=False)
+
+    result = await svc._write(kb_id="kb", user_id="u", org_id="o", v=validated(), folder_id=None)
+
+    assert svc._retag.await_count == 1 and graph.get_document.await_count == 2
+    assert (result.status, result.content_rev) == ("unchanged", "b" * 16)
+
+
+async def test_a_retag_that_applied_answers_unchanged_at_once() -> None:
+    graph = MagicMock()
+    graph.get_document = AsyncMock(return_value=_stored("pb0"))
+    svc = _service(graph)
+    svc._retag = AsyncMock(return_value=True)
+
+    result = await svc._write(kb_id="kb", user_id="u", org_id="o", v=validated(), folder_id=None)
+
+    assert graph.get_document.await_count == 1 and result.status == "unchanged"

@@ -1,4 +1,4 @@
-"""Task 1 (validate_body) and the worker process around it (T20, T21, T46 deaths, T47-T53 lease and respawn)."""
+"""validate_body and the worker process around it: deaths, the lease and respawn."""
 
 from __future__ import annotations
 
@@ -72,6 +72,12 @@ def test_identical_requests_give_one_digest_and_one_content_rev(spool) -> None:
     a = run(with_values({"team": "x", "count": 1}), spool)
     b = run(raw(envelope(metadata={"values": {"count": 1, "team": "x"}, "schemaId": SCHEMA_ID})), spool)
     assert (a.digest, a.content_rev) == (b.digest, b.content_rev)
+
+
+def test_empty_values_are_stored_as_an_empty_object(spool) -> None:
+    """A caller that clears every property sends ``values: {}``; it is not an absent field."""
+    v = run(with_values({}), spool)
+    assert json.loads(open(v.stored_path, "rb").read())["properties"] == {"schemaId": SCHEMA_ID, "values": {}}
 
 
 def test_no_metadata_no_properties(spool) -> None:
@@ -313,7 +319,7 @@ async def test_worker_has_no_core_files_and_an_address_space_limit(spool) -> Non
         await w.close()
 
 
-# ---- QA-08a-3, worker_dos reduced: an unclosed-string body no longer holds the worker ------------------------------
+# ---- worker_dos reduced: an unclosed-string body no longer holds the worker ----------------------
 
 async def test_an_unclosed_string_body_does_not_hold_the_worker(spool) -> None:
     evil = b'{"recordName":"' + b'\\"' * 20_000      # 40 KB; the quadratic lexer held the worker for 50 s
@@ -336,7 +342,7 @@ async def test_an_unclosed_string_body_does_not_hold_the_worker(spool) -> None:
 
 @pytest.mark.parametrize("group_type", ["table", "list", "text_section", "ordered_list"])
 def test_requires_processing_is_refused_on_every_group_until_the_group_scan_exists(spool, group_type) -> None:
-    """QA-08a-5: a table group with requires_processing was stored and then always failed at indexing."""
+    """a table group with requires_processing was stored and then always failed at indexing."""
     group = {"index": 0, "type": group_type, "requires_processing": True,
              "data": {"table_summary": "s"} if group_type == "table" else "text"}
     e = refused(raw(envelope({"block_groups": [group]})), spool, schema=None, schema_id=None)
@@ -344,7 +350,7 @@ def test_requires_processing_is_refused_on_every_group_until_the_group_scan_exis
 
 
 
-# ---- QA-08a-10 (worker_sparse): a valid list-heavy body at the cap is accepted inside the bound --------------------
+# ---- a valid list-heavy body at the cap is accepted inside the bound -----------------------------
 
 def rss_of(pid: int) -> int:
     try:
@@ -383,5 +389,36 @@ async def test_a_sparse_cells_body_at_the_cap_is_accepted_inside_the_worker_boun
         growth = (peak[0] - base) / 2**20
         assert v.block_count == 10_000 and w.deaths == 0
         assert growth <= 704, growth
+    finally:
+        await w.close()
+
+
+def test_a_spool_whose_directory_was_swept_while_idle_still_takes_a_body(tmp_path) -> None:
+    """A second process starting on the same root sweeps run directories idle past the limit."""
+    from app.connectors.sources.localKB.push import spool as spool_module
+
+    idle = Spool(str(tmp_path))
+    try:
+        assert spool_module.sweep(str(tmp_path), max_age_s=-1) == 1
+        assert not os.path.isdir(idle.dir)
+
+        path = idle.write(b"body")
+
+        assert open(path, "rb").read() == b"body"
+    finally:
+        idle.close()
+
+
+async def test_a_cancelled_validation_does_not_leave_its_result_for_the_next_push(spool) -> None:
+    w = W.PushWorker(lease_wait_s=30, kill_after_s=30)
+    try:
+        first = await start(w, spool, big_body())
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        v = await w.validate(spool.write(raw(envelope())), spool.new_path("out"), schema_id=None, schema=None)
+
+        assert v.block_count == 1
     finally:
         await w.close()

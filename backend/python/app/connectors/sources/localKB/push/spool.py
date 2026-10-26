@@ -53,6 +53,8 @@ class Spool:
         return os.path.join(self.dir, f"{uuid.uuid4().hex}.{suffix}")
 
     def write(self, data: bytes) -> str:
+        # Another process's sweep may have removed this idle process's directory.
+        os.makedirs(self.dir, mode=0o700, exist_ok=True)
         path = self.new_path("in")
         try:
             with open(path, "wb") as f:

@@ -55,6 +55,7 @@ from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.gate import GatedRoute, KbPushFlagMiddleware
 from app.connectors.sources.localKB.push.service import KbPushService
 from app.containers.connector import ConnectorAppContainer
+from app.core import org_context
 from app.modules.record_metadata.schemas import MetadataSchemaRegistry
 from app.services.storage_documents import StorageDocuments
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1832,6 +1833,14 @@ def _refusal_response(r: PushRefusal) -> JSONResponse:
     return JSONResponse(status_code=r.status, content=push_api.error_body(r), headers=push_api.error_headers(r))
 
 
+def _bound_org_id() -> str | None:
+    """The org the request is bound to, or None when it is not bound (the push routes then refuse)."""
+    try:
+        return org_context.current_org_id()
+    except (org_context.MissingOrgContext, org_context.SystemContextNotAllowed):
+        return None
+
+
 def _push_service(request: Request, kb_service: KnowledgeBaseService, kafka_service: KafkaService) -> KbPushService:
     container: ConnectorAppContainer = request.app.container
     runtime = push_api.runtime_for(request.app)
@@ -1869,7 +1878,7 @@ async def push_record(
     known; the body is then read by hand, bounded and timed (``push/admission.py``).
     """
     user = request.state.user
-    user_id, org_id = user.get("userId"), user.get("orgId")
+    user_id, org_id = user.get("userId"), _bound_org_id()
     try:
         if not user_id or not org_id:
             raise PushRefusal(400, "ENVELOPE_INVALID", "userId and orgId are required.")
@@ -1882,7 +1891,7 @@ async def push_record(
             body = await admission.read_body(request.headers, request.stream())
             # Once the body is in, the push finishes even if the client goes away; the caller's
             # slot is then released when the push itself ends.
-            task = asyncio.ensure_future(
+            task = org_context.spawn_in_request(
                 service.push(kb_id=kb_id, user_id=user_id, org_id=org_id, body=body, folder_id=folderId)
             )
             task.add_done_callback(lambda _t: admission.release(user_key))
@@ -1918,7 +1927,7 @@ async def put_kb_schema(
         except ValidationError as e:
             first = e.errors()[0]
             raise PushRefusal(400, "ENVELOPE_INVALID", "The schema body is invalid.", ".".join(str(x) for x in first["loc"])) from None
-        out = await push_api.put_schema(service.schemas, user.get("orgId"), kb_id, body)
+        out = await push_api.put_schema(service.schemas, _bound_org_id(), kb_id, body)
         return JSONResponse(status_code=200, content=out)
     except PushRefusal as r:
         return _refusal_response(r)
@@ -1939,7 +1948,7 @@ async def get_kb_schema(
     try:
         service = _push_service(request, kb_service, kafka_service)
         await service.authorize(kb_id, user.get("userId"), None)
-        out = await push_api.get_schema(service.schemas, user.get("orgId"), kb_id, version)
+        out = await push_api.get_schema(service.schemas, _bound_org_id(), kb_id, version)
         return JSONResponse(status_code=200, content=out)
     except PushRefusal as r:
         return _refusal_response(r)

@@ -1,4 +1,4 @@
-"""The push's decide-again retry and its unknown-outcome commit, on real Neo4j and Arango (ported from QA round 2).
+"""The push's decide-again retry and its unknown-outcome commit, on real Neo4j and Arango.
 
 Runs against the integration graph stores like the other graph ITs: NEO4J_IT_URI, NEO4J_IT_PASSWORD,
 ARANGO_IT_URL, ARANGO_IT_PASSWORD.
@@ -155,6 +155,7 @@ async def test_an_identical_repush_heals_a_record_whose_document_is_missing(env:
     healed = await env.record()
     assert (again.http_status, again.status, again.event) == (200, "updated", "updateRecord")
     assert env.storage.creates == creates + 1 and healed["externalRecordId"] != lost and healed["version"] == 1
+    assert healed["indexingStatus"] == "QUEUED"
     assert C.content_rev(env.storage.docs[healed["externalRecordId"]]) == first.content_rev
     assert (await env.push(env.body())).status == "unchanged"
 
@@ -170,7 +171,7 @@ async def test_an_identical_repush_of_a_failed_record_with_its_document_makes_no
 
 @pytest.mark.parametrize("action", ["create", "content"])
 async def test_a_commit_the_server_finishes_after_the_client_gave_up_keeps_its_document(env: IT.Env, action: str) -> None:
-    """QA-08a-12: the client's commit call times out, the store applies the commit 0.5 s later."""
+    """the client's commit call times out, the store applies the commit 0.5 s later."""
     import asyncio
 
     IT.record_keys(env, "rec-1")

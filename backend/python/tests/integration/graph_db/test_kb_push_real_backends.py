@@ -225,7 +225,6 @@ def digest_of(env: Env, body: bytes) -> str:
     return W.validate_body(body, schema_id=None, schema=None, out_path=out).content_rev
 
 
-# ---- T1, T2, T43 ------------------------------------------------------------------------------
 
 async def test_create_publishes_one_new_record(env) -> None:
     record_keys(env, "rec-1")
@@ -273,7 +272,6 @@ async def test_hundred_identical_pushes(env) -> None:
     assert {r.content_rev for r in results} == {results[0].content_rev}
 
 
-# ---- T4, T5, T6, T7, T19 -----------------------------------------------------------------------
 
 async def test_changed_content_new_document_then_update(env) -> None:
     record_keys(env, "rec-1")
@@ -345,7 +343,6 @@ async def test_tag_upgrade_is_metadata_only(env) -> None:
     assert len(env.events) == 1 and env.storage.creates == 1
 
 
-# ---- T10, T14, T15 ------------------------------------------------------------------------------
 
 async def test_folder_on_create_only(env) -> None:
     folder = await env.kb_service.create_folder_in_kb(env.kb_id, "docs", env.user_id, env.org_id)
@@ -389,7 +386,6 @@ async def test_duplicate_name_refused(env) -> None:
     assert await env.record("rec-2") is None
 
 
-# ---- T20, T21, T22, T23 ----------------------------------------------------------------------------
 
 async def test_reserved_property_projects_nothing(env) -> None:
     record_keys(env, "rec-1")
@@ -448,7 +444,6 @@ async def test_roles_and_other_org(env) -> None:
     assert (e.value.status, e.value.reason) == (403, "KB_ROLE_INSUFFICIENT")
 
 
-# ---- T31, T32, T32b, T33 --------------------------------------------------------------------------------
 
 async def test_graph_failure_cleans_new_document(env) -> None:
     record_keys(env, "rec-1")
@@ -573,7 +568,7 @@ async def test_the_claim_refuses_a_trashed_record_on_both_stores(env: Env) -> No
     assert (await env.record())["isDeleted"] is True
 
 
-# ---- T37: the race ----------------------------------------------------------------------------------------
+# ---- the race ------------------------------------------------------------------------------------
 
 async def race(env: Env, seed: int) -> list:
     rng = random.Random(seed)

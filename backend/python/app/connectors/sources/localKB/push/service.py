@@ -208,7 +208,11 @@ class KbPushService:
                 if action == "unchanged":
                     return self._result(existing, v, key, kb_id, "unchanged", 200, changed=False, event=None, indexing=existing.get("indexingStatus"))
                 if action == "retag":
-                    await self._retag(existing, v, kb_id, org_id)
+                    if not await self._retag(existing, v, kb_id, org_id):
+                        # A concurrent push moved the revision between the read and the retag.
+                        first_loss = first_loss if first_loss is not None else time.monotonic()
+                        await self._backoff(attempt)
+                        continue
                     return self._result(existing, v, key, kb_id, "unchanged", 200, changed=False, event=None, indexing=existing.get("indexingStatus"))
                 parent_folder_id = await self._placement(existing, key, kb_id, folder_id)
                 await self._check_name(existing, v, kb_id, parent_folder_id, key)
@@ -410,11 +414,13 @@ class KbPushService:
         outcome = await processor.on_pushed_record(record, expected=expected, new=new, content_changed=action == "content")
         return outcome, record, expected, new
 
-    async def _retag(self, existing: dict[str, Any], v: Validated, kb_id: str, org_id: str) -> None:
-        """Same version, same bytes, older normaliser tag: only the revision's tag changes."""
+    async def _retag(self, existing: dict[str, Any], v: Validated, kb_id: str, org_id: str) -> bool:
+        """Same version, same bytes, older normaliser tag: only the revision's tag changes.
+
+        False when the stored revision is no longer the one read (nothing was changed)."""
         new_revision = C.revision_id(v.digest, v.content_rev)
         async with (await self._processor(kb_id)).data_store_provider.transaction() as tx:
-            await tx.retag_push_record(
+            return await tx.retag_push_record(
                 key=existing.get("id") or existing.get("_key"), kb_id=kb_id, org_id=org_id,
                 expected_revision=existing["externalRevisionId"], new_revision=new_revision,
             )

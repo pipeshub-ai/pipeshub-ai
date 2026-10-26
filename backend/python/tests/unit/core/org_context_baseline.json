@@ -162,6 +162,7 @@
   "app/connectors/sources/localKB/api/knowledge_hub_router.py": 5,
   "app/connectors/sources/localKB/handlers/kb_service.py": 10,
   "app/connectors/sources/localKB/handlers/knowledge_hub_service.py": 2,
+  "app/connectors/sources/localKB/push/service.py": 1,
   "app/connectors/sources/salesforce/connector.py": 4,
   "app/events/events.py": 8,
   "app/events/processor.py": 1,

@@ -1,4 +1,4 @@
-"""The structural pre-parse pass (T29d, T46 structural cases, review round 7 build notes)."""
+"""The structural pre-parse pass."""
 
 import time
 from typing import Never
@@ -73,7 +73,7 @@ def test_shape_bounds_are_derived_from_the_dto() -> None:
     assert (S.MAX_VALID_OBJECTS, S.MAX_VALID_KEYS) == (740_004, 3_720_268)
 
 
-# ---- unknown, misplaced and duplicate keys (T29d) --------------------------------------
+# ---- unknown, misplaced and duplicate keys --------------------------------------
 
 def body_with_block(**block) -> bytes:
     return raw(envelope({"blocks": [{**TEXT, **block}]}))
@@ -167,7 +167,7 @@ def test_scalar_list_ceiling() -> None:
     assert e.reason == "LIST_TOO_LONG"
 
 
-# ---- R7-1: scalars inside a list of objects ------------------------------------------------------
+# ---- scalars inside a list of objects ------------------------------------------------------------
 
 @pytest.mark.parametrize("name,items", [
     ("zeros", "{}," + "0," * 50 + "0"),
@@ -183,7 +183,7 @@ def test_scalar_in_object_list(name, items) -> None:
 
 
 def test_scalar_in_object_list_without_the_gap_check_passes() -> None:
-    """Negative control: the pass of the round-7 spike accepted all of these."""
+    """Negative control: the first version of the pass accepted all of these."""
     body = b'{"blocks":{"blocks":[{},0,0,0,{}]}}'
     assert refused(body).reason == "NOT_AN_OBJECT_HERE"
     orig = S._GAP_JUNK
@@ -198,7 +198,7 @@ def test_object_list_with_whitespace_and_commas_is_fine() -> None:
     S.structure_pass(b'{"blocks":{"blocks":[ {} , {}\n,\t{} ]}}', NAMES)
 
 
-# ---- R7-2: shape bounds inside the loop ----------------------------------------------------------
+# ---- shape bounds inside the loop ----------------------------------------------------------------
 
 def test_object_bound_is_checked_in_the_loop(monkeypatch) -> None:
     monkeypatch.setattr(S, "MAX_VALID_OBJECTS", 5)
@@ -217,13 +217,25 @@ def empty_object_body(size: int) -> bytes:
     return head + b",".join([b"{}"] * n) + tail
 
 
-def test_empty_object_flood_is_refused_early() -> None:
+def test_empty_object_flood_is_refused_early(monkeypatch) -> None:
+    """The in-loop bound stops the walk at the crossing token. Counted in tokens, not seconds: a
+    wall or CPU limit fails on a slow shared runner without anything being wrong."""
+    visited = 0
+    real = S._TOKEN
+
+    class Counting:
+        def finditer(self, text):
+            nonlocal visited
+            for m in real.finditer(text):
+                visited += 1
+                yield m
+
+    monkeypatch.setattr(S, "_TOKEN", Counting())
     body = empty_object_body(16 << 20)
-    start = time.process_time()
     e = refused(body)
-    cpu = time.process_time() - start
     assert e.reason == "BODY_NOT_VALID_SHAPE"
-    assert cpu < 4.0, cpu  # the spike's end-of-pass check took 12.7 s here; the in-loop bound stops at 0.74 M objects
+    # an empty object is two tokens; the body holds some 5 M of them
+    assert visited <= 2 * S.MAX_VALID_OBJECTS + 8, visited
 
 
 def test_empty_object_flood_without_the_loop_bound_is_a_full_pass(monkeypatch) -> None:
@@ -292,7 +304,7 @@ def test_values_with_256_names_and_no_more() -> None:
     C.parse_envelope(with_values(big))
 
 
-# ---- the review's round-6 shapes: refused with no parse ---------------------------------------------
+# ---- shapes refused with no parse ---------------------------------------------
 
 def never_parse(monkeypatch) -> None:
     def boom(*a, **k) -> Never:
@@ -329,7 +341,7 @@ def test_pass_only_reads_bytes() -> None:
         S.structure_pass("not bytes", NAMES)  # type: ignore[arg-type]
 
 
-# ---- QA-08a-3: the lexer is linear, also on bodies that are not JSON ------------------------------------------------
+# ---- the lexer is linear, also on bodies that are not JSON ---------------------------------------
 
 def unclosed_escapes(n: int) -> bytes:
     return b'{"recordName":"' + b'\\"' * n
@@ -382,16 +394,19 @@ def test_closed_strings_with_escaped_quotes_still_pass() -> None:
 
 
 def test_the_old_lexer_is_quadratic_on_the_same_body() -> None:
-    """Negative control: the round-7 regex, same bytes."""
+    """Negative control: the earlier regex, same bytes."""
     import re
 
     old = re.compile(rb'"((?:[^"\\]|\\.)*)"(?=\s*:)|"(?:[^"\\]|\\.)*"')
 
     def timed(n: int) -> float:
         body = unclosed_escapes(n)
-        start = time.process_time()
-        old.sub(rb'"\1"', body)
-        return time.process_time() - start
+        runs = []
+        for _ in range(3):  # the fastest of three: a busy machine only ever makes a run slower
+            start = time.process_time()
+            old.sub(rb'"\1"', body)
+            runs.append(time.process_time() - start)
+        return min(runs)
 
     assert timed(4000) > 10 * timed(500) / 4, "expected superlinear growth"
     assert timed(4000) > 0.5
@@ -403,7 +418,7 @@ def test_escaped_key_and_gap_behaviour_survive_the_new_lexer() -> None:
     assert refused(empty_object_body(16 << 20)).reason == "BODY_NOT_VALID_SHAPE"
 
 
-# ---- QA-08a-10: the pass itself is flat in memory, and the predictor covers the measured shapes ----------------------
+# ---- the pass itself is flat in memory, and the predictor covers the measured shapes -------------
 
 def test_the_pass_allocates_no_object_per_string() -> None:
     """The lexer used re.sub, which collected a Python object per string literal first: about 220 bytes
@@ -460,7 +475,7 @@ def test_the_list_heavy_shape_is_not_priced_at_the_old_rate() -> None:
 
 
 def test_possessive_string_matching_keeps_big_invalid_bodies_cheap() -> None:
-    """QA N-8: without the possessive quantifiers every one of these costs several times more."""
+    """Without the possessive quantifiers every one of these costs several times more."""
     bodies = [b'{"a":"' + b"\\\\" * 4_000_000 + b"\\", b'{"a":' + b'"\\' * 4_000_000, b'{"a":"' + b"x" * 16_000_000]
     for body in bodies:
         cpu, refusal = cpu_of(body)

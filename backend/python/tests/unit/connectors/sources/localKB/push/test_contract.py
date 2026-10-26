@@ -1,4 +1,4 @@
-"""The push DTO, normaliser and error translation (T3, T12, T17, T29, T48 and the structure checks)."""
+"""The push DTO, normaliser and error translation."""
 
 import copy
 import hashlib
@@ -33,7 +33,7 @@ def refusal(obj) -> PushRefusal:
     return e.value
 
 
-# ---- T3: one digest per equivalence class ---------------------------------------------------
+# ---- one digest per equivalence class ------------------------------------------------------------
 
 def test_golden_digest() -> None:
     assert digest_of({"blocks": [TEXT]}) == GOLDEN
@@ -68,7 +68,7 @@ def test_changed_content_changes_the_digest() -> None:
 
 
 def test_naive_raw_body_canonicalisation_splits_the_equivalence_set() -> None:
-    """Negative control: hashing the client's own JSON (sorted keys) gives at least 3 digests for what T3 treats as one."""
+    """Negative control: hashing the client's own JSON (sorted keys) gives at least 3 digests for what the normaliser treats as one."""
     forms = [b for name in EQUIVALENT for b in EQUIVALENT[name]]
     naive = {hashlib.sha256(json.dumps(b, sort_keys=True).encode()).hexdigest() for b in forms[:7]}
     assert len(naive) >= 3
@@ -107,7 +107,6 @@ def test_two_parses_of_the_stored_bytes_get_distinct_ids_per_parse() -> None:
     assert a.blocks[0].id != b.blocks[0].id
 
 
-# ---- T12 --------------------------------------------------------------------------------------
 
 def stored_for(obj, values=None) -> dict:
     e = parse(obj)
@@ -122,7 +121,7 @@ def test_metadata_absent_empty_null() -> None:
     assert stored_for(empty, {"a": None})["properties"] == {"schemaId": "o:k:1", "values": {}}
 
 
-# ---- T17: the envelope -----------------------------------------------------------------------------
+# ---- the envelope --------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("ext", ["a/b", "a+b", "a@b", "a=b", "a b", "ok\n", "\nok", "-lead", "_lead", ".lead", "x" * 257, "", "é"])
 def test_external_record_id_refused(ext) -> None:
@@ -164,7 +163,7 @@ def test_record_name_is_trimmed() -> None:
     assert parse(envelope(recordName="  hi  ")).recordName == "hi"
 
 
-# ---- T29: strict typing, data shapes, poison ---------------------------------------------------------
+# ---- strict typing, data shapes, poison ----------------------------------------------------------
 
 def block(**kw) -> dict:
     return {"blocks": [{**TEXT, **kw}]}
@@ -275,7 +274,7 @@ def test_script_in_block_text_is_stored_byte_for_byte() -> None:
     assert json.loads(C.stored_bytes(e.blocks, None))["blocks"][0]["data"] == text
 
 
-# ---- T48: pipeline-owned fields -------------------------------------------------------------------------
+# ---- pipeline-owned fields -----------------------------------------------------------------------
 
 PIPELINE_FIELDS = ["content_hash", "semantic_metadata", "code_facts_version", "children_records", "public_data_link",
                    "image_metadata", "comments", "source_id", "source_type", "file_metadata", "parent_block_index"]
