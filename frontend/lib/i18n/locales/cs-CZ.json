@@ -770,6 +770,7 @@
       "empty": "Prázdné",
       "paused": "Pozastaveno",
       "needsMultimodalModel": "Vyžaduje multimodální model",
+      "passwordProtected": "Chráněno heslem",
       "skipped": "Přeskočeno",
       "pending": "Čeká"
     },
@@ -2999,6 +3000,8 @@
         "statFailedSub": "Chyby (problémy s API / oprávněními)",
         "statUnsupported": "Nepodporované",
         "statUnsupportedSub": "Nelze zpracovat",
+        "statPasswordProtected": "Chráněno heslem",
+        "statPasswordProtectedSub": "Bez hesla nelze přečíst",
         "statInProgressSub": "Stále se indexují",
         "statQueued": "Ve frontě",
         "statQueuedSub": "Čekají na indexování",

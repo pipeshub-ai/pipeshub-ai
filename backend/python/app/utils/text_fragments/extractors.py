@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from typing import TYPE_CHECKING, Protocol
 
+import tinycss2
 from markdown_it import MarkdownIt
 from selectolax.lexbor import LexborHTMLParser, LexborNode
 
@@ -91,7 +92,32 @@ _BOUNDARY_TAGS = frozenset(
     """iframe img svg video audio object embed canvas meter progress select input
     button textarea""".split()
 )
-_HIDDEN_STYLE = re.compile(r"display\s*:\s*none|visibility\s*:\s*hidden", re.IGNORECASE)
+
+
+def _has_hidden_style(style: str) -> bool:
+    declarations = tinycss2.parse_declaration_list(
+        style, skip_comments=True, skip_whitespace=True
+    )
+    for declaration in declarations:
+        if declaration.type != "declaration":
+            continue
+        hidden_value = {"display": "none", "visibility": "hidden"}.get(
+            declaration.lower_name
+        )
+        if hidden_value is None:
+            continue
+        values = [
+            token
+            for token in declaration.value
+            if token.type not in ("whitespace", "comment")
+        ]
+        if (
+            len(values) == 1
+            and values[0].type == "ident"
+            and values[0].lower_value == hidden_value
+        ):
+            return True
+    return False
 
 
 class HtmlBlockExtractor:
@@ -135,7 +161,7 @@ def _is_hidden(node: LexborNode) -> bool:
     if "hidden" in attributes:
         return True
     style = attributes.get("style")
-    return bool(style and _HIDDEN_STYLE.search(style))
+    return bool(style and _has_hidden_style(style))
 
 
 class ExtractorRegistry:

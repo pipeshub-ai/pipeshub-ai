@@ -620,16 +620,24 @@ describe('es_controller streaming answers', () => {
       expect(run.answer()?.content).to.equal('Sent to bob@example.com.')
     })
 
-    it('without answers, runs the saved ones as before', async () => {
+    it('without answers, asks the turn again from its first question instead of running the saved answers', async () => {
       const run = await startStream(cardFlow(OLD, undefined), controllerModule, undefined, { wait: false })
       await settle()
-      run.ai.send('RUN_FINISHED', finalAnswer('Canceled.'))
+
+      expect(run.ai.streamCalls[0]?.body.query).to.equal('send the mail')
+      expect(JSON.stringify(run.ai.streamCalls[0]?.body)).to.not.contain(OLD)
+    })
+
+    it('without answers, keeps the saved answers when the new run does not answer', async () => {
+      const run = await startStream(cardFlow(OLD, undefined), controllerModule, undefined, { wait: false })
+      await settle()
+      run.ai.send('RUN_ERROR', { runId: RUN, message: 'The AI model is not responding right now.', code: 'stream_error' })
       run.ai.finish()
       await run.res.ended
+      await run.done
       await settle()
 
-      expect(run.ai.streamCalls[0]?.body.query).to.equal(OLD)
-      expect(run.messages().filter((m) => m.messageType === 'user_query').at(-1)?.content).to.equal(OLD)
+      expect(run.messages().filter((m) => m.messageType === 'user_query').map((m) => m.content)).to.deep.equal(['send the mail', OLD])
     })
 
     it('refuses answers when the saved text only looks like card answers, with no card behind it', async () => {

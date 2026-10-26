@@ -105,6 +105,40 @@ class TestSpecificCauses:
         exc = _wrapped(DocumentProcessingError("Failed to process document"), ValueError("File has not been decrypted"))
         assert ue.to_user_reason(exc) == ue.PASSWORD_PROTECTED
 
+    def test_the_typed_password_error_gives_the_password_reason_without_any_wording(self) -> None:
+        from app.exceptions.indexing_exceptions import PasswordProtectedError
+
+        exc = _wrapped(DocumentProcessingError("Failed to process document"), PasswordProtectedError("x"))
+        assert ue.to_user_reason(exc) == ue.PASSWORD_PROTECTED
+        assert ue.is_password_protected(exc)
+
+    def test_status_follows_the_type_not_the_text(self) -> None:
+        # Both read as password-protected to a person; only the typed one is a verdict on the file.
+        worded = _wrapped(DocumentProcessingError("Failed to process document"), ValueError("File has not been decrypted"))
+        assert ue.to_user_reason(worded) == ue.PASSWORD_PROTECTED
+        assert not ue.is_password_protected(worded)
+        assert not ue.is_password_protected(DocumentProcessingError("the password column is missing"))
+        assert not ue.is_password_protected(None)
+
+    def test_the_parsing_service_code_counts_as_a_verdict(self) -> None:
+        from app.services.parsing.client import ParsingClientError
+        from app.services.parsing.interface import ParseErrorCode
+
+        assert ue.is_password_protected(ParsingClientError(ParseErrorCode.PASSWORD_REQUIRED, "locked"))
+        assert not ue.is_password_protected(ParsingClientError(ParseErrorCode.PARSE_FAILED, "locked"))
+
+    def test_a_copy_of_a_locked_file_is_not_a_classification_failure(self) -> None:
+        from app.services.graph_db.interface.graph_db_provider import (
+            promoted_duplicate_extraction_status,
+        )
+
+        assert promoted_duplicate_extraction_status("PASSWORD_PROTECTED", {}) == "SKIPPED"
+        assert promoted_duplicate_extraction_status("FAILED", {}) == "FAILED"
+
+    def test_a_copy_of_a_locked_file_says_so(self) -> None:
+        assert "password-protected" in ue.duplicate_password_protected(ue.PASSWORD_PROTECTED)
+        assert "failed" not in ue.duplicate_password_protected(None)
+
     def test_file_too_large(self) -> None:
         assert ue.to_user_reason(_wrapped(DocumentProcessingError("x"), MemoryError())) == ue.FILE_TOO_LARGE
 

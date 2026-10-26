@@ -127,6 +127,7 @@ const INDEXING_STATUS_KEYS: Record<string, string> = {
   PAUSED: 'kb.indexingStatus.paused',
   ENABLE_MULTIMODAL_MODELS: 'kb.indexingStatus.needsMultimodalModel',
   SKIPPED: 'kb.indexingStatus.skipped',
+  PASSWORD_PROTECTED: 'kb.indexingStatus.passwordProtected',
 };
 
 /** The translated status, or an unknown one in sentence case ("SOME_STATE" → "Some state"). */
@@ -150,6 +151,7 @@ function indexingStatusColors(status: string | undefined): IndexingStatusColors 
     case 'FAILED':
       return { bg: 'var(--red-3)', text: 'var(--red-11)', border: 'var(--red-6)' };
     case 'FILE_TYPE_NOT_SUPPORTED':
+    case 'PASSWORD_PROTECTED':
       return { bg: 'var(--orange-3)', text: 'var(--orange-11)', border: 'var(--orange-6)' };
     case 'AUTO_INDEX_OFF':
     case 'NOT_STARTED':
@@ -245,6 +247,7 @@ function shouldShowIndexingReasonTooltip(
     status === 'FAILED' ||
     status === 'AUTO_INDEX_OFF' ||
     status === 'FILE_TYPE_NOT_SUPPORTED' ||
+    status === 'PASSWORD_PROTECTED' ||
     status === 'NOT_STARTED'
   );
 }

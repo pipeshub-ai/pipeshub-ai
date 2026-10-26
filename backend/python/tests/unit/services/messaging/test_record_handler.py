@@ -3242,7 +3242,7 @@ class TestProcessEventErrors:
         assert "Reindex" not in updates["reason"]
         # Queued copies are told the same.
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
-            "r1", "vr1", updates["reason"]
+            "r1", "vr1", updates["reason"], status=ProgressStatus.FAILED
         )
 
     @pytest.mark.asyncio
@@ -3913,7 +3913,7 @@ class TestPropagatePrimaryFailureToQueuedDuplicates:
                     await _collect_events(handler, EventTypes.NEW_RECORD.value, payload)
 
         handler._propagate_primary_failure_to_queued_duplicates.assert_awaited_once_with(
-            "r1", "vr1", user_errors.UNREADABLE_FILE
+            "r1", "vr1", user_errors.UNREADABLE_FILE, status=ProgressStatus.FAILED
         )
         handler._trigger_next_queued_duplicate.assert_not_awaited()
 
@@ -5585,6 +5585,7 @@ class TestOnMessageAbandoned:
             ProgressStatus.AUTO_INDEX_OFF.value,
             ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
             ProgressStatus.FAILED.value,
+            ProgressStatus.PASSWORD_PROTECTED.value,
         ],
     )
     @pytest.mark.asyncio
