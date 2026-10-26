@@ -33,6 +33,7 @@ VIEWBOX_NUM_COMPONENTS = 4
 # serve any amount. downscale_to_limits fits accepted images to each model.
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=_MAX_IMAGE_BYTES, timeout_s=10.0)
+_CSS_VAR_OPEN = re.compile(r'var\(\s*--[\w-]+\s*(,)?')
 _logger = logging.getLogger(__name__)
 
 
@@ -320,10 +321,45 @@ class ImageParser:
             return None, None
 
     @staticmethod
+    def _resolve_css_var_fallbacks(svg_str: str) -> str:
+        """
+        Replace each CSS ``var(--name, fallback)`` with its fallback, as a browser
+        does when the custom property is not defined.
+
+        cairosvg has no custom-property support, and its color parser finds a hex
+        color anywhere in the value but slices it from index 1, so
+        ``var(--fill-0, #B4B4B4)`` fails with "invalid literal for int() with
+        base 16: 'ar'". A ``var()`` without a fallback is left as is.
+        """
+        parts = []
+        pos = 0
+        while (match := _CSS_VAR_OPEN.search(svg_str, pos)):
+            depth = 1
+            end = match.end()
+            while end < len(svg_str) and depth:
+                if svg_str[end] == '(':
+                    depth += 1
+                elif svg_str[end] == ')':
+                    depth -= 1
+                end += 1
+            if depth:
+                break
+            if match.group(1) is None:
+                parts.append(svg_str[pos:end])
+            else:
+                parts.append(svg_str[pos:match.start()])
+                fallback = svg_str[match.end():end - 1].strip()
+                parts.append(ImageParser._resolve_css_var_fallbacks(fallback))
+            pos = end
+        parts.append(svg_str[pos:])
+        return ''.join(parts)
+
+    @staticmethod
     def _sanitize_svg_content(svg_str: str) -> bytes:
         """
         Sanitize SVG content to fix common XML parsing issues, including unbound namespace prefixes.
-        This function ensures that common SVG namespace declarations are present in the root <svg> element.
+        This function ensures that common SVG namespace declarations are present in the root <svg> element,
+        and replaces CSS var() values that cairosvg cannot read with their fallbacks.
 
         Args:
             svg_str: SVG content as a string
@@ -332,6 +368,8 @@ class ImageParser:
             Sanitized SVG content as bytes
         """
         try:
+            svg_str = ImageParser._resolve_css_var_fallbacks(svg_str)
+
             # Find the <svg> tag (case-insensitive)
             svg_tag_pattern = r'(<svg[^>]*?)>'
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)
