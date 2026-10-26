@@ -2049,7 +2049,7 @@ export class StorageController {
         throw new BadRequestError("This version doesn't exist");
       }
 
-      if (document.isVersionedFile === false && resolvedVersion !== undefined) {
+      if (!document.isVersionedFile && resolvedVersion !== undefined) {
         throw new BadRequestError('This is a non-versioned document');
       }
 

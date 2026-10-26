@@ -78,14 +78,15 @@ async function touchArtifactSet(
   filter: Record<string, unknown>,
   { now, staleMs }: ArtifactFence,
 ): Promise<DocumentRow | null> {
+  const writable = {
+    ...filter,
+    $or: [
+      { 'artifactSet.retiringAt': { $exists: false } },
+      { 'artifactSet.retiringAt': { $lt: now - staleMs } },
+    ],
+  };
   const touched = await DocumentModel.findOneAndUpdate(
-    {
-      ...filter,
-      $or: [
-        { 'artifactSet.retiringAt': { $exists: false } },
-        { 'artifactSet.retiringAt': { $lt: now - staleMs } },
-      ],
-    } as never,
+    writable as never,
     { $set: { updatedAt: now }, $unset: { 'artifactSet.retiringAt': 1 } },
     { new: true, timestamps: false },
   );
@@ -559,12 +560,13 @@ export class MongoDocumentRepository implements DocumentRepository {
     known: number[],
     next: number,
   ): Promise<void> {
+    const claimed = {
+      _id: id,
+      orgId: orgId,
+      'artifactSet.retiringAt': { $in: known },
+    };
     await DocumentModel.updateOne(
-      {
-        _id: id,
-        orgId: orgId,
-        'artifactSet.retiringAt': { $in: known },
-      } as never,
+      claimed as never,
       { $set: { 'artifactSet.retiringAt': next } },
       { timestamps: false },
     );
@@ -575,11 +577,12 @@ export class MongoDocumentRepository implements DocumentRepository {
     orgId: string,
     claims: number[],
   ): Promise<void> {
-    await DocumentModel.deleteOne({
+    const claimed = {
       'artifactSet.retiringAt': { $in: claims },
       _id: id,
       orgId: orgId,
-    } as never);
+    };
+    await DocumentModel.deleteOne(claimed as never);
   }
 
   async listArtifactSets(
