@@ -33,7 +33,10 @@ export function headlineSize(question: string, compact: boolean): { size: '4' | 
   return { size: '7', letterSpacing: '-0.12px' };
 }
 
-function MentionChip({ node }: { node: MentionNode }) {
+// In a headline a chip keeps body size, as in the composer: at the headline's 28 px its 15 px icon looked lost.
+const HEADLINE_CHIP = { fontSize: 'var(--font-size-3)', lineHeight: 'var(--line-height-3)', verticalAlign: '0.15em' } as const;
+
+function MentionChip({ node, inHeadline = false }: { node: MentionNode; inHeadline?: boolean }) {
   const text = mentionLabel(node);
   // The icon is glued to the first word, so a line never breaks between them.
   const firstBreak = text.search(/\s/);
@@ -50,6 +53,7 @@ function MentionChip({ node }: { node: MentionNode }) {
         margin: '0 2px',
         boxDecorationBreak: 'clone',
         WebkitBoxDecorationBreak: 'clone',
+        ...(inHeadline ? HEADLINE_CHIP : {}),
       }}
     >
       <span style={{ whiteSpace: 'nowrap' }}>
@@ -99,7 +103,7 @@ function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
   return out;
 }
 
-function withMentions(text: string, mentions: readonly MentionNode[]): React.ReactNode {
+function withMentions(text: string, mentions: readonly MentionNode[], inHeadline = false): React.ReactNode {
   const spans = locateMentionNames(text, mentions);
   if (spans.length === 0) return withLinks(text, 't0');
   const out: React.ReactNode[] = [];
@@ -107,7 +111,7 @@ function withMentions(text: string, mentions: readonly MentionNode[]): React.Rea
   for (const span of spans) {
     if (span.start > cursor) out.push(...withLinks(text.slice(cursor, span.start), `t${cursor}`));
     out.push(
-      <MentionChip key={`${span.node.id}-${span.start}`} node={span.node} />
+      <MentionChip key={`${span.node.id}-${span.start}`} node={span.node} inHeadline={inHeadline} />
     );
     cursor = span.end;
   }
@@ -274,7 +278,7 @@ export function ExpandableUserQuery({
             wordBreak: 'break-word',
           }}
         >
-          {withMentions(displayed, mentions)}
+          {withMentions(displayed, mentions, Boolean(headline))}
           <span
             data-testid="user-query-inline-actions"
             style={{ marginLeft: 'var(--space-2)', verticalAlign: 'middle', display: 'inline-flex' }}

@@ -381,6 +381,41 @@ describe('ChatInput — typing and sending', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('keeps what was typed while a send was being confirmed, and drops only the sent words', async () => {
+    const accepted = deferred<boolean>();
+    renderInput({ onSend: vi.fn(() => accepted.promise) });
+    type('First question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    type('First question and a second one');
+    await act(async () => accepted.resolve(true));
+
+    expect(composer().value).toBe('and a second one');
+  });
+
+  it('leaves a box rewritten while a send was being confirmed as it is', async () => {
+    const accepted = deferred<boolean>();
+    renderInput({ onSend: vi.fn(() => accepted.promise) });
+    type('First question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    type('Something else entirely');
+    await act(async () => accepted.resolve(true));
+
+    expect(composer().value).toBe('Something else entirely');
+  });
+
+  it('clears the box once a confirmed send lands on an untouched draft', async () => {
+    const accepted = deferred<boolean>();
+    renderInput({ onSend: vi.fn(() => accepted.promise) });
+    type('First question');
+    fireEvent.keyDown(composer(), { key: 'Enter' });
+
+    await act(async () => accepted.resolve(true));
+
+    expect(composer().value).toBe('');
+  });
+
   it('seeds the box from a suggestion, and re-seeds only when a new suggestion is picked', () => {
     const { rerender } = renderInput({ prefill: { text: 'Summarise my week', key: 1 } });
     expect(composer().value).toBe('Summarise my week');

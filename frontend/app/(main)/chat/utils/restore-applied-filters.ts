@@ -8,10 +8,17 @@ const BUCKETS = SELECTION_KEYS;
 // sending its id would search nothing.
 const LEGACY_COLLECTIONS_APP_PREFIX = 'knowledgeBase_';
 
+// A source the question named with @ scoped that question only: it was never part of the chat's selection.
+const selected = (nodes: AppliedFilterNode[]): AppliedFilterNode[] => nodes.filter((node) => node.mentioned !== true);
+
 function restorable(applied: AppliedFilters): AppliedFilters {
   return {
     ...applied,
-    apps: applied.apps.filter((node) => !node.id.startsWith(LEGACY_COLLECTIONS_APP_PREFIX)),
+    apps: selected(applied.apps).filter((node) => !node.id.startsWith(LEGACY_COLLECTIONS_APP_PREFIX)),
+    kb: selected(applied.kb),
+    ...(applied.recordGroups && { recordGroups: selected(applied.recordGroups) }),
+    ...(applied.records && { records: selected(applied.records) }),
+    ...(applied.recordsExact && { recordsExact: selected(applied.recordsExact) }),
   };
 }
 

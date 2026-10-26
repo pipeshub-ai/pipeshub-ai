@@ -20,7 +20,7 @@ vi.mock('@/app/(main)/knowledge-base/api', () => ({
   },
 }));
 
-import { MentionMenu, type MentionMenuHandle, type MentionPick } from '../mention-menu';
+import { MentionMenu, openButtonSize, type MentionMenuHandle, type MentionPick } from '../mention-menu';
 
 const root = (id: string, name: string) => ({ id, name, nodeType: 'app', hasChildren: true, origin: 'CONNECTOR', connector: 'Jira' });
 const collection = (id: string, name: string) => ({ id, name, nodeType: 'kb', hasChildren: true, origin: 'COLLECTION', connector: 'KB' });
@@ -387,5 +387,12 @@ describe('@ menu — search', () => {
     await screen.findByText('Budget new', undefined, WAIT);
     await act(async () => late.resolve(page([child('stale', 'Budget stale')])));
     expect(screen.queryByText('Budget stale')).toBeNull();
+  });
+});
+
+describe('@ menu — the drill-in arrow', () => {
+  it('is a 40 px target in a 44 px phone row and a 24 px icon on a desktop row', () => {
+    expect(openButtonSize(44)).toBe(40);
+    expect(openButtonSize(36)).toBe(24);
   });
 });

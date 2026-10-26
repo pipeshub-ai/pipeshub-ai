@@ -23,6 +23,9 @@ export function useSendWhenFree(slotId: string | null | undefined): void {
     // After the history load, so a send it lets go builds on the loaded thread.
     if (!slotId || !convId || !loaded) return;
     if (adopted.current !== slotId) {
+      // Not restoring yet, with nothing queued (an extension may decide only once its settings load): the tab's copy
+      // stays as it is until then, rather than being overwritten by this empty queue.
+      if (!restores && queueOf({ queue }).length === 0) return;
       adopted.current = slotId;
       const kept = queueOf({ queue }).length > 0 || !restores ? [] : heldSendsOf(convId);
       if (kept.length > 0) {

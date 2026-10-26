@@ -277,6 +277,8 @@ export function ChatInput({
   const router = useRouter();
   const agentDeprecatedToolNames = useChatStore((s) => s.agentDeprecatedToolNames);
   const [message, setMessage] = useState('');
+  const messageRef = useRef(message);
+  messageRef.current = message;
   const [mentions, setMentions] = useState<MentionNode[]>([]);
   const [showUploadArea, setShowUploadArea] = useState(false);
   const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
@@ -1196,7 +1198,15 @@ export function ChatInput({
         store.setCollectionNamesCache({ ...store.collectionNamesCache, ...names });
         store.setCollectionMetaCache({ ...store.collectionMetaCache, ...meta });
       }
+      const sentFiles = new Set(uploadedFiles.filter((f) => f.status === 'uploaded'));
+      // A send the host confirms later may land after the person typed on: only what was sent leaves the box.
       const clearDraft = () => {
+        const now = messageRef.current;
+        if (now !== message) {
+          setUploadedFiles((files) => files.filter((f) => !sentFiles.has(f)));
+          if (now.startsWith(message)) composerRef.current?.setText(now.slice(message.length).trimStart());
+          return;
+        }
         setMessage('');
         setMentions([]);
         setUploadedFiles([]);

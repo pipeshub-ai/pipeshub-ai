@@ -44,6 +44,9 @@ const ROOTS_PAGE_SIZE = 50;
 const SEARCH_LIMIT = 20;
 const ROW_HEIGHT = 40;
 const ROW_HEIGHT_PHONE = 44;
+
+/** The drill-in arrow's square: a finger needs most of a phone row's height, a pointer only the icon. */
+export const openButtonSize = (rowHeight: number): number => (rowHeight >= ROW_HEIGHT_PHONE ? 40 : 24);
 const LOAD_MORE_EDGE_PX = 48;
 /** The box holds this height while it shows one list (a source, a group, every source), so Back does not move. */
 const DRILLED_HEIGHT = 300;
@@ -463,7 +466,7 @@ function ItemRow({
           ) : (
             <>
               <Box aria-hidden style={{ width: 3, height: 3, borderRadius: '50%', background: 'var(--slate-8)', flexShrink: 0 }} />
-              <Text size="2" truncate title={item.description} data-testid="mention-description" style={{ color: 'var(--slate-10)', minWidth: 0 }}>
+              <Text size="2" truncate title={item.description} data-testid="mention-description" style={{ color: 'var(--slate-11)', minWidth: 0 }}>
                 {item.description}
               </Text>
             </>
@@ -482,8 +485,8 @@ function ItemRow({
             onOpen();
           }}
           style={{
-            width: 24,
-            height: 24,
+            width: openButtonSize(height),
+            height: openButtonSize(height),
             flexShrink: 0,
             display: 'inline-flex',
             alignItems: 'center',

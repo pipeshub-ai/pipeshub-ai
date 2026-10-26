@@ -190,6 +190,17 @@ describe('ExpandableUserQuery', () => {
     expect(heading.style.paddingTop).toBe('0px');
   });
 
+  it('as a headline, keeps a mention chip at body size, so its icon does not look lost in the 28 px text', () => {
+    const mentions = [{ id: 'kb1', name: 'Finance', nodeType: 'app', connector: 'KB' }];
+    renderQuery({ question: 'Finance budget for Q3?', mentions, headline: { compact: false } });
+    const chip = (text: string) => screen.getByText(text).closest('span[style*="border-radius"]') as HTMLElement;
+    expect(chip('Finance').style.fontSize).toBe('var(--font-size-3)');
+    cleanup();
+
+    renderQuery({ question: 'Finance budget for Q3?', mentions });
+    expect(chip('Finance').style.fontSize).toBe('');
+  });
+
   it('as a headline, steps down 28, 24, 20, 18 px as the question grows, and is 18 px when compact', () => {
     const size = (n: number, compact = false) => headlineSize('x'.repeat(n), compact).size;
     expect([size(160), size(161), size(240), size(241), size(340), size(341)]).toEqual(['7', '6', '6', '5', '5', '4']);

@@ -218,6 +218,34 @@ describe('the tab keeps its queue', () => {
     expect(heldSendsOf('conv-1')).toEqual([]);
   });
 
+  it("a reload that may not restore yet keeps the tab's copy, and takes it back once it may", () => {
+    keepHeldSends('conv-1', [{ query: 'survives', clientMessageId: 'c-1', queuedAt: 1 }]);
+    // An extension may decide only once its settings load: until then this slot says it does not restore.
+    const after = useChatStore.getState().createSlot('conv-1');
+    useChatStore.getState().updateSlot(after, { isInitialized: true, isOwner: false, isStreaming: true });
+    renderHook(() => useSendWhenFree(after));
+    expect(heldSendsOf('conv-1').map((q) => q.query)).toEqual(['survives']);
+
+    act(() => useChatStore.getState().updateSlot(after, { isOwner: true }));
+    expect(queries(after)).toEqual(['survives']);
+  });
+
+  it('a reload that cuts the answer short sends nothing: the question stays queued, and the tab keeps its copy', () => {
+    vi.useFakeTimers();
+    const slotId = streamingChat();
+    queueSend(slotId, { query: 'survives the reload' });
+    renderHook(() => useSendWhenFree(slotId));
+    act(() => {
+      window.dispatchEvent(new Event('beforeunload'));
+      answerEnds(slotId);
+    });
+    expect(streamed.calls).toEqual([]);
+    expect(queries(slotId)).toEqual(['survives the reload']);
+    expect(heldSendsOf('conv-1').map((q) => q.query)).toEqual(['survives the reload']);
+    act(() => vi.advanceTimersByTime(2000));
+    vi.useRealTimers();
+  });
+
   it('works without storage, never throwing', () => {
     const spy = vi.spyOn(window, 'sessionStorage', 'get').mockImplementation(() => {
       throw new Error('blocked');

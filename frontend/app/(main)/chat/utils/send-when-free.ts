@@ -6,6 +6,24 @@ import { streamMessageForSlot } from '@/app/(main)/chat/streaming';
 import { markSentFromQueue, queueOf, requeueFirst, takeFirst } from './queued-send';
 
 /**
+ * The page is going away (a reload, the tab closing). The answer it cuts short frees the chat, but a question sent then
+ * is cut too, after it left the queue: it stays queued instead, and the tab's copy brings it back. A leave that did not
+ * happen (a cancelled prompt) is forgotten after a moment, since the page is still here to run the timer.
+ */
+let leaving = false;
+const LEAVE_FORGOTTEN_MS = 2000;
+if (typeof window !== 'undefined') {
+  const leave = () => {
+    leaving = true;
+    window.setTimeout(() => {
+      leaving = false;
+    }, LEAVE_FORGOTTEN_MS);
+  };
+  window.addEventListener('beforeunload', leave);
+  window.addEventListener('pagehide', leave);
+}
+
+/**
  * Whether the slot's first queued question may go now: nothing runs or stops in the chat, nothing refused waits ahead
  * of it, and the extension holds nothing back.
  */
@@ -27,7 +45,7 @@ export function queueMayGo(slot: ChatSlot | undefined): boolean {
  * Returns whether a send started.
  */
 export function sendNextQueued(slotId: string): boolean {
-  if (!queueMayGo(useChatStore.getState().slots[slotId])) return false;
+  if (leaving || !queueMayGo(useChatStore.getState().slots[slotId])) return false;
   const queued = takeFirst(slotId);
   if (!queued) return false;
   const apiQuery = queued.query || (queued.attachments?.length ? ATTACHMENT_ONLY_STREAM_QUERY : '');
