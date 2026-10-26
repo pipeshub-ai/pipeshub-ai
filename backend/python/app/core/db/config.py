@@ -39,6 +39,8 @@ class DbConfig:
     pooler: Pooler = "pgbouncer_txn"
     pool_max: int = 10
     jobs_pool_max: int = 3
+    pool_idle_seconds: float = 300.0  # an idle connection older than this is closed (asyncpg's own default)
+    pool_min: int = 1  # connections a pool keeps open when idle; 0 lets an idle process hold none
     strict: bool = True
     fence: bool = True  # write UoWs assert the deployment-profile epoch read at start
     want_extensions: tuple[str, ...] = ()
@@ -50,6 +52,8 @@ class DbConfig:
             raise DbConfigError(f"invalid service name {self.service!r}")
         if not self.dsn:
             raise DbConfigError("no database DSN configured")
+        if self.pool_max < 1 or self.jobs_pool_max < 1 or self.pool_idle_seconds < 0 or self.pool_min < 0:
+            raise DbConfigError("pool sizes must be at least 1, the idle time and the minimum not negative")
         if self.pooler not in _POOLERS:
             raise DbConfigError(f"pooler must be one of {_POOLERS}, got {self.pooler!r}")
 
@@ -68,10 +72,6 @@ class DbConfig:
         # Measured cost of turning the cache off: about 45% throughput (a revisit signal for psycopg 3).
         return 100 if self.pooler == "none" else 0
 
-    @property
-    def pool_min(self) -> int:
-        return 1
-
     @classmethod
     def from_env(cls, service: str) -> DbConfig:
         env = os.environ
@@ -81,4 +81,8 @@ class DbConfig:
             jobs_dsn=env.get("PG_JOBS_URL", ""),
             pooler=env.get("PG_POOLER", "pgbouncer_txn"),  # type: ignore[arg-type]
             strict=env.get("PG_STRICT", "true").strip().lower() not in ("0", "false", "no"),
+            pool_max=int(env.get("PG_POOL_MAX") or 10),
+            jobs_pool_max=int(env.get("PG_JOBS_POOL_MAX") or 3),
+            pool_idle_seconds=float(env.get("PG_POOL_IDLE_SECONDS") or 300),
+            pool_min=int(env.get("PG_POOL_MIN") or 1),
         )

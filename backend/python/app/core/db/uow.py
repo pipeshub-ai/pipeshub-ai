@@ -279,11 +279,12 @@ class KernelDB:
         cfg = self.cfg
         name = f"pipeshub-{cfg.service}/{cfg.app_version}"
         self._home_loop = asyncio.get_running_loop()
-        self._pool = await create_pool(cfg.dsn, max_size=cfg.pool_max, statement_cache_size=cfg.statement_cache_size, application_name=name)
+        self._pool = await create_pool(cfg.dsn, max_size=cfg.pool_max, statement_cache_size=cfg.statement_cache_size, application_name=name,
+                                       idle_seconds=cfg.pool_idle_seconds, min_size=cfg.pool_min)
         try:
             if cfg.jobs_dsn:
                 self._jobs_pool = await create_pool(cfg.jobs_dsn, max_size=cfg.jobs_pool_max, statement_cache_size=cfg.statement_cache_size,
-                                                    application_name=name + "/jobs")
+                                                    application_name=name + "/jobs", idle_seconds=cfg.pool_idle_seconds, min_size=cfg.pool_min)
             table = caps_mod.load_table()
             async with self._open(self._pool, role=cfg.role, org_id="", request_id="boot", klass=cfg.timeout_class, write=False) as tx:
                 sql, names = caps_mod.probe_sql(table)
@@ -428,7 +429,8 @@ class KernelDB:
                 name = f"pipeshub-{cfg.service}/{cfg.app_version}"
                 fut = mine[jobs] = org_context.spawn_detached(create_pool(
                     cfg.jobs_dsn if jobs else cfg.dsn, max_size=cfg.jobs_pool_max if jobs else cfg.pool_max,
-                    statement_cache_size=cfg.statement_cache_size, application_name=name + ("/jobs" if jobs else "")))
+                    statement_cache_size=cfg.statement_cache_size, application_name=name + ("/jobs" if jobs else ""),
+                    idle_seconds=cfg.pool_idle_seconds, min_size=cfg.pool_min))
                 fut.add_done_callback(lambda f: f.cancelled() or f.exception())    # mark a failure as seen: the callers get it
             return fut
 

@@ -71,7 +71,7 @@ class PostgresKeyValueStore(KeyValueStore[T], Generic[T]):
     ) -> None:
         self.serializer = serializer
         self.deserializer = deserializer
-        self._rt = runtime or RuntimeDb.shared()
+        self._rt = runtime or RuntimeDb()
         self._watchers: dict[str, list[tuple[Callable[[T | None], None], str]]] = {}
         self._listeners: dict[int, PgListener] = {}
         self._last_purge = 0.0

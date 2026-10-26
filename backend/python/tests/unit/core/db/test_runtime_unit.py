@@ -597,3 +597,20 @@ def test_close_terminates_closed_loop_pools_and_leaves_a_running_loops_to_that_l
     assert threading.get_ident() not in _FakePool.threads and t.ident in _FakePool.threads   # the live loop ran it (call_soon_threadsafe)
     assert db._side_pools == {}
     live.close()
+
+
+def test_pool_sizes_idle_time_and_minimum_come_from_the_environment(monkeypatch) -> None:
+    monkeypatch.setenv("PG_CORE_URL", "postgresql://x@h/db")
+    for key in ("PG_POOL_MAX", "PG_JOBS_POOL_MAX", "PG_POOL_IDLE_SECONDS", "PG_POOL_MIN"):
+        monkeypatch.delenv(key, raising=False)
+    c = DbConfig.from_env("indexing")
+    assert (c.pool_max, c.jobs_pool_max, c.pool_idle_seconds, c.pool_min) == (10, 3, 300.0, 1)  # unchanged for every other deployment
+    monkeypatch.setenv("PG_POOL_MAX", "4")
+    monkeypatch.setenv("PG_JOBS_POOL_MAX", "2")
+    monkeypatch.setenv("PG_POOL_IDLE_SECONDS", "30")
+    monkeypatch.setenv("PG_POOL_MIN", "0")
+    c = DbConfig.from_env("indexing")
+    assert (c.pool_max, c.jobs_pool_max, c.pool_idle_seconds, c.pool_min) == (4, 2, 30.0, 0)
+    monkeypatch.setenv("PG_POOL_MAX", "0")
+    with pytest.raises(DbConfigError):
+        DbConfig.from_env("indexing")

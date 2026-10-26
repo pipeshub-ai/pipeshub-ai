@@ -558,6 +558,10 @@ class MessagingEnvConfig:
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
+        if os.getenv("MESSAGE_BROKER", "").strip().lower() == MessageBrokerType.POSTGRES.value:
+            # The PostgreSQL queue orders deliveries of one message key. A lane key (the connector) as that key made every record of a
+            # connector wait for the one before it; with no lanes the key is the record, and records index side by side.
+            return 1
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
 
     @property

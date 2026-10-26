@@ -39,7 +39,7 @@ class PgCacheBus:
         runtime: RuntimeDb | None = None,
     ) -> None:
         self._apply, self._flush = apply, flush
-        self._rt = runtime or RuntimeDb.shared()
+        self._rt = runtime or RuntimeDb()
         self._dsn = listen_dsn(self._rt.cfg)
         self._listener: PgListener | None = None
         self._task: asyncio.Task | None = None

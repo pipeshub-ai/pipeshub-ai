@@ -86,7 +86,7 @@ def _range(prefix: str) -> tuple[str, str]:
 
 class PgState:
     def __init__(self, runtime: RuntimeDb | None = None) -> None:
-        self.rt = runtime or RuntimeDb.shared()
+        self.rt = runtime or RuntimeDb()
 
     async def _tx(self, *, write: bool = True):  # noqa: ANN202
         return (await self.rt.db()).runtime_uow(write=write)

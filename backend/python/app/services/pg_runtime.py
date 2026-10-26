@@ -14,6 +14,7 @@ import os
 import random
 import threading
 import time
+import weakref
 from typing import TYPE_CHECKING
 
 import asyncpg
@@ -66,29 +67,22 @@ def _plain(dsn: str) -> str:
     )
 
 
+# One database runtime per (configuration, event loop) for the whole process. Every RuntimeDb (key-value store, queue, cache
+# invalidation, state, health) used to start a runtime of its own, so each added pools of connections, and every connector
+# instance that reached one added more. Weak on the loop: a finished thread's loop releases its entry.
+_SHARED: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, dict[DbConfig, asyncio.Task[KernelDB]]] = weakref.WeakKeyDictionary()
+_SHARED_LOCK = threading.Lock()
+
+
 class RuntimeDb:
-    """One KernelDB per event loop for the runtime tables, made on first use. Safe to call from any thread.
+    """The shared KernelDB of this process for the runtime tables, per event loop, made on first use. Safe to call from any thread.
 
     It is used from the configuration service's watch thread as well as the main loop, so it takes a thread lock rather than an
-    asyncio one. Callers that do not hold their own use :meth:`shared`, so a process keeps one set of pools however many
-    components it starts.
+    asyncio one. Two RuntimeDb objects with the same configuration share one KernelDB (one set of pools) on a loop.
     """
-
-    _shared: RuntimeDb | None = None
-    _shared_lock = threading.Lock()
-
-    @classmethod
-    def shared(cls) -> RuntimeDb:
-        """The process-wide instance, configured from the environment on first use."""
-        with cls._shared_lock:
-            if cls._shared is None:
-                cls._shared = cls()
-            return cls._shared
 
     def __init__(self, cfg: DbConfig | None = None) -> None:
         self._cfg = cfg
-        self._dbs: dict[asyncio.AbstractEventLoop, asyncio.Task[KernelDB]] = {}
-        self._lock = threading.Lock()
 
     @property
     def cfg(self) -> DbConfig:
@@ -98,17 +92,20 @@ class RuntimeDb:
 
     async def db(self) -> KernelDB:
         loop = asyncio.get_running_loop()
-        with self._lock:
-            for old in [lp for lp in self._dbs if lp.is_closed()]:
-                gone = self._dbs.pop(old)  # its loop can run nothing any more: release the pools without awaiting
-                if gone.done() and not gone.cancelled() and gone.exception() is None:
-                    gone.result().terminate()
-            task = self._dbs.get(loop)
+        cfg = self.cfg
+        with _SHARED_LOCK:
+            for old in [lp for lp in _SHARED if lp.is_closed()]:
+                # its loop can run nothing any more: release the pools without awaiting
+                for gone in _SHARED.pop(old).values():
+                    if gone.done() and not gone.cancelled() and gone.exception() is None:
+                        gone.result().terminate()
+            per_loop = _SHARED.setdefault(loop, {})
+            task = per_loop.get(cfg)
             if task is None or (
                 task.done() and (task.cancelled() or task.exception() is not None)
             ):
                 # detached: the caller's request context (its org) must not follow the pool's start-up; a failed start is retried by the next caller
-                task = self._dbs[loop] = spawn_detached(self._start())
+                task = per_loop[cfg] = spawn_detached(self._start())
         return await asyncio.shield(task)
 
     async def _start(self) -> KernelDB:

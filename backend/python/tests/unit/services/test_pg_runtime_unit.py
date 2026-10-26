@@ -1,10 +1,7 @@
 import time
 
+from app.services import pg_runtime
 from app.services.pg_runtime import ListenHub, RuntimeDb
-
-
-def test_shared_runtime_db_is_one_per_process() -> None:
-    assert RuntimeDb.shared() is RuntimeDb.shared()
 
 
 def test_healthy_needs_the_channel_to_be_listened() -> None:
@@ -28,8 +25,9 @@ def test_runtime_db_terminates_the_pools_of_a_closed_loop() -> None:
     task = MagicMock()
     task.done.return_value, task.cancelled.return_value, task.exception.return_value = True, False, None
     task.result.return_value = gone_db
-    rt = RuntimeDb(MagicMock())
-    rt._dbs[dead] = task
+    cfg = MagicMock()
+    rt = RuntimeDb(cfg)
+    pg_runtime._SHARED[dead] = {cfg: task}
 
     async def run() -> None:
         async def start() -> object:
@@ -40,4 +38,4 @@ def test_runtime_db_terminates_the_pools_of_a_closed_loop() -> None:
 
     asyncio.run(run())
     gone_db.terminate.assert_called_once()
-    assert dead not in rt._dbs
+    assert dead not in pg_runtime._SHARED

@@ -18,11 +18,14 @@ class PooledConnection(asyncpg.Connection):
         return ""
 
 
-async def create_pool(dsn: str, *, max_size: int, statement_cache_size: int, application_name: str) -> asyncpg.Pool:
+async def create_pool(
+    dsn: str, *, max_size: int, statement_cache_size: int, application_name: str, idle_seconds: float = 300.0, min_size: int = 1
+) -> asyncpg.Pool:
     return await asyncpg.create_pool(
         dsn=dsn,
-        min_size=1,
+        min_size=min(min_size, max_size),
         max_size=max_size,
+        max_inactive_connection_lifetime=idle_seconds,
         connection_class=PooledConnection,
         statement_cache_size=statement_cache_size,
         server_settings={"application_name": application_name},

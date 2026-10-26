@@ -313,7 +313,7 @@ class Health:
 
         logger = container.logger()
         deadline = asyncio.get_running_loop().time() + HealthCheckConfig.CONNECTOR_HEALTH_CHECK_MAX_RETRIES.value * 2.0
-        rt = RuntimeDb.shared()
+        rt = RuntimeDb()
         while True:
             try:
                 db = await rt.db()
