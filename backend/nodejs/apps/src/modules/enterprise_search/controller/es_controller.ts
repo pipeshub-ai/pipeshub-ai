@@ -3401,10 +3401,15 @@ function answersCardBefore(
   return false;
 }
 
-/** The questions a row of card answers quotes (`1. "question" → answer`), as the app writes them. */
+/**
+ * The questions a row of card answers quotes, when it is written the way the app writes them
+ * (`User selections:` then `1. "question" → answer`, one per question); empty otherwise.
+ */
 function quotedCardQuestions(content: string | undefined | null): Set<string> {
   const questions = new Set<string>();
-  for (const match of (content ?? '').matchAll(/^\d+\.\s+"(.+)"\s+→/gm)) {
+  const body = (content ?? '').trimStart().replace(/^User selections:\s*/, '');
+  if (!/^1\.\s+"/.test(body)) return questions;
+  for (const match of body.matchAll(/^\d+\.\s+"(.+)"\s+→/gm)) {
     if (match[1]) questions.add(match[1].trim());
   }
   return questions;
@@ -3412,9 +3417,10 @@ function quotedCardQuestions(content: string | undefined | null): Set<string> {
 
 /**
  * Whether the row of answers at `older[i]` answers again a card the same turn already answered:
- * a card can be sent twice, and the second send follows a reply with no card next to it. It
- * counts only when it quotes a question of earlier answers that do follow a card, so a question
- * the reader typed with the same first words stays a question of its own.
+ * a card can be sent twice, and the second send follows a reply with no card next to it. No row
+ * records which send made it, so the text decides: written as the app writes answers, and every
+ * question it quotes answered earlier in the turn by answers that do follow a card. A question
+ * the reader typed with the same first words, or that asks anything else, stays its own.
  */
 function repeatsCardAnswers(
   older: Array<IMessage & { _id: mongoose.Types.ObjectId }>,
@@ -3422,16 +3428,17 @@ function repeatsCardAnswers(
 ): boolean {
   const quoted = quotedCardQuestions(older[i]?.content);
   if (quoted.size === 0) return false;
+  const answeredInTurn = new Set<string>();
   for (let j = i + 1; j < older.length; j += 1) {
     const row = older[j];
-    if (!row || row.messageType !== 'user_query') continue;
+    if (row?.messageType !== 'user_query') continue;
     if (!isAskUserQuestionAnswer(row.content) || !answersCardBefore(older, j))
-      return false;
+      break;
     for (const question of quotedCardQuestions(row.content)) {
-      if (quoted.has(question)) return true;
+      answeredInTurn.add(question);
     }
   }
-  return false;
+  return [...quoted].every((question) => answeredInTurn.has(question));
 }
 
 /** Whether two lists name the same files, whatever their order. */
@@ -3772,8 +3779,11 @@ async function regenerateAnswersInternal(
     /** Set once the new answer stands for the turn, so the rows it replaced may go. */
     let turnAnswered = false;
     const saveEditedQuestion = async (): Promise<void> => {
-      turnAnswered = true;
-      if (!editedQuery || !existingConversation) return;
+      if (!existingConversation) return;
+      if (!editedQuery) {
+        turnAnswered = true;
+        return;
+      }
       const editedRow = await updateUserQueryContent(
         (shownQuestion as IMessage & { _id: mongoose.Types.ObjectId })._id,
         editedQuery,
@@ -3784,7 +3794,9 @@ async function regenerateAnswersInternal(
       if (!editedRow) {
         throw new InternalServerError('Failed to save the edited question');
       }
+      // Only now: a failed save keeps the old card rows, as the question kept its old text.
       editedQuestionSaved = true;
+      turnAnswered = true;
       if (titleFollowsEdit) {
         existingConversation.title = editedQuery.slice(0, 100);
       }
