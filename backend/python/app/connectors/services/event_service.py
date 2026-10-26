@@ -259,13 +259,14 @@ class EventService:
         if previous is None or previous is connector:
             return
 
-        if _running_here(connector_id):
-            # cleanup() nulls the connector's client and data source, so closing one
-            # mid-sync kills that sync. Leaking the pool is the lesser evil, and is
-            # what this did before it started cleaning up at all.
+        if _running_here(connector_id) or _reindexing_here(connector_id):
+            # cleanup() nulls the connector's client and data source, and disposal
+            # closes the processor a reindex publishes through, so closing one
+            # mid-sync or mid-reindex kills that task. Leaking the pool is the
+            # lesser evil, and is what this did before it started cleaning up at all.
             self.logger.warning(
-                f"Replaced the live {connector_id} connector instance while its sync is "
-                "running; leaving the previous instance open so the sync can finish"
+                f"Replaced the live {connector_id} connector instance while a sync or "
+                "reindex is using it; leaving the previous instance open so it can finish"
             )
             return
 
@@ -528,16 +529,22 @@ class EventService:
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
 
-            # Cleared first: once it is in the cache, a failure must not close it.
-            stored, connector = connector, None
-            await self._store_connector(connector_id, stored)
+            await self._store_connector(connector_id, connector)
 
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
-            if connector is not None:
+            if connector is not None and not self._is_cached(connector_id, connector):
                 await self._dispose_unstored(connector_name, connector)
             return False
+
+    def _is_cached(self, connector_id: str, connector: BaseConnector) -> bool:
+        """Whether the cache holds this instance. When the cache cannot be read,
+        assume it does: closing a live connector breaks every task using it."""
+        try:
+            return self._get_connector(connector_id) is connector
+        except Exception:
+            return True
 
     async def _dispose_unstored(self, connector_name: str, connector: BaseConnector) -> None:
         """Close a connector that failed init() and is never stored. The factory

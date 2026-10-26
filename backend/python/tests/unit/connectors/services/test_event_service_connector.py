@@ -354,6 +354,23 @@ class TestStoreConnector:
 
         previous.cleanup.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_does_not_close_an_instance_a_reindex_is_using(self, service) -> None:
+        """A stage reindex publishes through the previous instance's processor;
+        disposing it would close that producer mid-reindex."""
+        spec_container = MagicMock(spec=[])
+        previous = AsyncMock()
+        spec_container.connectors_map = {"conn1": previous}
+        service.app_container = spec_container
+
+        with patch("app.connectors.services.event_service._running_here", return_value=False), \
+             patch("app.connectors.services.event_service._reindexing_here", return_value=True), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            await service._store_connector("conn1", MagicMock())
+
+        dispose.assert_not_awaited()
+
 
 # ===========================================================================
 # _ensure_connector
@@ -564,22 +581,35 @@ class TestHandleInit:
         dispose.assert_awaited_once_with(mock_conn)
 
     @pytest.mark.asyncio
-    async def test_a_store_failure_does_not_dispose_the_connector(self, service) -> None:
+    @pytest.mark.parametrize("inserted", [False, True], ids=["before_insert", "after_insert"])
+    async def test_a_store_failure_disposes_only_an_uncached_connector(self, service, inserted) -> None:
+        """Failing before the cache holds it leaves no one to close it; once
+        cached, closing it would break the tasks that pick it up."""
         mock_conn = AsyncMock()
         mock_conn.init = AsyncMock(return_value=True)
+        service.app_container = MagicMock(spec=["connector_notification_service"])
+        service.app_container.connectors_map = {}
         service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+
+        async def store(connector_id, connector) -> None:
+            if inserted:
+                service.app_container.connectors_map[connector_id] = connector
+            raise RuntimeError("cache")
+
         with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
              patch("app.connectors.services.event_service.GraphDataStore"), \
-             patch.object(service, "_store_connector", new_callable=AsyncMock,
-                          side_effect=RuntimeError("cache")), \
+             patch.object(service, "_store_connector", side_effect=store), \
+             patch.object(service, "_config_service_for", return_value=AsyncMock()), \
              patch("app.connectors.services.event_service.dispose_connector",
                    new_callable=AsyncMock) as dispose:
             mock_factory.create_connector = AsyncMock(return_value=mock_conn)
             result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
 
         assert result is False
-        dispose.assert_not_awaited()
-
+        if inserted:
+            dispose.assert_not_awaited()
+        else:
+            dispose.assert_awaited_once_with(mock_conn)
 
 def _close_then_raise(key, coro):
     """start_if_idle owns the coroutine, so a raising stub must still close it
