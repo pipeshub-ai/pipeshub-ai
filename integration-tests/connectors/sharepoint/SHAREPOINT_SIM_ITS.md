@@ -67,8 +67,9 @@ catches a stack where Microsoft's names do not lead to the simulator.
 ## In CI
 
 `.github/workflows/integration-tests.yml` runs the suite on shard `connectors-3` (and on a dispatch of
-`sharepoint_sim`). The SharePoint simulator has its own pin, `CONNSIM_SHAREPOINT_REF`, and image,
-`SHAREPOINT_SIM_IMAGE`, until it is on the simulators' main with the others. The "Use the SharePoint
+`sharepoint_sim`). The SharePoint simulator has its own pin, `CONNSIM_SHAREPOINT_REF` (connectors-simulator's
+main), and image, `SHAREPOINT_SIM_IMAGE`: the other simulators' `CONNSIM_REF` is still a branch that is not on
+that main. The "Use the SharePoint
 simulator" step builds that image, makes the TLS material, loads `sharepoint_sim.env`, and sets
 `SHAREPOINT_SIM_COMPOSE`, which adds the override to every compose call of that job. The override sends all of
 that stack's Microsoft traffic to the simulator, so the live `sharepoint` (shard 1) and `outlook` (shard 2)

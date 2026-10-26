@@ -338,8 +338,10 @@ jobs:
       # answers them through a TLS front under those names and has the app trust its CA. The "Use the SharePoint
       # simulator" step adds that file to every compose call through SHAREPOINT_SIM_COMPOSE, so no suite on that
       # shard may reach the real Microsoft 365: the live sharepoint suite (shard 1) and outlook (shard 2) stay off it.
-      # The simulator has its own pin and image until it is on the simulators' main with the others.
-      CONNSIM_SHAREPOINT_REF: 7ae65ec0b4eb37bdaf1682a5a4ebef8156bd7408
+      # Its own pin and image: CONNSIM_SHAREPOINT_REF is connectors-simulator's main with the SharePoint
+      # simulator (#7), while CONNSIM_REF is still the integration/notion-gmail branch, which has Confluence
+      # changes main lacks. One pin will do once that branch is on main.
+      CONNSIM_SHAREPOINT_REF: 7feca7cd6291a7a305073c08cf5d480cc6920c21
       SHAREPOINT_SIM_IMAGE: pipeshub/connectors-simulator:sharepoint-it
       NEEDS_SHAREPOINT_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'sharepoint_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
