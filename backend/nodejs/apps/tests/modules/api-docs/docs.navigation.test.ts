@@ -84,8 +84,10 @@ describe('ApiDocsService navigation from API_DOCS_NAV', () => {
     expect(tagsInNav(docs)).to.not.include('No Such Tag');
   });
 
-  it('keeps the sidebar when an overlay gives modules or tags the wrong type', async () => {
+  it('keeps the sidebar when an overlay has a null tag or a modules or tags of the wrong type', async () => {
     const docs = await docsWith([
+      'tags:',
+      '  - null',
       'x-pipeshub-nav:',
       '  - name: Bad Modules',
       '    modules: not-a-list',

@@ -323,7 +323,10 @@ export class ApiDocsService {
       }
     }
 
-    const declaredTags = (this.mergedSpec?.tags ?? []) as { name: string; description?: string }[];
+    const specTags: unknown = this.mergedSpec?.tags;
+    const declaredTags = (Array.isArray(specTags) ? specTags : []).filter(
+      (t): t is { name: string; description?: string } => typeof t?.name === 'string',
+    );
     const unlisted = [...new Set([...declaredTags.map((t) => t.name), ...usedTags])]
       .filter((t) => usedTags.has(t) && !claimed.has(t));
     if (unlisted.length > 0) {
