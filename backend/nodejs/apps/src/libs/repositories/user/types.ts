@@ -206,16 +206,28 @@ export interface UserRepository {
     orgId: string,
     q: DirectoryQuery,
   ): Promise<{ rows: UserDto[]; total: number }>;
-  listWithGroups(orgId: string): Promise<UserWithGroupsDto[]>;
+  /** Every live account of the org with its groups; service accounts only with `includeServiceAccounts`. */
+  listWithGroups(
+    orgId: string,
+    opts?: { includeServiceAccounts?: boolean },
+  ): Promise<UserWithGroupsDto[]>;
   /** One page of a group's members. */
   listMembersPage(
     ids: string[],
-    q: { search?: string; skip: number; limit: number },
+    q: {
+      search?: string;
+      skip: number;
+      limit: number;
+      /** Service accounts are left out of the page and of the count unless this is set. */
+      includeServiceAccounts?: boolean;
+    },
   ): Promise<{ rows: MemberSummaryDto[]; total: number }>;
   /** Accounts at these addresses in this organisation, removed ones included. */
   listByEmails(orgId: string, emails: string[]): Promise<UserDto[]>;
   listAdminIds(orgId: string): Promise<string[]>;
   listServiceAccounts(orgId: string): Promise<UserDto[]>;
+  /** Of these ids, the ones that are service accounts of this organisation. */
+  serviceAccountIdsAmong(orgId: string, ids: string[]): Promise<string[]>;
   getServiceAccount(orgId: string, id: string): Promise<UserDto | null>;
   countActiveAdmins(orgId: string, tx?: Tx): Promise<number>;
 

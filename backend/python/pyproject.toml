@@ -302,7 +302,9 @@ dependencies = [
     "pdfplumber==0.11.10",
     "pillow-avif-plugin==1.6.0",
     "pypdfium2==5.14.0",
-    "protobuf>=4.25.0,<6",
+    # The current google-api-core, grpcio-status and proto-plus need 6.33.5 or newer, and
+    # Python 3.14 has no older choice; snowflake-connector-python caps it below 7.
+    "protobuf>=6.33.5,<7",
     "pydantic==2.14.1",
     "py-trello==0.20.1",
     "python-arango==8.3.6",

@@ -16,6 +16,7 @@ import { getPictureRepository } from '../../../libs/repositories/picture';
 import { UniqueConstraintError } from '../../../libs/repositories/errors';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
+import { isUserOrgAdmin } from '../services/user-admin.service';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
 const GROUP_EXISTS_MESSAGE = 'Group already exists';
@@ -175,7 +176,43 @@ export class UserGroupController {
       throw new NotFoundError('UserGroup not found');
     }
 
+    // `users` is a list of Mongo ids, and a service account's is the value an
+    // agent stores when it is bound to that account. Every service account is
+    // put in the everyone group when it is created, so without this the group
+    // every member can read hands out all of them. The ids of colleagues stay,
+    // because they are already the member's to see.
+    if (Array.isArray(userGroup.users)) {
+      userGroup.users = await this.visibleMembers(req, orgId, userGroup.users);
+    }
     res.json(userGroup);
+  }
+
+  /**
+   * ``ids`` without the service accounts among them, unless the caller
+   * administers the organisation. The lookup only runs when one is actually in
+   * the list, so an ordinary group costs nothing.
+   */
+  private async visibleMembers(
+    req: AuthenticatedUserRequest,
+    orgId: string,
+    ids: readonly string[],
+  ): Promise<string[]> {
+    const members = [...ids];
+    if (members.length === 0) return members;
+
+    const accounts = await getUserRepository().serviceAccountIdsAmong(
+      orgId,
+      members,
+    );
+    if (accounts.length === 0) return members;
+
+    const isAdmin =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), orgId));
+    if (isAdmin) return members;
+
+    const hidden = new Set(accounts);
+    return members.filter((id) => !hidden.has(id));
   }
 
   async updateGroup(
@@ -325,11 +362,19 @@ export class UserGroupController {
 
     const allUserIds = group.users;
 
+    // This page carries each member's id, name and email, so a service account
+    // in the group would be fully identifiable — and its id is what binds an
+    // agent to it. Applied to the query rather than the page, so the count
+    // agrees with what comes back.
+    const includeServiceAccounts =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), orgId));
     const { rows: userDocs, total: totalCount } =
       await getUserRepository().listMembersPage(allUserIds, {
         search,
         skip,
         limit,
+        includeServiceAccounts,
       });
 
     // Bulk-fetch DPs for this page of users

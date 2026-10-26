@@ -619,7 +619,10 @@ class _TeamGraph:
         self.edges.update((collection, e["from_id"], e["to_id"]) for e in edges)
         return True
 
-    async def get_team_with_users(self, team_id: str, org_id: str, user_key: str) -> dict:
+    async def get_team_with_users(
+        self, team_id: str, org_id: str, user_key: str,
+        *, include_service_accounts: bool = False,
+    ) -> dict:
         self.read_back.append(team_id)
         return {"_key": team_id, "users": sorted(f for _, f, t in self.edges if t == team_id)}
 
