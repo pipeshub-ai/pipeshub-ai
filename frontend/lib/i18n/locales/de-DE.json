@@ -312,6 +312,13 @@
     "filterOnlyUnread": "Ungelesen",
     "filterArchived": "Archiviert",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} hat einen Chat mit Ihnen geteilt",
+      "titleAgent": "{{name}} hat einen Agenten-Chat mit Ihnen geteilt",
+      "body": "Sie können „{{chat}}“ jetzt öffnen.",
+      "bodyNoTitle": "Sie können ihn jetzt unter „{{place}}“ öffnen.",
+      "someone": "Ein Kollege"
+    },
     "loadFailed": "Benachrichtigungen konnten nicht geladen werden",
     "updateFailed": "Benachrichtigung konnte nicht aktualisiert werden",
     "removeFailed": "Benachrichtigung konnte nicht entfernt werden"
@@ -2639,7 +2646,8 @@
         "errorFallback": "Konnektor konnte nicht deaktiviert werden. Bitte versuchen Sie es erneut.",
         "actions": {
           "removeInstance": "diese Konnektor-Instanz zu entfernen",
-          "saveConfig": "Konfigurationsänderungen zu speichern"
+          "saveConfig": "Konfigurationsänderungen zu speichern",
+          "saveAuth": "die neuen Anmeldedaten zu speichern"
         }
       },
       "adminAccessDialog": {
@@ -2875,7 +2883,9 @@
           "ready": "Abgeschlossen",
           "readyTooltip": "Die Konfiguration ist abgeschlossen und authentifiziert. Die Synchronisierung kann nach der Aktivierung starten.",
           "desktopOffline": "Desktop offline",
-          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren."
+          "desktopOfflineTooltip": "Die Desktop-App, der dieser Ordner gehört, ist nicht verbunden. Öffnen Sie sie auf diesem Rechner, um zu synchronisieren.",
+          "actionNeeded": "Handlung erforderlich",
+          "actionNeededTooltip": "Erfordert Ihre Aufmerksamkeit: {{items}}"
         },
         "sync": {
           "kind": "Synchronisierung",
@@ -3122,6 +3132,12 @@
           "wholeSite": "Ganze Website",
           "onePage": "Eine Seite"
         }
+      },
+      "actionItems": {
+        "badge": "Handlung erforderlich",
+        "title": "Handlung erforderlich",
+        "openAuthentication": "Authentifizierung aktualisieren",
+        "viewSteps": "Einrichtungsschritte ansehen"
       }
     },
     "mcpServers": {
@@ -4295,6 +4311,12 @@
         "scopesHelp": "Wählen Sie aus, was dieses Token tun darf. Es gibt keine Standardauswahl: Eine unbeaufsichtigt verwendete Anmeldeinformation sollte nur die bewusst vergebenen Berechtigungen besitzen.",
         "expiryLabel": "Läuft ab nach",
         "expiryDays": "{{count}} Tagen",
+        "expiryCustom": "Benutzerdefiniert",
+        "expiryCustomLabel": "Tage bis zum Ablauf des Tokens",
+        "expiryCustomUnit": "Tage",
+        "expiryCustomHelp": "Geben Sie eine Anzahl von Tagen zwischen 1 und {{max}} ein.",
+        "expiryCustomInvalid": "Geben Sie eine ganze Zahl von Tagen zwischen 1 und {{max}} ein.",
+        "expiryCustomPreview": "Läuft am {{date}} ab",
         "existing": "Tokens",
         "none": "Dieses Konto besitzt noch keine Tokens.",
         "lastUsed": "Zuletzt verwendet: {{date}}",

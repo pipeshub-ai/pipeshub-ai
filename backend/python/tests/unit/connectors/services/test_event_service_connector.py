@@ -354,6 +354,23 @@ class TestStoreConnector:
 
         previous.cleanup.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_does_not_close_an_instance_a_reindex_is_using(self, service) -> None:
+        """A stage reindex publishes through the previous instance's processor;
+        disposing it would close that producer mid-reindex."""
+        spec_container = MagicMock(spec=[])
+        previous = AsyncMock()
+        spec_container.connectors_map = {"conn1": previous}
+        service.app_container = spec_container
+
+        with patch("app.connectors.services.event_service._running_here", return_value=False), \
+             patch("app.connectors.services.event_service._reindexing_here", return_value=True), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            await service._store_connector("conn1", MagicMock())
+
+        dispose.assert_not_awaited()
+
 
 # ===========================================================================
 # _ensure_connector
@@ -542,6 +559,57 @@ class TestHandleInit:
             result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
             assert result is False
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("init", [
+        AsyncMock(return_value=False),
+        AsyncMock(side_effect=OSError("share unreachable")),
+    ], ids=["returns_false", "raises"])
+    async def test_failed_init_disposes_the_connector(self, service, init) -> None:
+        """The factory hands the connector an open processor; a redelivered init
+        event builds another, so each failure must close its own."""
+        mock_conn = AsyncMock()
+        mock_conn.init = init
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is False
+        dispose.assert_awaited_once_with(mock_conn)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("inserted", [False, True], ids=["before_insert", "after_insert"])
+    async def test_a_store_failure_disposes_only_an_uncached_connector(self, service, inserted) -> None:
+        """Failing before the cache holds it leaves no one to close it; once
+        cached, closing it would break the tasks that pick it up."""
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.app_container = MagicMock(spec=["connector_notification_service"])
+        service.app_container.connectors_map = {}
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+
+        async def store(connector_id, connector) -> None:
+            if inserted:
+                service.app_container.connectors_map[connector_id] = connector
+            raise RuntimeError("cache")
+
+        with patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"), \
+             patch.object(service, "_store_connector", side_effect=store), \
+             patch.object(service, "_config_service_for", return_value=AsyncMock()), \
+             patch("app.connectors.services.event_service.dispose_connector",
+                   new_callable=AsyncMock) as dispose:
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            result = await service._handle_init("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is False
+        if inserted:
+            dispose.assert_not_awaited()
+        else:
+            dispose.assert_awaited_once_with(mock_conn)
 
 def _close_then_raise(key, coro):
     """start_if_idle owns the coroutine, so a raising stub must still close it
@@ -1508,6 +1576,64 @@ class TestConfigServiceFor:
         # Cleanup intents are service-wide: the reconcilers read them back.
         written = [c.args[0] for c in service.app_container.config_service.return_value.set_config.await_args_list]
         assert written[:2] == ["/services/entityCleanup/pending/c1", "/services/storageRelease/pending/c1"]
+
+
+class TestConnectorClassComesFromStoredType:
+    """The event name can come from a request body; the instance's stored type picks the class."""
+
+    _APP_DOC = {
+        "_key": "c1", "isActive": True, "orgId": "org1", "scope": "team",
+        "createdBy": "user-1", "type": "Google Drive",
+    }
+
+    @pytest.mark.asyncio
+    async def test_init_event_with_another_name_builds_the_stored_type(self, service) -> None:
+        mock_conn = AsyncMock()
+        mock_conn.init = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.create_connector = AsyncMock(return_value=mock_conn)
+            await service._handle_init("slack", {"orgId": "org1", "connectorId": "c1"})
+
+        assert mock_factory.create_connector.await_args.kwargs["name"] == "googledrive"
+        service.logger.warning.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_init_with_another_name_builds_the_stored_type(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("slack", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "googledrive"
+
+    @pytest.mark.asyncio
+    async def test_matching_name_builds_without_a_warning(self, service) -> None:
+        service.graph_provider.get_document = AsyncMock(return_value=self._APP_DOC)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("googledrive", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "googledrive"
+        service.logger.warning.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_instance_without_a_stored_type_keeps_the_event_name(self, service) -> None:
+        doc = {k: v for k, v in self._APP_DOC.items() if k != "type"}
+        service.graph_provider.get_document = AsyncMock(return_value=doc)
+        with patch.object(service, "_store_connector"), \
+             patch("app.connectors.services.event_service.ConnectorFactory") as mock_factory, \
+             patch("app.connectors.services.event_service.GraphDataStore"):
+            mock_factory.initialize_connector = AsyncMock(return_value=MagicMock())
+            await service._auto_initialize_connector("gmail", "c1")
+
+        assert mock_factory.initialize_connector.await_args.kwargs["name"] == "gmail"
 
 
 # ===========================================================================

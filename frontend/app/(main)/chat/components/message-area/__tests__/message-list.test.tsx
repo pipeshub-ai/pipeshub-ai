@@ -781,3 +781,51 @@ describe('MessageList — opening a chat', () => {
     expect(scroller().scrollTop).toBe(600);
   });
 });
+
+describe('MessageList — blur above the composer dock', () => {
+  function withDockHeight(height: number, run: () => void) {
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight');
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get(this: HTMLElement) {
+        return this.style.position === 'sticky' && this.querySelector('[data-testid="composer"]') ? height : 0;
+      },
+    });
+    try {
+      run();
+    } finally {
+      if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original);
+      else delete (HTMLElement.prototype as { offsetHeight?: number }).offsetHeight;
+    }
+  }
+
+  function blurHeight(): string {
+    const dock = screen.getByTestId('composer').closest('[style*="sticky"]') as HTMLElement;
+    const blur = dock.querySelector(':scope > [aria-hidden="true"]') as HTMLElement;
+    return blur.style.height;
+  }
+
+  function open() {
+    thread.messages = TWO_TURNS;
+    geometry.rowTop = { 'What is our refund policy?': 0, 'Who approves exceptions?': 600 };
+    openConversation('conv-1');
+    render(<MessageList composer={<div data-testid="composer" />} />);
+    settle();
+  }
+
+  it('stays inside a short dock, so a read-only viewer\'s last lines are not under the blur', () => {
+    withDockHeight(40, () => {
+      open();
+
+      expect(blurHeight()).toBe('40px');
+    });
+  });
+
+  it('keeps its full height above a full composer', () => {
+    withDockHeight(300, () => {
+      open();
+
+      expect(blurHeight()).toBe('180px');
+    });
+  });
+});

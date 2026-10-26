@@ -733,8 +733,7 @@ class TestCifsConnectorStreamAndFilters:
         assert mock_processor.reindex_existing_records.await_args.args[0][0].id == "same"
         assert mock_processor.on_new_records.await_args.args[0][0][0].id == "upd"
 
-    @patch("app.connectors.sources.cifs.connector.NetworkShareEntitiesProcessor.initialize", new_callable=AsyncMock)
-    async def test_create_connector(self, mock_init, mock_logger, mock_data_store_provider, mock_config_service, mock_processor):
+    async def test_create_connector(self, mock_logger, mock_data_store_provider, mock_config_service, mock_processor):
         created = await CifsConnector.create_connector(
             mock_logger,
             mock_data_store_provider,
@@ -745,4 +744,5 @@ class TestCifsConnectorStreamAndFilters:
             created_by="user-1",
         )
         assert isinstance(created, CifsConnector)
-        mock_init.assert_awaited()
+        # The factory's processor, not a second one with its own Redis connection.
+        assert created.data_entities_processor is mock_processor

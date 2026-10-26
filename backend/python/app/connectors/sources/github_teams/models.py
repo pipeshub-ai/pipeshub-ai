@@ -44,7 +44,9 @@ class GitHubLiterals(str, Enum):
     LAST_SYNC_TIME = "last_sync_time"
     ISSUE_TOTAL = "issue_total"
     LAST_COMMIT_SHA = "last_commit_sha"
-    DEFAULT_BRANCH = "default_branch"
+    # The branch the code checkpoint was taken on. The key predates branch
+    # selection; it keeps its name so checkpoints written before still read.
+    SYNCED_BRANCH = "default_branch"
     FULL_NAME = "full_name"
     UTF_8 = "utf-8"
     IMAGE = "image"

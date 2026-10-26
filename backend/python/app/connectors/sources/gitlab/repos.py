@@ -39,6 +39,7 @@ from app.connectors.core.constants import (
     IconPaths,
 )
 from app.connectors.core.registry.code_indexing_flags import (
+    code_branch,
     code_exclude_globs,
     code_indexing_flags,
 )
@@ -104,37 +105,62 @@ class ReposSync:
             return LinguistExclusions()
         return parse_linguist_exclusions(text)
 
+    def _link_ref(self) -> str:
+        """The ref links and listings name: the admin's branch, else HEAD (the default branch)."""
+        return code_branch(self.c.sync_filters) or "HEAD"
+
     async def run(
         self, project_id: int, project_path: str, default_branch: str
     ) -> None:
         """Sync code repository using incremental compare when a checkpoint exists,
         falling back to a full sync when the compare fails."""
         c = self.c
+        chosen_branch = code_branch(c.sync_filters)
+        branch = chosen_branch or default_branch
         branch_res = await c.runtime.ds_call(
-            c.data_source.get_branch, project_id=project_id, branch=default_branch,
+            c.data_source.get_branch, project_id=project_id, branch=branch,
         )
         if not branch_res.success or not branch_res.data:
             self.logger.error(
                 "Failed to fetch branch %s for project %s (%s): %s",
-                default_branch, project_id, project_path, branch_res.error,
+                branch, project_id, project_path, branch_res.error,
             )
-            # 404: an empty repository has no branch yet.
-            c.note_failed_read(f"default branch of project {project_path}", branch_res)
+            if chosen_branch and getattr(branch_res, "status_code", None) == HttpStatusCode.NOT_FOUND.value:
+                # Never fall back to the default branch: its files would replace the
+                # chosen branch's in the index without the admin asking for it.
+                c.note_sync_problem(
+                    f"code of project {project_path}: branch {chosen_branch!r} chosen in the "
+                    "connector's filters does not exist; existing records kept"
+                )
+            else:
+                # 404: an empty repository has no branch yet.
+                c.note_failed_read(f"branch {branch} of project {project_path}", branch_res)
             return
 
         current_sha = _branch_head_commit_sha(branch_res.data)
         if not current_sha:
             self.logger.error(
                 "No commit SHA on branch %s for project %s (%s)",
-                default_branch, project_id, project_path,
+                branch, project_id, project_path,
             )
             return
+        # A chosen branch is walked at its head commit and its records pinned to it, so
+        # content streams from that branch; the default branch keeps walking HEAD.
+        walk_ref = current_sha if chosen_branch else "HEAD"
 
         self._policy = PathPolicy(
             linguist=await self._load_linguist_exclusions(project_id, current_sha),
             exclude_globs=code_exclude_globs(c.sync_filters),
         )
-        last_sha, last_path = await self._get_code_repo_checkpoint(project_id)
+        last_sha, last_path, last_branch = await self._get_code_repo_checkpoint(project_id)
+        # A checkpoint from before branch selection was taken on the default branch.
+        last_branch = last_branch or default_branch
+        if last_sha is not None and last_branch != branch:
+            self.logger.info(
+                "Project %s synced branch changed (%s -> %s); walking the whole tree",
+                project_id, last_branch, branch,
+            )
+            last_sha = None
         if last_sha is not None and last_path != project_path:
             # Code records are keyed by the project's path. After a rename or a transfer
             # (or a checkpoint written before the path was kept) only a walk re-keys them.
@@ -145,9 +171,9 @@ class ReposSync:
             last_sha = None
         if last_sha is None:
             self.logger.info("No code-repo checkpoint for project %s; running full sync", project_id)
-            full_ok = await self._sync_repo_full(project_id, project_path)
+            full_ok = await self._sync_repo_full(project_id, project_path, walk_ref)
             if full_ok:
-                await self._update_code_repo_checkpoint(project_id, current_sha, project_path)
+                await self._update_code_repo_checkpoint(project_id, current_sha, project_path, branch)
             else:
                 self.logger.warning(
                     "Full sync for project %s completed with errors; "
@@ -175,11 +201,11 @@ class ReposSync:
             incremental_ok = False
             incremental_raised = True
         if incremental_ok:
-            await self._update_code_repo_checkpoint(project_id, current_sha, project_path)
+            await self._update_code_repo_checkpoint(project_id, current_sha, project_path, branch)
             return
 
         self.logger.warning("Incremental code sync failed for project %s; falling back to full sync", project_id)
-        full_ok = await self._sync_repo_full(project_id, project_path)
+        full_ok = await self._sync_repo_full(project_id, project_path, walk_ref)
         if not full_ok:
             self.logger.warning(
                 "Full sync fallback for project %s completed with errors; "
@@ -198,14 +224,14 @@ class ReposSync:
             )
             c.note_sync_problem(f"code of project {project_path}: changes since {last_sha[:8]} are pending")
         else:
-            await self._update_code_repo_checkpoint(project_id, current_sha, project_path)
+            await self._update_code_repo_checkpoint(project_id, current_sha, project_path, branch)
 
     # ------------------------------------------------------------------
     # Checkpoints
     # ------------------------------------------------------------------
 
-    async def _get_code_repo_checkpoint(self, project_id: int) -> tuple[str | None, str | None]:
-        """Return the last synced HEAD commit SHA and the project path it was synced under."""
+    async def _get_code_repo_checkpoint(self, project_id: int) -> tuple[str | None, str | None, str | None]:
+        """Return the last synced head commit SHA, and the project path and branch it was synced under."""
         from app.config.constants.arangodb import Connectors
         from app.connectors.core.base.sync_point.sync_point import (
             generate_record_sync_point_key,
@@ -215,14 +241,16 @@ class ReposSync:
             key = generate_record_sync_point_key(Connectors.GITLAB.value, group_project_id, "")
             data = await self.c.record_sync_point.read_sync_point(key)
             if not data:
-                return None, None
+                return None, None, None
             sha = data.get(GitlabLiterals.LAST_COMMIT_SHA.value)
-            return (str(sha) if sha else None), data.get("project_path")
+            return (str(sha) if sha else None), data.get("project_path"), data.get("branch")
         except Exception:
-            return None, None
+            return None, None, None
 
-    async def _update_code_repo_checkpoint(self, project_id: int, commit_sha: str, project_path: str) -> None:
-        """Persist the HEAD commit SHA, and the path it was synced under, after a successful sync."""
+    async def _update_code_repo_checkpoint(
+        self, project_id: int, commit_sha: str, project_path: str, branch: str,
+    ) -> None:
+        """Persist the head commit SHA, and the path and branch it was synced under, after a successful sync."""
         from app.config.constants.arangodb import Connectors
         from app.connectors.core.base.sync_point.sync_point import (
             generate_record_sync_point_key,
@@ -231,15 +259,15 @@ class ReposSync:
             Connectors.GITLAB.value, f"{project_id}-code-repository", ""
         )
         await self.c.record_sync_point.update_sync_point(
-            key, {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha, "project_path": project_path}
+            key, {GitlabLiterals.LAST_COMMIT_SHA.value: commit_sha, "project_path": project_path, "branch": branch}
         )
 
     # ------------------------------------------------------------------
     # Full sync
     # ------------------------------------------------------------------
 
-    async def _sync_repo_full(self, project_id: int, project_path: str) -> bool:
-        """Full sync of default-branch folders and blobs via one paginated GraphQL walk.
+    async def _sync_repo_full(self, project_id: int, project_path: str, walk_ref: str = "HEAD") -> bool:
+        """Full sync of the synced branch's folders and blobs via one paginated GraphQL walk at ``walk_ref``.
 
         Each page's folders and blobs are persisted immediately so only ~2 pages
         of entries are in memory at any time (the page being processed plus the
@@ -259,7 +287,7 @@ class ReposSync:
         all_ok = True
 
         pending: asyncio.Task[tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]] | None = (
-            asyncio.create_task(self._fetch_entries_page(project_path, project_id, after_cursor))
+            asyncio.create_task(self._fetch_entries_page(project_path, project_id, after_cursor, walk_ref))
         )
         try:
             while pending is not None:
@@ -281,7 +309,7 @@ class ReposSync:
                 after_cursor = next_cursor
                 if continue_paging:
                     pending = asyncio.create_task(
-                        self._fetch_entries_page(project_path, project_id, after_cursor)
+                        self._fetch_entries_page(project_path, project_id, after_cursor, walk_ref)
                     )
                 # What this walk writes: a blob the path policy leaves out is not kept.
                 seen.update(str(n["webPath"]) for n in page_trees if n.get("webPath"))
@@ -292,7 +320,7 @@ class ReposSync:
                     folders_walked += len(page_trees)
                 if page_blobs:
                     all_ok = await self.build_code_file_records(
-                        page_blobs, project_id, project_path
+                        page_blobs, project_id, project_path, commit_sha=_commit_ref(walk_ref),
                     ) and all_ok
                     blobs_walked += len(page_blobs)
         finally:
@@ -377,7 +405,7 @@ class ReposSync:
         return True
 
     async def _fetch_entries_page(
-        self, project_path: str, project_id: int, after_cursor: str
+        self, project_path: str, project_id: int, after_cursor: str, walk_ref: str = "HEAD",
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
         """Fetch one ``paginatedTree`` page. Returns ``(kind, trees, blobs, page_info)``.
 
@@ -407,7 +435,7 @@ class ReposSync:
                 )
                 await asyncio.sleep(delay)
             kind, trees, blobs, page_info, last_error, wait_asked = await self._fetch_entries_page_once(
-                project_path, project_id, after_cursor
+                project_path, project_id, after_cursor, walk_ref
             )
             if kind != "retry":
                 return kind, trees, blobs, page_info
@@ -420,7 +448,7 @@ class ReposSync:
         return "abort", [], [], {}
 
     async def _fetch_entries_page_once(
-        self, project_path: str, project_id: int, after_cursor: str
+        self, project_path: str, project_id: int, after_cursor: str, walk_ref: str = "HEAD",
     ) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any], str | None, float | None]:
         """One attempt at a ``paginatedTree`` page.
 
@@ -432,7 +460,7 @@ class ReposSync:
         try:
             res = await c.runtime.ds_call_async(
                 c.data_source.get_repo_entries_g,
-                project_id=project_path, ref="HEAD", after_cursor=after_cursor,
+                project_id=project_path, ref=walk_ref, after_cursor=after_cursor,
             )
         except Exception as e:
             return "retry", empty, empty, {}, f"{type(e).__name__}: {e}", None
@@ -463,7 +491,32 @@ class ReposSync:
         entry: dict[str, Any] = nodes[0]
         trees = (entry.get("trees") or {}).get("nodes") or []
         blobs = (entry.get("blobs") or {}).get("nodes") or []
+        if walk_ref != "HEAD":
+            trees = [self._as_head_entry(n, project_path, walk_ref, "tree") for n in trees]
+            blobs = [self._as_head_entry(n, project_path, walk_ref, "blob") for n in blobs]
         return "data", trees, blobs, page_info, None, None
+
+    def _as_head_entry(
+        self, node: dict[str, Any], project_path: str, walk_ref: str, kind: str,
+    ) -> dict[str, Any]:
+        """A walked entry re-keyed as if walked at HEAD.
+
+        GitLab names the walked ref in ``webPath``, which is the record's id. Ids
+        always name HEAD, so a walk at a commit updates the records a HEAD walk or
+        an incremental pass wrote instead of creating a second set. A blob keeps
+        GitLab's ``webUrl`` (pinned to the commit); a folder links to the branch.
+        """
+        marker = f"/-/{kind}/{walk_ref}/"
+        web_path = str(node.get("webPath") or "")
+        if marker in web_path:
+            web_path = web_path.replace(marker, f"/-/{kind}/HEAD/", 1)
+        else:
+            build = _code_blob_web_path if kind == "blob" else _code_tree_web_path
+            web_path = build(project_path, str(node.get("path") or ""))
+        entry = {**node, "webPath": web_path}
+        if kind == "tree":
+            entry["webUrl"] = _ref_web_url(self.c._gitlab_base_url, web_path, self._link_ref())
+        return entry
 
     # ------------------------------------------------------------------
     # Incremental sync
@@ -796,7 +849,7 @@ class ReposSync:
             tree_record = self._build_folder_record(
                 folder_name=prefix.rsplit("/", 1)[-1],
                 external_record_id=web_path,
-                weburl=f"{c._gitlab_base_url}{web_path}",
+                weburl=_ref_web_url(c._gitlab_base_url, web_path, self._link_ref()),
                 folder_hash=None,
                 external_group_id=external_group_id,
                 parent_external_record_id=(
@@ -1205,11 +1258,12 @@ class ReposSync:
         """Fetch commit-history timestamps for many paths (bounded concurrency)."""
         semaphore = asyncio.Semaphore(_GITLAB_BACKFILL_CONCURRENCY)
         results: dict[str, tuple[int | None, int | None]] = {}
+        ref = self._link_ref()
 
         async def fetch_one(path: str) -> None:
             async with semaphore:
                 try:
-                    results[path] = await self._code_file_source_timestamps(project_id, path)
+                    results[path] = await self._code_file_source_timestamps(project_id, path, ref)
                 except Exception as e:
                     self.logger.warning("Failed to fetch timestamps for %s in project %s: %s", path, project_id, e)
                     results[path] = (None, None)
@@ -1354,6 +1408,15 @@ def _code_blob_web_path(project_path: str, repo_path: str, ref: str = "HEAD") ->
 
 def _code_tree_web_path(project_path: str, repo_path: str, ref: str = "HEAD") -> str:
     return f"/{project_path}/-/tree/{ref}/{repo_path}"
+
+
+def _ref_web_url(base_url: str, web_path: str, ref: str) -> str:
+    """A link at ``ref`` for a record id, which always names HEAD."""
+    for kind in ("blob", "tree"):
+        marker = f"/-/{kind}/HEAD/"
+        if marker in web_path:
+            return base_url + web_path.replace(marker, f"/-/{kind}/{ref}/", 1)
+    return base_url + web_path
 
 
 def _repo_path_from_blob_web_url(web_url: str | None) -> str | None:

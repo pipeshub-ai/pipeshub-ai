@@ -14,8 +14,8 @@ shared test share.
                          back byte for byte (PP-351)
   TC-NAMES             — %, #, spaces and unicode in names: one record each, and the
                          download returns that file's own bytes (PP-345, PP-346)
-  TC-TEAM-SCOPE        — a team connector without a share filter syncs nothing; with
-                         one it syncs only that share (PP-347)
+  TC-TEAM-SCOPE        — a team connector without a share filter syncs every share;
+                         with one it syncs only that share (PP-347)
   TC-FILEID-TWO-SHARES — folders of two fresh shares keep their own records even
                          when the service hands out the same FileId (PP-344)
   TC-SAS               — a Read+List SAS connection string syncs and downloads; a
@@ -77,14 +77,19 @@ def _sas_connection_string(permission: str) -> str:
     return f"FileEndpoint={service.primary_endpoint};SharedAccessSignature={token}"
 
 
-def _config(shares: List[str] | None, connection_string: str | None = None) -> Dict[str, Any]:
+def _config(
+    shares: List[str] | None, connection_string: str | None = None, folders: List[str] | None = None,
+) -> Dict[str, Any]:
     config: Dict[str, Any] = {"auth": {
         "connectionString": connection_string or os.getenv("AZURE_FILES_CONNECTION_STRING"),
     }}
+    values: Dict[str, Any] = {}
     if shares is not None:
-        config["filters"] = {"sync": {"values": {
-            "shares": {"value": shares, "operator": "in", "type": "multiselect"},
-        }}}
+        values["shares"] = {"value": shares, "operator": "in", "type": "multiselect"}
+    if folders is not None:
+        values["folder_paths"] = {"value": folders, "operator": "in", "type": "list"}
+    if values:
+        config["filters"] = {"sync": {"values": values}}
     return config
 
 
@@ -103,12 +108,15 @@ async def scratch(
         made["shares"].append(name)
         return name
 
-    def connector(shares: List[str] | None, *, scope: str = "personal", connection_string: str | None = None) -> str:
+    def connector(
+        shares: List[str] | None, *, scope: str = "personal", connection_string: str | None = None,
+        folders: List[str] | None = None,
+    ) -> str:
         instance = pipeshub_client.create_connector(
             connector_type="Azure Files",
             instance_name=f"azure-files-pp341-{uuid.uuid4().hex[:8]}",
             scope=scope,
-            config=_config(shares, connection_string),
+            config=_config(shares, connection_string, folders),
         )
         made["connectors"].append(instance.connector_id)
         pipeshub_client.toggle_sync(instance.connector_id, enable=True)
@@ -226,22 +234,26 @@ class TestAzureFilesPP341:
     async def test_tc_team_scope(self, scratch, azure_files_storage, pipeshub_client, graph_provider) -> None:
         make_share, make_connector = scratch
         chosen, other = make_share("chosen"), make_share("other")
-        azure_files_storage.upload_file(chosen, "c.txt", b"chosen")
-        azure_files_storage.upload_file(other, "o.txt", b"other")
+        # The folder keeps the share-less connector off every other share in the test account.
+        folder = f"team-{uuid.uuid4().hex[:8]}"
+        for share, name in ((chosen, "c.txt"), (other, "o.txt")):
+            azure_files_storage.create_directory(share, folder)
+            azure_files_storage.upload_file(share, f"{folder}/{name}", name.encode())
 
-        unfiltered = make_connector(None, scope="team")
-        pipeshub_client.wait(60)
-        assert await graph_provider.count_records(unfiltered) == 0, (
-            "a team connector without a share filter must not sync every share"
-        )
+        unfiltered = make_connector(None, scope="team", folders=[folder])
 
-        filtered = make_connector([chosen], scope="team")
+        async def both_synced() -> bool:
+            return await _has(graph_provider, unfiltered, f"{chosen}/{folder}/c.txt", f"{other}/{folder}/o.txt")
+
+        await _wait(unfiltered, both_synced, "team sync of every share")
+
+        filtered = make_connector([chosen], scope="team", folders=[folder])
 
         async def synced() -> bool:
-            return await _has(graph_provider, filtered, f"{chosen}/c.txt")
+            return await _has(graph_provider, filtered, f"{chosen}/{folder}/c.txt")
 
         await _wait(filtered, synced, "team sync of the chosen share")
-        assert await graph_provider.get_record_by_external_id(filtered, f"{other}/o.txt") is None
+        assert await graph_provider.get_record_by_external_id(filtered, f"{other}/{folder}/o.txt") is None
 
     async def test_tc_fileid_two_shares(self, scratch, azure_files_storage, pipeshub_client, graph_provider) -> None:
         make_share, make_connector = scratch

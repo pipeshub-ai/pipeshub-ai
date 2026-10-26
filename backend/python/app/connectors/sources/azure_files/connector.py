@@ -161,8 +161,9 @@ SETUP_INFO = (
     "resource types). An account key connection string gives full read, write and delete "
     "access to everything in the storage account. Share-level permissions and NTFS folder "
     "permissions are not applied: every synced file is visible to everyone with access to "
-    "this connector, so for a team connector pick only shares the whole organisation may read "
-    "(a team connector syncs nothing until File Share Names names at least one share)."
+    "this connector, and a team connector shares them with the whole organisation. With no "
+    "shares picked under File Share Names, it syncs every share the credentials can list, so "
+    "for a team connector pick only shares the whole organisation may read."
 )
 
 
@@ -397,7 +398,7 @@ class AzureFilesDataSourceEntitiesProcessor(DataSourceEntitiesProcessor):
             display_name="File Share Names",
             filter_type=FilterType.MULTISELECT,
             category=FilterCategory.SYNC,
-            description="Select the Azure File Shares to sync. Required for a team connector: everything synced is visible to the whole organisation.",
+            description="File shares to sync; leave empty to sync every share the credentials can list. Everything a team connector syncs is visible to the whole organisation.",
             option_source_type=OptionSourceType.DYNAMIC,
             default_value=[],
             default_operator=MultiselectOperator.IN.value
@@ -632,18 +633,6 @@ class AzureFilesConnector(BaseConnector):
             )
 
             selected_shares = included_names(sync_filters, "shares")
-            if self.scope == ConnectorScope.TEAM.value and not selected_shares:
-                # Every synced file is readable by the whole organisation, so a team
-                # connector must not pick up every share the credential can list, nor
-                # every share but a few (Not in), which takes in shares created later.
-                message = (
-                    "A team connector syncs only the shares named in File Share Names (operator In), "
-                    "since everything it syncs is visible to the whole organisation. Select the "
-                    "shares to sync in the connector's filters."
-                )
-                await self._notify_problem(NotificationType.CONNECTOR_SYNC_ERROR, "No file shares selected", message)
-                raise ValueError(message)
-
             if self.scope == ConnectorScope.TEAM.value:
                 await self.data_entities_processor.ensure_team_app_edge(
                     self.connector_id

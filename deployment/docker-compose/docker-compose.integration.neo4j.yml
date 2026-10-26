@@ -221,6 +221,7 @@ services:
       - SLACK_BOT_PORT=${SLACK_BOT_PORT:-3020}
 
       - ENABLE_PDFPLUMBER_PROCESSOR=true
+      - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
 
     depends_on:
       # Blocks until the bucket exists. Without it pytest can start while

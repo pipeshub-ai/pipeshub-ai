@@ -530,11 +530,13 @@ Then the PDF goes to exactly one paid path at most:
 | The PDF | Read by |
 | --- | --- |
 | Needs OCR | VLM OCR, one model call per page; a scan over `VLM_OCR_MAX_PAGES` (default 500) fails as too large |
-| Has a text layer, within Docling's 100 MB | Docling; if Docling cannot read it, the PdfPlumber+OpenCV layout parser |
-| Has a text layer, over 100 MB, or `ENABLE_PDFPLUMBER_PROCESSOR=true` | The PdfPlumber+OpenCV layout parser |
-| Docling unreachable, refusing this service, shedding load, or answering 502/503/504 | Nothing: `DoclingUnavailableError` retries the record later |
+| Has a text layer, at most `PDF_DOCLING_MAX_PAGES` pages (default 30) and within Docling's 100 MB | Docling; if Docling cannot read it, the PdfPlumber+OpenCV layout parser |
+| Has a text layer, more than `PDF_DOCLING_MAX_PAGES` pages, over 100 MB, or `ENABLE_PDFPLUMBER_PROCESSOR=true` | The PdfPlumber+OpenCV layout parser |
+| Docling unreachable, refusing this service, shedding load, or answering 502/503/504 (`DoclingUnavailableError`) | The PdfPlumber+OpenCV layout parser, so text PDFs keep indexing while Docling is down. Only if Docling had already finished parsing the record is the error raised and the record retried, so it is never parsed twice. With `PARSER_BACKEND=docling` there is no other parser and the record is retried |
 
-A text PDF is never sent to OCR: that fallback once turned every failed Docling parse into a model call per page.
+In-process indexing never sends a text PDF to OCR: that fallback once turned every failed Docling parse into a model call per page.
+
+The page count is the one inspection already made, so routing opens the file no extra time; a file only pdfium can open has no count and goes to Docling. `PDF_DOCLING_MAX_PAGES=0` sends every text PDF to the layout parser; a value that is not a non-negative integer is read as 30. With `USE_PARSING_SERVICE=true` the parsing service routes the same way (`SmartPDFParser`), with one difference: when the parser it chose fails (PdfPlumber, after Docling when Docling could not read the file), the file goes to OCR, except for unsupported-format, empty-content and invalid-input errors. `PARSER_BACKEND=docling` skips the page and size routing and always asks Docling, which still refuses a PDF over 100 MB; such a file then goes to OCR. When Docling is unreachable, a PdfPlumber failure is reported as that failure and the file is not sent to OCR.
 
 What still pauses the loop, measured with a 50 ms heartbeat on a 20 MB CSV and a 4.9 MB source file: one full garbage collection of about 0.3 s when tens of thousands of parsed blocks are rebuilt in the indexing process (the cost of holding that many objects, there before this change too), up to 0.6 s of the same while a 290,000-row CSV becomes row blocks, and 0.1–0.3 s while that CSV's rows are unpickled. Before, the source file held the loop for 3–7 s, reading the CSV for 2 s, and building its row blocks for 9.7 s.
 

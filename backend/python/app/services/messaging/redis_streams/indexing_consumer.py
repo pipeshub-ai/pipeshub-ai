@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING, Any, Optional, override
 
 from pydantic import ValidationError
 
+from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
+from app.core.org_context import bind_optional, spawn_detached
+from app.core.org_context import pop as pop_org
+from app.core.org_context import push as push_org
 from app.services.distributed.interface import IDistributedLeaseManager, IRetryTracker
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
@@ -549,9 +553,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if not self.redis:
                 await self.initialize()
 
-            self.consume_task = asyncio.create_task(self._consume_loop())
+            self.consume_task = spawn_detached(self._consume_loop())
             if self.config.retention_mode == "after_ack":
-                self._retention_task = asyncio.create_task(self.__run_retention())
+                self._retention_task = spawn_detached(self.__run_retention())
             self.logger.info(
                 "Started Redis Streams consumer task with parsing_ceiling=%d, "
                 "light_parsing_ceiling=%d, indexing_ceiling=%d",
@@ -1148,7 +1152,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         if self.__already_held(message_id, topic):
             return False
         try:
-            parsed_message = await self._parse_message(message_id, fields)
+            parsed_message = await self._parse_message(message_id, fields, topic)
             stable_message_id = self._get_stable_message_id(message_id, parsed_message)
             if await self._should_dead_letter(
                 topic, message_id, stable_message_id, parsed_message
@@ -1929,7 +1933,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         self, stream_name: str, message_id: str, fields: dict[str, str]
     ) -> None:
         """Parse a freshly read entry and hand it to the scheduler."""
-        parsed = await self._parse_message(message_id, fields)
+        parsed = await self._parse_message(message_id, fields, stream_name)
         await self.__enqueue_parsed(stream_name, message_id, fields, parsed)
 
     async def __enqueue_parsed(
@@ -1991,7 +1995,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             await self._start_processing_task(stream_name, message_id, fields)
             return
 
-        parsed = parsed_message or await self._parse_message(message_id, fields)
+        parsed = parsed_message or await self._parse_message(message_id, fields, stream_name)
         if parsed is None:
             return
 
@@ -2250,7 +2254,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             for message_id, fields in messages
         ]
         parsed = [
-            await self._parse_message(message_id, fields)
+            await self._parse_message(message_id, fields, _stream)
             for _stream, message_id, fields in entries
         ]
         settled = await self.__settle_connector_off(entries, parsed)
@@ -2505,7 +2509,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             )
 
     async def _parse_message(
-        self, message_id: str, fields: dict[str, str]
+        self, message_id: str, fields: dict[str, str], stream_name: str
     ) -> StreamMessage | None:
         """Parse a Redis stream entry into a ``StreamMessage``.
 
@@ -2527,7 +2531,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # whose whole body rides in the envelope, and parsing it inline
             # blocks every other in-flight record on this one worker loop.
             raw = await offload_if_large(_loads_possibly_double_encoded, value_str)
-            return StreamMessage(**raw)
+            return await open_stream_message(stream_name, raw, StreamMessage)
+        except EnvelopeRejected as e:
+            self.logger.error("Envelope rejected for %s on %s: %s", message_id, stream_name, e.reason)
         except (json.JSONDecodeError, ValidationError, TypeError) as e:
             self.logger.error(
                 "Failed to parse message %s as StreamMessage: %s", message_id, e
@@ -2570,7 +2576,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             if parsed_message is None:
                 # The broker-order path spawns from raw fields; the tier has to
                 # be known before the token exists. The wrapper reuses this parse.
-                parsed_message = await self._parse_message(message_id, fields)
+                parsed_message = await self._parse_message(message_id, fields, stream_name)
             waiter_token = concurrency.GateWaiterToken(
                 self, concurrency.dispatch_tier(self, parsed_message)
             )
@@ -2750,6 +2756,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
         return message_id
 
+    async def _send_in_org(self, message: StreamMessage, topic: str, event_type: str, payload: dict) -> None:
+        """Re-publish under the message's own org so a retry is signed like the original (the handler's bind is gone by now)."""
+        with bind_optional(ctx_of(message)):
+            await self.producer.send_event(topic=topic, event_type=event_type, payload=payload)
+
     async def _requeue_message(
         self,
         stream_name: str,
@@ -2791,10 +2802,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             payload["_retry_not_before"] = time.time() + backoff
 
             await self._run_on_main_loop(
-                self.producer.send_event(
-                    topic=self._retry_topic(stream_name),
-                    event_type=message.eventType,
-                    payload=payload,
+                self._send_in_org(
+                    message, self._retry_topic(stream_name), message.eventType, payload
                 )
             )
         except Exception as e:
@@ -2908,7 +2917,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # above the offload threshold, a second thread hop) on the same
         # envelope.
         if parsed_message is None:
-            parsed_message = await self._parse_message(message_id, fields)
+            parsed_message = await self._parse_message(message_id, fields, stream_name)
         if parsed_message is None:
             self.logger.warning(
                 "Unparseable message %s from stream %s (%d byte payload); "
@@ -3063,6 +3072,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
+                org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, indexing_complete, shutting_down, parsing_admission, parse_lease_pool
@@ -3195,6 +3205,7 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
+                    pop_org(org_token)
                     reset_context(token)
 
                 if shutting_down:

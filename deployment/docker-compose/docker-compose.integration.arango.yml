@@ -221,6 +221,7 @@ services:
 
 
       - ENABLE_PDFPLUMBER_PROCESSOR=${ENABLE_PDFPLUMBER_PROCESSOR:-false}
+      - PDF_DOCLING_MAX_PAGES=${PDF_DOCLING_MAX_PAGES:-30}
     depends_on:
       # Blocks until the bucket exists. Without it pytest can start while
       # minio-init is still running, and the MinIO suite fails on a bucket

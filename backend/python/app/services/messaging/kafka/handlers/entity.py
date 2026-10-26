@@ -14,7 +14,10 @@ from app.config.constants.arangodb import (
     OriginTypes,
     ProgressStatus,
 )
-from app.connectors.core.base.connector.connector_service import connector_sync_lock
+from app.connectors.core.base.connector.connector_service import (
+    connector_sync_lock,
+    dispose_connector,
+)
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
     ensure_written,
@@ -748,8 +751,7 @@ class EntityEventService(BaseEventService):
             ):
                 existing_connector = self.app_container.connectors_map.pop(connector_id)
                 try:
-                    if hasattr(existing_connector, "cleanup"):
-                        await existing_connector.cleanup()
+                    await dispose_connector(existing_connector)
                     self.logger.info(f"Cleaned up connector instance {connector_id}")
                 except Exception as cleanup_err:
                     self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")

@@ -396,6 +396,13 @@
     "filterOnlyUnread": "未讀",
     "filterArchived": "已封存",
     "filterTooltip": "篩選：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 與你共用了一個聊天",
+      "titleAgent": "{{name}} 與你共用了一個代理程式聊天",
+      "body": "你現在可以開啟「{{chat}}」。",
+      "bodyNoTitle": "你現在可以在「{{place}}」中開啟它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
     "removeFailed": "無法移除通知"
@@ -2776,7 +2783,8 @@
         "errorFallback": "無法停用連接器。請再試一次。",
         "actions": {
           "removeInstance": "移除此連接器執行個體",
-          "saveConfig": "儲存設定變更"
+          "saveConfig": "儲存設定變更",
+          "saveAuth": "儲存新的認證資訊"
         }
       },
       "adminAccessDialog": {
@@ -3012,7 +3020,9 @@
           "ready": "已完成",
           "readyTooltip": "設定已完成並通過驗證。啟用後即可執行同步。",
           "desktopOffline": "桌面端離線",
-          "desktopOfflineTooltip": "擁有此資料夾的桌面應用程式未連線。請在該電腦上開啟它以進行同步。"
+          "desktopOfflineTooltip": "擁有此資料夾的桌面應用程式未連線。請在該電腦上開啟它以進行同步。",
+          "actionNeeded": "需要處理",
+          "actionNeededTooltip": "需要您處理：{{items}}"
         },
         "sync": {
           "kind": "同步",
@@ -3259,6 +3269,12 @@
           "wholeSite": "整個網站",
           "onePage": "單一頁面"
         }
+      },
+      "actionItems": {
+        "badge": "需要處理",
+        "title": "需要處理",
+        "openAuthentication": "更新驗證",
+        "viewSteps": "查看設定步驟"
       }
     },
     "mcpServers": {
@@ -4369,6 +4385,12 @@
         "scopesHelp": "選擇此 Token 可執行的操作。沒有預設值：無人看管執行的憑證應只擁有他人明確為其選擇的權限。",
         "expiryLabel": "有效期限",
         "expiryDays": "{{count}} 天",
+        "expiryCustom": "自訂",
+        "expiryCustomLabel": "權杖到期前的天數",
+        "expiryCustomUnit": "天",
+        "expiryCustomHelp": "請輸入 1 到 {{max}} 之間的天數。",
+        "expiryCustomInvalid": "請輸入 1 到 {{max}} 之間的整數天數。",
+        "expiryCustomPreview": "將於 {{date}} 到期",
         "existing": "Token",
         "none": "此帳戶尚未持有任何 Token。",
         "lastUsed": "上次使用 {{date}}",

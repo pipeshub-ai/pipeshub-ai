@@ -396,6 +396,13 @@
     "filterOnlyUnread": "未读",
     "filterArchived": "已归档",
     "filterTooltip": "筛选：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 与你共享了一个聊天",
+      "titleAgent": "{{name}} 与你共享了一个智能体聊天",
+      "body": "你现在可以打开“{{chat}}”。",
+      "bodyNoTitle": "你现在可以在“{{place}}”中打开它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
     "removeFailed": "无法移除通知"
@@ -2776,7 +2783,8 @@
         "errorFallback": "禁用连接器失败。请重试。",
         "actions": {
           "removeInstance": "移除此连接器实例",
-          "saveConfig": "保存配置更改"
+          "saveConfig": "保存配置更改",
+          "saveAuth": "保存新的凭据"
         }
       },
       "adminAccessDialog": {
@@ -3012,7 +3020,9 @@
           "ready": "已完成",
           "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
           "desktopOffline": "桌面端离线",
-          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。",
+          "actionNeeded": "需要处理",
+          "actionNeededTooltip": "需要您处理：{{items}}"
         },
         "sync": {
           "kind": "同步",
@@ -3259,6 +3269,12 @@
           "wholeSite": "整个网站",
           "onePage": "单个页面"
         }
+      },
+      "actionItems": {
+        "badge": "需要处理",
+        "title": "需要处理",
+        "openAuthentication": "更新身份验证",
+        "viewSteps": "查看设置步骤"
       }
     },
     "mcpServers": {
@@ -4369,6 +4385,12 @@
         "scopesHelp": "选择此令牌可以执行的操作。没有默认值：无人值守运行的凭据应当只拥有他人明确为其选择的权限。",
         "expiryLabel": "有效期",
         "expiryDays": "{{count}} 天",
+        "expiryCustom": "自定义",
+        "expiryCustomLabel": "令牌过期前的天数",
+        "expiryCustomUnit": "天",
+        "expiryCustomHelp": "请输入 1 到 {{max}} 之间的天数。",
+        "expiryCustomInvalid": "请输入 1 到 {{max}} 之间的整数天数。",
+        "expiryCustomPreview": "将于 {{date}} 过期",
         "existing": "令牌",
         "none": "此账号尚未持有任何令牌。",
         "lastUsed": "上次使用 {{date}}",

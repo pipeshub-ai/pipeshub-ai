@@ -319,6 +319,13 @@
     "filterOnlyUnread": "No leídas",
     "filterArchived": "Archivadas",
     "filterTooltip": "Filtro: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} ha compartido un chat contigo",
+      "titleAgent": "{{name}} ha compartido un chat de agente contigo",
+      "body": "Ahora puedes abrir «{{chat}}».",
+      "bodyNoTitle": "Ahora puedes abrirlo desde «{{place}}».",
+      "someone": "Un compañero"
+    },
     "loadFailed": "No se pudieron cargar las notificaciones",
     "updateFailed": "No se pudo actualizar la notificación",
     "removeFailed": "No se pudo eliminar la notificación"
@@ -2665,7 +2672,8 @@
         "errorFallback": "No se pudo deshabilitar el conector. Por favor, inténtelo de nuevo.",
         "actions": {
           "removeInstance": "eliminar esta instancia del conector",
-          "saveConfig": "guardar los cambios de configuración"
+          "saveConfig": "guardar los cambios de configuración",
+          "saveAuth": "guardar las nuevas credenciales"
         }
       },
       "adminAccessDialog": {
@@ -2902,7 +2910,9 @@
           "ready": "Completo",
           "readyTooltip": "La configuración está completa y autenticada. La sincronización puede ejecutarse cuando esté habilitada.",
           "desktopOffline": "Escritorio desconectado",
-          "desktopOfflineTooltip": "La aplicación de escritorio que gestiona esta carpeta no está conectada. Ábrela en ese equipo para sincronizar."
+          "desktopOfflineTooltip": "La aplicación de escritorio que gestiona esta carpeta no está conectada. Ábrela en ese equipo para sincronizar.",
+          "actionNeeded": "Acción necesaria",
+          "actionNeededTooltip": "Requiere su atención: {{items}}"
         },
         "sync": {
           "kind": "Sync",
@@ -3149,6 +3159,12 @@
           "wholeSite": "Sitio completo",
           "onePage": "Una página"
         }
+      },
+      "actionItems": {
+        "badge": "Acción necesaria",
+        "title": "Acción necesaria",
+        "openAuthentication": "Actualizar autenticación",
+        "viewSteps": "Ver los pasos de configuración"
       }
     },
     "mcpServers": {
@@ -4336,6 +4352,12 @@
         "scopesHelp": "Elija qué puede hacer este token. No hay valor predeterminado: una credencial que se ejecuta sin supervisión debe tener el acceso que alguien haya elegido para ella.",
         "expiryLabel": "Caduca después de",
         "expiryDays": "{{count}} días",
+        "expiryCustom": "Personalizado",
+        "expiryCustomLabel": "Días hasta que caduque el token",
+        "expiryCustomUnit": "días",
+        "expiryCustomHelp": "Introduce un número de días entre 1 y {{max}}.",
+        "expiryCustomInvalid": "Introduce un número entero de días entre 1 y {{max}}.",
+        "expiryCustomPreview": "Caduca el {{date}}",
         "existing": "Tokens",
         "none": "Esta cuenta todavía no tiene ningún token.",
         "lastUsed": "Último uso: {{date}}",

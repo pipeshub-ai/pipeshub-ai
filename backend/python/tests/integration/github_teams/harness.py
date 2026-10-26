@@ -205,6 +205,7 @@ class World:
         self.connector: GitHubTeamsConnector | None = None
         self.sleeps: list[float] = []
         self.scope: set[int] = set()  # repo ids the sync filter selects
+        self.branch: str | None = None  # the Branch sync filter; None = each repo's default
         self.synced_once = False
         self.pending_full_sync = False
         self.absent_reads: list[str] = []
@@ -304,6 +305,7 @@ class World:
         if self.synced_once:
             self.pending_full_sync = True
         self.scope = {r.id for r in repos}
+        self.branch = None
         self.config.clear()
         self.config.update({
             "auth": {"authType": "API_TOKEN", "token": token.value}, "credentials": {},
@@ -321,10 +323,12 @@ class World:
         self.scope = {r.id for r in self.gh.repos.values() if r.owner.login in orgs and not r.deleted}
 
     def select(self, repos: list[Repo]) -> None:
-        """The admin picks a different repository: the next sync is a full one."""
+        """The admin picks a different repository: the next sync is a full one. The form
+        clears the branch with it, as a branch of the old repository means nothing here."""
         self.config["filters"]["sync"]["values"] = {
             "repo_ids": {"operator": "in", "type": "select", "value": [r.full_name for r in repos]}}
         self.scope = {r.id for r in repos}
+        self.branch = None
         if self.synced_once:
             self.pending_full_sync = True
 
@@ -332,6 +336,17 @@ class World:
         """The admin sets the "updated since" window (GitHub time): a filter change."""
         self.config["filters"]["sync"]["values"]["modified"] = {
             "operator": "is_after", "type": "datetime", "value": {"start": start_seconds * 1000, "end": None}}
+        if self.synced_once:
+            self.pending_full_sync = True
+
+    def set_branch(self, branch: str | None) -> None:
+        """The admin picks the branch to sync (None clears it): a filter change."""
+        values = self.config["filters"]["sync"]["values"]
+        if branch is None:
+            values.pop("branch", None)
+        else:
+            values["branch"] = {"operator": "in", "type": "select", "value": [branch]}
+        self.branch = branch
         if self.synced_once:
             self.pending_full_sync = True
 
@@ -472,6 +487,11 @@ class World:
 
     # ------------------------------------------------------------------ GitHub's answer
 
+    def tree(self, repo: Repo) -> dict[str, bytes]:
+        """The files of the branch the connector is set to sync."""
+        head = repo.head(self.branch)
+        return head.tree if head else {}
+
     def gh_user(self, email: str) -> User | None:
         for u in self.gh.users.values():
             if email in (u.email, u.corporate_email):
@@ -494,7 +514,7 @@ class World:
                 return repo, issue if issue and not issue.deleted and issue.transferred_to is None else None
             if kind == "pull":
                 return repo, repo.pulls.get(int(tail))
-            tree = repo.head().tree if repo.head() else {}
+            tree = self.tree(repo)
             if kind == "blob":
                 return repo, tail if tail in tree else None
             if kind == "tree":
@@ -553,7 +573,7 @@ class World:
                 for pr in repo.pulls.values():
                     if f"{rid}/pull/{pr.number}" not in docs:
                         out.missing.append(f"pr {repo.name}#{pr.number}")
-                for path in (repo.head().tree if repo.head() else {}):
+                for path in self.tree(repo):
                     if f"/{rid}/blob/{path}" not in docs:
                         out.missing.append(f"file {repo.name}:{path}")
         for external_id, doc in docs.items():

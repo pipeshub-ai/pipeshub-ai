@@ -245,6 +245,8 @@ class SyncFilterKey(str, Enum):
     REPO_IDS = "repo_ids"
     # Code repositories: gitignore-style paths whose files get no record
     EXCLUDE_PATHS = "exclude_paths"
+    # Code repositories: the branch whose files are synced; unset = default branch
+    BRANCH = "branch"
 
     # Content filters
     CONTENT_STATUS = "content_status"

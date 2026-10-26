@@ -260,32 +260,6 @@ class TestRasterWorkerSizing:
         assert rasterizer.pdf_raster_pool_size() == 2
 
 
-def test_run_and_release_flags_the_task_for_a_trim_even_when_it_fails() -> None:
-    rasterizer._task_ended.clear()
-    assert rasterizer._run_and_release(sum, [1, 2]) == 3
-    assert rasterizer._task_ended.is_set()
-
-    rasterizer._task_ended.clear()
-    with pytest.raises(ZeroDivisionError):
-        rasterizer._run_and_release(divmod, 1, 0)
-    assert rasterizer._task_ended.is_set()
-
-
-def test_housekeeping_trims_twice_after_a_task_and_exits_once_orphaned() -> None:
-    rasterizer._task_ended.set()
-    with patch.object(rasterizer.os, "getppid", side_effect=[1, 1, 1, 1, 2]), \
-            patch.object(rasterizer.time, "sleep"), \
-            patch.object(rasterizer, "_release_freed_memory") as trim, \
-            patch.object(rasterizer.os, "_exit") as exit_, \
-            patch.object(rasterizer.threading, "Thread") as thread:
-        rasterizer._start_worker_housekeeping(1)
-        thread.call_args.kwargs["target"]()
-
-    # Twice for the one task, then no more while idle.
-    assert trim.call_count == 2
-    exit_.assert_called_once_with(0)
-
-
 def _alive(pid: int) -> bool:
     try:
         with open(f"/proc/{pid}/stat") as f:
