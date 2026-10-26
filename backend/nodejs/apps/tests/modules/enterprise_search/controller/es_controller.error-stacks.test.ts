@@ -27,7 +27,7 @@ async function respond(
 ): Promise<string> {
   const res = new FakeSSEResponse()
   const next = sinon.stub()
-  const req = { headers: {}, params, query, body, user: { userId: OWNER, orgId: ORG }, context: {} }
+  const req = { headers: {}, params, query, body, user: { userId: OWNER.toString(), orgId: ORG }, context: {} }
   await handler(req as never, res as never, next as never)
   await settle()
   expect(next.called, `handler failed: ${String(next.firstCall?.args[0])}`).to.equal(false)

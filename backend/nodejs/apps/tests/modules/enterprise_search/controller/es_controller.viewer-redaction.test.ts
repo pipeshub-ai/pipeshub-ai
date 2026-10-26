@@ -171,7 +171,7 @@ const fetchConversation = async (userId: string) => {
   const r = res()
   const next = sinon.stub()
   await getConversationById(appConfig)(req(userId, { params: { conversationId: SESSION } }), r, next)
-  expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+  sinon.assert.notCalled(next)
   return r.json.firstCall.args[0].conversation.messages[0]
 }
 
@@ -263,7 +263,7 @@ describe('shared chats: per-viewer citations', () => {
     const next = sinon.stub()
     await getAgentConversationById(appConfig)(req(VIEWER, { params: { conversationId: SESSION, agentKey: 'agent-1' } }), r, next)
 
-    expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+    sinon.assert.notCalled(next)
     const message = r.json.firstCall.args[0].conversation.messages[0]
     expectRecordsOnlyRedacted(message)
     expect(message.citations[1]).to.deep.equal({ redacted: true, reason: 'no_access' })
@@ -329,7 +329,7 @@ describe('shared chats: per-viewer citations', () => {
     const next = sinon.stub()
     await listAllArchivesConversation(appConfig)(req(VIEWER), r, next)
 
-    expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+    sinon.assert.notCalled(next)
     const [citations] = [r.json.firstCall.args[0].conversations[0].messages[0].citations]
     expect(citations[0].excerpt).to.equal('readable excerpt')
     expect(citations[1]).to.deep.equal({ redacted: true, reason: 'no_access' })
@@ -393,7 +393,7 @@ describe('shared chats: per-viewer citations', () => {
       const r = res()
       const next = sinon.stub()
       await searchArchivedConversations(appConfig)(req(userId, { query: { search: 't' } }), r, next)
-      expect(next.called, String(next.firstCall?.args[0])).to.equal(false)
+      sinon.assert.notCalled(next)
       return r.json.firstCall.args[0].conversations[0]
     }
     expect(JSON.stringify(await run(VIEWER))).to.not.contain(SECRET)
