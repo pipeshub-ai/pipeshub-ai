@@ -114,9 +114,9 @@ class TestCrossIssueReferences:
         for hidden in ("SEC-1", "Foo Corp", "SEC-2", "PUB-3", "SEC-4", "PUB-5"):
             assert hidden not in merged
 
-    async def _epic(self, lookup, readable) -> tuple[str, AsyncMock]:
+    async def _epic(self, lookup, readable, value: object = "PROJ-1") -> tuple[str, AsyncMock]:
         """Enrich a ticket whose epic link is the key PROJ-1 (own key PROJ-12)."""
-        issue = {"id": "10324", "fields": {"customfield_9": "PROJ-1"}}
+        issue = {"id": "10324", "fields": {"customfield_9": value}}
         base = "Record: PROJ-12\nTicket Information:\n* Status: Open\n"
 
         async def fetch(*_a: object, by_key: bool = False, **_k: object) -> dict:
@@ -166,6 +166,20 @@ class TestCrossIssueReferences:
         check = AsyncMock(side_effect=RuntimeError("down")) if failure == "check_raises" else AsyncMock(return_value={"501"})
         merged, _ = await self._epic(lookup, check)
         assert "Epic Link" not in merged
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("value", [
+        {"hasEpicLinkFieldDependency": False, "data": {"id": 7, "key": "PROJ-1", "summary": "Secret plan"}},
+        ["PROJ-1"],
+        {"value": "PROJ-1"},
+        {"name": "PROJ-1 Secret plan"},
+        {"key": 1},
+    ])
+    async def test_epic_link_of_any_other_shape_is_dropped(self, value: object) -> None:
+        check = AsyncMock(return_value={"501"})
+        merged, _ = await self._epic({"501": {"id": "501", "key": "PROJ-1"}}, check, value)
+        assert "Epic Link" not in merged and "Secret" not in merged
+        assert "PROJ-1" not in merged.replace("PROJ-12", "")
 
     @pytest.mark.asyncio
     async def test_no_check_drops_epic_link(self) -> None:

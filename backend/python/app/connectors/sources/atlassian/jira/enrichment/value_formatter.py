@@ -458,9 +458,13 @@ def restrict_cross_issue_refs(
         fields["issuelinks"] = links
     if fields.get("subtasks"):
         fields["subtasks"] = [k for k in map(keep, fields["subtasks"]) if k]
-    for field_id, key in key_only_refs(issue, discovered_custom_ids).items():
-        if (key_ids or {}).get(key) not in readable_ids:
-            fields.pop(field_id, None)
+    # Allow-list: an epic or parent link stays only if its value is a key that
+    # resolved to an issue the viewer can read; any other shape is dropped.
+    keyed = key_only_refs(issue, discovered_custom_ids)
+    for reg_key in _CROSS_ISSUE_CUSTOM_KEYS:
+        field_id = discovered_custom_ids.get(reg_key)
+        if field_id and field_id in fields and (key_ids or {}).get(keyed.get(field_id, ""), None) not in readable_ids:
+            fields.pop(field_id)
     return {**issue, "fields": fields}
 
 
