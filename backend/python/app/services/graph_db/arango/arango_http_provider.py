@@ -10030,7 +10030,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_key, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_key, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
@@ -10135,7 +10141,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return
 
             # 3. Check if team has any existing members to determine role
-            team_with_users = await self.get_team_with_users(team_id=team_key, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_key, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             role = "OWNER" if existing_member_count == 0 else "READER"
 
@@ -25384,7 +25396,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -25395,6 +25409,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             search_filter = ""
             if search:
                 search_filter = "FILTER (LOWER(user.fullName) LIKE @search OR LOWER(user.email) LIKE @search)"
+
+            # Inside `all_members`, so it runs before `total_count` is taken
+            # and before the page is cut: the page and the count agree, and
+            # neither says how many rows were withheld.
+            member_filter = "" if include_service_accounts else (
+                f"AND {aql_not_a_service_account('user')}"
+            )
 
             team_users_query = f"""
             FOR team IN {CollectionNames.TEAMS.value}
@@ -25408,7 +25429,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 FOR permission IN {CollectionNames.PERMISSION.value}
                 FILTER permission._to == team._id
                 LET user = DOCUMENT(permission._from)
-                FILTER user != null AND user.isActive == true
+                FILTER user != null AND user.isActive == true {member_filter}
                 {search_filter}
                 RETURN {{
                     "id": user._key,

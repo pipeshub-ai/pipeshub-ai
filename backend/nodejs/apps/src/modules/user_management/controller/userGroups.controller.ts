@@ -213,7 +213,7 @@ export class UserGroupController {
     // every member can read hands out all of them. The ids of colleagues stay,
     // because they are already the member's to see.
     if (Array.isArray(userGroup.users)) {
-      userGroup.users = await this.visibleMembers(req, userGroup.users);
+      userGroup.users = await this.visibleMembers(req, orgId, userGroup.users);
     }
     res.json(userGroup);
   }
@@ -225,12 +225,12 @@ export class UserGroupController {
    */
   private async visibleMembers(
     req: AuthenticatedUserRequest,
+    orgId: unknown,
     ids: readonly mongoose.Types.ObjectId[],
   ): Promise<mongoose.Types.ObjectId[]> {
     const members = [...ids];
     if (members.length === 0) return members;
 
-    const orgId = req.user?.orgId as string | undefined;
     const accounts = (await Users.find({
       _id: { $in: members },
       kind: 'service',

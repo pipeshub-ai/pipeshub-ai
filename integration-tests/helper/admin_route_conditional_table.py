@@ -714,6 +714,19 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
         ),
         service=CONNECTOR_SERVICE,
     ),
+    # The member page the team screen actually loads.
+    ConditionalRoute(
+        "api/routes/entity.py::get_team_users", "GET", "/api/v1/entity/team/{target}/users",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        # Searched for, because the page is cut at 100 and sorted by nobody in
+        # particular; and the filter runs before the cut, so a member's page
+        # for this search is empty rather than short.
+        params={"limit": "100", "search": "{service_account_email}"},
+        service=CONNECTOR_SERVICE,
+    ),
     ConditionalRoute(
         "api/routes/entity.py::get_user_teams", "GET", "/api/v1/entity/user/teams",
         cases=(

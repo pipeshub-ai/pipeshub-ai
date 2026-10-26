@@ -6633,7 +6633,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -6646,6 +6648,11 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with paginated members, None if not found

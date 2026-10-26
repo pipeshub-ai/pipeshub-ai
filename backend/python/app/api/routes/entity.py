@@ -701,11 +701,16 @@ async def _team_members_include_service_accounts(request: Request) -> bool:
     No opt-in flag, unlike the people directory: the team screen an
     administrator opens has to show them, and there is nobody else to ask.
 
-    Only the two routes that read a team somebody else may own. The read-back
-    after creating or changing a team is the caller being shown what they just
-    wrote, on a team they had to be able to write; it is not a directory, and
-    filtering it would hide from an administrator the member they had just
-    added.
+    The three routes that read a team's members: one team, that team's member
+    page, and the teams a user is in.
+
+    Not the read-back after creating or changing a team. That is the caller
+    being shown what they just wrote, and it is filtered the plain way, so an
+    administrator's `memberCount` there can be short by the service accounts in
+    the team. The screens read members from `/team/{id}/users`, which is
+    administrator-aware, so what they display is right either way; making the
+    read-back agree would put an admin check on two write routes, and the live
+    suite has no way to exercise one on a route that writes.
     """
     return await _caller_is_an_administrator(request)
 
@@ -828,7 +833,8 @@ async def get_team_users(
             user_key=user['_key'],
             search=search,
             page=page,
-            limit=limit
+            limit=limit,
+            include_service_accounts=await _team_members_include_service_accounts(request),
         )
 
         if not result:

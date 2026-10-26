@@ -26,12 +26,16 @@ def aql_not_a_service_account(variable: str) -> str:
 
     A missing attribute compares as null in AQL, which is not `'service'`, so a
     node from before `kind` passes the first half — the address is what catches
-    it. `LOWER(null)` is the empty string, which ends with nothing, so a node
-    with no address is kept rather than dropped.
+    it.
+
+    `RIGHT`, not `ENDS_WITH`: AQL has no `ENDS_WITH`, only `STARTS_WITH`, and
+    not `LIKE` either here — the suffix would have to be escaped against `%`
+    and `_`. `RIGHT` on a missing address gives the empty string, which is not
+    the suffix, so a node with no address is kept rather than dropped.
     """
     return (
         f"{variable}.kind != 'service' "
-        f"AND NOT ENDS_WITH(LOWER({variable}.email), '{_SUFFIX}')"
+        f"AND RIGHT(LOWER({variable}.email), {len(_SUFFIX)}) != '{_SUFFIX}'"
     )
 
 

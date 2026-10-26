@@ -124,7 +124,7 @@ class TestTheAddressCoversTheBackfillWindow:
 
         await provider.get_organization_users(org_id="org-1")
 
-        assert all("ENDS_WITH(LOWER(user.email)" in q for q in queries)
+        assert all("RIGHT(LOWER(user.email)" in q for q in queries)
 
     @pytest.mark.asyncio
     async def test_neo4j_reads_the_address_as_well_as_kind(self) -> None:

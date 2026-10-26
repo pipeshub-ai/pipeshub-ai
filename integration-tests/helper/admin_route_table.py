@@ -370,6 +370,7 @@ PYTHON_CONDITIONAL_ADMIN = {
     # administrator. Neither refuses anyone.
     "api/routes/entity.py::get_team": "admin widens the member list",
     "api/routes/entity.py::get_user_teams": "admin widens the member list",
+    "api/routes/entity.py::get_team_users": "admin widens the member list",
 }
 
 
