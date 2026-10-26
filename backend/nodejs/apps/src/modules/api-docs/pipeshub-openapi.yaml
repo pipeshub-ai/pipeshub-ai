@@ -35224,8 +35224,9 @@ paths:
         of the virtual record, and returns an upload URL for each file. Its files
         live under `record-revisions/{virtualRecordId}/{rev}/` in the organisation, which
         comes from the storage token only. Calling again for the same revision
-        returns the same document, so the call is safe to repeat. URLs expire
-        after 15 minutes.
+        returns the same document, so the call is safe to repeat. Every call
+        moves the revision's `updatedAt`, so a delete that listed it earlier
+        sees the new write. URLs expire after 15 minutes.
       operationId: internalPresignArtifactSet
       security:
         - scopedToken: []
@@ -35324,11 +35325,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
-            Conflict (`CONFLICT`). Possible causes:
+            Conflict (`CONFLICT`); no URLs are issued. Possible causes:
             - The revision was deleted and not yet purged (`This revision was deleted; purge it before
               writing it again`)
             - The revision is stored on another storage than the configured one (`This revision is
               stored on <vendor>, not on the configured <type> storage`)
+            - A delete claimed the revision less than 15 minutes ago (`This revision is being
+              deleted; write it again once the delete has finished`)
           content:
             application/json:
               schema:
@@ -35383,7 +35386,24 @@ paths:
                           description: Milliseconds since the epoch.
                         updatedAt:
                           type: integer
-                          description: Milliseconds since the epoch.
+                          description: |
+                            Milliseconds since the epoch. The revision's write
+                            stamp: moved by every presign of it. Pass it as
+                            `ifUnchangedSince` to delete the revision only if
+                            nothing wrote it since.
+                        deleteFence:
+                          type: boolean
+                          description: |
+                            Always true. Present only on servers that check
+                            `ifUnchangedSince` on delete; a client that does
+                            not see it must not delete with a stamp.
+                        retiringAt:
+                          type: integer
+                          description: |
+                            Milliseconds since the epoch. Present while a delete
+                            has claimed the revision (or one died after claiming
+                            it). Presign refuses the revision while the claim is
+                            younger than 15 minutes.
         '400':
           description: |
             The virtual record id is missing or not valid.
@@ -35411,11 +35431,45 @@ paths:
         revision that is already gone counts as purged, so the call is safe to
         repeat. If the files cannot be removed the document is kept and the call
         answers 503, so it can be retried.
+
+        The revision is claimed before any file is removed, and presign refuses
+        a claimed revision. With `ifUnchangedSince`, the claim succeeds only if
+        the revision's `updatedAt` is no newer than it and no other delete holds
+        a claim younger than 15 minutes; otherwise nothing is removed and the
+        call answers 409 `changed`. While it removes files the delete renews its
+        claim (every 3 minutes), so a claim older than 15 minutes is from a
+        delete that died. A delete that dies after its claim leaves the revision
+        unwritable until then; after that, a later delete may claim it again, or
+        a presign of the revision clears the claim and writes it again. If a
+        delete finds its claim taken back after its files were removed (its
+        renewals failed for 15 minutes, or the Node replicas' clocks disagree by
+        more than 12 minutes), it keeps the document and answers 409 `lost`:
+        files may have been removed. The clocks of the replicas that serve this
+        route must agree to within 12 minutes. The `ifUnchangedSince` comparison
+        needs less than that to hold: the sweep lists only revisions whose stamp is
+        older than its retention grace (24 hours by default), so a rewrite stamped
+        by a replica whose clock is behind falls under that stamp only if the skew
+        is larger than the grace.
+
+        Query keys other than `ifUnchangedSince` are refused with 400, so a
+        misspelt key is not read as an unfenced delete. A listing from a server
+        that fences deletes carries `deleteFence: true`; callers must send a
+        stamp only to such a server, and deploy this service before them.
       operationId: internalPurgeArtifactSet
       security:
         - scopedToken: []
       parameters:
         - $ref: '#/components/parameters/InternalDocumentId'
+        - name: ifUnchangedSince
+          in: query
+          required: false
+          description: |
+            Milliseconds since the epoch, normally the `updatedAt` the revision
+            was listed with, as decimal digits only. The revision is removed
+            only if it was not written after this.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: |
@@ -35425,9 +35479,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StoragePurgeResult'
+        '409':
+          description: |
+            `changed` (only with `ifUnchangedSince`): the revision was written
+            after it, or another delete is removing it. Nothing was removed.
+            `lost`: the delete's claim was taken back while it removed files.
+            The files may have been removed although the document was kept.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - purged
+                  - reason
+                properties:
+                  purged:
+                    type: integer
+                    enum: [0]
+                  reason:
+                    type: string
+                    enum: [changed, lost]
         '400':
           description: |
-            The document id is not a 24-character hex id.
+            The document id is not a 24-character hex id, `ifUnchangedSince` is not a
+            non-negative integer, or the query holds a key other than `ifUnchangedSince`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:

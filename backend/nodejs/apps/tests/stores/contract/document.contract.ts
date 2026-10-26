@@ -7,6 +7,7 @@ import type {
   DocumentRepository,
   NewDocument,
 } from '../../../src/libs/repositories/document';
+import { ConflictError } from '../../../src/libs/repositories/errors';
 import { StorageVendor } from '../../../src/modules/storage/types/storage.service.types';
 
 export interface DocumentFixture {
@@ -15,6 +16,9 @@ export interface DocumentFixture {
 }
 
 const HEX = /^[0-9a-f]{24}$/;
+// A delete claim younger than this blocks a write of the revision; an older one is from a delete that died.
+const STALE = 15 * 60 * 1000;
+const fence = (now: number): { now: number; staleMs: number } => ({ now, staleMs: STALE });
 
 export function describeDocumentContract(fx: DocumentFixture): void {
   const { repo } = fx;
@@ -332,6 +336,7 @@ export function describeDocumentContract(fx: DocumentFixture): void {
           documentName: 'revision_r1',
           artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: `${org}/PipesHub/record-revisions/v1/r1` },
         }),
+        fence(Date.now()),
       );
       const ids = (await repo.listByVirtualRecord(org, 'v1', flat)).map((r) => r._id).sort();
       expect(ids).to.deep.equal([rec._id, rev._id].sort());
@@ -345,16 +350,132 @@ export function describeDocumentContract(fx: DocumentFixture): void {
           documentName: `revision_${rev}`,
           artifactSet: { virtualRecordId: 'v1', rev, root: `${org}/PipesHub/record-revisions/v1/${rev}` },
         });
-      const [a, b] = await Promise.all([repo.createArtifactSetOnce(set('r1')), repo.createArtifactSetOnce(set('r1'))]);
+      const [a, b] = await Promise.all([repo.createArtifactSetOnce(set('r1'), fence(Date.now())), repo.createArtifactSetOnce(set('r1'), fence(Date.now()))]);
       expect(b._id).to.equal(a._id);
       expect(a.artifactSet).to.deep.equal({ virtualRecordId: 'v1', rev: 'r1', root: `${org}/PipesHub/record-revisions/v1/r1` });
-      const second = await repo.createArtifactSetOnce(set('r2'));
+      const second = await repo.createArtifactSetOnce(set('r2'), fence(Date.now()));
       const other = await repo.createArtifactSetOnce(
         mk(fx.newId(), { artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: 'x' } }),
+        fence(Date.now()),
       );
       expect(other._id).to.not.equal(a._id);
       await repo.update(org, second._id, { isDeleted: true });
       expect((await repo.listArtifactSets(org, 'v1')).map((r) => r._id)).to.deep.equal([a._id]);
+    });
+
+    describe('the delete fence of a content revision', () => {
+      const T0 = 1_000_000_000_000;
+      const revision = async (org: string, rev = 'r1', at = T0): Promise<string> => {
+        const input = mk(org, {
+          documentName: `revision_${rev}`,
+          artifactSet: { virtualRecordId: 'v1', rev, root: `${org}/PipesHub/record-revisions/v1/${rev}` },
+        });
+        await repo.createArtifactSetOnce(input, fence(at));
+        // The first call stamps the row with the real clock; a second one moves the stamp to `at`.
+        return (await repo.createArtifactSetOnce(input, fence(at)))._id;
+      };
+      const stamp = async (org: string, id: string): Promise<number | undefined> => (await repo.get(org, id))?.updatedAt;
+
+      it('a write moves the write stamp, so a delete that listed the revision earlier no longer matches', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        const listed = await stamp(org, id);
+        expect(listed).to.equal(T0);
+        await repo.createArtifactSetOnce(
+          mk(org, { documentName: 'revision_r1', artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: 'x' } }),
+          fence(T0 + 5000),
+        );
+        expect(await stamp(org, id)).to.equal(T0 + 5000);
+        const claim = await repo.claimArtifactSetForDelete(org, id, { now: T0 + 6000, staleMs: STALE, ifUnchangedSince: listed });
+        expect(claim).to.equal('changed');
+        expect((await repo.get(org, id))?.artifactSet?.retiringAt).to.equal(undefined);
+      });
+
+      it('a delete claims the revision without moving the write stamp, and a write is then refused', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        const claimed = await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE, ifUnchangedSince: T0 });
+        expect(claimed).to.not.equal(null);
+        expect(claimed).to.not.equal('changed');
+        expect((claimed as { artifactSet?: { retiringAt?: number } }).artifactSet?.retiringAt).to.equal(T0 + 1000);
+        expect(await stamp(org, id)).to.equal(T0);
+        const again = mk(org, { documentName: 'revision_r1', artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: 'x' } });
+        let refused: unknown;
+        try {
+          await repo.createArtifactSetOnce(again, fence(T0 + 2000));
+        } catch (error) {
+          refused = error;
+        }
+        expect(refused).to.be.instanceOf(ConflictError);
+        expect(await stamp(org, id)).to.equal(T0);
+      });
+
+      it('a second delete is refused while the first claim is fresh and may take over a stale one', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE, ifUnchangedSince: T0 });
+        expect(await repo.claimArtifactSetForDelete(org, id, { now: T0 + 2000, staleMs: STALE, ifUnchangedSince: T0 })).to.equal('changed');
+        const later = T0 + 1000 + STALE + 1;
+        const taken = await repo.claimArtifactSetForDelete(org, id, { now: later, staleMs: STALE, ifUnchangedSince: T0 });
+        expect((taken as { artifactSet?: { retiringAt?: number } }).artifactSet?.retiringAt).to.equal(later);
+      });
+
+      it('a write clears a claim that is older than the stale bound', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE, ifUnchangedSince: T0 });
+        const later = T0 + 1000 + STALE + 1;
+        const written = await repo.createArtifactSetOnce(
+          mk(org, { documentName: 'revision_r1', artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: 'x' } }),
+          fence(later),
+        );
+        expect(written._id).to.equal(id);
+        expect(written.artifactSet?.retiringAt).to.equal(undefined);
+        expect(await stamp(org, id)).to.equal(later);
+      });
+
+      it('an unfenced delete claims whatever is there, and a revision that is not there answers null', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        expect(await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE })).to.not.equal(null);
+        expect(await repo.claimArtifactSetForDelete(org, fx.newId(), { now: T0, staleMs: STALE, ifUnchangedSince: T0 })).to.equal(null);
+        const plain = await repo.create(mk(org, { documentName: 'not-a-revision' }));
+        expect(await repo.claimArtifactSetForDelete(org, plain._id, { now: T0, staleMs: STALE, ifUnchangedSince: T0 })).to.equal(null);
+        expect(await repo.claimArtifactSetForDelete(fx.newId(), id, { now: T0, staleMs: STALE })).to.equal(null);
+      });
+
+      it('the final delete is fenced on the delete\'s own claim values: a writer that took the claim back keeps the row', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE, ifUnchangedSince: T0 });
+        // a renewal moves the claim; the delete knows both values
+        await repo.renewArtifactSetClaim(org, id, [T0 + 1000], T0 + 2000);
+        expect((await repo.get(org, id))?.artifactSet?.retiringAt).to.equal(T0 + 2000);
+        // a renewal that does not know the current value changes nothing
+        await repo.renewArtifactSetClaim(org, id, [T0 + 500], T0 + 3000);
+        expect((await repo.get(org, id))?.artifactSet?.retiringAt).to.equal(T0 + 2000);
+        // a writer takes the claim back (stale), so the delete's values no longer match
+        await repo.createArtifactSetOnce(
+          mk(org, { documentName: 'revision_r1', artifactSet: { virtualRecordId: 'v1', rev: 'r1', root: 'x' } }),
+          fence(T0 + 2000 + STALE + 1),
+        );
+        await repo.removeClaimedArtifactSet(id, org, [T0 + 1000, T0 + 2000]);
+        expect(await repo.get(org, id)).to.not.equal(null);
+        // a claim that still stands is removed
+        await repo.claimArtifactSetForDelete(org, id, { now: T0 + 9_000_000, staleMs: STALE });
+        await repo.removeClaimedArtifactSet(id, org, [T0 + 1000, T0 + 9_000_000]);
+        expect(await repo.get(org, id)).to.equal(null);
+      });
+
+      it('listArtifactSets carries the claim, so a listing shows a delete in progress', async () => {
+        const org = fx.newId();
+        const id = await revision(org);
+        await repo.claimArtifactSetForDelete(org, id, { now: T0 + 1000, staleMs: STALE });
+        const [listed] = await repo.listArtifactSets(org, 'v1');
+        expect(listed._id).to.equal(id);
+        expect(listed.artifactSet?.retiringAt).to.equal(T0 + 1000);
+        expect(listed.updatedAt).to.equal(T0);
+      });
     });
 
     it('listEnvelopes answers the live record_ and metadata_ rows, newest first', async () => {

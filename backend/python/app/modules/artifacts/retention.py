@@ -35,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import time
 from dataclasses import dataclass, fields
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -55,9 +56,31 @@ if TYPE_CHECKING:
     from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 
 DEFAULT_GRACE_MS = 24 * 3600 * 1000
+# Once per process: the recovery loop builds a new sweep every pass, so a per-sweep latch would log every minute.
+_unfenced_warned = False
+
+
+def reset_unfenced_warning() -> None:
+    global _unfenced_warned  # noqa: PLW0603 - a process-wide latch by design
+    _unfenced_warned = False
+
 DEFAULT_PAGE_SIZE = 200
 # Virtual records whose artifact sets are listed and deleted at once.
 RETENTION_CONCURRENCY = 8
+# One listing attempt, no retries: a vrid that cannot be listed now is simply
+# reached again on a later pass, and the shared session's 120 s read bound with
+# three attempts would let one hung storage call hold a page for minutes.
+RETENTION_LIST_TIMEOUT_SECONDS = 10.0
+# One delete attempt, well under the record lease term (120 s) the sweep holds
+# while it runs. Storage goes on with a delete this gives up on; its stamp check
+# (``ifUnchangedSince``) is what keeps that safe once the lease has lapsed.
+RETENTION_DELETE_TIMEOUT_SECONDS = 30.0
+# Least a delete is given when the tick's deadline is close, so one hung delete
+# cannot hold a tick much past its budget.
+RETENTION_DELETE_MIN_TIMEOUT_SECONDS = 5.0
+# Virtual records failing in a row that end the page: storage (or the graph) is
+# down, and every further vrid would only wait out its own timeout.
+RETENTION_MAX_CONSECUTIVE_FAILURES = 3
 
 
 @dataclass
@@ -72,11 +95,14 @@ class RetentionReport:
     failed: int = 0
     # The recovery lease was lost part-way; the page is to be read again.
     interrupted: bool = False
+    # The page stopped early on its deadline or on failures in a row; the walk
+    # goes on from the key the page returned.
+    cut_short: bool = False
 
     def add(self, other: RetentionReport) -> None:
         for f in fields(self):
-            if f.name == "interrupted":
-                self.interrupted = self.interrupted or other.interrupted
+            if f.type == "bool":
+                setattr(self, f.name, getattr(self, f.name) or getattr(other, f.name))
             else:
                 setattr(self, f.name, getattr(self, f.name) + getattr(other, f.name))
 
@@ -127,6 +153,9 @@ class RevisionRetentionSweep:
         page_size: int = DEFAULT_PAGE_SIZE,
         concurrency: int = RETENTION_CONCURRENCY,
         leases: IDistributedLeaseManager | None = None,
+        list_timeout_seconds: float = RETENTION_LIST_TIMEOUT_SECONDS,
+        delete_timeout_seconds: float = RETENTION_DELETE_TIMEOUT_SECONDS,
+        max_consecutive_failures: int = RETENTION_MAX_CONSECUTIVE_FAILURES,
         now_ms: Callable[[], int] = get_epoch_timestamp_in_ms,
     ) -> None:
         if grace_ms <= 0:
@@ -139,18 +168,28 @@ class RevisionRetentionSweep:
         self.concurrency = max(1, concurrency)
         # None without distributed concurrency: no re-index holds a lease to wait for either.
         self.leases = leases
+        self.list_timeout_seconds = list_timeout_seconds
+        self.delete_timeout_seconds = delete_timeout_seconds
+        self.max_consecutive_failures = max(1, max_consecutive_failures)
         self._now_ms = now_ms
 
     async def run_page(
-        self, after_key: str | None, *, still_leader: Callable[[], bool] | None = None
+        self,
+        after_key: str | None,
+        *,
+        still_leader: Callable[[], bool] | None = None,
+        deadline: float | None = None,
     ) -> tuple[str | None, RetentionReport]:
         """One page of virtual records after ``after_key``.
 
         Returns the key to continue from (None once the walk reached the end) and
         what the page did. When ``still_leader`` turns False the page stops and
         hands back ``after_key``, so the next pass reads the same page again.
-        Raises when the page or its trash check cannot be read; a virtual record
-        that fails on its own is logged and counted.
+        Past ``deadline`` (``time.monotonic()``), or after failures in a row, no
+        further virtual record is started and the page hands back the key of the
+        last one before the first it did not try (``cut_short``). Raises when
+        the page or its trash check cannot be read; a virtual record that fails
+        on its own is logged and counted.
         """
         report = RetentionReport()
         pointers = await self.graph_provider.get_revision_pointers(after_key, self.page_size)
@@ -173,26 +212,59 @@ class RevisionRetentionSweep:
 
         unheld = await self._unheld_stage_revisions([v for v in vrids if v not in trashed], cutoff_ms, report)
         gate = asyncio.Semaphore(self.concurrency)
+        # Per pointer: whether it was tried. A failure counts (the next walk
+        # retries it), even one of the run that ended the page: resuming at it
+        # could hold the walk on a few vrids that keep failing.
+        finished = [not p.get("virtualRecordId") or p["virtualRecordId"] in trashed for p in pointers]
+        failing_run: list[int] = []
+        tried = 0
 
-        async def one(pointer: dict[str, Any]) -> None:
+        def stop_starting() -> bool:
+            # The deadline never stops the first vrid of a page: when the page's own
+            # graph reads used up the budget, the walk would otherwise re-read the
+            # same page every tick and never move.
+            if len(failing_run) >= self.max_consecutive_failures or (
+                deadline is not None and tried > 0 and time.monotonic() >= deadline
+            ):
+                report.cut_short = True
+            return report.cut_short
+
+        async def one(index: int, pointer: dict[str, Any]) -> None:
+            nonlocal tried
             vrid = str(pointer["virtualRecordId"])
             async with gate:
-                if not leader():
+                if not leader() or stop_starting():
                     return
+                tried += 1
                 try:
-                    await self._retire_virtual_record(pointer, unheld.get(vrid, []), cutoff_ms, report, leader)
+                    ok = await self._retire_virtual_record(
+                        pointer, unheld.get(vrid, []), cutoff_ms, report, leader, deadline
+                    )
                 except Exception as exc:
+                    ok = False
                     report.failed += 1
                     self.logger.warning(
                         "Revision retention: could not retire old revisions of %s; next pass retries: %s: %s",
                         vrid, type(exc).__name__, exc,
                     )
+                if ok:
+                    failing_run.clear()
+                else:
+                    failing_run.append(index)
+                finished[index] = True
 
-        await asyncio.gather(
-            *(one(p) for p in pointers if p.get("virtualRecordId") and p["virtualRecordId"] not in trashed)
-        )
+        await asyncio.gather(*(one(i, p) for i, p in enumerate(pointers) if not finished[i]))
         if report.interrupted:
             return after_key, report
+        if report.cut_short:
+            done = next((i for i, f in enumerate(finished) if not f), len(pointers))
+            if done < len(pointers):
+                resume = next(
+                    (str(p["virtualRecordId"]) for p in reversed(pointers[:done]) if p.get("virtualRecordId")),
+                    after_key,
+                )
+                return resume, report
+            report.cut_short = False
         next_key = str(pointers[-1]["virtualRecordId"]) if len(pointers) >= self.page_size else None
         return next_key, report
 
@@ -218,13 +290,19 @@ class RevisionRetentionSweep:
 
     async def _deletable_revisions(
         self, pointer: dict[str, Any], cutoff_ms: int, report: RetentionReport
-    ) -> list[dict[str, Any]]:
-        """Artifact sets past the grace that are neither the current nor the previous revision."""
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Artifact sets past the grace that are neither the current nor the previous revision.
+
+        The flag is False when the listing failed (storage or network), which feeds
+        the page's failures-in-a-row stop.
+        """
         vrid = str(pointer["virtualRecordId"])
         if not pointer.get("currentRev") or not pointer.get("orgId") or not ARTIFACT_ROUTES.available:
-            return []
+            return [], True
         try:
-            revisions = await self.store.list_revisions(pointer["orgId"], vrid)
+            revisions = await self.store.list_revisions(
+                pointer["orgId"], vrid, timeout_seconds=self.list_timeout_seconds
+            )
         except ArtifactRoutesUnavailable as exc:
             # Process-wide, as for writes: the storage service has no artifact routes
             # until the upgrade that brings them, which restarts this service.
@@ -233,7 +311,7 @@ class RevisionRetentionSweep:
                     "Storage has no artifact routes (HTTP %d); old revisions are not retired "
                     "until this service restarts", exc.status,
                 )
-            return []
+            return [], True
         except Exception as exc:
             # The stage states of this virtual record are retired all the same.
             report.failed += 1
@@ -241,7 +319,7 @@ class RevisionRetentionSweep:
                 "Revision retention: could not list the revisions of %s; next pass retries: %s: %s",
                 vrid, type(exc).__name__, exc,
             )
-            return []
+            return [], False
         keep = {pointer.get("currentRev"), pointer.get("previousRev")}
         candidates = []
         for revision in revisions:
@@ -256,7 +334,7 @@ class RevisionRetentionSweep:
                 record_retention("revision", "kept")
             else:
                 candidates.append(revision)
-        return candidates
+        return candidates, True
 
     async def _retire_virtual_record(
         self,
@@ -265,15 +343,17 @@ class RevisionRetentionSweep:
         cutoff_ms: int,
         report: RetentionReport,
         leader: Callable[[], bool],
-    ) -> None:
+        deadline: float | None = None,
+    ) -> bool:
+        """Retire one virtual record; False when its artifact listing failed."""
         vrid = str(pointer["virtualRecordId"])
-        candidates = await self._deletable_revisions(pointer, cutoff_ms, report)
+        candidates, listed = await self._deletable_revisions(pointer, cutoff_ms, report)
         if not candidates and not unheld_revs:
-            return
+            return listed
         org_id = pointer.get("orgId")
         if not org_id:
             # The holders are read per organization; without one nothing is known to be unheld.
-            return
+            return listed
 
         def keep_all() -> None:
             report.revisions_kept += len(candidates)
@@ -287,7 +367,7 @@ class RevisionRetentionSweep:
         async with self._holder_leases(vrid, str(org_id)) as lease:
             if lease is None:
                 busy()
-                return
+                return listed
             # Read after the leases are held, the holders last: a record that moved onto
             # an old revision, or into the trash, before then is seen here.
             mapping = (
@@ -297,10 +377,10 @@ class RevisionRetentionSweep:
             holders = await self._holders(vrid, str(org_id))
             if not lease.covers(holders):
                 busy()
-                return
+                return listed
             if any(h.get("isDeleted") for h in holders):
                 keep_all()
-                return
+                return listed
             if unheld_revs and leader():
                 # The statement checks the rule again against the graph as it is now.
                 deleted = await self.graph_provider.stage_states_delete_unheld_revisions(
@@ -309,7 +389,10 @@ class RevisionRetentionSweep:
                 report.stage_states_deleted += deleted
                 record_retention("stage_state", "deleted", deleted)
             if candidates:
-                await self._retire_revisions(str(org_id), candidates, mapping, holders, lease, report, leader)
+                await self._retire_revisions(
+                    str(org_id), candidates, mapping, holders, lease, report, leader, deadline
+                )
+            return listed
 
     async def _holders(self, vrid: str, org_id: str) -> list[dict[str, Any]]:
         return (await self.graph_provider.get_virtual_record_holders([vrid], org_id)).get(vrid, [])
@@ -340,6 +423,12 @@ class RevisionRetentionSweep:
                 with contextlib.suppress(Exception):
                     await leases.release(f"record:{record_id}", owner)
 
+    def _delete_timeout(self, deadline: float | None) -> float:
+        if deadline is None:
+            return self.delete_timeout_seconds
+        remaining = deadline - time.monotonic()
+        return min(self.delete_timeout_seconds, max(RETENTION_DELETE_MIN_TIMEOUT_SECONDS, remaining))
+
     async def _retire_revisions(
         self,
         org_id: str,
@@ -349,24 +438,73 @@ class RevisionRetentionSweep:
         lease: _HolderLeases,
         report: RetentionReport,
         leader: Callable[[], bool],
+        deadline: float | None = None,
     ) -> None:
+        def keep(count: int = 1) -> None:
+            if count <= 0:
+                return
+            report.revisions_kept += count
+            record_retention("revision", "kept", count)
+
         if mapping is None or not mapping.get("currentRev"):
-            report.revisions_kept += len(candidates)
-            record_retention("revision", "kept", len(candidates))
+            keep(len(candidates))
             return
         # A record whose source went back to earlier bytes is on an old rev, and its
         # writer re-uses that revision's document.
-        keep = {mapping.get("currentRev"), mapping.get("previousRev")} | _held_revs(holders)
-        for revision in candidates:
-            # A delete can be slow (a whole tree): the leases must outlast the next one.
-            if revision.get("rev") in keep or not leader() or not await lease.renew():
-                report.revisions_kept += 1
-                record_retention("revision", "kept")
+        held = {mapping.get("currentRev"), mapping.get("previousRev")} | _held_revs(holders)
+        for index, revision in enumerate(candidates):
+            if revision.get("rev") in held:
+                keep()
                 continue
+            if revision.get("deleteFence") is not True:
+                # A storage service from before the delete fence ignores the stamp and
+                # would delete unfenced (Node must be upgraded before this service).
+                global _unfenced_warned  # noqa: PLW0603
+                if not _unfenced_warned:
+                    _unfenced_warned = True
+                    self.logger.warning(
+                        "Storage does not report the artifact delete fence; old revisions are "
+                        "kept until the storage service is upgraded"
+                    )
+                keep()
+                record_retention("revision", "unfenced")
+                continue
+            # Past the tick's deadline the rest is left for the next walk; a delete can
+            # be slow (a whole tree) and the leases must outlast it, so they are renewed
+            # right before it.
+            if not leader() or (deadline is not None and time.monotonic() >= deadline) or not await lease.renew():
+                keep(len(candidates) - index)
+                return
             try:
-                await self.store.delete_revision(org_id, str(revision["documentId"]))
+                # One bounded attempt carrying the stamp the revision was listed with:
+                # storage refuses the delete if the revision was written again since, so
+                # a delete that outlives this lease cannot remove what a re-index filed.
+                purged = await self.store.delete_revision(
+                    org_id,
+                    str(revision["documentId"]),
+                    if_unchanged_since=_stored_at_ms(revision),
+                    timeout_seconds=self._delete_timeout(deadline),
+                )
             except Exception:
                 record_retention("revision", "failed")
                 raise
+            if purged is None:
+                keep()
+                record_retention("revision", "changed")
+                continue
+            if purged < 1:
+                # Something else removed it since it was listed: nothing was deleted here.
+                keep()
+                record_retention("revision", "gone")
+                continue
             report.revisions_deleted += 1
             record_retention("revision", "deleted")
+            if not await lease.renew():
+                # The delete took longer than the lease term: stop; storage's stamp check
+                # protected that delete, and the next walk reads the holders again.
+                self.logger.warning(
+                    "Revision retention: the record leases lapsed during a delete; "
+                    "the rest of the virtual record is left for the next pass"
+                )
+                keep(len(candidates) - index - 1)
+                return

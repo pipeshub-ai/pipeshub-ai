@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from functools import partial
@@ -921,12 +922,16 @@ async def _sweep_retired_revisions(
         leases=concurrency_manager,
     )
     total = RetentionReport()
+    budget = messaging_env.revision_retention_tick_budget_seconds
+    deadline = time.monotonic() + budget if budget > 0 else None
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     for _ in range(RETENTION_MAX_PAGES_PER_TICK):
-        if not lease_held():
+        if not lease_held() or (deadline is not None and time.monotonic() >= deadline):
             break
         try:
-            next_key, report = await sweep.run_page(_retention_cursor, still_leader=lease_held)
+            next_key, report = await sweep.run_page(
+                _retention_cursor, still_leader=lease_held, deadline=deadline
+            )
         except Exception as exc:
             logger.warning("Revision retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
             break
@@ -934,9 +939,17 @@ async def _sweep_retired_revisions(
         if report.interrupted:
             break
         _retention_cursor = next_key
-        if next_key is None:
+        if next_key is None or report.cut_short:
+            break
+        # A pause can last ORPHAN_SCAN_MAX_PAUSE_SECONDS; do not sleep through the deadline.
+        if deadline is not None and deadline - time.monotonic() <= ORPHAN_SCAN_MAX_PAUSE_SECONDS:
             break
         await pacer.pause()
+    if total.cut_short:
+        logger.info(
+            "Revision retention stopped early this pass (time budget or failures in a row); "
+            "the next pass goes on from there"
+        )
     if total.removed or total.failed:
         logger.info(
             "Revision retention: %d revision(s) and %d stage state(s) removed, %d revision(s) kept, "
