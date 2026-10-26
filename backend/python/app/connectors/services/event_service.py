@@ -16,7 +16,10 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    dispose_connector,
+)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
@@ -53,7 +56,7 @@ from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
 )
-from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField
+from app.modules.pipeline.models import RETRYABLE_STAGES, HeadlineField, stage_state_rev
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.lanes.lifecycle import free_lane_of_deleted_connector
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -256,19 +259,20 @@ class EventService:
         if previous is None or previous is connector:
             return
 
-        if _running_here(connector_id):
-            # cleanup() nulls the connector's client and data source, so closing one
-            # mid-sync kills that sync. Leaking the pool is the lesser evil, and is
-            # what this did before it started cleaning up at all.
+        if _running_here(connector_id) or _reindexing_here(connector_id):
+            # cleanup() nulls the connector's client and data source, and disposal
+            # closes the processor a reindex publishes through, so closing one
+            # mid-sync or mid-reindex kills that task. Leaking the pool is the
+            # lesser evil, and is what this did before it started cleaning up at all.
             self.logger.warning(
-                f"Replaced the live {connector_id} connector instance while its sync is "
-                "running; leaving the previous instance open so the sync can finish"
+                f"Replaced the live {connector_id} connector instance while a sync or "
+                "reindex is using it; leaving the previous instance open so it can finish"
             )
             return
 
         self.logger.warning(f"Replaced the live {connector_id} connector instance; cleaning up the previous one")
         try:
-            await previous.cleanup()
+            await dispose_connector(previous)
         except Exception as e:
             self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
 
@@ -291,9 +295,6 @@ class EventService:
 
     def _release_connector(self, connector_id: str, connector: BaseConnector) -> None:
         """Close an evicted connector rather than leaking its sessions instead."""
-        cleanup = getattr(connector, "cleanup", None)
-        if cleanup is None:
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -301,7 +302,7 @@ class EventService:
 
         async def _close() -> None:
             try:
-                await cleanup()
+                await dispose_connector(connector)
             except Exception as e:  # eviction must never fail a sync
                 self.logger.warning(
                     "Cleanup failed for evicted connector %s: %s", connector_id, e
@@ -361,6 +362,25 @@ class EventService:
         """Live connector instance for HTTP callers, built from its app doc if missing."""
         return await self._ensure_connector(connector_name, connector_id)
 
+    def _stored_connector_name(
+        self, connector_doc: dict[str, Any], event_name: str, connector_id: str
+    ) -> str:
+        """The registry name of the instance's stored type, which picks its class.
+
+        The event name is not trusted for this: the resync route takes it from the
+        request body, so it could build one connector's class over another
+        instance's config and credentials.
+        """
+        stored = (connector_doc.get("type") or "").replace(" ", "").lower()
+        if not stored:
+            return event_name
+        if stored != event_name:
+            self.logger.warning(
+                f"Event for connector {connector_id} names '{event_name}' but the "
+                f"instance is '{stored}'; using '{stored}'"
+            )
+        return stored
+
     async def _auto_initialize_connector(
         self, connector_name: str, connector_id: str
     ) -> BaseConnector | None:
@@ -391,7 +411,7 @@ class EventService:
             data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
-                name=connector_name,
+                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
@@ -472,6 +492,7 @@ class EventService:
 
     async def _build_init_connector(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Build and store the connector. Caller must hold ``connector_init_lock``."""
+        connector: BaseConnector | None = None
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
@@ -500,7 +521,7 @@ class EventService:
             
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
-                name=connector_name,
+                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
@@ -522,6 +543,7 @@ class EventService:
 
             if not is_initialized:
                 self.logger.error(f"❌ Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
+                await self._dispose_unstored(connector_name, connector)
                 return False
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
@@ -531,7 +553,25 @@ class EventService:
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
+            if connector is not None and not self._is_cached(connector_id, connector):
+                await self._dispose_unstored(connector_name, connector)
             return False
+
+    def _is_cached(self, connector_id: str, connector: BaseConnector) -> bool:
+        """Whether the cache holds this instance. When the cache cannot be read,
+        assume it does: closing a live connector breaks every task using it."""
+        try:
+            return self._get_connector(connector_id) is connector
+        except Exception:
+            return True
+
+    async def _dispose_unstored(self, connector_name: str, connector: BaseConnector) -> None:
+        """Close a connector that failed init() and is never stored. The factory
+        handed it an open processor, and a redelivered init event builds another."""
+        try:
+            await dispose_connector(connector)
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up {connector_name} after a failed init: {e}")
 
     async def _handle_start_sync(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""
@@ -1230,6 +1270,9 @@ class EventService:
                 if record_id is not None or record_group_id is not None:
                     self.logger.error("Re-running pipeline stages is connector-wide only; ignoring this event")
                     return False
+                if len({RETRYABLE_STAGES[s] for s in stages}) > 1:
+                    self.logger.error(f"Stages re-run together must be selected the same way: {stages!r}")
+                    return False
                 # Records are selected by the stages' own status, and a retry is for what failed.
                 status_filters = raw_status_filters if raw_status_filters else [ProgressStatus.FAILED.value]
 
@@ -1339,6 +1382,14 @@ class EventService:
         # republished: that would run two pipelines against the same
         # virtualRecordId. Everything else, including AUTO_INDEX_OFF, is fair game.
         exclude_statuses = [ProgressStatus.IN_PROGRESS.value]
+        if stages and RETRYABLE_STAGES[stages[0]] is None:
+            await self._rerun_stage_by_state(
+                connector, connector_id, org_id, user_key, stages,
+                status_filters or [ProgressStatus.FAILED.value], exclude_statuses, batch_size,
+            )
+            return
+        # Past the branch above, a stage's selector is a record field.
+        status_field = (RETRYABLE_STAGES[stages[0]] if stages else None) or HeadlineField.INDEXING
 
         while True:
             if record_id is not None:
@@ -1377,7 +1428,7 @@ class EventService:
                     after_key=after_key,
                     exclude_statuses=exclude_statuses,
                     is_placeholder=False,
-                    status_field=(RETRYABLE_STAGES[stages[0]] if stages else HeadlineField.INDEXING).value,
+                    status_field=status_field.value,
                 )
 
             fetched_count = len(records)
@@ -1414,7 +1465,18 @@ class EventService:
             if stages:
                 # Only the stages re-run: the record stays searchable and its indexing
                 # status is untouched, and the connector is not asked to re-fetch it.
-                await connector.data_entities_processor.reindex_existing_records(records, stages=stages)
+                # Each record is bound to its revision, so one re-indexed before its event is
+                # handled is left to that revision's stages. The revision is read together with
+                # a re-check of the selection: a record that left it since is not re-run.
+                revisions = await self.graph_provider.get_record_content_revs(
+                    [r.id for r in records], status_field=status_field.value,
+                    statuses=status_filters or [], exclude_indexing_statuses=exclude_statuses,
+                )
+                records = [r for r in records if r.id in revisions]
+                if records:
+                    await connector.data_entities_processor.reindex_existing_records(
+                        records, stages=stages, stage_revisions=revisions,
+                    )
                 total_processed += len(records)
                 if fetched_count < batch_size:
                     break
@@ -1439,6 +1501,61 @@ class EventService:
                 break
 
         self.logger.info(f"✅ Completed reindex for {connector_name} {connector_id} connector. Total records processed: {total_processed}")
+
+    async def _rerun_stage_by_state(
+        self,
+        connector: BaseConnector,
+        connector_id: str,
+        org_id: str,
+        user_key: str | None,
+        stages: list[str],
+        statuses: list[str],
+        exclude_indexing_statuses: list[str],
+        batch_size: int,
+    ) -> None:
+        """Re-run ``stages`` for records selected by their stage state: one keyset pass over the
+        connector's states in each status, ``batch_size`` states a page.
+
+        The cursor is the state key, so a page reads at most ``batch_size`` states however many
+        match. Records a page could not be built for are skipped; a page whose records could
+        not be read at all raises, rather than being passed over as empty.
+        """
+        stage = stages[0]
+        total = 0
+        for status in dict.fromkeys(statuses):
+            after_key: str | None = None
+            while True:
+                page = await self.graph_provider.get_stage_states_with_records(
+                    org_id, connector_id, stage, status,
+                    limit=batch_size, after_key=after_key,
+                    exclude_indexing_statuses=exclude_indexing_statuses,
+                )
+                if not page:
+                    break
+                after_key = page[-1][0]
+                keys = list(dict.fromkeys(k for _, record_keys in page for k in record_keys))
+                revisions = {k: stage_state_rev(state) for state, record_keys in page for k in record_keys}
+                typed = (
+                    await self.graph_provider.get_typed_records_batch(keys, raise_on_error=True)
+                    if keys else {}
+                )
+                records = [typed[k] for k in keys if k in typed and not typed[k].is_placeholder]
+                if user_key is not None and records:
+                    allowed = (await self.graph_provider.check_access(
+                        user_key, org_id, node_ids=[r.id for r in records],
+                    )).node_ids
+                    records = [r for r in records if r.id in allowed]
+                if records:
+                    self.logger.info(
+                        f"Re-running {stages} for {len(records)} records ({stage} {status}, after {after_key})"
+                    )
+                    await connector.data_entities_processor.reindex_existing_records(
+                        records, stages=stages, stage_revisions=revisions
+                    )
+                    total += len(records)
+                if len(page) < batch_size:
+                    break
+        self.logger.info(f"✅ Re-ran {stages} for {total} records of connector {connector_id}")
 
     async def _release_storage(
         self,

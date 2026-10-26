@@ -175,6 +175,8 @@ export interface AgentChatToolGroupRow {
   /** Stable id for UI keys — same toolset type may appear multiple times as instances. */
   instanceId?: string;
   iconPath?: string;
+  /** An MCP server's catalog type, which picks its logo. */
+  typeId?: string;
   fullNames: string[];
   toolDescriptions?: Record<string, string>;
 }
@@ -251,6 +253,7 @@ export function buildAgentChatMcpGroups(agent: AgentDetail | null | undefined): 
       label: (server.displayName || server.name || 'MCP Server').trim(),
       toolsetSlug: 'mcp',
       ...(instanceId ? { instanceId } : {}),
+      typeId: server.typeId?.trim() || undefined,
       fullNames,
       toolDescriptions: Object.keys(toolDescriptions).length ? toolDescriptions : undefined,
     });
@@ -481,8 +484,15 @@ export const AgentsApi = {
     };
   },
 
-  async getAgent(agentKey: string): Promise<GetAgentResult> {
-    const { data } = await apiClient.get<GetAgentApiResponse>(`${AGENTS_BASE_URL}/${agentKey}`);
+  /**
+   * `quiet` keeps a failed lookup from raising the global error toast, for callers that already cope
+   * with it: someone a chat was shared with may not be allowed to open the agent it belongs to.
+   */
+  async getAgent(agentKey: string, options?: { quiet?: boolean }): Promise<GetAgentResult> {
+    const { data } = await apiClient.get<GetAgentApiResponse>(
+      `${AGENTS_BASE_URL}/${agentKey}`,
+      options?.quiet ? { suppressErrorToast: true } : undefined,
+    );
     const agent = data?.agent;
     if (!agent || typeof agent !== 'object') {
       return { agent: null, toolFullNames: [] };

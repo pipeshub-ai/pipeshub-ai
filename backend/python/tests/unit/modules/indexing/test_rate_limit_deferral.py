@@ -78,6 +78,18 @@ class TestPlan:
         plan = plan_deferral({}, DAY_S + 60, now_ms=NOW, max_total_seconds=DAY_S)
         assert plan.give_up is True
 
+    def test_a_new_run_starts_now_for_a_record_waiting_its_turn(self) -> None:
+        record = {RATE_LIMITED_SINCE_FIELD: NOW - 23 * HOUR_MS - 50 * 60_000, RETRY_NOT_BEFORE_FIELD: NOW - 60_000}
+        plan = plan_deferral(record, 1800, now_ms=NOW, max_total_seconds=DAY_S, new_run=True)
+        assert plan.since_ms == NOW
+        assert plan.not_before_ms == NOW + 1800 * 1000
+        assert plan.give_up is False
+
+    def test_a_new_run_still_gives_up_on_one_wait_longer_than_the_allowance(self) -> None:
+        record = {RATE_LIMITED_SINCE_FIELD: NOW - 5 * HOUR_MS, RETRY_NOT_BEFORE_FIELD: NOW - 60_000}
+        plan = plan_deferral(record, DAY_S + 60, now_ms=NOW, max_total_seconds=DAY_S, new_run=True)
+        assert plan.give_up is True
+
     def test_a_wait_left_alone_longer_than_the_allowance_starts_over(self) -> None:
         record = {RATE_LIMITED_SINCE_FIELD: NOW - 30 * 24 * HOUR_MS, RETRY_NOT_BEFORE_FIELD: NOW - 25 * HOUR_MS}
         plan = plan_deferral(record, 1800, now_ms=NOW, max_total_seconds=DAY_S)

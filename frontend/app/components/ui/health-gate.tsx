@@ -83,8 +83,8 @@ function BackendUnavailableScreen() {
     <Flex
       align="center"
       justify="center"
+      className="viewport-height"
       style={{
-        height: '100vh',
         width: '100%',
         backgroundColor: 'var(--olive-2)',
       }}

@@ -1,8 +1,10 @@
 """A write that fails partway leaves the graph as it was, on Neo4j 5.26 and ArangoDB 3.12.
 
-With NEO4J_EXPLICIT_TRANSACTIONS off (the default), every Neo4j statement
-commits on its own, so a write split over several statements kept its first
-steps when a later one failed. ArangoDB rolls the whole transaction back. Each
+With NEO4J_EXPLICIT_TRANSACTIONS off, every Neo4j statement commits on its own,
+so a write split over several statements kept its first steps when a later one
+failed. It is on by default now and these writes are single statements anyway;
+the tests run in the default mode, and a plain multi-statement block that
+fails midway is checked to leave nothing. ArangoDB rolls the whole transaction back. Each
 write below is now one statement on Neo4j:
 
 - a sync rewriting a user group's members, a record group's permissions or an
@@ -184,7 +186,7 @@ async def _require_lock_timeout(graph: Neo4jProvider) -> None:
 
 @pytest.fixture(params=["neo4j", "arango"])
 async def world(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch) -> AsyncIterator[_World]:
-    # The default, where each Neo4j statement commits on its own.
+    # The default: Neo4j runs each transaction block as one real transaction.
     monkeypatch.delenv("NEO4J_EXPLICIT_TRANSACTIONS", raising=False)
     # The failure is the point: a retry would only wait on the same hold again.
     monkeypatch.setattr(graph_data_store_module, "_is_retryable", lambda _instance, _error: False)
@@ -1498,9 +1500,10 @@ async def test_a_failed_knowledge_base_create_leaves_no_knowledge_base(world: _W
 async def test_with_create_transactions_off_a_failed_knowledge_base_create_leaves_it_half_made(
     world: _World, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """NEO4J_CREATE_TRANSACTIONS=false is today's auto-commit, which the hold above does fail partway."""
+    """With both flags false it is the old auto-commit, which the hold above does fail partway."""
     w = world
     monkeypatch.setenv("NEO4J_CREATE_TRANSACTIONS", "false")
+    monkeypatch.setenv("NEO4J_EXPLICIT_TRANSACTIONS", "false")
     graph = await connect_neo4j(logger, monkeypatch)
     try:
         await _add_org(w)
@@ -1651,3 +1654,23 @@ async def test_a_failed_agent_create_leaves_no_agent(world: _World) -> None:
     assert await _sources(w, agent.get("id") or agent["_key"], CollectionNames.AGENT_INSTANCES.value) == {
         owner, w.org_id,
     }
+
+
+async def test_a_plain_block_that_fails_midway_writes_nothing(world: _World) -> None:
+    """The default on both stores: statements before the failure are rolled back."""
+    w = world
+    key = f"user-midway-{uuid.uuid4().hex[:8]}"
+    w.ids.add(key)
+    store = GraphDataStore(logger, w.graph)
+
+    async def write_then_fail(tx_store) -> None:
+        await tx_store.batch_upsert_nodes(
+            [{"id": key, "userId": key, "orgId": w.org_id, "email": f"{key}@example.com", "isActive": True}],
+            CollectionNames.USERS.value,
+        )
+        raise RuntimeError("fail after the first statement")
+
+    with pytest.raises(RuntimeError, match="after the first statement"):
+        await store.execute_in_transaction(write_then_fail)
+
+    assert await w.graph.get_document(key, CollectionNames.USERS.value) is None

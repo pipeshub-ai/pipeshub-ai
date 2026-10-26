@@ -36,6 +36,12 @@ export function useFormFieldControl(): FormFieldControlIds | Record<string, neve
   return useContext(FormFieldControlContext) ?? {};
 }
 
+/** True when a label (often a backend display name) already says "(optional)", in English or `suffix`. */
+export function labelEndsWithOptional(label: string, suffix: string): boolean {
+  const end = label.trim().toLowerCase();
+  return end.endsWith('(optional)') || end.endsWith(suffix.trim().toLowerCase());
+}
+
 // ========================================
 // Component
 // ========================================
@@ -69,7 +75,7 @@ export function FormField({
             *
           </Text>
         )}
-        {optional && (
+        {optional && !labelEndsWithOptional(label, t('form.optional')) && (
           <Text
             size="1"
             weight="regular"

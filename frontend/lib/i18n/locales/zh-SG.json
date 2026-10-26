@@ -11,7 +11,9 @@
       "manualIndexStart": "正在索引手动索引记录…",
       "manualIndexError": "启动手动索引失败",
       "retryClassificationStart": "分类重试已加入队列",
-      "retryClassificationError": "重试分类失败"
+      "retryClassificationError": "重试分类失败",
+      "retryEntitiesStart": "实体提取重试已加入队列",
+      "retryEntitiesError": "重试实体提取失败"
     },
     "trash": {
       "menuLabel": "最近删除",
@@ -121,7 +123,8 @@
     "tabYourProjects": "您的项目",
     "tabArchived": "已归档",
     "archivedEmptyState": "暂无归档项目",
-    "archivedEmptyStateHint": "您归档的项目会显示在这里。"
+    "archivedEmptyStateHint": "您归档的项目会显示在这里。",
+    "actionsLabel": "项目操作"
   },
   "timeGroup": {
     "today": "今天",
@@ -198,6 +201,7 @@
   },
   "onboarding": {
     "skipEmbeddingDefault": "跳过",
+    "stepOf": "第 {{current}} 步，共 {{total}} 步：{{title}}",
     "skipEmbeddingTitle": "打开“默认（系统提供）”的设置，然后点击“添加模型”以保存",
     "nextDisabledEmbeddingHint": "在下方添加一个嵌入模型提供商，或点击“跳过”以打开默认模型设置",
     "embeddingStepHint": "在下方添加一个嵌入模型提供商以启用语义搜索，或点击“跳过”打开“默认（系统提供）”并点击“添加模型”。您稍后可以在工作区设置中更改。",
@@ -227,7 +231,7 @@
       }
     },
     "systemConfig": "系统配置",
-    "stepHeading": "第 {{current}}/{{total}} 步：配置{{name}}",
+    "stepHeading": "配置{{name}}",
     "stepAiModel": {
       "stepName": "AI 模型*",
       "addLlmHint": "至少添加一个文本（LLM）提供商以继续。",
@@ -334,7 +338,6 @@
     "untitledChat": "—",
     "name": "名称",
     "size": "大小",
-    "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
     "types": {
       "IMAGE": "图片",
       "CHART": "图表",
@@ -367,7 +370,6 @@
     "deleteSuccess": "已删除\"{{name}}\"",
     "preview": "预览",
     "moreActionsFor": "{{name}} 的更多选项",
-    "pageOf": "{{page}} / {{total}}",
     "loadFailedHint": "请检查网络连接后重试。",
     "noMatches": "没有符合筛选条件的产物",
     "noMatchesHint": "请尝试其他搜索，或清除筛选条件以查看全部产物。",
@@ -378,6 +380,7 @@
   },
   "notifications": {
     "title": "通知",
+    "close": "关闭通知",
     "loading": "正在加载…",
     "empty": "暂无通知",
     "emptyUnread": "没有未读通知",
@@ -393,6 +396,13 @@
     "filterOnlyUnread": "未读",
     "filterArchived": "已归档",
     "filterTooltip": "筛选：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 与你共享了一个聊天",
+      "titleAgent": "{{name}} 与你共享了一个智能体聊天",
+      "body": "你现在可以打开“{{chat}}”。",
+      "bodyNoTitle": "你现在可以在“{{place}}”中打开它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "加载通知失败",
     "updateFailed": "无法更新通知",
     "removeFailed": "无法移除通知"
@@ -495,7 +505,10 @@
     "willBeDeleted": "将被删除",
     "willBeReindexed": "将被重新索引",
     "reindexConfirm": "重新索引此{{type}}？",
-    "reindexDescription": "这将更新此{{type}}及其内容的搜索索引。"
+    "reindexDescription": "这将更新此{{type}}及其内容的搜索索引。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有内容将被删除。",
+    "deleteFolderBody": "'{{name}}' 及其中的所有内容将从此集合中删除。",
+    "deleteFileBody": "'{{name}}' 将从此集合中删除。"
   },
   "table": {
     "fileName": "文件名",
@@ -552,6 +565,12 @@
     }
   },
   "common": {
+    "shiftKey": "Shift",
+    "pagination": {
+      "showing": "显示第 {{start}}-{{end}} 项，共 {{total}} 项",
+      "pageOf": "{{page}} / {{total}}",
+      "perPage": "每页 {{value}} 条"
+    },
     "yes": "是",
     "no": "否",
     "ok": "确定",
@@ -591,6 +610,14 @@
     "enterprise": {
       "label": "EE 版提供",
       "tooltip": "属于 PipesHub 企业版"
+    },
+    "errorBoundary": {
+      "title": "出了点问题",
+      "body": "页面的这一部分无法显示。请重试，或返回聊天。",
+      "retry": "重试",
+      "goToChat": "前往聊天",
+      "notFoundTitle": "找不到页面",
+      "notFoundBody": "此页面不存在或已移动。"
     }
   },
   "units": {
@@ -636,7 +663,8 @@
     "open": "打开侧边栏",
     "expand": "展开侧边栏",
     "close": "关闭侧边栏",
-    "collapse": "收起侧边栏"
+    "collapse": "收起侧边栏",
+    "navigation": "导航"
   },
   "menu": {
     "reindex": "重新索引",
@@ -648,7 +676,8 @@
     "forceReindexing": "强制重新索引",
     "retryIndexing": "重试索引",
     "rename": "重命名",
-    "delete": "删除"
+    "delete": "删除",
+    "indexAll": "全部索引"
   },
   "reindexScope": {
     "description": "选择要为“{{name}}”建立索引的内容。",
@@ -707,6 +736,44 @@
       "needsMultimodalModel": "需要多模态模型",
       "skipped": "已跳过",
       "pending": "待处理"
+    },
+    "allRecordsBusy_other": "此视图当前繁忙，将在 {{count}} 秒后重试。",
+    "allRecordsLoadFailed": "加载记录失败",
+    "searchResults": "搜索结果",
+    "clearSearch": "清除搜索",
+    "rowActions": {
+      "open": "打开",
+      "preview": "预览",
+      "goToParent": "转到上级",
+      "goToNamed": "转到 {{name}}",
+      "moreFor": "{{name}} 的更多选项",
+      "select": "选择 {{name}}"
+    },
+    "upload": {
+      "title": "上传数据",
+      "documentation": "文档",
+      "filesTitle": "上传文件",
+      "filesHint": "每个文件最大 {{maxMb}} MB。上传时会检查类型和大小。",
+      "foldersTitle": "上传文件夹",
+      "foldersHint": "上传时会检查每个文件（每个文件最大 {{maxMb}} MB）。",
+      "or": "或",
+      "fileCount_one": "{{count}} 个文件",
+      "fileCount_other": "{{count}} 个文件",
+      "folderCount_one": "{{count}} 个文件夹",
+      "folderCount_other": "{{count}} 个文件夹",
+      "depthWarning_one": "这里只能再容纳 {{count}} 层文件夹（文件夹最多可嵌套 {{max}} 层）。请移除一些文件夹后继续。",
+      "depthWarning_other": "这里只能再容纳 {{count}} 层文件夹（文件夹最多可嵌套 {{max}} 层）。请移除一些文件夹后继续。",
+      "folderLimitReached": "文件夹最多可嵌套 {{max}} 层，而此文件夹已达到上限，因此不能在此上传文件夹。你仍然可以上传文件。",
+      "addFiles": "添加文件",
+      "addFolder": "添加文件夹",
+      "moreBelow": "下方还有更多",
+      "removeNamed": "移除 {{name}}",
+      "expandFolder": "展开文件夹",
+      "collapseFolder": "折叠文件夹"
+    },
+    "createDialog": {
+      "titlePlaceholder": "例如：工程",
+      "descriptionPlaceholder": "例如：开发团队文档"
     }
   },
   "connectorTypes": {
@@ -756,7 +823,7 @@
     "noModelsAvailable": "尚未配置任何 AI 模型",
     "failedToLoadModels": "加载 AI 模型失败",
     "failedToLoadAgentConfig": "加载此智能体的模型配置失败",
-    "openModels": "打开模型",
+    "openModels": "管理模型",
     "connectorsCollectionsTitle": "连接器与收藏集",
     "connectorsTooltip": "连接器与收藏集",
     "connectorsDefaultScopeHint": "默认会搜索所有连接器和收藏集。如需缩小范围，请在下方选择特定项目。",
@@ -809,6 +876,7 @@
     "recents": "最近",
     "sharedChats": "共享的聊天",
     "sharedBy": "由 {{name}} 共享",
+    "agentChat": "智能体聊天",
     "noSharedChats": "没有共享的聊天",
     "yourChats": "您的聊天",
     "noChatsFound": "未找到聊天",
@@ -823,7 +891,6 @@
     "treeExpand": "显示 {{name}} 中的内容",
     "treeCollapse": "隐藏 {{name}} 中的内容",
     "noCollectionsAvailable": "没有可用的收藏集",
-    "comingSoon": "即将推出",
     "answer": "回答",
     "sources": "来源",
     "citation": "引用",
@@ -873,6 +940,7 @@
     "backToChatHome": "所有聊天",
     "agentSidebarLabel": "智能体",
     "agentNameLoading": "正在加载…",
+    "sharedAgentChat": "共享的智能体聊天",
     "myAgents": "我的智能体",
     "moreAgents": "更多智能体",
     "agentHeaderMenuAria": "智能体选项",
@@ -937,6 +1005,8 @@
     "stoppedMarker": "已停止",
     "toolCard": {
       "arguments": "参数",
+      "query": "查询",
+      "queryCutOff": "此查询仅保存了开头部分，因此无法复制。",
       "result": "结果",
       "error": "错误",
       "blocked": "已阻止",
@@ -977,8 +1047,6 @@
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "响应即将停止，已生成的部分内容将被保留。",
-      "editComingSoonTitle": "即将推出",
-      "editComingSoonDescription": "我们正在开发编辑功能",
       "deprecatedTools": "此智能体包含已不可用的工具。请打开智能体构建器将其移除。",
       "openAgentBuilder": "打开智能体构建器",
       "loadConversationFailed": "无法打开此对话。请刷新页面后重试。",
@@ -1350,12 +1418,9 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "此智能体未配置",
       "internalSearch": "内部搜索",
-      "webSearch": "网络搜索",
-      "deepResearch": "深度研究",
-      "deepResearchNeedsWebSearch": "开启网页搜索后才能使用深度研究"
+      "webSearch": "网络搜索"
     },
     "resizePanels": "调整聊天和预览面板大小",
-    "mobileProfileComingSoon": "移动端个人资料页面即将推出。",
     "toolApproval": {
       "noArguments": "无详细信息",
       "deny": "拒绝",
@@ -1504,7 +1569,8 @@
       },
       "roles": {
         "admin": "管理员",
-        "member": "成员"
+        "member": "成员",
+        "guest": "访客"
       },
       "statuses": {
         "active": "活跃",
@@ -1738,11 +1804,10 @@
       "searchPlaceholder": "搜索…",
       "newApplication": "新建 OAuth 应用",
       "emptyTitle": "暂无 OAuth 2.0 应用",
-      "emptyDescription": "创建一个 OAuth 2.0 应用，让第三方集成通过 Pipeshub 访问您的组织。",
+      "emptyDescription": "创建一个 OAuth 2.0 应用，让第三方集成通过 PipesHub 访问您的组织。",
       "loading": "正在加载应用…",
       "errorGeneric": "无法加载 OAuth 应用",
       "retry": "重试",
-      "docsOpenLabel": "打开 OAuth 文档（即将推出）",
       "scopesBadgeOne": "{{count}} 个权限范围",
       "scopesBadgeMany": "{{count}} 个权限范围",
       "manage": "管理",
@@ -1817,7 +1882,14 @@
         "saveErrorTitle": "保存更改失败",
         "regenerateSuccessTitle": "密钥已重新生成",
         "regenerateErrorTitle": "重新生成密钥失败",
-        "errorLifetimeInvalid": "请输入有效的有效期（整数秒，且不小于 1）。"
+        "errorLifetimeInvalid": "请输入有效的有效期（整数秒，且不小于 1）。",
+        "identityBoundNote": "此应用程序的令牌以所指向的服务账户身份行事。更改它会吊销已经签发的令牌。",
+        "identityUnboundNote": "此应用程序的令牌以创建它的人的身份行事，拥有其文档权限和角色——如果创建者是管理员，就意味着管理员权限。请改为将其指向一个服务账户。",
+        "identityAdminOnly": "只有管理员才能为此应用程序指定服务账户。请联系管理员处理。",
+        "identityBindAction": "使用此账户",
+        "identityBindRevokes": "此操作会吊销该应用程序已签发的令牌。使用它们的一切都需要重新获取。",
+        "identityBound": "该应用程序现在以此服务账户的身份行事。",
+        "identityBindFailed": "无法更改服务账户。请稍后重试。"
       },
       "create": {
         "panelTitle": "创建 OAuth 2.0 应用",
@@ -1875,7 +1947,15 @@
         "errorOptionalUrlInvalid": "可选 URL 如已填写，必须是有效的 http(s) 地址。",
         "grantRequiredTitle": "需要授权类型",
         "grantRequiredDescription": "必须至少保留一种已选择的授权类型。",
-        "clientCredentialsWarning": "客户端凭据令牌始终以创建此应用的用户身份访问 Pipeshub，而不是以调用令牌端点的任何人的身份。在您授予的权限范围（scope）内，令牌可以访问该用户能访问的一切，并继承其角色，因此由管理员创建的应用将拥有管理员权限。如果该账户被删除，令牌也会失效。如果此应用同时支持授权码流程，用户仍可通过该方式为自己授权。"
+        "serviceAccountHeading": "此应用程序代表其行事的服务账户",
+        "clientCredentialsIdentityNote": "此应用程序的令牌以所指向的服务账户身份行事；若未设置，则以创建它的人的身份行事——如果创建者是管理员，就意味着管理员权限。",
+        "serviceAccountHelper": "客户端凭据令牌不包含任何人员，因此此应用程序需要自己的身份。服务账户始终是成员，绝不会是管理员，并且无法登录。没有服务账户，应用程序将以创建它的人的身份行事。",
+        "serviceAccountPlaceholder": "选择服务账户",
+        "serviceAccountLoading": "正在加载服务账户…",
+        "serviceAccountNone": "目前还没有服务账户。请在“工作区 → 服务账户”中创建一个，然后返回此处。",
+        "serviceAccountLoadError": "无法加载服务账户。请稍后重试。",
+        "serviceAccountRetry": "重试",
+        "errorServiceAccountRequired": "请选择此应用程序代表其行事的服务账户。"
       }
     },
     "personalAccessTokens": {
@@ -1903,7 +1983,7 @@
         "errorTitle": "撤销令牌失败"
       },
       "create": {
-        "panelTitle": "创建个人访问令牌",
+        "panelTitle": "新建个人访问令牌",
         "successPanelTitle": "令牌已创建",
         "createButton": "创建令牌",
         "doneButton": "完成",
@@ -2183,8 +2263,11 @@
       "createdBy": "创建者",
       "createdOn": "创建日期"
     },
+    "bulk": {
+      "selected": "已选择 {{count}} 个{{label}}"
+    },
     "pagination": {
-      "showing": "显示第 {{from}}-{{to}} 项，共 {{total}} 项",
+      "showing_other": "显示第 {{from}}-{{to}} 项，共 {{count}} 项",
       "previous": "上一页",
       "next": "下一页"
     },
@@ -2224,7 +2307,7 @@
         "webSearch": "网络搜索",
         "tenants": "租户",
         "superOrgs": "组织",
-        "oauthApps": "OAuth 应用",
+        "oauthApps": "连接器 OAuth 应用",
         "serviceAccounts": "服务账号"
       }
     },
@@ -2400,14 +2483,15 @@
       "enterprise": {
         "userActionsTitle": "成员自己的操作",
         "userActionsDescription": "查看并移除组织成员为自己添加的操作。"
-      }
+      },
+      "appsHeading": "应用操作"
     },
     "rightPanel": {
       "primaryDisabledHint": "请向上滚动并填写必填字段（标有 * 号）以继续。",
       "primaryLoadingHint": "请稍候…"
     },
     "archivedChats": {
-      "title": "已归档聊天",
+      "title": "已归档的对话",
       "emptyList": "没有已归档的聊天",
       "selectPrompt": "选择一个已归档的聊天进行预览",
       "restore": "恢复",
@@ -2533,7 +2617,7 @@
     "authentication": {
       "loading": "正在加载身份验证设置…",
       "configure": "配置",
-      "title": "身份验证设置",
+      "title": "身份验证",
       "subtitle": "配置用户登录应用程序的方式",
       "methodsHeading": "身份验证方式",
       "methodsSubtitle": "启用一种或多种身份验证方式。用户可使用任意已启用的方式登录。",
@@ -2559,17 +2643,11 @@
       "panels": {
         "google": "配置 Google 身份验证",
         "microsoft": "配置 Microsoft 身份验证",
-        "samlSso": "配置 SAML SSO",
-        "oauth": "配置 OAuth 2.0",
         "github": "配置 GitHub 身份验证"
       },
       "jit": {
         "title": "启用即时（JIT）预配",
         "description": "当用户首次使用 {{providerName}} 登录时自动创建用户账户"
-      },
-      "xmlUpload": {
-        "parseError": "无法从此文件解析 SAML 元数据。请检查它是否为有效的 IdP 元数据 XML。",
-        "readError": "读取文件失败。"
       },
       "riskDialog": {
         "title": "确认身份验证更改",
@@ -2582,6 +2660,22 @@
       "userMethods": {
         "heading": "用户登录方式",
         "subtitle": "控制所有组织中所有用户可使用的登录方式。"
+      },
+      "signInRemoval": {
+        "title_other": "PipesHub 1.0 已移除 {{methods}} 登录",
+        "nowSignsInWith": "此工作区现在使用{{methods}}登录。",
+        "peopleIntro": "以下人员曾经登录过，但尚未设置密码：",
+        "person": "{{name}}（{{email}}）",
+        "andMore": "以及其他 {{count}} 人",
+        "howToSetPassword": "不使用 Google、Microsoft 或邮箱验证码登录的人员需要设置密码。他们可以在登录页面使用“忘记密码”（需要已配置邮件 SMTP），也可以由运行 PipesHub 服务器的人员按照 PipesHub 1.0 升级指南为其创建设置密码的链接。",
+        "methodNames": {
+          "password": "密码",
+          "otp": "邮箱验证码",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -2637,7 +2731,7 @@
       },
       "successDialog": {
         "title": "实例已配置完成，可以开始同步！",
-        "description": "您现在就可以开始将您的 {{name}} 数据与 Pipeshub 同步，",
+        "description": "您现在就可以开始将您的 {{name}} 数据与 PipesHub 同步，",
         "descriptionSuffix": "也可以稍后在设置中进行。",
         "later": "稍后再说",
         "startSync": "立即开始同步"
@@ -2689,7 +2783,8 @@
         "errorFallback": "禁用连接器失败。请重试。",
         "actions": {
           "removeInstance": "移除此连接器实例",
-          "saveConfig": "保存配置更改"
+          "saveConfig": "保存配置更改",
+          "saveAuth": "保存新的凭据"
         }
       },
       "adminAccessDialog": {
@@ -2821,10 +2916,28 @@
         "localWatcherLabel": "本地监视器",
         "localWatcherStatus": "{{state}} · {{pending}} 个待处理 · {{failed}} 个失败",
         "classification": "分类",
-        "classificationSkipped": "已跳过",
+        "enrichment": {
+          "title": "AI 数据提取",
+          "description": "记录可搜索后在后台运行，搜索无需等待。",
+          "classificationHint": "添加摘要、主题和类别",
+          "entities": "实体提取",
+          "entitiesHint": "识别人物、组织和地点",
+          "progress": "{{completed}} / {{total}}",
+          "waiting": "等待中",
+          "skipped": "已跳过",
+          "notStarted": "记录可搜索后开始",
+          "inProgress": "进行中",
+          "done": "已完成",
+          "failedCount_one": "{{count}} 个失败",
+          "failedCount_other": "{{count}} 个失败",
+          "retry": "重试"
+        },
         "retryFailedClassification": "重试失败的分类",
         "retryClassificationSuccess": "分类重试已加入队列",
         "retryClassificationError": "重试分类失败",
+        "retryFailedEntities": "重试失败的实体提取",
+        "retryEntitiesSuccess": "实体提取重试已加入队列",
+        "retryEntitiesError": "重试实体提取失败",
         "codeGraph": {
           "title": "代码图",
           "status": {
@@ -2907,7 +3020,9 @@
           "ready": "已完成",
           "readyTooltip": "配置已完成并通过认证。启用后即可运行同步。",
           "desktopOffline": "桌面端离线",
-          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。"
+          "desktopOfflineTooltip": "拥有此文件夹的桌面应用未连接。请在该电脑上打开它以进行同步。",
+          "actionNeeded": "需要处理",
+          "actionNeededTooltip": "需要您处理：{{items}}"
         },
         "sync": {
           "kind": "同步",
@@ -3154,6 +3269,12 @@
           "wholeSite": "整个网站",
           "onePage": "单个页面"
         }
+      },
+      "actionItems": {
+        "badge": "需要处理",
+        "title": "需要处理",
+        "openAuthentication": "更新身份验证",
+        "viewSteps": "查看设置步骤"
       }
     },
     "mcpServers": {
@@ -3161,7 +3282,7 @@
       "loading": "正在加载 MCP 服务器…",
       "noResults": "没有符合搜索条件的 MCP 服务器",
       "replacedNotice": "已不再维护。请改为添加 {{name}}。",
-      "addServer": "添加服务器",
+      "addServer": "新建服务器",
       "custom": "自定义",
       "inherited": "继承",
       "inheritedDeleteTooltip": "由上级组织管理",
@@ -3289,7 +3410,7 @@
         "scopesPlaceholder": "添加权限范围",
         "useAdminAuth": "为所有用户使用共享的管理员认证",
         "headerValue": "{{headerName}}",
-        "apiToken": "API Token",
+        "apiToken": "API token",
         "credentialsHeading": "凭证（可选）",
         "credentialsHint": "现在添加凭证，或跳过并稍后在“连接与工具”标签页中连接。",
         "multiEnvIncomplete": "请填写所有必需的环境变量，或全部留空以便稍后连接。",
@@ -3302,7 +3423,7 @@
       },
       "configPanel": {
         "editTitle": "编辑 MCP 服务器",
-        "createTitle": "添加 MCP 服务器",
+        "createTitle": "新建 MCP 服务器",
         "tabs": {
           "configuration": "配置",
           "tools": "工具与审批",
@@ -3341,7 +3462,7 @@
           "copyFailed": "无法复制服务器 URL",
           "addedBy": "由 {{name}} 添加",
           "disconnectHint": "将您登出。设置和规则会保留。",
-          "remove": "移除服务器",
+          "remove": "删除服务器",
           "removeHint": "为所有人删除它。",
           "removeHintPersonal": "删除它及您的登录信息。"
         }
@@ -3383,7 +3504,7 @@
       "stdioPolicy": {
         "disabledTitle": "此部署已禁用",
         "disabledDescription": "自定义 STDIO 服务器会在 PipesHub 服务器上运行命令，因此在运维人员于部署环境中设置 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前保持关闭。在此之前，智能体无法使用此服务器的工具。你可以删除它，或将其改为远程（HTTP）服务器。",
-        "unavailableHint": "此部署已关闭本地命令（STDIO）服务器。如需允许，运维人员必须设置 {{flag}}=true。",
+        "unavailableHint": "本地命令（STDIO）服务器已关闭。请联系管理员启用。",
         "enabledWarning": "此命令以服务的权限在 PipesHub 服务器上运行，包括其网络访问和凭据。请只添加你信任的命令。"
       },
       "addDialog": {
@@ -3453,10 +3574,9 @@
       "subtitle": "配置机器人凭据，并可选择将每个机器人映射到一个智能体",
       "loading": "正在加载机器人…",
       "defaultAssistant": "默认助手",
-      "createBot": "创建机器人",
+      "createBot": "新建机器人",
       "emptyTitle": "暂无机器人",
       "emptyDescription": "立即设置您的第一个机器人",
-      "addBot": "添加机器人",
       "types": {
         "slack": "Slack 机器人",
         "discord": "Discord 机器人",
@@ -3500,7 +3620,7 @@
       },
       "title": "机器人",
       "noBots": "暂无机器人",
-      "setupFirstBot": "立即设置您的第一个机器人",
+      "setupFirstBot": "机器人可让用户直接在 Slack 中向您的智能体提问。添加一个即可开始。",
       "documentation": "文档",
       "configPanelTitle": "机器人配置",
       "selectBotSetup": "选择机器人设置",
@@ -3540,7 +3660,7 @@
       "subtitle": "构建可供您的智能体使用的自定义技能——Markdown 指令、可选脚本和参考文件，与 Agent Builder 中的其他内容一样进行版本管理和治理。",
       "loading": "正在加载技能…",
       "refreshed": "已刷新",
-      "createSkill": "创建技能",
+      "createSkill": "新建技能",
       "importSkill": "导入",
       "reviewCandidates": "审核候选技能",
       "searchPlaceholder": "搜索技能…",
@@ -3681,7 +3801,8 @@
       "availability": {
         "label": "可供智能体使用",
         "description": "关闭后，此技能仍保留在您的库中，但智能体无法发现或加载它。",
-        "descriptionBuiltin": "关闭后，此内置技能仍保留在库中，但整个组织的智能体都无法发现或加载它。"
+        "descriptionBuiltin": "关闭后，此内置技能仍保留在库中，但整个组织的智能体都无法发现或加载它。",
+        "short": "可用"
       }
     },
     "mail": {
@@ -3773,7 +3894,7 @@
       "configCalloutTitle": "提示词配置",
       "configCalloutDescription": "自定义系统提示词有助于定义 AI 的行为、语气以及回答问题的方式。请确保您的提示词清晰明确，并符合您组织的需求。",
       "resetToDefault": "恢复默认",
-      "customInstructionsTitle": "自定义指令",
+      "customInstructionsTitle": "提示词",
       "customInstructionsDescription": "为聊天助手添加自定义指令——例如使用特定语言回答、遵循某种格式风格，或应用您希望的任何行为。下面每种模式的回答方式不同，因此各有自己的指令。",
       "scopeHint": "这些指令仅适用于<bold>聊天助手</bold>（下方的智能体模式）。在 <bold>Agent Builder</bold> 中创建的自定义智能体不受影响——每个智能体使用自己的系统提示词和在该智能体上配置的指令。",
       "agentTitle": "智能体",
@@ -3783,7 +3904,7 @@
     },
     "webSearch": {
       "loading": "正在加载网络搜索设置…",
-      "title": "网络搜索配置",
+      "title": "网络搜索",
       "subtitle": "配置聊天机器人搜索网络时使用的网络搜索提供商",
       "methodsHeading": "不同的网络搜索方式",
       "methodsSubtitle": "选择用户进行网络搜索时使用的方式",
@@ -3815,16 +3936,23 @@
         "default": "默认",
         "configured": "已配置",
         "notConfigured": "未配置",
-        "active": "已配置"
+        "active": "已配置",
+        "builtIn": "内置"
       },
-      "heading": "网络搜索配置",
+      "heading": "网络搜索",
       "methodsSection": "不同的网络搜索方式",
       "methodsSectionDescription": "选择用户进行网络搜索时使用的方式",
       "policyTitle": "网络搜索提供商策略",
       "verifying": "正在验证连接...",
       "disabledReasonConfigure": "请先配置此提供商，然后再启用。",
       "disabledReasonActive": "请先停用当前启用的提供商，然后再启用此提供商。",
-      "configureTip": "配置"
+      "configureTip": "配置",
+      "actions": {
+        "setDefault": "设为默认",
+        "settingDefault": "正在设置…",
+        "editConfiguration": "编辑配置",
+        "deleteConfiguration": "删除配置"
+      }
     },
     "profile": {
       "subtitle": "在此管理您的所有个人资料信息",
@@ -3858,7 +3986,7 @@
         "title": "角色与权限",
         "role": "角色",
         "groups": "用户组",
-        "roleDescription": "您在 Pipeshub 应用中的角色",
+        "roleDescription": "您在 PipesHub 应用中的角色",
         "groupsDescription": "您所属的用户组",
         "noGroups": "未找到用户组"
       },
@@ -4131,7 +4259,7 @@
       }
     },
     "oauthApps": {
-      "title": "OAuth 应用",
+      "title": "连接器 OAuth 应用",
       "subtitle": "管理连接器和操作的 OAuth 凭据。标记为“默认”的应用将自动用于新连接，除非被覆盖。",
       "addButton": "添加 OAuth 应用",
       "tabs": {
@@ -4257,6 +4385,12 @@
         "scopesHelp": "选择此令牌可以执行的操作。没有默认值：无人值守运行的凭据应当只拥有他人明确为其选择的权限。",
         "expiryLabel": "有效期",
         "expiryDays": "{{count}} 天",
+        "expiryCustom": "自定义",
+        "expiryCustomLabel": "令牌过期前的天数",
+        "expiryCustomUnit": "天",
+        "expiryCustomHelp": "请输入 1 到 {{max}} 之间的天数。",
+        "expiryCustomInvalid": "请输入 1 到 {{max}} 之间的整数天数。",
+        "expiryCustomPreview": "将于 {{date}} 过期",
         "existing": "令牌",
         "none": "此账号尚未持有任何令牌。",
         "lastUsed": "上次使用 {{date}}",
@@ -4321,6 +4455,169 @@
         "outcomeRevoked": "已移除权限",
         "byAdmin": "由 {{admin}}"
       }
+    },
+    "apiToolsets": {
+      "title": "API 操作",
+      "subtitle": "管理员为智能体提供的内部 API。需要时，请连接您自己的凭据。",
+      "subtitleAdmin": "通过 OpenAPI 规范将内部 REST API 转换为操作。选择智能体可以调用的操作，以及 PipesHub 的登录方式。",
+      "emptyTitle": "添加您的第一个 API 操作",
+      "emptyAdmin": "上传任意内部 REST API 的 OpenAPI 3.0 或 3.1 规范。",
+      "card": {
+        "fallbackDescription": "根据 OpenAPI 规范添加的内部 REST API。"
+      },
+      "operationCount_other": "{{count}} 个操作",
+      "kind": {
+        "read": "读取",
+        "write": "写入",
+        "destructive": "删除"
+      },
+      "authType": {
+        "none": "无需身份验证",
+        "api_key": "API 密钥",
+        "http_bearer": "Bearer 令牌",
+        "http_basic": "用户名和密码",
+        "oauth2_client_credentials": "OAuth 2.0 客户端凭据",
+        "oauth2_authorization_code": "OAuth 2.0 登录"
+      },
+      "status": {
+        "connected": "已连接",
+        "notConnected": "未连接",
+        "open": "无需登录",
+        "shared": "共享凭据"
+      },
+      "cta": {
+        "add": "添加 API 操作",
+        "connect": "连接",
+        "manageConnection": "管理连接",
+        "details": "详情",
+        "edit": "编辑",
+        "delete": "删除",
+        "more": "{{name}} 的更多选项"
+      },
+      "toasts": {
+        "loadError": "无法加载 API 操作",
+        "created": "已添加 API 操作",
+        "updated": "已更新 API 操作",
+        "saveError": "无法保存 API 操作",
+        "deleted": "已删除 API 操作",
+        "deleteError": "无法删除 API 操作",
+        "connected": "已连接",
+        "disconnected": "已断开连接"
+      },
+      "deleteDialog": {
+        "title": "删除 API 操作",
+        "body": "删除 {{name}}？为它保存的所有凭据都会被移除。智能体正在使用的 API 操作无法删除。"
+      },
+      "editor": {
+        "addTitle": "添加 API 操作",
+        "editTitle": "编辑 API 操作",
+        "spec": "OpenAPI 规范",
+        "specHint": "上传或粘贴该 API 的 OpenAPI 3.0 或 3.1 规范（JSON 或 YAML 格式）。PipesHub 会读取其中的操作和登录方式。",
+        "specEditHint": "留空则保留当前规范。上传新规范后可从其操作和身份验证方式中选择。",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "读取规范",
+        "previewing": "正在读取规范…",
+        "validateError": "无法读取规范",
+        "warnings": "已跳过规范中的部分内容：",
+        "operations": "操作（已选 {{selected}} / {{total}}）",
+        "operationsHint": "智能体只能调用您选择的操作。",
+        "name": "名称",
+        "description": "描述",
+        "baseUrl": "基础 URL",
+        "baseUrlHint": "PipesHub 发送请求的地址，操作路径会追加在其后。",
+        "loopbackHint": "localhost 指 PipesHub 服务器本身。请使用 PipesHub 访问该 API 的地址，例如它在你网络中的主机名。",
+        "authScheme": "身份验证",
+        "authSchemeLocked": "重新上传规范才能更改 PipesHub 的身份验证方式。",
+        "scopes": "权限范围",
+        "oauthClientId": "OAuth 应用客户端 ID",
+        "oauthClientSecret": "OAuth 应用客户端密钥",
+        "keepSecret": "留空则保留已保存的密钥",
+        "sharedCredential": "使用一个共享凭据",
+        "sharedCredentialHint": "您只需设置一次凭据，所有成员都会使用它。关闭后，每位成员连接自己的凭据。",
+        "sharedCredentialForced": "客户端凭据以应用而非个人身份登录，因此所有人共享您设置的凭据。",
+        "timeout": "超时（秒）",
+        "timeoutHint": "等待 API 响应的时间，1 到 {{max}} 秒。",
+        "problems": {
+          "name": "请输入名称。",
+          "baseUrl": "请输入基础 URL。",
+          "operations": "请至少选择一个操作。",
+          "timeout": "请输入 1 到 120 秒之间的超时时间。",
+          "oauthClientId": "请输入 OAuth 应用的客户端 ID。"
+        },
+        "create": "添加 API 操作",
+        "specLoadedHint": "此 API 操作所依据的规范。替换规范即可从较新版本中选择。",
+        "replaceSpec": "替换规范",
+        "specUnread": "请先读取新规范，或取消替换。",
+        "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 个操作",
+        "dropFile": "将规范文件拖放到此处，或点击选择文件",
+        "dropFileHint": "JSON 或 YAML。您也可以在下方粘贴规范。",
+        "sampleHint": "手头没有规范？从示例开始：一个支持所有登录方式的帮助台 API。",
+        "sample": {
+          "yaml": "示例 YAML",
+          "json": "示例 JSON"
+        },
+        "detailsHeading": "详情",
+        "descriptionHint": "智能体会读取此内容来决定何时使用该 API。",
+        "authSchemeHint": "智能体调用 API 时 PipesHub 的登录方式。",
+        "redirectUrl": "重定向 URL",
+        "redirectUrlHint": "在 OAuth 应用中将此 URL 注册为允许的重定向地址。",
+        "noAuthHint": "PipesHub 不带凭据调用该 API，因此只有规范中标记为公开的操作才能正常工作。",
+        "selectReads": "仅读取",
+        "selectAll": "全部",
+        "selectNone": "全不选",
+        "unreachableWarning_other": "已选的 {{count}} 个操作需要凭据，未经身份验证将会失败。",
+        "deselectUnreachable": "取消选择这些操作",
+        "needsCredentials": "需要凭据",
+        "needsCredentialsHint": "规范显示此操作需要凭据。未经身份验证，API 会拒绝该请求。",
+        "advancedHeading": "高级"
+      },
+      "connect": {
+        "mode": {
+          "none": "此 API 无需凭据。",
+          "own": "智能体使用您自己的凭据调用此 API。",
+          "shared": "所有成员都使用您在此处设置的凭据。",
+          "managed": "此 API 操作的凭据由管理员管理。"
+        },
+        "status": "状态",
+        "signIn": "登录",
+        "signInAgain": "重新登录",
+        "signingIn": "正在登录…",
+        "fields": {
+          "apiKey": "API 密钥",
+          "token": "令牌",
+          "username": "用户名",
+          "password": "密码",
+          "clientId": "客户端 ID",
+          "clientSecret": "客户端密钥"
+        },
+        "replaceHint": "已保存。输入新值即可替换。",
+        "error": "操作未成功，请重试。",
+        "test": "测试连接",
+        "testing": "正在测试…",
+        "testOk": "API 已响应。",
+        "testFailed": "API 返回了错误。",
+        "testTruncated": "仅显示响应的开头部分。",
+        "disconnect": "断开连接",
+        "disconnecting": "正在断开连接…",
+        "panelTitle": "API 操作",
+        "connectionHeading": "连接",
+        "testHeading": "测试连接",
+        "testHint": "调用一个无需输入的读取操作。",
+        "testIdle": "运行测试调用，查看 API 返回的内容。",
+        "testNeedsConnection": "请先连接，再运行测试调用。",
+        "operationsHeading_other": "智能体可以调用的 {{count}} 个操作"
+      },
+      "sectionTitle": "API 操作",
+      "kindCount": {
+        "read_other": "{{count}} 个读取",
+        "write_other": "{{count}} 个写入",
+        "destructive_other": "{{count}} 个删除"
+      },
+      "kindPolicy": {
+        "read": "立即运行",
+        "write": "先询问用户",
+        "destructive": "除非智能体的操作规则允许，否则会被阻止"
+      }
     }
   },
   "filePreview": {
@@ -4342,6 +4639,8 @@
     "resizeCitations": "调整引用面板大小",
     "resizePreview": "调整文件预览面板大小",
     "viewCitations": "查看引用",
+    "preview": "预览",
+    "fileDetails": "文件详情",
     "openNamedInSource": "在来源中打开 {{name}}"
   },
   "agentBuilder": {
@@ -4349,20 +4648,17 @@
     "agentName": "名称",
     "createdBy": "创建者",
     "agentNamePlaceholder": "例如：支持机器人",
-    "serviceAccountBadge": "服务智能体",
-    "serviceAccountBadgeTooltip": "此服务智能体使用专用的工具集凭据，并为所有使用者提供全组织范围的知识访问权限。",
-    "convertToServiceAccount": "转换为服务智能体",
-    "convertToServiceAccountTooltip": "永久性操作：智能体级别的工具集和全组织范围的知识。无法撤销。",
-    "convertToServiceAccountTooltipNewAgent": "将此智能体创建为服务智能体，具有智能体级别的工具集和全组织范围的知识。",
-    "createAsServiceAccount": "服务智能体",
-    "createAsServiceAccountTooltip": "创建时使用智能体级别的工具集和完整的知识访问权限。",
+    "serviceAgentBadge": "服务智能体",
+    "serviceAgentBadgeTooltip": "此服务智能体使用自己的工具集凭据。它以创建者的权限检索知识，因此所有使用者看到的结果都来自创建者有权阅读的内容。",
+    "convertToServiceAgentTooltip": "永久性操作：智能体级别的工具集、与整个组织共享，并以创建者的权限检索知识。无法撤销。",
+    "convertToServiceAgentTooltipNewAgent": "将此智能体创建为服务智能体：智能体级别的工具集、与整个组织共享，并以您的权限检索知识。",
     "agentActionsMenuAria": "智能体菜单",
     "agentMenuCreateAsServiceAgent": "创建为服务智能体",
     "agentMenuConvertToServiceAgent": "转换为服务智能体",
     "share": "共享",
     "shareWithOrg": "与所有人共享",
     "shareWithOrgTooltip": "与您组织中的所有人共享此智能体。",
-    "serviceAccountShareTooltip": "服务智能体始终与整个组织共享。",
+    "serviceAgentShareTooltip": "服务智能体始终与整个组织共享。",
     "saving": "正在保存…",
     "saveChanges": "保存更改",
     "createAgent": "创建智能体",
@@ -4371,9 +4667,20 @@
     "userAgent": "用户智能体",
     "userAgentDesc": "个人智能体，采用按用户的工具集身份验证。",
     "serviceAgent": "服务智能体",
-    "serviceAgentDesc": "全组织范围的智能体，使用智能体级别的工具集凭据。",
+    "serviceAgentDesc": "全组织范围的智能体，使用智能体级别的工具集凭据。以创建者的权限检索知识。",
+    "identitySearchesAs": "以{{identity}}的身份检索",
+    "identityCreator": "创建者",
+    "identityBoundUnknown": "某个服务账号",
+    "identityTooltip": "选择该智能体检索知识时使用的身份。所有使用它的人，看到的都是该身份有权读取的内容。",
+    "identityDialogTitle": "以此身份检索知识",
+    "identityDialogBody": "该智能体与整个组织共享，因此这决定了所有人的提问能触及的范围。默认是它的创建者。服务账号是管理员有意授予权限的身份。",
+    "identityChoose": "选择",
+    "identityLoading": "正在加载服务账号…",
+    "identityLoadError": "无法加载服务账号。",
+    "identityRetry": "重试",
+    "identityNone": "尚无服务账号。请在“工作区 → 服务账号”中创建。",
     "nameRequired": "请输入名称以继续。",
-    "saveAsServiceAccountFirst": "请先将该智能体保存为服务智能体，然后再配置工具集凭据。",
+    "saveAsServiceAgentFirst": "请先将该智能体保存为服务智能体，然后再配置工具集凭据。",
     "hidePalette": "隐藏面板",
     "showPalette": "显示面板",
     "openInChat": "在聊天中打开",
@@ -4384,8 +4691,14 @@
     "removeConnectionDesc": "这将移除两个节点之间的链接。您可以通过连接点重新连接它们。",
     "remove": "移除",
     "palette": "面板",
+    "addToCanvas": "添加到画布",
     "paletteDragHint": "将区块拖动到画布上",
-    "paletteViewOnlyServiceAccount": "仅供查看。此组织服务智能体的面板和工具集设置已锁定。",
+    "paletteTapHint": "点按 + 将区块添加到画布",
+    "loadingAgent": "正在加载智能体…",
+    "agentLoadFailedTitle": "无法加载此智能体",
+    "agentLoadFailedDescription": "请检查网络连接后重试。智能体加载完成前不会保存任何内容。",
+    "agentLoadRetry": "重试",
+    "paletteViewOnlyServiceAgent": "仅供查看。此组织服务智能体的面板和工具集设置已锁定。",
     "paletteActionBlockedViewOnly": "仅供查看。此组织服务智能体无法在此处更改。",
     "viewerPaletteDragBlocked": "仅供查看。流程已锁定；请在“工具”下对工具集进行身份验证。",
     "paletteViewerAuthenticateInTools": "仅供查看。画布拖动已关闭；请在“工具”下登录工具集。",
@@ -4402,8 +4715,8 @@
     "skillDisabled": "此技能已停用，重新启用前智能体将无法使用",
     "collapse": "收起",
     "expand": "展开",
-    "serviceAccountCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
-    "serviceAccountConverted": "智能体已转换为服务智能体。请使用面板中的钥匙图标配置工具集凭据。",
+    "serviceAgentCreated": "服务智能体已创建。请使用面板中的钥匙图标配置每个工具集。",
+    "serviceAgentConverted": "智能体已转换为服务智能体。请使用面板中的钥匙图标配置工具集凭据。",
     "unsavedChangesConfirm": "您有未保存的更改。确定要离开吗？",
     "agentUpdated": "智能体已更新",
     "agentUpdatedDesc": "您的更改已保存。",
@@ -4681,7 +4994,12 @@
     "limitSource": "选择 {{name}} 的搜索范围",
     "limitSourceHint": "保持勾选整个来源，或取消勾选后勾选智能体可以搜索的文件夹和项目。",
     "limitSourceCount": "仅限所选的 {{count}} 项",
-    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的个人操作，不能添加到与组织共享或以服务账号运行的智能体中。"
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的个人操作，不能添加到与组织共享或以服务账号运行的智能体中。",
+    "apiToolsets": {
+      "section": "API 操作",
+      "connectTooltip": "请在“操作”中连接",
+      "serviceAccountBlocked": "服务账号智能体只能使用具有共享凭据或无需登录的 API 操作。"
+    }
   },
   "recordView": {
     "sections": {
@@ -4713,6 +5031,7 @@
     "stageParsed": "已解析",
     "stageSearchable": "可搜索",
     "stageClassified": "已分类",
+    "stageEntities": "实体",
     "stageAttempt": "第 {{n}} 次尝试",
     "stageDetailsAria": "阶段详情",
     "tabRecordInformation": "记录信息",
@@ -4911,9 +5230,6 @@
       "emailVerifiedDescription": "您的电子邮件地址已更新。请使用新的电子邮件登录。",
       "emailVerifyFailedTitle": "电子邮件验证失败",
       "emailVerifyFailedDescription": "链接可能无效或已过期。",
-      "samlErrorTitle": "使用 SAML 登录时出错",
-      "samlSignInFailedTitle": "登录失败",
-      "samlSignInFailedDescription": "SAML 单点登录无法完成。请重试。",
       "orgEmailVerifiedTitle": "组织已验证",
       "orgEmailVerifiedDescription": "您的组织现已激活。请登录以继续。",
       "orgEmailVerifyFailedTitle": "验证失败",
@@ -4943,13 +5259,10 @@
       "signInWithEmailOtp": "使用电子邮件 OTP 登录",
       "orContinueWith": "或使用 {{provider}} 继续",
       "orContinueWithAny": "或使用其中任意一种方式继续",
-      "orContinueWithSso": "或使用单点登录继续",
       "googleNotConfigured": "您的组织尚未配置 Google 登录。",
       "microsoftNotConfigured": "您的组织尚未配置 Microsoft 登录。",
-      "oauthNotConfigured": "您的组织尚未配置 OAuth 登录。",
       "googleUnavailable": "Google 登录目前不可用。请联系您的管理员。",
       "microsoftUnavailable": "Microsoft 登录目前不可用。请联系您的管理员。",
-      "oauthUnavailable": "OAuth 登录目前不可用。请联系您的管理员。",
       "showPassword": "显示密码",
       "hidePassword": "隐藏密码",
       "accountDisabled": "您的账号已被停用。",
@@ -4986,7 +5299,12 @@
     "back": "返回",
     "skip": "跳过",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "selectOne": "选择一项",
+    "selectMany": "选择所有适用项",
+    "skipAll": "全部跳过",
+    "expired": "此问题已过期。请在聊天中回复以继续。",
+    "repliedInChat": "你已在聊天中回复。"
   },
   "oauthDevice": {
     "title": "连接设备",
@@ -5020,6 +5338,18 @@
       "everythingHint": "包括之后添加的来源。"
     },
     "appLimited_other": "{{appName}} 只能查看其创建者选择的 {{count}} 个项目，且仅限您可见的部分。"
+  },
+  "errorToast": {
+    "accessDenied": "访问被拒绝",
+    "invalidRequest": "无效请求",
+    "notFound": "未找到",
+    "actionRequired": "需要处理",
+    "connectionError": "连接错误",
+    "serverError": "服务器错误",
+    "timedOut": "请求超时",
+    "somethingWentWrong": "出了点问题",
+    "tryAgainShortly": "请稍后重试",
+    "connectedServiceProblem": "关联服务出现问题"
   },
   "validation": {
     "password": {

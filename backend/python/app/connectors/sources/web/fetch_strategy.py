@@ -22,8 +22,10 @@ import functools
 import logging
 import random
 import socket
+import sys
 import threading
 import time
+import traceback
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -52,6 +54,7 @@ from app.utils.url_fetcher import (
     _pinned_requests_adapter,
     _require_pinned_peer,
 )
+from app.utils.url_redaction import redact_urls_in_text
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
@@ -90,6 +93,46 @@ def _max_queue_wait(timeout: float) -> float:
     won't end soon. Pages are fetched one at a time, so the page goes on without the threads
     rather than waiting any longer."""
     return 2 * _hop_deadline(timeout)
+
+
+class _UrlRedactingLogger:
+    """Logs through *logger* with every URL cut to scheme, host and path: a feed or
+    page URL can carry a token in its query string or user info."""
+
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    def __getattr__(self, name: str) -> Any:  # noqa: ANN401 - forwards the rest of the Logger API
+        return getattr(self._logger, name)
+
+    def _log(self, level: int, msg: object, *args: object, exc_info: object = None, **kwargs: Any) -> None:  # noqa: ANN401
+        if self._logger.isEnabledFor(level):
+            text = str(msg) % args if args else str(msg)
+            if exc_info:
+                # Formatted here: the traceback ends with the exception's text, which can hold the URL.
+                if isinstance(exc_info, BaseException):
+                    exc_info = (type(exc_info), exc_info, exc_info.__traceback__)
+                elif not isinstance(exc_info, tuple):
+                    exc_info = sys.exc_info()
+                if exc_info[0] is not None:
+                    text = f"{text}\n{''.join(traceback.format_exception(*exc_info)).rstrip()}"
+            self._logger.log(level, redact_urls_in_text(text), **kwargs)
+
+    def debug(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.DEBUG, msg, *args, **kwargs)
+
+    def info(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.INFO, msg, *args, **kwargs)
+
+    def warning(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.WARNING, msg, *args, **kwargs)
+
+    def error(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        self._log(logging.ERROR, msg, *args, **kwargs)
+
+    def exception(self, msg: object, *args: object, **kwargs: Any) -> None:  # noqa: ANN401
+        kwargs.setdefault("exc_info", True)
+        self._log(logging.ERROR, msg, *args, **kwargs)
 
 
 class FetchPoolBusy(Exception):
@@ -872,6 +915,7 @@ async def fetch_url_with_fallback(
     Returns:
         FetchResponse on success or non-retryable error, None if all strategies fail.
     """
+    logger = _UrlRedactingLogger(logger)  # type: ignore[assignment]
     headers = build_crawler_headers(url, referer=referer, extra=extra_headers, browser_like=browser_like)
 
     if max_size_mb is not None:

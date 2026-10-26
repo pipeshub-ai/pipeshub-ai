@@ -22,6 +22,10 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from app.connectors.sources.localKB.handlers.kh_merge import PartitionFeed, merge_pages
+from app.exceptions.graph_db_exceptions import (
+    KnowledgeHubListingBusy,
+    KnowledgeHubListingTooLarge,
+)
 from app.utils.kh_cursor import (
     Boundary,
     KnowledgeHubCursor,
@@ -68,6 +72,8 @@ async def search_page(
     secret: str | bytes | None = None,
     access: dict[str, Any] | None = None,
     max_concurrency: int | None = DEFAULT_MAX_CONCURRENCY,
+    limit_apps: list[str] | None = None,
+    max_depth: int = 50,
 ) -> SearchPage:
     """Assemble one page. A bad cursor raises `CursorError`; the caller answers 400.
 
@@ -123,7 +129,7 @@ async def search_page(
         after=cursor.boundary.as_after() if cursor else None,
         direction=direction, include_total=not reuse_total,
         max_concurrency=max_concurrency,
-        user_key=user_key, grants_read=grants_read,
+        user_key=user_key, grants_read=grants_read, max_depth=max_depth,
     )
     if grants_read is not None:
         access = {**access, "by_connector": grants_read}
@@ -195,6 +201,7 @@ async def search_page(
                 mode="search",
                 user_id=user_id,
                 org_id=org_id,
+                limit_apps=limit_apps,
             ),
             secret,
         )
@@ -267,6 +274,7 @@ async def _run(
     max_concurrency: int | None,
     user_key: str | None = None,
     grants_read: dict[str, list[str]] | None = None,
+    max_depth: int = 50,
 ) -> list[dict[str, Any]]:
     """One page per connector. Any failure aborts the page. With ``grants_read``
     each page reads its connector's grants itself and leaves them there."""
@@ -292,6 +300,7 @@ async def _run(
                 include_total=include_total,
                 # Named once for the merged page, not once per connector.
                 name_parents=False,
+                max_depth=max_depth,
                 **own_grants,
             )
 
@@ -302,8 +311,15 @@ async def _run(
 
     # A TaskGroup cancels its siblings when one raises, so a failed connector
     # does not leave the rest querying for a page nobody will return.
-    async with asyncio.TaskGroup() as group:
-        tasks = [group.create_task(run(app_id)) for app_id in targets]
+    try:
+        async with asyncio.TaskGroup() as group:
+            tasks = [group.create_task(run(app_id)) for app_id in targets]
+    except ExceptionGroup as failures:
+        # A connector too large to list (or busy) fails the page as itself, not as a group nobody maps to a message.
+        refused = failures.subgroup(lambda e: isinstance(e, (KnowledgeHubListingTooLarge, KnowledgeHubListingBusy)))
+        if refused is not None:
+            raise refused.exceptions[0] from None
+        raise
     return [task.result() for task in tasks]
 
 

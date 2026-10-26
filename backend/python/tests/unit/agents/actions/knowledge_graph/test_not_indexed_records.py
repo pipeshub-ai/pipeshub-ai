@@ -188,6 +188,33 @@ class TestHttpRecordContent:
         assert "Created At:" in content
         assert "exists, but its content is not indexed yet (status: AUTO_INDEX_OFF)" in content
 
+    async def test_a_huge_record_is_cut_with_a_marker_that_says_how_to_read_on(self) -> None:
+        from app.utils.render_budget import FETCH_MAX_CHARS
+
+        graph = _graph(status=ProgressStatus.COMPLETED.value)
+        record = {"id": PR_ID}
+        with patch.object(connector_router, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(connector_router, "record_to_text", return_value="x" * (FETCH_MAX_CHARS * 3)):
+            body = await self._content(graph)
+
+        assert body["truncated"] is True and body["totalChars"] == FETCH_MAX_CHARS * 3
+        assert "Content truncated" in body["content"] and "startBlock" in body["content"]
+        # The marker counts toward the cap, and says how much content precedes it.
+        assert len(body["content"]) <= FETCH_MAX_CHARS
+        shown = len(body["content"]) - len(body["content"].lstrip("x"))
+        assert shown > FETCH_MAX_CHARS - 500
+        assert f"showed {shown} of {FETCH_MAX_CHARS * 3} characters" in body["content"]
+
+    async def test_access_is_one_check_that_the_fetch_reuses(self) -> None:
+        graph = _graph(status=ProgressStatus.COMPLETED.value)
+        fetch = AsyncMock(return_value={"ok": False})
+        with patch.object(connector_router, "_fetch_multiple_records_impl", fetch):
+            await self._content(graph)
+
+        graph.check_record_access_with_details.assert_not_called()
+        assert fetch.await_args.kwargs["accessible"] == {PR_ID}
+
     async def test_a_record_the_caller_may_not_read_is_still_refused(self) -> None:
         graph = _graph(access=False, typed=_typed_pr())
 

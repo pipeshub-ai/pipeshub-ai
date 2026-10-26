@@ -19,6 +19,7 @@ import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapab
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
+import { stripAnswerMarkers } from './utils/parse-download-markers';
 import { debugLog } from './debug-logger';
 import {
   loadHistoricalMessages,
@@ -52,13 +53,15 @@ import {
   type PendingAskUserQuestion,
   type MessagePart,
   type ChatKnowledgeFilters,
+  type AttachmentRef,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
-import { streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
+import { StreamError } from '@/lib/api/stream-errors';
 
 /** Stable id for the in-flight assistant placeholder (works on HTTP where randomUUID is missing). */
 function createPendingAssistantId(): string {
@@ -230,14 +233,19 @@ function followRemoteRun(slotId: string, convId: string): void {
  * - New message: replaces the trailing placeholder assistant row, or drops
  *   it entirely if the stream was stopped before any tokens arrived (e.g.
  *   during "Thinking") — an empty "stopped" bubble is just noise.
+ *
+ * The committed text is model output, not a backend-saved answer, so its
+ * markers are stripped: once committed it renders as `persisted` and any
+ * marker left in it would become a card.
  */
 function buildStoppedMessages(
   messages: ThreadMessageLike[],
   regenerateMessageId: string | null,
-  streamingContent: string,
+  rawStreamingContent: string,
   pendingAskUserQuestion?: PendingAskUserQuestion | null,
   streamingAssistantId?: string | null,
 ): ThreadMessageLike[] {
+  const streamingContent = stripAnswerMarkers(rawStreamingContent);
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>
@@ -277,9 +285,11 @@ function buildStoppedMessages(
   return messages;
 }
 
+/** `repliedInChat`: the message being sent answers this open card, so it shows as closed. */
 function stampPendingCardOnMessages(
   messages: ThreadMessageLike[],
   pending: PendingAskUserQuestion | null | undefined,
+  repliedInChat = false,
 ): ThreadMessageLike[] {
   if (!pending?.payload || !pending.assistantMessageId) return messages;
   const idx = messages.findIndex(
@@ -288,13 +298,18 @@ function stampPendingCardOnMessages(
   if (idx < 0) return messages;
   const row = messages[idx];
   const prevCustom = (row.metadata?.custom ?? {}) as Record<string, unknown>;
-  if (prevCustom.persistedAskUserQuestion) return messages;
+  const stamped = prevCustom.persistedAskUserQuestion as PendingAskUserQuestion['payload'] | undefined;
+  if (stamped && !repliedInChat) return messages;
+  const payload = stamped ?? pending.payload;
   const next = messages.slice();
   next[idx] = {
     ...row,
     metadata: {
       ...row.metadata,
-      custom: { ...prevCustom, persistedAskUserQuestion: pending.payload },
+      custom: {
+        ...prevCustom,
+        persistedAskUserQuestion: repliedInChat ? { ...payload, repliedInChat: true } : payload,
+      },
     },
   };
   return next;
@@ -313,6 +328,70 @@ function assistantRowIdForBackendMessage(
   if (row && typeof row.id === 'string') return row.id;
   const last = [...messages].reverse().find((m) => m.role === 'assistant');
   return last && typeof last.id === 'string' ? last.id : backendMessageId;
+}
+
+/**
+ * The user row before an assistant row, with its text swapped for an edited question and, when
+ * the edit replaced them, its files (an empty list clears them).
+ */
+export function withEditedQuestion(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+  text: string,
+  attachments?: AttachmentRef[],
+): ThreadMessageLike[] {
+  const idx = messages.findIndex((m) => {
+    if (m.role !== 'assistant') return false;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    return m.id === backendMessageId || custom?.messageId === backendMessageId;
+  });
+  if (idx <= 0 || messages[idx - 1].role !== 'user') return messages;
+  return messages.map((m, i) => {
+    if (i !== idx - 1) return m;
+    const custom = (m.metadata?.custom ?? {}) as Record<string, unknown>;
+    return {
+      ...m,
+      content: [{ type: 'text' as const, text }],
+      ...(attachments === undefined
+        ? {}
+        : {
+            metadata: {
+              ...m.metadata,
+              custom: { ...custom, attachments: attachments.length > 0 ? attachments : undefined },
+            },
+          }),
+    };
+  });
+}
+
+/**
+ * Whether a failure says the server did not take an edit: its own error (a run that failed) or a
+ * request it refused before streaming. A connection that dropped says nothing, the run goes on there
+ * and may save the edit, so what it did is read back from the server instead of guessed.
+ */
+export function editWasNotTaken(error: unknown): boolean {
+  return (
+    error instanceof ChatStreamError ||
+    (error instanceof StreamError && error.status !== undefined)
+  );
+}
+
+/** The answer row without the question card it asked, for a turn that is being asked again. */
+export function withoutQuestionCard(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+): ThreadMessageLike[] {
+  return messages.map((m) => {
+    if (m.role !== 'assistant') return m;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    if (m.id !== backendMessageId && custom?.messageId !== backendMessageId) return m;
+    const {
+      persistedAskUserQuestion: _card,
+      persistedAskUserQuestionAnswers: _answers,
+      ...rest
+    } = (m.metadata?.custom ?? {}) as Record<string, unknown>;
+    return { ...m, metadata: { ...m.metadata, custom: rest } };
+  });
 }
 
 function pendingFromUnansweredPersistedCard(
@@ -343,20 +422,25 @@ function sentAnswersAfterAsk(
   return sent && Object.keys(sent).length > 0 ? { sentAnswers: sent } : {};
 }
 
+/** A card event that has questions to show. Anything else (e.g. a refused call's error text) must not
+ * cost the user the answer that is streaming in. */
+export function isShowableAskUserQuestion(data: SSEAskUserQuestionEvent | undefined): boolean {
+  const toolData = data?.toolData;
+  return Boolean(
+    toolData &&
+      toolData.name === 'ask_user_question' &&
+      Array.isArray(toolData.questions) &&
+      toolData.questions.length > 0
+  );
+}
+
 function applyAskUserQuestionSse(
   slotId: string,
   data: SSEAskUserQuestionEvent,
   assistantRowId: string
 ): void {
-  const toolData = data?.toolData;
-  if (
-    !toolData ||
-    toolData.name !== 'ask_user_question' ||
-    !Array.isArray(toolData.questions) ||
-    toolData.questions.length === 0
-  ) {
-    return;
-  }
+  if (!isShowableAskUserQuestion(data)) return;
+  const toolData = data.toolData;
   const slot = useChatStore.getState().slots[slotId];
   const previous = slot?.pendingAskUserQuestion;
   const messages =
@@ -736,9 +820,12 @@ export async function streamMessageForSlot(
     }
   }
   const reuseExistingAssistant = (resumeAskUserQuestion || Boolean(reuseRowId)) && Boolean(lastAssistantId);
+  // Typing while a card is open answers it, as the server reads it: the card closes.
+  const repliedToOpenCard =
+    !resumeAskUserQuestion && !reuseRowId && slot.pendingAskUserQuestion?.status === 'pending';
   const messagesWithPreviousCard = reuseExistingAssistant
     ? baseMessages
-    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion);
+    : stampPendingCardOnMessages(baseMessages, slot.pendingAskUserQuestion, repliedToOpenCard);
   const pendingAssistantId = reuseExistingAssistant
     ? lastAssistantId!
     : createPendingAssistantId();
@@ -813,6 +900,7 @@ export async function streamMessageForSlot(
     ...(request.agentId
       ? { agentStreamTools: request.agentStreamTools ?? null }
       : {}),
+    ...(repliedToOpenCard ? { pendingAskUserQuestion: null } : {}),
     messages: resumeMessages,
   });
 
@@ -1025,7 +1113,7 @@ export async function streamMessageForSlot(
       },
 
       onArtifact: (data: SSEArtifactEvent) => {
-        if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (!data || !slotIsOnRun(slotId, streamRunId)) return;
         // Defensive guard: Python already suppresses STAGING artifacts before
         // emitting SSE events, so this branch should never fire in production.
         // It guards against accidental backend bypasses or future protocol changes.
@@ -1057,7 +1145,7 @@ export async function streamMessageForSlot(
       },
 
       onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
-        if (!slotIsOnRun(slotId, streamRunId)) return;
+        if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
         // Stop accumulating answer_chunks so no partial answer is shown
         // above the question card.
         ignoreChunks = true;
@@ -1087,6 +1175,78 @@ export async function streamMessageForSlot(
         if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
         latestParts = [];
         cancelPendingStatus();
+        if (!data?.conversation) {
+          // Finished without the saved conversation: settle the turn, then reload it by id if known.
+          const known = useChatStore.getState().slots[slotId];
+          const reloadId = known?.convId;
+          // Keep the streamed text on its row so a failed reload does not blank the answer.
+          const streamedAnswer = !reuseExistingAssistant && accumulatedContent.trim() && known
+            ? known.messages.map((m) => (m.id === pendingAssistantId
+              ? { ...m, content: [{ type: 'text' as const, text: accumulatedContent }] }
+              : m))
+            : null;
+          useChatStore.getState().updateSlot(slotId, {
+            ...(streamedAnswer ? { messages: streamedAnswer } : {}),
+            isStreaming: false,
+            streamingAssistantId: null,
+            streamingContent: '',
+            currentStatusMessage: null,
+            streamingCitationMaps: null,
+            streamingParts: [],
+            abortController: null,
+            runId: null,
+            stopping: false,
+          });
+          if (reloadId) {
+            const agent = known?.threadAgentId;
+            // The id is known from `connected`, so the next send must continue this chat.
+            if (isNewConversation) useChatStore.getState().resolveSlotConvId(slotId, reloadId);
+            // A newer turn adds rows to `messages`; this older snapshot must not replace them.
+            const settledMessages = useChatStore.getState().slots[slotId]?.messages;
+            void (agent ? AgentsApi.fetchAgentConversation(agent, reloadId) : ChatApi.fetchConversation(reloadId))
+              .then((detail) => {
+                const store = useChatStore.getState();
+                if (isNewConversation && store.pendingConversations[slotId]) {
+                  const createdAt = detail.conversation.createdAt ?? new Date().toISOString();
+                  store.resolvePendingConversation(
+                    slotId,
+                    {
+                      id: reloadId,
+                      title: detail.conversation.title,
+                      createdAt,
+                      updatedAt: createdAt,
+                      isShared: detail.conversation.isShared,
+                      status: detail.conversation.status,
+                      modelInfo: detail.conversation.modelInfo,
+                      isOwner: true,
+                      sharedWith: [],
+                      projectId: slot.projectId ?? undefined,
+                    },
+                    { isAgentStream: Boolean(request.agentId) },
+                  );
+                }
+                const current = useChatStore.getState().slots[slotId];
+                if (current?.convId !== reloadId || current.messages !== settledMessages) return;
+                // History returns its latest page only, so pagination restarts from it.
+                useChatStore.getState().updateSlot(slotId, {
+                  messages: loadHistoricalMessages(detail.messages).messages,
+                  rawMessages: detail.messages,
+                  messagePagination: {
+                    currentPage: detail.pagination.page,
+                    hasOlderMessages: detail.pagination.hasNextPage,
+                    isLoadingOlder: false,
+                  },
+                });
+              })
+              .catch((err) => {
+                console.error('[streaming] Failed to reload after finish:', err);
+                if (isNewConversation) useChatStore.getState().clearPendingConversation(slotId);
+              });
+          } else if (isNewConversation) {
+            useChatStore.getState().clearPendingConversation(slotId);
+          }
+          return;
+        }
         const conv = data.conversation as { _id?: string; id?: string };
         const newConvId = conv._id || conv.id || '';
 
@@ -1422,12 +1582,38 @@ export async function streamRegenerateForSlot(
   slotId: string,
   messageId: string,
   modelOverride?: ModelOverride,
-  originalFilters?: ChatKnowledgeFilters
+  originalFilters?: ChatKnowledgeFilters,
+  /**
+   * Set when the user edited the question: its text, and its files when they changed, replace
+   * the stored ones and the answer is rebuilt for them.
+   */
+  edit?: { query: string; attachments?: AttachmentRef[] },
+  /** Changed answers to the question card the reply followed: the turn is re-run with them. */
+  answers?: string,
 ): Promise<void> {
   const store = useChatStore.getState();
   const slot = store.slots[slotId];
   if (!slot || !slot.convId) return;
   if (slot.remoteRunInProgress) return;
+
+  const editConvId = slot.convId;
+  const preEditMessages = slot.messages;
+  const preEditPending = slot.pendingAskUserQuestion;
+  const editedMessages = edit
+    ? withoutQuestionCard(
+        withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments),
+        messageId,
+      )
+    : slot.messages;
+  const questionWasEdited = Boolean(edit);
+  /** A run that fails keeps the stored question and its card, so the screen must too. */
+  const undoEditedQuestion = (): Partial<{
+    messages: ThreadMessageLike[];
+    pendingAskUserQuestion: PendingAskUserQuestion | null;
+  }> =>
+    questionWasEdited
+      ? { messages: preEditMessages, pendingAskUserQuestion: preEditPending }
+      : { pendingAskUserQuestion: preEditPending };
 
   slot.abortController?.abort();
 
@@ -1461,6 +1647,11 @@ export async function streamRegenerateForSlot(
   const streamRunId = runId ?? null;
 
   store.updateSlot(slotId, {
+    // An answered card is not this run's: left in the slot it would be opened again when the run ends,
+    // and the next click on it would add an answer message after the reply.
+    ...(slot.pendingAskUserQuestion && slot.pendingAskUserQuestion.status !== 'pending'
+      ? { pendingAskUserQuestion: null }
+      : {}),
     isStreaming: true,
     regenerateMessageId: messageId,
     streamingAssistantId: messageId,
@@ -1471,6 +1662,8 @@ export async function streamRegenerateForSlot(
     abortController,
     runId: streamRunId,
     stopping: false,
+    // The old card belongs to the old question; keeping it would stamp it on the new answer.
+    ...(questionWasEdited ? { messages: editedMessages, pendingAskUserQuestion: null } : {}),
   });
 
   debugLog.flush('regenerate-started', { slotId, messageId });
@@ -1604,7 +1797,7 @@ export async function streamRegenerateForSlot(
     },
 
     onAskUserQuestion: (data: SSEAskUserQuestionEvent) => {
-      if (!slotIsOnRun(slotId, streamRunId)) return;
+      if (!slotIsOnRun(slotId, streamRunId) || !isShowableAskUserQuestion(data)) return;
       ignoreChunks = true;
       if (flushTimer !== null) { clearTimeout(flushTimer); flushTimer = null; }
       accumulatedContent = '';
@@ -1689,6 +1882,14 @@ export async function streamRegenerateForSlot(
           ...(regenPagination ? { messagePagination: regenPagination } : {}),
           ...(postRegenModelInfo ? { conversationModelInfo: postRegenModelInfo } : {}),
         });
+        // Editing the first question moves the chat's title; keep the sidebar in step.
+        const reloadedTitle = detail.conversation.title;
+        if (
+          reloadedTitle &&
+          useChatStore.getState().conversations.some((c) => c.id === slot.convId && c.title !== reloadedTitle)
+        ) {
+          useChatStore.getState().renameConversation(slot.convId!, reloadedTitle);
+        }
         notifyAnswerFinishedInBackground(slotId, wasStopped);
         debugLog.flush('regenerate-completed', { slotId, messageId });
       } catch (err) {
@@ -1723,7 +1924,9 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
+      const dropped = questionWasEdited && !editWasNotTaken(error);
       useChatStore.getState().updateSlot(slotId, {
+        ...(dropped ? {} : undoEditedQuestion()),
         isStreaming: false,
         regenerateMessageId: null,
         streamingAssistantId: null,
@@ -1735,6 +1938,7 @@ export async function streamRegenerateForSlot(
         runId: null,
         stopping: false,
       });
+      if (dropped) followRemoteRun(slotId, editConvId);
       debugLog.flush('regenerate-error', { slotId });
     },
 
@@ -1787,6 +1991,9 @@ export async function streamRegenerateForSlot(
           agentCapabilities: scopedCaps,
           ...(agentRegenReasoningEffort ? { reasoningEffort: agentRegenReasoningEffort } : {}),
           runId,
+          ...(edit ? { query: edit.query } : {}),
+          ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
+          ...(answers ? { answers } : {}),
         }
       );
     } else {
@@ -1794,14 +2001,13 @@ export async function streamRegenerateForSlot(
       // Universal agent mode: read current tool selection at regen time
       const isUniversalAgent = store.settings.queryMode === 'agent';
       const universalToolsSel = useChatStore.getState().universalAgentStreamTools;
-      const universalToolCatalog = useChatStore.getState().universalAgentToolCatalogFullNames;
-      // null → "all tools" (send full catalog), array → explicit subset, undefined → not an agent turn
+      // null → "all tools": left out, as a normal send does. A list without a web_search entry turns
+      // web search off, and the catalog has none. Array → explicit subset.
       // Strip instanceId prefix from internal keys before putting on the wire.
-      const regenStreamTools = isUniversalAgent
-        ? [...new Set(
-            (universalToolsSel === null ? [...universalToolCatalog] : [...universalToolsSel]).map(stripInstancePrefix)
-          )]
-        : undefined;
+      const regenStreamTools =
+        isUniversalAgent && universalToolsSel !== null
+          ? [...new Set([...universalToolsSel].map(stripInstancePrefix))]
+          : undefined;
       // Left unset when the user chose nothing, so the backend applies the model's default.
       const assistantRegenReasoningEffort =
         useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
@@ -1815,6 +2021,9 @@ export async function streamRegenerateForSlot(
         ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
         runId,
+        ...(edit ? { query: edit.query } : {}),
+        ...(edit?.attachments !== undefined ? { attachments: edit.attachments } : {}),
+        ...(answers ? { answers } : {}),
       });
     }
   } catch (error) {
@@ -1827,7 +2036,9 @@ export async function streamRegenerateForSlot(
     if (!aborted) {
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     }
+    const dropped = questionWasEdited && !aborted && !editWasNotTaken(error);
     useChatStore.getState().updateSlot(slotId, {
+      ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,
       regenerateMessageId: null,
       streamingAssistantId: null,
@@ -1839,6 +2050,7 @@ export async function streamRegenerateForSlot(
       runId: null,
       stopping: false,
     });
+    if (dropped) followRemoteRun(slotId, editConvId);
     debugLog.flush(aborted ? 'regenerate-aborted' : 'regenerate-fatal-error', { slotId });
   }
 }

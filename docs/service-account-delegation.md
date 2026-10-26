@@ -99,7 +99,7 @@ administrator can read.
 | Lifetime | 5 minutes, and no refresh token |
 | Scopes | At most what the service token holds; `agent:execute` never |
 | Allow-list | Named people only, at most 200 per account |
-| Audit | Every grant, revocation and attempt kept for 400 days |
+| Audit | Every grant, revocation and attempt, kept 30 days here. Keeping it longer, proving it was not altered and exporting it are the Enterprise audit log |
 | Chaining | A delegated token cannot be exchanged again |
 
 Every rule above is checked again on each request a delegated token makes, not

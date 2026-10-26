@@ -97,6 +97,7 @@ from app.utils.connector_instances import fetch_user_connector_instances
 from app.utils.image_admission import admission_from_state
 from app.utils.streaming import create_sse_event, handle_simple_mode
 from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+from app.utils.turn_memo import per_turn_lookups
 from app.web.config import resolve_web_search
 
 if TYPE_CHECKING:
@@ -346,6 +347,7 @@ async def _run_no_tools_degradation(
         yield create_sse_event("error", {"error": f"Stream error: {exc}"})
 
 
+@per_turn_lookups  # knowledge-hub access is asked about by several stages of a turn
 async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's call-site symmetry
     query_info: dict[str, Any],
     user_info: dict[str, Any],
@@ -433,8 +435,8 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
                 ),
                 resolve_web_search(config_service, log, use_cache=True) if policy.include_web_search else _none(),
                 resolve_attachments(
-                    query_info.get("attachments"), blob_store=blob_store,
-                    org_id=user_info.get("orgId", ""), ref_mapper=ref_mapper, logger=log,
+                    query_info.get("attachments"),
+                    org_id=user_info.get("orgId", ""), logger=log,
                     user_id=user_info.get("userId") or "",
                     graph_provider=graph_provider,
                     is_service_account=bool(user_info.get("isServiceAccount")),
@@ -707,9 +709,6 @@ async def run_chat_stream(  # noqa: PLR0913 - mirrors run_agent_loop_stream's ca
             await emit_prefetch_retrieval_context(
                 context, scheduled=prefetch_task is not None, result=prefetch_result,
             )
-            if resolved_attachments.context_text:
-                goal.constraints.append(resolved_attachments.context_text)
-
             if clarifying_questions:
                 await emit_pre_run_clarification(
                     context, goal.description, clarifying_questions, event_sink=context.event_sink,

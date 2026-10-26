@@ -9,6 +9,7 @@ import {
   isMcpOAuthSuccessMessageType,
 } from '../oauth/mcp-oauth-window-messages';
 import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
+import type { DesktopIntegrationFamily } from '@/lib/auth/desktop-oauth';
 import {
   DesktopOAuthError,
   desktopIntegrationErrorMessage,
@@ -100,6 +101,9 @@ interface UseMcpOAuthPopupOptions {
    * `agent-mcp-credentials-dialog.tsx`.
    */
   getAuthorizationUrl?: (instanceId: string) => Promise<{ authorizationUrl?: string }>;
+  /** Desktop app only: the deep-link family and the call that finishes the sign-in. Default: MCP's. */
+  desktopFamily?: DesktopIntegrationFamily;
+  completeCallback?: (params: { code: string; state: string }) => Promise<{ success?: boolean; errorMessage?: string }>;
 }
 
 /**
@@ -115,6 +119,8 @@ export function useMcpOAuthPopup({
   onVerified,
   onFailed,
   getAuthorizationUrl,
+  desktopFamily = 'mcp',
+  completeCallback = McpServersApi.completeOAuthCallback,
 }: UseMcpOAuthPopupOptions) {
   const [status, setStatus] = useState<McpOAuthPopupStatus>('idle');
 
@@ -126,6 +132,8 @@ export function useMcpOAuthPopup({
   onFailedRef.current = onFailed;
   const getAuthorizationUrlRef = useRef(getAuthorizationUrl);
   getAuthorizationUrlRef.current = getAuthorizationUrl;
+  const completeCallbackRef = useRef(completeCallback);
+  completeCallbackRef.current = completeCallback;
 
   const popupRef = useRef<Window | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -269,10 +277,10 @@ export function useMcpOAuthPopup({
       }
 
       const flow = runDesktopIntegrationOAuth({
-        family: 'mcp',
+        family: desktopFamily,
         authUrl: authorizationUrl,
         complete: async ({ code, state }) => {
-          const data = await McpServersApi.completeOAuthCallback({ code, state });
+          const data = await completeCallbackRef.current({ code, state });
           if (!data?.success) {
             throw new Error(data?.errorMessage?.trim() || 'The server rejected the OAuth authentication.');
           }
@@ -295,7 +303,7 @@ export function useMcpOAuthPopup({
         }
       );
     },
-    [completeOAuthFlow, fail]
+    [completeOAuthFlow, desktopFamily, fail]
   );
 
   const startOAuthPopup = useCallback(

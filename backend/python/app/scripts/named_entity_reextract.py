@@ -24,7 +24,7 @@ from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Any, TextIO
 
 from app.config.constants.arangodb import CollectionNames, ProgressStatus
-from app.modules.named_entities.domain.models import read_stored_extraction
+from app.modules.named_entities.kept import read_kept_extraction
 from app.modules.named_entities.stage import needs_reextract
 from app.services.graph_db.common.record_visibility import is_live_record
 
@@ -86,7 +86,7 @@ async def queue_reextractions(
         for record in page:
             tally.checked += 1
             tally.after_key = record.get("_key")
-            if await _wants_reextract(record, blob_storage, tally, everything=everything):
+            if await _wants_reextract(record, graph_provider, blob_storage, tally, everything=everything):
                 tally.queued += 1
                 if apply:
                     await graph_provider.schedule_named_entity_reextract(org_id, record["_key"])
@@ -97,17 +97,24 @@ async def queue_reextractions(
 
 
 async def _wants_reextract(
-    record: dict[str, Any], blob_storage: Any, tally: Tally, *, everything: bool,  # noqa: ANN401
+    record: dict[str, Any],
+    graph_provider: IGraphDBProvider,
+    blob_storage: Any,  # noqa: ANN401 - BlobStorage
+    tally: Tally,
+    *,
+    everything: bool,
 ) -> bool:
     if not is_live_record(record) or not record.get("virtualRecordId"):
         return False
     try:
         blob = await blob_storage.get_record_from_storage(record["virtualRecordId"], record.get("orgId"))
+        metadata = (blob or {}).get("semantic_metadata") or {}
+        extraction = await read_kept_extraction(
+            graph_provider, record["virtualRecordId"], record.get("contentRev"), metadata.get("named_entities")
+        )
     except Exception:
         tally.unreadable += 1
         return False
-    metadata = (blob or {}).get("semantic_metadata") or {}
-    extraction = read_stored_extraction(metadata.get("named_entities"))
     if extraction is None:
         tally.without_extraction += 1
         return False

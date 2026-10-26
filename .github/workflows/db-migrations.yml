@@ -1,0 +1,79 @@
+name: db-migrations
+
+# Lints the migration tree and runs the migration tests against real PostgreSQL 17 and 18.
+on:
+  pull_request:
+    branches:
+      - 'main'
+    paths:
+      - 'backend/db/**'
+      - 'backend/python/app/edition.py'
+      - '.github/workflows/db-migrations.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  migrations:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: ['17', '18']
+    services:
+      postgres:
+        image: postgres:${{ matrix.pg }}-bookworm
+        env:
+          POSTGRES_HOST_AUTH_METHOD: trust
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install
+        run: |
+          pip install -r backend/db/requirements.txt pytest
+          sudo apt-get update -qq && sudo apt-get install -y -qq pgbouncer
+
+      - name: Lints
+        working-directory: backend
+        run: |
+          python -m db.epoch_lint
+          python -m db.lint
+          python -m db.lib.vetted check db/versions/kernel/vetted/manifest.yaml
+          python -m db.lib.vetted check db/versions/platform/vetted/manifest.yaml
+
+      - name: Empty database to heads, then the org isolation catalog check
+        # python -m db.migrate exits 4 when kernel.rls_violations returns any row.
+        working-directory: backend
+        env:
+          PG_ADMIN_URL: postgresql://postgres@127.0.0.1:5432/ci_catalog
+          PG_BOOTSTRAP_EXTENSIONS: pg_trgm
+          PG_MIGRATE_URL: postgresql+psycopg://pipeshub_migrate@127.0.0.1:5432/ci_catalog
+        run: |
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'CREATE DATABASE ci_catalog'
+          python -m db.bootstrap_roles
+          python -m db.migrate
+          psql -h 127.0.0.1 -U postgres -d ci_catalog -v ON_ERROR_STOP=1 -tA -c 'SELECT count(*) FROM kernel.rls_violations' | grep -qx 0
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -c 'DROP DATABASE ci_catalog'
+          psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1 -tA -c "SELECT format('DROP ROLE %I;', rolname) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%'" | psql -h 127.0.0.1 -U postgres -v ON_ERROR_STOP=1
+
+      - name: Migration tests (planted defects, fault injection through PgBouncer, restore window)
+        working-directory: backend/db
+        env:
+          MIGRATE_TEST_PG_EXTERNAL: 127.0.0.1:5432
+          MIGRATE_TEST_PGBOUNCER: /usr/sbin/pgbouncer
+        run: python -m pytest -q

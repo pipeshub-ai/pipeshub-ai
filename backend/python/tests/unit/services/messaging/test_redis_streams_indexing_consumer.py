@@ -653,7 +653,7 @@ class TestStop:
 class TestParseMessage:
     async def test_valid_json(self, consumer):
         fields = _valid_fields("CREATE", {"id": 42})
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.eventType == "CREATE"
         assert result.payload == {"id": 42}
@@ -661,20 +661,20 @@ class TestParseMessage:
     async def test_double_encoded_json(self, consumer):
         inner = json.dumps({"eventType": "test", "payload": {"key": "val"}})
         fields = {"value": json.dumps(inner)}
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.payload == {"key": "val"}
 
     async def test_missing_value_field_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"_init": "1"})
+        result = await consumer._parse_message("1-0", {"_init": "1"}, "records")
         assert result is None
 
     async def test_empty_fields_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {})
+        result = await consumer._parse_message("1-0", {}, "records")
         assert result is None
 
     async def test_invalid_json_returns_none(self, consumer):
-        result = await consumer._parse_message("1-0", {"value": "not-json{{{"})
+        result = await consumer._parse_message("1-0", {"value": "not-json{{{"}, "records")
         assert result is None
 
     async def test_valid_json_invalid_schema_returns_none(self, consumer):
@@ -684,12 +684,12 @@ class TestParseMessage:
         parser must treat it as unparseable (return None) so the message is
         dropped, not crash the worker into a no-ACK loop.
         """
-        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})})
+        result = await consumer._parse_message("1-0", {"value": json.dumps({"foo": "bar"})}, "records")
         assert result is None
 
     async def test_non_mapping_json_returns_none(self, consumer):
         """JSON decoding to a non-object (list) is poison -> None, not a TypeError."""
-        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])})
+        result = await consumer._parse_message("1-0", {"value": json.dumps([1, 2, 3])}, "records")
         assert result is None
 
     async def test_valid_with_timestamp(self, consumer):
@@ -698,7 +698,7 @@ class TestParseMessage:
                 {"eventType": "test", "payload": {"k": "v"}, "timestamp": 12345}
             )
         }
-        result = await consumer._parse_message("1-0", fields)
+        result = await consumer._parse_message("1-0", fields, "records")
         assert isinstance(result, StreamMessage)
         assert result.timestamp == 12345
 
@@ -1468,6 +1468,113 @@ class TestProcessMessageWrapper:
         # Semaphores still released in finally despite the early return.
         assert consumer.parsing_semaphore._value == 1
         assert consumer.indexing_semaphore._value == 1
+
+
+    @pytest.mark.asyncio
+    async def test_deadline_during_handler_cleanup_does_not_cut_it_short(
+        self, consumer
+    ) -> None:
+        """The handler generator is closed outside the processing timeout: a
+        deadline that passes while the handler's cleanup is still running must
+        not cancel that cleanup (it reverts IN_PROGRESS)."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        cleanup_finished = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            try:
+                yield PipelineEvent(
+                    event=IndexingEvent.INDEXING_COMPLETE,
+                    data=PipelineEventData(record_id="r1"),
+                )
+            finally:
+                await asyncio.sleep(0.2)
+                cleanup_finished.set()
+
+        releases = 0
+
+        async def release_fails_once(*_args) -> None:
+            nonlocal releases
+            releases += 1
+            if releases == 1:
+                raise RuntimeError("lease store unavailable")
+
+        consumer.message_handler = handler
+        consumer._release_distributed_slot = release_fails_once
+
+        with patch.object(
+            type(messaging_env),
+            "record_processing_timeout",
+            new_callable=PropertyMock,
+            return_value=0.05,
+        ):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is False
+        assert cleanup_finished.is_set()
+
+
+    @pytest.mark.asyncio
+    async def test_bookkeeping_after_indexing_complete_runs_past_the_deadline(
+        self, consumer
+    ) -> None:
+        """Once INDEXING_COMPLETE is out the record is done: the handler's work
+        after it (releasing queued copies) must finish, and the record count as
+        a success, even when the processing deadline passes meanwhile."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        bookkeeping_finished = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            await asyncio.sleep(0.2)
+            bookkeeping_finished.set()
+
+        consumer.message_handler = handler
+        consumer._ack_message = AsyncMock()
+
+        with patch.object(
+            type(messaging_env),
+            "record_processing_timeout",
+            new_callable=PropertyMock,
+            return_value=0.05,
+        ):
+            result = await consumer._process_message_wrapper("s", "1-0", _valid_fields())
+
+        assert result is True
+        assert bookkeeping_finished.is_set()
+
+
+    @pytest.mark.asyncio
+    async def test_a_stalled_handler_after_indexing_complete_is_bounded(
+        self, consumer
+    ) -> None:
+        """The work after INDEXING_COMPLETE runs past the processing deadline but
+        has its own bound: a handler stalled there fails the attempt (so the
+        message is redelivered) instead of holding it forever."""
+        consumer.running = True
+        consumer.parsing_semaphore = asyncio.Semaphore(1)
+        consumer.indexing_semaphore = asyncio.Semaphore(1)
+        never = asyncio.Event()
+
+        async def handler(_parsed) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.INDEXING_COMPLETE,
+                data=PipelineEventData(record_id="r1"),
+            )
+            await never.wait()
+
+        consumer.message_handler = handler
+
+        with patch.object(concurrency, "POST_INDEXING_TAIL_TIMEOUT_S", 0.05):
+            result = await asyncio.wait_for(consumer._process_message_wrapper("s", "1-0", _valid_fields()), timeout=5)
+
+        assert result is False
 
 
 class TestTimingSummary:
@@ -2270,6 +2377,31 @@ class TestRetryDelayBeforeSemaphore:
 
         sent_payload = consumer.producer.send_event.await_args.kwargs["payload"]
         assert before + 89.0 <= sent_payload["_retry_not_before"] <= before + 91.0
+
+    @pytest.mark.asyncio
+    async def test_requeue_is_signed_afresh_under_the_message_org(self, consumer, monkeypatch) -> None:
+        from app.core import envelope, org_context
+
+        key = envelope.derive_key("requeue-secret")
+        envelope.configure(None, None, key)
+        monkeypatch.setenv("ENVELOPE_SIGN", "true")
+        sent = []
+
+        async def send_event(topic, event_type, payload) -> None:
+            sent.append(envelope.sign_message(topic, {"eventType": event_type, "payload": payload}))
+
+        consumer.producer = AsyncMock()
+        consumer.producer.send_event.side_effect = send_event
+        ctx = org_context.OrgContext("org_a", None, "service", "envelope", "r")
+        message = StreamMessage(eventType="newRecord", payload={"orgId": "org_a", "recordId": "r1"}, org_ctx=ctx)
+        try:
+            assert org_context._ctx.get() is None  # the handler's bind is gone by the time a retry is queued
+            await consumer._requeue_message("stream-a", message, "stable-id", retry_count=1)
+            # signed with a fresh issuedAt, so it is inside the accepted window however old the original was
+            opened = await envelope.open_envelope("stream-a", sent[0], keys=(key,), required=True)
+            assert opened.ctx.org_id == "org_a" and opened.message["payload"]["_retry_tracking_id"] == "stable-id"
+        finally:
+            envelope.configure(None)
 
     @pytest.mark.asyncio
     async def test_requeue_requires_producer(self, consumer):

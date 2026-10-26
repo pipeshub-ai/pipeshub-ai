@@ -22,6 +22,16 @@ import {
   newSystemRoot,
   sanitizeRootId,
 } from '../context/request-context';
+import { runWithEnvelope, signMessage } from '../context/envelope';
+import { spawnDetached } from '../context/orgContext';
+
+/** Sign (when enabled) only where the topic is known. */
+function signIfTopic(
+  topic: string | undefined,
+  value: Record<string, unknown>,
+): Record<string, unknown> {
+  return topic === undefined ? value : signMessage(topic, value);
+}
 
 @injectable()
 export abstract class BaseKafkaConnection implements IKafkaConnection {
@@ -112,7 +122,7 @@ export abstract class BaseKafkaProducerConnection
 
   async publish<T>(topic: string, message: StreamMessage<T>): Promise<void> {
     await this.ensureConnection();
-    await this.sendToKafka(topic, [this.formatMessage(message)]);
+    await this.sendToKafka(topic, [this.formatMessage(message, topic)]);
   }
 
   async publishBatch<T>(
@@ -122,7 +132,7 @@ export abstract class BaseKafkaProducerConnection
     await this.ensureConnection();
     await this.sendToKafka(
       topic,
-      messages.map((msg) => this.formatMessage(msg)),
+      messages.map((msg) => this.formatMessage(msg, topic)),
     );
   }
 
@@ -145,15 +155,23 @@ export abstract class BaseKafkaProducerConnection
     }
   }
 
-  protected formatMessage<T>(message: StreamMessage<T>): {
+  protected formatMessage<T>(
+    message: StreamMessage<T>,
+    topic?: string,
+  ): {
     key: string;
     value: string;
     headers?: Record<string, string>;
   } {
     // Stamp the trace id into the JSON envelope (only when value is an object).
     const value =
-      message.value && typeof message.value === 'object' && !Array.isArray(message.value)
-        ? injectEnvelope({ ...(message.value as Record<string, unknown>) })
+      message.value &&
+      typeof message.value === 'object' &&
+      !Array.isArray(message.value)
+        ? signIfTopic(
+            topic,
+            injectEnvelope({ ...(message.value as Record<string, unknown>) }),
+          )
         : message.value;
     return {
       key: message.key,
@@ -259,38 +277,44 @@ export abstract class BaseKafkaConsumerConnection
   ): Promise<void> {
     await this.ensureConnection();
     try {
-      await this.consumer.run({
-        eachMessage: async ({ topic, partition, message }) => {
-          try {
-            if (!message.value) {
-              throw new BadRequestError('Empty message value');
+      // The runner outlives this call: it must not keep the caller's org context.
+      await spawnDetached(() =>
+        this.consumer.run({
+          eachMessage: async ({ topic, partition, message }) => {
+            try {
+              if (!message.value) {
+                throw new BadRequestError('Empty message value');
+              }
+
+              const parsedValue = JSON.parse(message.value.toString());
+              const parsedMessage: StreamMessage<T> = {
+                key: message.key?.toString() ?? '',
+                value: parsedValue,
+              };
+
+              // Carry the producer's trace id into consumer-side logs.
+              const envelope = (parsedValue ?? {}) as Record<string, unknown>;
+              const rootId =
+                sanitizeRootId(
+                  envelope[ENVELOPE_REQUEST_ID] as string | undefined,
+                ) ?? newSystemRoot();
+
+              await runWithRequestContext({ rootId }, () =>
+                runWithEnvelope<T, unknown>(topic, parsedValue as T, (value) =>
+                  handler({ ...parsedMessage, value }),
+                ),
+              );
+            } catch (error) {
+              this.logger.error('Error processing message', {
+                topic,
+                partition,
+                messageKey: message.key?.toString(),
+                error: (error as Error).message,
+              });
             }
-
-            const parsedValue = JSON.parse(message.value.toString());
-            const parsedMessage: StreamMessage<T> = {
-              key: message.key?.toString() ?? '',
-              value: parsedValue,
-            };
-
-            // Carry the producer's trace id into consumer-side logs.
-            const envelope = (parsedValue ?? {}) as Record<string, unknown>;
-            const rootId =
-              sanitizeRootId(envelope[ENVELOPE_REQUEST_ID] as string | undefined) ??
-              newSystemRoot();
-
-            await runWithRequestContext({ rootId }, () =>
-              handler(parsedMessage),
-            );
-          } catch (error) {
-            this.logger.error('Error processing message', {
-              topic,
-              partition,
-              messageKey: message.key?.toString(),
-              error: (error as Error).message,
-            });
-          }
-        },
-      });
+          },
+        }),
+      );
     } catch (error) {
       throw new KafkaError('Failed to start message consumption', {
         details: (error as Error).message,

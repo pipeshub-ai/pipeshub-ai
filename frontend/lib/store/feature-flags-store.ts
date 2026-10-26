@@ -85,6 +85,8 @@ export const useFeatureFlagsStore = create<FeatureFlagsStore>()(
 export const selectFeatureFlagsLoaded = (s: FeatureFlagsStore) => s.flags !== null;
 /** MCP defaults to enabled, so an unloaded or absent flag must not read as disabled. */
 export const selectMcpEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_MCP !== false;
+/** API Toolsets default to disabled (Labs); "not yet loaded" reads as disabled. */
+export const selectApiToolsetsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_API_TOOLSETS === true;
 /** Actions defaults to enabled, so an unloaded or absent flag must not read as disabled. */
 export const selectActionsEnabled = (s: FeatureFlagsStore) => s.flags?.ENABLE_ACTIONS !== false;
 /** Vector store rebuild defaults to disabled; admins opt in from Labs. */

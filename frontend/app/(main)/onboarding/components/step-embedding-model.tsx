@@ -21,16 +21,12 @@ function orderDefaultEmbeddingProviderFirst(providers: AIModelProvider[]): AIMod
 }
 
 interface StepEmbeddingModelProps {
-  systemStepIndex: number;
-  totalSystemSteps: number;
   embeddingDefaultDialog: boolean;
   setEmbeddingDefaultDialog: React.Dispatch<React.SetStateAction<boolean>>;
   onRegistryHasSystemDefaultEmbedding?: (hasDefault: boolean) => void;
 }
 
 export function StepEmbeddingModel({
-  systemStepIndex,
-  totalSystemSteps,
   embeddingDefaultDialog,
   setEmbeddingDefaultDialog,
   onRegistryHasSystemDefaultEmbedding,
@@ -113,10 +109,10 @@ export function StepEmbeddingModel({
             size="1"
             style={{ color: 'var(--gray-9)', marginBottom: '4px', letterSpacing: '0.02em' }}
           >
-            System Configuration
+            {t('onboarding.systemConfig')}
           </Text>
           <Text as="div" size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
-            Step {systemStepIndex}/{totalSystemSteps}: Configure Embedding Model*
+            {t('onboarding.stepHeading', { name: t('onboarding.steps.embeddingModel.title') })}
           </Text>
         </Box>
 

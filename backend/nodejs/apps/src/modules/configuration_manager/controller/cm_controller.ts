@@ -31,6 +31,7 @@ import {
   storageTypes,
 } from '../constants/constants';
 import { EncryptionService } from '../../../libs/encryptor/encryptor';
+import { RENAMED_SIGN_IN_METHODS } from '../../../edition';
 import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/modules/collection-metrics';
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
@@ -43,7 +44,6 @@ import {
 } from '../../tokens_manager/services/cm.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { generateFetchConfigAuthToken } from '../../auth/utils/generateAuthToken';
-import { SamlController } from '../../auth/controller/saml.controller';
 import axios from 'axios';
 import { ARANGO_DB_NAME, MONGO_DB_NAME } from '../../../libs/enums/db.enum';
 import { ConfigService } from '../services/updateConfig.service';
@@ -82,6 +82,7 @@ import {
   WebSearchProviderConfiguration,
   canSearch,
 } from '../types/web-search.types';
+import { localStorageReplicaProblem } from '../../storage/utils/replicas';
 import {
   CONFIG_SECRET_PLACEHOLDER,
   SMTP_SECRET_KEYS,
@@ -97,10 +98,8 @@ import {
   mergeSlackBotConfigPlaceholders,
   GOOGLE_AUTH_SECRET_KEYS,
   MICROSOFT_AUTH_SECRET_KEYS,
-  OAUTH_SECRET_KEYS,
   maskGoogleAuthConfig,
   maskMicrosoftAuthConfig,
-  maskOAuthConfig,
   restoreSecretPlaceholders,
 } from '../utils/maskConfigSecrets';
 import {
@@ -325,6 +324,10 @@ export const createStorageConfig =
         }
 
         case storageTypes.LOCAL.toLowerCase(): {
+          const replicaProblem = localStorageReplicaProblem();
+          if (replicaProblem) {
+            throw new BadRequestError(replicaProblem);
+          }
           const localConfig = {
             mountName: config.mountName || 'PipesHub',
             baseUrl: config.baseUrl || defaultConfig.endpoint,
@@ -1028,85 +1031,33 @@ async function restoreStoredAuthSecrets<T extends Record<string, unknown>>(
   return config;
 }
 
-export const getAzureAdAuthConfig =
-  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.azureAD,
-      );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting auth config', { error });
-      next(error);
-    }
-  };
-
-export const setAzureAdAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const { clientId, tenantId, enableJit } = await restoreStoredAuthSecrets(
-        keyValueStoreService,
-        configPaths.auth.azureAD,
-        req.body,
-        MICROSOFT_AUTH_SECRET_KEYS,
-      );
-      const authority = `https://login.microsoftonline.com/${tenantId}`;
-
-      const encryptedAuthConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ clientId, tenantId, authority, enableJit: enableJit ?? true }));
-
-      await keyValueStoreService.set<string>(
-        configPaths.auth.azureAD,
-        encryptedAuthConfig,
-      );
-
-      res
-        .status(200)
-        .json({ message: 'Azure AD config created successfully' })
-        .end();
-    } catch (error: any) {
-      logger.error('Error creating smtp config', { error });
-      next(error);
-    }
-  };
-
 export const getMicrosoftAuthConfig =
   (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
     try {
       const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.microsoft,
-      );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
+      const readAuthConfig = async (
+        path: string,
+      ): Promise<Record<string, unknown> | null> => {
+        const encrypted = await keyValueStoreService.get<string>(path);
+        if (!encrypted) return null;
+        return JSON.parse(
           EncryptionService.getInstance(
             configManagerConfig.algorithm,
             configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
+          ).decrypt(encrypted),
+        ) as Record<string, unknown>;
+      };
+
+      let authConfig = await readAuthConfig(configPaths.auth.microsoft);
+      // Azure AD sign-in became Microsoft sign-in; until the startup migration
+      // copies its settings over, serve those.
+      if (!authConfig?.clientId && RENAMED_SIGN_IN_METHODS.azureAd === 'microsoft') {
+        const azureAd = await readAuthConfig(configPaths.auth.azureAD);
+        if (azureAd?.clientId) authConfig = azureAd;
+      }
+
+      if (authConfig) {
         const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
         res.status(200).json(hideSecrets ? maskMicrosoftAuthConfig(authConfig) : authConfig).end();
       } else {
@@ -1209,89 +1160,6 @@ export const setGoogleAuthConfig =
         .end();
     } catch (error: any) {
       logger.error('Error creating smtp config', { error });
-      next(error);
-    }
-  };
-
-export const getOAuthConfig =
-  (keyValueStoreService: KeyValueStoreService, applyMasking = true) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const encryptedAuthConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.oauth,
-      );
-
-      if (encryptedAuthConfig) {
-        const authConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedAuthConfig),
-        );
-        const hideSecrets = applyMasking && shouldHideSecrets() && !canRevealSecrets(req);
-        res.status(200).json(hideSecrets ? maskOAuthConfig(authConfig) : authConfig).end();
-      } else {
-        res.status(200).json({}).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting OAuth config', { error });
-      next(error);
-    }
-  };
-
-export const setOAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-
-      const {
-        providerName,
-        clientId,
-        clientSecret,
-        authorizationUrl,
-        tokenEndpoint,
-        userInfoEndpoint,
-        scope,
-        redirectUri,
-        enableJit,
-      } = await restoreStoredAuthSecrets(
-        keyValueStoreService,
-        configPaths.auth.oauth,
-        req.body,
-        OAUTH_SECRET_KEYS,
-      );
-
-      const oauthConfig = {
-        providerName,
-        clientId,
-        ...(clientSecret && { clientSecret }),
-        ...(authorizationUrl && { authorizationUrl }),
-        ...(tokenEndpoint && { tokenEndpoint }),
-        ...(userInfoEndpoint && { userInfoEndpoint }),
-        ...(scope && { scope }),
-        ...(redirectUri && { redirectUri }),
-        enableJit: enableJit ?? true,
-      };
-
-      const encryptedAuthConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify(oauthConfig));
-
-      await keyValueStoreService.set<string>(
-        configPaths.auth.oauth,
-        encryptedAuthConfig,
-      );
-
-      res
-        .status(200)
-        .json({ message: 'OAuth config created successfully' })
-        .end();
-    } catch (error: any) {
-      logger.error('Error creating OAuth config', { error });
       next(error);
     }
   };
@@ -1691,10 +1559,10 @@ export const createGoogleWorkspaceCredentials =
               googleWorkspaceBusinessCredentialsSchema.safeParse(configData);
 
             if (!validationResult.success) {
-              const formattedErrors = validationResult.error.errors
+              const formattedErrors = validationResult.error.issues
                 .map((err) => {
                   const fieldName = err.path[0] || 'Unknown field';
-                  return `  • ${fieldName}: ${err.message}  `;
+                  return `  • ${String(fieldName)}: ${err.message}  `;
                 })
                 .join('');
 
@@ -2309,75 +2177,6 @@ export const setSharePointCredentials =
         .json({ message: 'SharePoint credentials created successfully' });
     } catch (error: any) {
       logger.error('Error creating SharePoint credentials', { error });
-      next(error);
-    }
-  };
-
-export const setSsoAuthConfig =
-  (
-    keyValueStoreService: KeyValueStoreService,
-    samlController: SamlController,
-  ) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const { entryPoint, emailKey, enableJit , samlPlatform} = req.body;
-      let { certificate } = req.body;
-      certificate = certificate
-        .replace(/\\n/g, '') // Remove \n
-        .replace(/\n/g, '') // Remove newline characters
-        .replace(/\s+/g, '') // Remove all whitespace
-        .replace(/\\/g, ''); // Remove any remaining backslashes
-
-      // Step 2: Remove BEGIN and END certificate markers if present
-      certificate = certificate
-        .replace(/-----BEGINCERTIFICATE-----/g, '')
-        .replace(/-----ENDCERTIFICATE-----/g, '');
-
-      certificate = certificate
-        .replace(/-----BEGIN CERTIFICATE-----/g, '')
-        .replace(/-----END ERTIFICATE-----/g, '');
-      // Step 3: Ensure the certificate content is clean
-      certificate = certificate.trim();
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSsoConfig = EncryptionService.getInstance(
-        configManagerConfig.algorithm,
-        configManagerConfig.secretKey,
-      ).encrypt(JSON.stringify({ certificate, entryPoint, emailKey, enableJit: enableJit ?? true , samlPlatform }));
-      await keyValueStoreService.set<string>(
-        configPaths.auth.sso,
-        encryptedSsoConfig,
-      );
-      await samlController.updateSamlStrategiesWithCallback();
-      res.status(200).json({ message: 'Sso config created successfully' });
-    } catch (error: any) {
-      logger.error('Error creating Sso config', { error });
-      next(error);
-    }
-  };
-
-export const getSsoAuthConfig =
-  (keyValueStoreService: KeyValueStoreService) =>
-  async (_req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
-    try {
-      const configManagerConfig = loadConfigurationManagerConfig();
-      const encryptedSsoConfig = await keyValueStoreService.get<string>(
-        configPaths.auth.sso,
-      );
-      const spEntityId = process.env.SAML_SP_ENTITY_ID || process.env.FRONTEND_PUBLIC_URL || 'pipeshub';
-      if (encryptedSsoConfig) {
-        const ssoConfig = JSON.parse(
-          EncryptionService.getInstance(
-            configManagerConfig.algorithm,
-            configManagerConfig.secretKey,
-          ).decrypt(encryptedSsoConfig),
-        );
-        res.status(200).json({ ...ssoConfig, spEntityId }).end();
-        return;
-      } else {
-        res.status(200).json({ spEntityId }).end();
-      }
-    } catch (error: any) {
-      logger.error('Error getting SsoConfig', { error });
       next(error);
     }
   };
@@ -3598,6 +3397,27 @@ export const updateAIModelProvider =
         res.status(400).json({
           status: 'error',
           message: `Model key '${modelKey}' belongs to type '${targetModelType}', not '${modelType}'`,
+        });
+        return;
+      }
+
+      // A deployment serves one model: carrying the stored one to a new model
+      // saves a label that disagrees with the traffic, and the health check
+      // passes on the old deployment.
+      const incoming = configuration as Record<string, unknown>;
+      const stored = targetModel.configuration as
+        Record<string, unknown> | undefined;
+      const trimmed = (value: unknown): string =>
+        typeof value === 'string' ? value.trim() : '';
+      if (
+        trimmed(stored?.deploymentName) !== '' &&
+        'model' in incoming &&
+        trimmed(incoming.model) !== trimmed(stored?.model) &&
+        trimmed(incoming.deploymentName) === ''
+      ) {
+        res.status(400).json({
+          status: 'error',
+          message: 'Changing the model needs its deployment name.',
         });
         return;
       }

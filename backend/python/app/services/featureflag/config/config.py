@@ -8,6 +8,10 @@ class CONFIG:
     # and whether MCP is shown anywhere in the UI.
     # Defaults to enabled; admins may opt out from Labs.
     ENABLE_MCP = "ENABLE_MCP"
+    # Controls whether admins can add API Toolsets (tools compiled from an
+    # OpenAPI spec of an internal REST API) and whether agents load them.
+    # Defaults to disabled; admins must opt in from Labs.
+    ENABLE_API_TOOLSETS = "ENABLE_API_TOOLSETS"
     # Controls whether agents can load/use toolset actions (connector
     # integrations) and whether Actions is shown anywhere in the UI.
     # Defaults to enabled; admins may opt out from Labs.
@@ -35,3 +39,12 @@ class CONFIG:
     ENABLE_SOFT_DELETE = "ENABLE_SOFT_DELETE"
     # Typed named-entity extraction during indexing. Defaults to disabled.
     ENABLE_NAMED_ENTITY_EXTRACTION = "ENABLE_NAMED_ENTITY_EXTRACTION"
+    # Indexing also stores each content revision as a directory of artifact
+    # files beside the stored record. Nothing reads them yet. Defaults to disabled.
+    ENABLE_ARTIFACT_WRITE = "ENABLE_ARTIFACT_WRITE"
+    # Query-side record reads also read the artifact set and compare it with the
+    # stored record they serve. Defaults to disabled.
+    ENABLE_ARTIFACT_READ_SHADOW = "ENABLE_ARTIFACT_READ_SHADOW"
+    # Query-side record reads serve the artifact set, falling back to the stored
+    # record per record; wins over the shadow flag. Defaults to disabled.
+    ENABLE_ARTIFACT_READ = "ENABLE_ARTIFACT_READ"

@@ -15,6 +15,7 @@ import pytest
 
 from app.connectors.sources.github_teams import connector as connector_mod
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -37,6 +38,7 @@ def _runnable_connector() -> object:
     c.repos.timestamps.schedule = lambda: None
     c.users.sync_users = AsyncMock()
     c.projects.sync_all_repos = AsyncMock()
+    c.projects.failures = []
     return c
 
 
@@ -182,6 +184,15 @@ class TestConnectionAndAccess:
 
         assert await GitHubTeamsConnector.test_connection_and_access(c) is False
 
+    async def test_rejected_credentials_say_so(self) -> None:
+        c = make_mock_connector()
+        res = failed_response("Bad credentials", status_code=401)
+        res.api_message = "Bad credentials"
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="rejected the credentials"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
     async def test_exception_returns_false(self) -> None:
         c = make_mock_connector()
         c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("network"))
@@ -197,6 +208,7 @@ class TestRunSyncAndIncremental:
         order: list[str] = []
         c.users.sync_users = AsyncMock(side_effect=lambda: order.append("users"))
         c.projects.sync_all_repos = AsyncMock(side_effect=lambda: order.append("projects"))
+        c.projects.failures = []
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )

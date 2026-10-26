@@ -320,6 +320,11 @@ class BaseDataStore(ABC):
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         pass
 
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
+        """Delete the user's own PERMISSION edges to this connector's records, record groups and user groups.
+        Returns how many were deleted."""
+        raise NotImplementedError
+
     @abstractmethod
     async def delete_user_group_by_id(self, group_id: str) -> None:
         pass

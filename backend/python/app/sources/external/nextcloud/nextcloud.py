@@ -5,6 +5,8 @@ from typing import Any, Dict, List, Literal, Optional, Union
 from urllib.parse import quote
 from xml.sax.saxutils import escape
 
+import httpx
+
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.nextcloud.nextcloud import NextcloudClient
@@ -49,6 +51,15 @@ class NextcloudDataSource:
         # Note: OCS URLs require the ID in the path
         rel_path = f'/ocs/v1.php/cloud/users/{user_id}'
         return await self._ocs_request('GET', rel_path, headers=headers)
+
+    async def get_current_user(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
+        """
+        Get the authenticated user, whose ``id`` names their WebDAV and OCS paths.
+        The login name can differ from it (an email or an LDAP name).
+        Ref:
+        API: GET /ocs/v1.php/cloud/user
+        """
+        return await self._ocs_request('GET', '/ocs/v1.php/cloud/user', headers=headers)
 
     async def get_users(
         self,
@@ -1198,6 +1209,15 @@ class NextcloudDataSource:
             body=None
         )
         return await self._client.execute(req)
+
+    async def open_download(self, user_id: str, path: str) -> httpx.Response:
+        """Start a GET of a file and return the response with its body not yet read.
+
+        The caller reads it with ``aiter_bytes()`` and must ``aclose()`` it.
+        """
+        client = await self._client._ensure_client()
+        request = client.build_request('GET', self._build_webdav_url(user_id, path))
+        return await client.send(request, stream=True)
 
     async def upload_file(
         self,

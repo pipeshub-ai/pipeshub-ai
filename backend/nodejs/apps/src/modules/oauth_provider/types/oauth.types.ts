@@ -68,6 +68,13 @@ export interface GenerateTokensOptions {
    */
   actorUserId?: string;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The limit the user agreed to, for tokens minted from their grant (a
+   * code, a device approval, a refresh). Widening the app's limit later
+   * leaves these tokens at it. `null` is no limit; left out, the token takes
+   * the app's current limit.
+   */
+  grantedKnowledgeLimit?: KnowledgeLimit | null;
 }
 
 // Token Response (RFC 6749 compliant)
@@ -174,6 +181,15 @@ export interface CreateOAuthAppRequest {
   accessTokenLifetime?: number;
   refreshTokenLifetime?: number;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own tokens act as.
+   *
+   * Required when the app allows `client_credentials`, and ignored otherwise.
+   * That grant has no person in it, so without this the app acts as whoever
+   * created it — and an app created by an administrator would carry
+   * administrator rights for as long as it exists.
+   */
+  tokenIdentityUserId?: string;
 }
 
 // Update OAuth App Request
@@ -210,6 +226,15 @@ export interface OAuthAppResponse {
   accessTokenLifetime: number;
   refreshTokenLifetime: number;
   knowledgeLimit?: KnowledgeLimit;
+  /**
+   * The service account this app's own `client_credentials` tokens act as.
+   *
+   * Absent means the app has no service account and its tokens act as whoever
+   * created it. Apps created since that became a requirement always have one;
+   * an app registered before it may not, and those are the ones an
+   * administrator still has to move.
+   */
+  tokenIdentityUserId?: string;
   createdAt: Date;
   updatedAt: Date;
 }

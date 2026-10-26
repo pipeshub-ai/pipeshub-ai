@@ -1,10 +1,10 @@
 """What the record stages share: the records still on a job's revision, the stored record,
 and section writes into the stored record under the record's lease.
 
-Two stages write the stored record's ``semantic_metadata`` and may finish in either order:
-classify owns every field but ``named_entities``, the entities stage owns ``named_entities``.
-Each write re-reads the stored record under the record's lease and replaces only its own
-section, so neither overwrites the other.
+Classification is the stored record's only stage writer: it re-reads the record under the
+lease and replaces ``semantic_metadata``, keeping the ``named_entities`` section a record
+indexed before the entities stage existed may carry (``app.modules.named_entities.kept``
+reads it for such a record). The entities stage keeps its extraction in its stage state.
 """
 
 from collections.abc import Awaitable, Callable
@@ -37,19 +37,10 @@ class StoredRecordMissing(LookupError):
 
 
 def with_classification(current: StoredMetadata | None, classification: StoredMetadata) -> StoredMetadata:
-    """``classification`` with the stored named-entity section kept."""
+    """``classification`` with the stored named-entity section kept: a record indexed before
+    the entities stage has its extraction there, and a rollback reads it there too."""
     merged = {key: value for key, value in classification.items() if key != NAMED_ENTITIES_SECTION}
     merged[NAMED_ENTITIES_SECTION] = (current or {}).get(NAMED_ENTITIES_SECTION)
-    return merged
-
-
-def with_named_entities(current: StoredMetadata | None, extraction: StoredMetadata | None) -> StoredMetadata:
-    """The stored metadata with its named-entity section replaced; every other field kept.
-
-    With no metadata stored yet (classification has not finished, or produced none) the
-    section alone is stored, as ``extraction_blob_holder`` stores it."""
-    merged = dict(current or {})
-    merged[NAMED_ENTITIES_SECTION] = extraction
     return merged
 
 
@@ -158,10 +149,14 @@ class RecordStageIO:
         update: SectionUpdate,
         *,
         still_current: Callable[[], Awaitable[bool]] | None = None,
+        before: Callable[[], Awaitable[object]] | None = None,
+        written: Callable[[], Awaitable[object]] | None = None,
         then: Callable[[], Awaitable[object]] | None = None,
     ) -> None:
         """Re-read the stored record under the lease and write ``update`` of its metadata, then
-        run ``then`` (the stage's other writes for ``owner``) while the lease is still held.
+        run ``written`` (only when that write happened) and ``then`` (the stage's other writes
+        for ``owner``) while the lease is still held. ``before`` runs under the lease ahead of the
+        write, for an output that must exist before the stored record says it does.
 
         Raises ``RevisionSuperseded`` / ``RecordBusy`` from the lease, and
         ``StoredRecordMissing`` when no stored record exists."""
@@ -169,12 +164,16 @@ class RecordStageIO:
             stored = await self._blob_storage.get_record_from_storage(job.virtual_record_id, job.org_id)
             if stored is None:
                 raise StoredRecordMissing(f"no stored record for virtual record {job.virtual_record_id}")
+            if before is not None:
+                _ = await before()
             current = stored.get("semantic_metadata")
             new = update(current if isinstance(current, dict) else None)
             if new is not None:
                 await self._blob_storage.save_semantic_metadata(job.org_id, owner, job.virtual_record_id, new)
                 stored["semantic_metadata"] = new
                 self._stored, self._stored_loaded = stored, True
+                if written is not None:
+                    _ = await written()
             if then is not None:
                 _ = await then()
 

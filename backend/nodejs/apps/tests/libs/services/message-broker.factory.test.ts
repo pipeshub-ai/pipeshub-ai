@@ -71,6 +71,7 @@ describe('MessageBrokerFactory', () => {
     sinon.restore();
     delete process.env.MESSAGE_BROKER;
     delete process.env.REDIS_STREAMS_MAXLEN;
+    delete process.env.REDIS_STREAMS_RETENTION_MODE;
   });
 
   describe('createMailMessageConsumer', () => {
@@ -331,16 +332,32 @@ describe('MessageBrokerFactory', () => {
       expect(config.groupId).to.equal('my-group');
     });
 
-    it('should use REDIS_STREAMS_MAXLEN env var for maxLen', () => {
+    it('should use REDIS_STREAMS_MAXLEN for maxLen only in maxlen retention mode', () => {
       process.env.REDIS_STREAMS_MAXLEN = '5000';
+      process.env.REDIS_STREAMS_RETENTION_MODE = 'maxlen';
       const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
       expect(config.maxLen).to.equal(5000);
     });
 
-    it('should default maxLen to 500000', () => {
+    it('should default maxLen to 500000 in maxlen retention mode', () => {
       delete process.env.REDIS_STREAMS_MAXLEN;
+      process.env.REDIS_STREAMS_RETENTION_MODE = 'maxlen';
       const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
       expect(config.maxLen).to.equal(500000);
+    });
+
+    it('should fail fast on an invalid REDIS_STREAMS_RETENTION_MODE', () => {
+      process.env.REDIS_STREAMS_RETENTION_MODE = 'bogus';
+      expect(() => buildRedisBrokerConfig({ host: 'localhost', port: 6379 })).to.throw(
+        /REDIS_STREAMS_RETENTION_MODE must be "after_ack" or "maxlen"/,
+      );
+    });
+
+    it('should not cap streams by default, even when REDIS_STREAMS_MAXLEN is set', () => {
+      process.env.REDIS_STREAMS_MAXLEN = '500000';
+      delete process.env.REDIS_STREAMS_RETENTION_MODE;
+      const config = buildRedisBrokerConfig({ host: 'localhost', port: 6379 });
+      expect(config.maxLen).to.be.undefined;
     });
 
   });

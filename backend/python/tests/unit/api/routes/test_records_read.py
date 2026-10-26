@@ -41,7 +41,12 @@ def _record(record_id: str, *texts: str, created: int = 0) -> dict:
 
 def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicMock]:
     graph = MagicMock()
-    graph.check_record_access_with_details = AsyncMock(return_value={"id": "r"} if access else None)
+    graph.get_user_by_user_id = AsyncMock(return_value={"id": "k-1"})
+    graph.check_access = AsyncMock(
+        side_effect=lambda _user, _org, node_ids, **_kw: SimpleNamespace(
+            node_ids=set(node_ids) if access else set()
+        )
+    )
     graph.get_document = AsyncMock(return_value={"connectorId": "c-1"})
     retrieval = MagicMock()
     retrieval.search_with_filters = AsyncMock(return_value={"searchResults": []})
@@ -75,6 +80,14 @@ class TestAccess:
             await _read(request)
         assert err.value.status_code == 403
         fetch.assert_not_awaited()
+
+    async def test_one_access_check_is_made_and_the_fetch_reuses_it(self) -> None:
+        request, graph, _ = _request()
+        fetch = AsyncMock(return_value={"ok": False})
+        with patch.object(route, "_fetch_multiple_records_impl", fetch):
+            await _read(request)
+        graph.check_access.assert_awaited_once()
+        assert fetch.await_args.kwargs["accessible"] == {"r-1"}
 
     async def test_no_access_to_the_thread_record_is_a_403_too(self) -> None:
         request, _, _ = _request(access=False)

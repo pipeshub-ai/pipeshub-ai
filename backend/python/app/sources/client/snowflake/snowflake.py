@@ -9,6 +9,7 @@ Authentication: https://docs.snowflake.com/en/developer-guide/sql-api/authentica
 """
 
 import logging
+import re
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 from urllib.parse import urlparse, urlunparse
@@ -28,6 +29,8 @@ try:
     import snowflake.connector as snowflake_connector  # type: ignore
 except ImportError:
     snowflake_connector = None
+
+_ACCOUNT_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 class AuthType(str, Enum):
     """Authentication type for Snowflake connector."""
@@ -82,13 +85,18 @@ class SnowflakeRESTClientViaOAuth(HTTPClient):
         # Parse the account identifier as a URL
         parsed = urlparse(account_identifier if "://" in account_identifier else f"https://{account_identifier}")
         # Extract the account name from netloc
-        netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+        netloc = parsed.netloc or parsed.path.split("/")[0]
         # Remove the .snowflakecomputing.com suffix if present
         if netloc.endswith(".snowflakecomputing.com"):
             account = netloc[:-len(".snowflakecomputing.com")]
         else:
             # If no suffix, assume netloc is the account name
             account = netloc
+
+        # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
+        # would let the value choose another server.
+        if not _ACCOUNT_NAME.fullmatch(account):
+            raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
 
         # Build the base URL using urlunparse for proper URL construction
         base_url = urlunparse((
@@ -178,7 +186,7 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
         logger.debug(f"🔧 [PAT] Parsed URL: scheme='{parsed.scheme}', netloc='{parsed.netloc}', path='{parsed.path}'")
 
         # Extract the account name from netloc
-        netloc = parsed.netloc or parsed.path.split("/")[0] if parsed.path else account_identifier
+        netloc = parsed.netloc or parsed.path.split("/")[0]
         logger.debug(f"🔧 [PAT] Extracted netloc: '{netloc}'")
 
         # Remove the .snowflakecomputing.com suffix if present
@@ -189,6 +197,11 @@ class SnowflakeRESTClientViaPAT(HTTPClient):
             # If no suffix, assume netloc is the account name
             account = netloc
             logger.debug(f"🔧 [PAT] No .snowflakecomputing.com suffix found, using netloc as account: '{account}'")
+
+        # The account becomes part of the host name: anything else (":", "#", "?", "/", "@")
+        # would let the value choose another server.
+        if not _ACCOUNT_NAME.fullmatch(account):
+            raise ValueError(f"Invalid Snowflake account identifier: {account_identifier!r}")
 
         # Build the base URL using urlunparse for proper URL construction
         base_url = urlunparse((

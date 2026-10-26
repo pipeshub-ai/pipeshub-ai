@@ -60,3 +60,15 @@ describe('InlineCitationGroup overflow', () => {
     expect(container.textContent).not.toMatch(/\+\d/);
   });
 });
+
+describe('citation circle touch area', () => {
+  it('uses the circle-specific class, not the generic centred touch-hit', () => {
+    const { container } = renderMarkers(2);
+    const circles = container.querySelectorAll('[aria-haspopup="dialog"] > span');
+    expect(circles.length).toBe(2);
+    circles.forEach((c) => {
+      expect(c.classList.contains('citation-number-circle')).toBe(true);
+      expect(c.classList.contains('touch-hit')).toBe(false);
+    });
+  });
+});

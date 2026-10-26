@@ -6,6 +6,7 @@ import React, { useState, useMemo, useRef, useCallback, useEffect } from 'react'
 import { Flex, Box, Text, Badge, Button, Popover, Checkbox, RadioGroup, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { Spinner } from '@/app/components/ui/spinner';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 /**
  * Option item for the filter dropdown
@@ -149,6 +150,8 @@ export function FilterDropdown({
   selectionMode = 'multiple',
 }: FilterDropdownProps) {
   const { t } = useTranslation();
+  // Phones get 44px option rows.
+  const isMobile = useIsMobile();
   const [isOpen, setIsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   /** Labels for selected values — kept when server-side option lists refresh after close */
@@ -522,7 +525,7 @@ export function FilterDropdown({
           gap="1"
           className="no-scrollbar"
           onScroll={handleScroll}
-          style={{ maxHeight: '200px', overflowY: 'auto' }}
+          style={{ maxHeight: isMobile ? '320px' : '200px', overflowY: 'auto' }}
         >
           {isLoadingOptions && filteredOptions.length === 0 ? (
             <Flex align="center" justify="center" gap="2" style={{ padding: '20px 12px' }}>
@@ -565,6 +568,7 @@ export function FilterDropdown({
                   onClick={() => selectOption(option.value)}
                   style={{
                     padding: '6px 8px',
+                    minHeight: isMobile ? 44 : undefined,
                     borderRadius: 'var(--radius-1)',
                     cursor: 'pointer',
                     backgroundColor: selectedValues.includes(option.value)
@@ -601,6 +605,7 @@ export function FilterDropdown({
                 onClick={() => selectOption(option.value)}
                 style={{
                   padding: '6px 8px',
+                  minHeight: isMobile ? 44 : undefined,
                   borderRadius: 'var(--radius-1)',
                   cursor: 'pointer',
                   backgroundColor: selectedValues.includes(option.value)

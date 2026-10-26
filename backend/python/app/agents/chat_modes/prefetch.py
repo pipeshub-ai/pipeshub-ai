@@ -29,6 +29,7 @@ from app.modules.retrieval.context.targeted import (
     targeted_retrieval_enabled,
 )
 from app.modules.retrieval.context.units import unit_children
+from app.modules.retrieval.selection_scope import connection_sources_of
 from app.utils.chat_helpers import CitationRefMapper, ImageBudget, is_base64_image
 
 if TYPE_CHECKING:
@@ -217,6 +218,7 @@ async def prefetch_retrieval(
         org_id=org_id,
         user_id=user_id,
         config_service=getattr(blob_store, "config_service", None),
+        connection_sources=connection_sources_of(filters),
     ).build(
         search_results,
         virtual_to_record_map,

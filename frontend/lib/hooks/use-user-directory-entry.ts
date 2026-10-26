@@ -16,7 +16,7 @@ export function parseUserDirectoryByIdsResponse(
 ): UserDirectoryEntry | null {
   const users = Array.isArray(data)
     ? data
-    : (data as { users?: unknown[] }).users ?? [];
+    : (data as { users?: unknown[] } | null)?.users ?? [];
   if (users.length === 0) return null;
   const user = users[0] as Record<string, unknown>;
   const fullName = (user.name as string) ?? (user.fullName as string) ?? '';

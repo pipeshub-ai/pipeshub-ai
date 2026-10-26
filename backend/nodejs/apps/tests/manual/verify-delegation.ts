@@ -406,15 +406,64 @@ async function main(): Promise<void> {
   const ttl = eventIndexes.find((i) => i.expireAfterSeconds !== undefined);
   check('the log expires rather than growing forever', ttl !== undefined);
   check(
-    'and it is kept past the longest service-token lifetime',
+    'and it expires below the shortest Enterprise audit retention',
     (ttl?.expireAfterSeconds ?? 0) === DELEGATION_EVENT_RETENTION_DAYS * 86400 &&
-      DELEGATION_EVENT_RETENTION_DAYS > 365,
+      DELEGATION_EVENT_RETENTION_DAYS > 0 &&
+      DELEGATION_EVENT_RETENTION_DAYS < 90,
   );
   check(
     'the TTL counts from when the record was written, not when the token expired',
     JSON.stringify(ttl?.key) === JSON.stringify({ createdAt: 1 }),
     JSON.stringify(ttl?.key),
   );
+
+  // The upgrade, against a real database, because this is the case the
+  // constant alone does not cover and a mock cannot prove.
+  //
+  // An instance that has run before already has this index at its old value.
+  // MongoDB refuses a createIndex that differs only in expireAfterSeconds, and
+  // Mongoose discards that error at model init, so the service starts and the
+  // retention silently stays where it was. Here the old value is put back
+  // deliberately, and the migration has to move it.
+  {
+    const { DelegationLogRetentionMigration } = await import(
+      '../../src/modules/configuration_manager/services/migrations/delegation_log_retention.migration'
+    );
+
+    const OLD_DAYS = 400;
+    await DelegationEvent.db.db?.command({
+      collMod: DelegationEvent.collection.collectionName,
+      index: { keyPattern: { createdAt: 1 }, expireAfterSeconds: OLD_DAYS * 86400 },
+    });
+
+    const seeded = (await DelegationEvent.collection.indexes()).find(
+      (i) => JSON.stringify(i.key) === JSON.stringify({ createdAt: 1 }),
+    );
+    check(
+      'an instance upgraded from the old retention really starts at the old value',
+      seeded?.expireAfterSeconds === OLD_DAYS * 86400,
+      String(seeded?.expireAfterSeconds),
+    );
+
+    const result = await new DelegationLogRetentionMigration(logger as never).run();
+    const after = (await DelegationEvent.collection.indexes()).find(
+      (i) => JSON.stringify(i.key) === JSON.stringify({ createdAt: 1 }),
+    );
+
+    check(
+      'the migration moves it to the configured retention',
+      result.status === 'updated' &&
+        after?.expireAfterSeconds === DELEGATION_EVENT_RETENTION_DAYS * 86400,
+      `${result.status}, now ${String(after?.expireAfterSeconds)}`,
+    );
+
+    const second = await new DelegationLogRetentionMigration(logger as never).run();
+    check(
+      'and running it again does nothing, since it runs on every boot',
+      second.status === 'already_correct',
+      second.status,
+    );
+  }
 
   // Everything above drives the service directly. This drives the whole
   // exchange: a real signed service token, the real token service, and the

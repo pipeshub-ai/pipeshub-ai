@@ -32,6 +32,7 @@ for _p in (_ROOT, _RV_HELPER):
 
 from helper.clients.connectors_client import ConnectorsClient  # noqa: E402
 from openapi_schema_validator import (  # noqa: E402
+    _operation_responses,
     assert_error_response_matches_openapi_operation,
     assert_query_params_documented,
     assert_request_body_strictly_matches_openapi_operation,
@@ -119,6 +120,36 @@ class TestGetConnector:
         resp = connectors_api.get_instance(str(uuid4()))
         assert resp.status_code == 404, resp.text
         assert_error_response_matches_openapi_operation(resp.json(), _GET, 404)
+
+    def test_get_instance_with_markup_in_a_query_value_is_400(
+        self, connectors_api: ConnectorsClient
+    ) -> None:
+        """The app-wide XSS filter answers before authentication, as the documented 400 says."""
+        # The validator never reads descriptions, so the sentence is checked here.
+        documented = _operation_responses(_GET)["400"]["description"]
+        assert "HTML tags, scripts, and XSS content are not allowed" in documented, documented
+        resp = connectors_api.get_instance(
+            str(uuid4()), auth=False, params={"q": "<script>alert(1)</script>"}
+        )
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert_error_response_matches_openapi_operation(body, _GET, 400)
+        assert body["error"]["code"] == "HTTP_BAD_REQUEST", body
+        assert body["error"]["message"].startswith(
+            'HTML tags, scripts, and XSS content are not allowed in the query parameter "q".'
+        ), body
+
+    def test_get_instance_with_a_malformed_id_is_400(
+        self, connectors_api: ConnectorsClient
+    ) -> None:
+        """A connectorId outside ``^[A-Za-z0-9_-]{1,64}$`` is the documented VALIDATION_ERROR."""
+        documented = _operation_responses(_GET)["400"]["description"]
+        assert "`connectorId` is not 1 to 64 letters" in documented, documented
+        resp = connectors_api.get_instance("x" * 65)
+        assert resp.status_code == 400, resp.text
+        body = resp.json()
+        assert_error_response_matches_openapi_operation(body, _GET, 400)
+        assert body["error"]["code"] == "VALIDATION_ERROR", body
 
     def test_get_instance_unauthenticated_is_401(
         self, connectors_api: ConnectorsClient, rss_connector: Any

@@ -18,7 +18,7 @@ test.describe('Workspace Labs', () => {
   });
 
   test('displays file upload limit setting', async ({ page }) => {
-    await expect(page.getByText('File Upload Limit').first()).toBeVisible({ timeout: 10_000 });
+    await expect(page.getByText('File upload limit').first()).toBeVisible({ timeout: 10_000 });
     await expect(page.getByPlaceholder('max. 1000')).toBeVisible();
   });
 });

@@ -17,6 +17,10 @@ from aiokafka import (  # type: ignore
 )
 from aiokafka.structs import ConsumerRecord  # type: ignore
 
+from app.core.envelope import EnvelopeRejected, ctx_of, open_stream_message
+from app.core.org_context import bind_optional, spawn_detached
+from app.core.org_context import pop as pop_org
+from app.core.org_context import push as push_org
 from app.services.messaging import consumer_concurrency as concurrency
 from app.services.messaging.config import (
     IndexingEvent,
@@ -400,12 +404,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         renewer, self.lease_renewer = self.lease_renewer, None
         return renewer
 
+    def _stop_taking_work(self) -> None:
+        """Called on the shared loop's thread when it dies: stops reads and dispatch, so nothing
+        more is handed to a loop that cannot run it."""
+        self.running = False
+
     def __start_worker_thread(self) -> None:
         """Start the worker thread with its own event loop, or join the shared worker loop."""
         if self._shared_worker is not None:
             self.worker_loop_ready.clear()
             loop = self._shared_worker.start()
             self.worker_loop = loop
+            self._shared_worker.add_exit_listener(self._stop_taking_work)
             self._shared_worker.call(lambda: self._on_worker_loop_started(loop))
             # Reported once, under the record consumer: every consumer on the loop sees the same lag.
             self.loop_lag_monitor = self._shared_worker.lag_monitor if self.stage_admission is None else None
@@ -519,6 +529,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._wait_for_active_futures()
         if self._shared_worker is not None:
             # The loop is shared: release only what this consumer started on it.
+            self._shared_worker.remove_exit_listener(self._stop_taking_work)
             if self.worker_loop is not None and self.worker_loop.is_running():
                 renewer = self._shared_worker.call(self._take_lease_renewer)
                 if renewer is not None:
@@ -673,7 +684,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             if not self.consumer:
                 await self.initialize()
 
-            self.consume_task = asyncio.create_task(self.__consume_loop())
+            self.consume_task = spawn_detached(self.__consume_loop())
             self.logger.info(
                 f"Started Kafka consumer task with "
                 f"parsing_ceiling={concurrency.parse_ceiling(self)}, "
@@ -1692,7 +1703,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         # In the background: reading and dispatching carry on while the
         # broker answers, and the results are buffered on a later pass.
         self._fetch_back_plan = plan
-        self._fetch_back_task = asyncio.create_task(
+        self._fetch_back_task = spawn_detached(
             asyncio.wait_for(
                 self.__offset_fetcher().fetch(wanted),
                 timeout=_FETCH_BACK_TIMEOUT_SECONDS,
@@ -2054,7 +2065,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     self.logger.debug(
                         f"Parsed message {message_id}: type={type(parsed)}"
                     )
-                    return StreamMessage(**parsed)
+                    return await open_stream_message(message.topic, parsed, StreamMessage)
+                except EnvelopeRejected as e:
+                    self.logger.error(f"Envelope rejected for {message_id}: {e.reason}")
+                    return None
                 except json.JSONDecodeError as e:
                     self.logger.error(
                         f"JSON parsing failed for message {message_id}: {str(e)}\n"
@@ -2268,6 +2282,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
         return f"{message.topic}-{message.partition}-{message.offset}"
 
+    async def _send_in_org(self, message: StreamMessage, topic: str, event_type: str, payload: dict) -> None:
+        """Re-publish under the message's own org so a retry is signed like the original (the handler's bind is gone by now)."""
+        with bind_optional(ctx_of(message)):
+            await self.producer.send_event(topic=topic, event_type=event_type, payload=payload)
+
     async def _requeue_message(
         self,
         topic: str,
@@ -2306,11 +2325,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             payload["_retry_not_before"] = time.time() + backoff_seconds
 
             await self._run_on_main_loop(
-                self.producer.send_event(
-                    topic=topic,
-                    event_type=message.eventType,
-                    payload=payload,
-                )
+                self._send_in_org(message, topic, message.eventType, payload)
             )
             self.logger.debug(
                 f"Re-queued {stable_message_id} with {backoff_seconds:.0f}s backoff (attempt {retry_count})"
@@ -2690,12 +2705,13 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     parsed_message.payload.get("extension"),
                     parsed_message.payload.get("mimeType"),
                 )
+                org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
                     nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
-                    async with asyncio.timeout(processing_timeout) as budget:
-                        event_gen = self.message_handler(parsed_message)
-                        try:
+                    event_gen = self.message_handler(parsed_message)
+                    try:
+                        async with asyncio.timeout(processing_timeout) as budget:
                             async for event in event_gen:
                                 if (
                                     event.event == IndexingEvent.START_PARSING
@@ -2780,15 +2796,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         f"Released indexing gate for {message_id}"
                                     )
                                     success = True
-                        finally:
-                            # If this coroutine is cancelled (timeout, or the
-                            # renewal-loss path cancelling handler_task below)
-                            # while suspended on the semaphore acquire, the
-                            # CancelledError lands here — not inside the
-                            # handler generator. Explicitly closing it
-                            # delivers GeneratorExit so the handler's own
-                            # cleanup (reverting IN_PROGRESS) still runs.
-                            await event_gen.aclose()
+                                    break
+                        # The record is done once INDEXING_COMPLETE is out; the
+                        # handler's bookkeeping after it (releasing queued copies)
+                        # must not fail a finished record on the processing deadline.
+                        await concurrency.finish_after_indexing_complete(event_gen)
+                    finally:
+                        # Closing delivers GeneratorExit so the handler's own
+                        # cleanup (reverting IN_PROGRESS) runs on every exit,
+                        # including cancellation while parked on a slot. It sits
+                        # outside the timeout so a deadline passing mid-cleanup
+                        # cannot cut that cleanup short, orphan inner generators
+                        # (their GC finalizer then runs in another Context and
+                        # ContextVar.reset fails), or turn the real error into a
+                        # TimeoutError.
+                        await event_gen.aclose()
 
                 handler_task: asyncio.Task[None] | None = None
                 try:
@@ -2824,6 +2846,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         renewal_task.cancel()
                         await asyncio.gather(renewal_task, return_exceptions=True)
                         renewal_task = None
+                    pop_org(org_token)
                     reset_context(token)
             else:
                 self.logger.error(f"No message handler available for {message_id}")

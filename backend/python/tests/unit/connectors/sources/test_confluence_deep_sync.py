@@ -202,7 +202,7 @@ class TestSyncUsers:
         connector.data_entities_processor.on_new_app_users.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_paginates_until_less_than_batch(self):
+    async def test_paginates_until_an_empty_page(self) -> None:
         connector = _make_connector()
 
         call_count = 0
@@ -214,9 +214,12 @@ class TestSyncUsers:
                 return _resp(200, {
                     "results": [{"user": {"accountId": f"u{i}"}, "email": f"u{i}@x.com"} for i in range(100)],
                 })
-            return _resp(200, {
-                "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
-            })
+            if call_count == 2:
+                # A short page is not the end: Cloud can return one before it.
+                return _resp(200, {
+                    "results": [{"user": {"accountId": "u100"}, "email": "u100@x.com"}],
+                })
+            return _resp(200, {"results": []})
 
         ds = MagicMock()
         ds.search_users = AsyncMock(side_effect=mock_search)
@@ -226,7 +229,7 @@ class TestSyncUsers:
         ))
 
         await connector._sync_users()
-        assert call_count == 2
+        assert call_count == 3
 
     @pytest.mark.asyncio
     async def test_skips_users_without_email(self):

@@ -1,5 +1,5 @@
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -130,6 +130,52 @@ def extract_tiny_ref(target: str) -> str | None:
 def build_tiny_web_ref_url(ref: str) -> str:
     """Wrap a refN token into its LLM-facing tiny URL form (https://refN.xyz)."""
     return f"https://{ref}.xyz"
+
+
+# A citation ref as a tool writes it for the model: the tiny web URL (with or
+# without its scheme), or a bare ``refN`` that is not part of a word, a path, an
+# assignment or a longer id. Only a whole token matches: nothing host- or
+# path-like may follow (``https://ref1.xyz.evil``, ``…/path``, ``ref1.xyz``), or
+# the rewrite would splice a URL into the middle of something else; nor may a
+# tiny URL sit inside a longer one (``…?next=https://ref1.xyz``). Sentence
+# punctuation may follow. A ref running into "…" was cut by a preview cap
+# ("ref12" kept as "ref1"), so it is matched as `cut` and never taken for the
+# ref it now reads as.
+_REQUEST_REF_RE = re.compile(
+    r'(?:(?<![\w/.=?&%#:+-])https?://|(?<![\w/.=-]))(?P<web>ref\d+)'
+    r'(?:\.xyz(?:/(?![\w-]))?(?![\w/-]|\.[\w-])|(?P<webcut>(?:\.x?y?)?…))'
+    r'|(?<![\w/.=-])(?P<bare>ref\d+)(?:(?P<cut>…)|(?![\w/-]|\.[\w-]))'
+)
+
+# What a ref becomes when no mapping says what it stood for. Neither a ref nor
+# a URL, so the model cannot cite it and nothing resolves it.
+EARLIER_TURN_REF = "earlier-turn source"
+
+
+def rewrite_request_refs(text: str, ref_to_url: Mapping[str, str] | None) -> tuple[str, int, int]:
+    """Make `text` safe to keep beyond the request whose refs it carries.
+
+    ``refN`` ids are numbered per request, so a ref that outlives its request
+    (a saved tool-result preview, a durable artifact) would resolve to whatever
+    a later request numbers the same. Each ref `ref_to_url` knows becomes its
+    URL, which is valid in any request; any other becomes ``EARLIER_TURN_REF``.
+    Returns the text and the counts of refs expanded and made uncitable.
+    """
+    expanded = unresolved = 0
+
+    def _replace(m: re.Match[str]) -> str:
+        nonlocal expanded, unresolved
+        if m.group("webcut") or m.group("cut"):
+            unresolved += 1
+            return f"{EARLIER_TURN_REF}…"
+        url = (ref_to_url or {}).get(m.group("web") or m.group("bare"))
+        if url:
+            expanded += 1
+            return url
+        unresolved += 1
+        return EARLIER_TURN_REF
+
+    return _REQUEST_REF_RE.sub(_replace, text), expanded, unresolved
 
 
 def _expand_multi_ref_links(text: str) -> str:
@@ -516,6 +562,12 @@ def sub_in_order(pattern: re.Pattern[str], text: str, replace: Callable[[re.Matc
     return out + text[pos:]
 
 
+def _badge_url(url: str) -> str:
+    """``url`` with ``(`` and ``)`` percent-encoded, so ``[N](url)`` cannot end early in a
+    reader that stops a link at the first ``)``. Browsers treat both forms as the same address."""
+    return url.replace("(", "%28").replace(")", "%29")
+
+
 def _renumber_citation_links(
     text: str,
     md_matches: list,
@@ -536,6 +588,8 @@ def _renumber_citation_links(
         raw_target = match.group(2).strip()
         full_url = _resolve_ref(raw_target, ref_to_url)
         new_num = url_to_citation_num.get(full_url)
+        # Looked up raw above; written into the badge with parentheses encoded.
+        full_url = _badge_url(full_url)
         out += text[pos:match.start()]
         if new_num is None:
             out += match.group(0)

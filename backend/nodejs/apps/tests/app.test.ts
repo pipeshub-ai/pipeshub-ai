@@ -42,7 +42,6 @@ import * as healthRoutes from '../src/modules/tokens_manager/routes/health.route
 import * as userRoutes from '../src/modules/user_management/routes/users.routes';
 import * as userGroupRoutes from '../src/modules/user_management/routes/userGroups.routes';
 import * as orgRoutes from '../src/modules/user_management/routes/org.routes';
-import * as samlRoutes from '../src/modules/auth/routes/saml.routes';
 import * as userAccountRoutes from '../src/modules/auth/routes/userAccount.routes';
 import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.routes';
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
@@ -170,12 +169,12 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(userRoutes, 'createUserRouter').returns(dummyRouter);
   sandbox.stub(userGroupRoutes, 'createUserGroupRouter').returns(dummyRouter);
   sandbox.stub(orgRoutes, 'createOrgRouter').returns(dummyRouter);
-  sandbox.stub(samlRoutes, 'createSamlRouter').returns(dummyRouter);
   sandbox.stub(userAccountRoutes, 'createUserAccountRouter').returns(dummyRouter);
   sandbox.stub(orgAuthConfigRoutes, 'createOrgAuthConfigRouter').returns(dummyRouter);
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
+  sandbox.stub(esRoutes, 'createRetrieveRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
   sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
@@ -293,15 +292,7 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     .bind<any>(CrawlingSchedulerService)
     .toConstantValue(mockCrawlingScheduler);
 
-  // SamlController mock — needed for updateSamlStrategies
-  const mockSamlController = {
-    updateSamlStrategiesWithCallback: sandbox.stub(),
-  };
-  containers['auth']
-    .bind<any>('SamlController')
-    .toConstantValue(mockSamlController);
-
-  return { containers, mockNotificationService, mockOAuthTokenService, mockSamlController };
+  return { containers, mockNotificationService, mockOAuthTokenService };
 }
 
 // ---------------------------------------------------------------------------
@@ -504,26 +495,6 @@ describe('Application', () => {
       expect(registerStub.firstCall.args[0]).to.equal(mockOAuthTokenService);
     });
 
-    it('should update SAML strategies after server starts listening', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      await app.start();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
     it('should start telemetry and the org metrics refresh loop', async () => {
       const app = new Application();
       stubAllContainers(sandbox);
@@ -615,29 +586,6 @@ describe('Application', () => {
       // so it should NOT throw
       await app.initialize();
     });
-
-    it('should handle SAML strategy update failure gracefully', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      mockSamlController.updateSamlStrategiesWithCallback.throws(
-        new Error('SAML config unavailable'),
-      );
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      // Should NOT throw — updateSamlStrategies has a try/catch
-      await app.start();
-    });
   });
 
   // =========================================================================
@@ -721,6 +669,45 @@ describe('Application', () => {
       }
     });
 
+    // Forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        interface MiddlewareLayer {
+          name: string;
+          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+        }
+        interface HeaderSink {
+          setHeader: (name: string, value: string) => void;
+          removeHeader: (name: string) => void;
+          getHeader: (name: string) => string | undefined;
+        }
+        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res: HeaderSink = {
+          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
+
     it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
       const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
       sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
@@ -763,6 +750,42 @@ describe('Application', () => {
       expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
       expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
       expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+    });
+
+    it('writes an access-log line for an API request a mounted router answers', async () => {
+      // A mounted router sees req.path relative to its mount point ("/"), and the
+      // log line is written after it answers: the API check must use the full URL.
+      const healthRouter = express.Router();
+      healthRouter.get('/', (_req, res) => {
+        res.json({ status: 'healthy' });
+      });
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+      const mountedApp = new Application();
+      await mountedApp.initialize();
+      const server = http.createServer((mountedApp as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      let status = 0;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path: '/api/v1/health?probe=mounted-router' }, (res) => {
+              status = res.statusCode ?? 0;
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      expect(status).to.equal(200);
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('probe=mounted-router'));
+      expect(accessLines).to.have.length(1);
+      expect(accessLines[0]).to.include('"GET /api/v1/health?probe=mounted-router HTTP/1.1" 200');
     });
   });
 
@@ -899,7 +922,6 @@ describe('Application', () => {
       '/api/v1/teams',
       '/api/v1/userGroups',
       '/api/v1/org',
-      '/api/v1/saml',
       '/api/v1/userAccount',
       '/api/v1/orgAuthConfig',
       '/api/v1/document',
@@ -955,6 +977,44 @@ describe('Application', () => {
         (l: any) => l.route && l.route.path === '*',
       );
       expect(lastRouteLayers.length).to.be.greaterThan(0);
+    });
+
+    describe('SPA fallback for unknown URLs', () => {
+      const callFallback = (reqPath: string) => {
+        const stack = (expressApp as any)._router?.stack || [];
+        const layer = stack.filter((l: any) => l.route && l.route.path === '*').pop();
+        const res: any = {
+          statusCode: 200,
+          status: sinon.stub().callsFake((code: number) => {
+            res.statusCode = code;
+            return res;
+          }),
+          sendFile: sinon.stub(),
+          setHeader: sinon.stub(),
+          type: sinon.stub().returnsThis(),
+          send: sinon.stub(),
+        };
+        layer.route.stack[0].handle({ path: reqPath }, res, () => {});
+        return res;
+      };
+
+      for (const reqPath of [
+        '/workspace/does-not-exist',
+        '/workspace/does-not-exist/',
+        '/workspace/developer-settings/does-not-exist',
+      ]) {
+        it(`serves the not-found page with 404 for ${reqPath}`, () => {
+          const res = callFallback(reqPath);
+          expect(res.statusCode).to.equal(404);
+          expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]404\.html$/);
+        });
+      }
+
+      it('still serves the root shell for other unknown URLs', () => {
+        const res = callFallback('/sign-in');
+        expect(res.statusCode).to.equal(200);
+        expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]index\.html$/);
+      });
     });
   });
 
@@ -1474,56 +1534,6 @@ describe('Application', () => {
     });
   });
 
-  // =========================================================================
-  // updateSamlStrategies()
-  // =========================================================================
-  describe('updateSamlStrategies()', () => {
-    it('should call SamlController.updateSamlStrategiesWithCallback', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub(),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      await app.updateSamlStrategies();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
-    it('should warn but not throw if SamlController is not available', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const emptyContainer = new Container();
-      (app as any).authServiceContainer = emptyContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-
-    it('should warn but not throw if updateSamlStrategiesWithCallback throws', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub().throws(new Error('SAML error')),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-  });
 
   // =========================================================================
   // setupApiDocs()

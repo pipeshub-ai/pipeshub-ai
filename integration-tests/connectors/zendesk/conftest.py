@@ -80,6 +80,114 @@ async def _get(client: httpx.AsyncClient, path: str, key: str) -> dict[str, Any]
     return result
 
 
+SEED_TAG = "pipeshub-seed"
+MAX_FALLBACK_CANDIDATES = 25
+
+
+def _ticket_problem(ticket: dict[str, Any]) -> str | None:
+    if not ticket.get("group_id"):
+        return "it has no group"
+    if not (ticket.get("requester_id") and ticket.get("assignee_id")):
+        return "it has no requester or no assignee"
+    if not (ticket.get("subject") and ticket.get("status")):
+        return "it has no subject or status"
+    if ticket["status"] == "deleted":
+        return "it is deleted"
+    return None
+
+
+async def _ticket_snapshot(
+    client: httpx.AsyncClient, ticket: dict[str, Any]
+) -> dict[str, Any] | str:
+    """Everything the suite asserts about one ticket, or why it cannot be used."""
+    problem = _ticket_problem(ticket)
+    if problem:
+        return problem
+    requester = await _get(
+        client, f"/api/v2/users/{ticket['requester_id']}.json", "user"
+    )
+    assignee = await _get(client, f"/api/v2/users/{ticket['assignee_id']}.json", "user")
+    if not (requester.get("email") and assignee.get("email")):
+        return "its requester or assignee has no email address"
+    response = await client.get(f"/api/v2/tickets/{ticket['id']}/comments.json")
+    response.raise_for_status()
+    comments = response.json().get("comments") or []
+    if not any(comment.get("public") for comment in comments):
+        return "it has no public comment"
+    group = await _get(client, f"/api/v2/groups/{ticket['group_id']}.json", "group")
+    return {
+        "ticket": ticket,
+        "group": group,
+        "requester": requester,
+        "assignee": assignee,
+        "comments": comments,
+    }
+
+
+async def _load_ticket(
+    client: httpx.AsyncClient, ticket_id: int
+) -> dict[str, Any] | str:
+    """Fetch a ticket fresh and snapshot it, or say why it cannot be used.
+
+    A 404 on the ticket or a related record (a hard-deleted ticket still in the
+    search index, a deleted user) rejects only that ticket. Other errors, such as
+    auth or rate limits, still raise.
+    """
+    try:
+        ticket = await _get(client, f"/api/v2/tickets/{ticket_id}.json", "ticket")
+        return await _ticket_snapshot(client, ticket)
+    except httpx.HTTPStatusError as exc:
+        if exc.response.status_code != 404:
+            raise
+        return f"it or a related record was not found ({exc.request.url.path})"
+
+
+async def _seeded_ticket(client: httpx.AsyncClient, ticket_id: int) -> dict[str, Any]:
+    """Prefer the configured ticket, then any other seed-tagged ticket that qualifies.
+
+    The tenant is shared with Zendesk automations: the AI agent escalated the
+    configured ticket and cleared its assignee (tag ``escalated_by_ultimate``),
+    and the suite's token is read-only so it cannot put the assignee back.
+    """
+    snapshot = await _load_ticket(client, ticket_id)
+    if isinstance(snapshot, dict):
+        return snapshot
+    rejected = [f"ticket {ticket_id}: {snapshot}"]
+
+    response = await client.get(
+        "/api/v2/search.json",
+        params={
+            "query": f"type:ticket tags:{SEED_TAG} -assignee:none",
+            "sort_by": "created_at",
+            "sort_order": "asc",
+            "per_page": MAX_FALLBACK_CANDIDATES,
+        },
+    )
+    response.raise_for_status()
+    for candidate in response.json().get("results") or []:
+        if candidate.get("id") == ticket_id or candidate.get("result_type") != "ticket":
+            continue
+        # Search results come from an index that can lag the ticket itself.
+        snapshot = await _load_ticket(client, candidate["id"])
+        if isinstance(snapshot, dict):
+            logger.warning(
+                "Zendesk ticket %s no longer qualifies (%s); using seeded ticket %s",
+                ticket_id,
+                rejected[0],
+                candidate["id"],
+            )
+            return snapshot
+        rejected.append(f"ticket {candidate['id']}: {snapshot}")
+
+    pytest.fail(
+        "No Zendesk ticket tagged "
+        f"{SEED_TAG!r} has a group, requester and assignee with emails, a subject, "
+        "a status and a public comment. Repair the seed ticket in the tenant "
+        "(and stop automations such as the AI agent from reassigning it). "
+        "Rejected: " + "; ".join(rejected)
+    )
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def zendesk_source() -> dict[str, Any]:
     missing = [name for name in REQUIRED_ENV if not os.getenv(name)]
@@ -111,18 +219,10 @@ async def zendesk_source() -> dict[str, Any]:
         timeout=30,
     ) as client:
         current_user = await _get(client, "/api/v2/users/me.json", "user")
-        ticket = await _get(client, f"/api/v2/tickets/{ticket_id}.json", "ticket")
+        seeded = await _seeded_ticket(client, ticket_id)
         article = await _get(
             client, f"/api/v2/help_center/articles/{article_id}.json", "article"
         )
-        assert ticket.get("group_id"), "Seeded ticket must belong to a Zendesk group"
-        assert ticket.get("requester_id") and ticket.get("assignee_id"), (
-            "Seeded ticket must have a requester and assignee"
-        )
-        assert ticket.get("subject") and ticket.get("status"), (
-            "Seeded ticket must have a stable subject and status"
-        )
-        assert ticket["status"] != "deleted", "Seeded ticket must not be deleted"
         assert article.get("section_id") and not article.get("draft"), (
             "Seeded article must be published in a section"
         )
@@ -132,40 +232,18 @@ async def zendesk_source() -> dict[str, Any]:
         assert article.get("user_segment_id") is None and not article.get(
             "user_segment_ids"
         ), "Seeded article must be public so the connector can sync it"
-        group = await _get(client, f"/api/v2/groups/{ticket['group_id']}.json", "group")
-        requester = await _get(
-            client, f"/api/v2/users/{ticket['requester_id']}.json", "user"
-        )
-        assignee = await _get(
-            client, f"/api/v2/users/{ticket['assignee_id']}.json", "user"
-        )
-        assert requester.get("email") and assignee.get("email"), (
-            "Seeded requester and assignee must have email addresses"
-        )
         section = await _get(
             client,
             f"/api/v2/help_center/sections/{article['section_id']}.json",
             "section",
         )
-        comments_response = await client.get(
-            f"/api/v2/tickets/{ticket_id}/comments.json"
-        )
-        comments_response.raise_for_status()
-        comments = comments_response.json().get("comments") or []
-        assert any(comment.get("public") for comment in comments), (
-            "Seeded ticket must have at least one public comment"
-        )
 
     return {
         "subdomain": subdomain,
         "current_user": current_user,
-        "ticket": ticket,
+        **seeded,
         "article": article,
-        "group": group,
-        "requester": requester,
-        "assignee": assignee,
         "section": section,
-        "comments": comments,
     }
 
 

@@ -19,6 +19,8 @@ from app.edition_config import (
     oauth_apps_router,
     sharing_router,
 )
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached, for_org, system
 from app.api.middlewares.request_context import RequestContextMiddleware
 from app.modules.demo_data.router import demo_data_router
 from app.utils.logger import install_log_redaction
@@ -27,6 +29,7 @@ from app.utils.request_context import set_service_suffix
 set_service_suffix("-cs")
 from app.agents.mcp.registry import get_mcp_registry
 from app.agents.registry.toolset_registry import get_toolset_registry
+from app.api.routes.api_toolsets import router as api_toolsets_router  # noqa: E402 - after set_service_suffix, like its neighbours
 from app.api.routes.entity import router as entity_router
 from app.api.routes.mcp_servers import router as mcp_servers_router
 from app.api.routes.toolsets import router as toolsets_router
@@ -314,7 +317,8 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         graph_provider = data_store.graph_provider
 
         # Get all organizations
-        orgs = await graph_provider.get_all_orgs(active=True)
+        with system("resume_sync"):
+            orgs = await graph_provider.get_all_orgs(active=True)
         if not orgs:
             logger.info("No organizations found in the system")
             return True
@@ -324,108 +328,112 @@ async def resume_sync_services(app_container: ConnectorAppContainer, data_store:
         # Process each organization
         for org in orgs:
             org_id = org.get("_key") or org.get("id")
-            accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
-            enabled_apps = await graph_provider.get_org_apps(org_id)
-            app_names = [app["type"].replace(" ", "").lower() for app in enabled_apps]
-            logger.info(f"App names: {app_names}")
-
-            logger.info(
-                "Processing organization %s with account type %s", org_id, accountType
-            )
-
-            # Get users for this organization
-            users = await graph_provider.get_users(org_id, active=True)
-            logger.info(f"User: {users}")
-            if not users:
-                logger.info("No users found for organization %s", org_id)
+            if not org_id:
+                logger.warning("Skipping an organization with no id")
                 continue
+            with for_org(str(org_id), job="resume_sync"):
+                accountType = org.get("accountType", AccountType.INDIVIDUAL.value)
+                enabled_apps = await graph_provider.get_org_apps(org_id)
+                app_names = [app["type"].replace(" ", "").lower() for app in enabled_apps]
+                logger.info(f"App names: {app_names}")
 
-            logger.info("Found %d users for organization %s", len(users), org_id)
+                logger.info(
+                    "Processing organization %s with account type %s", org_id, accountType
+                )
 
-            config_service, org_data_store = await scope_org_resources(
-                app_container, data_store, org_id
-            )
-            # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
-            # data_store_provider = data_store if data_store else await app_container.data_store()
+                # Get users for this organization
+                users = await graph_provider.get_users(org_id, active=True)
+                logger.info(f"User: {users}")
+                if not users:
+                    logger.info("No users found for organization %s", org_id)
+                    continue
 
-            # Initialize connectors_map if not already initialized
-            if not hasattr(app_container, 'connectors_map'):
-                app_container.connectors_map = {}
+                logger.info("Found %d users for organization %s", len(users), org_id)
 
-            # Initialize all enabled connectors in parallel so one slow
-            # connector (e.g. a provider whose OAuth endpoint is slow) does
-            # not gate the others on startup.
-            # When this process is not the one that runs syncs, it still
-            # builds the connector (routes need a warm one -- see
-            # _ensure_connector_initialized, which otherwise pays a full init
-            # plus a live connection test on the first record stream after every
-            # restart) and publishes a resync instead of starting one.
-            external = sync_executor_enabled()
+                config_service, org_data_store = await scope_org_resources(
+                    app_container, data_store, org_id
+                )
+                # Use pre-resolved data_store passed from lifespan to avoid coroutine reuse
+                # data_store_provider = data_store if data_store else await app_container.data_store()
 
-            async def _init_app(app: dict) -> tuple[str, str, object | None]:
-                connector_id = app.get("_key")
-                scope = app.get("scope", "personal")
-                created_by = app.get("createdBy", "")
-                connector_name = app["type"].lower().replace(" ", "")
-                # Only the event path runs a full sync and clears the flag; started
-                # here, a connector owed one (queued at capacity before a restart)
-                # would sync incrementally and stay flagged.
-                publish = external or bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
-                # Same lock the lazy-init paths use, and publish as soon as the
-                # instance exists rather than after the whole gather: startup can
-                # take seconds, and a request arriving in that window used to build
-                # a second instance with its own HTTP client and rate limiter.
-                async with connector_init_lock(connector_id):
-                    if app_container.connectors_map.get(connector_id) is not None:
-                        return connector_name, connector_id, None
-                    try:
-                        connector = await ConnectorFactory.create_and_start_sync(
-                            name=connector_name,
-                            logger=logger,
-                            data_store_provider=org_data_store,
-                            config_service=config_service,
+                # Initialize connectors_map if not already initialized
+                if not hasattr(app_container, 'connectors_map'):
+                    app_container.connectors_map = {}
+
+                # Initialize all enabled connectors in parallel so one slow
+                # connector (e.g. a provider whose OAuth endpoint is slow) does
+                # not gate the others on startup.
+                # When this process is not the one that runs syncs, it still
+                # builds the connector (routes need a warm one -- see
+                # _ensure_connector_initialized, which otherwise pays a full init
+                # plus a live connection test on the first record stream after every
+                # restart) and publishes a resync instead of starting one.
+                external = sync_executor_enabled()
+
+                async def _init_app(app: dict) -> tuple[str, str, object | None]:
+                    connector_id = app.get("_key")
+                    scope = app.get("scope", "personal")
+                    created_by = app.get("createdBy", "")
+                    connector_name = app["type"].lower().replace(" ", "")
+                    # Only the event path runs a full sync and clears the flag; started
+                    # here, a connector owed one (queued at capacity before a restart)
+                    # would sync incrementally and stay flagged.
+                    publish = external or bool(app.get(ConnectorStateKeys.PENDING_FULL_SYNC))
+                    # Same lock the lazy-init paths use, and publish as soon as the
+                    # instance exists rather than after the whole gather: startup can
+                    # take seconds, and a request arriving in that window used to build
+                    # a second instance with its own HTTP client and rate limiter.
+                    async with connector_init_lock(connector_id):
+                        if app_container.connectors_map.get(connector_id) is not None:
+                            return connector_name, connector_id, None
+                        try:
+                            connector = await ConnectorFactory.create_and_start_sync(
+                                name=connector_name,
+                                logger=logger,
+                                data_store_provider=org_data_store,
+                                config_service=config_service,
+                                connector_id=connector_id,
+                                scope=scope,
+                                created_by=created_by,
+                                org_id=org_id,
+                                data_entities_processor_cls=get_data_entities_processor_cls(),
+                                notification_service=app_container.connector_notification_service(),
+                                start_sync=not publish,
+                            )
+                        except Exception as e:
+                            logger.error(
+                                f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
+                                exc_info=True,
+                            )
+                            return connector_name, connector_id, None
+                        if connector:
+                            app_container.connectors_map[connector_id] = connector
+
+                    # Outside the init lock: publishing goes to the broker, and the
+                    # lock only needs to cover instance construction.
+                    if publish and connector:
+                        await _publish_startup_resync(
+                            app_container,
+                            config_service,
+                            logger,
+                            connector_name=connector_name,
                             connector_id=connector_id,
-                            scope=scope,
-                            created_by=created_by,
                             org_id=org_id,
-                            data_entities_processor_cls=get_data_entities_processor_cls(),
-                            notification_service=app_container.connector_notification_service(),
-                            start_sync=not publish,
+                            app=app,
+                            graph_provider=graph_provider,
                         )
-                    except Exception as e:
-                        logger.error(
-                            f"❌ Failed to initialize {connector_name} ({connector_id}) for org {org_id}: {e}",
-                            exc_info=True,
-                        )
-                        return connector_name, connector_id, None
+                    return connector_name, connector_id, connector
+
+                results = await asyncio.gather(
+                    *[_init_app(app) for app in enabled_apps],
+                    return_exceptions=False,
+                )
+                for connector_name, connector_id, connector in results:
                     if connector:
-                        app_container.connectors_map[connector_id] = connector
+                        # _init_app already published it under the lock; this loop only reports.
+                        logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
 
-                # Outside the init lock: publishing goes to the broker, and the
-                # lock only needs to cover instance construction.
-                if publish and connector:
-                    await _publish_startup_resync(
-                        app_container,
-                        config_service,
-                        logger,
-                        connector_name=connector_name,
-                        connector_id=connector_id,
-                        org_id=org_id,
-                        app=app,
-                        graph_provider=graph_provider,
-                    )
-                return connector_name, connector_id, connector
-
-            results = await asyncio.gather(
-                *[_init_app(app) for app in enabled_apps],
-                return_exceptions=False,
-            )
-            for connector_name, connector_id, connector in results:
-                if connector:
-                    # _init_app already published it under the lock; this loop only reports.
-                    logger.info(f"{connector_name} connector (id: {connector_id}) initialized for org %s", org_id)
-
-            logger.info("✅ Sync services resumed for org %s", org_id)
+                logger.info("✅ Sync services resumed for org %s", org_id)
         logger.info("✅ Sync services resumed for all orgs")
         return True
     except Exception as e:
@@ -622,7 +630,7 @@ async def _keep_trying(name: str, attempt, logger: logging.Logger, first_error: 
 def _start_retrying(name: str, attempt, logger: logging.Logger, error: Exception) -> None:  # noqa: ANN001
     # Set before the task first runs, so health never misses the failure.
     _component_status[name] = {"state": "retrying", "attempts": 1, "error": str(error)}
-    task = asyncio.create_task(_keep_trying(name, attempt, logger, error), name=f"retry_{name}")
+    task = spawn_detached(_keep_trying(name, attempt, logger, error), name=f"retry_{name}")
     _retry_tasks.append(task)
 
 
@@ -897,6 +905,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     app.container = app_container  # type: ignore
 
     app.state.config_service = app_container.config_service()
+    await configure_envelope(app.state.config_service)
 
     # Resolve data_store first - this internally resolves graph_provider
     data_store = await app_container.data_store()
@@ -928,7 +937,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         logger.warning(f"❌ Failed to start telemetry pusher: {e}")
 
     if telemetry_enabled():
-        app.state.connector_metrics_task = asyncio.create_task(
+        app.state.connector_metrics_task = spawn_detached(
             refresh_connector_metrics(graph_provider, logger, interval_s=60*5), name="connector_metrics_refresh"
         )
 
@@ -940,6 +949,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "✅ Shared connector thread pool ready (max_workers=%d)",
         app_container.connector_thread_pool.max_workers,
     )
+
+    # Before the refresh services: their first scan starts in the background right away, and a
+    # personal action's OAuth endpoints come only from this registry.
+    logger.info("🔄 Initializing in-memory toolset registry...")
+    toolset_registry = get_toolset_registry()
+    toolset_registry.auto_discover_toolsets()
+    app.state.toolset_registry = toolset_registry
+    logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
     # Start token refresh service at app startup (database-agnostic)
     try:
@@ -956,13 +973,6 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     registry = await initialize_connector_registry(app_container)
     app.state.connector_registry = registry
     logger.info("✅ Connector registry initialized and synchronized with database")
-
-    # Initialize toolset registry (in-memory, fast tool lookup)
-    logger.info("🔄 Initializing in-memory toolset registry...")
-    toolset_registry = get_toolset_registry()
-    toolset_registry.auto_discover_toolsets()
-    app.state.toolset_registry = toolset_registry
-    logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
     # Initialize MCP server catalog registry (in-memory, mirrors the toolset registry)
     logger.info("🔄 Initializing in-memory MCP server registry...")
@@ -1006,6 +1016,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         )
     except Exception as e:
         logger.error(f"❌ S3 created date filter migration failed: {e}", exc_info=True)
+
+    # Before syncs resume: earlier Nextcloud syncs linked whoever had the Nextcloud profile email to the app.
+    try:
+        from app.migrations.nextcloud_user_app_edges_migration import (
+            run_nextcloud_user_app_edges_migration,
+        )
+
+        await run_nextcloud_user_app_edges_migration(graph_provider, app_container.config_service(), logger)
+    except Exception as e:
+        logger.error(f"❌ Nextcloud user-app edges migration failed: {e}", exc_info=True)
 
     # Before any connector reads its settings, so none crawls with a value the form doesn't show.
     try:
@@ -1100,7 +1120,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             code_graph_event_service = await KafkaUtils.create_code_graph_event_service(
                 app_container, graph_provider
             )
-            app.state.code_edge_build_reconcile_task = asyncio.create_task(
+            app.state.code_edge_build_reconcile_task = spawn_detached(
                 reconcile_forever(graph_provider, code_graph_event_service, logger),
                 name="code_edge_build_reconcile",
             )
@@ -1135,12 +1155,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         except Exception as e:
             logger.error(f"❌ Code graph backfill failed: {e}", exc_info=True)
 
-    post_startup_task = asyncio.create_task(_post_startup(), name="connector_post_startup")
+    post_startup_task = spawn_detached(_post_startup(), name="connector_post_startup")
     app_container.post_startup_task = post_startup_task
 
     # Needs the producer started above; a Redis lease keeps it to one replica.
     from app.connectors.services.trash_purge import run_trash_purge_loop
-    app.state.trash_purge_task = asyncio.create_task(
+    app.state.trash_purge_task = spawn_detached(
         run_trash_purge_loop(app_container, graph_provider), name="trash_purge"
     )
     # Retries the storage release of connector/KB deletes that did not finish it.
@@ -1150,15 +1170,23 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         config_service, _ = await scope_org_resources(app_container, data_store, org_id)
         return config_service
 
-    app.state.storage_release_task = asyncio.create_task(
+    app.state.storage_release_task = spawn_detached(
         run_storage_release_loop(app_container, graph_provider, config_service_for=_org_config_service),
         name="storage_release",
     )
 
     # Here, not in indexing: it publishes re-index events on this service's producer.
     from app.connectors.services.stored_content_heal import run_stored_content_heal_loop
-    app.state.stored_content_heal_task = asyncio.create_task(
+    app.state.stored_content_heal_task = spawn_detached(
         run_stored_content_heal_loop(app_container, graph_provider), name="stored_content_heal"
+    )
+    # Moves pre-hierarchical records/<vrid> copies into the hierarchy; one replica leads.
+    from app.connectors.services.flat_storage_migration import (
+        run_flat_storage_migration,
+    )
+
+    app.state.flat_storage_migration_task = asyncio.create_task(
+        run_flat_storage_migration(app_container, graph_provider), name="flat_storage_migration",
     )
 
     # NOTE: ToolsetTokenRefreshService.start() already performs an initial refresh scan.
@@ -1179,6 +1207,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     for task_name in (
         "connector_metrics_task", "trash_purge_task", "storage_release_task",
         "stored_content_heal_task", "code_edge_build_reconcile_task",
+        "flat_storage_migration_task",
     ):
         task = getattr(app.state, task_name, None)
         if task is not None and not task.done():
@@ -1591,6 +1620,7 @@ async def vector_db_memory_check(request: Request) -> JSONResponse:
 app.include_router(entity_router)
 app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
+app.include_router(api_toolsets_router)
 app.include_router(kb_router)
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)

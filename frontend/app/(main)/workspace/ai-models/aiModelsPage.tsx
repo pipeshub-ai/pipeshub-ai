@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect } from 'react';
-import { Box, Button, Flex } from '@radix-ui/themes';
+import { Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useRouter } from 'next/navigation';
 import { ServiceGate } from '@/app/components/ui/service-gate';
@@ -28,36 +28,27 @@ export default function AIModelsPage() {
 
   if (!isProfileInitialized || isAdmin === false) return null;
 
-  const pagePaddingX = 'clamp(var(--space-4), 4vw, 100px)';
-  const pagePaddingY = 'clamp(var(--space-6), 3vw, 64px)';
-
   return (
     <ServiceGate services={['query']}>
-      {manager.capabilitySection === 'text_generation' && (
-        <Box
-          style={{
-            paddingTop: pagePaddingY,
-            paddingLeft: pagePaddingX,
-            paddingRight: pagePaddingX,
-            paddingBottom: 0,
-          }}
-        >
-          <ModelRolesSection
-            configuredModels={manager.configuredModels}
-            onRolesUpdated={() => {
-              void manager.loadProviders();
-              void manager.loadModels();
-            }}
-          />
-          <Flex justify="end" pt="3">
-            <Button type="button" variant="ghost" color="gray" onClick={manager.openIdentityPolicy}>
+      <ProviderGrid
+        headerActions={
+          manager.capabilitySection === 'text_generation' ? (
+            <Button type="button" variant="outline" color="gray" size="2" onClick={manager.openIdentityPolicy}>
               {t('workspace.aiModels.identityPolicy.open')}
             </Button>
-          </Flex>
-        </Box>
-      )}
-
-      <ProviderGrid
+          ) : null
+        }
+        belowHeader={
+          manager.capabilitySection === 'text_generation' ? (
+            <ModelRolesSection
+              configuredModels={manager.configuredModels}
+              onRolesUpdated={() => {
+                void manager.loadProviders();
+                void manager.loadModels();
+              }}
+            />
+          ) : null
+        }
         providers={manager.providers}
         configuredModels={manager.configuredModels}
         searchQuery={manager.searchQuery}

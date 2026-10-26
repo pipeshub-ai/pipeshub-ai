@@ -16,6 +16,9 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
+import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
+import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
@@ -43,13 +46,44 @@ export class MigrationService {
   async runMigration(deps: MigrationDependencies): Promise<void> {
     this.logger.info('Running migration...');
     // await this.aiModelsMigration();  NO LONGER NEEDED
+    // Before the two below, which wait on the connector service. This one has
+    // nothing to wait for — it reads Mongo and writes one key — and the
+    // connector service reads that key during its own startup, so staging
+    // after a wait that the connector service itself has to finish would
+    // always miss the boot that introduced it.
+    await this.serviceAccountKindBackfillMigration();
+    // Until it runs, a policy may still name a removed sign-in method.
+    await this.signInMethodsRemovalMigration();
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
     await this.chatSessionsMigration();
     await this.adminRoleMigration();
     await this.userGroupNameIndexMigration();
+    await this.delegationLogRetentionMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
+  }
+
+  async serviceAccountKindBackfillMigration(): Promise<void> {
+    try {
+      const result = await new ServiceAccountKindBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+        this.configManagerConfig.algorithm,
+        this.configManagerConfig.secretKey,
+      ).run();
+
+      if (result.skipped) return;
+
+      this.logger.info(
+        '✅ Service accounts staged for the connector service to mark in the graph',
+        result,
+      );
+    } catch (error) {
+      this.logger.error('Service-account kind backfill failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async adminRoleMigration(): Promise<void> {
@@ -75,9 +109,38 @@ export class MigrationService {
     }
   }
 
+  async signInMethodsRemovalMigration(): Promise<void> {
+    this.logger.info('Removing SAML and OAuth from sign-in policies');
+    try {
+      const result = await new SignInMethodsRemovalMigration(
+        this.logger,
+        this.keyValueStoreService,
+      ).run();
+
+      if (result.errored > 0) {
+        this.logger.warn(
+          '⚠️  Sign-in methods removal finished with errors — will retry on next boot',
+          result,
+        );
+      } else {
+        this.logger.info('✅ Sign-in methods removed', result);
+      }
+    } catch (error) {
+      this.logger.error('Sign-in methods removal failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
   async userGroupNameIndexMigration(): Promise<void> {
     // run() logs its own outcome and never throws.
     await new UserGroupNameIndexMigration(this.logger).run();
+  }
+
+  async delegationLogRetentionMigration(): Promise<void> {
+    // Changing the retention constant does not move an index that already
+    // exists; this does. run() logs its own outcome and never throws.
+    await new DelegationLogRetentionMigration(this.logger).run();
   }
 
   async chatKbFiltersMigration(): Promise<void> {

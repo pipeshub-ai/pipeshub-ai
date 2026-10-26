@@ -1,13 +1,14 @@
 import { z } from 'zod';
 import { extensionToMimeType } from '../../storage/mimetypes/mimetypes';
 import { FileRejectionReason } from '../../../libs/middlewares/file_processor/fp.constant';
+import { guidCheck, integerCheck } from '../../../libs/utils/zod-formats';
 
 const rejectedFileSchema = z.object({
   originalname: z.string(),
   filePath: z.string(),
   size: z.number(),
   mimetype: z.string(),
-  reason: z.nativeEnum(FileRejectionReason),
+  reason: z.enum(FileRejectionReason),
   error: z.string(),
 });
 
@@ -80,7 +81,7 @@ export const reindexRecordSchema = z.object({
   params: z.object({ recordId: z.string().min(1) }),
   body: z
     .object({
-      depth: z.number().int().min(-1).max(100).optional(),
+      depth: z.number().check(integerCheck()).min(-1).max(100).optional(),
       statusFilters: z.array(z.string()).optional(),
     })
     .optional(),
@@ -90,7 +91,7 @@ export const reindexRecordGroupSchema = z.object({
   params: z.object({ recordGroupId: z.string().min(1) }),
   body: z
     .object({
-      depth: z.number().int().min(-1).max(100).optional(),
+      depth: z.number().check(integerCheck()).min(-1).max(100).optional(),
       statusFilters: z.array(z.string()).optional(),
     })
     .optional(),
@@ -101,7 +102,7 @@ export const reindexRecordGroupSchema = z.object({
  * This is set by the file processor middleware after parsing files_metadata.
  */
 const fileBufferSchema = z.object({
-  buffer: z.any(),
+  buffer: z.any().optional(),
   mimetype: z.string().refine(
     (value) => Object.values(extensionToMimeType).includes(value),
     { message: 'Invalid MIME type' },
@@ -114,8 +115,8 @@ const fileBufferSchema = z.object({
 
 const uploadRecordsBodySchema = z.object({
   recordName: z.string().min(1).optional(),
-  recordType: z.string().min(1).default('FILE').optional(),
-  origin: z.string().min(1).default('UPLOAD').optional(),
+  recordType: z.string().min(1).optional(),
+  origin: z.string().min(1).optional(),
   isVersioned: z
     .union([
       z.boolean(),
@@ -166,7 +167,7 @@ const uploadRecordsBodySchema = z.object({
 export const uploadRecordsSchema = z.object({
   body: uploadRecordsBodySchema,
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
   }),
   query: z
     .object({
@@ -298,7 +299,7 @@ export const updateKBSchema = z.object({
     kbName: z.string().min(1).max(255).optional(),
   }),
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
   }),
 });
 
@@ -307,15 +308,38 @@ export const deleteKBSchema = z.object({
 });
 
 export const createFolderSchema = z.object({
-  body: z.object({
-    folderName: z.string().min(1).max(255),
-  }),
+  body: z
+    .object({
+      folderName: z.string().min(1).max(255),
+      folderId: z.unknown().optional(),
+      parentId: z.unknown().optional(),
+      parent_id: z.unknown().optional(),
+    })
+    .refine(
+      (data) =>
+        data.folderId === undefined &&
+        data.parentId === undefined &&
+        data.parent_id === undefined,
+      {
+        message: 'To create a subfolder, use the subfolder route.',
+      },
+    ),
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
+    folderId: z.string().check(guidCheck()).optional(),
   }),
-  query: z.object({
-    folderId: z.string().min(1).optional(),
-  }),
+  query: z
+    .object({
+      folderId: z.string().min(1).optional(),
+      parentId: z.unknown().optional(),
+      parent_id: z.unknown().optional(),
+    })
+    .refine(
+      (data) => data.parentId === undefined && data.parent_id === undefined,
+      {
+        message: 'To create a subfolder, use the subfolder route.',
+      },
+    ),
 });
 
 export const kbPermissionSchema = z.object({
@@ -339,7 +363,7 @@ export const kbPermissionSchema = z.object({
     path: ['role'],
   }),
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
   }),
 });
 
@@ -374,7 +398,7 @@ export const updatePermissionsSchema = z.object({
     path: ['teamIds'],
   }),
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
   }),
 });
 
@@ -384,7 +408,7 @@ export const deletePermissionsSchema = z.object({
     teamIds: z.array(z.string()).optional(),
   }),
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
   }),
 });
 
@@ -393,7 +417,7 @@ export const moveRecordSchema = z.object({
     newParentId: z.string().nullable(),
   }),
   params: z.object({
-    kbId: z.string().uuid(),
+    kbId: z.string().check(guidCheck()),
     recordId: z.string().min(1),
   }),
 });

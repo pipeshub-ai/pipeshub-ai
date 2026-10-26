@@ -388,6 +388,7 @@ class TestIsBase64ImageBranches:
             return real(data, *a, **k)
 
         monkeypatch.setattr(chat_helpers_module.base64, "b64decode", spy)
+        monkeypatch.setattr(chat_helpers_module, "_base64_image_verdicts", {})
         big = base64.b64encode(b"\x89PNG\r\n\x1a\n" + b"\x00" * 40_000).decode()
         assert is_base64_image(big) is True
         assert seen and max(seen) <= 272, f"decoded {max(seen)} chars, expected <= 272"

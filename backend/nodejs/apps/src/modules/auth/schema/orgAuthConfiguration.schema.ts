@@ -4,6 +4,7 @@ export interface IAuthMethod {
   type: 'samlSso' | 'otp' | 'password' | 'google' | 'microsoft' | 'azureAd' | 'oauth' | 'github';
 }
 
+/** Every method a saved policy may name; edition.ts says which ones this edition offers. */
 export enum AuthMethodType {
   SAML_SSO = 'samlSso',
   OTP = 'otp',
@@ -24,6 +25,8 @@ interface IOrgAuthConfig extends Document {
   orgId: Types.ObjectId;
   domain?: string;
   authSteps: IAuthStep[];
+  /** Methods the 1.0 upgrade took out of this policy (see removedSignInMethods.ts). */
+  removedSignInMethods?: string[];
   isDeleted?: boolean;
   createdAt?: Date;
   updatedAt?: Date;
@@ -71,6 +74,7 @@ const OrgAuthConfigSchema = new Schema<IOrgAuthConfig>(
         },
       ],
     },
+    removedSignInMethods: { type: [String], default: undefined },
     isDeleted: { type: Boolean, default: false },
   },
   { timestamps: true },

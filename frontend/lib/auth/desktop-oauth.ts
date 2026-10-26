@@ -38,9 +38,8 @@ export type DesktopOAuthProvider = 'google' | 'microsoft' | 'github' | 'saml' | 
  * Marks a `state` as belonging to a desktop flow, so the callback page knows
  * to hand the result to the app instead of posting it to an opener.
  *
- * A prefix rather than base64-encoded JSON, which `oauth-sign-in-button.tsx`
- * uses: `btoa` emits `+`, `/` and `=`, which survive the provider round trip
- * only while every hop re-encodes them. There is nothing structured to carry
+ * A prefix rather than base64-encoded JSON: `btoa` emits `+`, `/` and `=`,
+ * which survive the provider round trip only while every hop re-encodes them. There is nothing structured to carry
  * here anyway, since the provider is implied by which callback page is running.
  */
 const DESKTOP_STATE_PREFIX = 'phd.';

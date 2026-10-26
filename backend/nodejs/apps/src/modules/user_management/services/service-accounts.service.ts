@@ -210,6 +210,11 @@ export class ServiceAccountsService {
       fullName: serviceAccount.fullName,
       email: serviceAccount.email,
       syncAction: SyncAction.Immediate,
+      // Told to the graph rather than inferred there. A consumer that had to
+      // work this out from the address would be guessing at a rule this
+      // service owns.
+      kind: 'service',
+      isDisabled: false,
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -304,7 +309,7 @@ export class ServiceAccountsService {
           ...(input.description === undefined ? { description: '' } : {}),
         },
       },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     if (!restored) {
@@ -341,7 +346,7 @@ export class ServiceAccountsService {
     const finished = await Users.findOneAndUpdate(
       { _id: restored._id, restoreOpId, isDeleted: false },
       { $set: { isDisabled: false }, $unset: { restoreOpId: '' } },
-      { new: true },
+      { returnDocument: 'after' },
     ).exec();
 
     // Nothing matched, so something else has moved this account on while the
@@ -365,6 +370,11 @@ export class ServiceAccountsService {
       fullName: finished.fullName,
       email: finished.email,
       syncAction: SyncAction.Immediate,
+      kind: 'service',
+      // Mongo was switched back on a few lines above. Saying so explicitly is
+      // what stops a disable, delete and restore coming back enabled here and
+      // still switched off on the graph.
+      isDisabled: false,
     };
     await this.publish({
       eventType: EventType.NewUserEvent,
@@ -402,6 +412,10 @@ export class ServiceAccountsService {
     input: UpdateServiceAccountInput,
   ): Promise<ServiceAccountView> {
     const account = await this.findOrThrow(orgId, id);
+    // Read before anything below mutates it, so the graph is told only when
+    // the answer actually moved. Enabling and disabling are written on
+    // different paths, and neither alone says whether anything changed.
+    const wasDisabled = account.isDisabled === true;
 
     // Enabling is a conditional write, not an assignment to the document read
     // a moment ago. While a restore is in flight the account is deliberately
@@ -422,7 +436,7 @@ export class ServiceAccountsService {
           restoreOpId: { $exists: false },
         },
         { $set: { isDisabled: false } },
-        { new: true },
+        { returnDocument: 'after' },
       ).exec();
 
       if (!enabled) {
@@ -450,10 +464,20 @@ export class ServiceAccountsService {
     }
 
     if (Object.keys(changes).length > 0) {
-      await Users.updateOne(
+      const written = await Users.updateOne(
         { _id: account._id, orgId, kind: 'service', isDeleted: false },
         { $set: changes },
       ).exec();
+
+      // Nothing matched means the account stopped being one between the read
+      // at the top of this method and this write — deleted, in practice.
+      // Nothing was stored, so there is nothing to tell the graph, and saying
+      // it anyway would leave the graph holding a state no database agrees
+      // with. On a deleted account that state is what a bound agent is
+      // checked against, so it would put a removed identity back in use.
+      if (written.matchedCount === 0) {
+        throw new NotFoundError('Service account not found');
+      }
     }
 
     // Disabling has to reach the tokens this account obtained to act as other
@@ -471,14 +495,41 @@ export class ServiceAccountsService {
       );
     }
 
-    // The graph keeps its own copy of the display name, so a rename has to
-    // reach it too or search results will go on showing the old one.
-    if (input.fullName !== undefined) {
+    // Two reasons the graph has to hear about this.
+    //
+    // It keeps its own copy of the display name, so a rename has to reach it
+    // or search results will go on showing the old one.
+    //
+    // And it has no other way to learn that an account was switched off. The
+    // token paths all re-read this collection, but an agent bound to a service
+    // account searches as that identity on the graph alone — so without this
+    // it would go on reading with the reach of an account an administrator has
+    // just switched off. Published on enabling too: a flag written only on the
+    // way down would stay set after the account came back.
+    //
+    // Published whenever the request named `isDisabled`, not only when the
+    // stored value moved. If an earlier attempt wrote Mongo and then failed
+    // before publishing — token revocation throws, or the broker is down —
+    // the account is already disabled by the time the retry arrives, so
+    // nothing changed and a check on change alone would publish nothing. The
+    // graph would keep an account that is switched off in Mongo, and a bound
+    // agent would go on searching with it. The event carries the state rather
+    // than a transition, so publishing it twice says the same thing twice.
+    const isDisabledNow = account.isDisabled === true;
+    const disabledChanged = isDisabledNow !== wasDisabled;
+    if (
+      input.fullName !== undefined ||
+      input.isDisabled !== undefined ||
+      disabledChanged
+    ) {
       const updatedPayload: UserUpdatedEvent = {
         orgId,
         userId: idOf(account),
         fullName: account.fullName,
         email: account.email,
+        // Always sent on this event, so a rename cannot leave the graph
+        // holding a stale answer it was never told to update.
+        isDisabled: isDisabledNow,
       };
       await this.publish({
         eventType: EventType.UpdateUserEvent,

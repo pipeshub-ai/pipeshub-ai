@@ -244,6 +244,33 @@ export function getFullDocumentPath(
 }
 
 /**
+ * The folder holding a virtual record's content revisions.
+ * e.g. 'org1/PipesHub/record-revisions/vr-1'
+ *
+ * Not under `records/`: older records are filed flat at `records/{id}`, and a
+ * move of one of them into its folder path (move-tree) would carry or collide
+ * with revisions stored beneath the same folder.
+ */
+export function getArtifactSetFolder(
+  orgId: string,
+  virtualRecordId: string,
+): string {
+  return getFullDocumentPath(orgId, `record-revisions/${virtualRecordId}`);
+}
+
+/**
+ * Where one content revision of a virtual record keeps its files.
+ * e.g. 'org1/PipesHub/record-revisions/vr-1/0123abcd'
+ */
+export function getArtifactSetRoot(
+  orgId: string,
+  virtualRecordId: string,
+  rev: string,
+): string {
+  return `${getArtifactSetFolder(orgId, virtualRecordId)}/${rev}`;
+}
+
+/**
  * Returns the versioned snapshot path for a specific version number.
  * e.g. 'org1/PipesHub/Finance/doc1/versions/v3.pdf'
  */

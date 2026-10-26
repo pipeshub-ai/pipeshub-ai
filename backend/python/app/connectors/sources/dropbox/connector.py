@@ -385,14 +385,14 @@ class DropboxConnector(BaseConnector):
         )
 
         if not oauth_config:
-            self.logger.error(f"OAuth config {oauth_config_id} not found for Dropbox connector.")
+            self.logger.error(f"Linked OAuth app not found for Dropbox connector {self.connector_id}.")
             return False
 
         # Use credentials from OAuth config
         oauth_config_data = oauth_config.get("config", {})
         app_key = oauth_config_data.get("clientId") or oauth_config_data.get("client_id")
         app_secret = oauth_config_data.get("clientSecret") or oauth_config_data.get("client_secret")
-        self.logger.info(f"Using shared OAuth config {oauth_config_id} for Dropbox connector")
+        self.logger.info(f"Using linked OAuth app for Dropbox connector {self.connector_id}")
 
         try:
             config = DropboxTokenConfig(
@@ -1583,7 +1583,7 @@ class DropboxConnector(BaseConnector):
                     full_name=profile.name.display_name,
                     email=profile.email,
                     is_active=(profile.status._tag == "active"),
-                    title=member.role._tag,
+                    source_role=member.role._tag,
                 )
             )
         return app_users
@@ -2673,7 +2673,7 @@ class DropboxConnector(BaseConnector):
         # Find a team admin user
         team_admin_user = None
         for user in users:
-            if user.title == "team_admin":
+            if user.source_role == "team_admin":
                 team_admin_user = user
                 break
 
@@ -2860,7 +2860,7 @@ class DropboxConnector(BaseConnector):
         # Find team admin user
         team_admin_user = None
         for user in users:
-            if hasattr(user, 'title') and user.title == "team_admin":
+            if user.source_role == "team_admin":
                 team_admin_user = user
                 break
 

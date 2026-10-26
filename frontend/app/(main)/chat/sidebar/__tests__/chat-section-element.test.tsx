@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { act, cleanup, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 import { installMemoryStorage } from '@/lib/api/__tests__/sse-response';
 import { installBrowserShims, renderInTheme } from '@/app/(main)/agents/agent-builder/__tests__/agent-builder-harness';
@@ -108,5 +108,74 @@ describe('a chat row in the sidebar', () => {
     renderRow();
 
     expect(dot()).toBeNull();
+  });
+});
+
+describe('where a chat row opens', () => {
+  const hrefOf = (conv: unknown, agentId?: string) => {
+    renderInTheme(<ChatSectionElement conversation={conv as never} isActive={false} onClick={vi.fn()} agentId={agentId} />);
+    return screen.getByRole('link').getAttribute('href');
+  };
+
+  it('opens a plain chat through the plain chat URL', () => {
+    expect(hrefOf({ id: 'conv-1', title: 'Quarterly revenue', isOwner: true })).toBe('/chat?conversationId=conv-1');
+  });
+
+  it('opens an agent chat shared with the user under the agent it belongs to', () => {
+    expect(hrefOf({ id: 'conv-2', title: 'Roadmap', isOwner: false, agentKey: 'agent-7' })).toBe(
+      '/chat?agentId=agent-7&conversationId=conv-2',
+    );
+  });
+
+  it('prefers the agent of the sidebar section it is listed in', () => {
+    expect(hrefOf({ id: 'conv-3', title: 'Roadmap', isOwner: true, agentKey: 'agent-9' }, 'agent-7')).toBe(
+      '/chat?agentId=agent-7&conversationId=conv-3',
+    );
+  });
+});
+
+describe('who shared a chat, and whether it is an agent chat', () => {
+  const sharedBy = { userId: 'u-1', name: 'Pranjal' };
+
+  it('says "Shared by" for a plain chat someone shared', () => {
+    renderInTheme(
+      <ChatSectionElement conversation={{ id: 'c1', title: 'Plain', isOwner: false, sharedBy } as never} isActive={false} onClick={vi.fn()} />,
+    );
+    expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
+  });
+
+  it('marks an agent chat someone shared with the agent symbol, in the global list', () => {
+    renderInTheme(
+      <ChatSectionElement conversation={{ id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} />,
+    );
+    const symbol = screen.getByRole('img', { name: 'Agent chat' });
+    const name = screen.getByText('Shared by Pranjal');
+    // The sharer's name comes first and the symbol after it, not the other way round.
+    expect(name.contains(symbol)).toBe(true);
+    expect(name.firstChild?.textContent).toBe('Shared by Pranjal');
+    expect(name.lastElementChild).toBe(symbol);
+  });
+
+  it('names the symbol "Agent chat" in a tooltip on hover', async () => {
+    renderInTheme(
+      <ChatSectionElement conversation={{ id: 'c2', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} />,
+    );
+    fireEvent.pointerMove(screen.getByRole('img', { name: 'Agent chat' }));
+    expect((await screen.findAllByText('Agent chat')).length).toBeGreaterThan(0);
+  });
+
+  it('shows no agent symbol on a plain shared chat', () => {
+    renderInTheme(
+      <ChatSectionElement conversation={{ id: 'c1', title: 'Plain', isOwner: false, sharedBy } as never} isActive={false} onClick={vi.fn()} />,
+    );
+    expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
+  });
+
+  it('shows no agent symbol inside that agent’s own sidebar, where every chat is an agent chat', () => {
+    renderInTheme(
+      <ChatSectionElement conversation={{ id: 'c3', title: 'Roadmap', isOwner: false, sharedBy, agentKey: 'agent-7' } as never} isActive={false} onClick={vi.fn()} agentId="agent-7" />,
+    );
+    expect(screen.getByText('Shared by Pranjal')).toBeTruthy();
+    expect(screen.queryByRole('img', { name: 'Agent chat' })).toBeNull();
   });
 });

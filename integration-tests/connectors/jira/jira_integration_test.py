@@ -111,6 +111,7 @@ from connectors.jira.jira_test_utils import (  # noqa: E402
     wait_until_jira_condition,
 )
 from helper.indexing_wait import (  # noqa: E402
+    RECORD_INDEXING_TERMINAL,
     wait_until_record_indexing_completed,
 )
 
@@ -279,6 +280,21 @@ def _sync_filters(**values: Any) -> dict[str, Any]:
 
 def _pk(operator: str, values: list[str]) -> dict[str, Any]:
     return {"operator": operator, "type": "list", "value": values}
+
+
+# No issue on the simulator pack or the IT site was created before 2000-01-01.
+_BEFORE_ANY_ISSUE_MS = 946_684_800_000
+
+
+def _no_issues() -> dict[str, Any]:
+    """A ``created`` filter no issue passes, for tests that assert on projects only.
+
+    ``not_in [primary]`` and an empty key list scope every visible project. On the
+    simulator that is about 25,000 issues: a full sync of over four minutes on Neo4j and
+    longer on ArangoDB, so both tests ran past the 300s wait. A project becomes a
+    RecordGroup before any of its issues is read, so those assertions never needed them.
+    """
+    return {"type": "datetime", "operator": "is_before", "value": {"start": None, "end": _BEFORE_ANY_ISSUE_MS}}
 
 
 pytestmark = [
@@ -901,10 +917,18 @@ class TestJiraIndexing:
             pytest.skip("No reference issue discovered on primary — skipping")
         external_id = jira_connector["reference_issue_id"]
 
+        # The reference issue is queued behind the whole first sync of the primary project
+        # (about 400 issues on the simulator), so the wait follows the queue: it fails when
+        # indexing stops moving, not when a slower message broker takes longer to reach it.
+        async def indexed_so_far() -> int:
+            records = await graph_provider.fetch_records_by_type(connector_id, "")
+            return sum(1 for r in records if r.get("indexingStatus") in RECORD_INDEXING_TERMINAL)
+
         rec = await wait_until_record_indexing_completed(
             graph_provider, connector_id, external_id,
             timeout=JIRA_INDEXING_WAIT_SEC,
             description=f"TC-JIRA-IDX-001 {key}", pipeshub_client=pipeshub_client,
+            queue_progress=indexed_so_far,
         )
         assert rec.indexing_status == ProgressStatus.COMPLETED.value
         assert rec.record_type == RecordType.TICKET
@@ -1042,8 +1066,8 @@ class TestJiraBlocks:
             pytest.skip("JIRA_BLOCKS_ISSUE_KEY unset / not in primary / not synced — skipping")
 
         live_updated_ms = await get_jira_issue_updated_ms(jira_datasource, blocks_key)
-        expected, meta = load_expected()
-        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":
+        if os.getenv("JIRA_BLOCKS_BOOTSTRAP") != "1":  # a bootstrap may have no snapshot yet: it writes one below
+            expected, meta = load_expected()
             assert_snapshot_source_unchanged(meta, issue_key=blocks_key, live_updated_ms=live_updated_ms)
 
         # External Jira issue id → internal graph record id (what stream_record expects).
@@ -1146,7 +1170,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("not_in", [primary_key])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("not_in", [primary_key]), created=_no_issues()),
         )
         primary_rg = await graph_provider.get_record_group_by_external_id(
             connector_id, project_id_by_key[primary_key],
@@ -1294,7 +1319,8 @@ class TestJiraFilters:
         project_id_by_key = jira_connector["project_id_by_key"]
 
         await apply_filter_full_sync(
-            pipeshub_client, graph_provider, connector_id, _sync_filters(project_keys=_pk("in", [])),
+            pipeshub_client, graph_provider, connector_id,
+            _sync_filters(project_keys=_pk("in", []), created=_no_issues()),
         )
         rgs = await graph_provider.count_record_groups(connector_id, scoped=True)
         assert rgs >= len(keys), f"empty=all should sync ≥ {len(keys)} RecordGroups, got {rgs}"

@@ -42,6 +42,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from helper import suite_extensions
+
 ADMIN = "admin"
 # The member who created the target.
 CREATOR = "creator"
@@ -95,7 +97,6 @@ FRESH_KEYS = frozenset({
     "fresh_toolset", "fresh_personal_toolset", "unique_name",
 })
 DERIVED_KEYS = frozenset({"target", "target_name", "target_state"})
-WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)
 
 _PLACEHOLDER = re.compile(r"\{(\w+)\}")
 
@@ -661,3 +662,13 @@ REQUIRED_CASES: dict[str, frozenset[tuple[str, str, bool]]] = {
 
 def whose(target: str) -> str:
     return target.removeprefix("fresh_").removeprefix("listed_")
+
+
+# Rows and groups a downstream build adds (helper/suite_extensions.py). Last, so
+# the extension can build its rows with everything above.
+_extensions = suite_extensions.modules("admin_route_conditional_table")
+CONDITIONAL_ROUTES = suite_extensions.add_rows(
+    CONDITIONAL_ROUTES, "CONDITIONAL_ROUTES", _extensions, key=lambda route: route.handler)
+WORLD_GROUPS = suite_extensions.add_groups(
+    WORLD_GROUPS, "WORLD_GROUPS", _extensions, reserved=FRESH_KEYS | DERIVED_KEYS)
+WORLD_KEYS = frozenset(key for keys in WORLD_GROUPS.values() for key in keys)

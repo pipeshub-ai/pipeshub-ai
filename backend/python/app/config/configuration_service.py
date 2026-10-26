@@ -114,26 +114,29 @@ class ConfigurationService:
             if value is None:
                 # Try environment variable fallback for specific services
                 env_fallback = self._get_env_fallback(key)
+                # No key in these two lines either, for the same reason as the
+                # cache hit above.
                 if env_fallback is not None:
-                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
+                    self.logger.debug("📦 Using environment variable fallback for a config key")
                     with self._cache_lock:
                         self.cache[key] = env_fallback
                     return env_fallback
 
-                self.logger.debug("📦 Cache miss for key: %s", key)
+                self.logger.debug("📦 Config cache miss")
                 return default
             if keep_in_cache:
                 with self._cache_lock:
                     self.cache[key] = value
             return value
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             # Try environment variable fallback on error
             env_fallback = self._get_env_fallback(key)
             if env_fallback is not None:
-                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                # The error line above already names the key.
+                self.logger.debug("📦 Using environment variable fallback after the error")
                 return env_fallback
             return default
 
@@ -201,7 +204,7 @@ class ConfigurationService:
                 return {
                     "host": qdrant_host,
                     "port": int(os.getenv("QDRANT_PORT", "6333")),
-                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT", "6334")),
+                    "grpcPort": int(os.getenv("QDRANT_GRPC_PORT") or "6334"),
                     "apiKey": os.getenv("QDRANT_API_KEY", "qdrant"),
                 }
         elif key == config_node_constants.OPENSEARCH.value:

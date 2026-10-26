@@ -14,6 +14,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.code_graph.block_projection import (
     FILE_SUMMARY_QUALIFIED_NAME,
     block_key_for,
@@ -126,8 +127,9 @@ class BlobCodeFactsSource:
             return {}
         virtual_ids = await self._graph_provider.get_virtual_record_ids_for_record_ids(ids)
         # One mapping query for the batch; the per-record lookup inside
-        # get_record_from_storage would otherwise cost a graph round trip each.
-        lookups = await self._blob_storage.get_document_ids_by_virtual_record_ids(
+        # read_record would otherwise cost a graph round trip each.
+        reader = record_artifact_reader(self._blob_storage)
+        lookups = await reader.lookup_many(
             sorted(set(virtual_ids.values()))
         )
         semaphore = asyncio.Semaphore(self._concurrency)
@@ -138,8 +140,8 @@ class BlobCodeFactsSource:
                 return record_id, None
             async with semaphore:
                 try:
-                    record = await self._blob_storage.get_record_from_storage(
-                        virtual_id, org_id, lookup_result=lookups.get(virtual_id)
+                    record = await reader.read_record(
+                        virtual_id, org_id, lookup=lookups.get(virtual_id)
                     )
                 except Exception:
                     self._log.exception("Failed to read stored facts for record %s", record_id)

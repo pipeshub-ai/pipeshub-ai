@@ -13,6 +13,7 @@ from typing import Any
 
 import pytest
 
+from app.config.constants.arangodb import MimeTypes
 from app.models.entities import RecordType
 from connectors.confluence.confluence_v1_test_utils import (
     assert_api_content_matches_graph,
@@ -66,7 +67,7 @@ class _Graph:
         version = page["version"] + (1 if page is OTHER_RUNS else 0)
         return SimpleNamespace(
             external_record_id=page["id"], record_type=RecordType.CONFLUENCE_PAGE.value,
-            record_name=page["title"], mime_type="text/html", parent_external_record_id=None,
+            record_name=page["title"], mime_type=MimeTypes.BLOCKS.value, parent_external_record_id=None,
             external_record_group_id=SPACE_ID, external_revision_id=str(version),
             is_dependent_node=False,
         )

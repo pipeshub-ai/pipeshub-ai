@@ -145,6 +145,8 @@ export interface ConversationApiResponse {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Only on agent conversations shared with the user; needed to open them (`?agentId=`). */
+  agentKey?: string;
 }
 
 export type ConversationSource = 'owned' | 'shared';
@@ -179,6 +181,8 @@ export interface Conversation {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   sharedBy?: SharedByInfo;
+  /** Set on a shared agent conversation: the agent it belongs to. */
+  agentKey?: string;
 }
 
 export interface ChatSuggestion {
@@ -360,8 +364,6 @@ export interface ChatCollectionAttachment {
  * - `internalSearch` gates knowledge tools (retrieval, knowledgegraph, knowledgehub),
  *   and disables the Connectors + Collections tabs in the UI when false.
  * - `webSearch` gates web_search + fetch_url tools.
- * - `deepSearch` turns on deep research: the agent researches thoroughly on the
- *   web before answering (more steps and a larger web budget). Needs `webSearch`.
  *
  * When absent from a stream request, the backend defaults both to `true`
  * (preserving today's behavior for existing clients).
@@ -369,14 +371,12 @@ export interface ChatCollectionAttachment {
 export interface AgentCapabilities {
   internalSearch: boolean;
   webSearch: boolean;
-  deepSearch?: boolean;
 }
 
-/** Default capabilities — both search modes enabled, deep search off. */
+/** Default capabilities — both search modes enabled. */
 export const DEFAULT_AGENT_CAPABILITIES: AgentCapabilities = {
   internalSearch: true,
   webSearch: true,
-  deepSearch: false,
 };
 
 export interface ChatSettings {
@@ -452,6 +452,11 @@ export interface UploadedFile {
   errorMessage?: string;
   /** Origin of this chip — see {@link UploadedFileSource}. */
   source?: UploadedFileSource;
+  /**
+   * A file already stored with the question being edited, not one picked now. Removing the chip
+   * only detaches it from the edit: the stored file stays, since a fork of the chat may use it.
+   */
+  existing?: boolean;
   /** First-line excerpt shown on the chip, present only when `source === 'paste-text'`. */
   pastePreview?: string;
   /** Character count of the original pasted text (present only when `source === 'paste-text'`). */
@@ -552,6 +557,8 @@ export interface AskUserQuestionOption {
   id: string;
   label: string;
   isUserInput: boolean;
+  /** What happens if this option is picked. */
+  description?: string;
 }
 
 export interface AskUserQuestionItem {
@@ -559,12 +566,18 @@ export interface AskUserQuestionItem {
   question: string;
   options: AskUserQuestionOption[];
   multiSelect: boolean;
+  /** Short label shown above the question. */
+  header?: string;
 }
 
 export interface AskUserQuestionPayload {
   name: 'ask_user_question';
   userIntent?: string;
   questions: AskUserQuestionItem[];
+  /** ISO time after which the card can no longer be answered with its options. */
+  expiresAt?: string;
+  /** Set on this client when the user typed a reply in the chat instead of answering. */
+  repliedInChat?: boolean;
 }
 
 export interface SSEAskUserQuestionEvent {
@@ -588,6 +601,15 @@ export interface PendingAskUserQuestion {
   /** Answers the model already received. A resume only carries what is not here or differs. */
   sentAnswers?: Record<string, AskUserQuestionAnswer>;
   status: 'pending' | 'submitted' | 'persisted';
+}
+
+/** New answers to a reply's question card, sent with its regeneration. */
+export interface RegenAnswers {
+  messageId: string;
+  payload: AskUserQuestionPayload;
+  /** `User selections: ...`, as a tapped answer is sent. */
+  message: string;
+  answers: Record<string, AskUserQuestionAnswer>;
 }
 
 /** Artifact produced by a sandbox tool (coding/database). */
@@ -1065,7 +1087,7 @@ export interface AvailableLlmModel {
 export type ActiveMessageAction =
   | null
   | { type: 'regenerate'; messageId: string; appliedFilters?: AppliedFilters }
-  | { type: 'editQuery'; messageId: string; text: string };
+  | { type: 'editQuery'; messageId: string; text: string; appliedFilters?: AppliedFilters; attachments?: AttachmentRef[] };
 
 // ── Multi-Chat Slot Types ──
 

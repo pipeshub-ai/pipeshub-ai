@@ -491,3 +491,38 @@ async def test_a_reset_waiting_on_a_reinitialisation_keeps_the_fresh_state() -> 
     await waiting
     assert store._initialized is True
     assert store._generation == generation
+
+
+async def test_an_entity_search_embeds_the_query_with_the_model_instruction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """With the BGE query instruction on, the dense query vector is made from the instructed text; the sparse one is not."""
+    from app.utils.query_instruction import BGE_QUERY_INSTRUCTION
+
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "true")
+    store, _ = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    store._dense_embeddings.model = "BAAI/bge-large-en-v1.5"
+    store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
+
+    await store._query_vectors("pricing")
+
+    store._dense_embeddings.embed_query.assert_called_once_with(BGE_QUERY_INSTRUCTION + "pricing")
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "false")
+    store._query_vector_cache.clear()
+    await store._query_vectors("pricing")
+    assert store._dense_embeddings.embed_query.call_args.args == ("pricing",)
+
+
+async def test_toggling_the_query_instruction_does_not_serve_a_stale_cached_vector(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The cache is keyed by the text the model sees, so a flag change takes effect without clearing it."""
+    from app.utils.query_instruction import BGE_QUERY_INSTRUCTION
+
+    store, _ = TestARecreatedCollectionReachesRunningServices._searching_store(collection_dimension=4)
+    store._query_vector_cache.clear()
+    store._dense_embeddings.model = "BAAI/bge-large-en-v1.5"
+    store._dense_embeddings.embed_query = MagicMock(return_value=[0.1, 0.2])
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "false")
+    await store._query_vectors("pricing")
+    monkeypatch.setenv("EMBEDDING_QUERY_INSTRUCTION", "true")
+    await store._query_vectors("pricing")
+
+    assert store._dense_embeddings.embed_query.call_args.args == (BGE_QUERY_INSTRUCTION + "pricing",)

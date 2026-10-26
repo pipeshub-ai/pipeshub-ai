@@ -9,6 +9,12 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/workspace/general',
 }));
 
+// jsdom has no matchMedia; these tests cover the desktop sidebar.
+vi.mock('@/lib/hooks/use-is-mobile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/hooks/use-is-mobile')>()),
+  useIsMobile: () => false,
+}));
+
 let userState = { profile: { isAdmin: false } as { isAdmin: boolean } | null };
 vi.mock('@/lib/store/user-store', () => ({
   useUserStore: (selector: (s: typeof userState) => unknown) => selector(userState),

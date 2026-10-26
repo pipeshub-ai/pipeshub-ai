@@ -130,6 +130,64 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.timestamp).to.be.a('string')
     })
 
+    describe('local blob storage with several app replicas', () => {
+      let savedReplicas: string | undefined
+      beforeEach(() => { savedReplicas = process.env.PIPESHUB_APP_MAX_REPLICAS })
+      afterEach(() => {
+        if (savedReplicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+        else process.env.PIPESHUB_APP_MAX_REPLICAS = savedReplicas
+      })
+
+      const run = async (storageConfig: string | null) => {
+        mockKV.get = sinon.stub().resolves(storageConfig)
+        sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+        const res = mockRes()
+        await findHandler('/', 'get')({}, res, sinon.stub())
+        return res.json.firstCall.args[0]
+      }
+
+      it('warns (but stays healthy) when local storage runs on several replicas', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const body = await run(JSON.stringify({ storageType: 'local' }))
+        expect(body.status).to.equal('healthy')
+        expect(body.warnings).to.have.length(1)
+        expect(body.warnings[0]).to.contain('up to 6 app replicas')
+      })
+
+      it('warns for the default (no storage configured yet means local)', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '2'
+        const body = await run(null)
+        expect(body.warnings).to.have.length(1)
+      })
+
+      it('answers without the warning when the storage configuration read stalls', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        const clock = sinon.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+        try {
+          mockKV.get = sinon.stub().returns(new Promise(() => undefined))
+          sinon.stub(require('axios'), 'get').resolves({ status: 200 })
+          const res = mockRes()
+          const answered = findHandler('/', 'get')({}, res, sinon.stub())
+          await clock.tickAsync(2000)
+          await answered
+          const body = res.json.firstCall.args[0]
+          expect(body.status).to.equal('healthy')
+          expect(body.warnings).to.equal(undefined)
+        } finally {
+          clock.restore()
+        }
+      })
+
+      it('does not warn for S3 or for a single replica', async () => {
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '6'
+        expect((await run(JSON.stringify({ storageType: 's3' }))).warnings).to.equal(undefined)
+        sinon.restore()
+        sinon.stub(ConfigService, 'getInstance').returns(mockConfigService as any)
+        process.env.PIPESHUB_APP_MAX_REPLICAS = '1'
+        expect((await run(JSON.stringify({ storageType: 'local' }))).warnings).to.equal(undefined)
+      })
+    })
+
     it('should include deployment info in response', async () => {
       const handler = findHandler('/', 'get')
       const res = mockRes()

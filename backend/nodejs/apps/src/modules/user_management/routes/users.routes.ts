@@ -40,6 +40,7 @@ import { MailProducer } from '../../mail/services/mail.producer';
 import { OrgController } from '../controller/org.controller';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { emailCheck } from '../../../libs/utils/zod-formats';
 
 const UserIdUrlParams = z.object({
   id: z.string().regex(/^[a-fA-F0-9]{24}$/, 'Invalid UserId'),
@@ -72,7 +73,7 @@ const MultipleUserValidationSchema = z.object({
 
 const createUserBody = z.object({
   fullName: z.string().min(1, 'Full name is required'),
-  email: z.string().email('Invalid email'),
+  email: z.string().check(emailCheck('Invalid email')),
   mobile: z
     .string()
     .optional()
@@ -89,7 +90,7 @@ const createUserBody = z.object({
 
 const updateUserBody = z.object({
   fullName: z.string().optional(),
-  email: z.string().email('Invalid email').optional(),
+  email: z.string().check(emailCheck('Invalid email')).optional(),
   mobile: z
     .string()
     .optional()
@@ -149,7 +150,7 @@ const updateLastNameBody = z.object({
 });
 
 const updateEmailBody = z.object({
-  email: z.string().email('Valid email is required'),
+  email: z.string().check(emailCheck('Valid email is required')),
 });
 
 const updateUserFullNameValidationSchema = z.object({

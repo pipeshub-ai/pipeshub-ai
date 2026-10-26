@@ -91,7 +91,10 @@ class CloudRecordsDb(FakeRecordsDb):
         return list(self.active_users)
 
     async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
-        return list(self.app_users)
+        # One row per account, as the store upserts; a withdrawn user is no longer the connector's.
+        withdrawn = {u.source_user_id for u in self.withdrawn_users}
+        latest = {u.source_user_id: u for u in self.app_users}
+        return [u for sid, u in latest.items() if sid not in withdrawn]
 
     async def on_records_deleted_cascade(
         self, record_ids: list[str], connector_id: str, cascade_children: bool = True

@@ -194,7 +194,7 @@ describe('knowledge_base/validators/validators', () => {
       const data = {
         body: {},
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-        query: { folderId: 'folder-1' },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
       };
       const result = uploadRecordsSchema.safeParse(data);
       expect(result.success).to.be.true;
@@ -311,6 +311,16 @@ describe('knowledge_base/validators/validators', () => {
       const data = {
         body: { folderName: 'My Subfolder' },
         params: { kbId: validKbId },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
+      };
+      const result = createFolderSchema.safeParse(data);
+      expect(result.success).to.be.true;
+    });
+
+    it('should accept non-uuid string in folderId query param', () => {
+      const data = {
+        body: { folderName: 'My Subfolder' },
+        params: { kbId: validKbId },
         query: { folderId: 'parent-folder-1' },
       };
       const result = createFolderSchema.safeParse(data);
@@ -346,13 +356,97 @@ describe('knowledge_base/validators/validators', () => {
       const result = createFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
     });
+
+    it('should reject parentId in body', () => {
+      const data = {
+        body: {
+          folderName: 'My Subfolder',
+          parentId: '123e4567-e89b-12d3-a456-426614174000',
+        },
+        params: { kbId: validKbId },
+        query: {},
+      };
+      const result = createFolderSchema.safeParse(data);
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.equal(
+          'To create a subfolder, use the subfolder route.',
+        );
+      }
+    });
+
+    it('should reject parent_id in body', () => {
+      const data = {
+        body: {
+          folderName: 'My Subfolder',
+          parent_id: '123e4567-e89b-12d3-a456-426614174000',
+        },
+        params: { kbId: validKbId },
+        query: {},
+      };
+      const result = createFolderSchema.safeParse(data);
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.equal(
+          'To create a subfolder, use the subfolder route.',
+        );
+      }
+    });
+
+    it('should reject folderId in body', () => {
+      const data = {
+        body: {
+          folderName: 'My Subfolder',
+          folderId: '123e4567-e89b-12d3-a456-426614174000',
+        },
+        params: { kbId: validKbId },
+        query: {},
+      };
+      const result = createFolderSchema.safeParse(data);
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.equal(
+          'To create a subfolder, use the subfolder route.',
+        );
+      }
+    });
+
+    it('should reject parentId in query', () => {
+      const data = {
+        body: { folderName: 'My Subfolder' },
+        params: { kbId: validKbId },
+        query: { parentId: '123e4567-e89b-12d3-a456-426614174000' },
+      };
+      const result = createFolderSchema.safeParse(data);
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.equal(
+          'To create a subfolder, use the subfolder route.',
+        );
+      }
+    });
+
+    it('should reject parent_id in query', () => {
+      const data = {
+        body: { folderName: 'My Subfolder' },
+        params: { kbId: validKbId },
+        query: { parent_id: '123e4567-e89b-12d3-a456-426614174000' },
+      };
+      const result = createFolderSchema.safeParse(data);
+      expect(result.success).to.be.false;
+      if (!result.success) {
+        expect(result.error.issues[0].message).to.equal(
+          'To create a subfolder, use the subfolder route.',
+        );
+      }
+    });
   });
 
   describe('updateFolderSchema', () => {
     it('should accept valid data', () => {
       const data = {
         body: { folderName: 'Updated Folder' },
-        params: { kbId: 'kb-1', folderId: 'f-1' },
+        params: { kbId: 'kb-1', folderId: '123e4567-e89b-12d3-a456-426614174000' },
       };
       const result = updateFolderSchema.safeParse(data);
       expect(result.success).to.be.true;
@@ -361,7 +455,7 @@ describe('knowledge_base/validators/validators', () => {
     it('should reject empty folderName', () => {
       const data = {
         body: { folderName: '' },
-        params: { kbId: 'kb-1', folderId: 'f-1' },
+        params: { kbId: 'kb-1', folderId: '123e4567-e89b-12d3-a456-426614174000' },
       };
       const result = updateFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
@@ -370,13 +464,13 @@ describe('knowledge_base/validators/validators', () => {
 
   describe('deleteFolderSchema', () => {
     it('should accept valid params', () => {
-      const data = { params: { kbId: 'kb-1', folderId: 'f-1' } };
+      const data = { params: { kbId: 'kb-1', folderId: '123e4567-e89b-12d3-a456-426614174000' } };
       const result = deleteFolderSchema.safeParse(data);
       expect(result.success).to.be.true;
     });
 
     it('should reject empty kbId', () => {
-      const data = { params: { kbId: '', folderId: 'f-1' } };
+      const data = { params: { kbId: '', folderId: '123e4567-e89b-12d3-a456-426614174000' } };
       const result = deleteFolderSchema.safeParse(data);
       expect(result.success).to.be.false;
     });
@@ -501,7 +595,7 @@ describe('knowledge_base/validators/validators', () => {
   describe('moveRecordSchema', () => {
     it('should accept valid data', () => {
       const data = {
-        body: { newParentId: 'folder-123' },
+        body: { newParentId: '123e4567-e89b-12d3-a456-42661417400023' },
         params: {
           kbId: '550e8400-e29b-41d4-a716-446655440000',
           recordId: 'rec-1',
@@ -836,7 +930,7 @@ describe('Knowledge Base Validators - branch coverage', () => {
       const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: '123e4567-e89b-12d3-a456-426614174000' },
-        query: { folderId: 'folder-1' },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
       });
       expect(result.success).to.be.true;
     });
@@ -895,7 +989,7 @@ describe('Knowledge Base Validators - branch coverage', () => {
 
     it('should accept string newParentId', () => {
       const result = moveRecordSchema.safeParse({
-        body: { newParentId: 'folder-1' },
+        body: { newParentId: '123e4567-e89b-12d3-a456-426614174000' },
         params: {
           kbId: '123e4567-e89b-12d3-a456-426614174000',
           recordId: 'rec1',
@@ -1054,7 +1148,7 @@ describe('Knowledge Base Validators - coverage', () => {
       const result = uploadRecordsSchema.safeParse({
         body: {},
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-        query: { folderId: 'folder-123' },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
       });
       expect(result.success).to.be.true;
     });
@@ -1159,7 +1253,7 @@ describe('Knowledge Base Validators - coverage', () => {
   describe('moveRecordSchema', () => {
     it('should accept valid move request', () => {
       const result = moveRecordSchema.safeParse({
-        body: { newParentId: 'folder-123' },
+        body: { newParentId: '123e4567-e89b-12d3-a456-42661417400023' },
         params: {
           kbId: '550e8400-e29b-41d4-a716-446655440000',
           recordId: 'rec-1',
@@ -1227,7 +1321,7 @@ describe('Knowledge Base Validators - coverage', () => {
       const result = createFolderSchema.safeParse({
         body: { folderName: 'New Folder' },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-        query: { folderId: 'parent-folder-1' },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
       });
       expect(result.success).to.be.true;
     });
@@ -1369,7 +1463,7 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-        query: { folderId: 'folder-1' },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
       });
       expect(result.success).to.be.true;
     });
@@ -1389,7 +1483,7 @@ describe('Knowledge Base Validators - coverage', () => {
           ],
         },
         params: { kbId: '550e8400-e29b-41d4-a716-446655440000' },
-        query: { folderId: 'folder-1' },
+        query: { folderId: '123e4567-e89b-12d3-a456-426614174000' },
       });
       expect(result.success).to.be.false;
     });

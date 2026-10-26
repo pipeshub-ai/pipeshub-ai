@@ -126,6 +126,7 @@ class AgentRuntime:
         session_id: str | None = None,
         parent_scope: "RunScope | None" = None,
         mirror_events: bool = True,
+        user_request: str | None = None,
     ) -> AgentResult:
         """The single place a child agent is launched — used by both
         `agent_as_tool()`'s static composition and `spawn_agent`/`best_of_n`'s
@@ -158,9 +159,19 @@ class AgentRuntime:
         on the parent's stream (e.g. a silent judge/critique sub-agent) —
         it still emits ordinary lifecycle/tool events, just not the
         streaming text deltas.
+
+        `user_request`: the spawning agent's current request (callers pass
+        its last human message). The person's request reaches the child
+        verbatim, ahead of its delegated task (`with_user_request`): the one
+        the parent run inherited when it is itself a child, else this one.
+        A child given only its parent's paraphrase carries any drift in it
+        with no way to notice.
         """
         from app.agent_loop_lib.agent import Agent
         from app.agent_loop_lib.context.manager import ContextManager
+        from app.agent_loop_lib.tools.builtin.coordination.parent_results import (
+            with_user_request,
+        )
         from app.agent_loop_lib.transport.opik_tracing import (
             maybe_start_agent_span,
             record_agent_span_result,
@@ -217,6 +228,10 @@ class AgentRuntime:
             )
         elif team_id is not None:
             child._run_ctx.team_id = team_id
+        request = getattr(parent_run_ctx, "user_request", None) or user_request
+        if request:
+            child._run_ctx.user_request = request
+            goal = with_user_request(goal, request)
         child._parent_scope = parent_scope
         # Without this, `child.run()`'s `step()` calls always take the
         # non-streaming `_model.complete()` branch — `_streaming` is only

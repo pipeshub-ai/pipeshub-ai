@@ -133,7 +133,7 @@ test('an admin picks models, sets a flag per model, and retries the one that fai
   await expect(page.getByTestId('ai-picked-models')).toBeVisible();
   // gpt-4o-mini reports no flags, so its row starts from the form; Reasoning is still off there.
   await page.getByRole('switch', { name: 'Reasoning for gpt-4o-mini' }).click();
-  await page.getByRole('button', { name: 'Add Model' }).click();
+  await page.getByRole('button', { name: 'Add model' }).click();
 
   await expect(page.getByTestId('ai-batch-progress').getByText('rejected')).toBeVisible();
   const first = batchBodies[0];
@@ -167,7 +167,7 @@ test('a provider without a model list still adds several typed models', async ({
   ).toBeVisible();
 
   await page.getByRole('switch', { name: 'Reasoning for my-other-deployment' }).click();
-  await page.getByRole('button', { name: 'Add Model' }).click();
+  await page.getByRole('button', { name: 'Add model' }).click();
 
   await expect.poll(() => batchBodies.length).toBe(1);
   expect(discoverCalls()).toBe(0);

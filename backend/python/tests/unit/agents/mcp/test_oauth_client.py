@@ -10,6 +10,7 @@ from app.agents.mcp.oauth_client import (
     _parse_form_encoded,
     exchange_code_for_token,
     refresh_access_token,
+    request_client_credentials_token,
 )
 
 
@@ -569,3 +570,43 @@ class TestTheProvidersErrorCodeIsKept:
         error = MCPOAuthError("boom")
         assert str(error) == "boom"
         assert error.error_code is None
+
+
+class TestClientCredentialsToken:
+    """RFC 6749 §4.4: API Toolsets get tokens for the client itself, with no user."""
+
+    @staticmethod
+    async def _request(body: dict, **kwargs: object) -> tuple[object, dict]:
+        inner = MagicMock()
+        inner.post = AsyncMock(return_value=_json_response(200, body))
+        with _mock_async_client(inner):
+            tokens = await request_client_credentials_token(
+                "https://auth.example.com/token", "cid", "csec", allow_private=True, **kwargs,
+            )
+        return tokens, inner.post.await_args.kwargs
+
+    @pytest.mark.asyncio
+    async def test_asks_for_the_client_credentials_grant_with_the_scopes(self) -> None:
+        tokens, sent = await self._request({"access_token": "a", "expires_in": 60}, scopes=["read", "write"])
+
+        assert sent["data"] == {"grant_type": "client_credentials", "client_id": "cid", "client_secret": "csec", "scope": "read write"}
+        assert tokens.access_token == "a" and tokens.expires_in == 60
+        assert tokens.refresh_token is None
+        assert (tokens.client_id, tokens.token_url) == ("cid", "https://auth.example.com/token")
+
+    @pytest.mark.asyncio
+    async def test_without_scopes_none_are_sent(self) -> None:
+        _, sent = await self._request({"access_token": "a"})
+        assert "scope" not in sent["data"]
+
+    @pytest.mark.asyncio
+    async def test_client_secret_basic(self) -> None:
+        tokens, sent = await self._request({"access_token": "a"}, auth_method="client_secret_basic")
+        assert sent["headers"]["Authorization"].startswith("Basic ")
+        assert "client_secret" not in sent["data"]
+        assert tokens.token_endpoint_auth_method == "client_secret_basic"
+
+    @pytest.mark.asyncio
+    async def test_missing_access_token_raises(self) -> None:
+        with pytest.raises(MCPOAuthError, match="missing access_token"):
+            await self._request({"token_type": "Bearer"})

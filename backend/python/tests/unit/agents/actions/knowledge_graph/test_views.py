@@ -866,3 +866,19 @@ class TestCurrentReadableHint:
         )
         text = render_navigation_view(view, page=1)
         assert "fetch_record" not in text
+
+
+class TestUploadDatedRows:
+    def test_a_knowledge_base_file_shows_when_it_was_uploaded(self) -> None:
+        created_ms = int(datetime(2026, 10, 15, tzinfo=timezone.utc).timestamp() * 1000)
+        modified_ms = int(datetime(2026, 10, 16, tzinfo=timezone.utc).timestamp() * 1000)
+        row = _row("rec1", "notes.txt", "record", "FILE", source_created_at=created_ms, source_modified_at=modified_ms)
+        row.upload_dated = True
+        view = NavigationView(
+            current=None, breadcrumbs=[], rows=[row], related=[],
+            pagination=_pag(total=1), web_url=None, indexing_status=None, connector=None,
+        )
+        text = render_navigation_view(view, page=1)
+        assert "| uploaded: 2026-10-15" in text
+        assert "created:" not in text
+        assert "modified:" not in text

@@ -1041,6 +1041,24 @@ class TestNavigateDepthSingleQuery:
         assert f"record_id={_short_id_for(state, 'sub1')}" in text
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize(("depth", "flattened"), [(1, False), (2, True)])
+    async def test_depth1_browses_children_and_deeper_flattens_to_that_depth(self, depth, flattened) -> None:
+        """depth 1 is a cursor-paged browse of the direct children, never a flatten of
+        every descendant; depth d asks the flatten to stop at d."""
+        state = self._state_on_epic()
+        state["graph_provider"].get_node_depths_batch = AsyncMock(return_value={})
+        get_nodes = AsyncMock(return_value=_make_knowledge_hub_response(items=[], total=0))
+
+        with patch(
+            "app.agents.actions.knowledge_graph.navigator.KnowledgeHubService.get_nodes",
+            new=get_nodes,
+        ):
+            await KnowledgeGraph(state=state).navigate(node_id="epic1", depth=depth)
+
+        assert get_nodes.await_args.kwargs["flattened"] is flattened
+        assert get_nodes.await_args.kwargs["depth"] == depth
+
+    @pytest.mark.asyncio
     async def test_navigate_depth2_app_parent_clamps_to_depth1(self):
         """An app parent with depth>1 never reaches the level-backfill
         step — its rows are recordGroups (is_record=False), so

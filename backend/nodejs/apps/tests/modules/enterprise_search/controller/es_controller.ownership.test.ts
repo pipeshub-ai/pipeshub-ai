@@ -149,7 +149,7 @@ describe('es_controller ownership: nobody reads or changes a conversation that i
   ]
 
   const agentCases: JsonCase[] = [
-    { name: 'getAgentConversationById', handler: () => controller.getAgentConversationById as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY }) },
+    { name: 'getAgentConversationById', handler: () => controller.getAgentConversationById(appConfig) as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY }) },
     { name: 'updateAgentConversationTitle', handler: () => controller.updateAgentConversationTitle as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY }), body: { title: 'Hijacked' } },
     { name: 'updateAgentFeedback', handler: () => controller.updateAgentFeedback as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY, messageId: s.agentBotMessageId }), body: { isHelpful: false } },
     { name: 'archiveAgentConversation', handler: () => controller.archiveAgentConversation as JsonHandler, params: (s) => ({ conversationId: s.agentChatId, agentKey: AGENT_KEY }) },

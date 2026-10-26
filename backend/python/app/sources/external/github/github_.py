@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import base64
 import difflib
+import itertools
+import re
 from collections.abc import AsyncGenerator, Sequence
 from typing import TYPE_CHECKING
 
@@ -44,12 +46,27 @@ from app.sources.client.github.github import GitHubResponse, github_retry_after_
 
 if TYPE_CHECKING:
     import datetime
+    from collections.abc import Iterable
 
 # GitHub caps both REST and Search page sizes at 100. Requesting the maximum
 # cuts round trips for the many call sites that materialise a whole PaginatedList.
 _SERVER_PAGE_SIZE = 100
 _MAX_PAGE_SIZE = 100
 _DEFAULT_PAGE_SIZE = 10
+
+
+
+_REPO_SEGMENT = re.compile(r"[A-Za-z0-9_.-]{1,100}")
+# Most items one call reads into the model's context from a nested list (comments,
+# reviews, changed files). shortcut: the cut is silent; return a truncated flag if
+# answers on very long threads turn out wrong.
+_MAX_NESTED_ITEMS = 300
+
+
+def _capped[T](items: Iterable[T]) -> tuple[list[T], bool]:
+    """The first ``_MAX_NESTED_ITEMS`` items, and whether more exist."""
+    out = list(itertools.islice(items, _MAX_NESTED_ITEMS + 1))
+    return out[:_MAX_NESTED_ITEMS], len(out) > _MAX_NESTED_ITEMS
 
 
 class GitHubDataSource:
@@ -119,6 +136,12 @@ class GitHubDataSource:
         reads a sub-resource does not need: a missing repository still fails,
         as a 404 from that sub-resource. It halves the cost of a content fetch
         or tree walk against the hourly rate limit."""
+        # owner/repo come from the model. A "." or ".." segment (or a "/") would be
+        # resolved by the HTTP layer into another repository's path, so a write
+        # approved for acme/widgets could land elsewhere.
+        for part in (owner, repo):
+            if not _REPO_SEGMENT.fullmatch(part or "") or part in (".", ".."):
+                raise ValueError(f"Invalid GitHub owner or repository name: {part!r}")
         return self._sdk.get_repo(f"{owner}/{repo}", lazy=lazy)
 
     @staticmethod
@@ -286,8 +309,10 @@ class GitHubDataSource:
     ) -> GitHubResponse[list[Repository]]:
         """List repositories for a given user. When both per_page and page are omitted, returns all repos. When either is passed, returns one page (default 10 per page, max 100). Pass the login from get_owner(owner='me') result; do not pass 'me' here."""
         try:
-            # passing user name changes base url fetches only public repos although authenticated
-            u = self._sdk.get_user(user) if user else self._sdk.get_user()
+            # /users/{login}/repos lists public repos only, even for the caller's own login;
+            # the caller's own repos (private ones too) come from /user/repos.
+            me = self._sdk.get_user()
+            u = me if not user or user.lower() in ("me", me.login.lower()) else self._sdk.get_user(user)
             paginated = u.get_repos(type=type)
             if per_page is None and page is None:
                 return GitHubResponse(success=True, data=list(paginated))
@@ -504,10 +529,10 @@ class GitHubDataSource:
             r = self._repo(owner, repo)
             issue = r.get_issue(number)
             if since is None:
-                comments=list(issue.get_comments())
+                comments, truncated = _capped(issue.get_comments())
             else:
-                comments = list(issue.get_comments(since=since))
-            return GitHubResponse(success=True, data=comments)
+                comments, truncated = list(issue.get_comments(since=since)), False
+            return GitHubResponse(success=True, data=comments, truncated=truncated)
         except Exception as e:
             return self._err(e)
 
@@ -636,11 +661,11 @@ class GitHubDataSource:
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            files = list(pr.get_files())
+            files, truncated = _capped(pr.get_files())
 
             # Fast path: return as-is if full content fetching disabled
             if not fetch_full_content:
-                return GitHubResponse(success=True, data=files)
+                return GitHubResponse(success=True, data=files, truncated=truncated)
 
             # Process each file with safety checks
             enhanced_files = []
@@ -750,7 +775,7 @@ class GitHubDataSource:
                     f"{truncated_count} truncated (exceeded max_diff_lines)"
                 )
 
-            return GitHubResponse(success=True, data=enhanced_files)
+            return GitHubResponse(success=True, data=enhanced_files, truncated=truncated)
 
         except Exception as e:
             return self._err(e)
@@ -790,17 +815,21 @@ class GitHubDataSource:
                 return None
 
             # Fetch file content from base and head commits
-            base_content = ""
+            base_content: str | None = ""
             if status != "added":
                 base_content = self._fetch_file_content_at_ref(
                     owner, repo, filename, base_sha
                 )
 
-            head_content = ""
+            head_content: str | None = ""
             if status != "removed":
                 head_content = self._fetch_file_content_at_ref(
                     owner, repo, filename, head_sha
                 )
+            # A side that could not be read is not an empty file: diffing it as one
+            # shows the whole file added or deleted. The caller keeps GitHub's patch.
+            if base_content is None or head_content is None:
+                return None
 
             # Generate unified diff
             base_lines = base_content.splitlines(keepends=True) if base_content else []
@@ -848,7 +877,7 @@ class GitHubDataSource:
         repo: str,
         path: str,
         ref: str,
-    ) -> str:
+    ) -> str | None:
         """
         Fetch file content from a specific commit/ref.
 
@@ -859,7 +888,8 @@ class GitHubDataSource:
             ref: Git reference (commit SHA, branch, tag)
 
         Returns:
-            File content as string, or empty string if file doesn't exist or is binary.
+            File content as string, or None when it could not be read as text (a
+            directory, a file over 1 MB that GitHub sends without content, or any error).
         """
         try:
             r = self._repo(owner, repo)
@@ -867,7 +897,9 @@ class GitHubDataSource:
 
             # Handle directory response
             if isinstance(content, list):
-                return ""
+                return None
+            if getattr(content, "encoding", "base64") != "base64":
+                return None
 
             # Decode content
             if hasattr(content, 'decoded_content'):
@@ -876,20 +908,20 @@ class GitHubDataSource:
                 decoded_bytes = base64.b64decode(content.content)
                 return decoded_bytes.decode("utf-8", errors="replace")
 
-            return ""
+            return None
 
         except Exception as e:
             import logging
             logging.debug(f"Could not fetch {path} at {ref}: {e}")
-            return ""
+            return None
 
     def get_pull_reviews(self, owner: str, repo: str, number: int) -> GitHubResponse[list[PullRequestReview]]:
         """Get reviews of a PR (approve, request changes, comment with body)."""
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            reviews = list(pr.get_reviews())
-            return GitHubResponse(success=True, data=reviews)
+            reviews, truncated = _capped(pr.get_reviews())
+            return GitHubResponse(success=True, data=reviews, truncated=truncated)
         except Exception as e:
             return self._err(e)
 
@@ -915,8 +947,8 @@ class GitHubDataSource:
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            comments = list(pr.get_review_comments())
-            return GitHubResponse(success=True, data=comments)
+            comments, truncated = _capped(pr.get_review_comments())
+            return GitHubResponse(success=True, data=comments, truncated=truncated)
         except Exception as e:
             return self._err(e)
 
@@ -984,14 +1016,17 @@ class GitHubDataSource:
             return self._err(e)
 
 
-    def merge_pull(self, owner: str, repo: str, number: int, commit_message: str | None = None, merge_method: str = "merge") -> GitHubResponse[bool]:
-        """Merge a PR (merge/squash/rebase)."""
+    def merge_pull(self, owner: str, repo: str, number: int, commit_message: str | None = None, merge_method: str = "merge", sha: str | None = None) -> GitHubResponse[dict[str, object]]:
+        """Merge a PR (merge/squash/rebase). ``sha`` is the head the caller expects: GitHub
+        refuses the merge (409) when the PR has moved past it."""
         try:
             r = self._repo(owner, repo)
             pr = r.get_pull(number)
-            params = self._not_none(commit_message=commit_message, merge_method=merge_method)
-            ok = pr.merge(**params)
-            return GitHubResponse(success=True, data=bool(ok))
+            params = self._not_none(commit_message=commit_message, merge_method=merge_method, sha=sha)
+            result = pr.merge(**params)
+            return GitHubResponse(success=True, data={
+                "merged": bool(result.merged), "sha": result.sha, "message": result.message,
+            })
         except Exception as e:
             return self._err(e)
 

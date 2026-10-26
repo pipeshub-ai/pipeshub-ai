@@ -115,10 +115,10 @@ async def qdrant_service():
 
     host = os.environ.get("QDRANT_HOST", "localhost")
     port = int(os.environ.get("QDRANT_PORT", "6334"))
-    # gRPC always goes to 6334 (QdrantConfig has no grpc_port); "false" keeps a
-    # test container on other ports off whatever else listens there.
+    # "false" keeps a test container on other ports off whatever else listens on 6334.
     prefer_grpc = os.environ.get("QDRANT_PREFER_GRPC", "true").strip().lower() not in {"0", "false", "no"}
-    config = QdrantConfig.from_dict({"host": host, "port": port, "prefer_grpc": prefer_grpc})
+    config = QdrantConfig.from_dict({"host": host, "port": port, "prefer_grpc": prefer_grpc,
+                                   "grpc_port": int(os.environ.get("QDRANT_GRPC_PORT") or "6334")})
     svc = QdrantService(config)
     await _connect_or_skip(svc, "Qdrant", host, port)
     yield svc

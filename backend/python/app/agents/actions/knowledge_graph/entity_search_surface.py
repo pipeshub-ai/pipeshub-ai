@@ -8,6 +8,9 @@ with named-entity extraction on (``search_entities`` finds named entities,
 ``search``/``find_records_by_entity`` take their ids), ``search_entities``
 takes several queries at once and explains the kinds it cannot serve, and
 whatever names ``search_by_entities`` does so only because it is granted.
+With named-entity extraction off, the request also goes without
+``find_records_by_value`` and ``search_entities``' ``named_entity_kinds``,
+which could only fail there.
 
 Each variant is a small, named edit of the declared text, so the declared tool
 stays the single source of its wording; an edit whose anchor is gone fails
@@ -147,21 +150,43 @@ _VARIANTS: dict[str, _Variant] = {
 }
 
 
-def tools_for_request(instance: Any, tools: list[Tool], *, offered: bool) -> list[Tool]:  # noqa: ANN401
+def tools_for_request(
+    instance: Any, tools: list[Tool], *, offered: bool, named_entities: bool,  # noqa: ANN401
+) -> list[Tool]:
     """``tools`` as declared, without ``search_by_entities`` unless ``offered``;
-    with it, the entity-search variants in place of their declared tools."""
-    if not offered:
-        return [tool for tool in tools if tool.name != SEARCH_BY_ENTITIES_TOOL_NAME]
-    return [_variant_tool(instance, tool) for tool in tools]
+    with it, the entity-search variants in place of their declared tools.
+    Without ``named_entities``, also without the named-entity tool and parameter."""
+    if offered:
+        return [_variant_tool(instance, tool) for tool in tools]
+    served = [tool for tool in tools if tool.name != SEARCH_BY_ENTITIES_TOOL_NAME]
+    if named_entities:
+        return served
+    return [
+        _without_named_entity_kinds(instance, tool)
+        for tool in served
+        if tool.name != FIND_RECORDS_BY_VALUE_TOOL_NAME
+    ]
 
 
 def _variant_tool(instance: Any, tool: Tool) -> Tool:  # noqa: ANN401
     variant = _VARIANTS.get(tool.name)
-    declared = getattr(getattr(type(instance), _method_name(tool), None), TOOL_META_ATTR, None)
+    declared = _declared_meta(instance, tool)
     if variant is None or declared is None:
         return tool
     method: Callable[..., Any] = getattr(instance, variant.method or _method_name(tool))
     return BoundMethodTool(method, variant_meta(tool.name, declared))
+
+
+def _without_named_entity_kinds(instance: Any, tool: Tool) -> Tool:  # noqa: ANN401
+    declared = _declared_meta(instance, tool)
+    if tool.name != SEARCH_ENTITIES_TOOL_NAME or declared is None:
+        return tool
+    parameters = [p for p in declared.parameters if p.name != "named_entity_kinds"]
+    return BoundMethodTool(getattr(instance, _method_name(tool)), replace(declared, parameters=parameters))
+
+
+def _declared_meta(instance: Any, tool: Tool) -> ToolMeta | None:  # noqa: ANN401
+    return getattr(getattr(type(instance), _method_name(tool), None), TOOL_META_ATTR, None)
 
 
 def _method_name(tool: Tool) -> str:

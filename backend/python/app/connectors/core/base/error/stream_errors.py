@@ -236,8 +236,8 @@ def to_stream_error(exc: BaseException, *, connector: str | None = None) -> HTTP
             HttpStatusCode.CONFLICT.value,
             _RECONNECT.format(connector=connector or _DEFAULT_CONNECTOR),
         )
-    # ConnectorInitError's message is authored to be shown to the user.
-    if _is_a(exc, "ConnectorInitError"):
+    # These messages are authored to be shown to the user.
+    if _is_a(exc, "ConnectorInitError") or _is_a(exc, "AddressNotAllowedError"):
         return HTTPException(HttpStatusCode.CONFLICT.value, str(exc))
 
     status = extract_source_status(exc)

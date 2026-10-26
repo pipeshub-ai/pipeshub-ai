@@ -45,6 +45,7 @@ from helper.admin_route_conditional_table import (
     SERVICE_FOR_MEMBER,
     WORLD_GROUPS,
 )
+from helper import suite_extensions
 from helper.connector_service import CONNECTOR_URL_ENV, connector_service_url
 from helper.source_credentials import source_unavailable
 
@@ -623,3 +624,13 @@ class World:
             raise RuntimeError(
                 "The conditional-admin tests left something behind:\n  " + "\n  ".join(problems)
             )
+
+
+# How to make the groups an extension adds to WORLD_GROUPS (helper/suite_extensions.py).
+# Each builder takes the World, as a ``_build_<group>`` method does.
+for _group, _build in suite_extensions.add_items(
+    {}, "BUILDERS", suite_extensions.modules("admin_route_conditional_world"),
+).items():
+    if hasattr(World, f"_build_{_group}"):
+        raise ValueError(f"an extension adds a builder for the {_group!r} group, which World already makes")
+    setattr(World, f"_build_{_group}", _build)

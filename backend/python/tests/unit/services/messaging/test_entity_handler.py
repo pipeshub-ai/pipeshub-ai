@@ -1,7 +1,9 @@
 """Unit tests for app.services.messaging.kafka.handlers.entity.EntityEventService."""
 
+import asyncio
 import copy
 import logging
+from collections.abc import Iterator
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -12,6 +14,8 @@ from app.config.constants.arangodb import (
     CollectionNames,
     ConnectorScopes,
 )
+from app.connectors.core.base.connector.connector_service import connector_sync_lock
+from app.connectors.core.sync.sync_runner import _run_sync_alone
 from app.services.messaging.kafka.handlers.entity import EntityEventService
 
 # ---------------------------------------------------------------------------
@@ -430,7 +434,130 @@ class TestUserUpdated:
         call_args = graph_provider.batch_upsert_nodes.call_args
         user_data = call_args[0][0][0]
         assert user_data["fullName"] == "Alice Smith Updated"
-        assert user_data["isActive"] is True
+        # `isActive` is no longer one of the merged fields. This node has
+        # never carried it, so it is stamped by the conditional write that
+        # follows instead — see
+        # `test_a_node_from_before_the_field_is_still_marked_active`.
+        assert "isActive" not in user_data
+        graph_provider.update_node_fields_if_match.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_user_is_not_put_back(self) -> None:
+        """Soft delete is `isActive: False`, and these upserts merge. An update
+        event still in flight, or one from a request that raced the delete,
+        would otherwise bring a removed user back — and for a service account
+        that is the field a bound agent's identity is checked against."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1", "isActive": False},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        result = await svc.process_event(
+            "userUpdated",
+            {
+                "userId": "u-1",
+                "orgId": "org-1",
+                "email": "alice@test.com",
+                "fullName": "Alice Smith Updated",
+            },
+        )
+        assert result is True
+
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert "isActive" not in user_data
+        assert user_data["fullName"] == "Alice Smith Updated"
+        graph_provider.update_node_fields_if_match.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_node_from_before_the_field_is_still_marked_active(self) -> None:
+        """A node written before `isActive` existed is not evidence of a
+        deletion, and the permission reads filter on `isActive == true`, so it
+        is stamped. Through the conditional write, not the merge: a delete
+        that commits first leaves `False` and this must not undo it."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1"},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        await svc.process_event(
+            "userUpdated",
+            {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"},
+        )
+
+        assert "isActive" not in graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        key, collection, updates, expected = (
+            graph_provider.update_node_fields_if_match.call_args[0]
+        )
+        assert key == "user-key-1"
+        assert collection == CollectionNames.USERS.value
+        assert updates == {"isActive": True}
+        assert expected == {"isActive": None}
+
+    @pytest.mark.asyncio
+    async def test_a_delete_that_lands_mid_handler_still_wins(self) -> None:
+        """The window the guard has to survive: the delete commits after the
+        read and before the upsert. Written against a store that merges the way
+        both providers do, rather than against the call arguments."""
+        store = {"user-key-1": {"id": "user-key-1", "isActive": True}}
+
+        async def read_then_delete(user_id: str) -> dict:
+            seen = dict(store["user-key-1"])
+            # `_handle_user_deleted` on the other replica, in the window.
+            store["user-key-1"]["isActive"] = False
+            return seen
+
+        async def merge(nodes: list[dict], collection: str, **_: object) -> bool:
+            for node in nodes:
+                store.setdefault(node["id"], {}).update(node)
+            return True
+
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(side_effect=read_then_delete)
+        graph_provider.batch_upsert_nodes = AsyncMock(side_effect=merge)
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        result = await svc.process_event(
+            "userUpdated",
+            {
+                "userId": "u-1",
+                "orgId": "org-1",
+                "email": "alice@test.com",
+                "fullName": "Alice Smith Updated",
+            },
+        )
+
+        assert result is True
+        assert store["user-key-1"]["isActive"] is False
+        assert store["user-key-1"]["fullName"] == "Alice Smith Updated"
+        graph_provider.update_node_fields_if_match.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_active_user_is_not_restamped(self) -> None:
+        """The read already saw the field, so there is nothing to backfill and
+        no reason to spend a second write on every rename."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1", "isActive": True},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        await svc.process_event(
+            "userUpdated",
+            {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"},
+        )
+
+        assert "isActive" not in graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        graph_provider.update_node_fields_if_match.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
@@ -882,6 +1009,9 @@ class _KbGraph:
                 raise RuntimeError("LockAcquisitionTimeout")
             return []
         return [app for app in self.apps.values() if all(app.get(k) == v for k, v in filters.items())]
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return bool(explicit and self.honours_explicit)
 
     async def begin_transaction(self, read: list | None = None, write: list | None = None,
                                 explicit: bool | None = None) -> str:
@@ -1566,3 +1696,171 @@ class TestCreateKbConnectorAppInstanceEdgeCases:
                     result = await svc._create_kb_connector_app_instance("org-1", None)
                     assert result is not None
                     assert result["createdBy"] == "system"
+
+
+# ===================================================================
+# userAdded — link to running connectors
+# ===================================================================
+
+def _connector(org_id: str = "org-1", steps: tuple = ("_sync_users",), link=None) -> MagicMock:
+    c = MagicMock()
+    c.data_entities_processor.org_id = org_id
+    c.user_link_steps = steps
+    c.link_new_users = link or AsyncMock()
+    return c
+
+
+def _link_service(connectors: dict, app: dict | None = None) -> EntityEventService:
+    svc = _make_entity_service(app_container=SimpleNamespace(connectors_map=connectors, messaging_producer=None))
+    svc.graph_provider.get_document = AsyncMock(return_value={"isActive": True} if app is None else app)
+    return svc
+
+
+@pytest.fixture
+def no_debounce() -> Iterator[None]:
+    with patch("app.services.messaging.kafka.handlers.entity._LINK_DEBOUNCE_SEC", 0), \
+            patch("app.services.messaging.kafka.handlers.entity.get_coordinator", return_value=None):
+        yield
+
+
+async def _drain(svc) -> None:
+    await asyncio.gather(*[s["task"] for s in svc._link_state.values() if s["task"]])
+
+
+class TestUserAddedConnectorLink:
+    @pytest.mark.asyncio
+    async def test_added_user_schedules_link_pass(self) -> None:
+        svc = _make_entity_service()
+        svc._adopt_existing_person = AsyncMock()
+        svc._get_or_create_knowledge_base = AsyncMock()
+        svc._get_or_create_all_team_and_add_user = AsyncMock()
+        svc._schedule_connector_link = MagicMock()
+        svc.graph_provider.get_user_by_email = AsyncMock(return_value=None)
+        svc.graph_provider.get_document = AsyncMock(return_value={"_key": "org-1"})
+        payload = {"orgId": "org-1", "userId": "u-1", "email": "a@test.com"}
+        assert await svc._handle_user_added(payload) is True
+        svc._schedule_connector_link.assert_called_once_with("org-1")
+
+    @pytest.mark.asyncio
+    async def test_links_only_this_orgs_linking_connectors(self, no_debounce: None) -> None:
+        mine, other, plain = _connector(), _connector(org_id="org-2"), _connector(steps=())
+        svc = _link_service({"c1": mine, "c2": other, "c3": plain})
+        svc._schedule_connector_link("org-1")
+        await _drain(svc)
+        mine.link_new_users.assert_awaited_once()
+        other.link_new_users.assert_not_awaited()
+        plain.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_failing_connector_does_not_stop_the_rest_or_raise(self, no_debounce: None) -> None:
+        bad = _connector(link=AsyncMock(side_effect=RuntimeError("boom")))
+        good = _connector()
+        svc = _link_service({"c1": bad, "c2": good})
+        svc._schedule_connector_link("org-1")
+        await _drain(svc)
+        good.link_new_users.assert_awaited_once()
+        svc.logger.warning.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_a_burst_is_one_pass_per_connector(self) -> None:
+        c = _connector()
+        svc = _link_service({"c1": c})
+        with patch("app.services.messaging.kafka.handlers.entity._LINK_DEBOUNCE_SEC", 0.05), \
+                patch("app.services.messaging.kafka.handlers.entity.get_coordinator", return_value=None):
+            for _ in range(200):
+                svc._schedule_connector_link("org-1")
+            await _drain(svc)
+        assert c.link_new_users.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_an_add_during_a_pass_gets_one_more_and_never_overlaps(self) -> None:
+        running, overlap, calls = 0, 0, 0
+
+        started = asyncio.Event()
+
+        async def slow() -> None:
+            nonlocal running, overlap, calls
+            running += 1
+            overlap = max(overlap, running)
+            calls += 1
+            started.set()
+            await asyncio.sleep(0.1)
+            running -= 1
+
+        svc = _link_service({"c1": _connector(link=slow)})
+        with patch("app.services.messaging.kafka.handlers.entity._LINK_DEBOUNCE_SEC", 0.02), \
+                patch("app.services.messaging.kafka.handlers.entity.get_coordinator", return_value=None):
+            svc._schedule_connector_link("org-1")
+            await started.wait()  # first pass in flight
+            for _ in range(5):
+                svc._schedule_connector_link("org-1")
+            await _drain(svc)
+        assert (calls, overlap) == (2, 1)
+
+    @pytest.mark.asyncio
+    async def test_waits_for_a_running_sync_then_links(self) -> None:
+        c = _connector()
+        svc = _link_service({"c1": c})
+        coordinator = MagicMock()
+        coordinator.is_running = AsyncMock(side_effect=[True, True, False])
+        with patch("app.services.messaging.kafka.handlers.entity._LINK_DEBOUNCE_SEC", 0), \
+                patch("app.services.messaging.kafka.handlers.entity.get_coordinator", return_value=coordinator):
+            svc._schedule_connector_link("org-1")
+            await _drain(svc)
+        assert c.link_new_users.await_count == 1
+        assert coordinator.is_running.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_gives_up_on_a_sync_that_never_ends(self) -> None:
+        c = _connector()
+        svc = _link_service({"c1": c})
+        coordinator = MagicMock()
+        coordinator.is_running = AsyncMock(return_value=True)
+        with patch("app.services.messaging.kafka.handlers.entity._LINK_DEBOUNCE_SEC", 0), \
+                patch("app.services.messaging.kafka.handlers.entity._LINK_MAX_DEFERRALS", 3), \
+                patch("app.services.messaging.kafka.handlers.entity.get_coordinator", return_value=coordinator):
+            svc._schedule_connector_link("org-1")
+            await _drain(svc)
+        c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("app", [None, {"isActive": False}, {"isActive": True, "status": "DELETING"}])
+    async def test_skipped_for_a_missing_off_or_deleting_connector(self, no_debounce: None, app: dict | None) -> None:
+        c = _connector()
+        svc = _link_service({"c1": c})
+        svc.graph_provider.get_document = AsyncMock(return_value=app)
+        svc._schedule_connector_link("org-1")
+        await _drain(svc)
+        c.link_new_users.assert_not_awaited()
+        svc.graph_provider.batch_upsert_nodes.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deferred_while_a_sync_holds_the_connector(self, no_debounce: None) -> None:
+        c = _connector()
+        svc = _link_service({"c1": c})
+        async with connector_sync_lock("c1"):
+            assert await svc._link_connector("c1") is False
+        c.link_new_users.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_sync_admitted_during_a_pass_runs_after_it(self, no_debounce: None) -> None:
+        events: list[str] = []
+        started, release = asyncio.Event(), asyncio.Event()
+
+        async def link() -> None:
+            events.append("pass starts")
+            started.set()
+            await release.wait()
+            events.append("pass ends")
+
+        c = _connector(link=link)
+        c.run_sync = AsyncMock(side_effect=lambda: events.append("sync"))
+        svc = _link_service({"c1": c})
+        link_pass = asyncio.create_task(svc._link_connector("c1"))
+        await started.wait()
+        sync = asyncio.create_task(_run_sync_alone(c, "c1"))
+        await asyncio.sleep(0.01)
+        assert events == ["pass starts"]
+        release.set()
+        await asyncio.gather(link_pass, sync)
+        assert events == ["pass starts", "pass ends", "sync"]

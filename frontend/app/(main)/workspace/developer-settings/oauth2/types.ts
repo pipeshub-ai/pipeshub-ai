@@ -31,6 +31,11 @@ export interface OAuthClient {
   knowledgeLimit?: KnowledgeLimit;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * The service account this application's own tokens act as. Absent means
+   * they act as whoever created it — the case the migration prompt is for.
+   */
+  tokenIdentityUserId?: string;
 }
 
 export interface OAuthClientsPagination {
@@ -70,6 +75,8 @@ export interface CreateOAuthClientPayload {
   termsOfServiceUrl?: string;
   isConfidential: boolean;
   knowledgeLimit?: KnowledgeLimit;
+  /** Required when allowedGrantTypes includes client_credentials. */
+  tokenIdentityUserId?: string;
 }
 
 /** POST /api/v1/oauth-clients ΓÇö response includes clientSecret only at creation time */

@@ -67,7 +67,7 @@ async def test_robust_mode_backs_off_and_retries_a_rate_limited_page(
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert db.pages()["http://site.test/busy"].record_name == "Busy"
-    assert 15.0 in clock.sleeps
+    assert clock.slept(15.0)
 
 
 async def test_a_script_rendered_site_is_detected_and_crawled_with_the_browser(
@@ -305,7 +305,7 @@ async def test_robust_mode_retries_blocked_pages_and_documents_through_the_per_s
 
     await (await make_connector(use_headless_browser=True)).run_sync()
 
-    assert BROWSER_RETRY_LAST_WAIT in clock.sleeps
+    assert clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert db.pages()[f"http://site.test{link}"].indexing_status == ProgressStatus.FAILED.value
     assert set(db.pages()) == {START_URL, f"http://site.test{link}"}
 
@@ -320,7 +320,7 @@ async def test_robust_mode_fetches_a_redirected_file_the_browser_could_not_open(
 
     await (await make_connector(use_headless_browser=True)).run_sync()
 
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert browser.storage_docs[db.pages()[pdf].storage_document_id] == b"%PDF-1.4 handbook"
     assert set(db.pages()) == {START_URL, pdf}
 
@@ -338,7 +338,7 @@ async def test_robust_mode_follows_a_redirect_the_browser_aborted_onto_a_file(
     await (await make_connector(start, crawl_type="single" if single_page else "recursive",
                                 use_headless_browser=True)).run_sync()
 
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert browser.storage_docs[db.pages()[pdf].storage_document_id] == b"%PDF-1.4 handbook"
     assert "http://site.test/handbook" not in db.pages()
 
@@ -365,7 +365,7 @@ async def test_robust_mode_still_retries_an_html_page_the_browser_got_no_answer_
 
     await (await make_connector(use_headless_browser=True)).run_sync()
 
-    assert BROWSER_RETRY_LAST_WAIT in clock.sleeps
+    assert clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert db.pages()["http://site.test/flaky"].indexing_status == ProgressStatus.FAILED.value
 
 
@@ -379,7 +379,7 @@ async def test_robust_mode_skips_an_oversized_file_behind_an_aborted_redirect_wi
 
     await (await make_connector(use_headless_browser=True, max_size_mb=1)).run_sync()
 
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert browser.gets(pdf) == 0
     # Listed where the file is, as too large, and nothing downloaded.
     too_large = db.pages()[pdf]
@@ -411,7 +411,7 @@ async def test_robust_mode_never_downloads_a_redirected_file_outside_the_crawl(
     await (await make_connector(use_headless_browser=True, **settings)).run_sync()
 
     assert [method for method, url in browser.requests if url == target] == []
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert target not in db.pages()
 
 
@@ -426,7 +426,7 @@ async def test_robust_mode_probes_with_get_when_head_is_refused_and_stays_off_ot
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert [method for method, url in browser.requests if url == target] == []
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
     assert target not in db.pages()
 
 
@@ -441,7 +441,7 @@ async def test_robust_mode_probes_with_get_when_head_is_refused_and_fetches_an_i
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert browser.storage_docs[db.pages()[pdf].storage_document_id] == b"%PDF-1.4 report"
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
 
 
 async def test_robust_mode_takes_the_probe_s_error_for_a_page_instead_of_retrying_the_browser(
@@ -455,7 +455,7 @@ async def test_robust_mode_takes_the_probe_s_error_for_a_page_instead_of_retryin
     await connector.run_sync()
 
     assert browser.gets(gone) == 0
-    assert BROWSER_RETRY_LAST_WAIT not in clock.sleeps
+    assert not clock.slept(BROWSER_RETRY_LAST_WAIT)
     # The probe's real status, not the browser's silence, is what the page is filed under.
     assert connector.retry_urls[gone].status_code == 404
     assert gone not in db.pages()
@@ -518,7 +518,7 @@ async def test_robust_mode_reports_the_status_the_site_really_sent(
     await (await make_connector(use_headless_browser=True)).run_sync()
 
     assert (db.pages()["http://site.test/page"].reason or "").startswith(reason)
-    assert BROWSER_RETRY_LAST_WAIT in clock.sleeps
+    assert clock.slept(BROWSER_RETRY_LAST_WAIT)
 
 
 async def test_robust_mode_reports_no_answer_as_unreachable(

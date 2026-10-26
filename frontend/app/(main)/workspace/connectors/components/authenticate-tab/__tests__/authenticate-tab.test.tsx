@@ -90,7 +90,7 @@ describe('AuthenticateTab: credential form', () => {
     expect(screen.getByText('Instance name')).toBeTruthy();
     // The label names the input, for screen readers and getByLabelText.
     expect(screen.getByLabelText(/Instance name/)).toBe(screen.getByPlaceholderText('e.g. Production Slack'));
-    expect(screen.getByText('API Token Credentials')).toBeTruthy();
+    expect(screen.getByText('API Token credentials')).toBeTruthy();
     expect(screen.getByText('Enter your Jira authentication details')).toBeTruthy();
     expect(inputByLabel('Site URL').type).toBe('url');
     expect(inputByLabel('Account email').type).toBe('email');

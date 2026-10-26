@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import logging
 import time
-from contextlib import contextmanager
 from typing import TYPE_CHECKING
 
 from app.modules.entity_resolution.models import ResolutionMode
@@ -31,8 +30,6 @@ from app.telemetry.modules.named_entity_metrics import observe_stage, record_run
 _MODEL_GAVE_UP = frozenset({"no_progress", "budget_turns", "budget_tokens", "timeout"})
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
-
     from langchain_core.language_models.chat_models import BaseChatModel
 
     from app.config.configuration_service import ConfigurationService
@@ -125,36 +122,6 @@ async def extract_named_entities(
         supports_tools=False if reextract else None,
     )
     return await NamedEntityExtractor().extract(request)
-
-
-@contextmanager
-def extraction_blob_holder(record: object, extraction: NamedEntityExtraction | None) -> Iterator[bool]:
-    """While the blob is written, carry the extraction even if classification gave
-    no semantic metadata: the blob is the copy the graph and vectors are rebuilt
-    from. The holder is removed again because no metadata means a failed
-    classification to the graph writer. Yields whether a holder was set."""
-    holds = (
-        isinstance(extraction, NamedEntityExtraction)
-        and getattr(record, "semantic_metadata", None) is None
-        and (bool(extraction.entities) or extraction.status != "SKIPPED")
-    )
-    if not holds:
-        yield False
-        return
-    from app.models.blocks import SemanticMetadata
-
-    record.semantic_metadata = SemanticMetadata(named_entities=extraction.model_dump(mode="json"))
-    try:
-        yield True
-    finally:
-        record.semantic_metadata = None
-
-
-def attach_named_entities(record: Record, extraction: NamedEntityExtraction) -> None:
-    metadata = getattr(record, "semantic_metadata", None)
-    if metadata is None:
-        return
-    metadata.named_entities = extraction.model_dump(mode="json")
 
 
 def _model_gave_nothing(extraction: NamedEntityExtraction) -> bool:

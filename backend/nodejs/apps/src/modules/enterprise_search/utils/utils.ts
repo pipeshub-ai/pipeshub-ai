@@ -12,7 +12,7 @@ import {
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
 import { randomUUID } from 'crypto';
-import mongoose, { ClientSession, FilterQuery } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -46,6 +46,7 @@ import {
   CHAT_ERROR_MESSAGES,
   userFacingChatError,
 } from './chat-error-messages';
+import { stripModelAuthoredMarkers } from './answer-markers';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -211,7 +212,7 @@ export const allocateSeq = async (
     { _id: sessionId },
     { $inc: { nextSeq: n } },
     {
-      new: true,
+      returnDocument: 'after',
       projection: { nextSeq: 1 }, // overrides the schema's `select: false` for this one read
       session: mongoSession || undefined,
     },
@@ -252,7 +253,7 @@ export const appendMessages = async (
   return ChatSessionMessage.insertMany(toInsert, {
     ordered: true,
     session: mongoSession || undefined,
-  }) as unknown as Promise<IChatSessionMessageDocument[]>;
+  });
 };
 
 /**
@@ -265,28 +266,55 @@ export const appendMessages = async (
  */
 export const updateMessageById = async (
   messageId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
   newContent: IMessage,
   mongoSession?: ClientSession | null,
 ): Promise<IChatSessionMessageDocument | null> => {
-  const existing = await ChatSessionMessage.findById(messageId, undefined, {
-    session: mongoSession || undefined,
-  });
+  const existing = await ChatSessionMessage.findOne(
+    { _id: messageId, orgId },
+    undefined,
+    { session: mongoSession || undefined },
+  );
   if (!existing) {
     return null;
   }
   return ChatSessionMessage.findOneAndReplace(
-    { _id: messageId },
+    { _id: messageId, orgId },
     {
       ...newContent,
       sessionId: existing.sessionId,
       orgId: existing.orgId,
       seq: existing.seq,
     },
-    { new: true, session: mongoSession || undefined, runValidators: true },
+    {
+      returnDocument: 'after',
+      session: mongoSession || undefined,
+      runValidators: true,
+    },
   );
 };
 
-const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
+/**
+ * Rewrite a stored `user_query` row, used when the user edits the last
+ * question and regenerates its answer. Only `content` changes, and
+ * `attachments` when the edit replaced them (omitted keeps the stored files);
+ * mentions and seq stay as they were. Scoped to the conversation, so an id
+ * from anywhere else matches nothing.
+ */
+export const updateUserQueryContent = async (
+  messageId: mongoose.Types.ObjectId | string,
+  content: string,
+  sessionId: mongoose.Types.ObjectId | string,
+  mongoSession?: ClientSession | null,
+  attachments?: IChatAttachmentRef[],
+): Promise<IChatSessionMessageDocument | null> =>
+  ChatSessionMessage.findOneAndUpdate(
+    { _id: messageId, sessionId, messageType: 'user_query' },
+    { $set: { content, ...(attachments ? { attachments } : {}) } },
+    { returnDocument: 'after', session: mongoSession || undefined },
+  );
+
+export const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
   Boolean(msg?.tools?.some((tool) => tool.toolName?.includes('ask_user_question')));
 
 /**
@@ -327,13 +355,15 @@ export const staleAskUserQuestionToolCallIds = (
 
 export const deleteMessagesById = async (
   messageIds: mongoose.Types.ObjectId[],
+  orgId: mongoose.Types.ObjectId | string,
   mongoSession?: ClientSession | null,
+  sessionId?: mongoose.Types.ObjectId | string,
 ): Promise<number> => {
   if (messageIds.length === 0) {
     return 0;
   }
   const result = await ChatSessionMessage.deleteMany(
-    { _id: { $in: messageIds } },
+    { _id: { $in: messageIds }, orgId, ...(sessionId ? { sessionId } : {}) },
     mongoSession ? { session: mongoSession } : undefined,
   );
   return result.deletedCount ?? 0;
@@ -342,13 +372,18 @@ export const deleteMessagesById = async (
 /** Append a feedback entry to one message's `feedback` array. */
 export const appendMessageFeedback = async (
   messageId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
   feedbackEntry: unknown,
   mongoSession?: ClientSession | null,
 ): Promise<IChatSessionMessageDocument | null> => {
   return ChatSessionMessage.findOneAndUpdate(
-    { _id: messageId },
+    { _id: messageId, orgId },
     { $push: { feedback: feedbackEntry } },
-    { new: true, session: mongoSession || undefined, runValidators: true },
+    {
+      returnDocument: 'after',
+      session: mongoSession || undefined,
+      runValidators: true,
+    },
   );
 };
 
@@ -362,18 +397,25 @@ export const appendMessageFeedback = async (
 export const getMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   options: {
+    orgId: mongoose.Types.ObjectId | string;
     skip?: number;
     limit?: number;
     populateCitations?: boolean;
     sort?: 1 | -1;
-  } = {},
+  },
   mongoSession?: ClientSession | null,
 ): Promise<any[]> => {
-  const { skip = 0, limit, populateCitations = false, sort = 1 } = options;
+  const {
+    orgId,
+    skip = 0,
+    limit,
+    populateCitations = false,
+    sort = 1,
+  } = options;
   if (limit !== undefined && limit <= 0) {
     return [];
   }
-  let query = ChatSessionMessage.find({ sessionId }).sort({ seq: sort });
+  let query = ChatSessionMessage.find({ sessionId, orgId }).sort({ seq: sort });
   if (skip) {
     query = query.skip(skip);
   }
@@ -424,6 +466,22 @@ export const withoutErrorStacks = <T extends object>(conversation: T): T => {
     ...conversation,
     conversationErrors: conversationErrors.map(withoutStack),
   };
+};
+
+/**
+ * Error text, the failure reason and the compacted summary are written from the
+ * owner's runs and can quote what they read; other people listing the chat get none.
+ */
+export const withoutOwnerOnlyFields = <T extends object>(
+  conversation: T,
+): T => {
+  const {
+    conversationErrors: _errors,
+    failReason: _reason,
+    compactedSummary: _summary,
+    ...visible
+  } = conversation as Record<string, unknown>;
+  return visible as T;
 };
 
 export const attachMessages = (session: any, messages: any[]): any => {
@@ -484,7 +542,10 @@ export const attachPopulatedCitations = async (
     try {
       messages = await getMessages(
         sessionId,
-        { populateCitations: true },
+        {
+          orgId: (session as { orgId: string }).orgId,
+          populateCitations: true,
+        },
         mongoSession,
       );
     } catch (err: any) {
@@ -808,13 +869,44 @@ const withTurnAskToolResults = (
   return extra.length ? [...existing, ...extra] : existing;
 };
 
+/** Whether the turn at `index` still gets an answer before the next question. */
+const answerFollows = (messages: IMessage[], index: number): boolean => {
+  for (let j = index + 1; j < messages.length; j++) {
+    const type = messages[j]?.messageType;
+    if (type === 'bot_response') return true;
+    if (type === 'user_query') return false;
+  }
+  return false;
+};
+
+/**
+ * Prior turns for the AI service, oldest first.
+ *
+ * A turn that failed before an answer leaves an `error` row in place of one.
+ * It is sent as an answer with `status: 'failed'`: dropped, its question
+ * replayed as still open, and providers that merge consecutive user turns
+ * joined it to the current question. An answer the user stopped carries
+ * `status: 'stopped'`. The AI service renders both as short markers.
+ */
 export const formatPreviousConversations = (messages: IMessage[]) => {
   const result: Array<Record<string, unknown>> = [];
+  // Tracked, not read off the last entry: a fork keeps stored `system` rows,
+  // which can sit between a question and its error.
+  let questionOpen = false;
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
-    if (!msg || msg.messageType === 'error' || msg.messageType === 'tool_call') {
+    if (!msg || msg.messageType === 'tool_call') {
       continue;
     }
+    if (msg.messageType === 'error') {
+      if (questionOpen && !answerFollows(messages, i)) {
+        result.push({ role: 'bot_response', content: '', status: 'failed' });
+        questionOpen = false;
+      }
+      continue;
+    }
+    if (msg.messageType === 'user_query') questionOpen = true;
+    if (msg.messageType === 'bot_response') questionOpen = false;
     let toolResults: PreviousToolResult[] =
       msg.messageType === 'bot_response' ? toolResultsFromParts(msg.parts) : [];
     if (msg.messageType === 'bot_response') {
@@ -838,6 +930,9 @@ export const formatPreviousConversations = (messages: IMessage[]) => {
       // see HOW a past answer was produced instead of text-only history
       // (see `_convert_conversation_turn`, factory.py).
       ...(toolResults.length > 0 && { tool_results: toolResults }),
+      // A reply the user stopped did not finish its card's work, so the card can be answered again.
+      ...(msg.messageType === 'bot_response' &&
+        msg.status === 'stopped' && { status: 'stopped' }),
     });
   }
   return result;
@@ -997,6 +1092,25 @@ export const attachSharedBy = async <
   });
 };
 
+/**
+ * Which of `ids` (ObjectId strings) are active users of the organisation. One
+ * query, so a caller can check a whole list before it opens a transaction.
+ */
+export const findOrgUserIds = async (
+  orgId: string,
+  ids: string[],
+): Promise<Set<string>> => {
+  const users = await Users.find({
+    orgId: new mongoose.Types.ObjectId(orgId),
+    isDeleted: false,
+    _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .select('_id')
+    .lean()
+    .exec();
+  return new Set(users.map((user) => user._id.toString()));
+};
+
 export const attachSharedByIfRecipient = async <
   T extends {
     initiator?: { toString(): string };
@@ -1041,7 +1155,7 @@ export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
  * `require`d id param.
  */
 export const applyProjectIdQueryFilter = (
-  filter: FilterQuery<IChatSessionDocument>,
+  filter: Record<string, unknown>,
   req: AuthenticatedUserRequest,
 ): void => {
   const projectIdRaw = req.query?.projectId;
@@ -1066,11 +1180,11 @@ export const buildFilter = (
   shared: boolean = true,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
-) => {
+): Record<string, unknown> => {
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
   }
-  const filter: any = {
+  const filter: Record<string, unknown> = {
     orgId: new mongoose.Types.ObjectId(orgId),
     isDeleted: false,
     isArchived: false,
@@ -1126,20 +1240,21 @@ export const buildFilter = (
 
   // Handle date range
   if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
+    const createdAt: { $gte?: Date; $lte?: Date } = {};
+    filter.createdAt = createdAt;
     if (req.query.startDate) {
       const startDate = new Date(req.query.startDate as string);
       if (isNaN(startDate.getTime())) {
         throw new BadRequestError('Invalid start date format');
       }
-      filter.createdAt.$gte = startDate;
+      createdAt.$gte = startDate;
     }
     if (req.query.endDate) {
       const endDate = new Date(req.query.endDate as string);
       if (isNaN(endDate.getTime())) {
         throw new BadRequestError('Invalid end date format');
       }
-      filter.createdAt.$lte = endDate;
+      createdAt.$lte = endDate;
     }
   }
 
@@ -1154,7 +1269,7 @@ export const buildFilter = (
     }
   }
 
-  return filter;
+  return filter as Record<string, unknown>;
 };
 
 export const buildPaginationMetadata = (
@@ -1665,7 +1780,7 @@ export interface RunReservation {
  * purpose: inside a transaction snapshot the status would never change.
  */
 export const reserveRun = async (
-  filter: FilterQuery<IChatSessionDocument>,
+  filter: QueryFilter<IChatSessionDocument>,
   settleMs: number = ACTIVE_RUN_SETTLE_MS,
 ): Promise<RunReservation | null> => {
   const deadline = Date.now() + settleMs;
@@ -1692,7 +1807,7 @@ export const reserveRun = async (
           activeRunId: runId,
         },
       },
-      { new: false },
+      { returnDocument: 'before' },
     )
       .select('status')
       .lean();
@@ -1862,7 +1977,7 @@ export const savePartialConversation = async (
   try {
     const partialMessage: IMessage = {
       messageType: 'bot_response',
-      content: partialText,
+      content: stripModelAuthoredMarkers(partialText),
       contentFormat: 'MARKDOWN',
       status: 'stopped',
       ...(options?.parts?.length ? { parts: options.parts } : {}),
@@ -1873,6 +1988,7 @@ export const savePartialConversation = async (
     if (options?.replaceMessageId) {
       const updated = await updateMessageById(
         options.replaceMessageId,
+        conversation.orgId,
         partialMessage,
         session,
       );
@@ -1949,6 +2065,7 @@ export const replaceMessageWithError = async (
     const failedMessage = buildAIFailureResponseMessage(errorMessage);
     const updatedMessage = await updateMessageById(
       messageId,
+      conversation.orgId,
       failedMessage,
       session,
     );
@@ -2137,6 +2254,10 @@ export const markAgentConversationFailed = async (
  * Build filter for agent conversations. `ONLY_AGENT` is applied here (in
  * addition to always requiring a concrete `agentKey`) as defense-in-depth
  * now that agent and plain-chat sessions share one collection.
+ *
+ * `includeShared` adds the read-only "shared with me" branch. It is off by
+ * default so owner-only actions built on this filter (fork, cancel, archive
+ * list) never widen to a recipient; only the read paths opt in.
  */
 export const buildAgentConversationFilter = (
   req: any,
@@ -2146,18 +2267,32 @@ export const buildAgentConversationFilter = (
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
+  includeShared: boolean = false,
 ) => {
-  const filter: any = {
+  const filter: Record<string, unknown> = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [
       { userId: new mongoose.Types.ObjectId(userId) },
+      ...(includeShared
+        ? [
+            {
+              $and: [
+                { isShared: true },
+                { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
+              ],
+              // The owner archiving a chat takes it away from the people it was shared with.
+              isArchived: { $ne: true },
+            },
+          ]
+        : []),
       ...(accessibleProjectIds && accessibleProjectIds.length > 0
         ? [
             {
               projectId: { $in: accessibleProjectIds },
               projectVisibility: 'project',
+              isArchived: { $ne: true },
             },
           ]
         : []),
@@ -2191,20 +2326,21 @@ export const buildAgentConversationFilter = (
 
   // Handle date range
   if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
+    const createdAt: { $gte?: Date; $lte?: Date } = {};
+    filter.createdAt = createdAt;
     if (req.query.startDate) {
       const startDate = new Date(req.query.startDate as string);
       if (isNaN(startDate.getTime())) {
         throw new BadRequestError('Invalid start date format');
       }
-      filter.createdAt.$gte = startDate;
+      createdAt.$gte = startDate;
     }
     if (req.query.endDate) {
       const endDate = new Date(req.query.endDate as string);
       if (isNaN(endDate.getTime())) {
         throw new BadRequestError('Invalid end date format');
       }
-      filter.createdAt.$lte = endDate;
+      createdAt.$lte = endDate;
     }
   }
 
@@ -2230,8 +2366,8 @@ export const buildAgentSharedWithMeFilter = (
   orgId: string,
   userId: string,
   agentKey: string,
-) => {
-  const filter: any = {
+): Record<string, unknown> => {
+  const filter: Record<string, unknown> = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
@@ -2285,8 +2421,14 @@ export const validateAgentConversationAccess = async (
         { userId }, // Owner
         {
           isShared: true,
-          'sharedWith.userId': userId,
-          ...(accessLevel === 'write' && { 'sharedWith.accessLevel': 'write' }),
+          isArchived: { $ne: true },
+          // One entry must carry both the user and the level (separate dotted paths match across entries).
+          sharedWith: {
+            $elemMatch: {
+              userId,
+              ...(accessLevel === 'write' && { accessLevel: 'write' }),
+            },
+          },
         },
       ],
     });
@@ -2722,6 +2864,7 @@ export const handleRegenerationSuccess = async (
 
   const updatedMessage = await updateMessageById(
     messageId,
+    existingConversation.orgId,
     aiResponseMessage,
     session,
   );
@@ -2736,9 +2879,14 @@ export const handleRegenerationSuccess = async (
   // already see must not fail on transcript housekeeping.
   if (staleAskToolCallIds?.length) {
     try {
-      await deleteMessagesById(staleAskToolCallIds, session);
+      await deleteMessagesById(
+        staleAskToolCallIds,
+        existingConversation.orgId,
+        session,
+        existingConversation._id,
+      );
     } catch (cleanupErr: any) {
-      logger.warn('Failed to drop stale ask_user_question rows after regenerate', {
+      logger.warn('Failed to drop stale rows after regenerate', {
         conversationId: existingConversation._id,
         messageId,
         error: cleanupErr?.message,
@@ -2825,7 +2973,7 @@ export const handleRegenerationError = async (
       if (updatedConversation) {
         const messages = await getMessages(
           updatedConversation._id as mongoose.Types.ObjectId,
-          {},
+          { orgId: updatedConversation.orgId },
           session,
         );
         const plainConversation = attachMessages(

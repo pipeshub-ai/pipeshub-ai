@@ -17,7 +17,7 @@ from __future__ import annotations
 import asyncio
 import re
 from collections.abc import Callable
-from typing import Any, Dict, List, Optional, TYPE_CHECKING, TypeGuard
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypeGuard
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
@@ -634,11 +634,17 @@ async def _read_channel_record(
             "record_count": len(replies),
         })
 
-    from app.utils.chat_helpers import enrich_read_records_with_address_links
-
-    await enrich_read_records_with_address_links(
-        found_records, graph_provider, org_id, user_id=user_id,
+    from app.modules.retrieval.selection_scope import connection_sources_of
+    from app.utils.chat_helpers import (
+        enrich_read_records_with_address_links,
+        keep_record_text_inside_connection,
     )
+
+    limit = connection_sources_of((scope_state or {}).get("filters"))
+    await enrich_read_records_with_address_links(
+        found_records, graph_provider, org_id, user_id=user_id, connection_sources=limit,
+    )
+    await keep_record_text_inside_connection(found_records, graph_provider, user_id or "", org_id, limit)
 
     if threads:
         messages = max(len(in_record), 1)
@@ -828,11 +834,17 @@ async def _fetch_thread_records_impl(
 
     # A reply that pasted a pull request's or a ticket's link shows it, with
     # whether and when it merged or closed.
-    from app.utils.chat_helpers import enrich_read_records_with_address_links
-
-    await enrich_read_records_with_address_links(
-        found_records, graph_provider, effective_org, user_id=user_id,
+    from app.modules.retrieval.selection_scope import connection_sources_of
+    from app.utils.chat_helpers import (
+        enrich_read_records_with_address_links,
+        keep_record_text_inside_connection,
     )
+
+    limit = connection_sources_of((scope_state or {}).get("filters"))
+    await enrich_read_records_with_address_links(
+        found_records, graph_provider, effective_org, user_id=user_id, connection_sources=limit,
+    )
+    await keep_record_text_inside_connection(found_records, graph_provider, user_id or "", effective_org, limit)
 
     logger.info(
         "Fetched Slack thread %s: %d records returned, %d skipped (input record_id=%s)",

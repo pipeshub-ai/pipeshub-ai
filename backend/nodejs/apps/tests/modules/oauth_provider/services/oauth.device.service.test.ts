@@ -208,7 +208,7 @@ describe('OAuthDeviceService', () => {
     )
   })
 
-  it('stores the limit at creation and refuses approval and poll once the app limit differs', async () => {
+  it('stores the limit at creation and refuses approval and poll once the app limit narrows', async () => {
     const shown = { apps: [], recordGroups: [], records: ['f1'] };
     const create = sinon.stub(OAuthDeviceCode, 'create').resolves({} as any);
     mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: shown });
@@ -228,7 +228,10 @@ describe('OAuthDeviceService', () => {
     await service.approve('ABCD-EFGH', ids[0], ids[1], 'granted');
     expect(pending.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
 
-    mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: undefined });
+    mockOAuthAppService.getAppByClientId.resolves({
+      ...app,
+      knowledgeLimit: { apps: [], recordGroups: [], records: [] },
+    });
     const again = { ...pending, status: OAuthDeviceCodeStatus.PENDING, save: sinon.stub().resolves() };
     findOne.resolves(again);
     try {
@@ -249,6 +252,35 @@ describe('OAuthDeviceService', () => {
       expect(err).to.be.instanceOf(InvalidGrantError);
     }
     expect(mockOAuthTokenService.generateTokens.called).to.be.false;
+  });
+
+  it('approves and mints with the limit shown at consent when the app limit has widened since', async () => {
+    const shown = { apps: [], recordGroups: [], records: ['f1'] };
+    mockOAuthAppService.getAppByClientId.resolves({ ...app, knowledgeLimit: undefined });
+    const pending: any = {
+      status: OAuthDeviceCodeStatus.PENDING,
+      expiresAt: new Date(Date.now() + 60_000),
+      clientId: 'cid',
+      knowledgeLimit: shown,
+      scopes: ['user:read'],
+      save: sinon.stub().resolves(),
+    };
+    const findOne = sinon.stub(OAuthDeviceCode, 'findOne').resolves(pending);
+    await service.approve('ABCD-EFGH', new Types.ObjectId().toString(), new Types.ObjectId().toString(), 'granted');
+    expect(pending.status).to.equal(OAuthDeviceCodeStatus.APPROVED);
+
+    const approved = { ...pending, _id: new Types.ObjectId(), userId: new Types.ObjectId(), orgId: new Types.ObjectId() };
+    findOne.resolves(approved);
+    sinon.stub(OAuthDeviceCode, 'findOneAndDelete').resolves(approved as any);
+    stubLookup(Users, { fullName: 'Ada' });
+    stubLookup(Org, { accountType: 'business' });
+
+    await service.poll('cid', undefined, 'device-code');
+
+    expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({
+      recheckAppScopes: true,
+      grantedKnowledgeLimit: shown,
+    });
   });
 
   it('should drop scopes the app lost between approval and poll', async () => {

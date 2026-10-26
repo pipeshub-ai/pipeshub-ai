@@ -15,15 +15,18 @@ lands only while its job is still the one it read. A normal write of the record
 (it was indexed again meanwhile) drops the job in its own transaction, and that
 write extracted afresh.
 
-The blob keeps the extraction indexing stored. A persist retry that later
-re-projects it writes those entities again, and that write queues the record
-for a re-extraction once more, so the record settles on the complete set.
+A written completion replaces the extraction the ``entities`` stage kept for the
+revision. When it cannot (a record indexed before the stage, a newer run, an
+error), a later re-projection writes the older extraction again, and that
+write queues the record once more, so the record settles on the complete set.
+Queuing here instead would never settle a record the stage has no state for.
 """
 
 from __future__ import annotations
 
 import asyncio
 import inspect
+import logging
 import math
 import os
 from typing import TYPE_CHECKING, Any
@@ -39,6 +42,7 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
+from app.modules.named_entities.kept import keep_extraction
 from app.modules.named_entities.stage import REEXTRACT_MAX_WINDOWS
 from app.modules.named_entities.strategies.single_call import WINDOW_TIMEOUT_SECONDS
 from app.services.graph_db.common.record_visibility import is_live_record
@@ -69,6 +73,8 @@ STARTUP_GRACE_SECONDS = 300.0
 DEFAULT_INTERVAL_SECONDS = 60.0
 LEADER_KEY = "named_entity_completion:leader"
 _LEASE_MARGIN_SECONDS = 15 * 60
+
+logger = logging.getLogger(__name__)
 
 
 def llm_mostly_free() -> bool:
@@ -173,10 +179,21 @@ async def _complete_one(
         return "extract_failed"
     if extraction.status == "SKIPPED":
         return "gone"
-    return await _under_record_lease(
-        concurrency_manager, record_id,
-        lambda: sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts),
-    )
+
+    async def persist_and_keep() -> str:
+        outcome = await sink.persist_named_entities(ctx, extraction, retry_due=due, retry_attempts=attempts)
+        if outcome == "written":
+            # Otherwise a later reprojection (a persist retry, a re-embed) would bring back
+            # the extraction that left text unread.
+            try:
+                await keep_extraction(graph_provider, record["virtualRecordId"], record.get("contentRev"), extraction)
+            except Exception as exc:
+                logger.warning(
+                    "Completed named entities of record %s written but not kept: %s", record_id, type(exc).__name__
+                )
+        return outcome
+
+    return await _under_record_lease(concurrency_manager, record_id, persist_and_keep)
 
 
 def _record_lease_manager(app_container: Any) -> Any:  # noqa: ANN401

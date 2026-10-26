@@ -96,13 +96,13 @@ describe('ConnectorDetailsLayout: page states', () => {
 
   it('adds another instance', () => {
     const props = renderLayout();
-    fireEvent.click(screen.getByRole('button', { name: /Add Another Instance/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Add another instance/ }));
     expect(props.onAddInstance).toHaveBeenCalled();
   });
 
   it('shows a lock and does nothing when the user may not create instances', () => {
     const props = renderLayout({ createPermissionDenied: true });
-    const add = screen.getByRole('button', { name: /Add Another Instance/ });
+    const add = screen.getByRole('button', { name: /Add another instance/ });
     expect(within(add).getByText('locked')).toBeTruthy();
     fireEvent.click(add);
     expect(props.onAddInstance).not.toHaveBeenCalled();
@@ -142,7 +142,7 @@ describe('ConnectorDetailsLayout: instance status', () => {
     expect(within(c).getByText('Configuration')).toBeTruthy();
     expect(within(c).getByText('Complete')).toBeTruthy();
     expect(within(c).getByText('Scheduled')).toBeTruthy();
-    expect(within(c).getByText('Every 1 Hour')).toBeTruthy();
+    expect(within(c).getByText('Every 1 hour')).toBeTruthy();
   });
 
   it('marks an unfinished instance and explains why sync cannot be turned on', () => {
@@ -172,7 +172,7 @@ describe('ConnectorDetailsLayout: instance status', () => {
     });
 
     expect(screen.getByText('Needs auth')).toBeTruthy();
-    expect(screen.getByText('Authenticate Personal Account')).toBeTruthy();
+    expect(screen.getByText('Authenticate personal account')).toBeTruthy();
     expect(screen.getByRole('switch').hasAttribute('disabled')).toBe(true);
 
     fireEvent.click(screen.getByRole('button', { name: /^Connect$/ }));

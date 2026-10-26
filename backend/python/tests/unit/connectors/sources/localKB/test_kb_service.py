@@ -951,9 +951,26 @@ class TestUpdateFolder:
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Docs"})
 
-        result = await service.updateFolder("f1", "kb1", "user1", "docs")
+        result = await service.updateFolder("f1", "kb1", "user1", "Docs")
         assert result["success"] is True
         service.processor_for_kb.return_value.on_record_metadata_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_case_only_rename_is_applied(self, service) -> None:
+        # "reports" -> "Reports" used to answer 200 "unchanged" and do nothing.
+        _setup_writer(service)
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "reports"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
+        service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+        folder = MagicMock()
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=folder)
+
+        result = await service.updateFolder("f1", "kb1", "user1", "Reports")
+
+        assert result["success"] is True
+        assert folder.record_name == "Reports"
+        service.processor_for_kb.return_value.on_record_metadata_update.assert_awaited_once_with(folder)
 
     @pytest.mark.asyncio
     async def test_folder_document_missing(self, service):
@@ -2250,8 +2267,13 @@ class TestUpdateFolderException:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=False)
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=MagicMock())
+        service.processor_for_kb.return_value.on_record_metadata_update = AsyncMock(
+            side_effect=RuntimeError("graph write failed")
+        )
         result = await service.updateFolder("f1", "kb1", "user1", "New Name")
         assert result["success"] is False
 

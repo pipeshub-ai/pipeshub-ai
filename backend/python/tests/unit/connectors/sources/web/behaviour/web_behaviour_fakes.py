@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import shutil
 import socket
 import sys
@@ -469,9 +470,15 @@ class VirtualClock:
     """Stands in for ``asyncio`` inside the connector and fetch modules.
 
     ``sleep`` records the delay and advances a virtual clock instead of
-    waiting; ``get_event_loop().time()`` reads that clock. Everything else is
-    the real ``asyncio``.
+    waiting; ``get_event_loop().time()`` reads that clock alone. Everything
+    else is the real ``asyncio``.
+
+    The clock starts at a fixed time and moves only on ``sleep``: mixed with the
+    loop's real time, a wait computed as ``deadline - now`` came out as
+    14.999999999999972 instead of 15.0 on hosts whose monotonic clock is large.
     """
+
+    START = 1_000.0
 
     def __init__(self) -> None:
         self.offset = 0.0
@@ -480,6 +487,11 @@ class VirtualClock:
     def __getattr__(self, name: str) -> object:
         return getattr(asyncio, name)
 
+    def slept(self, seconds: float) -> bool:
+        """Whether some sleep was ``seconds`` long. Waits are computed as differences of
+        clock readings, so they are compared within float rounding, never exactly."""
+        return any(math.isclose(delay, seconds, abs_tol=1e-6) for delay in self.sleeps)
+
     async def sleep(self, delay: float, result: object = None) -> object:
         self.sleeps.append(delay)
         self.offset += max(delay, 0)
@@ -487,8 +499,7 @@ class VirtualClock:
         return result
 
     def get_event_loop(self) -> SimpleNamespace:
-        loop = asyncio.get_running_loop()
-        return SimpleNamespace(time=lambda: loop.time() + self.offset)
+        return SimpleNamespace(time=lambda: self.START + self.offset)
 
 
 class FakeRecordsDb:

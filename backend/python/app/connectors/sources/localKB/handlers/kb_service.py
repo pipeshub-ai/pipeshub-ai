@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Optional, Union
 
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
@@ -38,6 +38,13 @@ from app.connectors.services.vector_cleanup_events import (
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
 from app.models.entities import FileRecord, RecordType
+from app.models.source_dates import (
+    UPLOAD_SOURCE_CREATED_FIELD,
+    SourceTimestampOrigin,
+    epoch_ms,
+    parse_origin,
+    upload_origin,
+)
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
@@ -1203,8 +1210,9 @@ class KnowledgeBaseService:
             
             current_name = current_folder.get("recordName", "")
             
-            # Early exit if name hasn't changed
-            if current_name.lower() == name.lower():
+            # Early exit if name hasn't changed. Case counts: "reports" -> "Reports"
+            # is a rename the user asked for, and the stored path follows the name.
+            if current_name == name:
                 self.logger.info(f"↩️ Folder name unchanged, skipping update")
                 return {
                     "success": True,
@@ -1368,7 +1376,7 @@ class KnowledgeBaseService:
         user_id: str,
         record_id: str,
         updates: Dict,
-        file_metadata: Optional[Dict] = None,
+        file_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict]:
         """
         Update a record directly in KB root (not in any folder).
@@ -1444,7 +1452,15 @@ class KnowledgeBaseService:
             if file_metadata is not None:
                 # Content changed (new blob uploaded): bump revision so the record is
                 # re-persisted, force reindex, and emit updateRecord (Qdrant refresh).
+                if parse_origin(record.source_timestamp_origin) is SourceTimestampOrigin.CONTENT:
+                    # The old content's date goes with it; indexing dates the new one.
+                    stored = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+                    record.source_created_at = stored.get(UPLOAD_SOURCE_CREATED_FIELD) or record.created_at
                 record.source_updated_at = file_metadata.get("lastModified", timestamp)
+                # Node stamps receivedAt off the clock its missing-lastModified fallback
+                # reads, before the storage upload; ``timestamp`` comes after that upload.
+                received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
+                record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
                 await processor.on_record_content_update(record)
             else:
@@ -1676,7 +1692,7 @@ class KnowledgeBaseService:
                 }
 
             name = record.get("recordName") or "This item"
-            if parent_refusal := self._trashed_parent_refusal(name, members, member_ids):
+            if parent_refusal := await self._trashed_parent_refusal(name, members, member_ids, kb_id, outside):
                 return parent_refusal
 
             renames = await self._restore_renames(kb_id, members, member_ids)
@@ -1728,7 +1744,7 @@ class KnowledgeBaseService:
                     kb_id, batch_id, items, restore_source=DeleteSource.USER, require_live_parent=True
                 )
             except RestoreRefused as refused:
-                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
+                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id, outside)
 
             return await self._finish_restore(
                 processor, batch_id, members, renames, reindex_ids, reembed_ids=reembed_ids
@@ -1772,10 +1788,29 @@ class KnowledgeBaseService:
         return response
 
     @staticmethod
-    def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
-        """The 409 for a batch whose folder is in the trash outside it, else None."""
+    async def _trashed_parent_refusal(
+        name: str, members: list[dict], member_ids: set[str], kb_id: str, outside: ConnectionCheck | None,
+    ) -> dict | None:
+        """The 409 for a batch whose folder is in the trash outside it, else None.
+
+        A connected app whose limit leaves that folder out is told what to do
+        without the folder's name or id: a file the limit names does not name
+        the folder above it."""
         for item in members:
-            if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
+            parent_id = item.get("parentId")
+            if item.get("parentIsDeleted") and parent_id not in member_ids:
+                hidden = outside is not None and bool(
+                    await outside(kb_id, [], [{"record": {"_key": parent_id}, "parentId": None}])
+                )
+                if hidden:
+                    return {
+                        "success": False,
+                        "code": 409,
+                        "reason": (
+                            f"'{name}' was in a folder that is also in the trash. Ask someone who can "
+                            f"open that folder to restore it, then restore '{name}'."
+                        ),
+                    }
                 parent = item.get("parentName") or "the folder it was in"
                 return {
                     "success": False,
@@ -1784,12 +1819,13 @@ class KnowledgeBaseService:
                         f"'{name}' was in '{parent}', which is also in the trash. Restore "
                         f"'{parent}' first, then restore '{name}'."
                     ),
-                    "parentId": item.get("parentId"),
+                    "parentId": parent_id,
                 }
         return None
 
     async def _restore_refused_response(
-        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str
+        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str,
+        outside: ConnectionCheck | None = None,
     ) -> dict:
         """The answer for a restore the write refused, nothing written.
 
@@ -1799,8 +1835,8 @@ class KnowledgeBaseService:
         try:
             batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id)
             members = [item for item in batch if item["record"].get("connectorId") == kb_id]
-            parent_refusal = self._trashed_parent_refusal(
-                name, members, {item["record"]["_key"] for item in members}
+            parent_refusal = await self._trashed_parent_refusal(
+                name, members, {item["record"]["_key"] for item in members}, kb_id, outside,
             )
         except Exception as e:
             self.logger.warning("Could not re-read delete batch %s after a refused restore: %s", batch_id, e)
@@ -2979,6 +3015,7 @@ class KnowledgeBaseService:
         frec.parent_external_record_id = parent_folder_id or None
         # Server-side stamp: never trust a client-supplied uploader.
         frec.uploaded_by = uploaded_by or None
+        frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"

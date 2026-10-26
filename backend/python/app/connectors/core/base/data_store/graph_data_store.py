@@ -197,7 +197,7 @@ class GraphTransactionStore(TransactionStore):
     def __init__(self, graph_provider: IGraphDBProvider, txn: str, *, explicit: bool = False) -> None:
         self.graph_provider = graph_provider
         self.txn = txn  # Transaction ID (string) for HTTP provider
-        self.explicit = explicit  # the caller asked for one real transaction
+        self.explicit = explicit  # the block runs in one real transaction
         self.logger = graph_provider.logger
         # Lookups whose answer cannot change for the life of the transaction.
         # One batch is 100 records from a single connector, so the record group
@@ -415,6 +415,9 @@ class GraphTransactionStore(TransactionStore):
 
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
+
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
+        return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
 
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
@@ -1281,9 +1284,9 @@ class GraphDataStore(DataStoreProvider):
         - All operations pass txn_id in HTTP headers
         - commit/rollback are fully async HTTP calls
 
-        explicit=True makes the block all-or-nothing on Neo4j too, where each
-        statement otherwise commits on its own while NEO4J_EXPLICIT_TRANSACTIONS
-        is off. It holds its locks until commit, so keep such a block to a few
+        Neo4j blocks are all-or-nothing unless NEO4J_EXPLICIT_TRANSACTIONS is false,
+        where each statement commits on its own; explicit=True still asks for a
+        real transaction then. It holds its locks until commit, so keep such a block to a few
         writes, with no slow calls inside.
         """
         options = {} if explicit is None else {"explicit": explicit}
@@ -1294,7 +1297,9 @@ class GraphDataStore(DataStoreProvider):
         )
         self.logger.debug(f"✅ Transaction started with ID: {txn}")
 
-        tx_store = GraphTransactionStore(self.graph_provider, txn, explicit=explicit is True)
+        tx_store = GraphTransactionStore(
+            self.graph_provider, txn, explicit=self.graph_provider.opens_explicit_transaction(explicit) is True,
+        )
 
         try:
             yield tx_store

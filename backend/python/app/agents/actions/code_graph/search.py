@@ -11,6 +11,8 @@ import logging
 import re
 from typing import TYPE_CHECKING, Any
 
+from app.modules.artifacts.reader import record_artifact_reader
+
 from .ops import (
     _BLOCKS,
     _RECORDS,
@@ -174,12 +176,12 @@ async def _by_text(
     files_capped = len(ordered) > _TEXT_SEARCH_FILES
     ordered = ordered[:_TEXT_SEARCH_FILES]
     semaphore = asyncio.Semaphore(_BLOB_CONCURRENCY)
+    reader = record_artifact_reader(blob_store)
 
     async def load(key: str) -> tuple[str, dict[str, Any] | None]:
         async with semaphore:
             try:
-                return key, await blob_store.get_record_from_storage(
-                    virtual_record_id=records[key].get("virtualRecordId"), org_id=org_id)
+                return key, await reader.read_record(records[key].get("virtualRecordId"), org_id)
             except Exception:
                 logger.warning("search_code: blob for %s unreadable", paths[key], exc_info=True)
                 return key, None

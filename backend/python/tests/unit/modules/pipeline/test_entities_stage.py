@@ -1,6 +1,5 @@
 """EntitiesStage: a sibling of classify with its own fingerprint, outcomes and kept output."""
 
-from collections.abc import Awaitable, Callable
 from typing import Any
 
 import pytest
@@ -35,8 +34,7 @@ class _IO:
         self.outcome = "written"
         self.save_error: BaseException | None = None
         self.saved: list[list[str]] = []
-        self.present = True
-        self.restored: list[dict[str, Any]] = []
+        self.saved_blocks: list[BlocksContainer] = []
 
     @property
     def policy(self) -> PipelinePolicy:
@@ -61,20 +59,13 @@ class _IO:
     async def extract(self, job: StageJob, blocks: BlocksContainer) -> NamedEntityExtraction:
         return self.extraction
 
-    async def stored_entities_present(self, job: StageJob) -> bool:
-        return self.present
-
-    async def restore_stored_entities(
-        self, job: StageJob, extraction: dict[str, Any], *, still_current: Callable[[], Awaitable[bool]] | None = None
-    ) -> None:
-        if self.save_error is not None:
-            raise self.save_error
-        self.restored.append(extraction)
-
-    async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
+    async def save(
+        self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction, blocks: BlocksContainer,
+    ) -> str:
         if self.save_error is not None:
             raise self.save_error
         self.saved.append(record_ids)
+        self.saved_blocks.append(blocks)
         return self.outcome
 
 
@@ -109,6 +100,14 @@ async def test_a_completed_run_keeps_the_extraction_as_output() -> None:
     result = await EntitiesStage().run(_job(), io)
     assert result.outcome is StageOutcome.COMPLETED and io.saved == [["rec-1"]]
     assert NamedEntityExtraction.model_validate_json(result.output or "").status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_the_entities_are_saved_with_the_blocks_they_came_from() -> None:
+    # The persist also dates a knowledge-base upload by what its text states.
+    io = _IO()
+    await EntitiesStage().run(_job(), io)
+    assert io.saved_blocks == [io.blocks]
 
 
 @pytest.mark.asyncio
@@ -147,12 +146,10 @@ async def test_a_superseded_revision_is_stale() -> None:
 
 
 @pytest.mark.asyncio
-async def test_a_kept_extraction_goes_back_without_a_model_call() -> None:
-    io = _IO()
-    io.present = False
+async def test_the_extraction_is_kept_as_the_stage_output_only() -> None:
+    """Nothing to put back into the stored record: the stage state holds the extraction, so the
+    worker never asks whether a re-index left it in place."""
     stage = EntitiesStage()
-    assert not await stage.output_present(_job(), io)
-    kept = NamedEntityExtraction(status="COMPLETED").model_dump_json()
-    assert await stage.restore_output(_job(), io, kept)
-    assert io.restored[0]["status"] == "COMPLETED"
-    assert not await stage.restore_output(_job(), io, "not json")
+    assert not hasattr(stage, "output_present") and not hasattr(stage, "restore_output")
+    result = await stage.run(_job(), _IO())
+    assert NamedEntityExtraction.model_validate_json(result.output or "").status == "COMPLETED"

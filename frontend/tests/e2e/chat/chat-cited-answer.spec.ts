@@ -66,7 +66,7 @@ test.describe('Ask about an uploaded document', () => {
       timeout: 15_000,
     });
 
-    await page.getByRole('button', { name: /Open in Collections/ }).first().click();
+    await page.getByRole('button', { name: /Open in collections/ }).first().click();
     await expect(page, 'the citation should open the collection holding the document').toHaveURL(
       new RegExp(`nodeId=${kbId}`),
       { timeout: 20_000 },
