@@ -51,7 +51,7 @@ export function installSessionDocRegistry(): () => void {
   const repo = new MongoConversationRepository()
   const real = repo.recordRunState.bind(repo)
   repo.recordRunState = (id: string, change: any, tx?: any) => {
-    const doc = registry.get(String(id))
+    const doc = registry.get(id)
     return doc ? applyToDoc(doc, change, tx) : real(id, change, tx)
   }
   setConversationRepository(repo)

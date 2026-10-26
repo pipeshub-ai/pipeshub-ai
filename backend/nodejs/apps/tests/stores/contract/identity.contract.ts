@@ -75,7 +75,7 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const uid = await acct(org);
       await credentials.savePassword(uid, org, 'hash-value', '1.1.1.1');
       for (let i = 1; i <= MAX; i++) {
-        const a = await credentials.reserveAttempt(uid, org, MAX);
+        await credentials.reserveAttempt(uid, org, MAX);
         expect(a!.wrongCredentialCount).to.equal(i);
       }
       expect(await credentials.reserveAttempt(uid, org, MAX)).to.equal(null);
@@ -85,7 +85,7 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const org = await fx.newOrg();
       const uid = await acct(org);
       await credentials.savePassword(uid, org, 'hash-value', '1.1.1.1');
-      const a = await credentials.reserveAttempt(uid, org, MAX);
+      await credentials.reserveAttempt(uid, org, MAX);
       await credentials.setBlocked(uid, org, new Date(Date.now() + 60000));
       const blocked = await credentials.find(uid, org);
       expect(blocked!.isBlocked).to.equal(true);
@@ -204,7 +204,7 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const uid = await acct(org);
       await credentials.savePassword(uid, org, 'hash-value', 'ip');
       expect(await credentials.unblock(uid, org)).to.equal(false);
-      const a = await credentials.reserveAttempt(uid, org, MAX);
+      await credentials.reserveAttempt(uid, org, MAX);
       await credentials.setBlocked(uid, org, new Date(Date.now() + 60000));
       expect(await credentials.unblock(uid, org)).to.equal(true);
       const c = await credentials.find(uid, org);

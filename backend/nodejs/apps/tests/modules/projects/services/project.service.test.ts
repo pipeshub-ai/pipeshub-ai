@@ -215,8 +215,8 @@ describe('ProjectService', () => {
       });
       expect(project.name).to.equal('My Project');
       expect(project.description).to.equal('desc');
-      expect(project.orgId.toString()).to.equal(ORG_ID);
-      expect(project.userId.toString()).to.equal(OWNER_ID);
+      expect(project.orgId).to.equal(ORG_ID);
+      expect(project.userId).to.equal(OWNER_ID);
       expect(project.tools).to.deep.equal([]);
       expect(project.linkedKnowledgeBaseId).to.equal(null);
       expect(project.members).to.deep.equal([]);
