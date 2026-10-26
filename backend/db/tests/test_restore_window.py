@@ -66,8 +66,8 @@ def test_window_is_maintenance_mode_and_scoped_to_one_org(conns):
     # maintenance mode: the session was disconnected and no application login can connect
     with pytest.raises(psycopg.OperationalError):
         app.execute("SELECT 1")
-    with pytest.raises(psycopg.OperationalError, match="not permitted to log in"):
-        org_db.pooled(autocommit=True).execute("SELECT 1")                            # the pooler accepts the client; PostgreSQL refuses the login
+    with pytest.raises(psycopg.OperationalError, match="not permitted to log in|server login has been failing"):
+        org_db.pooled(autocommit=True).execute("SELECT 1")                            # the pooler accepts the client; PostgreSQL refuses the login (PgBouncer may answer for it while it retries)
     with pytest.raises(restore_window.Refused, match="already open"):
         restore_window.open_window(admin, migrate, backup, "e" * 24, PASSWORD)
     assert org_db.violations() == []                                                  # a declared window is not a violation

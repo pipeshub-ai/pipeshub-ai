@@ -55,7 +55,14 @@ def migrate_url() -> str:
 def locked(url: str, wait_s: float | None = None) -> Iterator[psycopg.Connection]:
     """Hold the migrate advisory lock on a dedicated session; yield that (autocommit) connection."""
     if wait_s is None:
-        wait_s = float(os.environ.get("PG_MIGRATE_LOCK_TIMEOUT_S", "600"))
+        raw = os.environ.get("PG_MIGRATE_LOCK_TIMEOUT_S", "600")
+        try:
+            wait_s = float(raw)
+        except ValueError:
+            raise RunnerError(EXIT_CONFIG, f"PG_MIGRATE_LOCK_TIMEOUT_S must be a number of seconds, got {raw!r}") from None
+    # lock_timeout = 0 means wait forever, and a negative value is a server error: refuse both before connecting.
+    if not wait_s >= 0.001:
+        raise RunnerError(EXIT_CONFIG, f"PG_MIGRATE_LOCK_TIMEOUT_S must be at least 0.001 seconds, got {wait_s:g}")
     dsn = make_url(url).set(drivername="postgresql").render_as_string(hide_password=False)
     try:
         conn = psycopg.connect(dsn, autocommit=True, connect_timeout=10, **KEEPALIVES)

@@ -4,7 +4,7 @@ One Alembic environment for the whole product, SQL-first (no models, no autogene
 It runs in its own image (`backend/db/Dockerfile`, `pipeshubai/pipeshub-migrate`) with `python -m db.migrate`.
 
 ## Layout
-- `versions/<module>/NNNN_<verb>_<object>.{py,sql}`: one directory per module = Alembic branch = PostgreSQL schema.
+- `versions/<module>/NNNN_<verb>_<object>.{py,sql}`: one directory per module = Alembic branch. Branches normally own their matching PostgreSQL schema; `kernel_0005` is the exception because it creates `platform.consumer_inbox` before the `platform` branch begins.
   The `.py` file is a short wrapper (`run_sql(__file__)`); the `.sql` file is the reviewed artifact.
 - Revision ids are `<module>_<NNNN>`; `NNNN` is the module's **epoch**. `env.py` writes it to
   `kernel.schema_epoch` in the same transaction as the revision. On a database that already has revisions, one transaction covers

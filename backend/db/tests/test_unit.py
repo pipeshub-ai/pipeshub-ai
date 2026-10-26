@@ -440,3 +440,13 @@ def test_autocommit_block_is_refused_in_a_verified_upgrade():
 
     with pytest.raises(RuntimeError, match="autocommit_block"):
         refuse_autocommit()
+
+
+@pytest.mark.parametrize("raw", ["abc", "", "0", "-5", "0.0001", "nan"])
+def test_a_bad_lock_timeout_is_a_configuration_error_before_any_connection(monkeypatch, raw):
+    monkeypatch.setenv("PG_MIGRATE_LOCK_TIMEOUT_S", raw)
+    with pytest.raises(migrate.RunnerError) as excinfo:
+        with migrate.locked("postgresql://nobody@127.0.0.1:1/none"):
+            pass
+    assert excinfo.value.code == migrate.EXIT_CONFIG
+    assert "PG_MIGRATE_LOCK_TIMEOUT_S" in str(excinfo.value)
