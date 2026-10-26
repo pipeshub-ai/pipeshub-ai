@@ -9,6 +9,7 @@ export const getIndexStatusIcon = (status: string): string => {
       FILE_TYPE_NOT_SUPPORTED: 'block',
       AUTO_INDEX_OFF: 'timer_off',
       EMPTY: 'folder_open',
+      PASSWORD_PROTECTED: 'lock',
     };
     return iconMap[status] || 'help';
   };

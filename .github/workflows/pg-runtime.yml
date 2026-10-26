@@ -30,6 +30,7 @@ on:
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'scripts/prepare_pg_test_db.sh'
+      - 'scripts/ensure_pg_cluster.sh'
       - 'scripts/assert_no_skips.py'
       - '.github/workflows/pg-runtime.yml'
   workflow_dispatch:
@@ -104,13 +105,19 @@ jobs:
       - name: Python runtime stores (tests/integration/pg_runtime)
         working-directory: backend/python
         run: |
-          sudo sed -i 's/ \(peer\|scram-sha-256\|md5\)$/ trust/' "/etc/postgresql/${{ matrix.pg }}/main/pg_hba.conf"
-          sudo systemctl restart "postgresql@${{ matrix.pg }}-main"
-          # the runner image already has a cluster on 5432, so a newly installed one is on another port
-          PG_PORT="$(pg_lsclusters -h | awk -v v="${{ matrix.pg }}" '$1 == v && $2 == "main" {print $3}')"
+          # the package does not always create "main" (the runner image already has PostgreSQL 16 configured), and the cluster that
+          # exists is on another port than 5432
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           export REDIS_RUNTIME_TEST_URL=127.0.0.1:6379
           python -m pytest tests/integration/pg_runtime -m "not chaos" --timeout=600 -p no:cacheprovider --junitxml="$RUNNER_TEMP/py-runtime-junit.xml"
+
+      - name: PostgreSQL clusters (on failure)
+        if: ${{ failure() }}
+        run: |
+          pg_lsclusters || true
+          ls -la /etc/postgresql /etc/postgresql/*/ 2>&1 || true
+          cat /etc/postgresql-common/createcluster.conf 2>&1 | grep -v '^#' | grep . || true
 
       - name: No unexpected skips
         if: ${{ always() }}
@@ -160,11 +167,18 @@ jobs:
       - name: Node job queue, LISTEN and runtime stores (test:pg-services)
         working-directory: backend/nodejs/apps
         run: |
-          sudo sed -i 's/ \(peer\|scram-sha-256\|md5\)$/ trust/' "/etc/postgresql/${{ matrix.pg }}/main/pg_hba.conf"
-          sudo systemctl restart "postgresql@${{ matrix.pg }}-main"
-          PG_PORT="$(pg_lsclusters -h | awk -v v="${{ matrix.pg }}" '$1 == v && $2 == "main" {print $3}')"
+          # the package does not always create "main" (the runner image already has PostgreSQL 16 configured), and the cluster that
+          # exists is on another port than 5432
+          PG_PORT="$("$GITHUB_WORKSPACE/scripts/ensure_pg_cluster.sh" "${{ matrix.pg }}")"
           eval "$(PG_ADMIN_URL="postgresql://postgres@127.0.0.1:${PG_PORT}/postgres" PREPARE_PG_PYTHON="$RUNNER_TEMP/migrate-venv/bin/python" PG_RUNTIME_ROLE=node "$GITHUB_WORKSPACE/scripts/prepare_pg_test_db.sh")"
           npm run test:pg-services -- --reporter xunit --reporter-option output="$RUNNER_TEMP/node-services-junit.xml"
+
+      - name: PostgreSQL clusters (on failure)
+        if: ${{ failure() }}
+        run: |
+          pg_lsclusters || true
+          ls -la /etc/postgresql /etc/postgresql/*/ 2>&1 || true
+          cat /etc/postgresql-common/createcluster.conf 2>&1 | grep -v '^#' | grep . || true
 
       - name: No unexpected skips
         if: ${{ always() }}

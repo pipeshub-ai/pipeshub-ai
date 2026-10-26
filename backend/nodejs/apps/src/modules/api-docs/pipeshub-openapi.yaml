@@ -5682,7 +5682,7 @@ components:
           description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
         parsingStatus:
           type: string
-          enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
+          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED, SKIPPED]
           description: |
             Parse-phase status (ahead of indexing/extraction):
             - NOT_STARTED: Awaiting parsing
@@ -5693,6 +5693,9 @@ components:
             - FILE_TYPE_NOT_SUPPORTED: Unsupported file format
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
+            - PAUSED: Parsing paused
+            - ENABLE_MULTIMODAL_MODELS: Requires multimodal AI models
+            - SKIPPED: The stage did not apply to this record
           example: "COMPLETED"
         hasIndexedCopy:
           type: boolean
@@ -5704,7 +5707,7 @@ components:
             COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
-          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
+          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED, SKIPPED, PASSWORD_PROTECTED]
           description: |
             Current indexing/processing status:
             - NOT_STARTED: Awaiting indexing
@@ -5717,6 +5720,10 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
             - ENABLE_MULTIMODAL_MODELS: Requires multimodal AI models
+            - SKIPPED: The stage did not apply to this record
+            - PASSWORD_PROTECTED: The file needs a password to open, so it cannot be read.
+              Not retried and not counted as a failure; the record's `reason` says what to do.
+              A reindex with `statusFilters: ["PASSWORD_PROTECTED"]` tries it again
           example: "COMPLETED"
         isDeleted:
           type: boolean
@@ -7443,8 +7450,9 @@ components:
         reindex (record or record-group). Omit `statusFilters` to reindex all
         descendants regardless of status. The statuses records carry are
         `NOT_STARTED`, `QUEUED`, `IN_PROGRESS`, `COMPLETED`, `FAILED`,
-        `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF` and `EMPTY`. Any other string is
-        accepted too (no validator checks the value) and simply matches no record.
+        `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY` and `PASSWORD_PROTECTED`.
+        Any other string is accepted too (no validator checks the value) and simply
+        matches no record.
     ReindexRecordRequestBody:
       type: object
       description: |
@@ -7642,6 +7650,10 @@ components:
         ENABLE_MULTIMODAL_MODELS:
           type: integer
         QUEUED:
+          type: integer
+        SKIPPED:
+          type: integer
+        PASSWORD_PROTECTED:
           type: integer
     DateRangeFilter:
       type: object
@@ -39136,7 +39148,7 @@ paths:
         **Status filters:**
 
         Optional `statusFilters` array limits reindex to records in matching indexing states
-        (e.g. `FAILED`, `AUTO_INDEX_OFF`). Any string is accepted.
+        (e.g. `FAILED`, `AUTO_INDEX_OFF`, `PASSWORD_PROTECTED`). Any string is accepted.
 
         **Access:** any role on the record's knowledge base may reindex it, `READER` included.
         For a connector record, read access to the record is enough. A record of a disabled
@@ -40240,7 +40252,7 @@ paths:
 
             Valid values: `NOT_STARTED`, `PAUSED`, `IN_PROGRESS`, `COMPLETED`,
             `FAILED`, `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY`,
-            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`
+            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`, `SKIPPED`, `PASSWORD_PROTECTED`
           schema:
             type: string
           example: COMPLETED,FAILED
@@ -40791,7 +40803,7 @@ paths:
 
             Valid values: `NOT_STARTED`, `PAUSED`, `IN_PROGRESS`, `COMPLETED`,
             `FAILED`, `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY`,
-            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`
+            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`, `SKIPPED`, `PASSWORD_PROTECTED`
           schema:
             type: string
           example: "COMPLETED,FAILED"

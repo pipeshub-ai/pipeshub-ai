@@ -2731,6 +2731,15 @@ class DataSourceEntitiesProcessor:
                         # whose status decides the skip. A reindexed restore starts clean.
                         if not reindex_restored:
                             self._preserve_indexing_state(record, existing_record)
+                elif (
+                    existing_record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+                    and record.external_revision_id == existing_record.external_revision_id
+                    and not reindex_restored
+                ):
+                    # The same bytes need the same password: queuing the record again
+                    # on every full sync would only repeat the verdict. A changed
+                    # revision takes the normal path and is indexed again.
+                    self._preserve_indexing_state(record, existing_record)
             elif record.external_revision_id == existing_record.external_revision_id:
                 # KB uploads with unchanged content must keep their indexing status
                 # (folders are created COMPLETED and must not be re-queued on metadata updates).
@@ -3011,9 +3020,13 @@ class DataSourceEntitiesProcessor:
             # Already indexed and unchanged — the COMPLETED status was carried
             # forward from the stored record precisely so this publish can be
             # skipped; there is nothing for the indexing consumer to redo.
-            if record.indexing_status == ProgressStatus.COMPLETED.value:
+            if record.indexing_status in (
+                ProgressStatus.COMPLETED.value,
+                ProgressStatus.PASSWORD_PROTECTED.value,
+            ):
                 self.logger.debug(
-                    f"Skipping indexing event for already-completed record {record.id}"
+                    f"Skipping indexing event for already-settled record {record.id} "
+                    f"({record.indexing_status})"
                 )
                 continue
 

@@ -80,11 +80,14 @@ stateDiagram-v2
     IN_PROGRESS --> EMPTY: parser produced no blocks
     IN_PROGRESS --> QUEUED: transient failure, retry scheduled (record.py finally)
     IN_PROGRESS --> FAILED: terminal error, or retries exhausted / dead-lettered
+    IN_PROGRESS --> PASSWORD_PROTECTED: the file needs a password to open (terminal, never retried)
     IN_PROGRESS --> QUEUED: stale (lease interval with leases, else max record timeout + parse admission wait + lease) → recovery republishes
     NOT_STARTED --> FILE_TYPE_NOT_SUPPORTED
     NOT_STARTED --> AUTO_INDEX_OFF: connector deleted / inactive
     IN_PROGRESS --> ENABLE_MULTIMODAL_MODELS: image with no multimodal LLM/embedding
 ```
+
+A file that needs a password to open ends `PASSWORD_PROTECTED`, not `FAILED`: it is its own bucket in the stats, its `extractionStatus` is `SKIPPED` (the classify stage does not apply), its `parsingStatus` carries the same status as `indexingStatus` like every terminal status, "Reindex failed" leaves it alone, and nothing retries it. The status follows evidence in the file, never the wording of an error: a PDF that pdfium refuses with its password status (a PDF with only an owner password opens without one and indexes normally), and a DOCX, XLSX or PPTX whose OLE compound container holds an `EncryptedPackage` stream. The OOXML check reads only the 512-byte header, the FAT entries the directory chain walks and the directory itself (bounded at 64 directory sectors), so its cost does not grow with the file (about 0.01 ms); the same check covers the macro-enabled `.docm`, `.xlsm` and `.pptm`; a damaged container is not called encrypted and ends as an unreadable file. The PDF verdict is one more pdfium open of the bytes: about 5 ms on a 56 MB file, paid only after another reader has already failed to open it, never on the happy path. The in-process pipeline raises `PasswordProtectedError` (a `DocumentProcessingError`, so terminal); the parsing service answers it `422` with code `PASSWORD_REQUIRED`, and `ParsingClient` raises the same typed error from that answer. The record handler picks the status from the error's type at the terminal write, and queued md5 duplicates take the same status. Legacy `.doc`, `.xls` and `.ppt` are not detected: their encryption flags sit inside streams, so they still end as an unreadable file. A connector re-sync that finds the same revision of a `PASSWORD_PROTECTED` record leaves it alone, as for `COMPLETED`; a changed revision is indexed again. A reindex with `statusFilters: ["PASSWORD_PROTECTED"]` tries it again, for when the source file has lost its password.
 
 `extractionStatus` belongs to the `classify` stage (§2.3) and never blocks searchability: a record is searchable as soon as `indexingStatus=COMPLETED`. It moves to `QUEUED` when the stage job is claimed and published, then to `COMPLETED`, `SKIPPED` (classification off, nothing to classify, or no LLM configured; `reason` says which) or `FAILED`. A retrying or paused job leaves it `QUEUED`.
 
@@ -268,23 +271,24 @@ Every indexing-time model call (classification, named-entity extraction and enti
 
 **Records from the old inline classification.** Before the classify stage, classification ran inside the record's indexing attempt. A record it left with `extractionStatus` `IN_PROGRESS` (its pod stopped mid-classification) or `NOT_STARTED` (`DEFER_EXTRACTION=true`) has no stage state, so no sweep revisits it. `POST /api/v1/connectors/{id}/reindex` with `stages: ["classify"]` and `statusFilters: ["IN_PROGRESS", "NOT_STARTED"]` classifies them again; with no stage state for the record's revision, that is a full reindex.
 
-**Rolling back to 0.10.0 on ArangoDB.** 0.10.0's connector service re-applies its strict `records` schema, which does not declare `contentRev`, and does not accept `SKIPPED` in any status field, `PAUSED` or `ENABLE_MULTIMODAL_MODELS` in `parsingStatus`, or `QUEUED` or `ENABLE_MULTIMODAL_MODELS` in `extractionStatus`. ArangoDB then rejects every later update to a record carrying one of them, so status writes to those records fail. Stop the new services and run this first; it is accepted under either schema, and `stageStates` can stay (0.10.0 does not read it):
+**Rolling back to 0.10.0 on ArangoDB.** 0.10.0's connector service re-applies its strict `records` schema, which does not declare `contentRev`, and does not accept `SKIPPED` in any status field, `PASSWORD_PROTECTED` in any of the three status fields (the handler also copies a record's final indexing status onto `parsingStatus`), `PAUSED` or `ENABLE_MULTIMODAL_MODELS` in `parsingStatus`, or `QUEUED` or `ENABLE_MULTIMODAL_MODELS` in `extractionStatus`. ArangoDB then rejects every later update to a record carrying one of them, so status writes to those records fail. Stop the new services and run this first; it is accepted under either schema, and `stageStates` can stay (0.10.0 does not read it):
 
 ```aql
-LET parsing = ["ENABLE_MULTIMODAL_MODELS", "PAUSED", "SKIPPED"]
-LET extraction = ["ENABLE_MULTIMODAL_MODELS", "QUEUED", "SKIPPED"]
+LET gone = ["PASSWORD_PROTECTED", "SKIPPED"]
+LET parsing = ["ENABLE_MULTIMODAL_MODELS", "PAUSED", "PASSWORD_PROTECTED", "SKIPPED"]
+LET extraction = ["ENABLE_MULTIMODAL_MODELS", "PASSWORD_PROTECTED", "QUEUED", "SKIPPED"]
 FOR r IN records
   FILTER HAS(r, "contentRev")
-    OR r.parsingStatus IN parsing OR r.indexingStatus == "SKIPPED" OR r.extractionStatus IN extraction
+    OR r.parsingStatus IN parsing OR r.indexingStatus IN gone OR r.extractionStatus IN extraction
   UPDATE r WITH {
     contentRev: null,
-    parsingStatus: r.parsingStatus == "SKIPPED" ? "FAILED" : (r.parsingStatus IN parsing ? "NOT_STARTED" : r.parsingStatus),
-    indexingStatus: r.indexingStatus == "SKIPPED" ? "FAILED" : r.indexingStatus,
-    extractionStatus: r.extractionStatus == "SKIPPED" ? "FAILED" : (r.extractionStatus IN extraction ? "NOT_STARTED" : r.extractionStatus)
+    parsingStatus: r.parsingStatus IN gone ? "FAILED" : (r.parsingStatus IN parsing ? "NOT_STARTED" : r.parsingStatus),
+    indexingStatus: r.indexingStatus IN gone ? "FAILED" : r.indexingStatus,
+    extractionStatus: r.extractionStatus IN gone ? "FAILED" : (r.extractionStatus IN extraction ? "NOT_STARTED" : r.extractionStatus)
   } IN records OPTIONS { keepNull: false }
 ```
 
-Neo4j has no schema for these fields and needs no cleanup.
+Rolling back to a version before `hasIndexedCopy` existed (0.10.0's schema allows no extra properties) needs that field removed from every record first, or the statement above is rejected on the first record that carries it; a rollback to the schema this change started from is not affected. Neo4j has no schema for these fields and needs no cleanup.
 
 ## 3. Light and heavy documents
 
@@ -530,11 +534,13 @@ Then the PDF goes to exactly one paid path at most:
 | The PDF | Read by |
 | --- | --- |
 | Needs OCR | VLM OCR, one model call per page; a scan over `VLM_OCR_MAX_PAGES` (default 500) fails as too large |
-| Has a text layer, within Docling's 100 MB | Docling; if Docling cannot read it, the PdfPlumber+OpenCV layout parser |
-| Has a text layer, over 100 MB, or `ENABLE_PDFPLUMBER_PROCESSOR=true` | The PdfPlumber+OpenCV layout parser |
-| Docling unreachable, refusing this service, shedding load, or answering 502/503/504 | Nothing: `DoclingUnavailableError` retries the record later |
+| Has a text layer, at most `PDF_DOCLING_MAX_PAGES` pages (default 30) and within Docling's 100 MB | Docling; if Docling cannot read it, the PdfPlumber+OpenCV layout parser |
+| Has a text layer, more than `PDF_DOCLING_MAX_PAGES` pages, over 100 MB, or `ENABLE_PDFPLUMBER_PROCESSOR=true` | The PdfPlumber+OpenCV layout parser |
+| Docling unreachable, refusing this service, shedding load, or answering 502/503/504 (`DoclingUnavailableError`) | The PdfPlumber+OpenCV layout parser, so text PDFs keep indexing while Docling is down. Only if Docling had already finished parsing the record is the error raised and the record retried, so it is never parsed twice. With `PARSER_BACKEND=docling` there is no other parser and the record is retried |
 
-A text PDF is never sent to OCR: that fallback once turned every failed Docling parse into a model call per page.
+In-process indexing never sends a text PDF to OCR: that fallback once turned every failed Docling parse into a model call per page.
+
+The page count is the one inspection already made, so routing opens the file no extra time; a file only pdfium can open has no count and goes to Docling. `PDF_DOCLING_MAX_PAGES=0` sends every text PDF to the layout parser; a value that is not a non-negative integer is read as 30. With `USE_PARSING_SERVICE=true` the parsing service routes the same way (`SmartPDFParser`), with one difference: when the parser it chose fails (PdfPlumber, after Docling when Docling could not read the file), the file goes to OCR, except for unsupported-format, empty-content and invalid-input errors. `PARSER_BACKEND=docling` skips the page and size routing and always asks Docling, which still refuses a PDF over 100 MB; such a file then goes to OCR. When Docling is unreachable, a PdfPlumber failure is reported as that failure and the file is not sent to OCR.
 
 What still pauses the loop, measured with a 50 ms heartbeat on a 20 MB CSV and a 4.9 MB source file: one full garbage collection of about 0.3 s when tens of thousands of parsed blocks are rebuilt in the indexing process (the cost of holding that many objects, there before this change too), up to 0.6 s of the same while a 290,000-row CSV becomes row blocks, and 0.1–0.3 s while that CSV's rows are unpickled. Before, the source file held the loop for 3–7 s, reading the CSV for 2 s, and building its row blocks for 9.7 s.
 

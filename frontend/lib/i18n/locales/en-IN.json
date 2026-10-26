@@ -645,6 +645,7 @@
       "empty": "Empty",
       "paused": "Paused",
       "needsMultimodalModel": "Needs multimodal model",
+      "passwordProtected": "Password protected",
       "skipped": "Skipped",
       "pending": "Pending"
     },
@@ -2754,6 +2755,8 @@
         "statFailedSub": "Errors (API / permission issues)",
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
+        "statPasswordProtected": "Password protected",
+        "statPasswordProtectedSub": "Can't be read without a password",
         "statInProgressSub": "Still being indexed",
         "statQueued": "Queued",
         "statQueuedSub": "Waiting to be indexed",
