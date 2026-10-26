@@ -36,13 +36,12 @@ class TestRetryAfter:
         assert rate_limit_retry_after(ValueError("boom")) is None
 
     def test_found_under_a_wrapper(self) -> None:
-        try:
-            try:
-                raise _limited(600)
-            except ApiCallError as inner:
-                raise RuntimeError("download failed") from inner
-        except RuntimeError as outer:
-            assert rate_limit_retry_after(outer) == 600
+        inner = _limited(600)
+
+        with pytest.raises(RuntimeError) as exc_info:
+            raise RuntimeError("download failed") from inner
+
+        assert rate_limit_retry_after(exc_info.value) == 600
 
     async def test_found_inside_tenacitys_retry_error(self) -> None:
         with pytest.raises(RetryError) as exc_info:

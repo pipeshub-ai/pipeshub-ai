@@ -39,19 +39,11 @@ def _blocks_by_type(container: BlocksContainer, block_type: BlockType) -> list[B
 
 
 def _child_block_indices(group: BlockGroup) -> list[int]:
-    assert group.children is not None
-    indices: list[int] = []
-    for block_range in group.children.block_ranges:
-        indices.extend(range(block_range.start, block_range.end + 1))
-    return indices
+    return [i for r in group.children.block_ranges for i in range(r.start, r.end + 1)]
 
 
 def _child_group_indices(group: BlockGroup) -> list[int]:
-    assert group.children is not None
-    indices: list[int] = []
-    for group_range in group.children.block_group_ranges:
-        indices.extend(range(group_range.start, group_range.end + 1))
-    return indices
+    return [i for r in group.children.block_group_ranges for i in range(r.start, r.end + 1)]
 
 
 def _is_empty_split_container(block: Block) -> bool:
@@ -69,11 +61,11 @@ def _is_empty_split_container(block: Block) -> bool:
 
 
 def _assert_all_blocks_have_data(container: BlocksContainer) -> None:
-    for block in container.blocks:
-        assert block.data is not None, (
-            f"block index={block.index} type={block.type} "
-            f"sub_type={block.sub_type} has data=None"
-        )
+    missing = [b for b in container.blocks if b.data is None]
+    assert not missing, (
+        "blocks with data=None: "
+        + ", ".join(f"index={b.index} type={b.type} sub_type={b.sub_type}" for b in missing)
+    )
 
 
 def _assert_empty_text_split_container(block: Block) -> None:

@@ -385,19 +385,19 @@ class TestBuiltinDateFormats:
         expected_codes = {14, 15, 16, 17, 18, 19, 20, 21, 22}
         assert set(BUILTIN_DATE_FORMATS.keys()) == expected_codes
 
-    def test_values_are_strings(self):
-        for code, fmt in BUILTIN_DATE_FORMATS.items():
-            assert isinstance(fmt, str), f"Code {code} has non-string format"
+    @pytest.mark.parametrize("code, fmt", BUILTIN_DATE_FORMATS.items())
+    def test_values_are_strings(self, code, fmt):
+        assert isinstance(fmt, str), f"Code {code} has non-string format"
 
 
 # ---------------------------------------------------------------------------
 # COMMON_FORMAT_WHITELIST constant
 # ---------------------------------------------------------------------------
 class TestCommonFormatWhitelist:
-    def test_all_entries_are_tuples(self):
-        for key, val in COMMON_FORMAT_WHITELIST.items():
-            assert isinstance(val, tuple), f"Key {key} is not a tuple"
-            assert len(val) == 2, f"Key {key} does not have exactly 2 elements"
+    @pytest.mark.parametrize("key, val", COMMON_FORMAT_WHITELIST.items())
+    def test_all_entries_are_tuples(self, key, val):
+        assert isinstance(val, tuple), f"Key {key} is not a tuple"
+        assert len(val) == 2, f"Key {key} does not have exactly 2 elements"
 
     def test_python_formats_start_with_percent(self):
         for key, (python_fmt, _) in COMMON_FORMAT_WHITELIST.items():
@@ -2632,23 +2632,6 @@ class TestResolveAmbiguousFormatAdditional:
         assert "%H" in result
         assert "%I" not in result  # Not 12-hour
 
-    def test_mm_ss_with_time_context(self):
-        """mm:ss format where has_time detects time (via h in format), covering line 251.
-
-        When the format has 'h' making has_time=True and then mm:ss appears with no
-        h patterns in the python_format, the special case branch is taken.
-        """
-        # This is a tricky case. We need has_time=True but no 'h' in python_format.
-        # Actually, looking at line 248-251 more carefully:
-        # has_time checks for 'h' in format_str (the original)
-        # Line 250 checks for [hH%] in python_format (after substitutions)
-        # If format_str has 'h' but the h gets consumed, it might not be present
-        # However, this is hard to trigger naturally. Instead:
-        # "mm:ss" has no 'h' so has_time=False, taking the else branch (line 263-265).
-        # For coverage of line 251, we need a format where has_time=True but
-        # python_format after step 5 has NO [hH%] -> this is the mm:ss without hours path.
-        pass
-
     def test_single_m_in_time_context(self):
         """Single 'm' adjacent to colon in time format, covering lines 278-285."""
         result = _resolve_ambiguous_format("m/d/yyyy h:m")
@@ -2769,36 +2752,10 @@ class TestProcessSheetExceptionHandler:
         sheet.title = "BadSheet"
         sheet.iter_rows = MagicMock(side_effect=RuntimeError("sheet error"))
 
-        with pytest.raises(RuntimeError, match="sheet error"):
+        with pytest.raises(RuntimeError) as exc_info:
             ep._process_sheet(sheet)
 
-
-class TestProcessCellFormulaCell:
-    """Cover lines 407, 460: formula cell handling in _process_sheet."""
-
-    def test_formula_cell_data_type_f(self):
-        """Cell with data_type 'f' gets formula attribute added."""
-        from openpyxl.cell.cell import Cell
-
-        ep = _make_excel_parser()
-        cell = MagicMock(spec=Cell)
-        cell.value = "=SUM(A1:A10)"
-        cell.data_type = "f"
-        cell.number_format = "General"
-        cell.column_letter = "B"
-        cell.coordinate = "B2"
-        cell.font = MagicMock(bold=False, italic=False, size=11, color=None)
-        cell.fill = MagicMock(start_color=None)
-        cell.alignment = MagicMock(horizontal=None, vertical=None)
-
-        # _process_cell handles data_type but _process_sheet checks for "f"
-        # We test via _process_sheet behavior. The formula check is in _process_sheet
-        # at line 459-460, not in _process_cell. Let's verify that.
-        # Actually, looking at the code, lines 459-460 are in _process_sheet.
-        # _process_cell doesn't have formula handling. Let's build a mock sheet
-        # that exercises lines 459-460.
-        pass
-
+        assert "sheet error" in str(exc_info.value)
 
 class TestProcessSheetFormulaCells:
     """Cover lines 459-460: formula cell in _process_sheet."""
@@ -2923,8 +2880,10 @@ class TestProcessCellExceptionHandler:
         # Make cell.value raise an exception when accessed
         type(cell).value = property(lambda self: (_ for _ in ()).throw(RuntimeError("bad cell")))
 
-        with pytest.raises(RuntimeError, match="bad cell"):
+        with pytest.raises(RuntimeError) as exc_info:
             ep._process_cell(cell, "Header", 1, 1)
+
+        assert "bad cell" in str(exc_info.value)
 
 
 class TestGetRowsTextExceptionHandler:

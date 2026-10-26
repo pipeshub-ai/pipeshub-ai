@@ -105,32 +105,40 @@ class TestDoclingParseFile:
         mock_result.status.value = "failure"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to parse Markdown"):
+        with pytest.raises(DocumentProcessingError) as exc_info:
             docling_parser.parse_file("/bad.md")
+
+        assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_partial_success_raises(self, docling_parser):
         mock_result = MagicMock()
         mock_result.status.value = "partial_success"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to parse Markdown"):
+        with pytest.raises(DocumentProcessingError) as exc_info:
             docling_parser.parse_file("/partial.md")
+        
+        assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_error_status(self, docling_parser):
         mock_result = MagicMock()
         mock_result.status.value = "error"
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to parse Markdown"):
+        with pytest.raises(DocumentProcessingError) as exc_info:
             docling_parser.parse_file("/error.md")
+        
+        assert "Failed to parse Markdown" in str(exc_info.value)
 
     def test_parse_file_empty_status(self, docling_parser):
         mock_result = MagicMock()
         mock_result.status.value = ""
         docling_parser.converter.convert = MagicMock(return_value=mock_result)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to parse Markdown"):
+        with pytest.raises(DocumentProcessingError) as exc_info:
             docling_parser.parse_file("/empty_status.md")
+                
+        assert "Failed to parse Markdown" in str(exc_info.value)
 
 
 # ===========================================================================
@@ -329,7 +337,7 @@ class TestMarkdownParserShim:
         from app.modules.parsers.markdown.markdown_parser import MarkdownParserProtocol
 
         class _Concrete(MarkdownParserProtocol):
-            pass
+            """Concrete subclass that keeps the protocol's default method bodies."""
 
         instance = _Concrete()
         result = instance.extract_and_replace_images("")

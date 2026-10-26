@@ -66,8 +66,10 @@ class TestDocParser:
             output=b"", stderr=b"not found"
         )
 
-        with pytest.raises(subprocess.CalledProcessError):
+        with pytest.raises(subprocess.CalledProcessError) as exc_info:
             parser.convert_doc_to_docx(b"fake doc binary")
+
+        assert exc_info.value.returncode == 1
 
     @patch("app.modules.parsers.docx.docparser.subprocess.run")
     def test_conversion_file_not_found_raises(self, mock_run):
@@ -86,8 +88,10 @@ class TestDocParser:
             mock_write_handle.__exit__ = MagicMock(return_value=False)
             mock_open.return_value = mock_write_handle
 
-            with pytest.raises(Exception, match="output file not found"):
+            with pytest.raises(Exception) as exc_info:
                 parser.convert_doc_to_docx(b"fake doc binary")
+
+        assert "output file not found" in str(exc_info.value)
 
     @patch("app.modules.parsers.docx.docparser.subprocess.run")
     def test_conversion_timeout_raises(self, mock_run):

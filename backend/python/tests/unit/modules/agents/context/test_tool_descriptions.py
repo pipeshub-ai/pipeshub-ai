@@ -92,7 +92,7 @@ class TestGetFieldTypeName:
     def test_annotation_without_origin_or_name(self):
         """When the annotation is something weird without __name__ or __origin__."""
         class _Weird:
-            pass
+            """Stand-in annotation type with no __origin__."""
         _Weird.__name__ = "WeirdType"
         field = _FakeFieldV2(annotation=_Weird)
         assert _get_field_type_name(field) == "weirdtype"
