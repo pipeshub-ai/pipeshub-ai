@@ -1,8 +1,13 @@
 """Unit tests for GitLab client module."""
 
+import http.server
 import logging
+import socket
+import threading
+import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import gitlab
 import pytest
 import requests
 
@@ -10,7 +15,9 @@ from app.sources.client.gitlab.gitlab import (
     GitLabClient,
     GitLabClientViaToken,
     GitLabConfig,
+    GitLabReadTimeout,
     GitLabResponse,
+    _TokenSafeSession,
 )
 
 
@@ -927,30 +934,22 @@ class TestReadTimeoutIsNotRetriedBySdk:
     """
 
     @staticmethod
-    def _stalled_server():
-        import http.server
-        import threading
-        import time
-
+    def _stalled_server() -> tuple[http.server.ThreadingHTTPServer, list[str]]:
         hits: list[str] = []
 
         class Handler(http.server.BaseHTTPRequestHandler):
-            def do_GET(self):  # noqa: N802
+            def do_GET(self) -> None:
                 hits.append(self.path)
                 time.sleep(1.0)
 
-            def log_message(self, *args):
+            def log_message(self, *args: object) -> None:
                 pass
 
         server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=server.serve_forever, daemon=True).start()
         return server, hits
 
-    def test_first_read_timeout_is_raised_after_one_request(self):
-        import gitlab
-
-        from app.sources.client.gitlab.gitlab import GitLabReadTimeout, _TokenSafeSession
-
+    def test_first_read_timeout_is_raised_after_one_request(self) -> None:
         server, hits = self._stalled_server()
         try:
             gl = gitlab.Gitlab(
@@ -966,12 +965,7 @@ class TestReadTimeoutIsNotRetriedBySdk:
             server.shutdown()
         assert len(hits) == 1
 
-    def test_connect_failures_are_still_retried_by_the_sdk(self):
-        import gitlab
-        import socket
-
-        from app.sources.client.gitlab.gitlab import _TokenSafeSession
-
+    def test_connect_failures_are_still_retried_by_the_sdk(self) -> None:
         with socket.socket() as s:
             s.bind(("127.0.0.1", 0))
             port = s.getsockname()[1]
@@ -979,7 +973,7 @@ class TestReadTimeoutIsNotRetriedBySdk:
         calls: list[int] = []
         real = requests.Session.send
 
-        def counting(self_, request, **kw):
+        def counting(self_: requests.Session, request: requests.PreparedRequest, **kw: object) -> requests.Response:
             calls.append(1)
             return real(self_, request, **kw)
 

@@ -138,7 +138,7 @@ class _TokenSafeSession(requests.Session):
     same rule.
     """
 
-    def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:
+    def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:  # noqa: ANN401 - requests.Session.send's keyword arguments
         try:
             return super().send(request, **kwargs)
         except requests.exceptions.ReadTimeout as exc:
