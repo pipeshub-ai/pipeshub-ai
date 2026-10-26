@@ -1,6 +1,9 @@
-import { Types } from 'mongoose';
-import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
-import { IProjectDocument } from '../../projects/types/project.interfaces';
+import {
+  BadRequestError,
+  ForbiddenError,
+  NotFoundError,
+} from '../../../libs/errors/http.errors';
+import { ProjectDto } from '../../projects/types/project.interfaces';
 import { ProjectService } from '../../projects/services/project.service';
 
 /** Sentinel accepted by `?projectId=` query params to mean "no project". */
@@ -9,7 +12,7 @@ export const PROJECT_ID_UNASSIGNED = 'unassigned';
 export interface ResolvedProjectLink {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
-  project?: IProjectDocument;
+  project?: ProjectDto;
 }
 
 /**
@@ -62,7 +65,10 @@ function readIdArray(value: unknown): string[] | undefined {
  * state); a non-empty request list is intersected with the project set so
  * the caller can only deselect, never add beyond what the project allows.
  */
-function narrowToProjectScope(requested: string[] | undefined, projectSet: string[]): string[] {
+function narrowToProjectScope(
+  requested: string[] | undefined,
+  projectSet: string[],
+): string[] {
   if (!requested || requested.length === 0) return projectSet;
   const allowed = new Set(projectSet);
   return requested.filter((id) => allowed.has(id));
@@ -104,7 +110,7 @@ const SELECTION_FILTER_KEYS = ['recordGroups', 'records', 'recordsExact'];
  */
 export function applyProjectScope(
   aiPayload: Record<string, unknown>,
-  project: IProjectDocument | undefined,
+  project: ProjectDto | undefined,
 ): void {
   if (!project) return;
   const context = ProjectService.buildContext(project);
@@ -213,8 +219,8 @@ export function bareToolFullName(key: string): string {
 export async function loadProjectForSession(
   orgId: string,
   userId: string,
-  projectId: Types.ObjectId | string | undefined,
-): Promise<IProjectDocument | undefined> {
+  projectId: { toString(): string } | string | undefined,
+): Promise<ProjectDto | undefined> {
   if (!projectId) return undefined;
   try {
     const { project } = await ProjectService.assertAccess(
@@ -225,7 +231,11 @@ export async function loadProjectForSession(
     );
     return project;
   } catch (error) {
-    if (error instanceof NotFoundError || error instanceof ForbiddenError || error instanceof BadRequestError) {
+    if (
+      error instanceof NotFoundError ||
+      error instanceof ForbiddenError ||
+      error instanceof BadRequestError
+    ) {
       return undefined;
     }
     throw error;

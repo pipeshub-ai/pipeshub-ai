@@ -16,10 +16,10 @@ import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
 import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
-import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
 
@@ -234,7 +234,7 @@ export class MigrationService {
       // immediately rather than trying to reach the (possibly still booting)
       // Python connector service — this makes cold-start faster and avoids
       // unnecessary retry noise in the logs.
-      const orgCount = await Org.countDocuments();
+      const orgCount = await getOrgRepository().count();
       if (orgCount === 0) {
         this.logger.info(
           'No organisation found — fresh setup detected. ' +

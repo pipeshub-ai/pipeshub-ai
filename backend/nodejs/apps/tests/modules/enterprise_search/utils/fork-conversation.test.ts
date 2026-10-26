@@ -18,6 +18,7 @@ import {
   FORK_COPY_BATCH_SIZE,
 } from '../../../../src/modules/enterprise_search/utils/fork-conversation'
 import { InMemoryChatStore, oid } from '../controller/chat-test-harness'
+import { MongoTx } from '../../../../src/libs/repositories/mongo'
 
 describe('fork-conversation helpers', () => {
   it('buildForkTitle prefixes the original title', () => {
@@ -207,7 +208,7 @@ describe('copySessionUpToMessage', () => {
         String(owner),
         String(orgId),
         { sessionType: 'chat' },
-        {} as never,
+        new MongoTx({} as never),
       )
       expect.fail('expected the copy to fail')
     } catch (error) {
@@ -245,7 +246,7 @@ describe('copySessionUpToMessage', () => {
       const projectId = oid()
       const assert = sinon.stub(ProjectService, 'assertAccess').resolves({} as never)
       expect(String(await resolveForkProjectId(chatIn(projectId), 'org', 'user'))).to.equal(String(projectId))
-      expect(assert.firstCall.args).to.deep.equal(['org', 'user', String(projectId), 'viewer'])
+      expect(assert.firstCall.args.map(String)).to.deep.equal(['org', 'user', String(projectId), 'viewer'])
     })
 
     it('drops the project once the caller cannot see it', async () => {
@@ -362,7 +363,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     const artifacts = await copyArtifactsForFork(
       source,
       String(forkPoint._id),
-      new Types.ObjectId(),
+      new Types.ObjectId().toHexString(),
       copyArtifacts as never,
     )
     return copySessionUpToMessage(
@@ -477,7 +478,7 @@ describe('copySessionUpToMessage with artifacts', () => {
     store.install()
     const seeded = seedWithArtifacts(store)
     const sessionsBefore = store.sessions.length
-    const forkId = new Types.ObjectId()
+    const forkId = new Types.ObjectId().toHexString()
     let sessionsWhenCopying = -1
     const copyArtifacts = sinon.stub().callsFake(async () => {
       sessionsWhenCopying = store.sessions.length
@@ -507,11 +508,18 @@ describe('copySessionUpToMessage with artifacts', () => {
     const copyArtifacts = sinon.stub()
 
     try {
-      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId(), copyArtifacts as never)
+      await copyArtifactsForFork(seeded.source, String(new Types.ObjectId()), new Types.ObjectId().toHexString(), copyArtifacts as never)
       expect.fail('expected a 404')
     } catch (error) {
       expect(error).to.be.instanceOf(NotFoundError)
     }
     expect(copyArtifacts.called).to.equal(false)
+  })
+})
+
+describe('stripMessageForCopy', () => {
+  it('drops the author stamp and keeps the turn as written', () => {
+    const message = { content: 'c', authorUserId: 'b'.repeat(24), tools: [1], reasoning: [1], parts: [1], referenceData: [1] }
+    expect(stripMessageForCopy(message)).to.deep.equal({ content: 'c', tools: [1], reasoning: [1], parts: [1], referenceData: [1] })
   })
 })

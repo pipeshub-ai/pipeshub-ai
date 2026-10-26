@@ -10,7 +10,9 @@ import {
 } from '../types/storage.service.types';
 
 // Extend the existing Document interface with Mongoose.Document
-export interface DocumentModel extends IDocument, MongooseDocument {}
+// _id comes from MongooseDocument; the plain row type (IDocument) carries it as a string.
+export interface DocumentModel
+  extends Omit<IDocument, '_id'>, MongooseDocument {}
 
 // Create schema for S3 and AzureBlob (without localPath)
 const RemoteStorageInfoSchema = new Schema<StorageInfo>(
@@ -28,7 +30,6 @@ const LocalStorageInfoSchema = new Schema<StorageInfo>(
   },
   { _id: false },
 );
-
 
 // Create schema from CustomMetadata interface
 const CustomMetadataSchema = new Schema<CustomMetadata>(
@@ -212,4 +213,7 @@ DocumentSchema.index(
 );
 
 // Create and export the model
-export const DocumentModel = mongoose.model<DocumentModel>('Document', DocumentSchema);
+export const DocumentModel = mongoose.model<DocumentModel>(
+  'Document',
+  DocumentSchema,
+);

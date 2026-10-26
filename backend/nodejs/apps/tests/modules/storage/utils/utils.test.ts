@@ -13,7 +13,7 @@ import {
   encodeRFC5987,
   extractOrgId,
   extractUserId,
-  toObjectId,
+  requireId,
   validateFileAndDocumentName,
   getDocumentInfo,
   generatePresignedUrlForDirectUpload,
@@ -273,11 +273,11 @@ describe('storage/utils/utils', () => {
   })
 
   // -------------------------------------------------------------------------
-  // toObjectId
+  // requireId
   // -------------------------------------------------------------------------
-  describe('toObjectId', () => {
-    it('should return an ObjectId for a valid id', () => {
-      expect(toObjectId('64d000000000000000000a01', 'organization').toHexString()).to.equal('64d000000000000000000a01')
+  describe('requireId', () => {
+    it('should return the id for a valid one', () => {
+      expect(requireId('64d000000000000000000a01', 'organization')).to.equal('64d000000000000000000a01')
     })
 
     // new ObjectId('user-123') throws a BSONError, which the error middleware answers with 500.
@@ -294,7 +294,7 @@ describe('storage/utils/utils', () => {
     ]
     for (const [id, kind] of malformed) {
       it(`should throw BadRequestError naming the ${kind} id for ${JSON.stringify(id)}`, () => {
-        expect(() => toObjectId(id, kind))
+        expect(() => requireId(id, kind))
           .to.throw(BadRequestError)
           .with.property('message')
           .that.contains(`The ${kind} id in the storage token isn't valid`)

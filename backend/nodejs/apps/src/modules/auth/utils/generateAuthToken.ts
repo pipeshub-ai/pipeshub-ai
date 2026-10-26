@@ -8,8 +8,8 @@ import {
 } from '../../../libs/utils/createJwt';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 import { normalizeUserRole } from '../../user_management/services/user-admin.service';
-import { Users } from '../../user_management/schema/users.schema';
-import mongoose from 'mongoose';
+import { getUserRepository } from '../../../libs/repositories/user';
+import { isValidId } from '../../../libs/repositories/ids';
 
 export const SERVICE_ACCOUNT_SIGN_IN_MESSAGE =
   'Service accounts cannot sign in. Use a service token instead.';
@@ -47,15 +47,14 @@ export async function generateAuthToken(
   // than surfacing as an unhandled cast error.
   const rawId: unknown = user._id;
   const userId =
-    rawId instanceof mongoose.Types.ObjectId ? rawId.toHexString() : rawId;
-  if (typeof userId !== 'string' || !mongoose.isValidObjectId(userId)) {
+    rawId != null && typeof rawId === 'object'
+      ? (rawId as { toString(): string }).toString()
+      : rawId;
+  if (typeof userId !== 'string' || !isValidId(userId)) {
     throw new NotFoundError('User not found');
   }
 
-  const account = await Users.findOne({ _id: userId, isDeleted: false })
-    .select('kind isDisabled')
-    .lean()
-    .exec();
+  const account = await getUserRepository().getAccountState(userId);
 
   if (!account) {
     throw new NotFoundError('User not found');

@@ -1,5 +1,4 @@
 import { Response, NextFunction } from 'express';
-import mongoose from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
@@ -7,9 +6,7 @@ import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { BadRequestError } from '../../../libs/errors/http.errors';
-import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
-import { IChatSessionDocument } from '../../enterprise_search/types/conversation.interfaces';
-import { asQueryFilter } from '../../../libs/utils/mongo-filter';
+import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
   CreateProjectInput,
@@ -17,15 +14,15 @@ import {
   UpdateProjectInput,
 } from '../services/project.service';
 import { ProjectKnowledgeBaseService } from '../services/project-kb.service';
-import { IProject, IProjectDocument, ProjectRole } from '../types/project.interfaces';
+import { IProject, ProjectDto, ProjectRole } from '../types/project.interfaces';
 import { resolveCallerTeamIds } from '../utils/team-membership';
 
 /** Enrich a Mongoose project document with the caller's computed role for JSON responses. */
 function projectWithRole(
-  project: IProjectDocument,
+  project: ProjectDto,
   role: ProjectRole,
 ): IProject & { role: ProjectRole } {
-  return { ...(project.toObject() as unknown as IProject), role };
+  return { ...project, role };
 }
 
 type ProjectRouteHandler = (
@@ -307,30 +304,18 @@ export const getProjectConversations =
       };
       const skip = (page - 1) * limit;
 
-      const filter = {
-        orgId: new mongoose.Types.ObjectId(orgId),
-        projectId: new mongoose.Types.ObjectId(projectId),
-        isDeleted: false,
-        $or: [
-          { userId: new mongoose.Types.ObjectId(userId) },
-          { projectVisibility: 'project' },
-        ],
-      };
-
-      const [conversations, totalCount] = await Promise.all([
-        ChatSession.find(asQueryFilter<IChatSessionDocument>(filter))
-          .sort({ lastActivityAt: -1, _id: -1 })
-          .skip(skip)
-          .limit(limit)
-          .select('-__v')
-          .lean()
-          .exec(),
-        ChatSession.countDocuments(asQueryFilter<IChatSessionDocument>(filter)),
-      ]);
+      const { rows: conversations, total: totalCount } =
+        await getConversationRepository().listByProject({
+          orgId,
+          projectId,
+          userId,
+          skip,
+          limit,
+        });
 
       res.status(200).json({
         conversations: conversations.map((c) =>
-          String(c.userId) === userId ? c : withoutOwnerOnlyFields(c),
+          c.userId === userId ? c : withoutOwnerOnlyFields(c),
         ),
         pagination: {
           page,

@@ -4,7 +4,7 @@ import type { Transporter } from 'nodemailer';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
-import { MailModel } from '../schema/mailInfo.schema';
+import { getMailLogRepository } from '../../../libs/repositories/mail-log';
 import { getEmailContent } from '../utils/email-content';
 import {
   classifyMailError,
@@ -224,15 +224,15 @@ export class MailSenderService {
             : String(persistError),
       });
     try {
-      new MailModel({
-        orgId: bodyData.orgId,
-        subject: bodyData.subject,
-        from: smtpConfig.fromEmail,
-        to: bodyData.sendEmailTo,
-        cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
-        emailTemplateType: bodyData.emailTemplateType,
-      })
-        .save()
+      getMailLogRepository()
+        .record({
+          orgId: bodyData.orgId,
+          subject: bodyData.subject,
+          from: smtpConfig.fromEmail,
+          to: bodyData.sendEmailTo,
+          cc: bodyData.sendCcTo ? bodyData.sendCcTo : [],
+          emailTemplateType: bodyData.emailTemplateType,
+        })
         .catch(logFailure);
     } catch (persistError) {
       logFailure(persistError);

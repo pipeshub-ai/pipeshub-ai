@@ -55,9 +55,9 @@ function respond(statusCode: number, data?: unknown): any {
 
 function makeProject(overrides: Record<string, any> = {}): any {
   return {
-    _id: new mongoose.Types.ObjectId(PROJECT_ID),
-    orgId: new mongoose.Types.ObjectId(ORG_ID),
-    userId: new mongoose.Types.ObjectId(OWNER_ID),
+    _id: PROJECT_ID,
+    orgId: ORG_ID,
+    userId: OWNER_ID,
     linkedKnowledgeBaseId: null,
     members: [],
     visibility: 'private',
@@ -69,7 +69,7 @@ function userMember(role: 'editor' | 'viewer'): { member: any; id: string } {
   const id = new mongoose.Types.ObjectId().toString();
   return {
     id,
-    member: { principalType: 'user', principalId: new mongoose.Types.ObjectId(id), role },
+    member: { principalType: 'user', principalId: id, role },
   };
 }
 
@@ -77,7 +77,7 @@ function teamMember(role: 'editor' | 'viewer'): { member: any; id: string } {
   const id = new mongoose.Types.ObjectId().toString();
   return {
     id,
-    member: { principalType: 'team', principalId: new mongoose.Types.ObjectId(id), role },
+    member: { principalType: 'team', principalId: id, role },
   };
 }
 
@@ -119,7 +119,7 @@ describe('ProjectKnowledgeBaseService', () => {
     it('throws NotFoundError for a project in another org, without calling the KB service', async () => {
       sinon
         .stub(Project, 'findOne')
-        .resolves(makeProject({ orgId: new mongoose.Types.ObjectId(OTHER_ORG_ID), linkedKnowledgeBaseId: 'kb-1' }));
+        .resolves(makeProject({ orgId: OTHER_ORG_ID, linkedKnowledgeBaseId: 'kb-1' }));
       const linkStub = sinon.stub(Project, 'findOneAndUpdate');
 
       await expectRejection(

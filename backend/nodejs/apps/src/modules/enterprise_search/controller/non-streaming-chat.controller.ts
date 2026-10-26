@@ -1,5 +1,9 @@
 import { NextFunction, Response } from 'express';
-import mongoose, { Types } from 'mongoose';
+import type {
+  ChatSessionDto,
+  NewSession,
+  SessionScope,
+} from '../../../libs/repositories/conversation';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import {
@@ -12,17 +16,9 @@ import {
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
 import { ProjectService } from '../../projects/services/project.service';
-import { IProjectDocument } from '../../projects/types/project.interfaces';
+import { ProjectDto } from '../../projects/types/project.interfaces';
 import { AppConfig } from '../../tokens_manager/config/config';
-import {
-  CONVERSATION_STATUS,
-  EXCLUDE_AGENT,
-  ONLY_AGENT,
-} from '../constants/constants';
-import {
-  IChatSession,
-  IChatSessionDocument,
-} from '../types/conversation.interfaces';
+import { CONVERSATION_STATUS } from '../constants/constants';
 import { buildAiChatRequest, ChatTarget } from '../utils/ai-chat-payload';
 import {
   completeTurn,
@@ -55,9 +51,9 @@ const targetOf = (req: ChatRequest): ChatTarget =>
 const sessionFields = (
   target: ChatTarget,
   body: Record<string, unknown>,
-  userId: Types.ObjectId,
-  orgId: Types.ObjectId,
-): Partial<IChatSession> => ({
+  userId: string,
+  orgId: string,
+): NewSession => ({
   orgId,
   userId,
   initiator: userId,
@@ -102,8 +98,8 @@ const nonStreamingTurn =
 
       await hydrateScopedRequestAsUser(req, appConfig);
       const { userId, orgId } = (req as AuthenticatedUserRequest).user as {
-        userId: Types.ObjectId;
-        orgId: Types.ObjectId;
+        userId: string;
+        orgId: string;
       };
 
       const target = targetOf(req);
@@ -114,21 +110,17 @@ const nonStreamingTurn =
         body.attachments as never,
       );
 
-      let conversation: IChatSessionDocument;
+      let conversation: ChatSessionDto;
       let previousConversations: unknown[];
-      let project: IProjectDocument | undefined;
+      let project: ProjectDto | undefined;
       if (mode === 'create') {
-        const link = await resolveProjectLink(
-          String(orgId),
-          String(userId),
-          body,
-        );
+        const link = await resolveProjectLink(orgId, userId, body);
         conversation = await openConversation(
           {
             ...sessionFields(target, body, userId, orgId),
             ...(link.projectId
               ? {
-                  projectId: new mongoose.Types.ObjectId(link.projectId),
+                  projectId: link.projectId,
                   projectVisibility: link.projectVisibility,
                 }
               : {}),
@@ -141,31 +133,29 @@ const nonStreamingTurn =
       } else {
         // Project context always comes from the session row, never the
         // request body — a follow-up turn cannot move itself into a project.
+        const scope: SessionScope =
+          target.kind === 'agent'
+            ? { kind: 'agent', agentKey: target.agentKey }
+            : { kind: 'chat' };
         const continued = await continueConversation(
-          {
-            _id: req.params.conversationId,
-            orgId,
-            userId,
-            isDeleted: false,
-            ...(target.kind === 'agent'
-              ? { agentKey: target.agentKey, ...ONLY_AGENT }
-              : EXCLUDE_AGENT),
-          },
+          scope,
+          req.params.conversationId as string,
           userMessage,
+          { userId, orgId },
         );
         conversation = continued.conversation;
         previousConversations = continued.previousConversations;
         project = await loadProjectForSession(
-          String(conversation.orgId),
-          String(conversation.userId),
+          conversation.orgId,
+          conversation.userId,
           conversation.projectId,
         );
       }
 
-      const conversationId = String(conversation._id);
+      const conversationId = conversation._id;
       res.setHeader(CONVERSATION_ID_HEADER, conversationId);
       if (conversation.projectId) {
-        void ProjectService.touchActivity(conversation.projectId.toString());
+        void ProjectService.touchActivity(conversation.projectId);
       }
 
       const turn = await completeTurn({

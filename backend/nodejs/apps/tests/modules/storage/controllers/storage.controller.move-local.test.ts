@@ -23,7 +23,7 @@ describe('StorageController.moveTreeLocal on disk', () => {
   const base = `${orgId}/PipesHub/records/c1`
 
   const doc = (documentPath: string, name = 'record_v') => ({
-    _id: new mongoose.Types.ObjectId(),
+    _id: new mongoose.Types.ObjectId().toString(),
     documentPath,
     documentName: name,
     extension: '.json',
@@ -211,7 +211,7 @@ describe('StorageController.moveTree per-org serialization', () => {
         lean: async () => {
           const n = ++call
           events.push(`find${n}`)
-          return [{ _id: new mongoose.Types.ObjectId(), documentPath: `${orgId}/PipesHub/records/c/${n}`, documentName: 'record_v' }]
+          return [{ _id: new mongoose.Types.ObjectId().toString(), documentPath: `${orgId}/PipesHub/records/c/${n}`, documentName: 'record_v' }]
         },
       }),
     })) as any)
@@ -295,7 +295,7 @@ describe('StorageController.moveTreeLocal large trees', () => {
     const base = 'org1/PipesHub/records/c1/Big'
     const rows = []
     for (let i = 0; i < 2500; i++) {
-      const d = { _id: new mongoose.Types.ObjectId(), documentPath: `${base}/f${i % 50}`, documentName: 'record_v', extension: '.json' }
+      const d = { _id: new mongoose.Types.ObjectId().toString(), documentPath: `${base}/f${i % 50}`, documentName: 'record_v', extension: '.json' }
       await fs.mkdir(path.join(mount, d.documentPath, String(d._id)), { recursive: true })
       rows.push(d)
     }
@@ -316,9 +316,9 @@ describe('StorageController.moveTreeLocal large trees', () => {
     const logger = { info: sinon.stub(), error: sinon.stub(), warn: sinon.stub(), debug: sinon.stub() }
     const controller = new StorageController({ endpoint: 'http://localhost:3000' } as any, logger as any, {} as any)
     const base = 'org1/PipesHub/records/c1/A'
-    const here = { _id: new mongoose.Types.ObjectId(), documentPath: base, documentName: 'record_v1', extension: '.json' }
-    const gone = { _id: new mongoose.Types.ObjectId(), documentPath: base, documentName: 'record_v2', extension: '.json' }
-    const deleted = { ...gone, _id: new mongoose.Types.ObjectId(), isDeleted: true }
+    const here = { _id: new mongoose.Types.ObjectId().toString(), documentPath: base, documentName: 'record_v1', extension: '.json' }
+    const gone = { _id: new mongoose.Types.ObjectId().toString(), documentPath: base, documentName: 'record_v2', extension: '.json' }
+    const deleted = { ...gone, _id: new mongoose.Types.ObjectId().toString(), isDeleted: true }
     await fs.mkdir(path.join(mount, base, String(here._id)), { recursive: true })
     sinon.stub(DocumentModel, 'find').returns({ select: () => ({ lean: () => Promise.resolve([]) }) } as any)
     sinon.stub(DocumentModel, 'bulkWrite').resolves({} as any)

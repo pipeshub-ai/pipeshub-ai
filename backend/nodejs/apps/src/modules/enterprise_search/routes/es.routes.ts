@@ -147,7 +147,7 @@ export function createConversationalRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'recordId');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  let appConfig = container.get<AppConfig>('AppConfig');
+  const appConfig = container.get<AppConfig>('AppConfig');
   const defaultChatModel = fillDefaultChatModel(
     container.isBound('KeyValueStoreService')
       ? container.get<KeyValueStoreService>('KeyValueStoreService')
@@ -604,7 +604,10 @@ export function createSemanticSearchRouter(container: Container): Router {
   router.post(
     '/',
     authMiddleware.authenticate,
-    requireScopes(OAuthScopeNames.SEMANTIC_READ, OAuthScopeNames.SEMANTIC_WRITE),
+    requireScopes(
+      OAuthScopeNames.SEMANTIC_READ,
+      OAuthScopeNames.SEMANTIC_WRITE,
+    ),
     ValidationMiddleware.validate(enterpriseSearchSearchSchema),
     search(appConfig),
   );
@@ -704,7 +707,7 @@ export function createAgentConversationalRouter(container: Container): Router {
   const router = Router();
   guardPathParams(router, 'agentKey', 'recordId', 'provider', 'model_key');
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
-  let appConfig = container.get<AppConfig>('AppConfig');
+  const appConfig = container.get<AppConfig>('AppConfig');
   const keyValueStoreService = container.isBound('KeyValueStoreService')
     ? container.get<KeyValueStoreService>('KeyValueStoreService')
     : undefined;
@@ -723,7 +726,9 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/conversations/show/archives',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
-    ValidationMiddleware.validate(listAllAgentsArchivedConversationsGroupedQuerySchema),
+    ValidationMiddleware.validate(
+      listAllAgentsArchivedConversationsGroupedQuerySchema,
+    ),
     listAllAgentsArchivedConversationsGrouped(appConfig),
   );
 
@@ -766,7 +771,10 @@ export function createAgentConversationalRouter(container: Container): Router {
   router.post(
     '/:agentKey/conversations/internal/:conversationId/messages/stream',
     authMiddleware.scopedTokenValidator(TokenScopes.CONVERSATION_CREATE),
-    addMessageStreamToAgentConversationInternal(appConfig, keyValueStoreService),
+    addMessageStreamToAgentConversationInternal(
+      appConfig,
+      keyValueStoreService,
+    ),
   );
 
   router.post(
@@ -805,13 +813,13 @@ export function createAgentConversationalRouter(container: Container): Router {
     deleteChatAttachment(appConfig),
   );
 
-    router.post(
-      '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
-      authMiddleware.authenticate,
-      requireScopes(OAuthScopeNames.AGENT_EXECUTE),
-      ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
-      regenerateAgentAnswers(appConfig),
-    );
+  router.post(
+    '/:agentKey/conversations/:conversationId/message/:messageId/regenerate',
+    authMiddleware.authenticate,
+    requireScopes(OAuthScopeNames.AGENT_EXECUTE),
+    ValidationMiddleware.validate(regenerateAgentAnswersParamsSchema),
+    regenerateAgentAnswers(appConfig),
+  );
 
   const authenticate = authMiddleware.authenticate.bind(authMiddleware);
 
@@ -975,7 +983,7 @@ export function createAgentConversationalRouter(container: Container): Router {
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(listAllArchivesAgentConversationQuerySchema),
     listAllArchivesAgentConversation(),
-  ); 
+  );
 
   router.post(
     '/create',

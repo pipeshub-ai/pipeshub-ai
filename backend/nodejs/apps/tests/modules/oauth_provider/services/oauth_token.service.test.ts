@@ -1486,7 +1486,7 @@ describe('OAuthTokenService - branch coverage', () => {
       ) => ({
         clientId,
         allowedScopes,
-        orgId,
+        orgId: orgId.toString(),
         accessTokenLifetime: 3600,
         refreshTokenLifetime: 86400,
         createdBy: new Types.ObjectId(),

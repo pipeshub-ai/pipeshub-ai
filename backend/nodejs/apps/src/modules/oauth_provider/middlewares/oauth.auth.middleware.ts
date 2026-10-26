@@ -12,7 +12,7 @@ import {
   ExpiredTokenError,
 } from '../../../libs/errors/oauth.errors';
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
-import { Users } from '../../user_management/schema/users.schema';
+import { getUserRepository } from '../../../libs/repositories/user';
 import { assertDelegationStillHolds } from '../services/delegation-guard';
 
 /**
@@ -35,14 +35,12 @@ async function assertDelegatedTokenStillHolds(
   const actorId = payload.act?.sub;
   if (actorId === undefined) return;
 
-  const subject = await Users.findOne({
-    _id: { $eq: payload.userId },
-    orgId: { $eq: payload.orgId },
-    isDeleted: false,
-  })
-    .select('role kind isDisabled')
-    .lean()
-    .exec();
+  const subject = await getUserRepository().getLiveFields(
+    payload.orgId,
+    payload.userId,
+    ['role', 'kind', 'isDisabled'],
+    { strict: true },
+  );
 
   if (!subject) {
     throw new InvalidTokenError(

@@ -8,7 +8,7 @@ import {
   NotificationProducer,
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
-import { INotification } from '../../notification/schema/notification.schema';
+import type { NotificationEventPayload } from '../../notification/service/notification.producer';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { newAccountPasswordLink } from '../../../libs/utils/createJwt';
 import { MailBody } from '../middlewares/types';
@@ -334,7 +334,7 @@ export class MailConsumer {
             error: details.error,
             suppressedFailures: details.suppressedFailures,
           },
-        } as unknown as INotification,
+        } as unknown as NotificationEventPayload,
       });
     } catch (publishError) {
       this.logger.error('Failed to publish mail failure notification', {

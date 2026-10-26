@@ -80,7 +80,7 @@ describe('FirstPartyDeviceAppService', () => {
     await service.getOrCreate()
     expect(update.calledOnce).to.be.true
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['kb:write', 'kb:upload'] } } },
     ])
   })
@@ -106,7 +106,7 @@ describe('FirstPartyDeviceAppService', () => {
     const update = sinon.stub(OAuthApp, 'updateOne').resolves({} as any)
     await service.getOrCreate()
     expect(update.firstCall.args).to.deep.equal([
-      { _id: appId },
+      { _id: appId.toString() },
       { $addToSet: { allowedScopes: { $each: ['offline_access'] } } },
     ])
   })

@@ -8,6 +8,12 @@ import { DocumentModel } from '../../../../src/modules/storage/schema/document.s
 import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
 
+// The repository reloads the row it updates, so create and findOne answer with the same object.
+const stubDocumentStore = (doc: any) => {
+  sinon.stub(DocumentModel, 'create').resolves(doc)
+  sinon.stub(DocumentModel, 'findOne').resolves(doc)
+}
+
 describe('UploadDocumentService', () => {
   let mockAdapter: any
   let mockKeyValueStoreService: any
@@ -157,7 +163,7 @@ describe('UploadDocumentService', () => {
         versionHistory: [],
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
       mockAdapter.uploadDocumentToStorageService.resolves({
         statusCode: 200,
         data: 'https://bucket.s3.us-east-1.amazonaws.com/org/PipesHub/doc-1/test.pdf',
@@ -200,7 +206,7 @@ describe('UploadDocumentService', () => {
         extension: '.pdf',
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
       mockAdapter.uploadDocumentToStorageService.resolves({
         statusCode: 200,
         data: 'https://bucket.s3.us-east-1.amazonaws.com/org/PipesHub/doc-1/current/test.pdf',
@@ -240,7 +246,7 @@ describe('UploadDocumentService', () => {
         versionHistory: [],
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
       mockAdapter.uploadDocumentToStorageService.resolves({
         statusCode: 200,
         data: 'file:///path/to/file.pdf',
@@ -283,7 +289,7 @@ describe('UploadDocumentService', () => {
         versionHistory: [],
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
       mockAdapter.uploadDocumentToStorageService.resolves({
         statusCode: 200,
         data: 'https://bucket.s3.us-east-1.amazonaws.com/path',
@@ -403,7 +409,7 @@ describe('UploadDocumentService', () => {
         versionHistory: [],
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
       mockAdapter.uploadDocumentToStorageService.resolves({
         statusCode: 200,
         data: 'https://bucket.s3.amazonaws.com/org/PipesHub/custom/path/doc-1/test.pdf',
@@ -445,7 +451,7 @@ describe('UploadDocumentService', () => {
         versionHistory: [],
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
       mockAdapter.uploadDocumentToStorageService.resolves({
         statusCode: 200,
         data: 'https://bucket.s3.amazonaws.com/org/PipesHub/doc-1/test.pdf',
@@ -493,7 +499,7 @@ describe('UploadDocumentService', () => {
         isVersionedFile: true,
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(savedDoc as any)
+      stubDocumentStore(savedDoc)
 
       mockAdapter.uploadDocumentToStorageService
         .onFirstCall().resolves({
@@ -560,7 +566,7 @@ describe('UploadDocumentService', () => {
         isVersionedFile: false,
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(placeholderDoc)
+      stubDocumentStore(placeholderDoc)
 
       mockAdapter.generatePresignedUrlForDirectUpload.resolves({
         statusCode: 200,
@@ -618,7 +624,7 @@ describe('UploadDocumentService', () => {
     })
 
     const directUpload = (placeholderDoc: any) => {
-      sinon.stub(DocumentModel, 'create').resolves(placeholderDoc)
+      stubDocumentStore(placeholderDoc)
       const service = new UploadDocumentService(
         mockAdapter,
         { buffer: Buffer.from('x'), originalname: 'big.pdf', size: LARGE_SIZE, mimetype: 'application/pdf' } as any,
@@ -686,7 +692,7 @@ describe('UploadDocumentService', () => {
         isVersionedFile: true,
         save: sinon.stub().resolves(),
       }
-      sinon.stub(DocumentModel, 'create').resolves(placeholderDoc)
+      stubDocumentStore(placeholderDoc)
 
       mockAdapter.generatePresignedUrlForDirectUpload.resolves({
         statusCode: 200,

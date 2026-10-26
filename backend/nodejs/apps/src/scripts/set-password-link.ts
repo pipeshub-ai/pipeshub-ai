@@ -7,12 +7,12 @@ import {
   getPreparedRedisProvider,
 } from '../libs/services/redis/connectionProviderFactory';
 import { MongoService } from '../libs/services/mongo.service';
+import { getUserRepository } from '../libs/repositories/user';
 import {
   jwtGeneratorForForgotPasswordLink,
   passwordResetLinkLifetime,
 } from '../libs/utils/createJwt';
 import { loadAppConfig } from '../modules/tokens_manager/config/config';
-import { Users } from '../modules/user_management/schema/users.schema';
 
 export interface SetPasswordLink {
   link: string;
@@ -28,11 +28,10 @@ interface LinkUser {
 
 export type FindLinkUser = (email: string) => Promise<LinkUser | null>;
 
-const findActiveUser: FindLinkUser = (email) =>
-  Users.findOne({ email, isDeleted: { $ne: true } })
-    .select('_id orgId email')
-    .lean<LinkUser>()
-    .exec();
+// The oldest live account that uses the address.
+const findActiveUser: FindLinkUser = async (email) => {
+  return getUserRepository().findActiveByEmail(email);
+};
 
 /** Builds the same link a "Forgot password" email carries. */
 export async function createSetPasswordLink(

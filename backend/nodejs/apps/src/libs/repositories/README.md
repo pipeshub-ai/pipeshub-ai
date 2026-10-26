@@ -13,7 +13,7 @@ Controllers and services call repositories, not Mongoose models. This directory 
 ## Aggregates moved so far
 
 - `conversation/`: chat and agent sessions, their messages and citations (`getConversationRepository()`). Methods are use cases, rows leave as plain objects with string ids. `listMessages` reads one session for one viewer; there is no multi-session message read. Every Mongo query the chat controllers ran lives in `conversation/mongo.ts`.
-- `semantic-search/`, `access-request/`: saved searches and access requests.
+- `semantic-search/`: saved searches.
 - `document/`: the metadata row behind every stored file (uploads, connector envelopes, assistant artifacts). Path-prefix lookups (`subtree`), connector scope (`pageByConnector`, `streamTaggedOutsidePrefixes`, `deleteByConnector`), virtual-record lookups and the keyed create (`createIdempotent`, which settles racing attempts and returns the first attempt's row) live in `document/mongo.ts`. `update` loads the row, applies a typed patch (and appended versions, optionally only while an upload lease is held) and saves it, so Mongoose writes only what changed.
 - `notification/`: per-user notifications. The retention window and the deleted flag are part of every method; `list` returns `limit + 1` rows so the caller can see whether another page exists.
 - `outbox/`: events decided with a change and delivered later. `claimNext` holds the claim rules (due, abandoned, not held back by an older event about the same entity); the model is in `outbox/schema/`.

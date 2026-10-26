@@ -40,9 +40,7 @@ export function toPlain<T = unknown>(
   opts: { json?: boolean } = {},
 ): T {
   const src = doc as
-    | { toObject?: () => unknown; toJSON?: () => unknown }
-    | null
-    | undefined;
+    { toObject?: () => unknown; toJSON?: () => unknown } | null | undefined;
   if (src && typeof src.toObject === 'function') {
     return walk(
       opts.json && typeof src.toJSON === 'function'

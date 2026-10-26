@@ -6,15 +6,17 @@ import { Logger } from '../services/logger.service';
 import { AuthenticatedServiceRequest, AuthenticatedUserRequest } from './types';
 import { AuthTokenService } from '../services/authtoken.service';
 import { inject, injectable } from 'inversify';
-import { IUserActivity, UserActivities } from '../../modules/auth/schema/userActivities.schema';
-import { userActivitiesType } from '../utils/userActivities.utils';
+import {
+  getActivityRepository,
+  type ActivityDto,
+} from '../repositories/activity';
+import { getUserRepository } from '../repositories/user';
 import { findSessionRefusal } from '../utils/user-session.utils';
 import { TokenScopes } from '../enums/token-scopes.enum';
 import { OAuthTokenService } from '../../modules/oauth_provider/services/oauth_token.service';
 import { parseScopeString } from '../../modules/oauth_provider/services/scope.validator.service';
-import { Users } from '../../modules/user_management/schema/users.schema';
-import { Org } from '../../modules/user_management/schema/org.schema';
-import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
+import { getOrgRepository } from '../repositories/org';
+import { getOAuthAppRepository } from '../repositories/oauth-app';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
@@ -26,7 +28,6 @@ export const TOKEN_CLIENT_NAME = 'api';
 
 export type OAuthTokenServiceFactory = () => OAuthTokenService | null;
 
-const { PASSWORD_CHANGED } = userActivitiesType;
 // Delay in milliseconds between password change activity and token generation
 
 @injectable()
@@ -39,10 +40,13 @@ export class AuthMiddleware {
     this.authenticate = this.authenticate.bind(this);
   }
 
-  private isOAuthToken(
-    decoded: Record<string, any> | null,
-  ): boolean {
-    return decoded !== null && decoded.tokenType === 'oauth' && typeof decoded.client_id === 'string' && typeof decoded.iss === 'string';
+  private isOAuthToken(decoded: Record<string, any> | null): boolean {
+    return (
+      decoded !== null &&
+      decoded.tokenType === 'oauth' &&
+      typeof decoded.client_id === 'string' &&
+      typeof decoded.iss === 'string'
+    );
   }
 
   async authenticate(
@@ -145,17 +149,13 @@ export class AuthMiddleware {
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
       try {
-        const app = await OAuthApp.findOne({
-          clientId: payload.client_id,
-          isDeleted: false,
-        })
-          .select('createdBy tokenIdentityUserId')
-          .lean()
-          .exec();
+        const app = await getOAuthAppRepository().findLiveIdentity(
+          payload.client_id,
+        );
         if (app) {
           // Absent means the creator, which is how every app behaves until
           // someone points it at a service account.
-          const resolved = (app.tokenIdentityUserId ?? app.createdBy).toString();
+          const resolved = app.tokenIdentityUserId ?? app.createdBy;
 
           // The token carries the identity it was minted for. If the
           // application has been pointed somewhere else since, this token is
@@ -200,14 +200,7 @@ export class AuthMiddleware {
 
     let email: string | undefined;
     let role: 'admin' | 'member' | undefined;
-    const user = await Users.findOne({
-      _id: userId,
-      orgId: orgId,
-      isDeleted: false,
-    })
-      .select('email fullName role isDisabled kind')
-      .lean()
-      .exec();
+    const user = await getUserRepository().getAuthSnapshot(orgId, userId);
 
     // Unlike session auth, OAuth/PAT tokens can outlive the user by
     // months or years — a removed employee's token must stop working
@@ -237,10 +230,11 @@ export class AuthMiddleware {
     // document (`users.routes.ts:319`) instead of trusting the request. There
     // is no value to clamp that both halves would agree on, so the only
     // answer that fails closed is no token at all.
-    if (payload.act?.sub !== undefined) {
+    const delegatedBy = payload.act?.sub;
+    if (delegatedBy !== undefined) {
       // The rules live in one place because OAuthAuthMiddleware needs the
       // same ones for the OIDC endpoints; see delegation-guard.ts.
-      await assertDelegationStillHolds(payload.act.sub, userId, orgId, user);
+      await assertDelegationStillHolds(delegatedBy, userId, orgId, user);
     }
 
     email = user.email;
@@ -260,13 +254,7 @@ export class AuthMiddleware {
 
     if (!accountType && isClientCredentials) {
       try {
-        const org = await Org.findOne({
-          _id: orgId,
-          isDeleted: false,
-        })
-          .select('accountType')
-          .lean()
-          .exec();
+        const org = await getOrgRepository().getAccountType(orgId);
         if (org) {
           accountType = org.accountType;
         }
@@ -321,24 +309,25 @@ export class AuthMiddleware {
         req.tokenPayload = decoded;
         req.verifiedToken = token;
 
-        const userId = decoded?.userId;
+        const userId = decoded?.userId as string | undefined;
         const orgId = decoded?.orgId as string | undefined;
 
-        this.logger.debug(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
+        this.logger.debug(
+          `userId: ${userId}, orgId: ${orgId}, scope: ${scope}`,
+        );
 
-        if (userId && orgId && (scope === TokenScopes.PASSWORD_RESET || scope === TokenScopes.VALIDATE_EMAIL)) {
-          let userActivity: Pick<IUserActivity, 'createdAt'> | null = null;
+        if (
+          userId &&
+          orgId &&
+          (scope === TokenScopes.PASSWORD_RESET ||
+            scope === TokenScopes.VALIDATE_EMAIL)
+        ) {
+          let userActivity: Pick<ActivityDto, 'createdAt'> | null = null;
           try {
-            userActivity = await UserActivities.findOne({
-              userId: userId,
-              orgId: orgId,
-              isDeleted: false,
-              activityType: PASSWORD_CHANGED,
-            })
-              .sort({ createdAt: -1 }) // sort by most recent first
-              .lean()
-              .exec();
-
+            userActivity = await getActivityRepository().latestPasswordChange(
+              userId,
+              orgId,
+            );
           } catch (activityError) {
             this.logger.error('Failed to fetch user activity', activityError);
           }
@@ -347,7 +336,9 @@ export class AuthMiddleware {
             const tokenIssuedAt = decoded.iat ? decoded.iat * 1000 : 0;
             const activityTimestamp = userActivity.createdAt?.getTime() || 0;
             if (activityTimestamp > tokenIssuedAt) {
-              throw new UnauthorizedError('Password reset link expired, please request for a new link');
+              throw new UnauthorizedError(
+                'Password reset link expired, please request for a new link',
+              );
             }
           }
         }
@@ -358,7 +349,7 @@ export class AuthMiddleware {
           runWithOrgContext(
             makeOrgContext({
               orgId,
-              userId: userId ? String(userId) : null,
+              userId: userId || null,
               kind: 'service',
               source: 'scoped_jwt',
             }),

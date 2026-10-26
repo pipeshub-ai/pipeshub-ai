@@ -1,11 +1,16 @@
 import { Response, NextFunction } from 'express';
-import { User, Users } from '../schema/users.schema'; // Adjust path as needed
 import {
   AuthenticatedServiceRequest,
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
-import mongoose from 'mongoose';
-import { UserDisplayPicture } from '../schema/userDp.schema';
+import { isValidId } from '../../../libs/repositories/ids';
+import { UniqueConstraintError } from '../../../libs/repositories/errors';
+import { getUserRepository } from '../../../libs/repositories/user';
+import type { UserDto, DirectoryQuery } from '../../../libs/repositories/user';
+import { getGroupRepository } from '../../../libs/repositories/group';
+import { getCredentialRepository } from '../../../libs/repositories/credential';
+import { getActivityRepository } from '../../../libs/repositories/activity';
+import { getPictureRepository } from '../../../libs/repositories/picture';
 import {
   assertRasterImage,
   readImageUpload,
@@ -43,7 +48,6 @@ import {
 } from '../services/entity_events.service';
 import { Logger } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
-import { UserGroups } from '../schema/userGroup.schema';
 import { isServiceAccountEmail } from '../constants/service-account.constants';
 import type {
   GraphUserListResponse,
@@ -60,17 +64,21 @@ import {
 } from '../services/user-admin.service';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
-import { escapeRegExp } from '../../../utils/escape-regexp';
 import { AuthService } from '../services/auth.service';
-import { Org } from '../schema/org.schema';
-import { UserCredentials } from '../../auth/schema/userCredentials.schema';
+import { getOrgRepository } from '../../../libs/repositories/org';
 import { passwordValidator } from '../../auth/utils/passwordValidator';
 import { SALT_ROUNDS } from '../../auth/controller/userAccount.controller';
 import bcrypt from 'bcryptjs';
-import { DEMO_ACCOUNT_DOMAIN, clearRemovedSampleAccount, isDemoAccountEmail } from '../services/demo-accounts.service';
+import {
+  DEMO_ACCOUNT_DOMAIN,
+  clearRemovedSampleAccount,
+  isDemoAccountEmail,
+} from '../services/demo-accounts.service';
 
-export { DEMO_ACCOUNT_DOMAIN, isDemoAccountEmail } from '../services/demo-accounts.service';
-import { UserActivities } from '../../auth/schema/userActivities.schema';
+export {
+  DEMO_ACCOUNT_DOMAIN,
+  isDemoAccountEmail,
+} from '../services/demo-accounts.service';
 import { userActivitiesType } from '../../../libs/utils/userActivities.utils';
 import { AICommandOptions } from '../../../libs/commands/ai_service/ai.service.command';
 import { AIServiceCommand } from '../../../libs/commands/ai_service/ai.service.command';
@@ -81,17 +89,14 @@ import {
   EventType as NotificationEventType,
 } from '../../notification/service/notification.producer';
 import { NotificationContainer } from '../../notification/container/notification.container';
-import { INotification } from '../../notification/schema/notification.schema';
+import type { NotificationEventPayload } from '../../notification/service/notification.producer';
 import { HttpMethod } from '../../../libs/enums/http-methods.enum';
 import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
 } from '../../../utils/xss-sanitization';
-import {
-  OAuthApp,
-  OAuthAppStatus,
-} from '../../oauth_provider/schema/oauth.app.schema';
+import { getOAuthAppRepository } from '../../../libs/repositories/oauth-app';
 import { resolveOAuthTokenService } from '../../../libs/services/oauth-token-service.provider';
 import { ProjectService } from '../../projects/services/project.service';
 import { ProjectKnowledgeBaseService } from '../../projects/services/project-kb.service';
@@ -122,8 +127,8 @@ function assertEmailChangeIsSelf(
   const isSelf =
     actor !== '' &&
     target !== '' &&
-    mongoose.Types.ObjectId.isValid(actor) &&
-    new mongoose.Types.ObjectId(actor).equals(target);
+    isValidId(actor) &&
+    actor.toLowerCase() === target.toLowerCase();
   if (!isSelf) {
     throw new ForbiddenError(
       'Only the account owner can change its email address. To fix an invitation sent to the wrong address, delete it and invite again.',
@@ -158,19 +163,14 @@ export interface InviteResult {
   limitExceededRestorations?: string[];
 }
 
-type MongoDuplicateKeyError = {
-  code?: number;
-  keyPattern?: Record<string, unknown>;
-  keyValue?: Record<string, unknown>;
-};
-
-// MongoDB reports a unique-index violation as code 11000, naming the key.
+// The store names the violated key; only the email key is a duplicate address.
 // A caught value can be anything, null or undefined included.
 function isDuplicateEmailKeyError(error: unknown): boolean {
-  const e = error as MongoDuplicateKeyError | null | undefined;
   return (
-    e?.code === 11000 &&
-    (e.keyPattern?.email !== undefined || e.keyValue?.email !== undefined)
+    error instanceof UniqueConstraintError &&
+    String(error.metadata?.key ?? '')
+      .split(',')
+      .includes('email')
   );
 }
 
@@ -201,8 +201,7 @@ export class UserController {
       includeServiceAccounts,
     } = req.query;
 
-    const orgId = req.user?.orgId;
-    const orgIdObj = new mongoose.Types.ObjectId(orgId);
+    const orgId = req.user?.orgId as string;
     const { page, limit, skip } = safeParsePagination(
       (pageParam as string) ?? '1',
       limitParam as string,
@@ -210,12 +209,6 @@ export class UserController {
       25,
       100,
     );
-
-    // Build MongoDB filter
-    const filter: Record<string, any> = {
-      orgId: orgIdObj,
-      isDeleted: { $ne: true },
-    };
 
     // This is the list of people. Service accounts are users in every way the
     // permission graph cares about, but they are managed in their own admin
@@ -245,127 +238,47 @@ export class UserController {
     const maySeeServiceAccounts =
       wantsServiceAccounts &&
       req.user?.userId !== undefined &&
-      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+      (await isUserOrgAdmin(req.user.userId as string, orgId));
 
-    if (!maySeeServiceAccounts) {
-      filter.kind = { $ne: 'service' };
-    }
+    const query: DirectoryQuery = {
+      skip,
+      limit,
+      includeServiceAccounts: maySeeServiceAccounts,
+    };
 
     if (search) {
-      const searchRegex = { $regex: escapeRegExp(String(search)), $options: 'i' };
-      filter.$or = [{ fullName: searchRegex }, { email: searchRegex }];
+      query.search = String(search);
     }
 
     // Status filters: hasLoggedIn and isBlocked
-    // When both are present, combine with $or so users matching either condition are returned.
-    const hasLoggedInFilter = hasLoggedIn !== undefined && hasLoggedIn !== '';
-    const isBlockedFilter = isBlocked !== undefined && isBlocked !== '';
-
-    if (isBlockedFilter) {
-      // Resolve blocked user IDs once and apply blocked/non-blocked constraint.
-      const blockedCreds = await UserCredentials.find({
-        orgId,
-        isBlocked: true,
-        isDeleted: false,
-      })
-        .select('userId')
-        .lean()
-        .exec();
-      const blockedIds = blockedCreds
-        .filter((c) => c.userId)
-        .map((c) => new mongoose.Types.ObjectId(c.userId!));
-
-      if (String(isBlocked) === 'true') {
-        const statusConditions: Record<string, any>[] = [];
-        if (hasLoggedInFilter) {
-          statusConditions.push({
-            hasLoggedIn: String(hasLoggedIn) === 'true',
-          });
-        }
-        // Always include the blocked constraint when isBlocked=true; an empty
-        // $in correctly matches nothing so "Blocked" with zero blocked users
-        // returns an empty list rather than the entire org.
-        statusConditions.push({ _id: { $in: blockedIds } });
-        // Merge with any existing $or (search) using $and
-        if (filter.$or) {
-          filter.$and = [{ $or: filter.$or }, { $or: statusConditions }];
-          delete filter.$or;
-        } else {
-          filter.$or = statusConditions;
-        }
-      } else {
-        if (hasLoggedInFilter) {
-          filter.hasLoggedIn = String(hasLoggedIn) === 'true';
-        }
-        if (blockedIds.length > 0) {
-          filter._id = { ...filter._id, $nin: blockedIds };
-        }
-      }
-    } else if (hasLoggedInFilter) {
-      filter.hasLoggedIn = String(hasLoggedIn) === 'true';
+    // When both are present, either condition matches.
+    if (hasLoggedIn !== undefined && hasLoggedIn !== '') {
+      query.hasLoggedIn = String(hasLoggedIn) === 'true';
+    }
+    if (isBlocked !== undefined && isBlocked !== '') {
+      query.blocked = String(isBlocked) === 'true';
     }
 
     // groupIds filter: restrict to users belonging to any of the specified groups
     if (groupIds) {
       const gids = String(groupIds).split(',').filter(Boolean);
       if (gids.length > 0) {
-        const groups = await UserGroups.find({
-          _id: { $in: gids.map((id) => new mongoose.Types.ObjectId(id)) },
-          orgId: orgIdObj,
-          isDeleted: false,
-        })
-          .select('users')
-          .lean()
-          .exec();
-        const userIdsInGroups = groups.flatMap((g) =>
-          g.users.map((u: any) => new mongoose.Types.ObjectId(u.toString())),
-        );
-        filter._id = { ...filter._id, $in: userIdsInGroups };
+        query.groupIds = gids;
       }
     }
 
-    const [mongoUsers, totalCount] = await Promise.all([
-      Users.find(filter)
-        .sort({ fullName: 1 })
-        .skip(skip)
-        .limit(limit)
-        .lean()
-        .exec(),
-      Users.countDocuments(filter),
-    ]);
+    const { rows: mongoUsers, total: totalCount } =
+      await getUserRepository().listDirectory(orgId, query);
 
-    const userIds = mongoUsers.map((u) => u._id.toString());
+    const userIds = mongoUsers.map((u) => u._id);
 
     // Enrich with profile pictures, groups, and blocked status
-    const [dpDocs, groupDocs, credDocs] =
+    const [dpDocs, groupDocs, blockedIds] =
       userIds.length > 0
         ? await Promise.all([
-            UserDisplayPicture.find({
-              orgId,
-              userId: { $in: userIds },
-              pic: { $ne: null },
-            })
-              .lean()
-              .exec(),
-            UserGroups.find({
-              orgId: orgIdObj,
-              isDeleted: false,
-              users: {
-                $in: userIds.map((id) => new mongoose.Types.ObjectId(id)),
-              },
-            })
-              .select('_id name type users')
-              .lean()
-              .exec(),
-            UserCredentials.find({
-              orgId,
-              userId: { $in: userIds },
-              isBlocked: true,
-              isDeleted: false,
-            })
-              .select('userId')
-              .lean()
-              .exec(),
+            getPictureRepository().listSet(orgId, userIds),
+            getGroupRepository().summariesForUsers(orgId, userIds),
+            getCredentialRepository().blockedUserIds(orgId, userIds),
           ])
         : [[], [], []];
 
@@ -373,11 +286,11 @@ export class UserController {
     for (const dp of dpDocs) {
       if (dp.userId && dp.pic) {
         const mime = dp.mimeType || 'image/jpeg';
-        dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+        dpMap.set(dp.userId, `data:${mime};base64,${dp.pic}`);
       }
     }
 
-    const blockedUserIds = new Set(credDocs.map((c) => c.userId?.toString()));
+    const blockedUserIds = new Set<string | undefined>(blockedIds);
 
     // Build per-user group data
     const userGroupsMap = new Map<
@@ -386,22 +299,22 @@ export class UserController {
     >();
     for (const g of groupDocs) {
       for (const uid of g.users) {
-        const uidStr = uid.toString();
+        const uidStr = uid;
         if (!userGroupsMap.has(uidStr)) userGroupsMap.set(uidStr, []);
         userGroupsMap
           .get(uidStr)!
-          .push({ _id: g._id.toString(), name: g.name, type: g.type });
+          .push({ _id: g._id, name: g.name, type: g.type });
       }
     }
 
     const enrichedUsers = mongoUsers.map((u) => {
-      const uid = u._id.toString();
+      const uid = u._id;
       const timestamps = u as typeof u & { createdAt?: Date; updatedAt?: Date };
       const groups = userGroupsMap.get(uid) ?? [];
       return {
         id: uid,
         userId: uid,
-        orgId: u.orgId?.toString(),
+        orgId: u.orgId,
         name: u.fullName,
         email: u.email,
         // Carried through so a caller that asked for service accounts can tell
@@ -434,61 +347,9 @@ export class UserController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
-    const orgId = req.user?.orgId;
-    const orgIdObj = new mongoose.Types.ObjectId(orgId);
+    const orgId = req.user?.orgId as string;
 
-    const users = await Users.aggregate([
-      {
-        $match: {
-          orgId: orgIdObj, // Only include users from the same org
-          isDeleted: false, // Exclude deleted users
-        },
-      },
-      {
-        $lookup: {
-          from: 'userGroups', // Collection name for user groups
-          localField: '_id', // Field in appusers collection
-          foreignField: 'users', // Field in appuserGroups collection (array of user IDs)
-          as: 'groups', // Resulting array of groups for each user
-        },
-      },
-      {
-        $addFields: {
-          // Filter groups array to keep only non-deleted groups from same org
-          groups: {
-            $filter: {
-              input: '$groups',
-              as: 'group',
-              cond: {
-                $and: [
-                  { $eq: ['$$group.orgId', orgIdObj] },
-                  { $ne: ['$$group.isDeleted', true] },
-                ],
-              },
-            },
-          },
-        },
-      },
-      {
-        $project: {
-          _id: 1,
-          userId: 1,
-          orgId: 1,
-          fullName: 1,
-          hasLoggedIn: 1,
-          groups: {
-            $map: {
-              input: '$groups',
-              as: 'group',
-              in: {
-                name: '$$group.name',
-                type: '$$group.type',
-              },
-            },
-          },
-        },
-      },
-    ]);
+    const users = await getUserRepository().listWithGroups(orgId);
 
     res.status(200).json(users);
   }
@@ -504,13 +365,10 @@ export class UserController {
       // Check if email should be included based on environment variable
       const hideEmail = process.env.HIDE_EMAIL === 'true';
 
-      const user = await Users.findOne({
-        _id: userId,
-        orgId,
-        isDeleted: false,
-      })
-        .lean()
-        .exec();
+      const user = await getUserRepository().getLive(
+        orgId as string,
+        userId as string,
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
@@ -543,24 +401,12 @@ export class UserController {
         throw new BadRequestError('orgId must be provided');
       }
 
-      const credential = await UserCredentials.findOneAndUpdate(
-        {
-          userId,
-          orgId,
-          isBlocked: true,
-          isDeleted: false,
-        },
-        {
-          $set: {
-            isBlocked: false,
-            wrongCredentialCount: 0,
-            blockExpiresAt: null,
-          },
-        },
-        { returnDocument: 'after' },
+      const unblocked = await getCredentialRepository().unblock(
+        userId,
+        orgId as string,
       );
 
-      if (!credential) {
+      if (!unblocked) {
         throw new BadRequestError('User not found or not blocked');
       }
 
@@ -580,14 +426,10 @@ export class UserController {
     const userId = req.params.id;
     const orgId = req.user?.orgId;
     try {
-      const user = await Users.findOne({
-        _id: userId,
-        orgId,
-        isDeleted: false,
-      })
-        .select('email')
-        .lean()
-        .exec();
+      const user = await getUserRepository().getEmail(
+        orgId as string,
+        userId as string,
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
@@ -614,48 +456,38 @@ export class UserController {
         );
       }
 
-      const invalidIds = userIds.filter((id) => !mongoose.isValidObjectId(id));
+      const invalidIds = userIds.filter((id) => !isValidId(id));
       if (invalidIds.length > 0) {
         throw new BadRequestError(
           'userIds must contain valid MongoDB ObjectIds',
         );
       }
 
-      const userObjectIds = userIds.map(
-        (id) => new mongoose.mongo.ObjectId(id),
-      );
-
       const orgId = req.user?.orgId;
 
-      const users = await Users.find({
-        orgId,
-        isDeleted: false,
-        _id: { $in: userObjectIds },
-      })
-        .lean()
-        .exec();
+      const users = await getUserRepository().listLiveByIds(
+        orgId as string,
+        userIds,
+      );
 
-      const userIdStrs = users.map((u) => u._id.toString());
+      const userIdStrs = users.map((u) => u._id);
       const dpMap = new Map<string, string>();
       if (orgId && userIdStrs.length > 0) {
-        const dpDocs = await UserDisplayPicture.find({
-          orgId,
-          userId: { $in: userIdStrs },
-          pic: { $ne: null },
-        })
-          .lean()
-          .exec();
+        const dpDocs = await getPictureRepository().listSet(
+          orgId as string,
+          userIdStrs,
+        );
         for (const dp of dpDocs) {
           if (dp.userId && dp.pic) {
             const mime = dp.mimeType || 'image/jpeg';
-            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+            dpMap.set(dp.userId, `data:${mime};base64,${dp.pic}`);
           }
         }
       }
 
       const enrichedUsers = users.map((u) => ({
         ...u,
-        profilePicture: dpMap.get(u._id.toString()),
+        profilePicture: dpMap.get(u._id),
       }));
 
       res.status(200).json(enrichedUsers);
@@ -682,17 +514,13 @@ export class UserController {
         throw new ForbiddenError(USER_LOOKUP_EMAIL_MISMATCH_MESSAGE);
       }
 
-      const tokenOrgId = (req as { tokenPayload?: { orgId?: string } })
-        .tokenPayload?.orgId;
+      const tokenOrgId = req.tokenPayload?.orgId;
 
-      const users = await Users.find({
-        email: tokenEmail.toLowerCase(),
-        isDeleted: false,
-        ...(tokenOrgId ? { orgId: tokenOrgId } : {}),
-      })
-        .select(USER_LOOKUP_FIELDS)
-        .lean()
-        .exec();
+      const users = await getUserRepository().listLiveByEmail(
+        tokenEmail.toLowerCase(),
+        USER_LOOKUP_FIELDS.split(' ') as Array<keyof UserDto>,
+        tokenOrgId || undefined,
+      );
 
       res.json(users);
       return;
@@ -737,23 +565,25 @@ export class UserController {
         password !== undefined
           ? await bcrypt.hash(password, SALT_ROUNDS)
           : undefined;
-      const newUser = new Users({
+      const fields = {
         ...userFields,
-        orgId: req.user?.orgId,
         role: resolveOptionalUserRole(req.body.role),
-      });
+      };
+      const orgId = req.user?.orgId as string;
+      const users = getUserRepository();
 
       // Refuse a duplicate here rather than letting the unique index throw
-      // after side effects have happened.
+      // after side effects have happened. Addresses are stored lowercased.
       const email =
-        typeof newUser.email === 'string' ? newUser.email.trim() : '';
+        typeof fields.email === 'string'
+          ? fields.email.toLowerCase().trim()
+          : '';
       if (email !== '') {
-        const existing = await Users.findOne({ email, isDeleted: false });
-        if (existing) {
+        if (await users.existsLiveEmail(email)) {
           throw new BadRequestError('A user with this email already exists');
         }
         if (isDemoAccountEmail(email)) {
-          await clearRemovedSampleAccount(email, String(newUser.orgId));
+          await clearRemovedSampleAccount(email, orgId);
         }
       }
 
@@ -765,22 +595,23 @@ export class UserController {
       // still have applied, so the undo takes the membership back either way;
       // before it, there is nothing to take back.
       let groupWriteAttempted = false;
+      let newUser!: UserDto;
       const undoSavedAccount = async (reason: string): Promise<void> => {
         // Membership goes first, so nothing is left pointing at a user that is
         // about to go, and in its own try: when the group write is what failed,
         // this is likely to fail too, and the account still has to go.
         try {
           if (groupWriteAttempted) {
-            await UserGroups.updateOne(
-              { orgId: newUser.orgId, type: 'everyone' },
-              { $pull: { users: newUser._id } },
+            await getGroupRepository().removeFromEveryone(
+              newUser.orgId,
+              newUser._id,
             );
           }
         } catch (membershipError) {
           this.logger.warn(
             `Account was saved but ${reason}, and taking it out of the everyone group failed too`,
             {
-              userId: String(newUser._id),
+              userId: newUser._id,
               error:
                 membershipError instanceof Error
                   ? membershipError.message
@@ -790,14 +621,17 @@ export class UserController {
         }
         try {
           if (hashedPassword !== undefined) {
-            await UserCredentials.deleteOne({ userId: String(newUser._id) });
+            await getCredentialRepository().discardForUser(
+              newUser._id,
+              newUser.email,
+            );
           }
-          await Users.deleteOne({ _id: newUser._id });
+          await users.deleteById(newUser._id);
         } catch (cleanupError) {
           this.logger.error(
             `Account was saved but ${reason}, and removing it failed too`,
             {
-              userId: String(newUser._id),
+              userId: newUser._id,
               error:
                 cleanupError instanceof Error
                   ? cleanupError.message
@@ -808,7 +642,7 @@ export class UserController {
       };
 
       try {
-        await newUser.save();
+        newUser = await users.create(orgId, fields);
       } catch (saveError) {
         // The check above only sees live accounts, but the unique index covers
         // every row, so the email can still collide here: two concurrent
@@ -822,13 +656,12 @@ export class UserController {
       }
       if (hashedPassword !== undefined) {
         try {
-          await new UserCredentials({
+          await getCredentialRepository().createWithPassword({
             userId: newUser._id,
             orgId: newUser.orgId,
-            isDeleted: false,
             hashedPassword,
             ipAddress: req.ip,
-          }).save();
+          });
         } catch (credentialError) {
           await undoSavedAccount('its credential was not');
           throw credentialError;
@@ -837,10 +670,7 @@ export class UserController {
 
       try {
         groupWriteAttempted = true;
-        await UserGroups.updateOne(
-          { orgId: newUser.orgId, type: 'everyone' }, // Find the everyone group in the same org
-          { $addToSet: { users: newUser._id } }, // Add user to the group if not already present
-        );
+        await getGroupRepository().addToEveryone(newUser.orgId, newUser._id);
       } catch (groupError) {
         await undoSavedAccount('the everyone-group membership was not');
         throw groupError;
@@ -851,8 +681,8 @@ export class UserController {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: newUser.orgId.toString(),
-          userId: newUser._id.toString(),
+          orgId: newUser.orgId,
+          userId: newUser._id,
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -873,7 +703,7 @@ export class UserController {
       }
       if (hashedPassword !== undefined) {
         this.logger.info('Demo account created with a starting password', {
-          orgId: newUser.orgId.toString(),
+          orgId: newUser.orgId,
           createdBy: req.user?.userId,
           email: newUser.email,
         });
@@ -897,33 +727,24 @@ export class UserController {
     logger: Logger,
   ) {
     logger.info(`Auto-provisioning user from ${provider}`, { email, orgId });
-    const user = await Users.findOne({
-      email,
-      orgId,
-      isDeleted: true,
-    });
-    if (user) {
+    if (await getUserRepository().hasRemovedAccount(orgId, email)) {
       throw new BadRequestError(
         'User account deleted by admin. Please contact your admin to restore your account.',
       );
     }
 
-    const newUser = new Users({
+    const newUser = await getUserRepository().create(orgId, {
       email,
       ...userDetails,
-      orgId,
       hasLoggedIn: false,
       isDeleted: false,
       role: 'member',
     });
 
-    await newUser.save();
-
     // Add to everyone group
-    await UserGroups.updateOne(
-      { orgId, type: 'everyone', isDeleted: false },
-      { $addToSet: { users: newUser._id } },
-    );
+    await getGroupRepository().addToEveryone(orgId, newUser._id, {
+      liveOnly: true,
+    });
 
     // Publish user creation event
     try {
@@ -932,8 +753,8 @@ export class UserController {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id.toString(),
+          orgId: orgId,
+          userId: newUser._id,
           fullName: newUser.fullName,
           email: newUser.email,
           syncAction: SyncAction.Immediate,
@@ -953,7 +774,7 @@ export class UserController {
       email,
     });
 
-    return newUser.toObject();
+    return newUser;
   }
 
   /**
@@ -1067,8 +888,8 @@ export class UserController {
           throw new ForbiddenError('Only admins can change user roles');
         }
         const requesterIsAdmin = await isUserOrgAdmin(
-          actorUserId,
-          req.user.orgId,
+          actorUserId as string,
+          req.user.orgId as string,
         );
         if (!requesterIsAdmin) {
           throw new ForbiddenError('Only admins can change user roles');
@@ -1096,11 +917,10 @@ export class UserController {
       }
 
       const { id } = req.params;
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-        isDeleted: false,
-      });
+      const user = await getUserRepository().getForEdit(
+        req.user.orgId as string,
+        id as string,
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
@@ -1126,7 +946,7 @@ export class UserController {
           (user.role !== 'member' &&
             !!id &&
             !!orgId &&
-            (await isUserOrgAdmin(String(id), String(orgId)))));
+            (await isUserOrgAdmin(id, orgId))));
       const promotingAdmin =
         updateFields.role === 'admin' && previousRole !== 'admin';
 
@@ -1138,8 +958,8 @@ export class UserController {
       // Separate email from other fields since it requires special handling (uniqueness check)
       const { email, ...otherUpdateFields } = updateFields;
 
-      // Apply all other whitelisted fields
-      Object.assign(user, otherUpdateFields);
+      // What the account will look like once the other fields are written.
+      const pendingUser = { ...user, ...otherUpdateFields };
 
       // Handle email update separately due to uniqueness check
       if (email !== undefined) {
@@ -1151,20 +971,20 @@ export class UserController {
           // Stored addresses are lowercased and the unique index is
           // case-sensitive, so the raw request value can miss an existing
           // lowercase match and the change would only fail later on save.
-          const existingUser = await Users.findOne({
-            email: newEmail,
-            _id: { $ne: id },
-            orgId: req.user.orgId,
-            isDeleted: false,
-          });
-          if (existingUser) {
+          if (
+            await getUserRepository().emailTakenByOther(
+              req.user.orgId as string,
+              newEmail as string,
+              id as string,
+            )
+          ) {
             throw new BadRequestError('Email already exists for another user');
           }
 
           const emailSentResponse = await this.emailChange(
-            email,
-            newEmail,
-            user,
+            email as string,
+            newEmail as string,
+            pendingUser,
           );
 
           if (emailSentResponse.statusCode !== 200) {
@@ -1177,32 +997,48 @@ export class UserController {
 
       // Demotion / promotion: RS = Org touch + check + save in one txn
       const rsAvailable = this.config.rsAvailable === 'true';
+      let saved: UserDto | null;
       if (demotingAdmin && id && orgId) {
-        await saveUserEnsuringOrgRetainsAdmin(user, rsAvailable);
+        saved = await saveUserEnsuringOrgRetainsAdmin(
+          orgId as string,
+          id,
+          otherUpdateFields,
+          rsAvailable,
+        );
       } else if (promotingAdmin && id && orgId) {
-        await saveUserEnsuringAdminCap(user, rsAvailable);
+        saved = await saveUserEnsuringAdminCap(
+          orgId as string,
+          id,
+          otherUpdateFields,
+          rsAvailable,
+        );
       } else {
-        await user.save();
+        saved = await getUserRepository().updateProfile(
+          orgId as string,
+          id as string,
+          otherUpdateFields,
+        );
       }
+      if (!saved) {
+        throw new NotFoundError('User not found');
+      }
+      const updatedUser = saved;
 
       // Role change: same as password change — invalidate every workspace
       // session for this email, then push force_logout to each connected tab.
       if (roleChanging && id && orgId) {
         try {
-          const email = user.email;
+          const email = updatedUser.email;
           const allMemberships = email
-            ? await Users.find({ email, isDeleted: false })
-                .select('_id orgId')
-                .lean()
-                .exec()
+            ? await getUserRepository().listLiveMembershipsByEmail(email)
             : [];
           const memberships =
             allMemberships.length > 0 ? allMemberships : [{ _id: id, orgId }];
 
-          await UserActivities.insertMany(
+          await getActivityRepository().recordMany(
             memberships.map((member) => ({
-              orgId: member.orgId,
-              userId: member._id,
+              orgId: String(member.orgId),
+              userId: String(member._id),
               email,
               activityType: userActivitiesType.ROLE_CHANGED,
               ipAddress: req.ip || '',
@@ -1235,13 +1071,15 @@ export class UserController {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id.toString(),
-          fullName: user.fullName,
-          ...(user.firstName && { firstName: user.firstName }),
-          ...(user.lastName && { lastName: user.lastName }),
-          ...(user.designation && { designation: user.designation }),
-          email: user.email,
+          orgId: updatedUser.orgId,
+          userId: updatedUser._id,
+          fullName: updatedUser.fullName,
+          ...(updatedUser.firstName && { firstName: updatedUser.firstName }),
+          ...(updatedUser.lastName && { lastName: updatedUser.lastName }),
+          ...(updatedUser.designation && {
+            designation: updatedUser.designation,
+          }),
+          email: updatedUser.email,
         } as UserUpdatedEvent,
       };
 
@@ -1249,7 +1087,7 @@ export class UserController {
       await this.eventService.stop();
       // Save the updated user
       res.json({
-        ...user.toObject(),
+        ...updatedUser,
         meta: {
           emailChangeMailStatus: emailChangeRequested,
         },
@@ -1269,26 +1107,23 @@ export class UserController {
       }
 
       const { id } = req.params;
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-        isDeleted: false,
-      });
+      const user = await getUserRepository().updateProfile(
+        req.user.orgId as string,
+        id as string,
+        { fullName: req.body.fullName },
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
       }
-
-      user.fullName = req.body.fullName;
-      await user.save();
 
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id.toString(),
+          orgId: user.orgId,
+          userId: user._id,
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1299,7 +1134,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      res.json(user);
     } catch (error) {
       next(error);
     }
@@ -1316,26 +1151,23 @@ export class UserController {
       }
 
       const { id } = req.params;
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-        isDeleted: false,
-      });
+      const user = await getUserRepository().updateProfile(
+        req.user.orgId as string,
+        id as string,
+        { firstName: req.body.firstName },
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
       }
-
-      user.firstName = req.body.firstName;
-      await user.save();
 
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id.toString(),
+          orgId: user.orgId,
+          userId: user._id,
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1346,7 +1178,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      res.json(user);
     } catch (error) {
       next(error);
     }
@@ -1363,26 +1195,23 @@ export class UserController {
       }
 
       const { id } = req.params;
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-        isDeleted: false,
-      });
+      const user = await getUserRepository().updateProfile(
+        req.user.orgId as string,
+        id as string,
+        { lastName: req.body.lastName },
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
       }
-
-      user.lastName = req.body.lastName;
-      await user.save();
 
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id.toString(),
+          orgId: user.orgId,
+          userId: user._id,
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1393,7 +1222,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      res.json(user);
     } catch (error) {
       next(error);
     }
@@ -1410,26 +1239,23 @@ export class UserController {
       }
 
       const { id } = req.params;
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-        isDeleted: false,
-      });
+      const user = await getUserRepository().updateProfile(
+        req.user.orgId as string,
+        id as string,
+        { designation: req.body.designation },
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
       }
-
-      user.designation = req.body.designation;
-      await user.save();
 
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.UpdateUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id.toString(),
+          orgId: user.orgId,
+          userId: user._id,
           fullName: user.fullName,
           ...(user.firstName && { firstName: user.firstName }),
           ...(user.lastName && { lastName: user.lastName }),
@@ -1440,7 +1266,7 @@ export class UserController {
 
       await this.eventService.publishEvent(event);
       await this.eventService.stop();
-      res.json(user.toObject());
+      res.json(user);
     } catch (error) {
       next(error);
     }
@@ -1460,11 +1286,10 @@ export class UserController {
       // Same rules as the email branch of updateUser: only the owner may change
       // the address. It is applied by /validateEmailChange once the link sent
       // to the new address is opened — never written here.
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-        isDeleted: false,
-      });
+      const user = await getUserRepository().getForEdit(
+        req.user.orgId as string,
+        id as string,
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
@@ -1480,13 +1305,13 @@ export class UserController {
         return;
       }
       assertEmailChangeIsSelf(req.user.userId, id);
-      const existingUser = await Users.findOne({
-        email: newEmail,
-        _id: { $ne: id },
-        orgId: req.user.orgId,
-        isDeleted: false,
-      });
-      if (existingUser) {
+      if (
+        await getUserRepository().emailTakenByOther(
+          req.user.orgId as string,
+          newEmail,
+          id as string,
+        )
+      ) {
         throw new BadRequestError('Email already exists for another user');
       }
       const emailSentResponse = await this.emailChange(
@@ -1513,57 +1338,33 @@ export class UserController {
     createdByUserId: unknown,
     actorUser: Record<string, unknown>,
   ): Promise<void> {
-    const orgOid =
-      orgId instanceof mongoose.Types.ObjectId
-        ? orgId
-        : new mongoose.Types.ObjectId(String(orgId));
-    const creatorOid =
-      createdByUserId instanceof mongoose.Types.ObjectId
-        ? createdByUserId
-        : new mongoose.Types.ObjectId(String(createdByUserId));
+    const orgOid = String(orgId);
+    const creatorOid = String(createdByUserId);
+    const apps = getOAuthAppRepository();
 
-    const apps = await OAuthApp.find({
-      orgId: orgOid,
-      createdBy: creatorOid,
-      isDeleted: false,
-    })
-      .select('clientId')
-      .lean()
-      .exec();
+    const clientIds = await apps.listClientIdsCreatedBy(orgOid, creatorOid);
 
     const oauthTokenService = resolveOAuthTokenService();
-    if (oauthTokenService && apps.length > 0) {
-      for (const app of apps) {
-        if (!app?.clientId) {
+    if (oauthTokenService && clientIds.length > 0) {
+      for (const clientId of clientIds) {
+        if (!clientId) {
           continue;
         }
         try {
-          await oauthTokenService.revokeAllTokensForApp(app.clientId);
+          await oauthTokenService.revokeAllTokensForApp(clientId);
         } catch (err) {
           this.logger.error(
             'Failed to revoke OAuth tokens when deleting user',
-            { clientId: app.clientId, err },
+            { clientId, err },
           );
         }
       }
     }
 
     const actorIdRaw = actorUser.userId ?? actorUser._id;
-    const deletedBy =
-      actorIdRaw != null
-        ? new mongoose.Types.ObjectId(String(actorIdRaw))
-        : creatorOid;
+    const deletedBy = actorIdRaw != null ? String(actorIdRaw) : creatorOid;
 
-    await OAuthApp.updateMany(
-      { orgId: orgOid, createdBy: creatorOid, isDeleted: false },
-      {
-        $set: {
-          isDeleted: true,
-          status: OAuthAppStatus.REVOKED,
-          deletedBy,
-        },
-      },
-    );
+    await apps.softDeleteCreatedBy(orgOid, creatorOid, deletedBy);
   }
 
   async deleteUser(
@@ -1577,10 +1378,10 @@ export class UserController {
       }
       const { id } = req.params;
 
-      const user = await Users.findOne({
-        orgId: req.user.orgId,
-        _id: id,
-      });
+      const user = await getUserRepository().getAny(
+        req.user.orgId as string,
+        id as string,
+      );
 
       if (!user) {
         throw new NotFoundError('User not found');
@@ -1604,7 +1405,7 @@ export class UserController {
       // account is later restored. A deletion without it would leave no
       // revocation marker, so if it cannot be written nothing is deleted.
       try {
-        await UserActivities.create({
+        await getActivityRepository().record({
           orgId,
           userId,
           email: user.email,
@@ -1613,7 +1414,7 @@ export class UserController {
         });
       } catch (activityError) {
         this.logger.error('Deletion not recorded; the user was not deleted', {
-          userId: userId.toString(),
+          userId: userId,
           error:
             activityError instanceof Error
               ? activityError.message
@@ -1624,10 +1425,7 @@ export class UserController {
         );
       }
 
-      await UserGroups.updateMany(
-        { orgId, users: userId },
-        { $pull: { users: userId } },
-      );
+      await getGroupRepository().removeFromAll(orgId, userId);
 
       await this.softDeleteOAuthAppsForUser(orgId, userId, req.user);
 
@@ -1635,42 +1433,31 @@ export class UserController {
       // revocation leaves the membership row intact — a retry of
       // deleteUser will re-find the same projects and reattempt.
       const projectsWithLinkedKb =
-        await ProjectService.findProjectsWithLinkedKbForUser(
-          orgId.toString(),
-          userId.toString(),
-        );
+        await ProjectService.findProjectsWithLinkedKbForUser(orgId, userId);
       for (const project of projectsWithLinkedKb) {
         await ProjectKnowledgeBaseService.revokePrincipalPermission(
           this.config,
           req.headers as Record<string, string>,
           project,
-          userId.toString(),
+          userId,
           'user',
         );
       }
-      await ProjectService.removeUserFromAllProjects(
-        orgId.toString(),
-        userId.toString(),
-      );
+      await ProjectService.removeUserFromAllProjects(orgId, userId);
 
-      user.isDeleted = true;
-      user.hasLoggedIn = false;
-      user.deletedBy = req.user.userId ?? req.user._id;
-
-      await UserCredentials.updateOne(
-        { userId: String(userId) },
-        { $unset: { hashedPassword: '' } },
-      );
-
-      await user.save();
+      await getCredentialRepository().clearPassword(userId, user.email);
+      await getUserRepository().markDeleted(orgId, userId, {
+        signedOut: true,
+        deletedBy: req.user?.userId ?? req.user?._id,
+      });
 
       await this.eventService.start();
       const event: Event = {
         eventType: EventType.DeleteUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: user.orgId.toString(),
-          userId: user._id.toString(),
+          orgId: user.orgId,
+          userId: user._id,
           email: user.email,
         } as UserDeletedEvent,
       };
@@ -1719,18 +1506,11 @@ export class UserController {
       const compressedPic = compressedImageBuffer.toString('base64');
       const compressedPicMimeType = 'image/jpeg';
 
-      await UserDisplayPicture.findOneAndUpdate(
-        {
-          orgId,
-          userId,
-        },
-        {
-          orgId,
-          userId,
-          pic: compressedPic,
-          mimeType: compressedPicMimeType,
-        },
-        { returnDocument: 'after', upsert: true },
+      await getPictureRepository().set(
+        orgId as string,
+        userId as string,
+        compressedPic,
+        compressedPicMimeType,
       );
       res.setHeader('Content-Type', compressedPicMimeType);
       res.status(201).send(compressedImageBuffer);
@@ -1749,10 +1529,11 @@ export class UserController {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
 
-      const userDp = await UserDisplayPicture.findOne({ orgId, userId })
-        .lean()
-        .exec();
-      if (!userDp || !userDp.pic) {
+      const userDp = await getPictureRepository().get(
+        orgId as string,
+        userId as string,
+      );
+      if (!userDp?.pic) {
         res.status(200).json({ errorMessage: 'User pic not found' });
         return;
       }
@@ -1777,10 +1558,10 @@ export class UserController {
       const orgId = req.user?.orgId;
       const userId = req.user?.userId;
 
-      const userDp = await UserDisplayPicture.findOne({
-        orgId,
-        userId,
-      }).exec();
+      const userDp = await getPictureRepository().remove(
+        orgId as string,
+        userId as string,
+      );
 
       if (!userDp) {
         res
@@ -1788,11 +1569,6 @@ export class UserController {
           .json({ errorMessage: 'User display picture not found' });
         return;
       }
-
-      userDp.pic = null;
-      userDp.mimeType = null;
-
-      await userDp.save();
 
       res.status(200).send(userDp);
     } catch (error) {
@@ -1814,12 +1590,8 @@ export class UserController {
       if (!req.user) {
         throw new NotFoundError('User not found');
       }
-      const org = await Org.findOne({ _id: req.user.orgId, isDeleted: false });
-      const user = await Users.findOne({
-        _id: id,
-        orgId: req.user.orgId,
-        isDeleted: false,
-      });
+      const org = await getOrgRepository().getLive(req.user.orgId as string);
+      const user = await getUserRepository().getForEdit(req.user.orgId, id);
       if (!user) {
         throw new UnauthorizedError('Error getting the user');
       }
@@ -1831,8 +1603,8 @@ export class UserController {
       const userId = req.user?.userId;
       const orgId = req.user?.orgId;
       const authToken = fetchConfigJwtGenerator(
-        userId,
-        orgId,
+        userId as string,
+        orgId as string,
         this.config.scopedJwtSecret,
       );
       let result = await this.authService.passwordMethodEnabled(authToken);
@@ -1845,7 +1617,7 @@ export class UserController {
           jwtGeneratorForNewAccountPassword(
             email,
             id,
-            orgId,
+            orgId as string,
             this.config.scopedJwtSecret,
           );
 
@@ -1954,14 +1726,14 @@ export class UserController {
       // role is validated by bulkInviteValidationSchema when present
       const inviteRole = role === 'admin' ? 'admin' : 'member';
       await this.assertMemberInviteConstraints(
-        req.user.userId,
-        req.user.orgId,
+        req.user.userId as string,
+        req.user.orgId as string,
         inviteRole,
         groupIds,
       );
 
       const orgId = req.user.orgId;
-      const org = await Org.findOne({ _id: orgId, isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
       const normalizedEmails = this.normalizeEmails(emails);
 
       await this.eventService.start();
@@ -1972,7 +1744,7 @@ export class UserController {
       const result = await this.processInvites(
         normalizedEmails,
         groupIds,
-        orgId,
+        orgId as string,
         req.user?.fullName,
         org,
         inviteRole,
@@ -2054,15 +1826,15 @@ export class UserController {
       // Reject invalid ids on the request thread — otherwise Mongo throws a
       // CastError deep in the background task, surfacing only as a generic
       // failure notification.
-      if (groupIds?.some((id) => !mongoose.isValidObjectId(id))) {
+      if (groupIds?.some((id) => !isValidId(id))) {
         throw new BadRequestError(
           'groupIds must contain valid MongoDB ObjectIds',
         );
       }
 
       await this.assertMemberInviteConstraints(
-        req.user.userId,
-        req.user.orgId,
+        req.user.userId as string,
+        req.user.orgId as string,
         'member',
         groupIds,
       );
@@ -2070,7 +1842,7 @@ export class UserController {
       const orgId = req.user.orgId;
       const inviterUserId = req.user?.userId;
       const inviterName = req.user?.fullName;
-      const org = await Org.findOne({ _id: orgId, isDeleted: false });
+      const org = await getOrgRepository().getLive(orgId as string);
 
       const validEmails = normalizedEmails.filter((email) =>
         isValidEmail(email),
@@ -2091,7 +1863,7 @@ export class UserController {
           const result = await this.processInvites(
             validEmails,
             groupIds,
-            orgId,
+            orgId as string,
             inviterName,
             org,
           );
@@ -2190,39 +1962,26 @@ export class UserController {
     // administrator limit either.
     emails = emails.filter((email) => !isServiceAccountEmail(email));
 
-    const existingUsers = (
-      await Users.find({ email: { $in: emails }, orgId })
-    ).filter((user) => user.kind !== 'service');
+    const users = getUserRepository();
+    const groups = getGroupRepository();
+    const existingUsers = (await users.listByEmails(orgId, emails)).filter(
+      (user) => user.kind !== 'service',
+    );
     const activeUsers = existingUsers.filter((user) => !user.isDeleted);
     const deletedUsers = existingUsers.filter((user) => user.isDeleted);
 
     const activeEmails = activeUsers.map((user) => user.email);
     const deletedEmails = deletedUsers.map((user) => user.email);
     const pendingUsers = activeUsers.filter((user) => !user.hasLoggedIn);
-    const pendingUserIds = pendingUsers
-      .map((user) => user._id)
-      .filter((userId): userId is mongoose.Types.ObjectId => Boolean(userId));
-
-    const blockedPendingCredentialDocs =
-      pendingUserIds.length > 0
-        ? await UserCredentials.find({
-            orgId,
-            userId: { $in: pendingUserIds.map((userId) => userId.toString()) },
-            isBlocked: true,
-            isDeleted: false,
-          })
-            .select('userId')
-            .lean()
-            .exec()
-        : [];
+    const pendingUserIds = pendingUsers.map((user) => user._id).filter(Boolean);
 
     const blockedPendingUserIds = new Set(
-      blockedPendingCredentialDocs
-        .map((doc) => doc.userId?.toString())
-        .filter((userId): userId is string => Boolean(userId)),
+      pendingUserIds.length > 0
+        ? await getCredentialRepository().blockedUserIds(orgId, pendingUserIds)
+        : [],
     );
     const pendingUsersToReinvite = pendingUsers.filter(
-      (user) => user._id && !blockedPendingUserIds.has(user._id.toString()),
+      (user) => user._id && !blockedPendingUserIds.has(user._id),
     );
 
     const emailsForNewAccounts = emails.filter(
@@ -2237,15 +1996,15 @@ export class UserController {
         pendingUsersToReinvite.filter(
           (user) => normalizeUserRole(user.role) !== 'admin',
         ).length;
-      await assertCanPromoteAdmin(String(orgId), additionalAdmins);
+      await assertCanPromoteAdmin(orgId, additionalAdmins);
     }
 
-    let restoredUsers: User[] = [];
+    let restoredUsers: UserDto[] = [];
     if (deletedUsers.length > 0) {
       // Recorded before the accounts come back, and nothing is restored without it:
       // it ends every token issued before the restore, including any minted while
       // the deletion was still running.
-      await UserActivities.insertMany(
+      await getActivityRepository().recordMany(
         deletedUsers.map((user) => ({
           orgId,
           userId: user._id,
@@ -2254,39 +2013,25 @@ export class UserController {
           ipAddress: 'system',
         })),
       );
-      await Users.updateMany(
-        { email: { $in: deletedEmails }, isDeleted: true, orgId },
-        { $set: { isDeleted: false } },
-      );
-      restoredUsers = await Users.find({
-        email: { $in: deletedEmails },
-        orgId,
-        isDeleted: false,
-      });
+      restoredUsers = await users.restoreByEmails(orgId, deletedEmails);
     }
 
     for (let i = 0; i < existingUsers.length; ++i) {
       const userId = existingUsers[i]?._id;
       if (groupIds && groupIds.length > 0) {
-        await UserGroups.updateMany(
-          { _id: { $in: groupIds }, orgId },
-          { $addToSet: { users: userId } },
-        );
+        await groups.addMemberToGroups(orgId, groupIds, userId as string);
       }
-      await UserGroups.updateOne(
-        { orgId, type: 'everyone' },
-        { $addToSet: { users: userId } },
-      );
+      await groups.addToEveryone(orgId, userId as string);
     }
 
-    let newUsers: User[] = [];
+    let newUsers: UserDto[] = [];
     if (emailsForNewAccounts.length > 0) {
-      newUsers = await Users.create(
+      newUsers = await users.createMany(
+        orgId,
         emailsForNewAccounts.map((email) => ({
           email,
           isDeleted: false,
           hasLoggedIn: false,
-          orgId,
           role: inviteRole,
         })),
       );
@@ -2299,13 +2044,7 @@ export class UserController {
         ...pendingUsersToReinvite.map((u) => u._id),
       ].filter(Boolean);
       if (promoteIds.length > 0) {
-        // Narrowed to people. The schema refuses to promote a service
-        // account, so without this a batch that happened to include one
-        // would fail as a whole and take the genuine invites with it.
-        await Users.updateMany(
-          { _id: { $in: promoteIds }, orgId, kind: { $ne: 'service' } },
-          { $set: { role: 'admin' } },
-        );
+        await users.promoteToAdmin(orgId, promoteIds);
       }
     }
 
@@ -2317,7 +2056,7 @@ export class UserController {
       pendingUsersToReinvite[0]?._id?.toString() ??
       restoredUsers[0]?._id?.toString();
     let isPasswordAuthEnabled = false;
-    if (probeUserId) {
+    if (probeUserId !== undefined && probeUserId !== '') {
       const authToken = fetchConfigJwtGenerator(
         probeUserId,
         orgId,
@@ -2347,31 +2086,25 @@ export class UserController {
 
     for (let i = 0; i < emailsForInvites.length; ++i) {
       const email = emailsForInvites[i];
-      if (!email) continue;
+      if (email === undefined || email === '') continue;
       const pendingUser = pendingUserByEmail.get(email);
-      const userId = pendingUser?._id || newUserByEmail.get(email)?._id;
-      if (!userId) {
+      const userId = pendingUser?._id ?? newUserByEmail.get(email)?._id;
+      if (userId === undefined || userId === '') {
         throw new InternalServerError(
           'User ID missing while inviting user. Please ensure user creation was successful.',
         );
       }
       if (!pendingUser) {
         if (groupIds && groupIds.length > 0) {
-          await UserGroups.updateMany(
-            { _id: { $in: groupIds }, orgId },
-            { $addToSet: { users: userId } },
-          );
+          await groups.addMemberToGroups(orgId, groupIds, userId);
         }
-        await UserGroups.updateOne(
-          { orgId, type: 'everyone' },
-          { $addToSet: { users: userId } },
-        );
+        await groups.addToEveryone(orgId, userId);
         const event: Event = {
           eventType: EventType.NewUserEvent,
           timestamp: Date.now(),
           payload: {
-            orgId: orgId.toString(),
-            userId: userId.toString(),
+            orgId: orgId,
+            userId: userId,
             email,
             syncAction: SyncAction.Immediate,
           } as UserAddedEvent,
@@ -2384,7 +2117,7 @@ export class UserController {
 
       const statusCode = await this.sendInviteMail(
         email,
-        userId.toString(),
+        userId,
         orgId,
         inviterName,
         org,
@@ -2400,7 +2133,7 @@ export class UserController {
     for (let i = 0; i < restoredUsers.length; ++i) {
       const email = restoredUsers[i]?.email;
       const userId = restoredUsers[i]?._id;
-      if (!email) {
+      if (email === undefined || email === '') {
         continue;
       }
       if (!userId) {
@@ -2412,8 +2145,8 @@ export class UserController {
         eventType: EventType.NewUserEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: orgId.toString(),
-          userId: userId.toString(),
+          orgId: orgId,
+          userId: userId,
           email,
           syncAction: SyncAction.Immediate,
         } as UserAddedEvent,
@@ -2423,7 +2156,7 @@ export class UserController {
 
       const statusCode = await this.sendInviteMail(
         email,
-        userId.toString(),
+        userId,
         orgId,
         inviterName,
         org,
@@ -2468,7 +2201,7 @@ export class UserController {
         emailTemplateType: 'appuserInvite',
         initiator: {
           jwtAuthToken: mailJwtGenerator(email, this.config.scopedJwtSecret),
-          orgId: orgId?.toString(),
+          orgId: orgId,
         },
         usersMails: [email],
         subject,
@@ -2476,7 +2209,7 @@ export class UserController {
           ? { invitee, orgName }
           : { invitee, orgName, link: `${this.config.frontendUrl}/sign-in` },
         ...(isPasswordAuthEnabled && {
-          passwordResetLinkFor: { userId, orgId: orgId.toString(), email },
+          passwordResetLinkFor: { userId, orgId: orgId, email },
         }),
         deliverAsync: true,
       });
@@ -2492,7 +2225,7 @@ export class UserController {
     orgId: string,
     summary: InviteResult & { invalid: string[] },
   ): Promise<void> {
-    if (!userId) return;
+    if (userId === undefined || userId === '') return;
     const parts = [
       `${summary.invited} invited`,
       `${summary.reinvited} re-invited`,
@@ -2521,7 +2254,7 @@ export class UserController {
     userId: string | undefined,
     orgId: string,
   ): Promise<void> {
-    if (!userId) return;
+    if (userId === undefined || userId === '') return;
     await this.publishInviteNotification(
       userId,
       orgId,
@@ -2546,7 +2279,7 @@ export class UserController {
         eventType: NotificationEventType.NewNotificationEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: orgId.toString(),
+          orgId: orgId,
           type: 'user.bulkInvite',
           recipientUserIds: [userId],
           title,
@@ -2554,7 +2287,7 @@ export class UserController {
           severity,
           status: 'unread',
           payload,
-        } as unknown as INotification,
+        } as unknown as NotificationEventPayload,
       });
     } catch (error) {
       this.logger.error('Failed to publish bulk invite notification', error);
@@ -2625,36 +2358,11 @@ export class UserController {
       const userMongoIds = usersArray.map((u) => u.userId).filter(Boolean);
 
       if (userMongoIds.length > 0) {
-        const orgIdObj = new mongoose.Types.ObjectId(orgId);
-
         // Parallel: fetch DPs, mongo user docs (hasLoggedIn), and group memberships
         const [dpDocs, mongoUsers, groupDocs] = await Promise.all([
-          UserDisplayPicture.find({
-            orgId,
-            userId: { $in: userMongoIds },
-            pic: { $ne: null },
-          })
-            .lean()
-            .exec(),
-          Users.find({
-            _id: { $in: userMongoIds },
-            orgId: orgIdObj,
-          })
-            .select('_id hasLoggedIn fullName role')
-            .lean()
-            .exec(),
-          UserGroups.find({
-            orgId: orgIdObj,
-            isDeleted: false,
-            users: {
-              $in: userMongoIds.map(
-                (id: string) => new mongoose.Types.ObjectId(id),
-              ),
-            },
-          })
-            .select('_id name type users')
-            .lean()
-            .exec(),
+          getPictureRepository().listSet(orgId as string, userMongoIds),
+          getUserRepository().listSummariesByIds(orgId as string, userMongoIds),
+          getGroupRepository().summariesForUsers(orgId as string, userMongoIds),
         ]);
 
         // Build lookup maps
@@ -2662,7 +2370,7 @@ export class UserController {
         for (const dp of dpDocs) {
           if (dp.userId && dp.pic) {
             const mime = dp.mimeType || 'image/jpeg';
-            dpMap.set(dp.userId.toString(), `data:${mime};base64,${dp.pic}`);
+            dpMap.set(dp.userId, `data:${mime};base64,${dp.pic}`);
           }
         }
 
@@ -2671,7 +2379,7 @@ export class UserController {
           { hasLoggedIn?: boolean; fullName?: string; role?: string }
         >();
         for (const mu of mongoUsers) {
-          mongoUserMap.set(mu._id.toString(), {
+          mongoUserMap.set(mu._id, {
             hasLoggedIn: mu.hasLoggedIn,
             fullName: mu.fullName,
             role: mu.role,
@@ -2682,12 +2390,12 @@ export class UserController {
         const userGroupsMap = new Map<string, UserGroupSummary[]>();
         for (const g of groupDocs) {
           for (const uid of g.users) {
-            const uidStr = uid.toString();
+            const uidStr = uid;
             if (!userGroupsMap.has(uidStr)) {
               userGroupsMap.set(uidStr, []);
             }
             userGroupsMap.get(uidStr)!.push({
-              _id: g._id.toString(),
+              _id: g._id,
               name: g.name,
               type: g.type,
             });
@@ -2767,7 +2475,7 @@ export class UserController {
         );
 
       const validateEmailLink = `${this.config.frontendUrl}/reset-email#token=${validateEmailToken}`;
-      const org = await Org.findOne({ _id: user.orgId, isDeleted: false });
+      const org = await getOrgRepository().getLive(String(user.orgId));
       const emailSentResponse = await this.mailService.sendMail({
         emailTemplateType: 'resetEmail',
         initiator: {

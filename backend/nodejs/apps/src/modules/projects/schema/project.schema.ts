@@ -1,5 +1,5 @@
-import mongoose, { Schema, Model } from 'mongoose';
-import { IProjectDocument } from '../types/project.interfaces';
+import mongoose, { Document, Schema, Model, Types } from 'mongoose';
+import { IProject, IProjectMember } from '../types/project.interfaces';
 import {
   PROJECT_CHAT_SHARING_VALUES,
   PROJECT_DESCRIPTION_MAX_LENGTH,
@@ -11,6 +11,26 @@ import {
   DEFAULT_PROJECT_CHAT_SHARING,
   DEFAULT_PROJECT_VISIBILITY,
 } from '../constants/constants';
+
+/** The stored shape: the same fields as `IProject`, with ids as driver ids. */
+export interface IProjectDocument
+  extends
+    Document,
+    Omit<
+      IProject,
+      'orgId' | 'userId' | 'members' | 'archivedBy' | 'deletedBy'
+    > {
+  orgId: Types.ObjectId;
+  userId: Types.ObjectId;
+  members: Array<
+    Omit<IProjectMember, 'principalId' | 'addedBy'> & {
+      principalId: Types.ObjectId;
+      addedBy: Types.ObjectId;
+    }
+  >;
+  archivedBy?: Types.ObjectId;
+  deletedBy?: Types.ObjectId;
+}
 
 /**
  * A project workspace: groups chat/agent conversations under shared

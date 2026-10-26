@@ -343,12 +343,13 @@ describe('user-admin.service', () => {
 
     it('passes the session through to count when provided', async () => {
       const session = { id: 'test-session' } as any;
+      const tx = { store: 'mongo', session } as any;
       const sessionStub = sinon.stub().callsFake(() => Promise.resolve(2));
       sinon.stub(Users, 'countDocuments').returns({
         session: sessionStub,
       } as any);
 
-      await assertCanDemoteAdmin(orgId, session);
+      await assertCanDemoteAdmin(orgId, tx);
 
       expect(sessionStub.calledOnce).to.equal(true);
       expect(sessionStub.firstCall.args[0]).to.equal(session);
@@ -393,11 +394,12 @@ describe('user-admin.service', () => {
         role: 'member',
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const countStub = sinon.stub(Users, 'countDocuments');
       countStub.onFirstCall().resolves(2); // pre-check
       countStub.onSecondCall().resolves(1); // post-save verify
 
-      await saveUserEnsuringOrgRetainsAdmin(user as any, false);
+      await saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, false);
 
       expect(save.calledOnce).to.equal(true);
       expect(save.firstCall.args[0]).to.equal(undefined);
@@ -412,13 +414,14 @@ describe('user-admin.service', () => {
         role: 'member',
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const countStub = sinon.stub(Users, 'countDocuments');
       countStub.onFirstCall().resolves(2);
       countStub.onSecondCall().resolves(0);
       const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
 
       try {
-        await saveUserEnsuringOrgRetainsAdmin(user as any, false);
+        await saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, false);
         expect.fail('expected BadRequestError');
       } catch (error: any) {
         expect(error.message).to.equal(
@@ -431,7 +434,7 @@ describe('user-admin.service', () => {
       expect(updateStub.firstCall.args[1]).to.deep.equal({
         $set: { role: 'admin' },
       });
-      expect(user.role).to.equal('admin');
+      expect(updateStub.firstCall.args[0]).to.deep.include({ _id: userId });
     });
 
     it('touches Org then checks then saves inside a transaction when RS is available', async () => {
@@ -441,6 +444,7 @@ describe('user-admin.service', () => {
         orgId,
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const withTransaction = sinon.stub().callsFake(async (fn: () => Promise<void>) => {
         await fn();
       });
@@ -454,7 +458,7 @@ describe('user-admin.service', () => {
       } as any);
       const orgUpdate = sinon.stub(Org, 'updateOne').resolves({} as any);
 
-      await saveUserEnsuringOrgRetainsAdmin(user as any, true);
+      await saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, true);
 
       expect(withTransaction.calledOnce).to.equal(true);
       expect(orgUpdate.calledOnce).to.equal(true);
@@ -474,6 +478,7 @@ describe('user-admin.service', () => {
         orgId,
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const withTransaction = sinon.stub().callsFake(async (fn: () => Promise<void>) => {
         await fn();
       });
@@ -487,7 +492,7 @@ describe('user-admin.service', () => {
       } as any);
 
       try {
-        await saveUserEnsuringOrgRetainsAdmin(user as any, true);
+        await saveUserEnsuringOrgRetainsAdmin(orgId, userId, {}, true);
         expect.fail('expected BadRequestError');
       } catch (error: any) {
         expect(error.message).to.equal(
@@ -508,11 +513,12 @@ describe('user-admin.service', () => {
         role: 'admin',
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const countStub = sinon.stub(Users, 'countDocuments');
       countStub.onFirstCall().resolves(4);
       countStub.onSecondCall().resolves(5);
 
-      await saveUserEnsuringAdminCap(user as any, false);
+      await saveUserEnsuringAdminCap(orgId, userId, {}, false);
 
       expect(save.calledOnce).to.equal(true);
       expect(countStub.callCount).to.equal(2);
@@ -526,13 +532,14 @@ describe('user-admin.service', () => {
         role: 'admin',
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const countStub = sinon.stub(Users, 'countDocuments');
       countStub.onFirstCall().resolves(4);
       countStub.onSecondCall().resolves(6);
       const updateStub = sinon.stub(Users, 'updateOne').resolves({} as any);
 
       try {
-        await saveUserEnsuringAdminCap(user as any, false);
+        await saveUserEnsuringAdminCap(orgId, userId, {}, false);
         expect.fail('expected BadRequestError');
       } catch (error: any) {
         expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);
@@ -543,7 +550,7 @@ describe('user-admin.service', () => {
       expect(updateStub.firstCall.args[1]).to.deep.equal({
         $set: { role: 'member' },
       });
-      expect(user.role).to.equal('member');
+      expect(updateStub.firstCall.args[0]).to.deep.include({ _id: userId });
     });
 
     it('does not save when pre-check finds the org is already at 5 admins', async () => {
@@ -553,6 +560,7 @@ describe('user-admin.service', () => {
         orgId,
         save,
       };
+      sinon.stub(Users, 'findOne').resolves(user as any);
       const withTransaction = sinon.stub().callsFake(async (fn: () => Promise<void>) => {
         await fn();
       });
@@ -566,7 +574,7 @@ describe('user-admin.service', () => {
       } as any);
 
       try {
-        await saveUserEnsuringAdminCap(user as any, true);
+        await saveUserEnsuringAdminCap(orgId, userId, {}, true);
         expect.fail('expected BadRequestError');
       } catch (error: any) {
         expect(error.message).to.equal(MAX_ORG_ADMINS_MESSAGE);

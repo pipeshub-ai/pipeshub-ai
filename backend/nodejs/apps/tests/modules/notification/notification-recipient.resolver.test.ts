@@ -66,7 +66,7 @@ describe('notification/notification-recipient.resolver', () => {
         user2.toString(),
       ]);
       expect(findStub.firstCall.args[0]).to.deep.equal({
-        orgId,
+        orgId: String(orgId),
         role: 'admin',
         isDeleted: { $ne: true },
         // "Notify the administrators" means people. A service account has no
