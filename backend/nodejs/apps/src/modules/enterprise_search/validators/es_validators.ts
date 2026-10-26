@@ -1324,6 +1324,9 @@ export const enterpriseSearchSearchSchema = z.object({
     // the date records are placed by. Left out, bounds on one date over more
     // than a month run as a timeline on it; 'off' is always a plain ranked search.
     timeline: z.enum(['created', 'modified', 'off']).optional(),
+    // false runs the search without saving it to the caller's search history;
+    // the response then has no `searchId`.
+    saveHistory: z.boolean().optional(),
   }),
 });
 
