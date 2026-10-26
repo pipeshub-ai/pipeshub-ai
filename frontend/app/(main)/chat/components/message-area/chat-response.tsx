@@ -940,9 +940,9 @@ export const ChatResponse = React.memo(function ChatResponse({
     });
   }, [messageId, question, isStreaming, appliedFilters, attachments]);
 
-  // When the active question card owns this row, read aloud the question text
-  // and its options instead of the hidden bot response.
-  const speakContent = askQuestionMatchesRow && pendingAskUserQuestion
+  // While this row's question card waits for an answer, read aloud and copy the
+  // question and its options. Once answered, the reply written after it is the content.
+  const speakContent = questionPending && pendingAskUserQuestion
     ? buildQuestionCardReadAloudText(pendingAskUserQuestion?.payload)
     : visibleAnswer;
 

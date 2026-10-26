@@ -312,6 +312,13 @@
     "filterOnlyUnread": "अपठित",
     "filterArchived": "संग्रहित",
     "filterTooltip": "फ़िल्टर: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} ने आपके साथ एक चैट साझा की",
+      "titleAgent": "{{name}} ने आपके साथ एक एजेंट चैट साझा की",
+      "body": "अब आप \"{{chat}}\" खोल सकते हैं।",
+      "bodyNoTitle": "अब आप इसे \"{{place}}\" से खोल सकते हैं।",
+      "someone": "एक सहकर्मी"
+    },
     "loadFailed": "सूचनाएँ लोड करने में विफल",
     "updateFailed": "सूचना अपडेट नहीं हो सकी",
     "removeFailed": "सूचना हटाने में विफल"
@@ -2634,7 +2641,8 @@
         "errorFallback": "कनेक्टर को अक्षम नहीं किया जा सका। कृपया पुनः प्रयास करें।",
         "actions": {
           "removeInstance": "इस कनेक्टर इंस्टेंस को हटाना",
-          "saveConfig": "कॉन्फ़िगरेशन परिवर्तन सहेजना"
+          "saveConfig": "कॉन्फ़िगरेशन परिवर्तन सहेजना",
+          "saveAuth": "नए क्रेडेंशियल सहेजना"
         }
       },
       "adminAccessDialog": {
@@ -2870,7 +2878,9 @@
           "ready": "पूर्ण",
           "readyTooltip": "कॉन्फ़िगरेशन पूर्ण और प्रमाणित है। सक्षम होने पर सिंक चल सकता है।",
           "desktopOffline": "डेस्कटॉप ऑफ़लाइन",
-          "desktopOfflineTooltip": "इस फ़ोल्डर की डेस्कटॉप ऐप कनेक्ट नहीं है। सिंक करने के लिए उसे उस मशीन पर खोलें।"
+          "desktopOfflineTooltip": "इस फ़ोल्डर की डेस्कटॉप ऐप कनेक्ट नहीं है। सिंक करने के लिए उसे उस मशीन पर खोलें।",
+          "actionNeeded": "कार्रवाई आवश्यक",
+          "actionNeededTooltip": "आपके ध्यान की ज़रूरत है: {{items}}"
         },
         "sync": {
           "kind": "Sync",
@@ -3117,6 +3127,12 @@
           "wholeSite": "पूरी साइट",
           "onePage": "एक पेज"
         }
+      },
+      "actionItems": {
+        "badge": "कार्रवाई आवश्यक",
+        "title": "कार्रवाई आवश्यक",
+        "openAuthentication": "प्रमाणीकरण अपडेट करें",
+        "viewSteps": "सेटअप के चरण देखें"
       }
     },
     "mcpServers": {
@@ -4295,6 +4311,12 @@
         "scopesHelp": "चुनें कि यह टोकन क्या कर सकता है। कोई डिफ़ॉल्ट नहीं है: बिना निगरानी चलने वाले क्रेडेंशियल के पास वही पहुँच होनी चाहिए जो किसी ने उसके लिए चुनी हो।",
         "expiryLabel": "इतने समय बाद समाप्त",
         "expiryDays": "{{count}} दिन",
+        "expiryCustom": "कस्टम",
+        "expiryCustomLabel": "टोकन की समय-सीमा समाप्त होने तक दिन",
+        "expiryCustomUnit": "दिन",
+        "expiryCustomHelp": "1 से {{max}} के बीच दिनों की संख्या दर्ज करें।",
+        "expiryCustomInvalid": "1 से {{max}} के बीच दिनों की पूर्ण संख्या दर्ज करें।",
+        "expiryCustomPreview": "{{date}} को समाप्त होगा",
         "existing": "टोकन",
         "none": "इस खाते के पास अभी कोई टोकन नहीं है।",
         "lastUsed": "अंतिम उपयोग {{date}}",

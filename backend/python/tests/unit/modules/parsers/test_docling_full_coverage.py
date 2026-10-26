@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.utils.pool_worker import run_and_release
 
 
 # ---------------------------------------------------------------------------
@@ -220,8 +221,9 @@ class TestParseDocumentMultiWorker:
             mock_loop.run_in_executor.assert_awaited_once()
             call_args = mock_loop.run_in_executor.call_args
             assert call_args[0][0] is mock_pool()  # pool argument
-            assert call_args[0][2] == "test.pdf"   # doc_name
-            assert call_args[0][3] == b"pdf bytes"  # content
+            assert call_args[0][1] is run_and_release  # trims the worker once done
+            assert call_args[0][3] == "test.pdf"   # doc_name
+            assert call_args[0][4] == b"pdf bytes"  # content
             MockDoclingDoc.model_validate_json.assert_called_once_with(mock_serialized)
             assert result is mock_doc
 
@@ -249,7 +251,7 @@ class TestParseDocumentMultiWorker:
             mock_loop.run_in_executor.assert_awaited_once()
             call_args = mock_loop.run_in_executor.call_args
             # The raw_content should be bytes extracted from BytesIO
-            assert call_args[0][3] == b"bytesio content"
+            assert call_args[0][4] == b"bytesio content"
             assert result is mock_doc
 
     @pytest.mark.asyncio
@@ -297,6 +299,18 @@ class TestGetConverter:
             MockConverter.assert_called_once()
             assert result is mock_converter
             _get_converter.cache_clear()
+
+    def test_docling_stops_a_conversion_at_the_service_timeout(self) -> None:
+        """The service cannot cancel the conversion thread, so Docling must stop it."""
+        from docling.datamodel.base_models import InputFormat
+
+        from app.modules.parsers.pdf import docling_processor as mod
+        mod._get_converter.cache_clear()
+        try:
+            options = mod._get_converter().format_to_options[InputFormat.PDF].pipeline_options
+        finally:
+            mod._get_converter.cache_clear()
+        assert options.document_timeout == mod.DOCUMENT_TIMEOUT_SECONDS
 
 
 # ===========================================================================

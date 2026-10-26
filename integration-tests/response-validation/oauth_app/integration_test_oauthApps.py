@@ -71,8 +71,10 @@ from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.rate_limit_window import wait_out_rate_limit  # noqa: E402
 from helper.second_user import SecondUser, log_in, second_user  # noqa: E402, F401
 from openapi_schema_validator import (  # noqa: E402
+    assert_error_response_matches_openapi_operation,
     assert_response_matches_openapi_operation,
     assert_response_matches_openapi_ref,
+    assert_response_strictly_matches_openapi_operation,
 )
 
 _logger = logging.getLogger(__name__)
@@ -274,6 +276,36 @@ class TestCreateOAuthApp(OAuthAppsTestBase):
             )
         finally:
             _delete_app(self.oauth, app_data["app"]["id"])
+
+    def test_knowledge_limit_round_trips(self) -> None:
+        """A knowledgeLimit is stored and echoed in full; one naming over 50 ids is a 400."""
+        source = str(uuid.uuid4())
+        resp = self.oauth.create_app(
+            **_make_app_body(grant_types=["client_credentials"]),
+            knowledgeLimit={"apps": [source.upper()]},
+        )
+        assert resp.status_code == 201, resp.text
+        payload = resp.json()
+        try:
+            assert_response_strictly_matches_openapi_operation(
+                payload, "createOAuthApp", status_code="201"
+            )
+            # Ids are lowercased; the lists left out come back empty.
+            assert payload["app"]["knowledgeLimit"] == {
+                "apps": [source],
+                "recordGroups": [],
+                "records": [],
+            }, payload
+        finally:
+            _delete_app(self.oauth, payload["app"]["id"])
+
+        resp = self.oauth.create_app(
+            **_make_app_body(grant_types=["client_credentials"]),
+            knowledgeLimit={"records": [str(uuid.uuid4()) for _ in range(51)]},
+        )
+        assert resp.status_code == 400, resp.text
+        assert resp.json()["error"]["code"] == "VALIDATION_ERROR", resp.text
+        assert_error_response_matches_openapi_operation(resp.json(), "createOAuthApp", 400)
 
     def test_error_responses(self) -> None:
         """401 missing auth, 400 missing name, 400 auth_code without redirectUris."""

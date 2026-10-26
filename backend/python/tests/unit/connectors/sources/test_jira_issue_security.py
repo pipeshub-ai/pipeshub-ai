@@ -2,6 +2,13 @@
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_AUTH,
+    UNREADABLE_KEEPS_STORED_ACCESS,
+    UNREADABLE_OTHER,
+    UNREADABLE_PERMISSION,
+    UNREADABLE_ROLES,
+    UNREADABLE_SCOPE,
+    UNREADABLE_TRANSIENT,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_attachment_access,
@@ -9,7 +16,10 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     apply_issue_access_settled,
     classify_project_mapping,
     classify_scheme_response,
+    refuses_a_scope,
     resolve_scheme_knowledge,
+    scheme_has_no_levels,
+    unreadable_reason,
 )
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType
@@ -435,3 +445,55 @@ class TestSettledResult:
         before = _present(members={"20": [holder]}).level_fingerprints()
         after = _present(members={"20": [{**holder, "user": {**holder["user"], "active": False}}]}).level_fingerprints()
         assert before["20"] != after["20"]
+
+class TestUnreadableReason:
+    """Why levels cannot be applied, so the warning names the fix."""
+
+    def test_a_readable_scheme_or_no_scheme_has_no_reason(self) -> None:
+        assert unreadable_reason(_present()) is None
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.NONE)) is None
+
+    def test_a_401_is_the_token_scope_and_a_403_the_account_permission(self) -> None:
+        """A site admin's token without the issue security scope gets 401, not 403."""
+        members_401 = IssueSecurityContext(
+            knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=401, scope_refused=True)
+        assert unreadable_reason(members_401) == UNREADABLE_SCOPE
+        # A 401 that names no scope is a token Jira no longer accepts.
+        expired = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=401)
+        assert unreadable_reason(expired) == UNREADABLE_AUTH
+        members_403 = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=403)
+        assert unreadable_reason(members_403) == UNREADABLE_PERMISSION
+        scheme_403 = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True, read_status=403)
+        assert unreadable_reason(scheme_403) == UNREADABLE_PERMISSION
+
+    def test_members_read_but_held_for_unread_roles(self) -> None:
+        held = _present(members={"10": [{"type": "applicationRole", "parameter": "jira-software"}]}, readable=False)
+        assert unreadable_reason(held) == UNREADABLE_ROLES
+
+    def test_a_transient_failure_is_told_apart(self) -> None:
+        """It keeps the stored grants, so the warning must not say the issues are hidden."""
+        transient = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=503, defer_checkpoint=True)
+        assert unreadable_reason(transient) == UNREADABLE_TRANSIENT
+        assert UNREADABLE_TRANSIENT in UNREADABLE_KEEPS_STORED_ACCESS and UNREADABLE_ROLES in UNREADABLE_KEEPS_STORED_ACCESS
+        assert UNREADABLE_SCOPE not in UNREADABLE_KEEPS_STORED_ACCESS
+
+    def test_any_other_failure(self) -> None:
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=503)) == UNREADABLE_OTHER
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN)) == UNREADABLE_OTHER
+
+
+class TestRefusesAScope:
+    def test_only_jiras_scope_message_counts(self) -> None:
+        assert refuses_a_scope({"code": 401, "message": "Unauthorized; scope does not match"})
+        assert not refuses_a_scope({"code": 401, "message": "Unauthorized"})
+        assert not refuses_a_scope(None)
+
+
+class TestSchemeHasNoLevels:
+    def test_only_an_empty_levels_list_counts(self) -> None:
+        assert scheme_has_no_levels({"id": 10001, "name": "ESP: Simplified Issue Security Scheme", "levels": []})
+        assert not scheme_has_no_levels({"id": 10101, "levels": [{"id": "10102", "name": "admin only"}]})
+        # Absent or malformed: the levels are not known to be none.
+        assert not scheme_has_no_levels({"id": 10101})
+        assert not scheme_has_no_levels({"id": 10101, "levels": None})
+        assert not scheme_has_no_levels(None)

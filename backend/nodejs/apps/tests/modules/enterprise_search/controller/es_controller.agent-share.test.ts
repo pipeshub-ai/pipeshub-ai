@@ -54,6 +54,7 @@ function setup(): Setup {
   const store = new InMemoryChatStore()
   const ai = new FakeAIBackend()
   store.install()
+  store.stubNotifications()
   ai.install()
   hookOrgUsers()
 

@@ -396,6 +396,13 @@
     "filterOnlyUnread": "읽지 않음",
     "filterArchived": "보관됨",
     "filterTooltip": "필터: {{filter}}",
+    "chatShared": {
+      "title": "{{name}}님이 채팅을 공유했습니다",
+      "titleAgent": "{{name}}님이 에이전트 채팅을 공유했습니다",
+      "body": "이제 \"{{chat}}\"을(를) 열 수 있습니다.",
+      "bodyNoTitle": "이제 \"{{place}}\"에서 열 수 있습니다.",
+      "someone": "동료"
+    },
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
     "removeFailed": "알림을 제거할 수 없습니다"
@@ -2776,7 +2783,8 @@
         "errorFallback": "커넥터를 비활성화하지 못했습니다. 다시 시도해 주세요.",
         "actions": {
           "removeInstance": "이 커넥터 인스턴스를 제거",
-          "saveConfig": "설정 변경 사항을 저장"
+          "saveConfig": "설정 변경 사항을 저장",
+          "saveAuth": "새 자격 증명을 저장"
         }
       },
       "adminAccessDialog": {
@@ -3012,7 +3020,9 @@
           "ready": "완료",
           "readyTooltip": "구성과 인증이 완료되었습니다. 활성화하면 동기화를 실행할 수 있습니다.",
           "desktopOffline": "데스크톱 오프라인",
-          "desktopOfflineTooltip": "이 폴더를 관리하는 데스크톱 앱이 연결되어 있지 않습니다. 동기화하려면 해당 컴퓨터에서 앱을 여세요."
+          "desktopOfflineTooltip": "이 폴더를 관리하는 데스크톱 앱이 연결되어 있지 않습니다. 동기화하려면 해당 컴퓨터에서 앱을 여세요.",
+          "actionNeeded": "조치 필요",
+          "actionNeededTooltip": "확인이 필요합니다: {{items}}"
         },
         "sync": {
           "kind": "동기화",
@@ -3259,6 +3269,12 @@
           "wholeSite": "사이트 전체",
           "onePage": "한 페이지"
         }
+      },
+      "actionItems": {
+        "badge": "조치 필요",
+        "title": "조치 필요",
+        "openAuthentication": "인증 업데이트",
+        "viewSteps": "설정 단계 보기"
       }
     },
     "mcpServers": {
@@ -4369,6 +4385,12 @@
         "scopesHelp": "이 토큰이 무엇을 할 수 있는지 선택하세요. 기본값은 없습니다. 무인으로 실행되는 자격 증명은 누군가 의도적으로 선택한 권한만 가져야 합니다.",
         "expiryLabel": "만료 기간",
         "expiryDays": "{{count}}일",
+        "expiryCustom": "사용자 지정",
+        "expiryCustomLabel": "토큰 만료까지 남은 일수",
+        "expiryCustomUnit": "일",
+        "expiryCustomHelp": "1에서 {{max}} 사이의 일수를 입력하세요.",
+        "expiryCustomInvalid": "1에서 {{max}} 사이의 정수 일수를 입력하세요.",
+        "expiryCustomPreview": "{{date}}에 만료",
         "existing": "토큰",
         "none": "이 계정에는 아직 토큰이 없습니다.",
         "lastUsed": "마지막 사용 {{date}}",

@@ -312,6 +312,13 @@
     "filterOnlyUnread": "Unread",
     "filterArchived": "Archived",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} shared a chat with you",
+      "titleAgent": "{{name}} shared an agent chat with you",
+      "body": "You can now open \"{{chat}}\".",
+      "bodyNoTitle": "You can now open it from \"{{place}}\".",
+      "someone": "A colleague"
+    },
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
     "removeFailed": "Could not remove notification"
@@ -2630,7 +2637,8 @@
         "errorFallback": "Failed to disable connector. Please try again.",
         "actions": {
           "removeInstance": "remove this connector instance",
-          "saveConfig": "save configuration changes"
+          "saveConfig": "save configuration changes",
+          "saveAuth": "save the new credentials"
         }
       },
       "adminAccessDialog": {
@@ -2866,7 +2874,9 @@
           "ready": "Complete",
           "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled.",
           "desktopOffline": "Desktop offline",
-          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync."
+          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync.",
+          "actionNeeded": "Action needed",
+          "actionNeededTooltip": "Needs your attention: {{items}}"
         },
         "sync": {
           "kind": "Sync",
@@ -3113,6 +3123,12 @@
           "wholeSite": "Whole site",
           "onePage": "One page"
         }
+      },
+      "actionItems": {
+        "badge": "Action needed",
+        "title": "Action needed",
+        "openAuthentication": "Update authentication",
+        "viewSteps": "View setup steps"
       }
     },
     "mcpServers": {
@@ -4316,6 +4332,12 @@
         "selectAllScopes": "Select all",
         "clearAllScopes": "Clear all",
         "expiryDays": "{{count}} days",
+        "expiryCustom": "Custom",
+        "expiryCustomLabel": "Days until the token expires",
+        "expiryCustomUnit": "days",
+        "expiryCustomHelp": "Enter a number of days from 1 to {{max}}.",
+        "expiryCustomInvalid": "Enter a whole number of days from 1 to {{max}}.",
+        "expiryCustomPreview": "Expires on {{date}}",
         "expiresInDays": "Days left: {{count}}",
         "expiringSoon": "Tokens expiring soon: {{count}}. Create a replacement for each one, move the integrations across, and then revoke the old tokens."
       },

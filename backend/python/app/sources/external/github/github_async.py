@@ -455,6 +455,45 @@ class GitHubAsyncDataSource:
             f"/repos/{owner}/{repo}/branches/{quote(branch, safe='')}"
         )
 
+    async def list_branches(
+        self,
+        owner: str,
+        repo: str,
+        per_page: int | None = None,
+        after: str | None = None,
+        query: str | None = None,
+    ) -> GitHubResponse:
+        """One page of branch names, alphabetical, optionally matching ``query``.
+
+        GraphQL, because the REST branches listing cannot search by name.
+        ``data`` is ``{"default_branch", "names", "has_next_page", "end_cursor"}``.
+        """
+        _per_page, _ = self._clamp_page_args(per_page, None)
+        res = await self.graphql_query(
+            "query($owner: String!, $name: String!, $first: Int!, $after: String, $query: String) "
+            "{ repository(owner: $owner, name: $name) { defaultBranchRef { name } "
+            "refs(refPrefix: \"refs/heads/\", first: $first, after: $after, query: $query, "
+            "orderBy: {field: ALPHABETICAL, direction: ASC}) "
+            "{ nodes { name } pageInfo { hasNextPage endCursor } } } }",
+            {"owner": owner, "name": repo, "first": _per_page, "after": after, "query": query or None},
+        )
+        if not res.success:
+            return res
+        repository = (res.data or {}).get("repository")
+        if not isinstance(repository, dict):
+            return GitHubResponse(
+                success=False, error=f"Repository {owner}/{repo} not found",
+                status_code=HttpStatusCode.NOT_FOUND.value,
+            )
+        refs = repository.get("refs") or {}
+        page_info = refs.get("pageInfo") or {}
+        return GitHubResponse(success=True, data={
+            "default_branch": (repository.get("defaultBranchRef") or {}).get("name"),
+            "names": [n["name"] for n in refs.get("nodes") or [] if n and n.get("name")],
+            "has_next_page": bool(page_info.get("hasNextPage")),
+            "end_cursor": page_info.get("endCursor"),
+        })
+
     # ------------------------------------------------------------------
     # Code indexing (Git Data / Compare)
     # ------------------------------------------------------------------
@@ -491,7 +530,7 @@ class GitHubAsyncDataSource:
         return await self._get_wrapped(f"/repos/{owner}/{repo}/compare/{basehead}")
 
     async def list_commits_first_and_last(
-        self, owner: str, repo: str, path: str | None = None,
+        self, owner: str, repo: str, path: str | None = None, sha: str | None = None,
     ) -> GitHubResponse:
         """``(newest, oldest)`` commit for a path in exactly 2 requests.
 
@@ -503,6 +542,8 @@ class GitHubAsyncDataSource:
             params: dict[str, Any] = {"per_page": 1}
             if path:
                 params["path"] = path
+            if sha:
+                params["sha"] = sha
             response = await self._rest.request(
                 "GET", f"/repos/{owner}/{repo}/commits", params=params,
             )

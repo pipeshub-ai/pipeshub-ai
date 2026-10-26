@@ -396,6 +396,38 @@ export const AgentMcpScopes = [
   'code:read',
 ] as const;
 
+/**
+ * The scopes the `/mcp` tools use: the scope each route they call requires,
+ * both in Node and in the Python service it forwards to, plus `offline_access`
+ * so MCP clients get a refresh token. Clients such as Claude Code request
+ * every scope in `scopes_supported`, so discovery advertises only these.
+ * MCP_SCOPES stays the cap on what any token may hold.
+ */
+export const McpToolScopes = [
+  'offline_access',
+  // pipeshub_search: Node accepts semantic:read too, but the Python search
+  // route it forwards to requires semantic:write.
+  'semantic:write',
+  'conversation:chat',
+  'agent:read',
+  'agent:execute',
+  'kb:read',
+  'kb:write',
+  'kb:upload',
+  'connector:read',
+  'config:read',
+  'user:read',
+  'team:read',
+  'usergroup:read',
+  'code:read',
+] as const;
+
+/** The MCP_SCOPES the `/mcp` tools use, in MCP_SCOPES order. */
+export function mcpDiscoveryScopes(mcpScopes: readonly string[]): string[] {
+  const used = new Set<string>(McpToolScopes);
+  return mcpScopes.filter((scope) => used.has(scope));
+}
+
 export const ScopeCategories = [
   'Identity',
   'Access',

@@ -13,6 +13,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -23,6 +24,7 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
@@ -221,6 +223,9 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+      configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
+        ConfigService.getInstance().getScopedJwtSecret(),
+      );
 
       // Ensure message broker topics/streams exist
       try {
@@ -436,6 +441,16 @@ export class Application {
         if (_req.path.startsWith('/_next/') || buildAssetPath.test(_req.path)) {
           res.setHeader('Cache-Control', 'no-store');
           res.status(404).type('text/plain').send('Not Found');
+          return;
+        }
+
+        // Every workspace page is pre-rendered, so an unmatched /workspace/
+        // URL is a page this build does not have. The root shell would
+        // hydrate as `/` and redirect to /chat; serve the not-found page.
+        if (/^\/workspace\//.test(_req.path)) {
+          res.status(404).sendFile(path.join(publicDir, '404.html'), {
+            headers: { 'Cache-Control': 'no-cache' },
+          });
           return;
         }
 

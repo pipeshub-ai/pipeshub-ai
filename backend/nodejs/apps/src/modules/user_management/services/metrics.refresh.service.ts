@@ -6,6 +6,7 @@ import {
 } from '../../../libs/services/telemetry/modules/org-metrics';
 import { setOrgUsers } from '../../../libs/services/telemetry/modules/user-metrics';
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
+import { spawnDetached, system } from '../../../libs/context/orgContext';
 import { Logger } from '../../../libs/services/logger.service';
 
 const DEFAULT_INTERVAL_MS = 60000 * 5;
@@ -115,10 +116,12 @@ export function startOrgMetricsRefresh(
   };
 
   // Kick off immediately, then on an interval. unref so it never blocks exit.
-  void refresh();
-  const timer = setInterval(() => {
-    void refresh();
-  }, intervalMs);
+  // Cross-org aggregation: explicit system scope, and a timer that keeps no caller context.
+  const run = (): void => void system('metrics_refresh', refresh);
+  const timer = spawnDetached(() => {
+    run();
+    return setInterval(run, intervalMs);
+  });
   timer.unref();
   return timer;
 }

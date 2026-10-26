@@ -159,6 +159,7 @@ if TYPE_CHECKING:
     .build_decorator()
 class SmbConnector(BaseConnector):
     # An edition swaps these two by subclassing instead of copying init / create_connector.
+    # ConnectorFactory builds the processor from processor_cls.
     processor_cls: type[NetworkShareEntitiesProcessor] = NetworkShareEntitiesProcessor
 
     def __init__(
@@ -446,14 +447,11 @@ class SmbConnector(BaseConnector):
         data_entities_processor: DataSourceEntitiesProcessor,
         **kwargs: object,
     ) -> SmbConnector:
-        processor = cls.processor_cls(logger, data_store_provider, config_service)
-        org_id = kwargs.get("org_id")
-        if org_id:
-            processor.org_id = org_id
-        await processor.initialize()
+        # ConnectorFactory builds and initializes the processor from processor_cls.
+        # Building a second one here orphaned the factory's, and its Redis connection.
         return cls(
             logger,
-            processor,
+            data_entities_processor,
             data_store_provider,
             config_service,
             connector_id,

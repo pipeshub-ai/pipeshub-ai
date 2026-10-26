@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify'
 import { randomUUID } from 'crypto'
 import crypto from 'crypto'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ScopeValidatorService } from './scope.validator.service'
@@ -13,7 +13,9 @@ import {
   OAuthGrantType,
 } from '../schema/oauth.app.schema'
 import {
+  isKnowledgeLimitWithin,
   sameKnowledgeLimit,
+  storedKnowledgeLimitFilter,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import {
@@ -26,6 +28,7 @@ import {
   ForbiddenError,
 } from '../../../libs/errors/http.errors';
 import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../user_management/services/user-admin.service';
+import { ConflictError } from '../../../libs/errors/http.errors';
 import { Users } from '../../user_management/schema/users.schema'
 import {
   CreateOAuthAppRequest,
@@ -622,9 +625,42 @@ export class OAuthAppService {
     }
     if (data.knowledgeLimit !== undefined) {
       app.knowledgeLimit = data.knowledgeLimit ?? undefined;
+      // Saved only over the limit read above. Two edits from one snapshot
+      // are each judged against it, so without this the later save could
+      // pass as a widening while dropping what the earlier one added.
+      app.$where = storedKnowledgeLimitFilter(previousLimit);
     }
 
-    await app.save()
+    // The knowledge limit rides in each token's claim. A narrowed one may
+    // hide what a token reaches, so those tokens go below. A widened one
+    // keeps them: each token, and each refresh, stays at the limit its user
+    // agreed to, and the new items reach a user once they connect again.
+    const limitNarrowed = !isKnowledgeLimitWithin(
+      previousLimit,
+      app.knowledgeLimit,
+    );
+    const limitWidened =
+      !limitNarrowed && !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
+    if (limitWidened) {
+      // Refresh tokens stored before they kept the user's limit take the
+      // app's on refresh. Revoked before the save, so a refresh that still
+      // gets through read the app before it and carries the old limit;
+      // revoked after, a refresh in between could mint with the wider one.
+      await this.oauthTokenService.revokeRefreshTokensWithoutKnowledgeLimit(
+        app.clientId,
+      );
+    }
+
+    try {
+      await app.save();
+    } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) {
+        throw new ConflictError(
+          'This application changed while you were editing it. Reload it and save again.',
+        );
+      }
+      throw error;
+    }
 
     // Tokens carry their scopes in the claim, and neither Node nor the Python
     // services compare that claim with the app on each request. Removing a
@@ -632,24 +668,35 @@ export class OAuthAppService {
     const removedScopes = previousScopes.filter(
       (scope) => !app.allowedScopes.includes(scope),
     )
-    // The knowledge limit rides in the claim the same way. Any change goes:
-    // a new limit may hide what a token reaches, and a lifted one widens what
-    // users agreed to, so they connect again.
-    const limitChanged = !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
-    if (removedScopes.length > 0 || limitChanged) {
+    if (removedScopes.length > 0 || limitNarrowed) {
       try {
         await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
       } catch (error) {
+        // Put back only over the limit this request saved: an edit that
+        // landed since stands, and was judged against what is stored.
+        if (data.knowledgeLimit !== undefined) {
+          app.$where = storedKnowledgeLimitFilter(
+            toKnowledgeLimit(app.knowledgeLimit),
+          );
+        }
         app.allowedScopes = previousScopes
         app.knowledgeLimit = previousLimit;
-        await app.save()
+        try {
+          await app.save();
+        } catch (rollbackError) {
+          if (
+            !(rollbackError instanceof mongoose.Error.DocumentNotFoundError)
+          ) {
+            throw rollbackError;
+          }
+        }
         throw error
       }
       this.logger.info('OAuth app access changed; tokens revoked', {
         appId: app._id.toString(),
         orgId,
         removedScopes,
-        limitChanged,
+        limitNarrowed,
       })
     }
 

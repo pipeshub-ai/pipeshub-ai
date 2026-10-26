@@ -9,7 +9,6 @@ from urllib.parse import quote
 import pytest
 
 from app.config.constants.arangodb import MimeTypes, ProgressStatus
-from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterOperator,
@@ -422,8 +421,6 @@ class TestRunSyncComprehensive:
             connector._create_record_groups_for_shares = AsyncMock()
             connector._sync_share = AsyncMock(return_value=(set(), True))
             connector.account_name = "testaccount"
-            # A team connector refuses to list every share (PP-347).
-            connector.scope = ConnectorScope.PERSONAL.value
 
             await connector.run_sync()
 

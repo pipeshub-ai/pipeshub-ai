@@ -701,7 +701,9 @@ export function loadHistoricalMessages(
         lastUnansweredAnswers = {};
       }
 
-      const feedbackEntry = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined)?.[0];
+      // Each rating is appended to `feedback`, so the last entry is the one the user chose.
+      const feedbackHistory = (msg.feedback as Array<{ isHelpful?: boolean }> | undefined) ?? [];
+      const feedbackEntry = feedbackHistory[feedbackHistory.length - 1];
       const feedbackInfo = feedbackEntry?.isHelpful === true
         ? { value: 'like' as const }
         : feedbackEntry?.isHelpful === false

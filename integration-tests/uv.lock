@@ -306,7 +306,7 @@ wheels = [
 
 [[package]]
 name = "anthropic"
-version = "0.109.2"
+version = "0.125.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -318,9 +318,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/1b/b7/9a8e2f79011e89dd6eeb599c27332aed765dac9d6fbee3a55e68e4e3ec25/anthropic-0.109.2.tar.gz", hash = "sha256:d37db299597c7bc124b49b767ff135f1e6456b64af2b2fad4b63b2a1df333cf0", size = 927559, upload-time = "2026-06-15T17:30:25.024Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/62/f8/6f0560884b5363848347bd640b6c1d04abc25e7aa61787a232f790c6b60a/anthropic-0.125.0.tar.gz", hash = "sha256:e0cdd336580cb7411c1cdab69f80973e9bf4bff7f8e08141811d46307d45c682", size = 1112593, upload-time = "2026-08-19T22:00:42.837Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d1/f2/bee5de8a2699fc8a3cce34d61c7a2626a2c310ddde7ea5611327eb0ddbe9/anthropic-0.109.2-py3-none-any.whl", hash = "sha256:e0fb4ca5df0ed983248c9c6c3242adc81d9cfddb8725902da53698554117abac", size = 923800, upload-time = "2026-06-15T17:30:23.124Z" },
+    { url = "https://files.pythonhosted.org/packages/2f/1a/b1bd30cda3790557e8791bec5922a6ec8fabb6fa8b008c76a39cf7be6152/anthropic-0.125.0-py3-none-any.whl", hash = "sha256:3486013602eca76d8b12540764e53654f02cf4951110bca86cf06e67428a9f21", size = 1184067, upload-time = "2026-08-19T22:00:44.596Z" },
 ]
 
 [[package]]
@@ -3173,16 +3173,16 @@ wheels = [
 
 [[package]]
 name = "langchain-anthropic"
-version = "1.4.6"
+version = "1.5.6"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anthropic" },
     { name = "langchain-core" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/e1/f5/cd397b94aeed5fa0e8ab9595b9fb578ac99f424d42220defe6626e6a1a7b/langchain_anthropic-1.4.6.tar.gz", hash = "sha256:78942d4458d883b7d362438a095ed501ed84f44d402622404482481fc973b9da", size = 706540, upload-time = "2026-06-12T16:54:15.352Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/6f/c6/97c439282c13225beb56ba96ed2a5b1cb2c32eacb84c518fe475ce43711d/langchain_anthropic-1.5.6.tar.gz", hash = "sha256:648fdab25573fc9d29543c4b4af1d682b7b6e548d452bb46e67ebc586e195629", size = 720743, upload-time = "2026-08-13T02:30:48.262Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/26/af/927dbbc5a1f5fea1a69adc2883f034cbd1430004e36f4eacd302d500393a/langchain_anthropic-1.4.6-py3-none-any.whl", hash = "sha256:dbd412a956b6b8b0716d9d8460ef71f834a6731cdbfc59e6160482a4a9fb5200", size = 51797, upload-time = "2026-06-12T16:54:14.159Z" },
+    { url = "https://files.pythonhosted.org/packages/de/5e/61b288074742179041cb5390430e52429a0fc41f4a94efec20042bda009f/langchain_anthropic-1.5.6-py3-none-any.whl", hash = "sha256:c358ed2ca90ef75254bb73a96b0a8a8ef0efc1deabe529ea06db6ff403001a27", size = 56547, upload-time = "2026-08-13T02:30:47.118Z" },
 ]
 
 [[package]]
@@ -3307,7 +3307,7 @@ wheels = [
 
 [[package]]
 name = "langchain-google-genai"
-version = "4.3.2"
+version = "4.3.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "filetype" },
@@ -3315,9 +3315,9 @@ dependencies = [
     { name = "langchain-core" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/79/2f/e03b63ad3a61fd1aa479bbc0f3df5d27abb8f9159d111cba96629df844ef/langchain_google_genai-4.3.2.tar.gz", hash = "sha256:6471769a4463fedb10d2d19a9b56c31de1cde505edf7fffd8cdbf98af8c1d7da", size = 286018, upload-time = "2026-07-27T16:27:39.214Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5f/17/dcf759ad83ab3566db1b02c8b21211f43085c66f3b5964f6fe573ffe8664/langchain_google_genai-4.3.7.tar.gz", hash = "sha256:8a57f936b1fbde52776fdde6673fdabd99cfa5cbbb122a926f1cff0ba00f6bc6", size = 373696, upload-time = "2026-08-27T20:44:05.203Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/01/cb/4a2eb187b108a240d57cf8dcf67e818ca75365f769444bf5716e2823cd98/langchain_google_genai-4.3.2-py3-none-any.whl", hash = "sha256:f3b1c09b264612fd1735a9590987bfa0cccca0bc0111691543decb5a03b8667d", size = 72770, upload-time = "2026-07-27T16:27:38.052Z" },
+    { url = "https://files.pythonhosted.org/packages/47/2f/ade5d1a7ecfbc88f7de65c6610ef89d80905b29fa3dd28a764f7028f3d42/langchain_google_genai-4.3.7-py3-none-any.whl", hash = "sha256:8d4b1aa8f2c2e17b8e790d34a7e9a7b8e7d13e9a00175679d17647c235104bf9", size = 79611, upload-time = "2026-08-27T20:44:03.884Z" },
 ]
 
 [[package]]
@@ -4479,14 +4479,14 @@ wheels = [
 
 [[package]]
 name = "notion-client"
-version = "2.2.1"
+version = "3.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/cd/95/6e0d1cb377a296ecc940ad6c8662b6c18cada6b69cec1742295e9228a7d1/notion-client-2.2.1.tar.gz", hash = "sha256:3827e381ccb5a21aeb606686787edfb6c7a10681cb3507c4d606a1918e791061", size = 19857, upload-time = "2023-12-28T11:31:37.347Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/c0/e3/4ac01384e86e2c381c21b87a0fefcdfe6d65577ae3153fad27e7e96c5d9c/notion_client-3.1.0.tar.gz", hash = "sha256:516e31326f855ec34559289b57be4e27ad656062f51f594c8f4ee3a608ee333d", size = 38781, upload-time = "2026-05-12T08:54:44.363Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/22/5e/977505b17c5528cffaaf561de46f58fa546345ae75866e3985039aaa991d/notion_client-2.2.1-py2.py3-none-any.whl", hash = "sha256:4ecf9ec527a124462f7bd407d9c9ead9853a9b2c8f00e56f3fa8fb15106ad871", size = 13983, upload-time = "2023-12-28T11:31:34.498Z" },
+    { url = "https://files.pythonhosted.org/packages/08/08/12645b24044301cb0d7908ec068c55c0d5724f39372891a1a27d630fdf50/notion_client-3.1.0-py2.py3-none-any.whl", hash = "sha256:7e3935f4dbc11231d8ad1fe404112e278501520342eaa35f86456f0df44a8aca", size = 23092, upload-time = "2026-05-12T08:54:43.135Z" },
 ]
 
 [[package]]
@@ -5474,13 +5474,13 @@ requires-dist = [
     { name = "jinja2", specifier = "==3.1.6" },
     { name = "jsonschema", specifier = "==4.26.0" },
     { name = "langchain", specifier = "==1.4.7" },
-    { name = "langchain-anthropic", specifier = "==1.4.6" },
+    { name = "langchain-anthropic", specifier = "==1.5.6" },
     { name = "langchain-aws", specifier = "==1.1.0" },
     { name = "langchain-cohere", specifier = "==0.6.0" },
     { name = "langchain-community", specifier = "==0.4.2" },
     { name = "langchain-experimental", specifier = "==0.4.2" },
     { name = "langchain-fireworks", specifier = "==1.7.1" },
-    { name = "langchain-google-genai", specifier = "==4.3.2" },
+    { name = "langchain-google-genai", specifier = "==4.3.7" },
     { name = "langchain-google-vertexai", specifier = "==3.2.4" },
     { name = "langchain-groq", specifier = "==1.1.3" },
     { name = "langchain-mistralai", specifier = "==1.1.6" },
@@ -5500,7 +5500,7 @@ requires-dist = [
     { name = "msgspec", specifier = "==0.22.0" },
     { name = "nats-py", specifier = "==2.16.0" },
     { name = "neo4j", specifier = "==6.4.1" },
-    { name = "notion-client", specifier = "==2.2.1" },
+    { name = "notion-client", specifier = "==3.1.0" },
     { name = "numpy", specifier = "==2.5.4" },
     { name = "opencv-python-headless", specifier = "==4.11.0.86" },
     { name = "openpyxl", specifier = "==3.1.5" },

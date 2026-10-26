@@ -299,7 +299,6 @@ class Record(BaseModel):
     mime_type: str = Field(default=MimeTypes.UNKNOWN.value, description="MIME type of the record")
     inherit_permissions: bool = Field(default=True, description="Inherit permissions from parent record") # Used in backend only to determine if the record should have a inherit permissions relation from its parent record
     # Write-time only. Set when a record's parent is not its permission parent.
-    # Jira does not set this: a story inherits its epic.
     inherit_permissions_from_group: bool = Field(default=False)
     # Write-time only. When set, this save replaces the record's permission edges.
     rewrite_permissions: bool = Field(default=False)

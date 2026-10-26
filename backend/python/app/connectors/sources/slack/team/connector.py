@@ -11,8 +11,9 @@ Sync pipeline (in order):
   4. Messages    → MessageRecord / FileRecord / LinkRecord per channel (incremental,
                    per-channel checkpoint via messages_sync_point)
   5. Thread-growth → detects threads with new replies since last run.
-                   Uses per-channel checkpoints (audit_log_sync_point keyed by channel_id)
-                   so each channel's window is exactly "since we last checked it".
+                   Uses per-channel checkpoints (audit_log_sync_point keyed by channel_id);
+                   each run re-reads at least the last 24 hours (THREAD_GROWTH_LOOKBACK_SECONDS)
+                   so a reply to a thread started before the previous run is found.
                    First run falls back to the sync-window filter (same range as messages).
                    Full cursor-based pagination prevents silent truncation on busy channels.
 
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import mimetypes
 import re
 import time
@@ -55,7 +57,10 @@ from app.config.constants.arangodb import (
     PermissionModel,
 )
 from app.config.constants.http_status_code import HttpStatusCode
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -104,6 +109,7 @@ from app.connectors.sources.slack.common.stream_errors import (
     slack_stream_error,
 )
 from app.connectors.sources.slack.common.token_renewal import (
+    PASTED_ROTATING_TOKEN_MESSAGE,
     RenewingSlackDataSource,
     SlackTokenRenewal,
 )
@@ -137,6 +143,7 @@ from app.models.entities import (
     RelatedExternalRecord,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.slack.slack import SlackClient
 from app.sources.external.slack.slack import SlackDataSource
 from app.utils.streaming import create_stream_record_response
@@ -148,6 +155,7 @@ if TYPE_CHECKING:
 
     from app.config.configuration_service import ConfigurationService
     from app.connectors.core.base.data_store.data_store import DataStoreProvider
+    from app.connectors.core.thread_pool import ThreadPoolLease
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 BURST_WINDOW_SECONDS        = 300           # 5-minute conversational burst window
@@ -192,8 +200,39 @@ MAX_CONCURRENT_CHANNEL_MEMBERS = 10  # private/mpim member fetches in Phase 3
 MAX_CONCURRENT_CHANNEL_SYNCS   = 6   # parallel channel message syncs in Phase 4
 MAX_CONCURRENT_USER_INFO       = 10  # users.info fan-out for unknown mention IDs
 
+# Slack SDK calls are blocking and run in the connector's thread lease; enough
+# slots for every parallel fan-out above to be in flight at once.
+MAX_CONCURRENT_SLACK_CALLS     = 16
+
+# The thread-growth pass re-reads at least this much channel history every run, so
+# a new reply to a thread started before the previous sync is still found. Slack
+# lists a thread under its first message's time, and history cannot be filtered by
+# the time of the latest reply.
+THREAD_GROWTH_LOOKBACK_SECONDS = 24 * 3600
+
+# What Slack answers when the token itself is no good; every later call fails the same way.
+SLACK_AUTH_ERRORS = frozenset({
+    "invalid_auth", "not_authed", "token_revoked", "token_expired",
+    "account_inactive", "team_access_not_granted", "ekm_access_denied",
+})
+
+# Bot token scopes the workspace connector cannot sync without.
+REQUIRED_BOT_SCOPES: tuple[str, ...] = (
+    "channels:read", "channels:history",
+    "groups:read", "groups:history",
+    "users:read", "users:read.email",
+    "files:read",
+)
+
+# Returned by _hash_download when Slack served its sign-in page instead of the file.
+_SIGN_IN_PAGE = object()
+
 # Slack user mention syntax: <@U…> or <@U…|display_name>; W-prefix = SSO users.
 _USER_MENTION_RE = re.compile(r"<@([UW]\w+)(?:\|[^>]+)?>")
+
+
+class SlackTokenRefusedError(ConnectorInitError):
+    """Slack refused the connector's token; the sync stops and the user is told."""
 
 
 # ── Internal dataclasses ───────────────────────────────────────────────────────
@@ -305,6 +344,13 @@ class RateLimiter:
     .with_description("Sync messages and channels from Slack")\
     .with_categories(["Messaging"])\
     .with_scopes([ConnectorScope.TEAM.value])\
+    .with_resilience_config(
+        # A ceiling across all methods; RateLimiter below paces each Slack tier.
+        rate_limit=20,
+        max_retries=3,  # a 429 is retried after its Retry-After, up to max_delay
+        base_delay=1.0,
+        max_delay=60.0,
+    )\
     .with_auth([
         # AuthBuilder.type(AuthType.OAUTH).oauth(
         #     connector_name="Slack Workspace",
@@ -445,6 +491,13 @@ class SlackConnector(BaseConnector):
         self.connector_id = connector_id
         self.external_client: Optional[SlackClient] = None
         self.data_source:     Optional[SlackDataSource] = None
+        # Acquired in init(): slack_sdk is synchronous, so its calls run here.
+        self._slack_executor: ThreadPoolLease | None = None
+        # Channel names whose messages this run could not read, for one notice per run.
+        self._unreadable_channels: list[str] = []
+        self._channel_list_failed = False
+        # Set once Slack refuses the token in a run; parallel channel syncs see it too.
+        self._token_refused = False
 
         # Workspace identity (set in init())
         self.workspace_domain: Optional[str] = None
@@ -565,15 +618,24 @@ class SlackConnector(BaseConnector):
     # =========================================================================
 
     async def init(self) -> bool:
-        """Build the Slack client and fetch workspace identity."""
+        """Build the Slack client and fetch workspace identity.
+
+        Raises ConnectorInitError when the token is malformed or Slack refuses it, so
+        the user sees why instead of "Failed to initialize connector".
+        """
         try:
             self.logger.info("🔧 Initialising Slack connector…")
-            self.external_client = await SlackClient.build_from_services(
-                logger=self.logger,
-                config_service=self.config_service,
-                connector_instance_id=self.connector_id,
-            )
-            self.data_source = SlackDataSource(self.external_client)
+            self._slack_executor = self._thread_lease(MAX_CONCURRENT_SLACK_CALLS)
+            try:
+                self.external_client = await SlackClient.build_from_services(
+                    logger=self.logger,
+                    config_service=self.config_service,
+                    connector_instance_id=self.connector_id,
+                )
+            except ValueError as exc:
+                # The token's format, or a token missing from the saved settings.
+                raise ConnectorInitError(str(exc)) from exc
+            self.data_source = SlackDataSource(self.external_client, executor=self._slack_executor)
 
             ds = await self._fresh_datasource()
             resp = await ds.team_info()
@@ -582,42 +644,121 @@ class SlackConnector(BaseConnector):
                 self.workspace_domain = team.get("domain")
                 self.team_id = team.get("id")
                 self.logger.info(f"Workspace: {self.workspace_domain} ({self.team_id})")
+            else:
+                self._raise_if_token_refused(resp, "team.info")
+                self.logger.warning(
+                    f"team.info failed ({getattr(resp, 'error', 'no response')}); "
+                    f"reading the workspace from auth.test"
+                )
 
             # Fallback: extract workspace_domain from auth.test if team.info failed
             if not self.workspace_domain:
                 try:
                     auth_resp = await ds.auth_test()
-                    if auth_resp and auth_resp.success:
-                        auth_url = auth_resp.data.get("url", "")
-                        if auth_url:
-                            host = urlparse(auth_url).hostname or ""
-                            if host.endswith(".slack.com"):
-                                self.workspace_domain = host.replace(".slack.com", "")
-                                self.logger.info(
-                                    f"Resolved workspace_domain from auth.test: "
-                                    f"{self.workspace_domain}"
-                                )
                 except Exception as exc:
                     self.logger.warning(f"auth.test fallback failed: {exc}")
+                    auth_resp = None
+                if auth_resp and auth_resp.success:
+                    auth_url = auth_resp.data.get("url", "")
+                    self.team_id = self.team_id or auth_resp.data.get("team_id")
+                    if auth_url:
+                        host = urlparse(auth_url).hostname or ""
+                        if host.endswith(".slack.com"):
+                            self.workspace_domain = host.replace(".slack.com", "")
+                            self.logger.info(
+                                f"Resolved workspace_domain from auth.test: "
+                                f"{self.workspace_domain}"
+                            )
+                elif auth_resp is not None:
+                    self._raise_if_token_refused(auth_resp, "auth.test")
+                    self.logger.warning(
+                        f"auth.test fallback failed: {getattr(auth_resp, 'error', 'no response')}"
+                    )
 
             self.logger.info("✅ Slack connector initialised")
             return True
 
+        except ConnectorInitError:
+            raise
         except Exception as exc:
             self.logger.error(f"❌ Init failed: {exc}", exc_info=True)
             return False
+
+    def _raise_if_token_refused(self, resp: object, operation: str) -> None:
+        """Raise ConnectorInitError when Slack answered ``operation`` by refusing the token."""
+        error = getattr(resp, "error", None)
+        if error in SLACK_AUTH_ERRORS:
+            self.logger.error(f"❌ Slack refused the token on {operation}: {error}")
+            raise ConnectorInitError(self._token_refused_message(error))
+
+    def _token_refused_message(self, error: str | None) -> str:
+        if error == "token_expired":
+            return f"{self.display_name}: {PASTED_ROTATING_TOKEN_MESSAGE}"
+        return (
+            f"Slack refused the token saved in {self.display_name} ({error}). The token "
+            f"was revoked, the app was removed from the workspace, or the workspace is "
+            f"inactive. Reinstall the Slack app, then paste its current Bot User OAuth "
+            f"Token into the connector's settings."
+        )
+
+    async def _fail_if_token_refused(self, resp: object, operation: str) -> None:
+        """Stop the sync and tell the user, once per run, when Slack refuses the token.
+
+        A bot token has no refresh, and token renewal has already had its try, so
+        every later call would fail the same way and the run would end as a success
+        having written nothing.
+        """
+        error = getattr(resp, "error", None)
+        if error not in SLACK_AUTH_ERRORS:
+            return
+        message = self._token_refused_message(error)
+        self.logger.error(f"❌ Slack refused the token on {operation}: {error}")
+        if not self._token_refused:
+            self._token_refused = True
+            await self.notify(
+                type=NotificationType.CONNECTOR_AUTH_ERROR,
+                severity=NotificationSeverity.ERROR,
+                title=f"{self.display_name}: Slack token refused",
+                message=message,
+            )
+        raise SlackTokenRefusedError(message)
+
+    async def _report_unreadable_channels(self) -> None:
+        """One notice per run for the channels whose messages could not be read."""
+        names = list(dict.fromkeys(self._unreadable_channels))
+        if not names:
+            return
+        shown = ", ".join(f"#{n}" for n in names[:5])
+        more = f" and {len(names) - 5} more" if len(names) > 5 else ""
+        await self.notify(
+            type=NotificationType.CONNECTOR_SYNC_ERROR,
+            severity=NotificationSeverity.WARNING,
+            title=f"{self.display_name}: some Slack channels were not synced",
+            message=(
+                f"{self.display_name}: the Slack app cannot read {shown}{more}. Invite the "
+                f"app to these channels (/invite in the channel), or add the channels:join "
+                f"scope for public channels."
+            ),
+        )
 
     @cached_property
     def _token_renewal(self) -> SlackTokenRenewal:
         return SlackTokenRenewal(
             self.connector_id, type(self)._connector_metadata["name"], self.config_service, self.logger,
+            executor=self._slack_executor, resilience=self.resilience,
         )
 
-    async def _fresh_datasource(self) -> RenewingSlackDataSource:
-        """Return a SlackDataSource backed by the always-current token, renewed when it expires."""
+    async def _fresh_datasource(self, *, retry_rate_limits: bool = True) -> RenewingSlackDataSource:
+        """Return a SlackDataSource backed by the always-current token, renewed when it expires.
+
+        Sync retries a 429 after its Retry-After. Streaming passes ``retry_rate_limits=False``:
+        a user is waiting, so the 429 goes back with its Retry-After instead.
+        """
         if not self.external_client:
             raise RuntimeError("Call init() first.")
-        return await self._token_renewal.datasource(self.external_client, self._current_token)
+        return await self._token_renewal.datasource(
+            self.external_client, self._current_token, retry_rate_limits=retry_rate_limits,
+        )
 
     async def _current_token(self) -> tuple[dict[str, Any], str]:
         # Cache the connector config to avoid an etcd/Redis round-trip on every
@@ -664,6 +805,9 @@ class SlackConnector(BaseConnector):
             # Set when a read fails and the sync carries on without it; see
             # full_sync_coverage.
             self._full_sync_read_failed = False
+            self._unreadable_channels = []
+            self._channel_list_failed = False
+            self._token_refused = False
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "slack_workspace", self.connector_id, self.logger
@@ -699,8 +843,12 @@ class SlackConnector(BaseConnector):
                 if not rg.external_group_id:
                     return
                 async with msg_sem:
+                    if self._token_refused:
+                        return
                     try:
                         await self.sync_channel_messages(rg.external_group_id)
+                    except SlackTokenRefusedError:
+                        raise
                     except Exception as exc:
                         self._full_sync_read_failed = True
                         self.logger.error(
@@ -709,13 +857,35 @@ class SlackConnector(BaseConnector):
                             exc_info=True,
                         )
 
-            await asyncio.gather(*(_sync_one(rg) for rg in channels))
+            # Channels already reading finish before a refused token is raised, so
+            # none is left running after the sync has failed.
+            results = await asyncio.gather(
+                *(_sync_one(rg) for rg in channels), return_exceptions=True,
+            )
+            refused = next((r for r in results if isinstance(r, SlackTokenRefusedError)), None)
+            if refused:
+                raise refused
 
             # Phase 5 — Thread-growth detection (edit detection bypassed for now)
             await self._sync_thread_growth()
 
+            await self._report_unreadable_channels()
+            if self._channel_list_failed:
+                await self.notify(
+                    type=NotificationType.CONNECTOR_SYNC_ERROR,
+                    severity=NotificationSeverity.ERROR,
+                    title=f"{self.display_name}: Slack channels could not be listed",
+                    message=(
+                        f"{self.display_name}: Slack did not return the full channel list, so "
+                        f"some channels were not synced this time. The next sync tries again."
+                    ),
+                )
+                raise RuntimeError("conversations.list failed; channels not listed were not synced")
+
             self.logger.info("✅ Slack sync complete")
 
+        except SlackTokenRefusedError:
+            raise  # logged and notified where Slack refused the token
         except Exception as exc:
             self.logger.error(f"❌ Sync failed: {exc}", exc_info=True)
             raise
@@ -755,6 +925,7 @@ class SlackConnector(BaseConnector):
             resp = await ds.users_list(limit=PAGE_SIZE_USERS, cursor=cursor)
 
             if not resp or not resp.success:
+                await self._fail_if_token_refused(resp, "users.list")
                 # The workspace_member role is written from these pages: with one
                 # missing it is left out or short, and must not be unlinked as unseen.
                 self._full_sync_read_failed = True
@@ -845,6 +1016,9 @@ class SlackConnector(BaseConnector):
                 email=email,
                 full_name=name,
                 is_active=not m.get("deleted", False),
+                # Multi- and single-channel guests reach only the channels they are
+                # in, so they must not get the org-wide grants org members get.
+                is_guest=bool(m.get("is_restricted") or m.get("is_ultra_restricted")),
                 created_at=updated_at,
                 updated_at=updated_at,
             )
@@ -952,9 +1126,22 @@ class SlackConnector(BaseConnector):
                 if not ug:
                     continue
 
-                member_ids: list[str] = gd.get("users", [])
+                member_ids: list[str] | None = gd.get("users", [])
                 if not member_ids:
                     member_ids = await self._fetch_usergroup_members(gd.get("id", ""))
+                if member_ids is None:
+                    # Unread is not empty: re-sent with no members, the group would
+                    # lose every one it has stored. Keep it as it is.
+                    self._full_sync_read_failed = True
+                    try:
+                        await self.data_entities_processor.note_kept_user_group(
+                            self.connector_id, ug.source_user_group_id,
+                        )
+                    except Exception as exc:
+                        self.logger.warning(
+                            f"Could not note user group {ug.source_user_group_id} as kept: {exc}"
+                        )
+                    continue
 
                 members: list[AppUser] = []
                 for uid in member_ids:
@@ -1009,15 +1196,22 @@ class SlackConnector(BaseConnector):
             self.logger.error(f"_to_user_group failed for {gid}: {exc}")
             return None
 
-    async def _fetch_usergroup_members(self, group_id: str) -> list[str]:
+    async def _fetch_usergroup_members(self, group_id: str) -> list[str] | None:
+        """The group's member ids, or None when Slack did not return them."""
         try:
             await self.rate_limiter.acquire(Tier.T2)
             ds = await self._fresh_datasource()
             r  = await ds.usergroups_users_list(usergroup=group_id)
-            return r.data.get("users", []) if r and r.success else []
         except Exception as exc:
-            self.logger.error(f"_fetch_usergroup_members({group_id}): {exc}")
-            return []
+            self.logger.error(f"usergroups.users.list({group_id}) failed: {exc}", exc_info=True)
+            return None
+        if not r or not r.success:
+            self.logger.warning(
+                f"usergroups.users.list({group_id}) failed: {getattr(r, 'error', 'no response')}; "
+                f"its stored members are kept"
+            )
+            return None
+        return r.data.get("users", [])
 
     # =========================================================================
     # 4.  Phase 3 — Channel sync → RecordGroups + HAS_PERMISSION edges
@@ -1083,7 +1277,9 @@ class SlackConnector(BaseConnector):
             )
 
             if not resp or not resp.success:
+                await self._fail_if_token_refused(resp, "conversations.list")
                 self._full_sync_read_failed = True
+                self._channel_list_failed = True
                 self.logger.error(
                     f"❌ conversations.list failed: {getattr(resp, 'error', 'no response')}"
                 )
@@ -1534,6 +1730,9 @@ class SlackConnector(BaseConnector):
                         self.logger.warning(
                             f"Could not join channel {channel_id} ({join_err}), skipping."
                         )
+                        self._unreadable_channels.append(
+                            self.channel_id_to_name_cache.get(channel_id, channel_id)
+                        )
                         break
                 elif error == "channel_not_found":
                     self.logger.warning(
@@ -1545,7 +1744,12 @@ class SlackConnector(BaseConnector):
                     self.logger.warning(
                         f"Skipping channel {channel_id}: still not_in_channel after join attempt"
                     )
+                    self._unreadable_channels.append(
+                        self.channel_id_to_name_cache.get(channel_id, channel_id)
+                    )
                     break
+                elif error in SLACK_AUTH_ERRORS:
+                    await self._fail_if_token_refused(resp, "conversations.history")
                 else:
                     self.logger.error(
                         f"❌ conversations.history({channel_id}) failed: {error}"
@@ -2119,7 +2323,8 @@ class SlackConnector(BaseConnector):
                 external_record_group_id=f"thread_{ctx.channel_id}_{thread_ts}",
                 record_group_id=thread_rg_id,
                 root_record_group_id=self._root_rg_id(ctx),
-                version=1,
+                version=0,
+                external_revision_id=self._content_revision(burst.messages),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
@@ -2522,7 +2727,8 @@ class SlackConnector(BaseConnector):
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
                 root_record_group_id=self._root_rg_id(ctx),
-                version=1,
+                version=0,
+                external_revision_id=self._content_revision(burst.messages),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
@@ -2685,7 +2891,8 @@ class SlackConnector(BaseConnector):
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
                 root_record_group_id=self._root_rg_id(ctx),
-                version=1,
+                version=0,
+                external_revision_id=self._content_revision([msg]),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
@@ -2835,19 +3042,18 @@ class SlackConnector(BaseConnector):
                 await ctx.rate_limiter.acquire(Tier.T3)
                 token = (await self._fresh_datasource()).access_token
                 async with httpx.AsyncClient(timeout=30.0) as http:
-                    headers = {"Authorization": f"Bearer {token}"} if token else {}
-                    r = await http.get(url_dl, headers=headers)
+                    file_hash = await self._hash_download(http, url_dl, token)
                     # Slack answers a token it no longer accepts with 200 and its sign-in
                     # page. Right after a scheduled rotation the connector can still hold
                     # the old token, so try once more with the stored one if it is newer.
-                    if r.status_code == 200 and "text/html" in r.headers.get("content-type", ""):
+                    if file_hash is _SIGN_IN_PAGE:
                         newer = await self._token_renewal.newer_stored_token(token)
-                        if newer:
-                            r = await http.get(url_dl, headers={"Authorization": f"Bearer {newer}"})
-                    if r.status_code == 200:
-                        file_hash = hashlib.sha256(r.content).hexdigest()
+                        file_hash = await self._hash_download(http, url_dl, newer) if newer else None
+                    if file_hash is _SIGN_IN_PAGE:
+                        file_hash = None
             except Exception as exc:
                 self.logger.warning(f"File download failed {fid}: {exc}")
+                file_hash = None
 
         rg_id = ctx.channel_groups_map.get(ctx.channel_id)
         filename = fd.get("name", f"file_{fid}")
@@ -2863,7 +3069,7 @@ class SlackConnector(BaseConnector):
                 external_record_group_id=ctx.channel_id,
                 record_group_id=rg_id,
                 root_record_group_id=self._root_rg_id(ctx),
-                version=1,
+                version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
@@ -2889,6 +3095,26 @@ class SlackConnector(BaseConnector):
         except Exception as exc:
             self.logger.error(f"_process_file_raw({fid}): {exc}")
             return None
+
+    async def _hash_download(
+        self, http: httpx.AsyncClient, url: str, token: str | None,
+    ) -> str | None | object:
+        """SHA-256 of the file at ``url``, read in chunks so memory stays bounded.
+
+        ``_SIGN_IN_PAGE`` when Slack served its sign-in page instead of the file,
+        None for any other failure.
+        """
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        async with http.stream("GET", url, headers=headers) as r:
+            if r.status_code != HttpStatusCode.SUCCESS.value:
+                self.logger.warning(f"Slack file download failed with status {r.status_code}")
+                return None
+            if "text/html" in r.headers.get("content-type", ""):
+                return _SIGN_IN_PAGE
+            digest = hashlib.sha256()
+            async for chunk in r.aiter_bytes(64 * 1024):
+                digest.update(chunk)
+            return digest.hexdigest()
 
     async def _process_file(
         self,
@@ -2934,7 +3160,7 @@ class SlackConnector(BaseConnector):
                 root_record_group_id=self._root_rg_id(ctx),
                 parent_external_record_id=parent.external_record_id,
                 parent_record_type=RecordType.MESSAGE,
-                version=1,
+                version=0,
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
@@ -3025,7 +3251,8 @@ class SlackConnector(BaseConnector):
                 parent_record_type=(
                     RecordType.MESSAGE if parent_external_record_id else None
                 ),
-                version=1,
+                version=0,
+                external_revision_id=self._content_revision([msg]),
                 origin=OriginTypes.CONNECTOR,
                 connector_name=Connectors.SLACK_WORKSPACE,
                 connector_id=self.connector_id,
@@ -3054,6 +3281,28 @@ class SlackConnector(BaseConnector):
         except Exception as exc:
             self.logger.error(f"_to_message_record({ts}): {exc}")
             return None
+
+    @staticmethod
+    def _content_revision(msgs: list[dict[str, Any]]) -> str:
+        """A revision that changes exactly when what a record's blocks show changes.
+
+        Built from the fields the message blocks are made of, so an edit, a new
+        reaction or reply count re-indexes the record and a re-read of the same
+        messages does not.
+        """
+        parts = [
+            {
+                "ts": m.get("ts"),
+                "user": m.get("user"),
+                "text": m.get("text"),
+                "edited": (m.get("edited") or {}).get("ts"),
+                "reply_count": m.get("reply_count"),
+                "reactions": [(r.get("name"), r.get("count")) for r in m.get("reactions") or []],
+                "files": [f.get("id") for f in m.get("files") or []],
+            }
+            for m in sorted(msgs, key=lambda m: m.get("ts") or "")
+        ]
+        return hashlib.sha256(json.dumps(parts, sort_keys=True).encode()).hexdigest()
 
     @staticmethod
     def _slack_ts_to_utc_label(ts: str) -> str:
@@ -3164,7 +3413,9 @@ class SlackConnector(BaseConnector):
         Checkpoint logic mirrors ``sync_channel_messages``:
           - First run (no checkpoint) → use the sync-window filter so the scan
             covers the same range as the initial message sync.
-          - Subsequent runs → use the stored ``last_check_time``.
+          - Subsequent runs → the stored ``last_check_time``, or 24 hours back if
+            that is earlier (never before the sync window). Replies to threads
+            started before that are not found until a full sync.
         """
         self.logger.info("🔍 Thread-growth detection (per-channel)…")
         try:
@@ -3187,11 +3438,17 @@ class SlackConnector(BaseConnector):
 
                 oldest_ts: Optional[str] = None
                 if last and last.get("last_check_time"):
-                    # Slack ts is canonical "<seconds>.<6-digit microseconds>";
-                    # str(float) can produce 7+ decimals (e.g.
-                    # "1777530605.9567418") which Slack's `oldest`/`latest`
-                    # parser silently rejects (success=True, msg_count=0).
-                    oldest_ts = f"{last['last_check_time'] / 1000.0:.6f}"
+                    # Look back at least THREAD_GROWTH_LOOKBACK_SECONDS, never before
+                    # the sync window. Slack ts is canonical "<seconds>.<6-digit
+                    # microseconds>"; str(float) can produce 7+ decimals, which
+                    # Slack's `oldest`/`latest` parser silently rejects.
+                    since = min(
+                        last["last_check_time"] / 1000.0,
+                        time.time() - THREAD_GROWTH_LOOKBACK_SECONDS,
+                    )
+                    if sync_window_ts:
+                        since = max(since, float(sync_window_ts))
+                    oldest_ts = f"{since:.6f}"
                 else:
                     oldest_ts = sync_window_ts
 
@@ -3902,6 +4159,12 @@ class SlackConnector(BaseConnector):
         sp_data = await self.audit_log_sync_point.read_sync_point(thread_sp_key)
         last_reply_ts = (sp_data or {}).get("last_reply_ts")
 
+        # The look-back lists threads already read; only one with a reply newer
+        # than its checkpoint needs its replies fetched again.
+        latest_reply = md.get("latest_reply")
+        if last_reply_ts and latest_reply and float(latest_reply) <= float(last_reply_ts):
+            return True
+
         # If we have a checkpoint, look up the thread RG arango id for the
         # incremental path. Failure here is fatal for the incremental branch
         # (we'd publish bursts with an empty record_group_id), so we fall
@@ -4402,17 +4665,12 @@ class SlackConnector(BaseConnector):
             if not start_ts or not end_ts:
                 raise HTTPException(400, f"Burst record {ext_id} missing start_ts/end_ts")
 
-            await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
-            resp = await ds.conversations_history(
-                channel=ch, oldest=start_ts, latest=end_ts,
-                inclusive=True, limit=200,
+            window_msgs = await self._read_all_pages_for_streaming(
+                "conversations_history",
+                channel=ch, oldest=start_ts, latest=end_ts, inclusive=True,
             )
-            if not resp or not resp.success:
-                raise slack_stream_error(resp, connector=self.display_name)
-
             burst_msgs = sorted(
-                [m for m in resp.data.get("messages", [])
+                [m for m in window_msgs
                  if m.get("ts") and start_ts <= m["ts"] <= end_ts],
                 key=lambda m: m["ts"],
             )
@@ -4458,18 +4716,12 @@ class SlackConnector(BaseConnector):
                     f"Thread burst record {ext_id} missing start_ts/end_ts/thread_id",
                 )
 
-            await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
-            resp = await ds.conversations_replies(
-                channel=ch, ts=thread_ts_val,
-                oldest=start_ts, latest=end_ts,
-                inclusive=True, limit=200,
+            window_msgs = await self._read_all_pages_for_streaming(
+                "conversations_replies",
+                channel=ch, ts=thread_ts_val, oldest=start_ts, latest=end_ts, inclusive=True,
             )
-            if not resp or not resp.success:
-                raise slack_stream_error(resp, connector=self.display_name)
-
             burst_msgs = sorted(
-                [m for m in resp.data.get("messages", [])
+                [m for m in window_msgs
                  if m.get("ts") and start_ts <= m["ts"] <= end_ts],
                 key=lambda m: m["ts"],
             )
@@ -4506,7 +4758,7 @@ class SlackConnector(BaseConnector):
         # ── Single message record ─────────────────────────────────────────
         else:
             await self.rate_limiter.acquire(Tier.T3)
-            ds   = await self._fresh_datasource()
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
             resp = await ds.conversations_history(
                 channel=ch, oldest=ext_id, latest=ext_id,
                 inclusive=True, limit=1,
@@ -4521,7 +4773,7 @@ class SlackConnector(BaseConnector):
                 tid = getattr(record, "thread_id", None)
                 if tid and tid != ext_id:
                     await self.rate_limiter.acquire(Tier.T3)
-                    resp = await (await self._fresh_datasource()).conversations_replies(
+                    resp = await (await self._fresh_datasource(retry_rate_limits=False)).conversations_replies(
                         channel=ch, ts=tid, oldest=ext_id, latest=ext_id,
                         inclusive=True, limit=1,
                     )
@@ -4561,6 +4813,28 @@ class SlackConnector(BaseConnector):
         blocks_json = bc.model_dump_json(indent=2, exclude_none=True)
         return blocks_json.encode("utf-8")
 
+    async def _read_all_pages_for_streaming(
+        self, method: str, **params: Any,  # noqa: ANN401 - any Slack method parameter
+    ) -> list[dict[str, Any]]:
+        """Every message ``method`` returns for ``params``, read to the last page.
+
+        A conversation record has no cap on its message count, and one page would
+        drop its earliest messages from the rebuilt record. A failed page raises the
+        mapped source error.
+        """
+        messages: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            await self.rate_limiter.acquire(Tier.T3)
+            ds   = await self._fresh_datasource(retry_rate_limits=False)
+            resp = await getattr(ds, method)(**params, limit=PAGE_SIZE_MESSAGES, cursor=cursor)
+            if not resp or not resp.success:
+                raise slack_stream_error(resp, connector=self.display_name)
+            messages.extend(resp.data.get("messages", []))
+            cursor = (resp.data.get("response_metadata") or {}).get("next_cursor") or None
+            if not cursor:
+                return messages
+
     async def _stream_file_bytes(
         self, record: FileRecord
     ) -> AsyncGenerator[bytes, None]:
@@ -4569,7 +4843,7 @@ class SlackConnector(BaseConnector):
             raise HTTPException(400, f"No file ID for {record.id}")
 
         await self.rate_limiter.acquire(Tier.T4)
-        ds   = await self._fresh_datasource()
+        ds   = await self._fresh_datasource(retry_rate_limits=False)
         info = await ds.files_info(file=fid)
         if not info or not info.success:
             raise slack_stream_error(info, connector=self.display_name)
@@ -4634,7 +4908,13 @@ class SlackConnector(BaseConnector):
                 else:
                     not_updated.append(rec)
             except Exception as exc:
-                self.logger.error(f"reindex check failed for {rec.id}: {exc}")
+                # The platform has already reset the record for indexing; dropped
+                # here, it would never be queued again.
+                self.logger.error(
+                    f"reindex check failed for {rec.id}: {exc}; reindexing it as stored",
+                    exc_info=True,
+                )
+                not_updated.append(rec)
 
         for rec, perms in updated:
             await self.data_entities_processor.on_record_content_update(rec)
@@ -4846,22 +5126,57 @@ class SlackConnector(BaseConnector):
     # =========================================================================
 
     async def test_connection_and_access(self) -> bool:
+        """Check the token with auth.test and the scopes Slack says it was granted.
+
+        Raises ConnectorInitError naming what is wrong: a refused token, or the
+        scopes the connector needs and the token lacks.
+        """
         try:
             ds   = await self._fresh_datasource()
             resp = await ds.check_token_scopes()
-            return bool(resp and resp.success)
         except Exception as exc:
-            self.logger.error(f"Connection test failed: {exc}")
-            return False
+            self.logger.error(f"Connection test failed: {exc}", exc_info=True)
+            raise ConnectorInitError(f"Could not reach Slack: {exc}") from exc
+        if not resp or not resp.success:
+            error = getattr(resp, "error", "no response")
+            self.logger.error(f"Slack connection test failed: {error}")
+            if error in SLACK_AUTH_ERRORS:
+                raise ConnectorInitError(self._token_refused_message(error))
+            raise ConnectorInitError(
+                f"Slack did not accept the connection test ({error}): "
+                f"{getattr(resp, 'message', None) or 'check the token and try again.'}"
+            )
+        granted = (resp.data or {}).get("scopes")
+        if granted is None:
+            # Slack sends the scopes in a header a proxy can drop; the sync then
+            # reports any missing one on the call that needs it.
+            self.logger.warning("Slack did not report the token's scopes; skipping the scope check")
+            return True
+        missing = [scope for scope in REQUIRED_BOT_SCOPES if scope not in granted]
+        if missing:
+            raise ConnectorInitError(
+                f"The Slack token is missing these scopes: {', '.join(missing)}. Add them under "
+                f"OAuth & Permissions → Bot Token Scopes in the Slack app, reinstall the app to "
+                f"the workspace, and paste the new token."
+            )
+        for scope in ("channels:join", "usergroups:read"):
+            if scope not in granted:
+                self.logger.warning(
+                    f"Slack token has no {scope} scope: "
+                    + ("public channels the app is not in are skipped" if scope == "channels:join"
+                       else "Slack user groups are not synced")
+                )
+        return True
 
     async def run_incremental_sync(self) -> None:
         await self.run_sync()
 
     async def cleanup(self) -> None:
+        await self._release_thread_lease()
         self.logger.info("Slack connector cleanup complete")
 
-    async def get_signed_url(self, record: Record) -> str:
-        return ""   # Slack uses OAuth bearer tokens, not signed URLs
+    async def get_signed_url(self, record: Record) -> str | None:
+        return None   # Slack files open only with the bot token; there is no signed URL
 
     async def handle_webhook_notification(self, notification: dict) -> None:
         self.logger.warning("Webhook notifications not yet implemented for Slack")

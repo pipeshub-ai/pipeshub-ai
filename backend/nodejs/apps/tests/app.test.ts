@@ -978,6 +978,44 @@ describe('Application', () => {
       );
       expect(lastRouteLayers.length).to.be.greaterThan(0);
     });
+
+    describe('SPA fallback for unknown URLs', () => {
+      const callFallback = (reqPath: string) => {
+        const stack = (expressApp as any)._router?.stack || [];
+        const layer = stack.filter((l: any) => l.route && l.route.path === '*').pop();
+        const res: any = {
+          statusCode: 200,
+          status: sinon.stub().callsFake((code: number) => {
+            res.statusCode = code;
+            return res;
+          }),
+          sendFile: sinon.stub(),
+          setHeader: sinon.stub(),
+          type: sinon.stub().returnsThis(),
+          send: sinon.stub(),
+        };
+        layer.route.stack[0].handle({ path: reqPath }, res, () => {});
+        return res;
+      };
+
+      for (const reqPath of [
+        '/workspace/does-not-exist',
+        '/workspace/does-not-exist/',
+        '/workspace/developer-settings/does-not-exist',
+      ]) {
+        it(`serves the not-found page with 404 for ${reqPath}`, () => {
+          const res = callFallback(reqPath);
+          expect(res.statusCode).to.equal(404);
+          expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]404\.html$/);
+        });
+      }
+
+      it('still serves the root shell for other unknown URLs', () => {
+        const res = callFallback('/sign-in');
+        expect(res.statusCode).to.equal(200);
+        expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]index\.html$/);
+      });
+    });
   });
 
   // =========================================================================
