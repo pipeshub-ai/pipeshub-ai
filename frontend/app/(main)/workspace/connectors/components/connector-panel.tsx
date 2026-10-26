@@ -139,9 +139,19 @@ export function ConnectorPanel() {
   const [syncSaveConfirmOpen, setSyncSaveConfirmOpen] = useState(false);
   const [syncSaveConfirmKind, setSyncSaveConfirmKind] = useState<'manual' | 'wide_sync'>('wide_sync');
   const [disableFirstConfigSaveOpen, setDisableFirstConfigSaveOpen] = useState(false);
-  const [disableFirstAuthSaveOpen, setDisableFirstAuthSaveOpen] = useState(false);
-  /** Credentials that passed the check, kept while the admin confirms disabling the connector. */
-  const authAwaitingDisableRef = useRef<Record<string, unknown> | null>(null);
+  /**
+   * Credentials that passed the check, kept while the admin confirms disabling the connector they
+   * were entered for. The panel stays mounted when it closes, so they name that connector.
+   */
+  const [authAwaitingDisable, setAuthAwaitingDisable] = useState<{
+    connectorId: string;
+    auth: Record<string, unknown>;
+  } | null>(null);
+  useEffect(() => {
+    if (authAwaitingDisable && (!isPanelOpen || authAwaitingDisable.connectorId !== panelConnectorId)) {
+      setAuthAwaitingDisable(null);
+    }
+  }, [isPanelOpen, panelConnectorId, authAwaitingDisable]);
 
   const connectorPanelNestedModalHost = useWorkspaceDrawerNestedModalHost(isPanelOpen);
 
@@ -538,12 +548,12 @@ export function ConnectorPanel() {
   );
 
   /** Edit mode: PUT /config/auth, then reload so the Configure tab reflects the saved credentials. */
-  const saveEditedAuth = useCallback(async (finalAuth: Record<string, unknown>) => {
+  const saveEditedAuth = useCallback(async (editId: string, finalAuth: Record<string, unknown>) => {
     setIsSavingAuth(true);
     try {
       setSaveError(null);
 
-      await ConnectorsApi.saveAuthConfig(panelConnectorId!, {
+      await ConnectorsApi.saveAuthConfig(editId, {
         auth: {
           ...finalAuth,
           connectorScope: selectedScope,
@@ -551,29 +561,33 @@ export function ConnectorPanel() {
         baseUrl: browserOAuthBaseUrl(),
       });
 
-      const editId = panelConnectorId!;
       const editType = connectorType;
+      const isStillOpen = () => {
+        const s = useConnectorsStore.getState();
+        return s.panelConnectorId === editId && s.panelConnector?.type === editType;
+      };
       let configRes: Awaited<ReturnType<typeof ConnectorsApi.getConnectorConfig>> | null = null;
       try {
         setIsLoadingConfig(true);
         const [schemaRes, fetched] = await Promise.all([
           ConnectorsApi.getConnectorSchema(connectorType),
-          ConnectorsApi.getConnectorConfig(panelConnectorId!),
+          ConnectorsApi.getConnectorConfig(editId),
         ]);
         configRes = fetched;
-        const s = useConnectorsStore.getState();
-        if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
+        if (isStillOpen()) {
           setSchemaAndConfig(schemaRes.schema, configRes);
         }
       } catch {
         // Non-fatal — user can reopen panel
       } finally {
-        const s = useConnectorsStore.getState();
-        if (s.panelConnectorId === editId && s.panelConnector?.type === editType) {
+        if (isStillOpen()) {
           setIsLoadingConfig(false);
         }
       }
 
+      if (!isStillOpen()) {
+        return;
+      }
       if (isOAuthType(selectedAuthType)) {
         setPanelActiveTab(
           isConnectorConfigAuthenticated(configRes) ? 'configure' : 'authorize'
@@ -588,7 +602,6 @@ export function ConnectorPanel() {
       setIsSavingAuth(false);
     }
   }, [
-    panelConnectorId,
     connectorType,
     selectedScope,
     selectedAuthType,
@@ -617,8 +630,7 @@ export function ConnectorPanel() {
     // The server refuses new credentials on an enabled connector: offer to disable it here, so
     // the admin keeps what they entered instead of leaving the panel to disable it.
     if (!isCreateMode && useConnectorsStore.getState().panelConnector?.isActive) {
-      authAwaitingDisableRef.current = finalAuth;
-      setDisableFirstAuthSaveOpen(true);
+      setAuthAwaitingDisable({ connectorId: panelConnectorId!, auth: finalAuth });
       return;
     }
     setIsSavingAuth(true);
@@ -697,7 +709,7 @@ export function ConnectorPanel() {
         setIsSavingAuth(false);
       }
     } else {
-      await saveEditedAuth(finalAuth);
+      await saveEditedAuth(panelConnectorId!, finalAuth);
     }
   }, [
     isCreateMode,
@@ -1136,19 +1148,17 @@ export function ConnectorPanel() {
         container={connectorPanelNestedModalHost}
       />
     )}
-    {panelConnectorId && (
+    {authAwaitingDisable && authAwaitingDisable.connectorId === panelConnectorId && (
       <DisableFirstDialog
-        open={disableFirstAuthSaveOpen}
-        onOpenChange={setDisableFirstAuthSaveOpen}
-        connectorId={panelConnectorId}
+        open
+        onOpenChange={(open) => {
+          if (!open) setAuthAwaitingDisable(null);
+        }}
+        connectorId={authAwaitingDisable.connectorId}
         connectorName={connectorName || connectorTypeName}
         actionLabel={t('workspace.connectors.disableFirstDialog.actions.saveAuth')}
         disabledNoticeSource={connectorType}
-        onProceed={async () => {
-          const pending = authAwaitingDisableRef.current;
-          authAwaitingDisableRef.current = null;
-          if (pending) await saveEditedAuth(pending);
-        }}
+        onProceed={() => saveEditedAuth(authAwaitingDisable.connectorId, authAwaitingDisable.auth)}
         container={connectorPanelNestedModalHost}
       />
     )}

@@ -1863,7 +1863,7 @@ class TestConnectionCheck:
 
         assert result.success is True
         assert "upload a client certificate" in result.message and "Sites.Read.All" in result.message
-        assert not [r for r in cloud.requests if r.url.host.endswith("sharepoint.com")]
+        assert not [r for r in cloud.requests if r.url.host.endswith(".sharepoint.com")]
 
     async def test_a_rejected_secret_is_named(self, cloud) -> None:
         cloud.token_failure = json_response({"error": "invalid_client", "error_description": "AADSTS7000215: Invalid client secret provided."}, status=401)
@@ -2130,7 +2130,7 @@ class TestLookups:
         await connector.run_sync()
 
         assert len(sharepoint_calls(cloud)) > 2
-        assert len([f for f in cloud.token_requests() if "sharepoint.com" in f.get("scope", "")]) == 1
+        assert len([f for f in cloud.token_requests() if f.get("scope") == "https://acme-my.sharepoint.com/.default"]) == 1
 
 
 class TestMigration:
@@ -2654,6 +2654,20 @@ class TestConnectionCheckReadsSharePoint:
         result = await self.check(certificate=CERTIFICATE, privateKey=PRIVATE_KEY)
 
         assert result.success is False
+
+    async def test_sharepoint_out_of_reach_lets_the_save_go_ahead(self, cloud, tenant, sharepoint_rest) -> None:
+        tenant.add_user("u-ana", "ana@acme.com", "Ana")
+        drive_with_sharepoint_ids(cloud)
+
+        def unreachable(request: httpx.Request) -> httpx.Response:
+            raise httpx.ConnectTimeout("timed out", request=request)
+
+        cloud.on("GET", LIST_REST, unreachable)
+
+        result = await self.check(clientSecret=None, certificate=CERTIFICATE, privateKey=PRIVATE_KEY)
+
+        assert result.success is True and "could not be checked now" in result.message
+        assert sharepoint_calls(cloud) == ["list"]
 
     async def test_no_onedrive_to_check_with_lets_the_save_go_ahead(self, cloud, tenant, sharepoint_rest) -> None:
         tenant.add_user("u-ana", "ana@acme.com", "Ana")

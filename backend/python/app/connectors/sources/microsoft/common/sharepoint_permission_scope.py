@@ -172,7 +172,11 @@ class SharePointPermissionScopeReader:
         attempt = 1
         while True:
             async with self._rate_limiter:
-                response = await http_client.get(url, headers=headers)
+                try:
+                    response = await http_client.get(url, headers=headers)
+                except httpx.HTTPError as error:
+                    # No answer came (the network, a timeout), so not a refusal: callers treat it as unreadable.
+                    raise SharePointRestError(f"could not reach SharePoint REST for {url}: {error!r}") from error
             if response.status_code == HTTPStatus.OK:
                 return response
             if response.status_code == HTTPStatus.UNAUTHORIZED:

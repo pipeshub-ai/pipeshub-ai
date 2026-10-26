@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
-import { screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
+import { act, screen, fireEvent, cleanup, waitFor, within } from '@testing-library/react';
 import '@/lib/__tests__/test-i18n';
 
 const api = vi.hoisted(() => ({
@@ -366,6 +366,17 @@ describe('ConnectorPanel: members and OAuth apps', () => {
 });
 
 describe('ConnectorPanel: editing saved credentials', () => {
+  const savedJiraConfig = () =>
+    api.getConnectorConfig.mockResolvedValue(
+      makeConfig({
+        config: {
+          auth: { values: { baseUrl: 'https://acme.atlassian.net', email: 'a@b.co', apiToken: 'old' } },
+          sync: {},
+          filters: {},
+        },
+      })
+    );
+
   it('saves changed credentials for an existing instance and moves on to Configure', async () => {
     api.getConnectorConfig.mockResolvedValue(
       makeConfig({
@@ -463,6 +474,46 @@ describe('ConnectorPanel: editing saved credentials', () => {
       expect((inputByLabel('API token') as HTMLInputElement).value).toBe('new-token');
       expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
     });
+
+    it('drops what was entered when the panel moves to another connector before confirming', async () => {
+      savedJira();
+      await startEdit({ isActive: true, isAuthenticated: false, isConfigured: false });
+      fillCredentials({ token: 'new-token' });
+      fireEvent.click(nextButton());
+      await screen.findByText('Connector is currently enabled');
+
+      act(() => {
+        const other = makeInstance({ _key: 'conn-2', name: 'Jira (Sales)', isActive: true });
+        useConnectorsStore.getState().closePanel();
+        useConnectorsStore.getState().openPanel(other, other._key, 'team');
+      });
+
+      await waitFor(() => expect(screen.queryByText('Connector is currently enabled')).toBeNull());
+      expect(api.toggleConnector).not.toHaveBeenCalled();
+      expect(api.saveAuthConfig).not.toHaveBeenCalled();
+    });
+  });
+
+  it('leaves the tab of a connector opened while the save ran', async () => {
+    savedJiraConfig();
+    let finishSave: (value: unknown) => void = () => {};
+    api.saveAuthConfig.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
+    await startEdit({ isAuthenticated: false, isConfigured: false });
+    fillCredentials({ token: 'new-token' });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', expect.anything()));
+
+    act(() => {
+      const other = makeInstance({ _key: 'conn-2', name: 'Jira (Sales)', isAuthenticated: false, isConfigured: false });
+      useConnectorsStore.getState().closePanel();
+      useConnectorsStore.getState().openPanel(other, other._key, 'team');
+    });
+    expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+    await act(async () => finishSave({}));
+
+    await waitFor(() => expect(api.getConnectorConfig).toHaveBeenCalledWith('conn-1'));
+    expect(useConnectorsStore.getState().panelConnectorId).toBe('conn-2');
+    expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
   });
 });
 

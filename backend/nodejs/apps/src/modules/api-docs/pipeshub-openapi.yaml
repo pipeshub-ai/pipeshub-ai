@@ -15833,6 +15833,11 @@ components:
                 nullable: true
                 enum: [authenticate]
                 description: Where in the connector panel it is done; authenticate opens the Authenticate tab
+              docsUrl:
+                type: string
+                format: uri
+                nullable: true
+                description: The setup steps for it, on the docs site
         config:
           $ref: '#/components/schemas/ConnectorSchema'
 
@@ -19219,6 +19224,16 @@ components:
         options:
           type: array
           items: {}
+        savedOnly:
+          type: boolean
+          description: >-
+            Shown only on an instance that already has a value saved for it, never on a new one: a way of
+            signing in kept for instances set up with it. Absent means false.
+        requiredUnlessSaved:
+          type: string
+          description: >-
+            Name of another field: this field is required, except on an instance that has a value saved for
+            that field. Absent means `required` alone applies.
     ConnectorRegistryEntry:
       type: object
       description: A connector type the org can add.
