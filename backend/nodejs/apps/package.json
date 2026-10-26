@@ -41,7 +41,7 @@
     "@types/multer": "^1.4.12",
     "@types/node": "^22.10.2",
     "@types/pg": "^8.23.1",
-    "@types/sinon": "^17.0.3",
+    "@types/sinon": "^22.0.1",
     "@types/slug": "^5.0.9",
     "@types/swagger-ui-express": "^4.1.8",
     "@typescript-eslint/eslint-plugin": "^8.72.0",
@@ -57,7 +57,7 @@
     "nock": "^14.0.11",
     "nodemon": "^3.1.14",
     "prettier": "^3.9.10",
-    "sinon": "^19.0.2",
+    "sinon": "^22.1.0",
     "ts-node": "^10.9.2",
     "typescript": "^5.7.2",
     "typescript-eslint": "^8.72.0"
