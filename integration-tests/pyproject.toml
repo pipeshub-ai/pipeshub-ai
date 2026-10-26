@@ -14,7 +14,7 @@ dependencies = [
   "pytest-xdist>=3.5.0",
   "filelock>=3.13.0",
   "bcrypt>=4.0.0",
-  "fastmcp==4.1.0",
+  "fastmcp==4.1.2",
   "psycopg[binary]>=3.1",
   "PyMySQL>=1.1",
   "pymongo>=4.5.0",
