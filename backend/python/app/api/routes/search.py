@@ -105,6 +105,18 @@ class SearchQuery(BaseModel):
 
 DEFAULT_RETRIEVE_LIMIT = 8
 MAX_RETRIEVE_LIMIT = 50
+# With maxChunksPerRecord set, a page of `limit` passages is often only a couple
+# of records (knowledge search keeps up to four each). Read this many times
+# `limit`, bounded, so the cap can fill the page from later records.
+RETRIEVE_CAP_OVERFETCH = 4
+MAX_RETRIEVE_CANDIDATES = 200
+
+
+def _retrieve_fetch_limit(limit: int, max_per_record: int | None) -> int:
+    """How many passages to read for a page of ``limit`` chunks."""
+    if max_per_record is None:
+        return limit
+    return min(limit * RETRIEVE_CAP_OVERFETCH, MAX_RETRIEVE_CANDIDATES)
 
 
 class RetrieveQuery(BaseModel):
@@ -628,6 +640,7 @@ async def retrieve(
     logger = container.logger()
     time_range = _search_time_range(body)
     user = request.state.user
+    fetch_limit = _retrieve_fetch_limit(body.limit, body.maxChunksPerRecord)
     try:
         async with call_scope(
             principal_from_request_user(user),
@@ -643,12 +656,12 @@ async def retrieve(
                 queries=queries,
                 org_id=user.get("orgId"),
                 user_id=user.get("userId"),
-                limit=body.limit,
+                limit=fetch_limit,
                 filter_groups=within_connection(body.filters, connection_limit(user)),
                 knowledge_search=True,
                 time_range=time_range,
             )
-            results = _apply_result_limit(results, body.limit, body.query)
+            results = _apply_result_limit(results, fetch_limit, body.query)
             await hide_record_parents_outside_connection(
                 request, graph_provider, user.get("orgId"), user.get("userId"), results,
             )
@@ -673,7 +686,7 @@ async def retrieve(
                     })
                 return JSONResponse(status_code=status_code, content={"message": results.get("message")})
             return JSONResponse(status_code=200, content={
-                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord),
+                "chunks": _retrieve_chunks(results, body.maxChunksPerRecord)[: body.limit],
                 "incomplete": bool(results.get("searchIncomplete")),
             })
     except HTTPException:

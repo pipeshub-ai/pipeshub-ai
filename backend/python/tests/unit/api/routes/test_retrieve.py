@@ -184,6 +184,22 @@ class TestRetrieve:
         assert [c["text"] for c in body["chunks"]] == ["the match"]
 
     @pytest.mark.asyncio
+    async def test_a_per_record_cap_fills_the_page_from_later_records(self) -> None:
+        # Two passages of r1 ahead of one of r2: limit 2 with a cap of 1 is one chunk each.
+        code, body, search, _ = await _retrieve(
+            RetrieveQuery(query="q", limit=2, maxChunksPerRecord=1),
+            _results(_hit("r1", 0, "a", 0.9), _hit("r1", 1, "b", 0.85), _hit("r2", 0, "c", 0.8)),
+        )
+        assert [c["record"]["recordId"] for c in body["chunks"]] == ["r1", "r2"]
+        # More candidates are read than the page holds, and no more than the bound.
+        assert search.call_args.kwargs["limit"] == 8
+
+    @pytest.mark.asyncio
+    async def test_without_a_cap_the_page_reads_only_limit(self) -> None:
+        _, _, search, _ = await _retrieve(RetrieveQuery(query="q", limit=3), _results(_hit("r1", 0, "a")))
+        assert search.call_args.kwargs["limit"] == 3
+
+    @pytest.mark.asyncio
     async def test_reports_an_incomplete_search(self) -> None:
         _, body, _, _ = await _retrieve(
             RetrieveQuery(query="q"), _results(_hit("r1", 0, "x"), searchIncomplete="some sources timed out"),
