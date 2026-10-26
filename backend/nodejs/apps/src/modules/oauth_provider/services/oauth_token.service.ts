@@ -3,6 +3,7 @@ import jwt, { Algorithm, Secret } from 'jsonwebtoken';
 import crypto from 'crypto';
 import { randomUUID } from 'crypto';
 import { Logger } from '../../../libs/services/logger.service';
+import { forOrg } from '../../../libs/context/orgContext';
 import {
   getOAuthTokenRepository,
   type AccessTokenDto,
@@ -834,7 +835,10 @@ export class OAuthTokenService {
     ) {
       return;
     }
-    await getOAuthTokenRepository().touchAccessLastUsed(token._id, new Date());
+    const touch = (): Promise<void> =>
+      getOAuthTokenRepository().touchAccessLastUsed(token._id, new Date());
+    // this runs after authentication, outside a request's org: PostgreSQL needs the token's
+    await (token.orgId ? forOrg(token.orgId, 'oauth.touch', touch) : touch());
   }
 
   /**

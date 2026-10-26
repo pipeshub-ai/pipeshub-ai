@@ -1,6 +1,7 @@
 import { injectable, inject } from 'inversify'
 import crypto from 'crypto'
 import { Logger } from '../../../libs/services/logger.service'
+import { forOrg } from '../../../libs/context/orgContext';
 import {
   DeviceGrantError,
   InvalidClientError,
@@ -240,7 +241,10 @@ export class OAuthDeviceService {
       throw new InvalidGrantError('device_code has already been used')
     }
 
-    return this.issueForApproval(app, claimed as ClaimedApproval);
+    // The approving person's organisation: what the grant reads and writes from here on belongs to it.
+    return forOrg(claimed.orgId, 'oauth.device', () =>
+      this.issueForApproval(app, claimed as ClaimedApproval),
+    );
   }
 
   private async issueForApproval(
