@@ -2811,7 +2811,7 @@ class TestRestrictionsWithoutTheAuditLog:
         api.on("GET", f"{V1}/content/10/restriction", read_restricted_to())
         await connector._sync_permission_changes_from_audit_log([ENG])
 
-        assert db.records["10"].access_rule != AccessRule.RESTRICTED
+        assert db.records["10"].access_rule == AccessRule.STRICT
         assert db.record_permissions["10"] == [] or all(p.email != "ana@acme.com" for p in db.record_permissions["10"])
 
     async def _refused_audit_log(self, api, connector) -> None:
