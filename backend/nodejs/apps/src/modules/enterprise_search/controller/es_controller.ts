@@ -2814,7 +2814,7 @@ const createShareConversationHandler =
 
       // Only users who did not already have access are told; re-sharing or a level change is not news.
       const alreadySharedIds = new Set(
-        (ownedConversation.sharedWith || []).map((share: any) =>
+        (ownedConversation.sharedWith || []).map((share) =>
           String(share.userId).toLowerCase(),
         ),
       );
