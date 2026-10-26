@@ -33,6 +33,7 @@ CREATE TABLE content.documents (
   upload_lease_token text,
   upload_lease_expires_at timestamptz,
   awaiting_direct_upload boolean,
+  artifact_set jsonb,                              -- {"virtualRecordId", "rev", "root"}: the row stands for one content revision of a virtual record; NULL for every other row
   version int NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,
@@ -47,6 +48,10 @@ BEGIN
     EXECUTE format('CREATE TABLE content.documents_h%2$s PARTITION OF content.documents_def FOR VALUES WITH (MODULUS 64, REMAINDER %1$s)', i, lpad(i::text, 2, '0'));
   END LOOP;
 END $$;
+
+-- Two presigns of one revision racing each other settle on one row; the first column also serves listing and purging a record's revisions.
+CREATE UNIQUE INDEX documents_artifact_set ON content.documents (org_id, (artifact_set->>'virtualRecordId'), (artifact_set->>'rev'))
+  WHERE artifact_set IS NOT NULL;
 
 CREATE INDEX documents_by_name ON content.documents (org_id, document_name);
 CREATE INDEX documents_by_path ON content.documents (org_id, document_path);

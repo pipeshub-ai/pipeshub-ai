@@ -29,7 +29,7 @@ export function unitsAreAtomic(rsAvailable: boolean): boolean {
 
 /** The newest revisions of each schema branch this code needs. */
 const CONVERSATION_EPOCH = 2;
-const CONTENT_EPOCH = 3;
+const CONTENT_EPOCH = 2;
 const PLATFORM_DATA_EPOCH = 1;
 
 /** The schema a process needs under `DOC_STORE=postgres`: the fence, and the tables of each repository that is not kept on Mongo. */
