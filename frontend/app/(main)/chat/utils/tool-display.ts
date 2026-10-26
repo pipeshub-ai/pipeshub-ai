@@ -60,6 +60,21 @@ export function isAskUserQuestionTool(toolName: string | undefined): boolean {
 }
 
 /**
+ * Splits a row's parts at its ask_user_question call so the timeline reads
+ * work → question card → work done after the answer. `appendResumeParts` keeps the
+ * first ask call and adds every resumed part after it, so the first ask is the boundary.
+ * Null when the row has no ask call.
+ */
+export function splitPartsAtQuestion(
+  parts: MessagePart[] | undefined,
+): { before: MessagePart[]; after: MessagePart[] } | null {
+  if (!parts) return null;
+  const askIndex = parts.findIndex((p) => p.type === 'tool_call' && isAskUserQuestionTool(p.toolName));
+  if (askIndex < 0) return null;
+  return { before: parts.slice(0, askIndex + 1), after: parts.slice(askIndex + 1) };
+}
+
+/**
  * A resumed reply's parts, added to the row it carries on.
  * - A call the row already has (the call an approval card stopped on, now settled) replaces it
  *   where it is, inside a sub-agent too, and keeps the card's details.

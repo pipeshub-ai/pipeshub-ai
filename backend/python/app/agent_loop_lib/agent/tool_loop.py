@@ -191,6 +191,19 @@ def _result_view(agent, call: ToolCall, tr: ToolResult) -> dict[str, Any] | None
     return view if isinstance(view, dict) else None
 
 
+def _result_failed(agent, call: ToolCall, tr: ToolResult) -> bool:
+    """Whether the step card shows the call as failed. A failure to decide leaves it as `tr` says."""
+    if tr.is_error:
+        return True
+    tool = _resolve_quietly(agent, call.name)
+    if tool is None:
+        return False
+    try:
+        return tool.result_failed(call.arguments, tr) is True
+    except Exception:
+        return False
+
+
 class _PendingApprovalHolder:
     """Shared by reference across a spawn tree (`inherit=True`): when any run in it leaves a call
     waiting for a person, every run above it ends its turn too, instead of carrying on without
@@ -466,11 +479,12 @@ async def execute_tool_call(
         return ToolCallOutcome(result=tr)
 
     if not _silent:
+        failed = _result_failed(agent, call, tr)
         result_event: dict[str, Any] = {
-            "tool": tr.name, "is_error": tr.is_error,
+            "tool": tr.name, "is_error": failed,
             "content": _result_preview(tr.content), "tool_call_id": call.id,
             "result_summary": _result_summary(agent, runtime, call, tr),
-            "status": ToolCallStatus.ERROR if tr.is_error else ToolCallStatus.SUCCESS,
+            "status": ToolCallStatus.ERROR if failed else ToolCallStatus.SUCCESS,
         }
         if tr.artifact_meta is not None:
             result_event["artifact_id"] = tr.artifact_meta.artifact_id

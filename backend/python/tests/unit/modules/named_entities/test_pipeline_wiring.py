@@ -9,6 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from app.models.blocks import BlocksContainer
 from app.models.entities import EntityType
 from app.modules.named_entities import stage
 from app.modules.named_entities.domain.kinds import EntityKind
@@ -457,7 +458,10 @@ async def test_an_extraction_never_touches_the_stored_record() -> None:
 
     io = GraphEntitiesIO(_view_job(), Deadline(30), **common)
     await io.current_record_ids(_view_job())
-    assert await io.save(_view_job(), ["rec-1"], _extraction()) == "written"
+    blocks = BlocksContainer(blocks=[], block_groups=[])
+    assert await io.save(_view_job(), ["rec-1"], _extraction(), blocks) == "written"
+    # The persist also dates a knowledge-base upload by its text, so it gets the blocks.
+    assert sink.persist_named_entities.await_args.args[0].record.block_containers is blocks
 
     blob.save_semantic_metadata.assert_not_awaited()
     assert stored["semantic_metadata"] is None
@@ -541,6 +545,16 @@ async def test_a_failed_persist_is_queued_for_retry_and_never_fails_indexing(sta
         graph.schedule_named_entity_persist_retry.assert_awaited_once_with("org-1", "rec-1", "persist_failed", 0)
     else:
         graph.schedule_named_entity_persist_retry.assert_not_awaited()
+
+
+@pytest.mark.parametrize(("stage_outcome", "dated"), [("written", True), ("failed", True), ("superseded", False)])
+async def test_a_superseded_persist_leaves_the_dates_to_the_newer_write(stage_outcome: str, dated: bool) -> None:
+    sink = _sink(MagicMock(schedule_named_entity_persist_retry=AsyncMock(return_value=1)))
+    with patch.object(stage, "persist_named_entities", AsyncMock(return_value=stage_outcome)), \
+            patch("app.services.featureflag.platform_settings.is_named_entity_extraction_enabled", AsyncMock(return_value=True)), \
+            patch.object(SinkOrchestrator, "_apply_content_dates", AsyncMock()) as apply_dates:
+        await sink.persist_named_entities(SimpleNamespace(record=_record()), _extraction())
+    assert apply_dates.await_count == (1 if dated else 0)
 
 
 async def test_a_retry_that_cannot_be_recorded_still_does_not_raise():

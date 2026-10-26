@@ -19,6 +19,7 @@ import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapab
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
+import { stripAnswerMarkers } from './utils/parse-download-markers';
 import { debugLog } from './debug-logger';
 import {
   loadHistoricalMessages,
@@ -232,14 +233,19 @@ function followRemoteRun(slotId: string, convId: string): void {
  * - New message: replaces the trailing placeholder assistant row, or drops
  *   it entirely if the stream was stopped before any tokens arrived (e.g.
  *   during "Thinking") — an empty "stopped" bubble is just noise.
+ *
+ * The committed text is model output, not a backend-saved answer, so its
+ * markers are stripped: once committed it renders as `persisted` and any
+ * marker left in it would become a card.
  */
 function buildStoppedMessages(
   messages: ThreadMessageLike[],
   regenerateMessageId: string | null,
-  streamingContent: string,
+  rawStreamingContent: string,
   pendingAskUserQuestion?: PendingAskUserQuestion | null,
   streamingAssistantId?: string | null,
 ): ThreadMessageLike[] {
+  const streamingContent = stripAnswerMarkers(rawStreamingContent);
   if (regenerateMessageId) {
     if (!streamingContent) return messages;
     return messages.map((m) =>
@@ -368,6 +374,30 @@ export function editWasNotTaken(error: unknown): boolean {
     error instanceof ChatStreamError ||
     (error instanceof StreamError && error.status !== undefined)
   );
+}
+
+/**
+ * Whether the answer row shows a question card the server asks again on a regenerate: one stored on
+ * it, or one waiting on the slot. A card closed by a typed reply is not one: that regenerate only
+ * redoes the reply to the typed message.
+ */
+function rowHasQuestionCard(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+  pending: PendingAskUserQuestion | null | undefined,
+): boolean {
+  const row = messages.find((m) => {
+    if (m.role !== 'assistant') return false;
+    const custom = m.metadata?.custom as { messageId?: string } | undefined;
+    return m.id === backendMessageId || custom?.messageId === backendMessageId;
+  });
+  if (!row) return false;
+  const custom = row.metadata?.custom as
+    | { persistedAskUserQuestion?: { repliedInChat?: boolean } }
+    | undefined;
+  const stored = custom?.persistedAskUserQuestion;
+  if (stored) return !stored.repliedInChat;
+  return pending?.assistantMessageId === row.id;
 }
 
 /** The answer row without the question card it asked, for a turn that is being asked again. */
@@ -1593,19 +1623,23 @@ export async function streamRegenerateForSlot(
   const editConvId = slot.convId;
   const preEditMessages = slot.messages;
   const preEditPending = slot.pendingAskUserQuestion;
-  const editedMessages = edit
+  // The server asks a card turn again from its first question (edited or not), so its old card
+  // and answers go: the new run asks afresh, and a kept card would swallow the new questions.
+  // Changed answers keep the card: the reply is re-run for them, and the card shows them meanwhile.
+  const turnIsAskedAgain =
+    !answers && (Boolean(edit) || rowHasQuestionCard(slot.messages, messageId, slot.pendingAskUserQuestion));
+  const editedMessages = turnIsAskedAgain
     ? withoutQuestionCard(
-        withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments),
+        edit ? withEditedQuestion(slot.messages, messageId, edit.query, edit.attachments) : slot.messages,
         messageId,
       )
     : slot.messages;
-  const questionWasEdited = Boolean(edit);
   /** A run that fails keeps the stored question and its card, so the screen must too. */
   const undoEditedQuestion = (): Partial<{
     messages: ThreadMessageLike[];
     pendingAskUserQuestion: PendingAskUserQuestion | null;
   }> =>
-    questionWasEdited
+    turnIsAskedAgain
       ? { messages: preEditMessages, pendingAskUserQuestion: preEditPending }
       : { pendingAskUserQuestion: preEditPending };
 
@@ -1657,7 +1691,7 @@ export async function streamRegenerateForSlot(
     runId: streamRunId,
     stopping: false,
     // The old card belongs to the old question; keeping it would stamp it on the new answer.
-    ...(questionWasEdited ? { messages: editedMessages, pendingAskUserQuestion: null } : {}),
+    ...(turnIsAskedAgain ? { messages: editedMessages, pendingAskUserQuestion: null } : {}),
   });
 
   debugLog.flush('regenerate-started', { slotId, messageId });
@@ -1918,7 +1952,7 @@ export async function streamRegenerateForSlot(
       }
       cancelPendingStatus();
       console.error('[streaming] Regenerate error for slot', slotId, error);
-      const dropped = questionWasEdited && !editWasNotTaken(error);
+      const dropped = turnIsAskedAgain && !editWasNotTaken(error);
       useChatStore.getState().updateSlot(slotId, {
         ...(dropped ? {} : undoEditedQuestion()),
         isStreaming: false,
@@ -2030,7 +2064,7 @@ export async function streamRegenerateForSlot(
     if (!aborted) {
       console.error('[streaming] Fatal regenerate error for slot', slotId, error);
     }
-    const dropped = questionWasEdited && !aborted && !editWasNotTaken(error);
+    const dropped = turnIsAskedAgain && !aborted && !editWasNotTaken(error);
     useChatStore.getState().updateSlot(slotId, {
       ...(dropped ? {} : undoEditedQuestion()),
       isStreaming: false,

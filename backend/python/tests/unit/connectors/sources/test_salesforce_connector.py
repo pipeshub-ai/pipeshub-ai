@@ -2,7 +2,7 @@
 
 import logging
 from datetime import datetime, timezone
-from collections.abc import Iterator
+from collections.abc import AsyncIterator, Iterator
 from typing import Any, Dict, List, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -3517,6 +3517,77 @@ class TestSyncPermissionsEdges:
         mock_tx.batch_create_edges.assert_awaited()
 
 
+class TestSyncPermissionsEdgesPartialReads:
+    """A failed per-user access read must not remove stored access (unknown is not empty)."""
+
+    def _connector(self, per_user) -> tuple[SalesforceConnector, MagicMock]:
+        connector = _make_connector()
+        connector._soql_query_paginated = _mock_pages([
+            {"Id": "sf-1", "Email": "alice@example.com"},
+            {"Id": "sf-2", "Email": "bob@example.com"},
+        ])
+        mock_tx = connector.data_entities_processor.data_store_provider.transaction.return_value
+        mock_tx.get_nodes_by_field_in = AsyncMock(side_effect=[
+            [{"externalRecordId": "opp-1", "id": "deal-1", "connectorId": "conn-sf-1"}],
+            [],
+            [{"email": "alice@example.com", "id": "u1"}, {"email": "bob@example.com", "id": "u2"}],
+        ])
+        mock_tx.delete_edges_to = AsyncMock(return_value=1)
+        mock_tx.batch_create_edges = AsyncMock()
+        connector._sync_permissions_for_user = AsyncMock(side_effect=per_user)
+        return connector, mock_tx
+
+    @pytest.mark.asyncio
+    async def test_a_user_whose_fetch_raised_keeps_all_stored_edges(self) -> None:
+        async def per_user(user, **_) -> list[tuple[str, str, str, bool]]:
+            if user["Id"] == "sf-2":
+                raise RuntimeError("503 from Salesforce")
+            return [("alice@example.com", "opp-1", "READER", False)]
+
+        connector, tx = self._connector(per_user)
+        await connector._sync_permissions_edges(api_version="59.0")
+        tx.delete_edges_to.assert_not_awaited()
+        tx.batch_create_edges.assert_awaited()  # alice's fresh edge is still added
+
+    @pytest.mark.asyncio
+    async def test_a_partial_read_flagged_by_the_collector_keeps_stored_edges(self) -> None:
+        async def per_user(user, incomplete=None, **_) -> list[tuple[str, str, str, bool]]:
+            if user["Id"] == "sf-2":
+                incomplete.add(user["Email"])  # a composite batch failed mid-way
+            return [("alice@example.com", "opp-1", "READER", False)]
+
+        connector, tx = self._connector(per_user)
+        await connector._sync_permissions_edges(api_version="59.0")
+        tx.delete_edges_to.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_complete_reads_still_replace_the_edges(self) -> None:
+        async def per_user(user, **_) -> list[tuple[str, str, str, bool]]:
+            return [("alice@example.com", "opp-1", "READER", False)]
+
+        connector, tx = self._connector(per_user)
+        await connector._sync_permissions_edges(api_version="59.0")
+        tx.delete_edges_to.assert_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_5xx_on_a_composite_batch_marks_the_user_incomplete(self) -> None:
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector.data_source.composite = AsyncMock(
+            return_value=MagicMock(success=False, data=None, error="503")
+        )
+        incomplete: set = set()
+        out = await connector._sync_permissions_for_user(
+            user={"Id": "005000000000001", "Email": "alice@example.com"},
+            salesforce_external_ids=["006000000000001"],
+            salesforce_record_group_external_ids=[],
+            api_version="59.0",
+            semaphore=__import__("asyncio").Semaphore(1),
+            incomplete=incomplete,
+        )
+        assert out == [] and incomplete == {"alice@example.com"}
+
+
 class TestSyncPermissionsEdgesDropsCachedAccess:
     """Rewriting the permission edges can take access away, so the search cache's
     access lists for the connector are dropped once the transaction has ended."""
@@ -6906,7 +6977,7 @@ class TestSyncPermissionsEdgesRemaining:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version):
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 if rid == opp_id:
                     yield (rid, user_email, "READER")
@@ -6948,7 +7019,7 @@ class TestSyncPermissionsForUserRemaining:
         acc_id = "001000000000001AAA"
         semaphore = __import__("asyncio").Semaphore(1)
 
-        async def _iter_access(user_id, user_email, record_ids, api_version):
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 yield (rid, user_email, "READER")
 
@@ -7518,7 +7589,7 @@ class TestSyncPermissionsEdgesUnknownAccess:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version):
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             for rid in record_ids:
                 if rid == opp_id:
                     yield (rid, user_email, "INVALID_LEVEL")
@@ -8385,7 +8456,7 @@ class TestFinalCoveragePush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version):
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             yield (opp_id, user_email, "READER")
 
         connector._iter_record_access = _iter_access
@@ -8409,7 +8480,7 @@ class TestFinalCoveragePush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version):
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             if record_ids and record_ids[0] == opp_id:
                 yield (opp_id, user_email, "READER")
 
@@ -8862,7 +8933,7 @@ class TestCoverageFinalPush:
         mock_tx.delete_edges_to = AsyncMock()
         mock_tx.batch_create_edges = AsyncMock()
 
-        async def _iter_access(user_id, user_email, record_ids, api_version):
+        async def _iter_access(user_id, user_email, record_ids, api_version, incomplete=None) -> AsyncIterator[tuple[str, str, str]]:
             yield ("006000000000099AAA", user_email, "READER")
 
         connector._iter_record_access = _iter_access

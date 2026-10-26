@@ -22,12 +22,25 @@ type Filter = Record<string, unknown>
 const valueAt = (row: Row, key: string): unknown =>
   key.split('.').reduce<any>((v, k) => (v == null ? undefined : v[k]), row)
 
+const setAt = (row: Row, key: string, value: unknown): void => {
+  const parts = key.split('.')
+  const last = parts.pop()!
+  const parent = parts.reduce<any>((v, k) => (v[k] ??= {}), row)
+  parent[last] = value
+}
+
 // Enough of Mongo's filter language for these queries: equality on dotted
-// paths, $or, $in, $exists, $eq and $ne.
+// paths, $or, $in, $exists, $eq, $ne, $lt and $lte.
 const matches = (row: Row, filter: Filter): boolean =>
   Object.entries(filter).every(([key, want]) => {
     if (key === '$or') return (want as Filter[]).some((branch) => matches(row, branch))
     const have = valueAt(row, key)
+    if (want !== null && typeof want === 'object' && '$lte' in want) {
+      return typeof have === 'number' && have <= (want as { $lte: number }).$lte
+    }
+    if (want !== null && typeof want === 'object' && '$lt' in want) {
+      return typeof have === 'number' && have < (want as { $lt: number }).$lt
+    }
     if (want !== null && typeof want === 'object' && '$in' in want) {
       return (want as { $in: unknown[] }).$in.map(String).includes(String(have))
     }
@@ -168,6 +181,24 @@ describe('StorageController artifact sets', () => {
       rows.push(doc)
       return doc
     }) as never)
+    sinon.stub(DocumentModel, 'findOneAndUpdate').callsFake(((filter: Filter, update: { $set: Row; $unset?: Row }) =>
+      query(() => {
+        const row = rows.find((r) => matches(r, filter))
+        if (!row) return null
+        for (const [key, value] of Object.entries(update.$set)) setAt(row, key, value)
+        for (const key of Object.keys(update.$unset ?? {})) {
+          const parts = key.split('.')
+          const last = parts.pop()!
+          const parent = parts.reduce<any>((v, k) => v?.[k], row)
+          if (parent) delete parent[last]
+        }
+        return row
+      })) as never)
+    sinon.stub(DocumentModel, 'updateOne').callsFake((async (filter: Filter, update: { $set: Row }) => {
+      const row = rows.find((r) => matches(r, filter))
+      if (row) for (const [key, value] of Object.entries(update.$set)) setAt(row, key, value)
+      return { matchedCount: row ? 1 : 0 }
+    }) as never)
     sinon.stub(DocumentModel, 'deleteOne').callsFake(((filter: Filter) => {
       rows = rows.filter((r) => !matches(r, filter))
       return Promise.resolve({})
@@ -188,6 +219,7 @@ describe('StorageController artifact sets', () => {
       expect(res.statusCode).to.equal(0)
       expect((DocumentModel.create as sinon.SinonStub).called).to.be.false
       expect((DocumentModel.findOne as sinon.SinonStub).called).to.be.false
+      expect((DocumentModel.findOneAndUpdate as sinon.SinonStub).called).to.be.false
       expect(adapter.signObjectUrl.called).to.be.false
       expect(rows).to.have.length(0)
     })
@@ -255,8 +287,9 @@ describe('StorageController artifact sets', () => {
 
     it('settles on the document a racing presign created when the unique index refuses a second', async () => {
       const winner = artifactRow()
-      const findOne = DocumentModel.findOne as sinon.SinonStub
-      findOne.onFirstCall().callsFake(() => query(() => null))
+      // The first look finds nothing: the racing presign has not created it yet.
+      ;(DocumentModel.findOneAndUpdate as sinon.SinonStub).onFirstCall().callsFake(() => query(() => null))
+      ;(DocumentModel.findOne as sinon.SinonStub).onFirstCall().callsFake(() => query(() => null))
       ;(DocumentModel.create as sinon.SinonStub).callsFake(async () => {
         throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 })
       })
@@ -517,6 +550,218 @@ describe('StorageController artifact sets', () => {
     })
   })
 
+  describe('a revision written again while a delete runs', () => {
+    let clock: sinon.SinonFakeTimers
+    const T = 1_000_000_000_000
+    const MIN = 60_000
+    beforeEach(() => {
+      clock = sinon.useFakeTimers({ now: T, toFake: ['Date'] })
+    })
+    afterEach(() => clock.restore())
+
+    const purge = (doc: Row, ifUnchangedSince?: number) =>
+      run('purgeArtifactSet', request({
+        params: { documentId: String(doc._id) },
+        query: ifUnchangedSince === undefined ? {} : { ifUnchangedSince },
+      }))
+
+    it('presign of an existing revision moves its write stamp, without a timestamps bump of its own', async () => {
+      const doc = artifactRow({ createdAt: 5, updatedAt: 5 })
+
+      const { res, error } = await run('presignArtifactSet', request({ body: presignBody() }))
+
+      expect(error).to.be.undefined
+      expect(res.body.documentId).to.equal(String(doc._id))
+      expect(doc.updatedAt).to.equal(T)
+      const [, update, options] = (DocumentModel.findOneAndUpdate as sinon.SinonStub).firstCall.args
+      expect(update).to.deep.equal({ $set: { updatedAt: T }, $unset: { 'artifactSet.retiringAt': 1 } })
+      expect(options).to.include({ timestamps: false })
+    })
+
+    it('takes back a revision whose delete died past the stale bound: claim cleared and stamp moved together', async () => {
+      const doc = artifactRow({ updatedAt: 5, artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: T - 16 * MIN } })
+
+      const { res, error } = await run('presignArtifactSet', request({ body: presignBody() }))
+
+      expect(error).to.be.undefined
+      expect(res.body.documentId).to.equal(String(doc._id))
+      expect(doc.artifactSet.retiringAt).to.be.undefined
+      expect(doc.updatedAt).to.equal(T)
+      expect((DocumentModel.findOneAndUpdate as sinon.SinonStub).callCount).to.equal(1)
+    })
+
+    it('a delete whose claim was taken back (its renewal missed) keeps the document and says lost, not changed', async () => {
+      const doc = artifactRow({ createdAt: 5, updatedAt: 5 })
+      let presigned: { res: any; error: unknown } | undefined
+      adapter.deleteTree.callsFake(async () => {
+        clock.tick(16 * MIN)
+        presigned = await run('presignArtifactSet', request({ body: presignBody() }))
+        return { statusCode: 200 }
+      })
+
+      const { res } = await purge(doc, 5)
+
+      expect(presigned!.error).to.be.undefined
+      expect(res.statusCode).to.equal(409)
+      // The files may be gone: never "nothing was removed".
+      expect(res.body).to.deep.equal({ purged: 0, reason: 'lost' })
+      expect(rows).to.deep.equal([doc])
+      expect(doc.artifactSet.retiringAt).to.be.undefined
+    })
+
+    it('a delete that runs past the stale bound keeps its claim alive, so a writer is refused and the delete finishes', async () => {
+      clock.restore()
+      clock = sinon.useFakeTimers({ now: T, toFake: ['Date', 'setInterval', 'clearInterval'] })
+      const doc = artifactRow({ createdAt: 5, updatedAt: 5 })
+      let presigned: { res: any; error: unknown } | undefined
+      adapter.deleteTree.callsFake(async () => {
+        // 20 minutes of a slow tree delete, a writer arriving after each 4
+        for (let i = 0; i < 5; i += 1) {
+          await clock.tickAsync(4 * MIN)
+          presigned = await run('presignArtifactSet', request({ body: presignBody() }))
+          expect(presigned.error, `after ${String((i + 1) * 4)} min`).to.be.instanceOf(ConflictError)
+        }
+        return { statusCode: 200 }
+      })
+
+      const { res } = await purge(doc, 5)
+
+      expect(res.statusCode).to.equal(200)
+      expect(res.body).to.deep.equal({ purged: 1 })
+      expect(rows).to.deep.equal([])
+    })
+
+    it('refuses to presign a revision a delete has claimed, with 409 and no URLs', async () => {
+      const doc = artifactRow({ artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: T - MIN } })
+
+      const { res, error } = await run('presignArtifactSet', request({ body: presignBody() }))
+
+      expect(error).to.be.instanceOf(ConflictError)
+      expect(res.statusCode).to.equal(0)
+      expect(adapter.signObjectUrl.called).to.be.false
+      expect((DocumentModel.create as sinon.SinonStub).called).to.be.false
+      expect(doc.updatedAt).to.equal(1)
+    })
+
+    it('refuses a racing presign whose winner a delete has already claimed', async () => {
+      artifactRow({ artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: T } })
+      ;(DocumentModel.findOne as sinon.SinonStub).onFirstCall().callsFake(() => query(() => null))
+      ;(DocumentModel.create as sinon.SinonStub).callsFake(async () => {
+        throw Object.assign(new Error('E11000 duplicate key'), { code: 11000 })
+      })
+
+      const { error } = await run('presignArtifactSet', request({ body: presignBody() }))
+
+      expect(error).to.be.instanceOf(ConflictError)
+      expect(adapter.signObjectUrl.called).to.be.false
+    })
+
+    it('keeps a revision written after the stamp the caller listed: 409 changed, nothing deleted', async () => {
+      const doc = artifactRow({ createdAt: 5, updatedAt: 5 })
+      await run('presignArtifactSet', request({ body: presignBody() }))
+
+      const { res, error } = await purge(doc, 5)
+
+      expect(error).to.be.undefined
+      expect(res.statusCode).to.equal(409)
+      expect(res.body).to.deep.equal({ purged: 0, reason: 'changed' })
+      expect(adapter.deleteTree.called).to.be.false
+      expect(rows).to.deep.equal([doc])
+      expect(doc.artifactSet.retiringAt).to.be.undefined
+    })
+
+    it('deletes tree and document when the stamp still matches, claiming first', async () => {
+      const doc = artifactRow({ createdAt: 5, updatedAt: 5 })
+      adapter.deleteTree.callsFake(async () => {
+        expect(rows[0]!.artifactSet.retiringAt).to.equal(T)
+        return { statusCode: 200 }
+      })
+
+      const { res } = await purge(doc, 5)
+
+      expect(res.statusCode).to.equal(200)
+      expect(res.body).to.deep.equal({ purged: 1 })
+      expect(adapter.deleteTree.getCalls().map((c) => c.args[0])).to.deep.equal([root()])
+      expect(rows).to.deep.equal([])
+      const [, , options] = (DocumentModel.findOneAndUpdate as sinon.SinonStub).firstCall.args
+      expect(options).to.include({ timestamps: false })
+    })
+
+    it('a presign after the claim is refused, so the delete never removes what it handed out', async () => {
+      const doc = artifactRow({ createdAt: 5, updatedAt: 5 })
+      let presigned: { res: any; error: unknown } | undefined
+      adapter.deleteTree.callsFake(async () => {
+        presigned = await run('presignArtifactSet', request({ body: presignBody() }))
+        return { statusCode: 200 }
+      })
+
+      await purge(doc, 5)
+
+      expect(presigned!.error).to.be.instanceOf(ConflictError)
+      expect(adapter.signObjectUrl.called).to.be.false
+    })
+
+    it('leaves a revision another delete claimed recently: 409, nothing deleted', async () => {
+      const doc = artifactRow({ updatedAt: 5, artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: T - MIN } })
+
+      const { res } = await purge(doc, 5)
+
+      expect(res.statusCode).to.equal(409)
+      expect(adapter.deleteTree.called).to.be.false
+      expect(rows).to.deep.equal([doc])
+    })
+
+    it('re-claims and finishes a revision whose delete died after its claim', async () => {
+      const doc = artifactRow({ updatedAt: 5, artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: T - 16 * MIN } })
+
+      const { res } = await purge(doc, 5)
+
+      expect(res.body).to.deep.equal({ purged: 1 })
+      expect(rows).to.deep.equal([])
+    })
+
+    it('leaves the claim when the tree cannot be removed, so presign keeps refusing until a retry', async () => {
+      const doc = artifactRow({ updatedAt: 5 })
+      adapter.deleteTree.rejects(new Error('storage down'))
+
+      const { error } = await purge(doc, 5)
+      const presign = await run('presignArtifactSet', request({ body: presignBody() }))
+
+      expect(error).to.be.instanceOf(ServiceUnavailableError)
+      expect(doc.artifactSet.retiringAt).to.equal(T)
+      expect(doc.updatedAt).to.equal(5)
+      expect(presign.error).to.be.instanceOf(ConflictError)
+    })
+
+    it('answers purged 0 for a revision already gone, with or without the stamp', async () => {
+      const gone = { _id: new mongoose.Types.ObjectId() }
+
+      expect((await purge(gone, 5)).res.body).to.deep.equal({ purged: 0 })
+      expect((await purge(gone)).res.body).to.deep.equal({ purged: 0 })
+    })
+
+    it('without the stamp deletes whatever its write time or claim, and still claims first', async () => {
+      const doc = artifactRow({ updatedAt: T, artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: T - MIN } })
+      adapter.deleteTree.callsFake(async () => {
+        expect(rows[0]!.artifactSet.retiringAt).to.equal(T)
+        return { statusCode: 200 }
+      })
+
+      const { res } = await purge(doc)
+
+      expect(res.body).to.deep.equal({ purged: 1 })
+      expect(rows).to.deep.equal([])
+    })
+
+    it('lists the write stamp and a claim', async () => {
+      artifactRow({ createdAt: 3, updatedAt: 7, artifactSet: { virtualRecordId: VRID, rev: REV, root: root(), retiringAt: 9 } })
+
+      const { res } = await run('listArtifactSets', request({ query: { virtualRecordId: VRID } }))
+
+      expect(res.body.revisions[0]).to.include({ createdAt: 3, updatedAt: 7, retiringAt: 9 })
+    })
+  })
+
   describe('purgeVirtualRecordDocuments', () => {
     it('removes every revision of the record, tree and document, and leaves other records alone', async () => {
       artifactRow()
@@ -568,6 +813,7 @@ describe('StorageController artifact sets', () => {
           storageVendor: StorageVendor.S3,
           createdAt: 10,
           updatedAt: 11,
+          deleteFence: true,
         }],
       })
     })

@@ -34,6 +34,7 @@ class _IO:
         self.outcome = "written"
         self.save_error: BaseException | None = None
         self.saved: list[list[str]] = []
+        self.saved_blocks: list[BlocksContainer] = []
 
     @property
     def policy(self) -> PipelinePolicy:
@@ -58,10 +59,13 @@ class _IO:
     async def extract(self, job: StageJob, blocks: BlocksContainer) -> NamedEntityExtraction:
         return self.extraction
 
-    async def save(self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction) -> str:
+    async def save(
+        self, job: StageJob, record_ids: list[str], extraction: NamedEntityExtraction, blocks: BlocksContainer,
+    ) -> str:
         if self.save_error is not None:
             raise self.save_error
         self.saved.append(record_ids)
+        self.saved_blocks.append(blocks)
         return self.outcome
 
 
@@ -96,6 +100,14 @@ async def test_a_completed_run_keeps_the_extraction_as_output() -> None:
     result = await EntitiesStage().run(_job(), io)
     assert result.outcome is StageOutcome.COMPLETED and io.saved == [["rec-1"]]
     assert NamedEntityExtraction.model_validate_json(result.output or "").status == "COMPLETED"
+
+
+@pytest.mark.asyncio
+async def test_the_entities_are_saved_with_the_blocks_they_came_from() -> None:
+    # The persist also dates a knowledge-base upload by what its text states.
+    io = _IO()
+    await EntitiesStage().run(_job(), io)
+    assert io.saved_blocks == [io.blocks]
 
 
 @pytest.mark.asyncio

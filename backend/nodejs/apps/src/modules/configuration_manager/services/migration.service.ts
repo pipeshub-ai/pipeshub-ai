@@ -18,6 +18,7 @@ import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
 import { UserGroupNameIndexMigration } from './migrations/user_group_name_index.migration';
 import { SignInMethodsRemovalMigration } from './migrations/sign_in_methods_removal.migration';
 import { DelegationLogRetentionMigration } from './migrations/delegation_log_retention.migration';
+import { ServiceAccountKindBackfillMigration } from './migrations/service_account_kind_backfill.migration';
 import { Org } from '../../user_management/schema/org.schema';
 
 const DEFAULT_CHAT_SESSIONS_MIGRATION_BATCH_SIZE = 10;
@@ -45,7 +46,13 @@ export class MigrationService {
   async runMigration(deps: MigrationDependencies): Promise<void> {
     this.logger.info('Running migration...');
     // await this.aiModelsMigration();  NO LONGER NEEDED
-    // First: until it runs, a policy may still name a removed sign-in method.
+    // Before the two below, which wait on the connector service. This one has
+    // nothing to wait for — it reads Mongo and writes one key — and the
+    // connector service reads that key during its own startup, so staging
+    // after a wait that the connector service itself has to finish would
+    // always miss the boot that introduced it.
+    await this.serviceAccountKindBackfillMigration();
+    // Until it runs, a policy may still name a removed sign-in method.
     await this.signInMethodsRemovalMigration();
     await this.connectorSyncScheduleMigration(deps.scheduler, deps.appConfig);
     await this.chatKbFiltersMigration();
@@ -55,6 +62,28 @@ export class MigrationService {
     await this.delegationLogRetentionMigration();
     await this.documentOrgIdMigration();
     this.logger.info('✅ Migration completed');
+  }
+
+  async serviceAccountKindBackfillMigration(): Promise<void> {
+    try {
+      const result = await new ServiceAccountKindBackfillMigration(
+        this.logger,
+        this.keyValueStoreService,
+        this.configManagerConfig.algorithm,
+        this.configManagerConfig.secretKey,
+      ).run();
+
+      if (result.skipped) return;
+
+      this.logger.info(
+        '✅ Service accounts staged for the connector service to mark in the graph',
+        result,
+      );
+    } catch (error) {
+      this.logger.error('Service-account kind backfill failed', {
+        error: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
   }
 
   async adminRoleMigration(): Promise<void> {

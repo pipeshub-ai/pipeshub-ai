@@ -3,7 +3,6 @@ from typing import Optional
 import httpx  # type: ignore
 
 from app.sources.client.http.http_request import HTTPRequest
-from app.sources.client.http.http_resilient_transport import ResilientHTTPTransport
 from app.sources.client.http.http_response import HTTPResponse
 from app.sources.client.iclient import IClient
 from app.sources.client.resilience import ResiliencePolicy
@@ -40,8 +39,9 @@ class HTTPClient(IClient):
         return self
 
     def require_public_addresses(self) -> None:
-        """Send requests only to public addresses, each connected to the address that was
-        checked (see `public_only`). For an address a user chose; call before the first request."""
+        """Send requests only to public addresses, not private ones either (see `address_guard`).
+        For an address a user chose that the deployment's network must not see, such as a
+        personal action's; call before the first request."""
         if self.client is not None:
             raise RuntimeError("require_public_addresses() must be called before the first request")
         self._public_only = True
@@ -49,23 +49,16 @@ class HTTPClient(IClient):
     async def _ensure_client(self) -> httpx.AsyncClient:
         """Ensure client is created and available"""
         if self.client is None:
-            kwargs = {
-                "timeout": self.timeout,
-                "follow_redirects": self.follow_redirects,
-                "headers": self.headers,
-            }
-            if self.resilience is not None:
-                kwargs["transport"] = ResilientHTTPTransport(self.resilience)
-            # getattr: a subclass that skips HTTPClient.__init__ has no flag, and isn't public-only.
-            if getattr(self, "_public_only", False):
-                from app.sources.client.http.public_only import PublicOnlyTransport
+            from app.sources.client.http.address_guard import guarded_async_client
 
-                # shortcut: a resilient inner transport connects without the environment proxy;
-                # no public-only client uses resilience today. Give it the proxy when one does.
-                kwargs["transport"] = PublicOnlyTransport(inner=kwargs.get("transport"))
-                # The guard applies the environment proxy itself; httpx's own would route around it.
-                kwargs["trust_env"] = False
-            self.client = httpx.AsyncClient(**kwargs)
+            # getattr: a subclass that skips HTTPClient.__init__ has no flag, and isn't public-only.
+            self.client = guarded_async_client(
+                allow_private=False if getattr(self, "_public_only", False) else None,
+                resilience=self.resilience,
+                timeout=self.timeout,
+                follow_redirects=self.follow_redirects,
+                headers=self.headers,
+            )
         return self.client
 
     async def execute(self, request: HTTPRequest, **kwargs) -> HTTPResponse:

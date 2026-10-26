@@ -6,6 +6,7 @@ import sys
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from fastapi import BackgroundTasks
 
 # ---------------------------------------------------------------------------
 # Module-level mocking to handle missing optional dependencies.
@@ -413,6 +414,43 @@ class TestBackpressureResponse:
 class TestParsePdfEndpoint:
     """Tests for the /parse-pdf endpoint (multipart file upload)."""
 
+    def test_heap_is_trimmed_once_the_response_is_sent(self) -> None:
+        from fastapi.testclient import TestClient
+
+        import app.services.docling.docling_service as mod
+        original = mod.docling_service
+        svc = DoclingService()
+        mock_doc = MagicMock()
+        mock_doc.model_dump_json.return_value = '{"pages": []}'
+        svc.parse_pdf_only = AsyncMock(return_value=mock_doc)
+        mod.docling_service = svc
+        try:
+            with patch.object(mod, "release_freed_memory") as trim:
+                resp = TestClient(mod.app).post(
+                    "/parse-pdf",
+                    files={"file": ("a.pdf", b"%PDF-1.4", "application/pdf")},
+                    data={"record_name": "a.pdf"},
+                )
+            assert resp.status_code == 200
+            trim.assert_called_once_with()
+        finally:
+            mod.docling_service = original
+
+    @pytest.mark.asyncio
+    async def test_a_refused_request_also_schedules_the_trim(self) -> None:
+        import app.services.docling.docling_service as mod
+        background_tasks = BackgroundTasks()
+        with patch.object(mod, "_acquire_docling_gate", new_callable=AsyncMock, return_value=(False, 0)):
+            resp = await mod.parse_pdf_endpoint(
+                background_tasks=background_tasks,
+                file=_make_upload_file(b"data"),
+                record_name="test.pdf",
+                start_page=None,
+                end_page=None,
+            )
+        assert resp.status_code == 429
+        assert [t.func for t in background_tasks.tasks] == [mod.release_freed_memory]
+
     @pytest.mark.asyncio
     async def test_parse_pdf_endpoint_backpressured_returns_429(self):
         import app.services.docling.docling_service as mod
@@ -428,6 +466,7 @@ class TestParsePdfEndpoint:
             ):
                 from app.services.docling.docling_service import parse_pdf_endpoint
                 resp = await parse_pdf_endpoint(
+                    background_tasks=BackgroundTasks(),
                     file=_make_upload_file(b"data"),
                     record_name="test.pdf",
                     start_page=None,
@@ -448,6 +487,7 @@ class TestParsePdfEndpoint:
             from fastapi import HTTPException
             with pytest.raises(HTTPException):
                 await parse_pdf_endpoint(
+                    background_tasks=BackgroundTasks(),
                     file=_make_upload_file(b"data"),
                     record_name="test.pdf",
                     start_page=None,
@@ -468,6 +508,7 @@ class TestParsePdfEndpoint:
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
             resp = await parse_pdf_endpoint(
+                background_tasks=BackgroundTasks(),
                 file=_make_upload_file(b"data"),
                 record_name="test.pdf",
                 start_page=None,
@@ -492,6 +533,7 @@ class TestParsePdfEndpoint:
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
             resp = await parse_pdf_endpoint(
+                background_tasks=BackgroundTasks(),
                 file=_make_upload_file(b"data"),
                 record_name="test.pdf",
                 start_page=5,
@@ -514,6 +556,7 @@ class TestParsePdfEndpoint:
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
             resp = await parse_pdf_endpoint(
+                background_tasks=BackgroundTasks(),
                 file=_make_upload_file(b"data"),
                 record_name="test.pdf",
                 start_page=None,
@@ -539,6 +582,7 @@ class TestParsePdfEndpoint:
         try:
             from app.services.docling.docling_service import parse_pdf_endpoint
             resp = await parse_pdf_endpoint(
+                background_tasks=BackgroundTasks(),
                 file=_make_upload_file(b"data"),
                 record_name="test.pdf",
                 start_page=None,
@@ -574,6 +618,7 @@ class TestParsePdfEndpoint:
             ):
                 from app.services.docling.docling_service import parse_pdf_endpoint
                 resp = await parse_pdf_endpoint(
+                    background_tasks=BackgroundTasks(),
                     file=_make_upload_file(b"data"),
                     record_name="test.pdf",
                     start_page=None,

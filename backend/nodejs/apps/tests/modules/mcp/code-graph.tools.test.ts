@@ -5,7 +5,7 @@ import { z } from 'zod'
 import {
   CODE_GRAPH_TOOL_NAMES,
   callerHasCodeRepos,
-  registerCodeGraphTools,
+  registerCodeGraphToolDefinitions,
   ToolRegistrar,
 } from '../../../src/modules/mcp/code-graph.tools'
 
@@ -16,7 +16,7 @@ function register(): Map<string, Registered> {
   const server: ToolRegistrar = {
     registerTool: (name, config, handler) => { tools.set(name, { config, handler }) },
   }
-  registerCodeGraphTools(server, {
+  registerCodeGraphToolDefinitions(server, {
     aiBackend: 'http://query:8000',
     authorization: 'Bearer caller-token',
   })

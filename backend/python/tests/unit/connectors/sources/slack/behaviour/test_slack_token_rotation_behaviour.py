@@ -32,6 +32,7 @@ from slack_behaviour_setup import (
     workspace_connector,
 )
 
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.base.token_service import oauth_service, token_refresh_service
 from app.connectors.core.base.token_service.startup_service import startup_service
 from app.connectors.core.base.token_service.token_refresh_service import (
@@ -464,8 +465,10 @@ class TestTokensThatDoNotRotate:
         connector, _ = await workspace_connector(store, checkpoints, workspace_config(token=BOT_TOKEN))
         workspace.expired_tokens.add(BOT_TOKEN)
 
-        assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(ConnectorInitError):
+            await connector.test_connection_and_access()
+        with pytest.raises(ConnectorInitError):
+            await connector.run_sync()
 
         assert oauth.requests == []
 
@@ -479,8 +482,10 @@ class TestTokensThatDoNotRotate:
         workspace.expired_tokens.add(pasted)
         capture_logs(caplog)
 
-        assert await connector.test_connection_and_access() is False
-        await connector.run_sync()
+        with pytest.raises(ConnectorInitError, match="token rotation"):
+            await connector.test_connection_and_access()
+        with pytest.raises(ConnectorInitError, match="token rotation"):
+            await connector.run_sync()
 
         assert oauth.requests == []
         explained = [r for r in caplog.records if "token rotation" in r.getMessage()]

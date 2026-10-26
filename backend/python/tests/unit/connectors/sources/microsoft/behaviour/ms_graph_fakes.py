@@ -249,8 +249,10 @@ class RecordingNotifications:
     def __init__(self) -> None:
         self.sent: list[dict[str, Any]] = []
 
-    async def publish_notification(self, **kwargs: object) -> None:
+    async def publish_notification(self, **kwargs: object) -> bool:
+        """Like the real service: True when the broker took it."""
         self.sent.append(kwargs)
+        return True
 
 
 
@@ -273,6 +275,7 @@ class FakeRecordsDb:
         self.app_users: list[Any] = []
         self.active_users: list[Any] = []
         self.user_groups: dict[str, list[Any]] = {}
+        self.kept_user_groups: list[str] = []
         self.user_group_writes: list[tuple[Any, list[Any]]] = []
         self.fail_group_write: set[str] = set()
         self.deleted_groups: list[str] = []
@@ -284,6 +287,9 @@ class FakeRecordsDb:
         self.content_updates: list[Any] = []
         self.permission_updates: list[tuple[Any, list[Any]]] = []
         self.reindexed: list[Any] = []
+        # Per record, whether it has an inherit edge, as the last write left it. Every write
+        # sets it from the record passed, including a permission update, as the processor does.
+        self.inherit_edges: dict[str, bool] = {}
         # The store the processor reads stored edges from (the connector's data store provider).
         self.edge_store: Any = None
 
@@ -355,10 +361,12 @@ class FakeRecordsDb:
         for record, permissions in records_with_permissions:
             self.records[record.external_record_id] = record
             self.record_permissions[record.external_record_id] = list(permissions)
+            self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def on_record_metadata_update(self, record: Record) -> None:
         self.metadata_updates.append(record)
         self.records[record.external_record_id] = record
+        self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def on_record_content_update(self, record: Record) -> None:
         self.content_updates.append(record)
@@ -367,6 +375,7 @@ class FakeRecordsDb:
     async def on_updated_record_permissions(self, record: Record, permissions: list[Any]) -> None:
         self.permission_updates.append((record, list(permissions)))
         self.record_permissions[record.external_record_id] = list(permissions)
+        self.inherit_edges[record.external_record_id] = bool(record.inherit_permissions)
 
     async def inheritance_when_unreadable(self, collection: str, stored_id: str | None) -> bool:
         """Whether the stored node has an inherit edge, read from the edge store as the processor
@@ -442,6 +451,17 @@ class FakeRecordsDb:
 
     async def get_all_active_users(self) -> list[Any]:
         return list(self.active_users)
+
+    async def note_kept_user_group(self, connector_id: str, external_group_id: str) -> None:
+        self.kept_user_groups.append(external_group_id)
+
+    async def get_all_user_groups(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        from types import SimpleNamespace
+
+        return [SimpleNamespace(source_user_group_id=k) for k in self.user_groups]
+
+    def note_kept_user_groups(self, connector_id: str, groups: list[Any]) -> None:
+        self.kept_user_groups.extend(g.source_user_group_id for g in groups)
 
     async def on_new_user_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         # Like the real processor: a write that fails raises, and none of the batch is saved.

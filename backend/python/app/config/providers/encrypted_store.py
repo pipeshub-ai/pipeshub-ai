@@ -107,6 +107,10 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
 
         if store_type_str == "redis":
             return self._create_redis_store(serialize, deserialize)
+        elif store_type_str == "postgres":
+            return KeyValueStoreFactory.create_store(
+                store_type=StoreType.POSTGRES, serializer=serialize, deserializer=deserialize, config=StoreConfig(host="", port=0),
+            )
         else:
             return self._create_etcd_store(serialize, deserialize)
 
@@ -266,7 +270,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                     return self._decode_value(key, encrypted_value)
                 except Exception as e:
                     self.logger.error(
-                        f"Failed to process value for key {key}: {str(e)}"
+                        "Failed to process value for key %s: %s", key, type(e).__name__
                     )
                     # A value came back and could not be read: not the same as
                     # no value, so a caller that asked must not see None.
@@ -278,8 +282,7 @@ class EncryptedKeyValueStore(KeyValueStore[T], Generic[T]):
                 return None
 
         except Exception as e:
-            self.logger.error("Failed to get config %s: %s", key, str(e))
-            self.logger.exception("Detailed error:")
+            self.logger.error("Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             return None

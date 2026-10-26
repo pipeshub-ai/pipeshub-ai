@@ -21,6 +21,7 @@ from app.connectors.sources.linear.api_gateway import (
 )
 from app.connectors.sources.linear.connector import (
     MAX_INLINE_IMAGE_BYTES,
+    PROJECTS_CHECKPOINT_KEY,
     LinearConnector,
     file_record_id,
     link_destination,
@@ -671,6 +672,31 @@ class TestIssueToRecords:
         assert len(records) == 1
         datasource.execute_operation.assert_not_awaited()
 
+    @pytest.mark.asyncio
+    async def test_an_issue_listed_again_unchanged_is_not_counted_as_refreshed(self) -> None:
+        connector = _make_connector()
+        updated = connector._parse_linear_datetime(_issue()["updatedAt"])
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_ticket(source_updated_at=updated))
+
+        records = await connector._issue_to_records(_issue(), "team-1")
+
+        # Stored again at the same version, so it is not re-indexed: a comment
+        # written since must still reach it through the comment-activity pass.
+        assert records[0][0].version == 1
+        assert "issue-1" not in connector._refreshed_issue_ids
+
+    @pytest.mark.asyncio
+    async def test_an_issue_that_changed_is_counted_as_refreshed(self) -> None:
+        connector = _make_connector()
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            return_value=_ticket(source_updated_at=1))
+
+        records = await connector._issue_to_records(_issue(), "team-1")
+
+        assert records[0][0].version == 2
+        assert "issue-1" in connector._refreshed_issue_ids
+
 
 # ---------------------------------------------------------------------------
 # Comment activity
@@ -741,7 +767,8 @@ class TestCommentActivity:
         async def project_to_records(project_id, scope, *args) -> list:
             if project_id == "proj-new":
                 return []  # not in a synced team
-            return [(MagicMock(id=f"child-of-{project_id}"), []), (MagicMock(id=f"fresh-{project_id}"), [])]
+            # As _project_to_records returns them: the project, then its children.
+            return [(MagicMock(id=f"fresh-{project_id}"), []), (MagicMock(id=f"child-of-{project_id}"), [])]
 
         connector._project_to_records = AsyncMock(side_effect=project_to_records)
 
@@ -763,10 +790,60 @@ class TestCommentActivity:
         assert processor.on_new_records.await_count == 5
         # Only what was already indexed needs re-indexing: a new record is indexed
         # anyway, a placeholder has no content, and for a project it is the project
-        # record (the last one) that carries the discussion.
+        # record (the first one) that carries the discussion.
         reindexed = [c.args[0].id for c in processor.on_record_content_update.await_args_list]
         assert reindexed == ["fresh-issue-known", "fresh-proj-known"]
         assert connector.issues_sync_point.store["comment_activity"]["last_sync_time"] == NOW
+
+    @pytest.mark.asyncio
+    async def test_a_comment_on_an_issue_the_listing_returned_unchanged_is_reindexed(self) -> None:
+        # The nightly case: the issue listing's overlap window returns the issue
+        # again, unchanged, in the same run as a new comment on it.
+        connector = _make_connector()
+        connector.issues_sync_point.store["comment_activity"] = {"last_sync_time": NOW - 3_600_000}
+        processor = connector.data_entities_processor
+        updated = connector._parse_linear_datetime(_issue()["updatedAt"])
+        stored = _ticket(source_updated_at=updated)
+        processor.get_record_by_external_id = AsyncMock(return_value=stored)
+        await connector._issue_to_records(_issue(), "team-1")
+
+        datasource = _use_datasource(connector, MagicMock())
+
+        async def execute_operation(operation, variables) -> GraphQLResponse:
+            if operation == "commentActivity":
+                return _ok({"comments": _page([{"id": "c1", "issue": {"id": "issue-1"}}])})
+            return _ok({"projectUpdates": _page([])})
+
+        datasource.execute_operation = AsyncMock(side_effect=execute_operation)
+        datasource.issues = AsyncMock(return_value=_ok({"issues": _page([_issue()])}))
+
+        await connector._sync_comment_activity({"team-1"})
+
+        reindexed = [c.args[0].external_record_id for c in processor.on_record_content_update.await_args_list]
+        assert reindexed == ["issue-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_comment_on_a_project_with_a_link_reindexes_the_project(self) -> None:
+        connector = _make_connector()
+        connector.issues_sync_point.store["comment_activity"] = {"last_sync_time": NOW - 3_600_000}
+        processor = connector.data_entities_processor
+        processor.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="node-proj"))
+        datasource = _use_datasource(connector, MagicMock())
+
+        async def execute_operation(operation, variables) -> GraphQLResponse:
+            if operation == "commentActivity":
+                return _ok({"comments": _page([{"id": "c1", "issue": None, "project": {"id": "proj-1"}}])})
+            return _ok({"projectUpdates": _page([])})
+
+        datasource.execute_operation = AsyncMock(side_effect=execute_operation)
+        project = MagicMock(id="node-proj", source_created_at=NOW, source_updated_at=NOW)
+        link = MagicMock(id="node-link", source_created_at=NOW, source_updated_at=NOW)
+        connector._project_to_records = AsyncMock(return_value=[(project, []), (link, [])])
+
+        await connector._sync_comment_activity({"team-1"})
+
+        # The discussion is part of the project's content, not its link's.
+        assert [c.args[0] for c in processor.on_record_content_update.await_args_list] == [project]
 
     @pytest.mark.asyncio
     async def test_failed_activity_listing_keeps_the_checkpoint(self) -> None:
@@ -1085,7 +1162,7 @@ class TestRunSync:
         for sync_point, key in (
             (connector.attachments_sync_point, "attachments"),
             (connector.documents_sync_point, "documents"),
-            (connector.projects_sync_point, "projects"),
+            (connector.projects_sync_point, PROJECTS_CHECKPOINT_KEY),
         ):
             sync_point.store[key] = {"last_sync_time": NOW - 1000, "resume_cursor": "cursor-1",
                                      "resume_since": 1, "resume_started_at": NOW - 500}
@@ -1094,7 +1171,7 @@ class TestRunSync:
         async def sync_attachments(_teams) -> None:
             seen["attachments"] = dict(connector.attachments_sync_point.store["attachments"])
             seen["documents"] = dict(connector.documents_sync_point.store["documents"])
-            seen["projects"] = dict(connector.projects_sync_point.store["projects"])
+            seen["projects"] = dict(connector.projects_sync_point.store[PROJECTS_CHECKPOINT_KEY])
 
         connector._sync_attachments = AsyncMock(side_effect=sync_attachments)
 
@@ -1447,53 +1524,3 @@ class TestUnsyncedParentTeams:
         assert {g.source_user_group_id for g, _ in user_groups} == {"team-web", "team-ops", "team-sec"}
         assert datasource.teams.await_count == 2
         assert datasource.teams.await_args.kwargs["filter"] == {"id": {"in": ["team-sec"]}}
-
-
-class TestConnectionCheck:
-    """The setup form tries an API key before saving it (checklist 2.2 and 2.4)."""
-
-    @staticmethod
-    def _datasource(viewer, teams=None, organization=None) -> MagicMock:
-        datasource = MagicMock()
-        datasource.viewer = AsyncMock(return_value=viewer)
-        datasource.teams = AsyncMock(return_value=teams or _ok({"teams": _page([{"id": "t1"}])}))
-        datasource.organization = AsyncMock(return_value=organization or _ok({"organization": {"name": "Acme"}}))
-        return datasource
-
-    @pytest.mark.asyncio
-    async def test_a_working_key_names_the_workspace_and_user(self) -> None:
-        datasource = self._datasource(_ok({"viewer": {"name": "Alice"}}))
-        with patch.object(connector_module, "LinearDataSource", return_value=datasource):
-            result = await LinearConnector.check_connection({"authType": "API_TOKEN", "apiToken": "lin_api_x"}, MagicMock())
-        assert result.success is True and result.message == "Connected to Acme as Alice."
-
-    @pytest.mark.asyncio
-    async def test_a_rejected_key_says_how_to_get_a_new_one(self) -> None:
-        rejected = GraphQLResponse(success=False, message="Authentication required", status_code=401)
-        with patch.object(connector_module, "LinearDataSource", return_value=self._datasource(rejected)):
-            result = await LinearConnector.check_connection({"authType": "API_TOKEN", "apiToken": "lin_api_bad"}, MagicMock())
-        assert result.success is False and "did not accept this API key" in result.message
-
-    @pytest.mark.asyncio
-    async def test_a_key_that_cannot_read_teams_is_refused(self) -> None:
-        forbidden = GraphQLResponse(success=False, message="Forbidden", status_code=403)
-        datasource = self._datasource(_ok({"viewer": {"name": "Alice"}}), teams=forbidden)
-        with patch.object(connector_module, "LinearDataSource", return_value=datasource):
-            result = await LinearConnector.check_connection({"authType": "API_TOKEN", "apiToken": "lin_api_x"}, MagicMock())
-        assert result.success is False and "cannot read teams" in result.message
-
-    @pytest.mark.asyncio
-    @pytest.mark.parametrize("token", ["", "   ", None])
-    async def test_an_empty_key_asks_for_one_without_calling_linear(self, token) -> None:
-        with patch.object(connector_module, "LinearDataSource") as datasource:
-            result = await LinearConnector.check_connection({"authType": "API_TOKEN", "apiToken": token}, MagicMock())
-        assert result.success is False and result.message == "Enter a Linear API key."
-        datasource.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_oauth_is_left_to_linear(self) -> None:
-        result = await LinearConnector.check_connection({"authType": "OAUTH"}, MagicMock())
-        assert result.success is True
-
-    def test_the_setup_form_offers_the_check(self) -> None:
-        assert LinearConnector.supports_connection_check() is True

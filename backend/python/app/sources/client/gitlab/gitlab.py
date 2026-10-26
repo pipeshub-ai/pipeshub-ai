@@ -6,10 +6,12 @@ from urllib.parse import urljoin, urlparse
 
 import gitlab
 import requests
+import urllib3
 from gitlab import Gitlab
 from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.address_guard import AddressGuardAdapter
 from app.sources.client.iclient import IClient
 from app.utils.oauth_config import resolve_instance_url
 
@@ -115,6 +117,19 @@ def _require_secure_url(url: str, logger: logging.Logger | None = None) -> None:
     )
 
 
+class GitLabReadTimeout(requests.exceptions.RequestException):
+    """A GitLab server that accepted the request and then stopped answering.
+
+    python-gitlab 8 retries ``requests.exceptions.Timeout`` when
+    ``retry_transient_errors`` is on (up to 10 attempts with backoff), so one
+    stalled call would hold a worker thread for ten per-request timeouts, and
+    ``asyncio.wait_for`` cannot interrupt that thread. python-gitlab 6 raised
+    the first read timeout. This type is deliberately not a ``Timeout`` or a
+    ``ConnectionError``, so python-gitlab raises it at once; callers that
+    want another attempt retry at their own level.
+    """
+
+
 class _TokenSafeSession(requests.Session):
     """Keeps the GitLab token on its own server across redirects.
 
@@ -124,6 +139,18 @@ class _TokenSafeSession(requests.Session):
     same rule.
     """
 
+    def send(self, request: requests.PreparedRequest, **kwargs: Any) -> requests.Response:  # noqa: ANN401 - requests.Session.send's keyword arguments
+        try:
+            return super().send(request, **kwargs)
+        except requests.exceptions.ReadTimeout as exc:
+            # A connect timeout is a ConnectionError and keeps python-gitlab's retry.
+            raise GitLabReadTimeout(str(exc), request=request) from exc
+        except requests.exceptions.ConnectionError as exc:
+            # A stall while reading the body comes out of requests as a ConnectionError.
+            if exc.args and isinstance(exc.args[0], urllib3.exceptions.ReadTimeoutError):
+                raise GitLabReadTimeout(str(exc), request=request) from exc
+            raise
+
     def rebuild_auth(self, prepared_request: requests.PreparedRequest, response: requests.Response) -> None:
         if self.should_strip_auth(response.request.url, prepared_request.url):
             prepared_request.headers.pop("PRIVATE-TOKEN", None)
@@ -131,7 +158,8 @@ class _TokenSafeSession(requests.Session):
 
 
 def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
-    """A session that never carries the GitLab token off its server or onto plain http.
+    """A session that never carries the GitLab token off its server or onto plain http,
+    and never reaches an address the deployment forbids (see ``AddressGuardAdapter``).
 
     python-gitlab follows redirects on GET and HEAD. Each redirect target must
     pass the same rule as the instance URL before it is requested, and a
@@ -145,6 +173,9 @@ def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
 
     session = _TokenSafeSession()
     session.hooks["response"].append(refuse_insecure_redirect)
+    guard = AddressGuardAdapter()
+    session.mount("http://", guard)
+    session.mount("https://", guard)
     return session
 
 

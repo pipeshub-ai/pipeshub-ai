@@ -21,6 +21,25 @@ class DocumentProcessingError(IndexingError):
         self.doc_id = doc_id
 
 
+class PasswordProtectedError(DocumentProcessingError):
+    """The file is encrypted and needs a password to open.
+
+    Raised only on positive evidence from the file itself (a PDF library's
+    password error, an Office encryption container), never from the wording of
+    another error. Terminal like every ``DocumentProcessingError``: a retry
+    reads the same bytes, so the record ends ``PASSWORD_PROTECTED`` instead of
+    ``FAILED``.
+    """
+
+    def __init__(
+        self,
+        message: str = "The file is password-protected",
+        doc_id: str = None,
+        details: dict = None,
+    ) -> None:
+        super().__init__(message, doc_id, details)
+
+
 class RecordStatusUpdateError(IndexingError):
     """Raised when persisting a record's status fields to the graph DB fails.
 

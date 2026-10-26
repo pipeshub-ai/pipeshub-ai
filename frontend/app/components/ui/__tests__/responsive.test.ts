@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { overlayWidth, touchTarget, PAGE_PADDING_X } from '../responsive';
+import { overlayWidth, touchTarget, PAGE_PADDING_X, pagePaddingX } from '../responsive';
 import { pageInlinePadding } from '@/app/(main)/workspace/components/settings-page-container';
 
 describe('responsive helpers', () => {
@@ -14,6 +14,12 @@ describe('responsive helpers', () => {
 
   it('exposes the page padding token', () => {
     expect(PAGE_PADDING_X).toBe('clamp(var(--space-4), 4vw, 100px)');
+  });
+
+  it('pagePaddingX is fluid below 1024px and fixed from there up', () => {
+    expect(pagePaddingX(40)).toBe(
+      'max(clamp(var(--space-4), 4vw, 40px), min(40px, calc((100vw - 1023px) * 1000)))',
+    );
   });
 
   it('pageInlinePadding keeps the page gutter and centres content capped at maxWidth', () => {

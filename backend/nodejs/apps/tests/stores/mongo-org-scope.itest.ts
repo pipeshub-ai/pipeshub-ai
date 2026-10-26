@@ -40,7 +40,7 @@ describe('Org scoping against a real MongoDB', function () {
     await EnterpriseSemanticSearch.collection.insertMany([
       ...[1, 2, 3].map((i) => mk(A, uA, i)), ...[1, 2, 3, 4, 5, 6, 7].map((i) => mk(B, uB, i))]);
     let body: any;
-    await searchHistory({} as any)({ user: { orgId: A.toString(), userId: uA.toString() }, query: {}, context: {} } as any,
+    await searchHistory({ user: { orgId: A.toString(), userId: uA.toString() }, query: {}, context: {} } as any,
       { status: () => ({ json: (b: any) => { body = b; } }) } as any, (e: any) => { throw e; });
     expect(body.searchHistory).to.have.length(3);
     expect(body.pagination.totalCount ?? body.pagination.total).to.equal(3);

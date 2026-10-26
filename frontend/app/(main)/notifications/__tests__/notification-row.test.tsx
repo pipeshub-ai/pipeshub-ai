@@ -5,7 +5,6 @@ import { Theme } from '@radix-ui/themes';
 
 vi.mock('react-i18next', () => ({ useTranslation: () => ({ t: (k: string) => k, i18n: { language: 'en' } }) }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
-vi.mock('@/lib/api', () => ({ apiClient: { post: vi.fn(), get: vi.fn().mockResolvedValue({ data: { request: { status: 'pending' } } }) } }));
 vi.mock('@/lib/navigation', () => ({
   Link: ({ href, children, onClick, ...rest }: React.AnchorHTMLAttributes<HTMLAnchorElement>) => (
     <a
@@ -121,37 +120,5 @@ describe('chatConversationIdFromHref', () => {
     '/\\demo.example.com/chat/?conversationId=abc',
   ])('finds no conversation in %s', (href) => {
     expect(chatConversationIdFromHref(href)).toBeNull();
-  });
-});
-
-describe('NotificationRow access requests', () => {
-  const row = (type: string, payload?: Record<string, unknown>) =>
-    render(
-      <Theme>
-        <NotificationRow
-          notification={{ _id: 'n2', type, title: 'Access requested', status: 'unread', payload }}
-          onOpenLink={vi.fn()}
-          onMarkRead={vi.fn()}
-          onMarkUnread={vi.fn()}
-          onArchive={vi.fn()}
-          onUnarchive={vi.fn()}
-          onDismiss={vi.fn()}
-          markReadLabel="read"
-          markUnreadLabel="unread"
-          archiveLabel="archive"
-          unarchiveLabel="unarchive"
-          dismissLabel="dismiss"
-        />
-      </Theme>,
-    );
-
-  it('shows Approve and Deny on an access request', () => {
-    row('accessRequest', { requestId: 'r1' });
-    expect(screen.getByText('notifications.accessRequest.approve')).toBeTruthy();
-  });
-
-  it('shows no decision buttons on other notifications', () => {
-    row('conversation_shared', { requestId: 'r1' });
-    expect(screen.queryByText('notifications.accessRequest.approve')).toBeNull();
   });
 });

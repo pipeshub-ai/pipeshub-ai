@@ -548,24 +548,6 @@ export const ChatApi = {
   },
 
   /**
-   * Ask for a source redacted from a shared chat. Native records go to their
-   * owner; connector records notify the owner and are granted only by the source.
-   * The record must be one shown as redacted in the named chat (or search).
-   * Endpoint: POST /api/v1/access-requests
-   */
-  async requestAccess(
-    recordId: string,
-    from: { conversationId?: string; searchId?: string }
-  ): Promise<{ alreadyAccessible?: boolean; sourceUrl?: string }> {
-    const { data } = await apiClient.post<{ alreadyAccessible?: boolean; sourceUrl?: string }>(
-      '/api/v1/access-requests',
-      { recordId, ...from },
-      { suppressErrorToast: true },
-    );
-    return data;
-  },
-
-  /**
    * Submit feedback (thumbs up / thumbs down) for a bot response message.
    * Endpoint: POST /api/v1/conversations/:conversationId/message/:messageId/feedback
    */

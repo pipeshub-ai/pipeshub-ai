@@ -12,6 +12,11 @@ from typing import TYPE_CHECKING, Any
 
 from app.config.configuration_service import ConfigurationService
 from app.models.blocks import BlocksContainer, SemanticMetadata
+from app.modules.artifacts.sidecars import (
+    CLASSIFICATION,
+    ArtifactSidecars,
+    classification_payload,
+)
 from app.modules.pipeline.leases import RecordLeases, RevisionSuperseded
 from app.modules.pipeline.models import StageJob
 from app.modules.pipeline.policy import PipelinePolicy
@@ -50,6 +55,7 @@ class GraphClassifyIO(RecordStageIO):
         config_service: ConfigurationService,
         record_from_document: RecordFromDocument,
         record_leases: RecordLeases,
+        sidecars: ArtifactSidecars | None = None,
     ) -> None:
         super().__init__(
             job,
@@ -63,6 +69,7 @@ class GraphClassifyIO(RecordStageIO):
         self._sink = sink
         self._classifier = classifier
         self._config_service = config_service
+        self._sidecars = sidecars
         self._departments: list[str] | None = None
 
     async def departments(self, org_id: str) -> list[str]:
@@ -101,12 +108,36 @@ class GraphClassifyIO(RecordStageIO):
         self, job: StageJob, metadata: SemanticMetadata, *, still_current: Callable[[], Awaitable[bool]] | None = None
     ) -> None:
         classification = metadata.model_dump(mode="json")
+        owner = job.record_ids[0]
         await self._write_section(
             job,
-            job.record_ids[0],
+            owner,
             lambda current: with_classification(current, classification),
             still_current=still_current,
+            # Before the classification goes back: once the stored record has it, the job counts
+            # as done, so a summary point that failed after that would stay missing.
+            before=lambda: self._restore_summary_point(owner, metadata),
+            written=lambda: self._write_sidecar(job, metadata),
         )
+
+    async def _restore_summary_point(self, record_id: str, metadata: SemanticMetadata) -> None:
+        # The re-index of unchanged content that left the stored record without its
+        # classification also deleted the record's vectors, its summary point among them.
+        # Put that back from the kept classification too; the graph taxonomy survives a re-index.
+        ctx = await self._context(record_id, None)
+        if ctx is None:
+            raise RevisionSuperseded(record_id)
+        ctx.record.semantic_metadata = metadata
+        await self._sink.write_summary_point(ctx)
+
+    async def _write_sidecar(self, job: StageJob, metadata: SemanticMetadata) -> None:
+        # Under the lease, right after the stored record: the revision's sidecar never says
+        # something its stored record does not.
+        if self._sidecars is not None:
+            _ = await self._sidecars.write(
+                job.org_id, job.virtual_record_id, job.rev, CLASSIFICATION, job.stage_version,
+                classification_payload(metadata),
+            )
 
     async def save(self, job: StageJob, record_ids: list[str], metadata: SemanticMetadata) -> None:
         # Content-level outputs are shared by every record on the revision; edges are per record.
@@ -124,6 +155,7 @@ class GraphClassifyIO(RecordStageIO):
             job,
             owner,
             lambda current: with_classification(current, classification),
+            written=lambda: self._write_sidecar(job, metadata),
             then=lambda: self._sink.write_enrichment(ctx),
         )
         for record_id in record_ids[1:]:

@@ -34,13 +34,15 @@ import {
 } from '../types/oauth.types';
 import { Users } from '../../user_management/schema/users.schema';
 import {
-  sameKnowledgeLimit,
+  isKnowledgeLimitWithin,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import { Org } from '../../user_management/schema/org.schema';
 import { OAuthDcrService } from '../services/oauth.dcr.service';
 import { OAuthDeviceService } from '../services/oauth.device.service';
 import { TokenExchangeService } from '../services/token-exchange.service';
+import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
+import { clientTags } from '../../../libs/services/telemetry/identity';
 
 interface AuthenticatedRequest extends Request {
   user?: {
@@ -409,6 +411,15 @@ export class OAuthProviderController {
       res.setHeader('Pragma', 'no-cache');
 
       res.json(tokenResponse);
+
+      // A refresh renews a grant already counted, so only first issuance is recorded.
+      if (tokenRequest.grant_type !== 'refresh_token') {
+        recordEvent('oauth_token_issued', {
+          grant_type: tokenRequest.grant_type,
+          client_id: clientId,
+          ...clientTags(req.headers),
+        });
+      }
     } catch (error) {
       // OAuth errors should return 400 with JSON body
       const oauthError = this.buildErrorResponse(error as Error);
@@ -426,13 +437,30 @@ export class OAuthProviderController {
     _next: NextFunction,
   ): Promise<void> {
     try {
-      const { token, token_type_hint, client_id, client_secret } = req.body;
+      const { token, token_type_hint, client_id, client_secret } = req.body as {
+        token: string;
+        token_type_hint?: 'refresh_token' | 'access_token';
+        client_id: string;
+        // A JSON body can carry any type here, null included.
+        client_secret?: unknown;
+      };
 
-      // RFC 7009: Verify client credentials
-      await this.oauthAppService.verifyClientCredentials(
-        client_id,
-        client_secret,
-      );
+      // RFC 7009: authenticate the client. A public client (the first-party
+      // device app) has no secret and is identified by client_id alone, as the
+      // token and refresh grants do; hashing its absent secret used to throw,
+      // and the catch below answered 200 without revoking anything.
+      const app = await this.oauthAppService.getAppByClientId(client_id);
+      if (app.isConfidential) {
+        if (typeof client_secret !== 'string' || client_secret === '') {
+          throw new InvalidClientError(
+            'client_secret required for confidential clients',
+          );
+        }
+        await this.oauthAppService.verifyClientCredentials(
+          client_id,
+          client_secret,
+        );
+      }
 
       // RFC 7009: Revoke token with ownership verification
       // The revokeToken method now validates the token was issued to this client
@@ -670,9 +698,12 @@ export class OAuthProviderController {
       throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
     }
 
-    // The user agreed to the limit the code was issued under, and an edit
-    // since then revokes tokens but cannot reach a code.
-    if (!sameKnowledgeLimit(codeResult.knowledgeLimit, app.knowledgeLimit)) {
+    // The user agreed to the limit the code was issued under, and its tokens
+    // carry that limit. The app may have widened since; a narrowing revokes
+    // tokens but cannot reach a code, so it is refused here.
+    if (
+      !isKnowledgeLimitWithin(codeResult.knowledgeLimit, app.knowledgeLimit)
+    ) {
       throw new InvalidGrantError(
         "The application's permissions changed after you allowed it. Sign in again.",
       );
@@ -719,8 +750,31 @@ export class OAuthProviderController {
       true,
       fullName,
       accountType,
-      { recheckAppScopes: true },
+      {
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: codeResult.knowledgeLimit ?? null,
+      },
     );
+
+    // A replay of this code that ran while the tokens were being minted could
+    // not revoke them yet; it left a flag, so the winner takes its own pair back.
+    if (
+      await this.authorizationCodeService.wasReplayed(request.code, clientId)
+    ) {
+      await this.oauthTokenService.revokeToken(
+        tokens.accessToken,
+        clientId,
+        'access_token',
+      );
+      if (tokens.refreshToken) {
+        await this.oauthTokenService.revokeToken(
+          tokens.refreshToken,
+          clientId,
+          'refresh_token',
+        );
+      }
+      throw new InvalidGrantError('Authorization code has already been used');
+    }
 
     this.logger.info('Authorization code grant completed', {
       clientId,

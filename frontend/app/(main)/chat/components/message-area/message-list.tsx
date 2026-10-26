@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
-import { useThread, useThreadRuntime } from '@assistant-ui/react';
+import { useAui, useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
@@ -17,8 +17,8 @@ import { InlineCitationPopoverHost } from './response-tabs/citations/inline-cita
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ProgressiveBlur } from '@/app/components/ui/progressive-blur';
 import { loadOlderMessagesForSlot } from '../../streaming';
-import { parseArtifactMarkers } from '../../utils/parse-download-markers';
-import { buildMessagePairs, extractTextContent } from './message-pairs';
+import { extractAnswerMarkers } from '../../utils/parse-download-markers';
+import { buildMessagePairs } from './message-pairs';
 import type { MessagePair } from './message-pairs';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
@@ -60,9 +60,6 @@ const COMPOSER_BLUR_HEIGHT_PX = 180;
 
 export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // ── Slot-scoped selectors (narrow — only active slot fields) ──
-  const activeConvId = useChatStore((s) =>
-    s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null
-  );
   const isStreaming = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.isStreaming ?? false : false
   );
@@ -192,15 +189,15 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
 
-  // Use useThread to get reactive thread state
-  const thread = useThread();
-  const threadRuntime = useThreadRuntime();
+  // Reactive thread messages plus the client used to append follow-up messages
+  const threadMessages = useAuiState((s) => s.thread.messages);
+  const aui = useAui();
 
-  // Track thread.messages changes as a render reason
-  const prevThreadMsgsRef = useRef(thread.messages);
-  if (thread.messages !== prevThreadMsgsRef.current) {
-    debugLog.reason('[chat] [MessageList]', ['thread.messages']);
-    prevThreadMsgsRef.current = thread.messages;
+  // Track threadMessages changes as a render reason
+  const prevThreadMsgsRef = useRef(threadMessages);
+  if (threadMessages !== prevThreadMsgsRef.current) {
+    debugLog.reason('[chat] [MessageList]', ['threadMessages']);
+    prevThreadMsgsRef.current = threadMessages;
   }
 
   // Callback ref setter for message elements
@@ -215,24 +212,23 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Build message pairs (user question + assistant answer) in chronological order
   const messagePairs = useMemo<MessagePair[]>(
     () =>
-      buildMessagePairs(thread.messages, {
+      buildMessagePairs(threadMessages, {
         isStreaming,
         streamingQuestion,
         pendingCollections,
         regenerateMessageId,
         emptyCitationMaps: EMPTY_CITATION_MAPS,
       }),
-    [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
+    [threadMessages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
   );
 
   // The highest version any message in this conversation has shown for a
   // given artifact `recordId`. Every version bump re-registers the SAME
   // recordId, so an older message's card can compare its own `version`
   // against this map to know a later turn has since produced a newer copy —
-  // derived entirely from markers already persisted on each message
-  // (`parseArtifactMarkers`), no extra API call. The currently-streaming
-  // turn's markers aren't persisted yet, so its live SSE `artifacts` are
-  // folded in too.
+  // derived entirely from markers already persisted on each message, no extra
+  // API call. The row still streaming has no saved answer yet (its text is
+  // model output, see `MarkerSource`), so only its live SSE `artifacts` count.
   const latestArtifactVersions = useMemo(() => {
     const versions = new Map<string, number>();
     const record = (recordId: string | undefined, version: number | undefined) => {
@@ -240,18 +236,16 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
       const current = versions.get(recordId);
       if (current === undefined || version > current) versions.set(recordId, version);
     };
-    for (const msg of thread.messages) {
-      if (msg.role !== 'assistant') continue;
-      const content = extractTextContent(msg.content as { type: string; text?: string }[]);
-      if (!content.includes('::artifact[')) continue;
-      const { artifacts } = parseArtifactMarkers(content);
+    for (const pair of messagePairs) {
+      if (pair.isStreaming || !pair.answer.includes('::artifact[')) continue;
+      const { artifacts } = extractAnswerMarkers(pair.answer, 'persisted');
       for (const artifact of artifacts) record(artifact.recordId, artifact.version);
     }
     if (isStreaming) {
       for (const artifact of streamingArtifacts) record(artifact.recordId, artifact.version);
     }
     return versions;
-  }, [thread.messages, isStreaming, streamingArtifacts]);
+  }, [messagePairs, isStreaming, streamingArtifacts]);
 
   const lastPairKey = messagePairs[messagePairs.length - 1]?.key ?? null;
 
@@ -300,12 +294,12 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Diagnostic: log message pair count for rendering pipeline debugging ──
   if (process.env.NODE_ENV === 'development') {
-    const assistantMsgs = thread.messages.filter(m => m.role === 'assistant').length;
-    const userMsgs = thread.messages.filter(m => m.role === 'user').length;
-    if (messagePairs.length === 0 && thread.messages.length > 0) {
+    const assistantMsgs = threadMessages.filter(m => m.role === 'assistant').length;
+    const userMsgs = threadMessages.filter(m => m.role === 'user').length;
+    if (messagePairs.length === 0 && threadMessages.length > 0) {
       console.warn(
         '[debugging] [MessageList] 0 pairs but',
-        thread.messages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
+        threadMessages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
         'isStreaming:', isStreaming
       );
     }
@@ -822,8 +816,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // bottom-tracking scroll.
   //
   // IMPORTANT: `messagePairs` (the full array) is intentionally NOT in the
-  // deps — only `messagePairs.length` is. During streaming, `useThread()` may
-  // return a new `thread.messages` reference on every render (even with the
+  // deps — only `messagePairs.length` is. During streaming, `useAuiState()` may
+  // return a new `threadMessages` reference on every render (even with the
   // same logical content), which would invalidate the `messagePairs` useMemo
   // and produce a new array reference ~60fps. If the full array were a dep,
   // this effect would re-run on every render, its cleanup would cancel the
@@ -898,6 +892,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── 3. ResizeObserver on scroll container (window resize) and composer dock ──
   const hasComposer = composer != null;
+  // Measured before paint: the blur is capped at this height, so a first frame at 0 would show
+  // the last lines of the transcript unblurred until the effect below ran.
+  useLayoutEffect(() => {
+    setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+  }, [hasComposer]);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -1043,13 +1042,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Handle Ask More question click — send through runtime
   const handleAskMoreClick = useCallback(
     (question: string) => {
-      threadRuntime.append({
+      aui.thread().append({
         role: 'user',
         content: [{ type: 'text', text: question }],
         startRun: true,
       });
     },
-    [threadRuntime]
+    [aui]
   );
 
   // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.
@@ -1133,11 +1132,7 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
                     collections={pair.collections}
                     appliedFilters={pair.appliedFilters}
                     attachments={pair.attachments}
-                    redactedAttachments={pair.redactedAttachments}
-                    conversationId={activeConvId ?? undefined}
-                    askedBy={pair.askedBy}
                     messageId={pair.messageId}
-                    authorUserId={pair.authorUserId}
                     isLastMessage={isLast}
                     rowId={pair.key}
                     citationMessageRowKey={pair.key}
@@ -1213,7 +1208,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             pointerEvents: 'none',
           }}
         >
-          <ProgressiveBlur height={COMPOSER_BLUR_HEIGHT_PX} />
+          {/* Capped at the dock: a viewer with no input has only the footer links here, and a
+              taller blur would sit over the last lines of the transcript, which cannot scroll
+              clear of it. */}
+          <ProgressiveBlur height={Math.min(COMPOSER_BLUR_HEIGHT_PX, composerDockHeight)} />
           <Flex
             direction="column"
             align="center"

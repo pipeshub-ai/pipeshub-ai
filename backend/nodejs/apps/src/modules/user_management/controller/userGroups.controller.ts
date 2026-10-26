@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { Response } from 'express';
-import { Users } from '../schema/users.schema';
+import { Users, User } from '../schema/users.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
@@ -8,12 +8,14 @@ import {
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { injectable } from 'inversify';
-import { groupTypes, UserGroups } from '../schema/userGroup.schema';
+import { groupTypes, UserGroup, UserGroups } from '../schema/userGroup.schema';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import { UserDisplayPicture } from '../schema/userDp.schema';
 import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { escapeRegExp } from '../../../utils/escape-regexp';
 import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
+import { isUserOrgAdmin } from '../services/user-admin.service';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
 const GROUP_EXISTS_MESSAGE = 'Group already exists';
@@ -92,6 +94,15 @@ export class UserGroupController {
     if (!type) {
       throw new BadRequestError('type(Type of the Group) is required');
     }
+
+    // The route schema already forces strings. Checked again so a query
+    // operator ({ "$ne": null }) can never reach the lookup below.
+    if (typeof name !== 'string') {
+      throw new BadRequestError('name must be a string');
+    }
+    if (typeof type !== 'string') {
+      throw new BadRequestError('type must be a string');
+    }
     if (RESERVED_GROUP_NAMES.includes(name) || RESERVED_GROUP_NAMES.includes(type)) {
       throw new BadRequestError('Group name or type "admin", "everyone", or "standard" cannot be created');
     }
@@ -148,12 +159,12 @@ export class UserGroupController {
     }
 
     const [groups, totalCount] = await Promise.all([
-      UserGroups.find(filter)
+      UserGroups.find(asQueryFilter<UserGroup>(filter))
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      UserGroups.countDocuments(filter),
+      UserGroups.countDocuments(asQueryFilter<UserGroup>(filter)),
     ]);
 
     // Return userCount instead of the full users array
@@ -196,7 +207,46 @@ export class UserGroupController {
       throw new NotFoundError('UserGroup not found');
     }
 
+    // `users` is a list of Mongo ids, and a service account's is the value an
+    // agent stores when it is bound to that account. Every service account is
+    // put in the everyone group when it is created, so without this the group
+    // every member can read hands out all of them. The ids of colleagues stay,
+    // because they are already the member's to see.
+    if (Array.isArray(userGroup.users)) {
+      userGroup.users = await this.visibleMembers(req, orgId, userGroup.users);
+    }
     res.json(userGroup);
+  }
+
+  /**
+   * ``ids`` without the service accounts among them, unless the caller
+   * administers the organisation. The lookup only runs when one is actually in
+   * the list, so an ordinary group costs nothing.
+   */
+  private async visibleMembers(
+    req: AuthenticatedUserRequest,
+    orgId: unknown,
+    ids: readonly mongoose.Types.ObjectId[],
+  ): Promise<mongoose.Types.ObjectId[]> {
+    const members = [...ids];
+    if (members.length === 0) return members;
+
+    const accounts = (await Users.find({
+      _id: { $in: members },
+      kind: 'service',
+    })
+      .select('_id')
+      .lean()
+      .exec()) as Array<{ _id: mongoose.Types.ObjectId }>;
+    if (accounts.length === 0) return members;
+
+    const isAdmin =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+    if (isAdmin) return members;
+
+    const hidden = new Set(accounts.map((u) => u._id.toString()));
+    return members.filter((id) => !hidden.has(id.toString()));
   }
 
   async updateGroup(
@@ -362,6 +412,16 @@ export class UserGroupController {
 
     // Fetch user details with optional search filter
     const userFilter: UserFilter = { _id: { $in: allUserIds }, isDeleted: { $ne: true } };
+    // This page carries each member's id, name and email, so a service account
+    // in the group would be fully identifiable — and its id is what binds an
+    // agent to it. Applied to the filter rather than the page, so the count
+    // agrees with what comes back.
+    const maySeeServiceAccounts =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+    if (!maySeeServiceAccounts) {
+      userFilter.kind = { $ne: 'service' };
+    }
     if (search) {
       const escaped = escapeRegExp(search);
       userFilter.$or = [
@@ -371,13 +431,13 @@ export class UserGroupController {
     }
 
     const [userDocs, totalCount] = await Promise.all([
-      Users.find(userFilter)
+      Users.find(asQueryFilter<User>(userFilter))
         .select('fullName firstName lastName email')
         .skip(skip)
         .limit(limit)
         .lean()
         .exec(),
-      Users.countDocuments(userFilter),
+      Users.countDocuments(asQueryFilter<User>(userFilter)),
     ]);
 
     // Bulk-fetch DPs for this page of users
@@ -418,11 +478,13 @@ export class UserGroupController {
     const { userId } = req.params;
     const orgId = req.user?.orgId;
 
-    const groups = await UserGroups.find({
-      orgId,
-      users: { $in: [userId] },
-      isDeleted: false,
-    }).select('name type');
+    const groups = await UserGroups.find(
+      asQueryFilter<UserGroup>({
+        orgId,
+        users: { $in: [userId] },
+        isDeleted: false,
+      }),
+    ).select('name type');
 
     res.status(200).json(groups);
   }

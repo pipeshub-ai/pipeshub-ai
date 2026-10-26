@@ -36,6 +36,7 @@ import {
 import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
 import type { ApiToolset } from '@/app/(main)/workspace/api-toolsets/types';
 import { McpServersApi } from '@/app/(main)/workspace/mcp-servers/api';
+import { McpServerIcon } from '@/app/(main)/workspace/mcp-servers/components';
 import type { McpMyServerEntry } from '@/app/(main)/workspace/mcp-servers/types';
 import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
@@ -828,7 +829,7 @@ export function UniversalAgentResourcesPanel({
     footerLinkText: string;
     footerLinkAriaLabel: string;
     renderGroupIcon: (group: CatalogToolGroupRow) => React.ReactNode;
-    renderToolIcon: (bareFn: string) => React.ReactNode;
+    renderToolIcon: (bareFn: string, group: CatalogToolGroupRow) => React.ReactNode;
     afterGroups?: React.ReactNode;
     /** Rows after the groups that aren't groups (the MCP servers still to connect). */
     extraRows?: React.ReactNode;
@@ -979,7 +980,7 @@ export function UniversalAgentResourcesPanel({
                           onClick={(e) => e.stopPropagation()}
                         />
                       </span>
-                      {renderToolIcon(fn)}
+                      {renderToolIcon(fn, group)}
                       <Flex direction="column" gap="0" style={{ flex: 1, minWidth: 0 }}>
                         <Text size="2" weight="medium" style={{ color: 'var(--gray-11)' }} truncate>
                           {short}
@@ -1214,8 +1215,10 @@ export function UniversalAgentResourcesPanel({
             footerLinkAriaLabel: t('chat.agentResources.browseWorkspaceMcpAria', {
               defaultValue: 'Open MCP servers to add or manage connections',
             }),
-            renderGroupIcon: () => <MaterialIcon name="hub" size={18} color="var(--gray-11)" />,
-            renderToolIcon: () => <MaterialIcon name="hub" size={16} color="var(--gray-9)" />,
+            renderGroupIcon: (group) => <McpServerIcon typeId={group.typeId} name={group.label} size={18} />,
+            renderToolIcon: (_fn, group) => (
+              <McpServerIcon typeId={group.typeId} name={group.label} size={16} color="var(--gray-9)" />
+            ),
             extraRows:
               filteredMcpToConnect.length > 0 ? (
                 <McpConnectRows

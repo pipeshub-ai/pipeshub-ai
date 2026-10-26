@@ -295,7 +295,7 @@ class GoogleGmailIndividualConnector(BaseConnector):
             )
 
             if not oauth_config:
-                self.logger.error(f"OAuth config {oauth_config_id} not found for Gmail connector.")
+                self.logger.error(f"Linked OAuth app not found for Gmail connector {self.connector_id}.")
                 return False
 
             oauth_config_data = oauth_config.get("config", {})

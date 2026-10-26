@@ -37,6 +37,7 @@ from app.config.constants.arangodb import (
 )
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 
 from .catalog import ConnectorCatalog, ConnectorInfo
 from .identifiers import CanonicalRef, RefKind, normalize_weburl, resolve_canonical_ref
@@ -439,7 +440,7 @@ class RecordResolver:
         if not connectors:
             return []
         tasks = [self._graph.get_record_by_issue_key(c.id, key) for c in connectors]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for i, rec in enumerate(results):
             if isinstance(rec, Exception):
@@ -457,7 +458,7 @@ class RecordResolver:
         if not connectors:
             return []
         tasks = [self._graph.get_record_by_external_id(c.id, external_id) for c in connectors]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for rec in results:
             if isinstance(rec, Exception) or rec is None:
@@ -520,7 +521,7 @@ class RecordResolver:
             )
             for c in connectors
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for rec in results:
             if isinstance(rec, Exception) or rec is None:

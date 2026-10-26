@@ -19,7 +19,7 @@ export interface CreateChatShareAdapterOptions {
 
 /**
  * Creates a ShareAdapter for a Chat Conversation.
- * Share/unshare with a view/edit level per person; no team-sharing UI.
+ * Simple share/unshare — no roles and no team-sharing UI.
  */
 export function createChatShareAdapter(
   conversationId: string,
@@ -35,24 +35,8 @@ export function createChatShareAdapter(
     entityType: 'conversation',
     entityId: conversationId,
     sidebarTitle: 'Share Chat',
-    supportsRoles: true,
+    supportsRoles: false,
     supportsTeams: false,
-    // The owner stays the owner: only Can view / Can edit are offered. An agent
-    // conversation is shared read-only, so it offers Can view alone.
-    roleOptions: {
-      roles: agentId ? ['READER'] : ['WRITER', 'READER'],
-      labels: {
-        OWNER: { label: i18next.t('shareSidebar.roles.owner.label'), description: '' },
-        WRITER: {
-          label: i18next.t('shareSidebar.roles.writer.label'),
-          description: i18next.t('shareSidebar.chatRoles.writer'),
-        },
-        READER: {
-          label: i18next.t('shareSidebar.roles.reader.label'),
-          description: i18next.t('shareSidebar.chatRoles.reader'),
-        },
-      },
-    },
 
     async getSharedMembers(): Promise<SharedMember[]> {
       // Read lazily from UserStore — populated by UserProfileInitializer on every
@@ -135,20 +119,16 @@ export function createChatShareAdapter(
       // Chat share currently supports direct-user IDs only.
       const userIdsSet = new Set(submission.userIds);
 
-      // 'write' lets them add messages (their turns run with their own access).
-      const accessLevel: 'read' | 'write' = submission.role === 'WRITER' ? 'write' : 'read';
+      // The chat /share endpoint accepts an optional accessLevel ('read' | 'write').
+      // The sidebar forces submission.role to 'READER' when supportsRoles is false
+      // (our case), but map it explicitly so the backend contract is respected if
+      // the adapter is ever flipped to support roles.
+      const accessLevel: 'read' | 'write' =
+        submission.role === 'WRITER' ? 'write' : 'read';
 
       await apiClient.post(`${conversationBasePath}/share`, {
         userIds: Array.from(userIdsSet),
         accessLevel,
-      });
-    },
-
-    async updateRole(memberId: string, memberType: 'user' | 'team', newRole: ShareRole): Promise<void> {
-      if (memberType !== 'user') return;
-      await apiClient.post(`${conversationBasePath}/share`, {
-        userIds: [memberId],
-        accessLevel: newRole === 'WRITER' ? 'write' : 'read',
       });
     },
 
@@ -161,6 +141,7 @@ export function createChatShareAdapter(
     /** Paginated org users (Mongo userId) for chat /share. */
     getSharingUsersPaginated: fetchShareUsersPaginated,
 
+    // No updateRole — supportsRoles is false
   };
 }
 

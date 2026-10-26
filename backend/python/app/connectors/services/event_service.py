@@ -16,7 +16,10 @@ from app.config.constants.arangodb import (
     Connectors,
     ProgressStatus,
 )
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    dispose_connector,
+)
 from app.connectors.core.base.connector.instance_lock import connector_init_lock
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.connectors.core.constants import ConnectorStateKeys
@@ -256,19 +259,20 @@ class EventService:
         if previous is None or previous is connector:
             return
 
-        if _running_here(connector_id):
-            # cleanup() nulls the connector's client and data source, so closing one
-            # mid-sync kills that sync. Leaking the pool is the lesser evil, and is
-            # what this did before it started cleaning up at all.
+        if _running_here(connector_id) or _reindexing_here(connector_id):
+            # cleanup() nulls the connector's client and data source, and disposal
+            # closes the processor a reindex publishes through, so closing one
+            # mid-sync or mid-reindex kills that task. Leaking the pool is the
+            # lesser evil, and is what this did before it started cleaning up at all.
             self.logger.warning(
-                f"Replaced the live {connector_id} connector instance while its sync is "
-                "running; leaving the previous instance open so the sync can finish"
+                f"Replaced the live {connector_id} connector instance while a sync or "
+                "reindex is using it; leaving the previous instance open so it can finish"
             )
             return
 
         self.logger.warning(f"Replaced the live {connector_id} connector instance; cleaning up the previous one")
         try:
-            await previous.cleanup()
+            await dispose_connector(previous)
         except Exception as e:
             self.logger.warning(f"Failed to clean up the replaced {connector_id} connector instance: {e}")
 
@@ -291,9 +295,6 @@ class EventService:
 
     def _release_connector(self, connector_id: str, connector: BaseConnector) -> None:
         """Close an evicted connector rather than leaking its sessions instead."""
-        cleanup = getattr(connector, "cleanup", None)
-        if cleanup is None:
-            return
         try:
             loop = asyncio.get_running_loop()
         except RuntimeError:
@@ -301,7 +302,7 @@ class EventService:
 
         async def _close() -> None:
             try:
-                await cleanup()
+                await dispose_connector(connector)
             except Exception as e:  # eviction must never fail a sync
                 self.logger.warning(
                     "Cleanup failed for evicted connector %s: %s", connector_id, e
@@ -361,6 +362,25 @@ class EventService:
         """Live connector instance for HTTP callers, built from its app doc if missing."""
         return await self._ensure_connector(connector_name, connector_id)
 
+    def _stored_connector_name(
+        self, connector_doc: dict[str, Any], event_name: str, connector_id: str
+    ) -> str:
+        """The registry name of the instance's stored type, which picks its class.
+
+        The event name is not trusted for this: the resync route takes it from the
+        request body, so it could build one connector's class over another
+        instance's config and credentials.
+        """
+        stored = (connector_doc.get("type") or "").replace(" ", "").lower()
+        if not stored:
+            return event_name
+        if stored != event_name:
+            self.logger.warning(
+                f"Event for connector {connector_id} names '{event_name}' but the "
+                f"instance is '{stored}'; using '{stored}'"
+            )
+        return stored
+
     async def _auto_initialize_connector(
         self, connector_name: str, connector_id: str
     ) -> BaseConnector | None:
@@ -391,7 +411,7 @@ class EventService:
             data_store_provider = self._build_data_store(org_id)
 
             connector = await ConnectorFactory.initialize_connector(
-                name=connector_name,
+                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
@@ -472,6 +492,7 @@ class EventService:
 
     async def _build_init_connector(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Build and store the connector. Caller must hold ``connector_init_lock``."""
+        connector: BaseConnector | None = None
         try:
             org_id = payload.get("orgId")
             connector_id = payload.get("connectorId")
@@ -500,7 +521,7 @@ class EventService:
             
             # Use generic connector factory
             connector = await ConnectorFactory.create_connector(
-                name=connector_name,
+                name=self._stored_connector_name(connector_doc, connector_name, connector_id),
                 logger=self.logger,
                 data_store_provider=data_store_provider,
                 config_service=config_service,
@@ -522,6 +543,7 @@ class EventService:
 
             if not is_initialized:
                 self.logger.error(f"❌ Failed to initialize {connector_name} connector (init returned False). Not storing in container.")
+                await self._dispose_unstored(connector_name, connector)
                 return False
 
             self.logger.info(f"✅ Successfully initialized {connector_name} connector")
@@ -531,7 +553,25 @@ class EventService:
             return True
         except Exception as e:
             self.logger.error(f"Failed to initialize event service connector {connector_name} for org_id %s: %s", org_id, e, exc_info=True)
+            if connector is not None and not self._is_cached(connector_id, connector):
+                await self._dispose_unstored(connector_name, connector)
             return False
+
+    def _is_cached(self, connector_id: str, connector: BaseConnector) -> bool:
+        """Whether the cache holds this instance. When the cache cannot be read,
+        assume it does: closing a live connector breaks every task using it."""
+        try:
+            return self._get_connector(connector_id) is connector
+        except Exception:
+            return True
+
+    async def _dispose_unstored(self, connector_name: str, connector: BaseConnector) -> None:
+        """Close a connector that failed init() and is never stored. The factory
+        handed it an open processor, and a redelivered init event builds another."""
+        try:
+            await dispose_connector(connector)
+        except Exception as e:
+            self.logger.warning(f"Failed to clean up {connector_name} after a failed init: {e}")
 
     async def _handle_start_sync(self, connector_name: str, payload: dict[str, Any]) -> bool:
         """Queue immediate start of the sync service"""

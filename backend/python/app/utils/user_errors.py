@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from app.agents.agent_loop.error_classification import classify_error
+from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
@@ -22,6 +23,7 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    PasswordProtectedError,
     ProcessingError,
     RecordStatusUpdateError,
     VectorStoreError,
@@ -31,7 +33,7 @@ from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import Iterator, Mapping
 
 # "Reindex" is the action's label in the knowledge base.
 GENERIC_FAILURE = (
@@ -160,6 +162,95 @@ def unsupported_file_type(extension: str | None) -> str:
     return f"PipesHub can't read {what} yet. Convert the file to PDF, DOCX or TXT to make it searchable."
 
 
+# What a synced item is called in a reason. Some sources let a file be fixed
+# where it lives, but not all (a mail attachment can't be edited), so reasons
+# say what a new copy in the source leads to rather than asking for an edit.
+_SYNCED_FILE_TYPES = frozenset({RecordTypes.FILE.value, RecordTypes.CODE_FILE.value})
+_SYNCED_ITEM_KINDS = {
+    RecordTypes.ATTACHMENT.value: "attachment",
+    RecordTypes.MAIL.value: "email",
+    RecordTypes.GROUP_MAIL.value: "email",
+    RecordTypes.MESSAGE.value: "message",
+    RecordTypes.TICKET.value: "ticket",
+    RecordTypes.PULL_REQUEST.value: "pull request",
+    RecordTypes.WEBPAGE.value: "page",
+    RecordTypes.SHAREPOINT_PAGE.value: "page",
+    RecordTypes.COMMENT.value: "comment",
+    RecordTypes.WEBPAGE_COMMENT.value: "comment",
+    RecordTypes.MEETING.value: "meeting",
+    RecordTypes.CASE.value: "case",
+    RecordTypes.TASK.value: "task",
+}
+# The app refuses Reindex on one record of a code repository and points at a
+# reindex of the whole repository instead (isRecordReindexBlocked in
+# frontend/app/(main)/knowledge-base/utils/reindex-label.ts).
+_CODE_REPO_CONNECTORS = frozenset({
+    Connectors.GITHUB.value, Connectors.GITHUB_TEAMS.value,
+    Connectors.GITLAB.value, Connectors.GITLAB_PERSONAL.value,
+})
+
+
+def for_synced_item(
+    reason: str, record_type: str | None, source: str | None, connector: str | None = None,
+) -> str:
+    """``reason`` for an item a connector synced from ``source``.
+
+    The reasons below tell someone to upload the file again, which they never
+    did and can't do for a synced item. Any other reason is returned as it is.
+    ``connector`` is the record's connector type, which decides whether the
+    item can be reindexed on its own.
+    """
+    src = source or "the source"
+    code_repo = (connector or "").strip().upper() in _CODE_REPO_CONNECTORS
+    retry = "Reindex the whole repository from the knowledge hub" if code_repo else "Try Reindex"
+    if record_type in _SYNCED_FILE_TYPES:
+        return {
+            UNREADABLE_FILE: (
+                f"We couldn't read this file from {src}. It may be damaged or in a format we "
+                f"can't open, so it isn't searchable. A fresh copy (or a PDF export) added to "
+                f"{src} is indexed on the next sync."
+            ),
+            FILE_TOO_LARGE: (
+                f"This file from {src} is too large to index, so it isn't searchable. Smaller "
+                f"files split from it and added to {src} are indexed on the next sync."
+            ),
+            PASSWORD_PROTECTED: (
+                f"This file from {src} is password-protected, so we can't read it and it isn't "
+                f"searchable. A copy without the password added to {src} is indexed on the "
+                "next sync."
+            ),
+            PROCESSING_TIMED_OUT: (
+                f"This file from {src} took too long to process. {retry}; if it keeps "
+                "failing, ask your admin for help."
+            ),
+        }.get(reason, reason)
+    kind = _SYNCED_ITEM_KINDS.get(record_type or "", "item")
+    after_change = (
+        f"It's indexed again on the next sync after it changes in {src}" if code_repo
+        else f"Try Reindex after it changes in {src}"
+    )
+    return {
+        UNREADABLE_FILE: (
+            f"We couldn't read this {kind} from {src}: part of its content is in a form "
+            f"PipesHub can't process, so it isn't searchable. {after_change}; if it keeps "
+            "failing, ask your admin for help."
+        ),
+        FILE_TOO_LARGE: (
+            f"This {kind} from {src} is larger than PipesHub can index, so it isn't "
+            f"searchable. Nothing is wrong with it in {src}; if you need it in search, "
+            "ask your admin for help."
+        ),
+        PASSWORD_PROTECTED: (
+            f"This {kind} from {src} is password-protected, so we can't read it and it "
+            "isn't searchable. If you need it in search, ask your admin for help."
+        ),
+        PROCESSING_TIMED_OUT: (
+            f"This {kind} from {src} took too long to process. {retry}; if it keeps "
+            "failing, ask your admin for help."
+        ),
+    }.get(reason, reason)
+
+
 def _megabytes(size_bytes: int, *, round_up: bool = False) -> str:
     tenths = size_bytes / (1024 * 1024) * 10
     return f"{(math.ceil(tenths) if round_up else round(tenths)) / 10:.1f}".removesuffix(".0")
@@ -181,6 +272,11 @@ def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: b
         "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then "
         f"{after_raising}."
     )
+
+
+def duplicate_password_protected(primary_reason: str | None) -> str:
+    base = "An identical file is password-protected, so this copy was skipped."
+    return f"{base} {primary_reason}" if primary_reason else base
 
 
 def duplicate_failed(primary_reason: str | None) -> str:
@@ -533,18 +629,60 @@ def too_large_refusal(exc: BaseException | None) -> StorageRequestRejectedError 
     )
 
 
-def to_user_reason(exc: BaseException | None) -> str:
+def to_user_reason(
+    exc: BaseException | None,
+    *,
+    record: Mapping[str, object] | None = None,
+    source: str | None = None,
+) -> str:
     """The reason to store on a record that failed to index because of ``exc``.
 
     The outermost PipesHub error says what was being done (embedding, storing,
     reading the file); the errors under it say why. Checked in that order, so a
     processing timeout reads as a slow file and a storage timeout as an outage.
+
+    Several reasons tell someone to upload the file again. For a ``record``
+    synced by a connector they say what to do in ``source`` (the connector's
+    name) instead, see ``for_synced_item``.
     """
+    reason = _reason(exc)
+    if record is not None and record.get("origin") == OriginTypes.CONNECTOR.value:
+        record_type = record.get("recordType")
+        connector = record.get("connectorName")
+        return for_synced_item(
+            reason,
+            record_type if isinstance(record_type, str) else None,
+            source,
+            connector if isinstance(connector, str) else None,
+        )
+    return reason
+
+
+def is_password_protected(exc: BaseException | None) -> bool:
+    """Whether the file itself was found to need a password, which ends its indexing as
+    ``PASSWORD_PROTECTED`` rather than ``FAILED``.
+
+    Only the typed error counts, or the parsing service's PASSWORD_REQUIRED code.
+    The wording of an error does not: a reason can still read "password-protected"
+    from ``_PASSWORD_HINTS`` for a file nothing recognised as encrypted.
+    """
+    if exc is None:
+        return False
+    return any(
+        isinstance(e, PasswordProtectedError)
+        or getattr(e, "code", None) == ParseErrorCode.PASSWORD_REQUIRED
+        for e in _chain(exc)
+    )
+
+
+def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
 
     for e in chain:
+        if isinstance(e, PasswordProtectedError):
+            return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the
         # parsing service's answer: the same code and details either way.
         if getattr(e, "code", None) == ParseErrorCode.UNSUPPORTED_FORMAT:

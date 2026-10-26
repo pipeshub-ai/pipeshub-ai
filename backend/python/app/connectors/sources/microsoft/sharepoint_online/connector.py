@@ -120,6 +120,16 @@ from app.connectors.sources.microsoft.sharepoint_online.sync_health import (
     SharePointSyncIncomplete,
     SyncHealth,
 )
+from app.connectors.sources.microsoft.common.sharepoint_permission_scope import (
+    GUID_PATTERN,
+    SHAREPOINT_ITEMS_PAGE_SIZE,
+    SHAREPOINT_REST_HEADERS,
+    SHAREPOINT_REST_MAX_ATTEMPTS,
+    SHAREPOINT_REST_MAX_RETRY_AFTER_S,
+    SHAREPOINT_REST_RETRY_STATUSES,
+    ListPermissionScope,
+    drive_item_unique_id,
+)
 from app.connectors.sources.microsoft.sharepoint_online.utils import (
     clean_html_output,
     get_sharepoint_auth_notification,
@@ -241,29 +251,6 @@ class SiteMetadata:
     updated_at: Optional[datetime] = None
 
 
-@dataclass
-class ListPermissionScope:
-    """Which parts of a SharePoint list carry their own permissions.
-
-    Graph marks no driveItem permission as inherited, so only SharePoint
-    REST can tell a uniquely permissioned item from one that inherits.
-    """
-    web_url: str
-    list_url: str
-    has_unique_role_assignments: bool
-    # Lower-cased list item UniqueId -> list item Id, for items with unique role assignments.
-    unique_items: dict[str, int]
-
-
-SHAREPOINT_REST_HEADERS = {
-    'Accept': 'application/json;odata=verbose',
-    'Content-Type': 'application/json;odata=verbose',
-}
-SHAREPOINT_REST_RETRY_STATUSES = (HTTPStatus.TOO_MANY_REQUESTS, HTTPStatus.SERVICE_UNAVAILABLE)
-SHAREPOINT_REST_MAX_ATTEMPTS = 3
-SHAREPOINT_REST_MAX_RETRY_AFTER_S = 30
-SHAREPOINT_ITEMS_PAGE_SIZE = 5000
-
 # Stored records written before version 2 carry a copy of every inherited grant. Their next
 # run reads every item again so those copies are replaced (see run_sync).
 PERMISSION_MODEL_VERSION = 2
@@ -292,7 +279,6 @@ SP_PRINCIPAL_SHAREPOINT_GROUP = 8
 SP_LIMITED_ACCESS_ROLE_KIND = 1
 SP_LIMITED_ACCESS_ROLE_NAMES = frozenset({"Limited Access", "Web-Only Limited Access"})
 
-GUID_PATTERN = re.compile(r'([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})')
 TENANT_CLAIM_PATTERN = re.compile(r'\|tenant\|([0-9a-fA-F-]{36})')
 DIRECTORY_ROLE_ODATA_TYPE = "#microsoft.graph.directoryRole"
 M365_OWNERS_DISPLAY_SUFFIX = " Owners"
@@ -344,22 +330,6 @@ def merge_permission(permissions: dict[tuple[str, str], Permission], permission:
     if current is None or _PERMISSION_RANK[permission.type] > _PERMISSION_RANK[current.type]:
         permissions[key] = permission
 
-
-def drive_item_unique_id(item: DriveItem) -> str | None:
-    """The SharePoint list item UniqueId of a drive item, lower-cased.
-
-    A drive item's eTag is ``"{GUID},n"`` and that GUID is the list item's UniqueId.
-    """
-    sharepoint_ids = getattr(item, 'sharepoint_ids', None)
-    unique_id = getattr(sharepoint_ids, 'list_item_unique_id', None) if sharepoint_ids else None
-    if isinstance(unique_id, str) and unique_id:
-        return unique_id.lower()
-    e_tag = getattr(item, 'e_tag', None)
-    if isinstance(e_tag, str):
-        match = GUID_PATTERN.search(e_tag)
-        if match:
-            return match.group(1).lower()
-    return None
 
 
 class MicrosoftRegion(str, Enum):

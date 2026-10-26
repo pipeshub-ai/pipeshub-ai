@@ -838,12 +838,20 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     # Create RecordGroup for group mailbox
                     group_record_group = self._transform_group_to_record_group(group)
 
-                    # Fetch members for this group
-                    members = await self._get_group_members(group_id)
+                    # Fetch members for this group. Unknown is not empty: a failed read keeps
+                    # the stored members, while the mailbox and its conversations sync as usual.
+                    try:
+                        members = await self._get_group_members(group_id)
+                    except Exception as e:
+                        self.logger.error(f"Keeping stored members of group {group_id}: {e}")
+                        self._full_sync_incomplete = True
+                        self._skipped["groups"] += 1
+                        await self.data_entities_processor.note_kept_user_group(self.connector_id, group_id)
+                        members = None
 
                     # Convert to AppUser objects - members are Pydantic User objects from _get_group_members
                     app_users = []
-                    for member in members:
+                    for member in members or []:
                         # transitiveMembers also lists nested groups and devices, which have no UPN.
                         member_email = getattr(member, "mail", None) or getattr(member, "user_principal_name", None)
                         if member_email:
@@ -859,7 +867,8 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                                 )
                                 app_users.append(app_user)
 
-                    user_groups_batch.append((user_group, app_users))
+                    if members is not None:
+                        user_groups_batch.append((user_group, app_users))
                     all_synced_user_groups.append(user_group)
 
                     # Add group mailbox RecordGroup to batch with group permission
@@ -888,6 +897,9 @@ class OutlookConnector(OutlookFolderInventoryMixin, BaseConnector):
                     self.logger.error(f"Error processing group {group_name}: {e}")
                     self._full_sync_incomplete = True
                     self._skipped["groups"] += 1
+                    # Unknown is not empty: keep the stored members of this group.
+                    if group.id:
+                        await self.data_entities_processor.note_kept_user_group(self.connector_id, group.id)
                     continue
 
             # Process remaining groups

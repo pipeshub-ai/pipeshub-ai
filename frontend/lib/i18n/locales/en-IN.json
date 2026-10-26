@@ -312,25 +312,16 @@
     "filterOnlyUnread": "Unread",
     "filterArchived": "Archived",
     "filterTooltip": "Filter: {{filter}}",
+    "chatShared": {
+      "title": "{{name}} shared a chat with you",
+      "titleAgent": "{{name}} shared an agent chat with you",
+      "body": "You can now open \"{{chat}}\".",
+      "bodyNoTitle": "You can now open it from \"{{place}}\".",
+      "someone": "A colleague"
+    },
     "loadFailed": "Failed to load notifications",
     "updateFailed": "Could not update notification",
-    "removeFailed": "Could not remove notification",
-    "accessRequest": {
-      "approve": "Approve",
-      "deny": "Deny",
-      "approved": "Access granted",
-      "denied": "Request declined",
-      "failed": "Couldn't save your decision. Please try again.",
-      "approveTitle": "Approve access?",
-      "approveBodyCollection": "This gives {{user}} read access to the whole collection “{{name}}”.",
-      "approveBodyRecord": "This gives {{user}} read access to this record.",
-      "cancel": "Cancel",
-      "alreadyDecided": "This request was already decided.",
-      "someone": "Someone",
-      "alreadyApproved": "Already approved",
-      "alreadyDeclined": "Already declined",
-      "forwarded": "Access to this record is granted in its source system."
-    }
+    "removeFailed": "Could not remove notification"
   },
   "action": {
     "find": "Find",
@@ -431,7 +422,7 @@
     "willBeReindexed": "will be reindexed",
     "reindexConfirm": "Reindex this {{type}}?",
     "reindexDescription": "This will update the search index for this {{type}} and its contents.",
-    "deleteCollectionBody": "'{{name}}' and everything in it will be deleted.",
+    "deleteCollectionBody": "'{{name}}' and everything in it will be deleted. It will also be removed from any agents that use it.",
     "deleteFolderBody": "'{{name}}' and everything in it will be deleted from this collection.",
     "deleteFileBody": "'{{name}}' will be deleted from this collection."
   },
@@ -654,6 +645,7 @@
       "empty": "Empty",
       "paused": "Paused",
       "needsMultimodalModel": "Needs multimodal model",
+      "passwordProtected": "Password protected",
       "skipped": "Skipped",
       "pending": "Pending"
     },
@@ -666,7 +658,9 @@
       "open": "Open",
       "preview": "Preview",
       "goToParent": "Go to parent",
-      "goToNamed": "Go to {{name}}"
+      "goToNamed": "Go to {{name}}",
+      "moreFor": "More options for {{name}}",
+      "select": "Select {{name}}"
     },
     "upload": {
       "title": "Upload data",
@@ -796,8 +790,6 @@
     "sharedChats": "Shared chats",
     "sharedBy": "Shared by {{name}}",
     "agentChat": "Agent chat",
-    "askedBy": "{{name}} asked",
-    "askedByUnknown": "Another user asked",
     "noSharedChats": "No shared chats",
     "yourChats": "Your chats",
     "noChatsFound": "No chats found",
@@ -1341,9 +1333,7 @@
     "agentCapabilities": {
       "notConfiguredOnAgent": "Not configured on this agent",
       "internalSearch": "Internal search",
-      "webSearch": "Web search",
-      "deepResearch": "Deep research",
-      "deepResearchNeedsWebSearch": "Turn on web search to use deep research"
+      "webSearch": "Web search"
     },
     "resizePanels": "Resize chat and preview panels",
     "toolApproval": {
@@ -1402,20 +1392,7 @@
       "download": "Download artifact",
       "downloading": "Downloading artifact"
     },
-    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
-    "redaction": {
-      "partial": "This answer is partially based on sources you can't access.",
-      "hidden": "This answer is based on sources you can't access.",
-      "sourceLabel": "Source you can't access",
-      "requestAccess": "Request access",
-      "requested": "Access requested",
-      "requestFailed": "Couldn't send the request. Please try again.",
-      "openInSource": "Open in source",
-      "inlineHidden": "Hidden: you don't have access",
-      "alreadyAccessible": "You can already open this source. Refresh the chat.",
-      "detailsHidden": "Details such as tool results and reasoning are hidden for shared viewers.",
-      "collectionLabel": "Request access to the collection that contains this source"
-    }
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -2661,7 +2638,8 @@
         "errorFallback": "Failed to disable connector. Please try again.",
         "actions": {
           "removeInstance": "remove this connector instance",
-          "saveConfig": "save configuration changes"
+          "saveConfig": "save configuration changes",
+          "saveAuth": "save the new credentials"
         }
       },
       "adminAccessDialog": {
@@ -2777,6 +2755,8 @@
         "statFailedSub": "Errors (API / permission issues)",
         "statUnsupported": "Unsupported",
         "statUnsupportedSub": "Can't be processed",
+        "statPasswordProtected": "Password protected",
+        "statPasswordProtectedSub": "Can't be read without a password",
         "statInProgressSub": "Still being indexed",
         "statQueued": "Queued",
         "statQueuedSub": "Waiting to be indexed",
@@ -2793,7 +2773,22 @@
         "localWatcherLabel": "LOCAL WATCHER",
         "localWatcherStatus": "{{state}} · {{pending}} pending · {{failed}} failed",
         "classification": "Classification",
-        "classificationSkipped": "Skipped",
+        "enrichment": {
+          "title": "Data extraction with AI",
+          "description": "Runs in the background once a record is searchable. Search doesn't wait for it.",
+          "classificationHint": "Adds a summary, topics and categories",
+          "entities": "Entity extraction",
+          "entitiesHint": "Finds people, organisations and places",
+          "progress": "{{completed}} of {{total}}",
+          "waiting": "Waiting",
+          "skipped": "Skipped",
+          "notStarted": "Starts once records are searchable",
+          "inProgress": "In progress",
+          "done": "Done",
+          "failedCount_one": "{{count}} failed",
+          "failedCount_other": "{{count}} failed",
+          "retry": "Retry"
+        },
         "retryFailedClassification": "Retry failed classification",
         "retryClassificationSuccess": "Classification retry queued",
         "retryClassificationError": "Failed to retry classification",
@@ -2882,7 +2877,9 @@
           "ready": "Complete",
           "readyTooltip": "Configuration is complete and authenticated. Sync can run when enabled.",
           "desktopOffline": "Desktop offline",
-          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync."
+          "desktopOfflineTooltip": "The desktop app that owns this folder is not connected. Open it on that machine to sync.",
+          "actionNeeded": "Action needed",
+          "actionNeededTooltip": "Needs your attention: {{items}}"
         },
         "sync": {
           "kind": "Sync",
@@ -3129,6 +3126,12 @@
           "wholeSite": "Whole site",
           "onePage": "One page"
         }
+      },
+      "actionItems": {
+        "badge": "Action needed",
+        "title": "Action needed",
+        "openAuthentication": "Update authentication",
+        "viewSteps": "View setup steps"
       }
     },
     "mcpServers": {
@@ -4332,6 +4335,12 @@
         "selectAllScopes": "Select all",
         "clearAllScopes": "Clear all",
         "expiryDays": "{{count}} days",
+        "expiryCustom": "Custom",
+        "expiryCustomLabel": "Days until the token expires",
+        "expiryCustomUnit": "days",
+        "expiryCustomHelp": "Enter a number of days from 1 to {{max}}.",
+        "expiryCustomInvalid": "Enter a whole number of days from 1 to {{max}}.",
+        "expiryCustomPreview": "Expires on {{date}}",
         "expiresInDays": "Days left: {{count}}",
         "expiringSoon": "Tokens expiring soon: {{count}}. Create a replacement for each one, move the integrations across, and then revoke the old tokens."
       },
@@ -4575,20 +4584,17 @@
     "agentName": "Name",
     "createdBy": "Created by",
     "agentNamePlaceholder": "e.g. Support bot",
-    "serviceAccountBadge": "Service agent",
-    "serviceAccountBadgeTooltip": "This service agent has its own toolset credentials. It searches knowledge with its creator's access, so everyone who uses it sees results from what the creator can read.",
-    "convertToServiceAccount": "Convert to service agent",
-    "convertToServiceAccountTooltip": "Permanent: agent-level toolsets, shared with your whole organisation, and knowledge searched with the creator's access. Cannot be undone.",
-    "convertToServiceAccountTooltipNewAgent": "Creates this agent as a service agent: agent-level toolsets, shared with your whole organisation, and knowledge searched with your access.",
-    "createAsServiceAccount": "Service agent",
-    "createAsServiceAccountTooltip": "Create with agent-level toolsets, shared with your whole organisation. It searches knowledge with your access.",
+    "serviceAgentBadge": "Service agent",
+    "serviceAgentBadgeTooltip": "This service agent has its own toolset credentials. It searches knowledge with its creator's access, so everyone who uses it sees results from what the creator can read.",
+    "convertToServiceAgentTooltip": "Permanent: agent-level toolsets, shared with your whole organisation, and knowledge searched with the creator's access. Cannot be undone.",
+    "convertToServiceAgentTooltipNewAgent": "Creates this agent as a service agent: agent-level toolsets, shared with your whole organisation, and knowledge searched with your access.",
     "agentActionsMenuAria": "Agent menu",
     "agentMenuCreateAsServiceAgent": "Create as service agent",
     "agentMenuConvertToServiceAgent": "Convert to service agent",
     "share": "Share",
     "shareWithOrg": "Share with everyone",
     "shareWithOrgTooltip": "Share this agent with everyone in your organisation.",
-    "serviceAccountShareTooltip": "Service agents are always shared with the organisation.",
+    "serviceAgentShareTooltip": "Service agents are always shared with the organisation.",
     "saving": "Saving…",
     "saveChanges": "Save changes",
     "createAgent": "Create agent",
@@ -4598,8 +4604,19 @@
     "userAgentDesc": "Personal agent with per-user toolset authentication.",
     "serviceAgent": "Service agent",
     "serviceAgentDesc": "Organisation-wide agent with agent-level toolset credentials. Searches knowledge with its creator's access.",
+    "identitySearchesAs": "Searches as {{identity}}",
+    "identityCreator": "its creator",
+    "identityBoundUnknown": "a service account",
+    "identityTooltip": "Choose the identity this agent searches knowledge as. Everyone who uses it sees results from what that identity can read.",
+    "identityDialogTitle": "Search knowledge as",
+    "identityDialogBody": "This agent is shared with your whole organisation, so this decides what everybody's questions can reach. Its creator is the default. A service account is an identity an administrator grants deliberately.",
+    "identityChoose": "Choose",
+    "identityLoading": "Loading service accounts…",
+    "identityLoadError": "Could not load service accounts.",
+    "identityRetry": "Try again",
+    "identityNone": "No service accounts yet. Create one in Workspace → Service accounts.",
     "nameRequired": "Enter a name to continue.",
-    "saveAsServiceAccountFirst": "Save the agent as a service agent first, then configure toolset credentials.",
+    "saveAsServiceAgentFirst": "Save the agent as a service agent first, then configure toolset credentials.",
     "hidePalette": "Hide palette",
     "showPalette": "Show palette",
     "openInChat": "Open in chat",
@@ -4617,7 +4634,7 @@
     "agentLoadFailedTitle": "Couldn't load this agent",
     "agentLoadFailedDescription": "Check your connection and try again. Nothing is saved until the agent loads.",
     "agentLoadRetry": "Try again",
-    "paletteViewOnlyServiceAccount": "View only. Palette and toolset setup are locked for this org service agent.",
+    "paletteViewOnlyServiceAgent": "View only. Palette and toolset setup are locked for this org service agent.",
     "paletteActionBlockedViewOnly": "View only. This org service agent cannot be changed here.",
     "viewerPaletteDragBlocked": "View only. Flow is locked; authenticate toolsets under Tools.",
     "paletteViewerAuthenticateInTools": "View only. Canvas drag is off; sign in to toolsets under Tools.",
@@ -4630,8 +4647,8 @@
     "noSkills": "No skills yet — create or import one under Your Skills",
     "collapse": "Collapse",
     "expand": "Expand",
-    "serviceAccountCreated": "Service agent created. Configure each toolset with the key icon in the palette.",
-    "serviceAccountConverted": "Agent converted to a service agent. Configure toolset credentials with the key icon in the palette.",
+    "serviceAgentCreated": "Service agent created. Configure each toolset with the key icon in the palette.",
+    "serviceAgentConverted": "Agent converted to a service agent. Configure toolset credentials with the key icon in the palette.",
     "unsavedChangesConfirm": "You have unsaved changes. Are you sure you want to leave?",
     "agentUpdated": "Agent updated",
     "agentUpdatedDesc": "Your changes have been saved.",
@@ -5401,7 +5418,8 @@
     "serverError": "Server error",
     "timedOut": "Request timed out",
     "somethingWentWrong": "Something went wrong",
-    "tryAgainShortly": "Please try again shortly"
+    "tryAgainShortly": "Please try again shortly",
+    "connectedServiceProblem": "Problem with a connected service"
   },
   "validation": {
     "password": {
@@ -5462,10 +5480,6 @@
         "label": "Can view",
         "description": "Only viewing access"
       }
-    },
-    "chatRoles": {
-      "writer": "Can view and send messages. Their answers use their own access.",
-      "reader": "Can only view the chat."
     },
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",

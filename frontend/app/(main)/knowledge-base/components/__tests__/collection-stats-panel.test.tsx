@@ -52,6 +52,10 @@ function openWith(data: ConnectorStatsResponse['data']) {
   renderInTheme(<CollectionStatsPanel />);
 }
 
+// Retries live inside the Data extraction with AI section, which starts collapsed.
+const openEnrichment = async () =>
+  fireEvent.click(await screen.findByRole('button', { name: /Data extraction with AI/ }));
+
 const disabled = (name: RegExp) => (screen.getByRole('button', { name }) as HTMLButtonElement).disabled;
 
 beforeEach(() => {
@@ -69,14 +73,16 @@ afterEach(() => {
 
 describe('CollectionStatsPanel: entity extraction retry', () => {
   it('hides the retry when no record failed entity extraction', async () => {
-    openWith(stats(undefined, { COMPLETED: 5, FAILED: 0 }));
+    openWith(stats({ COMPLETED: 5 }, { COMPLETED: 5, FAILED: 0 }));
+    await openEnrichment();
 
     await waitFor(() => expect(screen.getByText('Records status')).toBeTruthy());
     expect(screen.queryByRole('button', { name: /Retry failed entity extraction/ })).toBeNull();
   });
 
   it('re-runs only the entities stage for failed records and refreshes the numbers', async () => {
-    openWith(stats(undefined, { FAILED: 3 }));
+    openWith(stats({ COMPLETED: 5 }, { FAILED: 3 }));
+    await openEnrichment();
 
     fireEvent.click(await screen.findByRole('button', { name: /Retry failed entity extraction \(3\)/ }));
 
@@ -87,7 +93,8 @@ describe('CollectionStatsPanel: entity extraction retry', () => {
 
   it('reports a failed retry', async () => {
     reindexKnowledgeBase.mockRejectedValue(new Error('nope'));
-    openWith(stats(undefined, { FAILED: 3 }));
+    openWith(stats({ COMPLETED: 5 }, { FAILED: 3 }));
+    await openEnrichment();
 
     fireEvent.click(await screen.findByRole('button', { name: /Retry failed entity extraction \(3\)/ }));
 
@@ -98,6 +105,7 @@ describe('CollectionStatsPanel: entity extraction retry', () => {
     let finish: (value: unknown) => void = () => {};
     reindexKnowledgeBase.mockReturnValue(new Promise((resolve) => (finish = resolve)));
     openWith(stats({ FAILED: 2 }, { FAILED: 3 }));
+    await openEnrichment();
 
     fireEvent.click(await screen.findByRole('button', { name: /Retry failed entity extraction \(3\)/ }));
 

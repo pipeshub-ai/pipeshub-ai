@@ -45,6 +45,9 @@ function stats(indexingStatus: Record<string, number>, total?: number): Connecto
 
 const toastTitles = () => toasts().map((t) => t.title);
 
+// Retries live inside the Data extraction with AI section, which starts collapsed.
+const openEnrichment = () => fireEvent.click(screen.getByRole('button', { name: /Data extraction with AI/ }));
+
 beforeEach(() => {
   installDomShims();
   useConnectorsStore.getState().reset();
@@ -156,6 +159,7 @@ describe('OverviewTab: actions', () => {
       FAILED: 2,
     } as ConnectorStatsResponse['data']['stats']['extractionStatus'];
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedClassification} />);
+    openEnrichment();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry failed classification \(2\)/ }));
 
@@ -175,8 +179,11 @@ describe('OverviewTab: actions', () => {
 
   it('hides the entity extraction retry when no record failed it', () => {
     const noFailedEntities = stats({ COMPLETED: 5 });
+    noFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
     noFailedEntities.stats.entitiesStatus = { COMPLETED: 5, FAILED: 0 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={noFailedEntities} />);
+    openEnrichment();
 
     expect(screen.queryByRole('button', { name: /Retry failed entity extraction/ })).toBeNull();
   });
@@ -189,8 +196,11 @@ describe('OverviewTab: actions', () => {
 
   it('retries failed entity extraction and refreshes the numbers', async () => {
     const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
     withFailedEntities.stats.entitiesStatus = { COMPLETED: 1, FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+    openEnrichment();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
 
@@ -202,8 +212,11 @@ describe('OverviewTab: actions', () => {
   it('does not call a queued entity extraction retry failed when only the stats refresh fails', async () => {
     fetchInstanceStats.mockRejectedValue(new Error('stats down'));
     const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
     withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+    openEnrichment();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
 
@@ -224,6 +237,7 @@ describe('OverviewTab: actions', () => {
       FAILED: 2,
     } as ConnectorStatsResponse['data']['stats']['extractionStatus'];
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedClassification} />);
+    openEnrichment();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry failed classification \(2\)/ }));
 
@@ -234,8 +248,11 @@ describe('OverviewTab: actions', () => {
   it('reports a failed entity extraction retry', async () => {
     reindexConnector.mockRejectedValue(new Error('nope'));
     const withFailedEntities = stats({ COMPLETED: 5 });
+    withFailedEntities.stats.extractionStatus = { COMPLETED: 5 };
+
     withFailedEntities.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailedEntities} />);
+    openEnrichment();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
 
@@ -249,6 +266,7 @@ describe('OverviewTab: actions', () => {
     withFailures.stats.extractionStatus = { FAILED: 2 };
     withFailures.stats.entitiesStatus = { FAILED: 4 };
     renderInTheme(<OverviewTab instance={makeInstance({ isActive: true })} stats={withFailures} />);
+    openEnrichment();
 
     fireEvent.click(screen.getByRole('button', { name: /Retry failed entity extraction \(4\)/ }));
 
@@ -302,5 +320,21 @@ describe('OverviewTab: actions', () => {
     fireEvent.click(screen.getByRole('button', { name: /Refresh/ }));
 
     await waitFor(() => expect(toastTitles()).toContain('Failed to refresh record status'));
+  });
+
+  it('opens the settings on Authenticate, not Configure, to fix what the connector asks', () => {
+    const instance = makeInstance({
+      isAuthenticated: true,
+      isConfigured: true,
+      actionItems: [{ code: 'certificate_sign_in', severity: 'warning', title: 'Switch', message: 'Upload', action: 'authenticate' }],
+    });
+    renderInTheme(<OverviewTab instance={instance} stats={stats({ COMPLETED: 1 })} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Update authentication' }));
+
+    const s = useConnectorsStore.getState();
+    expect(s.isPanelOpen).toBe(true);
+    expect(s.panelConnectorId).toBe(instance._key);
+    expect(s.panelActiveTab).toBe('authenticate');
   });
 });

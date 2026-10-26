@@ -317,6 +317,8 @@ class GoogleDriveIndividualConnector(BaseConnector):
         self._folder_seed_ids: set = set()
         self._tracked_folder_ids: set = set()
         self._blocked_folder_ids: set = set()
+        # Selected folders this account cannot see at all: a wrong ID, deleted, or not shared.
+        self._unseen_folder_ids: set = set()
 
         # Google Drive client and data source (initialized in init())
         self.google_client: Optional[GoogleClient] = None
@@ -528,6 +530,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
                 if drive_content_changed(existing_record, metadata):
                     is_updated = True
                     content_changed = await self._content_changed(existing_record, metadata, self.drive_data_source)
+                    # A native file's version also moves on a sharing change. With no new content it is
+                    # still written, as a rename is: a full sync unlinks every record it does not write,
+                    # and only the metadata path stores the new version without re-indexing the file.
+                    metadata_changed = metadata_changed or not content_changed
 
                 if existing_record and drive_id != existing_record.external_record_group_id:
                     is_updated = True
@@ -873,9 +879,11 @@ class GoogleDriveIndividualConnector(BaseConnector):
                         "run: once it can be read, new changes inside it sync again, and a full "
                         "sync brings in what it already holds."
                     )
+                    self._unseen_folder_ids.add(folder_id)
                     continue
                 failing.clear(folder_id)
                 if probe is None:
+                    self._unseen_folder_ids.add(folder_id)
                     self.logger.warning(
                         f"📁 Seed folder {folder_id} is not visible to this account; "
                         "its subtree will not be synced"
@@ -2270,10 +2278,10 @@ class GoogleDriveIndividualConnector(BaseConnector):
             await self._run_sync_steps()
         except Exception as e:
             report.note_failure(e)
-            report.note_unreadable_folders(sorted(self._blocked_folder_ids))
+            report.note_unreadable_folders(sorted(self._blocked_folder_ids | self._unseen_folder_ids))
             await report.finish(complete=False)
             raise
-        report.note_unreadable_folders(sorted(self._blocked_folder_ids))
+        report.note_unreadable_folders(sorted(self._blocked_folder_ids | self._unseen_folder_ids))
         complete = not self._sync_ledger.has_gaps
         await report.finish(complete=complete)
         if not complete:
@@ -2299,6 +2307,7 @@ class GoogleDriveIndividualConnector(BaseConnector):
         self._folder_seed_ids = set(folder_ids_filter or ())
         self._tracked_folder_ids = set(self._folder_seed_ids)
         self._blocked_folder_ids = set()
+        self._unseen_folder_ids = set()
         self._sync_ledger = FullSyncLedger()
         self._shortcut_cache = {}
         self._member_drive_ids = set()

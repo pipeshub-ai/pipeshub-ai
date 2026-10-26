@@ -11,6 +11,7 @@ import {
   MailSendResult,
   SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
+  smtpProblemOf,
 } from '../types/mail-event.types';
 
 const SMTP_DNS_TIMEOUT_MS = 30_000;
@@ -266,6 +267,7 @@ export class MailSenderService {
     if (openUntil !== null) {
       return {
         status: 'unavailable',
+        problem: 'unreachable',
         error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
       };
     }
@@ -314,8 +316,9 @@ export class MailSenderService {
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
-      this.logger.error('Mail send error', { error: message, kind });
-      return { status: kind, error: message };
+      const problem = smtpProblemOf(error);
+      this.logger.error('Mail send error', { error: message, kind, problem });
+      return { status: kind, error: message, ...(problem && { problem }) };
     }
   }
 }

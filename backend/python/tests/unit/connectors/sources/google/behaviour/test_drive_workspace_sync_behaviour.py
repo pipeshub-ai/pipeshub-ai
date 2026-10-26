@@ -7,6 +7,7 @@ Our databases are in-memory fakes.
 """
 
 import asyncio
+import contextlib
 import json
 import logging
 from collections.abc import AsyncIterator, Callable
@@ -1531,6 +1532,61 @@ def selected_tree(ws: Workspace) -> None:
     ws.world.add_item("drop", "drop.txt", parent="other-sub", owner=ALICE)
     ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["top"]})
 
+
+
+async def test_a_selected_folder_id_no_user_can_find_is_reported_to_the_admins(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.world.add_item("deep", "deep.txt", parent="pick", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await ws.connector_()).notify = notify
+    await ws.sync()
+
+    assert "deep.txt" in ws.names()
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in this connector's folder filter cannot be found")
+
+
+async def test_selected_folders_no_user_could_be_asked_about_are_not_reported_missing(ws: Workspace) -> None:
+    ws.world.folder("pick", "Picked", parent="root-bob", owner=BOB)
+    ws.filters(folder_ids={"operator": "in", "type": "list", "value": ["pick", "no-such-folder"]})
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    async def cannot_impersonate(user: object) -> None:
+        raise RuntimeError("impersonation failed")
+
+    connector = await ws.connector_()
+    connector.notify = notify
+    connector._build_user_drive_data_source = cannot_impersonate
+    with contextlib.suppress(Exception):
+        await ws.sync()
+
+    assert not [n for n in notices if "selected folders" in n["title"]]
+
+
+async def test_a_selected_folder_left_out_after_unrecognised_403s_is_reported(ws: Workspace) -> None:
+    two_selected_folders(ws)
+    ws.http.fail("GET", "/drive/v3/files/pick", 403, "someReasonDriveAddsLater")
+    for _ in range(4):
+        with pytest.raises(HttpError):
+            await ws.sync()
+    notices: list[dict[str, Any]] = []
+
+    async def notify(**kwargs: object) -> None:
+        notices.append(kwargs)
+
+    (await ws.connector_()).notify = notify
+    await ws.sync()
+
+    assert [n["title"].split(": ", 1)[1] for n in notices] == ["some selected folders cannot be opened"]
+    assert notices[0]["message"].startswith("1 folder in")
 
 async def test_narrowing_the_folder_filter_removes_what_it_leaves_out(ws: Workspace) -> None:
     selected_tree(ws)
