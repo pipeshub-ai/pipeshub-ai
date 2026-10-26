@@ -16,11 +16,13 @@ from app.services.cache.invalidation_hooks import notify_connector_sync_complete
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_user_or_503
+from app.utils.logger import create_logger
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 
 if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
 
+_log = create_logger(__name__)
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
 MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
@@ -270,7 +272,9 @@ async def create_team(request: Request) -> JSONResponse:
     # any error response makes the dashboard say "try again", which would create
     # the team a second time; so a failed read-back answers with the team as written.
     try:
-        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, org_id=user_info.get("orgId"), user_key=user['_key'])
+        team_with_users = await graph_provider.get_team_with_users(
+            team_id=team_key, org_id=user_info.get("orgId"), user_key=user['_key'],
+        )
     except Exception as e:
         logger.error(f"Team {team_key} was created but could not be read back: {str(e)}", exc_info=True)
         team_with_users = None
@@ -321,7 +325,10 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="User not found")
     try:
         # Use interface method to get team with users
-        result = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
+        result = await graph_provider.get_team_with_users(
+            team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
+            include_service_accounts=await _team_members_include_service_accounts(request),
+        )
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -489,7 +496,9 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
+        updated_team = await graph_provider.get_team_with_users(
+            team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
+        )
 
         return JSONResponse(
             status_code=200,
@@ -618,7 +627,8 @@ async def get_user_teams(
             limit=limit,
             created_by=graph_created_by,
             created_after=created_after,
-            created_before=created_before
+            created_before=created_before,
+            include_service_accounts=await _team_members_include_service_accounts(request),
         )
 
         if not result_list:
@@ -662,6 +672,44 @@ async def get_user_teams(
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
 
+async def _caller_is_an_administrator(request: Request) -> bool:
+    """The live role Node reports for the request's own credentials.
+
+    An unconfirmed role reads as "not an administrator". Everywhere this is
+    used it only narrows what comes back, so that is the safe answer and the
+    request still works — including when the configuration service cannot be
+    reached at all, which must not turn a listing into an error.
+    """
+    try:
+        config_service = request.app.container.config_service()
+        return (await fetch_caller_role(request, config_service)).is_admin
+    except Exception:
+        _log.warning("Could not read the caller's role; answering as a member")
+        return False
+
+
+async def _team_members_include_service_accounts(request: Request) -> bool:
+    """Whether a team's member list should name machine identities.
+
+    Every account is added to the organisation's All team when it is created,
+    service accounts included (`_get_or_create_all_team_and_add_user` on
+    `userAdded`), and each member row carries the `userId` that binds an agent
+    to one, next to the address that identifies it as a machine. Team
+    membership is how a service account is granted what it can read, and the
+    screens that manage it are administrators'; so is seeing it here.
+
+    No opt-in flag, unlike the people directory: the team screen an
+    administrator opens has to show them, and there is nobody else to ask.
+
+    Only the two routes that read a team somebody else may own. The read-back
+    after creating or changing a team is the caller being shown what they just
+    wrote, on a team they had to be able to write; it is not a directory, and
+    filtering it would hide from an administrator the member they had just
+    added.
+    """
+    return await _caller_is_an_administrator(request)
+
+
 async def _may_list_service_accounts(request: Request, *, asked: bool) -> bool:
     """Whether this listing should include machine identities.
 
@@ -674,8 +722,7 @@ async def _may_list_service_accounts(request: Request, *, asked: bool) -> bool:
     """
     if not asked:
         return False
-    config_service = request.app.container.config_service()
-    return (await fetch_caller_role(request, config_service)).is_admin
+    return await _caller_is_an_administrator(request)
 
 
 @router.get("/user/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])

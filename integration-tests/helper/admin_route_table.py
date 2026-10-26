@@ -365,6 +365,11 @@ PYTHON_CONDITIONAL_ADMIN = {
     # The directory of people. Everyone gets it; an administrator asking for
     # service accounts gets those too, and nobody else does.
     "api/routes/entity.py::get_users": "admin widens the directory",
+    # Every account joins the All team when it is created, service accounts
+    # included, so these answer a member a shorter member list than an
+    # administrator. Neither refuses anyone.
+    "api/routes/entity.py::get_team": "admin widens the member list",
+    "api/routes/entity.py::get_user_teams": "admin widens the member list",
 }
 
 

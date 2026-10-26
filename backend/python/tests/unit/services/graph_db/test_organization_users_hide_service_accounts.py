@@ -17,8 +17,11 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from app.config.constants.service_accounts import SERVICE_ACCOUNT_EMAIL_DOMAIN
 from app.services.graph_db.arango.arango_http_provider import ArangoHTTPProvider
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
+
+_RESERVED_DOMAIN = f"@{SERVICE_ACCOUNT_EMAIL_DOMAIN}"
 
 
 def _arango() -> tuple[ArangoHTTPProvider, list[str]]:
@@ -59,6 +62,7 @@ class TestArango:
         assert all("user.kind != 'service'" in q for q in queries), (
             "the listing and the count must agree on who is in the organisation"
         )
+        assert all(_RESERVED_DOMAIN in q for q in queries)
 
     @pytest.mark.asyncio
     async def test_an_administrator_can_ask_for_them(self) -> None:
@@ -78,6 +82,7 @@ class TestNeo4j:
 
         assert queries, "no query ran"
         assert all("u.kind <> 'service'" in q for q in queries)
+        assert all(_RESERVED_DOMAIN in q for q in queries)
 
     @pytest.mark.asyncio
     async def test_a_node_written_before_kind_existed_is_still_listed(self) -> None:
@@ -97,3 +102,44 @@ class TestNeo4j:
         await provider.get_organization_users(org_id="org-1", include_service_accounts=True)
 
         assert all("kind" not in q for q in queries)
+
+
+# ---------------------------------------------------------------------------
+# The address, beside `kind`.
+#
+# `kind` is newer than the user nodes, and the backfill that stamps it on the
+# service accounts among them runs at startup
+# (`app/migrations/service_account_kind_migration.py`). Until it has, a service
+# account's node looks like a person's to a filter on `kind` alone. The address
+# is written when the account is created and can only belong to a service
+# account, so reading it too closes that window without ever hiding a
+# colleague.
+# ---------------------------------------------------------------------------
+
+
+class TestTheAddressCoversTheBackfillWindow:
+    @pytest.mark.asyncio
+    async def test_arango_reads_the_address_as_well_as_kind(self) -> None:
+        provider, queries = _arango()
+
+        await provider.get_organization_users(org_id="org-1")
+
+        assert all("ENDS_WITH(LOWER(user.email)" in q for q in queries)
+
+    @pytest.mark.asyncio
+    async def test_neo4j_reads_the_address_as_well_as_kind(self) -> None:
+        provider, queries = _neo4j()
+
+        await provider.get_organization_users(org_id="org-1")
+
+        assert all("toLower(u.email) ENDS WITH" in q for q in queries)
+
+    @pytest.mark.asyncio
+    async def test_a_user_with_no_address_is_still_listed(self) -> None:
+        """In Cypher a comparison against a missing property is null, and a null
+        predicate drops the row, so this needs its own arm like `kind` does."""
+        provider, queries = _neo4j()
+
+        await provider.get_organization_users(org_id="org-1")
+
+        assert all("u.email IS NULL OR NOT" in q for q in queries)

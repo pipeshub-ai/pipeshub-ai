@@ -22,7 +22,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 import requests
 
@@ -613,7 +613,14 @@ class World:
                                "Deleting the test service account", ok=(200, 204, 404)),
         )
         self._await_in_the_directory(email)
-        return {"service_account": account_id, "service_account_email": email}
+        # The team every account joins on the way in. Its key is built from the
+        # org id rather than looked up, which is also what the graph does
+        # (`_get_or_create_all_team_and_add_user`).
+        return {
+            "service_account": account_id,
+            "service_account_email": email,
+            "all_team": f"all_{self.value('org')}",
+        }
 
     def _await_in_the_directory(self, email: str) -> None:
         """Wait until the new account reaches the graph the directory reads.
@@ -626,7 +633,9 @@ class World:
         deadline = time.monotonic() + _DIRECTORY_READY_TIMEOUT_SEC
         while True:
             listed = self._json(
-                ADMIN, "GET", f"{_USERS}/graph/list?includeServiceAccounts=true&limit=100",
+                ADMIN, "GET",
+                f"{_USERS}/graph/list?includeServiceAccounts=true&limit=100"
+                f"&search={quote(email)}",
                 "Looking for the test service account", ok=(200,),
             )
             if any(

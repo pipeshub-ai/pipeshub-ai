@@ -91,8 +91,9 @@ WORLD_GROUPS: dict[str, tuple[str, ...]] = {
     # made and may edit.
     "agents": ("admin_agent", "member_agent"),
     # A service account, waited for until it reaches the graph the directory
-    # reads. Its address is what a listing is searched for.
-    "service_accounts": ("service_account", "service_account_email"),
+    # reads. Its address is what a listing is searched for, and `all_team` is
+    # the organisation's All team, which it joins on the way in.
+    "service_accounts": ("service_account", "service_account_email", "all_team"),
 }
 # Made new each time they are asked for: a connector, or an MCP server (the
 # admin's, or the creator's personal one) for a case that deletes it.
@@ -690,7 +691,36 @@ CONDITIONAL_ROUTES: tuple[ConditionalRoute, ...] = (
                  absent=("{service_account_email}",)),
             Case("service_account", ADMIN, True, 200, "{service_account_email}"),
         ),
-        params={"includeServiceAccounts": "true", "limit": "100"},
+        # Searched for by address, not just asked for: the listing is paged,
+        # and a new account sorts by name among everyone else, so on a busy org
+        # it would not be on the first page either way round.
+        params={
+            "includeServiceAccounts": "true", "limit": "100",
+            "search": "{service_account_email}",
+        },
+        service=CONNECTOR_SERVICE,
+    ),
+    # The All team is the second copy of the same membership: every account is
+    # put in it when it is created, and a member row carries the `userId` that
+    # binds an agent to a service account, next to the address that gives it
+    # away. `GET /team/{id}` has no membership check of its own, and
+    # `GET /user/teams` embeds the same list per team. Nobody is refused; the
+    # list is simply shorter for a member.
+    ConditionalRoute(
+        "api/routes/entity.py::get_team", "GET", "/api/v1/entity/team/{target}",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        service=CONNECTOR_SERVICE,
+    ),
+    ConditionalRoute(
+        "api/routes/entity.py::get_user_teams", "GET", "/api/v1/entity/user/teams",
+        cases=(
+            Case("all_team", MEMBER, False, 200, "", absent=("{service_account_email}",)),
+            Case("all_team", ADMIN, True, 200, "{service_account_email}"),
+        ),
+        params={"limit": "100"},
         service=CONNECTOR_SERVICE,
     ),
 )
