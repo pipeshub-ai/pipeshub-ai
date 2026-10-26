@@ -404,6 +404,33 @@ class TestCommitDateFailures:
         assert dates == {"src/b.py": (1704412800000, 1704412800000)}
         assert rest_paths == []
 
+    async def test_a_failed_oldest_commit_query_leaves_the_path_undated(self) -> None:
+        """A 502 that outlasts ds_call's retries at the smallest batch is a failed
+        read, not an empty one: no created date is taken from the newest commit."""
+        def graphql(query: str) -> object:
+            if "after:" in query:
+                return failed_response("HTTP 502: <html>", status_code=502)
+            return _graphql_response({
+                "p0": {"totalCount": 3, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+                "p1": {"totalCount": 1, "nodes": [{"authoredDate": "2024-01-05T00:00:00Z"}],
+                       "pageInfo": {"endCursor": "abc 0"}},
+            })
+
+        c, rest_paths, batches = self._connector(graphql)
+
+        dates = await ReposSync(c).timestamps.fetch_commit_dates("acme", "widgets", ["src/a.py", "src/b.py"])
+
+        assert dates == {"src/b.py": (1704412800000, 1704412800000)}
+        assert rest_paths == []
+
+    def test_failure_detail_redacts_urls(self) -> None:
+        from app.connectors.sources.github_teams.timestamps import _classify_failure
+
+        res = failed_response("upstream https://user:hunter2@example.com/x?token=abc failed")
+        detail = _classify_failure(res).detail
+        assert "hunter2" not in detail and "token=abc" not in detail
+
     async def test_a_rate_limited_backfill_pauses_until_the_next_sync(self) -> None:
         from app.connectors.sources.github_teams.timestamps import _GraphqlFailure
 

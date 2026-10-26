@@ -44,6 +44,7 @@ from app.sources.external.github.github_async import GhObject
 from app.config.constants.arangodb import CollectionNames
 from app.models.entities import RecordType
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_urls_in_text
 
 from .models import path_from_external_id
 
@@ -376,7 +377,8 @@ class TimestampBackfill:
         oldest, failure = await self._fetch_oldest_dates(pending_oldest, variables)
         for i, path, _cursor in pending_oldest:
             if i not in oldest:
-                # Rate-limited before its oldest commit was asked for.
+                # Its oldest commit was never read (a rate limit, or a query
+                # that kept failing): left undated, so a later run asks again.
                 results.pop(path, None)
                 continue
             _created, updated_ms = results[path]
@@ -410,7 +412,15 @@ class TimestampBackfill:
                 if failure.too_heavy and len(chunk) > _GRAPHQL_MIN_ALIAS_BATCH:
                     size = max(_GRAPHQL_MIN_ALIAS_BATCH, len(chunk) // 2)
                     continue
-                target = {}
+                # A failed read is not an empty one: these paths stay out of
+                # `found`, so they stay undated and a later run asks again,
+                # rather than taking their newest commit as created for good.
+                self.logger.warning(
+                    "Oldest-commit query for %s path(s) failed (%s); leaving them undated for now.",
+                    len(chunk), failure.detail,
+                )
+                remaining = rest
+                continue
             for i, _path, _cursor in chunk:
                 nodes = (target.get(f"p{i}") or {}).get("nodes") or []
                 found[i] = _iso_to_ms(nodes[0].get("authoredDate")) if nodes else None
@@ -526,7 +536,8 @@ def _classify_failure(res: object) -> _GraphqlFailure:
         or exception_type in ("TimeoutError", "ReadTimeout", "ReadError")
         or any(marker in lowered for marker in _GRAPHQL_TIMEOUT_MARKERS)
     )
-    detail = f"HTTP {status}" if status is not None else (error[:120] or "no data")
+    # Error text can quote a URL; it is logged, so it goes through redaction.
+    detail = f"HTTP {status}" if status is not None else (redact_urls_in_text(error[:120]) or "no data")
     return _GraphqlFailure(rate_limited, too_heavy, retry_after, detail)
 
 
