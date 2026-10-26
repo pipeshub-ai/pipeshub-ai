@@ -239,7 +239,7 @@ The first upgrade to this chart fails until you set a new key. Releases on
 your secret store as described at the end of this section. Qdrant stores no data under the key; it only checks it on each
 request, so collections stay readable after the change.
 
-Both the Qdrant StatefulSet and the app Deployment carry a
+In inline mode, both the Qdrant StatefulSet and the app Deployment carry a
 `checksum/qdrant-api-key` annotation, so changing the key restarts both. Until
 both have restarted, requests made with the old key to a pod that has the new
 one fail with 401. To avoid that window, stop the app first:
