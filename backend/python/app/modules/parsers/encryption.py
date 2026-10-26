@@ -96,12 +96,9 @@ def pdfium_password_error(exc: BaseException) -> bool:
 
     if not isinstance(exc, pypdfium2.PdfiumError):
         return False
-    code = getattr(exc, "err_code", None)
-    if code is None:
-        # pypdfium2 before 5 does not carry the code; pdfium still holds it for
-        # the load that just failed in this thread.
-        code = pdfium_raw.FPDF_GetLastError()
-    return code == pdfium_raw.FPDF_ERR_PASSWORD
+    # The code pdfium reported for this load, carried by the exception (pypdfium2 5+). Not
+    # FPDF_GetLastError(): that is the library's state for whatever failed last in the thread.
+    return getattr(exc, "err_code", None) == pdfium_raw.FPDF_ERR_PASSWORD
 
 
 def raise_if_pdf_needs_password(content: bytes) -> None:

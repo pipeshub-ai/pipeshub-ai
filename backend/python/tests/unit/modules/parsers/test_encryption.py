@@ -187,6 +187,12 @@ class TestPdf:
         # A different error whose text says "password" is not a password error.
         assert not pdfium_password_error(pypdfium2.PdfiumError("Failed to load document (password mentioned)"))
         assert not pdfium_password_error(RuntimeError("Incorrect password error"))
+
+    def test_an_error_without_pdfiums_code_is_not_a_password_even_after_a_password_failure(self) -> None:
+        # pdfium's last-error state still says "password" here; an exception that carries no code must not read it.
+        with pytest.raises(pypdfium2.PdfiumError):
+            pypdfium2.PdfDocument(password_protected_pdf())
+        assert not pdfium_password_error(pypdfium2.PdfiumError("Failed to load document"))
         try:
             pypdfium2.PdfDocument(password_protected_pdf())
         except pypdfium2.PdfiumError as exc:
