@@ -32,6 +32,7 @@ from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.utils.converters.docling_doc_to_blocks import DoclingDocToBlocksConverter
 from app.utils.pdf_utils import PAGE_BATCH_SIZE, get_pdf_page_count  # noqa: F401 - re-exported
+from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
 
 SUCCESS_STATUS = "success"
@@ -93,6 +94,8 @@ def _get_process_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
         max_workers=scaled(LOCAL_DOCLING_PARSE_WORKERS),
         mp_context=multiprocessing.get_context("spawn"),
+        initializer=start_housekeeping,
+        initargs=(os.getpid(),),
     )
 
 
@@ -168,6 +171,7 @@ class DoclingProcessor():
             try:
                 serialized_doc = await loop.run_in_executor(
                     _get_process_pool(),
+                    run_and_release,
                     _parse_document_in_worker,
                     doc_name,
                     raw_content,
