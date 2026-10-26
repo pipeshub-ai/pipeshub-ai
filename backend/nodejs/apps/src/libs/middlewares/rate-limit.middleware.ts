@@ -239,7 +239,7 @@ export function createKeyedRateLimiter(
         // recent[0] is the oldest counted failure; the window frees up when it expires.
         const retryAfterSec = Math.max(
           1,
-          Math.ceil((recent[0] + windowMs - now) / 1000),
+          Math.ceil(((recent[0] ?? now) + windowMs - now) / 1000),
         );
         res.setHeader('Retry-After', String(retryAfterSec));
         reject(req, res, String(retryAfterSec));
