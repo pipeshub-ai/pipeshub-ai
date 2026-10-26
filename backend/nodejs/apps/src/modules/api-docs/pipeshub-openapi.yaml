@@ -1115,7 +1115,8 @@ components:
               `/userAccount/initAuth` never lists it and `/userAccount/authenticate` answers `400`
 
             `samlSso`, `oauth` (removed in 1.0) and `azureAd` (now `microsoft`) are refused when a
-            policy is saved, and dropped from a stored policy when it is read.
+            policy is saved. A stored policy that still names one is read without it (`azureAd`
+            reads as `microsoft`), with `password` added to the first step.
       required:
         - type
     AuthStep:
@@ -1127,8 +1128,9 @@ components:
           type: number
           description: |
             Label of the step; must be unique across steps. Only checked to be a number: `0`,
-            negative, fractional and values above 3 are accepted and stored. Steps run in the
-            order of the array, not by this value.
+            negative, fractional and values above 3 are accepted and stored as sent. Sign-in runs
+            the steps in ascending `order`, and `GET /orgAuthConfig/authMethods` returns them
+            renumbered 1, 2, 3 in that order.
         allowedMethods:
           type: array
           items:
@@ -1272,8 +1274,8 @@ components:
       description: |
         Settings of the external sign-in providers among the allowed methods, keyed by provider.
         A provider is listed whenever its settings can be read, which is also the case when
-        nothing has been saved for it yet: its entry is then an empty object (`saml`: only
-        `spEntityId`).
+        nothing has been saved for it yet: its entry is then an empty object. Only `google`
+        and `microsoft` have a sign-in flow.
       properties:
         google:
           $ref: '#/components/schemas/AuthProviderGooglePublicConfig'
@@ -1316,17 +1318,9 @@ components:
                 - $ref: '#/components/schemas/GoogleCredentials'
         - properties:
             method:
-              enum: [microsoft, azureAd]
+              enum: [microsoft]
             credentials:
               $ref: '#/components/schemas/MicrosoftCredentials'
-        - properties:
-            method:
-              enum: [oauth]
-            credentials:
-              $ref: '#/components/schemas/OAuthCredentials'
-        - properties:
-            method:
-              enum: [samlSso]
       properties:
         method:
           type: string
@@ -1340,7 +1334,6 @@ components:
             - $ref: '#/components/schemas/OtpCredentials'
             - $ref: '#/components/schemas/GoogleCredentials'
             - $ref: '#/components/schemas/MicrosoftCredentials'
-            - $ref: '#/components/schemas/OAuthCredentials'
             - type: string
               minLength: 1
               description: Google ID token (for google method)
@@ -1350,9 +1343,8 @@ components:
             object whose `password`, `otp`, `token`, `code`, `accessToken` and `idToken`,
             when present, are strings; other fields of the object are passed through. An
             object without the field its method needs is refused later as a failed sign-in,
-            not as a validation error: `microsoft` and `azureAd` without `idToken` answer
-            `400`, `oauth` without `accessToken` answers `400`, and a Google token that is
-            not a JWT answers `500`.
+            not as a validation error: `microsoft` without `idToken` answers `400`, and a Google
+            token that is not a JWT answers `500`.
         email:
           type: string
           format: email
@@ -1392,19 +1384,6 @@ components:
           example: "123456"
       required:
         - otp
-    OAuthCredentials:
-      type: object
-      additionalProperties: false
-      description: Credentials for generic OAuth sign-in. Only `accessToken` is read; it is sent to the provider's userinfo endpoint.
-      properties:
-        accessToken:
-          type: string
-          description: OAuth access token
-        idToken:
-          type: string
-          description: Accepted but not read
-      required:
-        - accessToken
     AuthenticateMultiStepResponse:
       type: object
       additionalProperties: false
@@ -1667,52 +1646,6 @@ components:
         - createdAt
         - updatedAt
         - __v
-    OAuthExchangeRequest:
-      type: object
-      additionalProperties: false
-      description: |
-        Request to exchange OAuth authorization code for tokens. The route has no validator:
-        a missing or empty field is refused with `400`, while fields not listed here and the
-        query string are not read.
-      properties:
-        code:
-          type: string
-          minLength: 1
-          description: OAuth authorization code, sent as it is to the provider's token endpoint
-        provider:
-          type: string
-          minLength: 1
-          description: OAuth provider name. Only checked to be present and non-empty; its value is not used (a non-string is tolerated)
-        redirectUri:
-          type: string
-          format: uri
-          minLength: 1
-          description: Redirect URI used in authorization request, passed to the provider as `redirect_uri`
-      required:
-        - code
-        - provider
-        - redirectUri
-    OAuthExchangeResponse:
-      type: object
-      additionalProperties: false
-      description: |
-        The provider's token response, cut down to these four fields and copied as they are.
-        A field the provider leaves out is absent here.
-      properties:
-        access_token:
-          type: string
-          description: OAuth access token
-        id_token:
-          type: string
-          description: OAuth ID token (JWT)
-        token_type:
-          type: string
-          example: "Bearer"
-        expires_in:
-          type: integer
-          description: Token expiry in seconds
-      required:
-        - access_token
     HasPasswordMethodResponse:
       type: object
       description: Whether password authentication is enabled for the organization
@@ -17376,63 +17309,6 @@ components:
             Enable Just-In-Time (JIT) user provisioning on first sign-in. May be left out; an
             explicit `null` is rejected.
           default: true
-    GenericOAuthConfig:
-      type: object
-      description: |
-        Generic OAuth 2.0 provider configuration, as sent to the API. Fields other than these
-        nine are dropped by the validator and not stored.
-      required:
-        - providerName
-        - clientId
-      properties:
-        providerName:
-          type: string
-          minLength: 1
-          pattern: '\S'
-          description: Display name for the OAuth provider
-          example: "Custom OAuth Provider"
-        clientId:
-          type: string
-          minLength: 1
-          pattern: '\S'
-          description: OAuth client ID
-        clientSecret:
-          type: string
-          description: OAuth client secret. An empty string means "not set".
-        authorizationUrl:
-          type: string
-          pattern: '^$|^[A-Za-z][A-Za-z0-9+.-]*:'
-          description: |
-            Authorization endpoint URL. Must parse as a URL (the pattern is the closest
-            JSON Schema can say); an empty string is accepted and means "not set".
-        tokenEndpoint:
-          type: string
-          pattern: '^$|^[A-Za-z][A-Za-z0-9+.-]*:'
-          description: |
-            Token endpoint URL. Must parse as a URL (the pattern is the closest
-            JSON Schema can say); an empty string is accepted and means "not set".
-        userInfoEndpoint:
-          type: string
-          pattern: '^$|^[A-Za-z][A-Za-z0-9+.-]*:'
-          description: |
-            User info endpoint URL. Must parse as a URL (the pattern is the closest
-            JSON Schema can say); an empty string is accepted and means "not set".
-        scope:
-          type: string
-          description: OAuth scopes to request. An empty string means "not set".
-          example: "openid profile email"
-        redirectUri:
-          type: string
-          pattern: '^$|^[A-Za-z][A-Za-z0-9+.-]*:'
-          description: |
-            OAuth redirect URI. Must parse as a URL (the pattern is the closest
-            JSON Schema can say); an empty string is accepted and means "not set".
-        enableJit:
-          type: boolean
-          description: Enable Just-In-Time (JIT) user provisioning on first sign-in
-          default: true
-
-    # Connector Configuration Schemas
     GoogleWorkspaceCredentials:
       type: object
       description: Google Workspace service account or OAuth credentials
@@ -20025,7 +19901,7 @@ components:
       type: object
       additionalProperties: false
       description: |
-        Credentials for `microsoft` and `azureAd` sign-in. Only `idToken` is read: it is
+        Credentials for `microsoft` sign-in. Only `idToken` is read: it is
         verified against Microsoft's signing keys, with the saved client ID as audience.
         Without it the sign-in answers `400`.
       properties:
@@ -23158,73 +23034,6 @@ components:
           type: string
           description: Google OAuth client ID
           example: "123456789-abc.apps.googleusercontent.com"
-        enableJit:
-          type: boolean
-          description: Just-In-Time user provisioning; `true` when the request left it out
-    StoredSSOAuthConfig:
-      type: object
-      description: |
-        SAML SSO configuration as stored, plus `spEntityId`. When nothing has been saved the
-        object holds `spEntityId` alone.
-      required:
-        - spEntityId
-      properties:
-        entryPoint:
-          type: string
-          description: Identity provider SSO URL
-          example: "https://idp.example.com/sso/saml"
-        certificate:
-          type: string
-          description: |
-            The certificate as stored: the base64 body on one line, without the PEM
-            `BEGIN` / `END` lines. Returned in full. May be an empty string.
-        emailKey:
-          type: string
-          description: SAML attribute name for user email
-          example: "email"
-        enableJit:
-          type: boolean
-          description: Just-In-Time user provisioning; `true` when the request left it out
-        samlPlatform:
-          type: string
-          description: Name of the SAML platform; absent when the request left it out
-          example: "Okta"
-        spEntityId:
-          type: string
-          description: |
-            Service Provider entity ID, from the `SAML_SP_ENTITY_ID` environment variable or
-            else the frontend public URL. Not stored and not settable through the API.
-          example: "https://app.example.com"
-    StoredGenericOAuthConfig:
-      type: object
-      description: |
-        Generic OAuth 2.0 provider configuration, as stored. An empty object when nothing has
-        been saved; otherwise `providerName`, `clientId` and `enableJit` are present and each
-        optional field only if the request gave it a non-empty value.
-      properties:
-        providerName:
-          type: string
-          example: "Custom OAuth Provider"
-        clientId:
-          type: string
-        clientSecret:
-          type: string
-          description: Returned unmasked
-        authorizationUrl:
-          type: string
-          format: uri
-        tokenEndpoint:
-          type: string
-          format: uri
-        userInfoEndpoint:
-          type: string
-          format: uri
-        scope:
-          type: string
-          example: "openid profile email"
-        redirectUri:
-          type: string
-          format: uri
         enableJit:
           type: boolean
           description: Just-In-Time user provisioning; `true` when the request left it out
@@ -27239,7 +27048,7 @@ paths:
             - No `x-session-token` header, or a session that is unknown, expired or already used to finish a sign-in; start again with `/initAuth`
             - Wrong, missing, expired or already used sign-in code (the same message for an email with no account and for a locked account)
             - CAPTCHA refused
-            - The identity provider rejected the sign-in, or a Microsoft or Azure AD `idToken` is not a valid token for the saved client ID
+            - The identity provider rejected the sign-in, or a Microsoft `idToken` is not a valid token for the saved client ID
           content:
             application/json:
               schema:
@@ -27830,8 +27639,10 @@ paths:
         **Response Structure:**
 
         Returns an array of authentication steps, each containing:
-        - `order`: The step label as it was saved: any number (`0`, negative, fractional and
-          values above 3 included). Steps run in the order of the array, not by this value
+        - `order`: The step's position, 1, 2 or 3. Steps are returned in ascending order of the
+          `order` they were saved with and renumbered from 1. A method removed in 1.0 is left out
+          (`azureAd` reads as `microsoft`), a step left with no method is dropped, and when a
+          removed method was left out `password` is added to the first step
         - `allowedMethods`: Array of methods allowed for that step
 
         **Example Response:**
@@ -27996,8 +27807,8 @@ paths:
 
         **Validation Rules:**
         - Minimum 1 step, maximum 3 steps
-        - Each step must have a unique `order`. `order` is only checked to be a number; steps
-          run in the order of the array
+        - Each step must have a unique `order`. `order` is only checked to be a number and is
+          stored as sent; sign-in runs the steps in ascending `order`
         - No duplicate methods within the same step
         - No method can appear in multiple steps
         - Each step must have at least one allowed method
@@ -28055,21 +27866,11 @@ paths:
               properties:
                 authMethod:
                   type: array
-                  description: Authentication steps to set for the organization (1-3 steps). `samlSso` only in a one-step policy.
+                  description: Authentication steps to set for the organization (1-3 steps).
                   minItems: 1
                   maxItems: 3
                   items:
                     $ref: '#/components/schemas/AuthStep'
-                  anyOf:
-                    - maxItems: 1
-                    - items:
-                        properties:
-                          allowedMethods:
-                            items:
-                              properties:
-                                type:
-                                  not:
-                                    enum: [samlSso]
       responses:
         '200':
           description: Authentication methods updated successfully
@@ -28086,7 +27887,9 @@ paths:
               steps, an unknown method type, an `order` that is missing, repeated or not a number,
               or a body that is not a JSON object
             - A method removed in 1.0 (`samlSso`, `oauth`) or the old name `azureAd`
-              (`VALIDATION_ERROR`)
+              (`VALIDATION_ERROR`): `"samlSso" sign-in was removed in PipesHub 1.0. Use password,
+              email OTP, Google or Microsoft sign-in instead.` or `"azureAd" sign-in is now
+              "microsoft". Use "microsoft" instead.`
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -28193,7 +27996,6 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
-  # ==================== SAML ENDPOINTS ====================
   /users/health:
     get:
       tags:
@@ -63952,7 +63754,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
     get:
       tags:
         - Authentication Configuration
@@ -63960,7 +63761,9 @@ paths:
       description: |
         Get Microsoft authentication configuration.
 
-        Returns the stored object, or an empty object when nothing has been saved. The request
+        Returns the stored object, or an empty object when nothing has been saved. Azure AD
+        sign-in became Microsoft sign-in in 1.0: while no Microsoft client ID is saved, the
+        saved Azure AD settings are returned instead, when they hold a client ID. The request
         carries no parameters: the query string is not read.
       operationId: getMicrosoftAuthConfig
       security:
@@ -69042,7 +68845,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
   /code-graph/repos:
     get:
       tags:
