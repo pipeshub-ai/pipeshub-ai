@@ -35,7 +35,7 @@ export interface ResolvedClient {
 }
 
 /**
- * The only calls allowed without an org, or across orgs, for the OAuth
+ * The only calls allowed without an org bound, for the OAuth
  * lookups. Each returns at most one row and a store must fail
  * closed (throw) when a key matches more than one.
  */
@@ -46,7 +46,7 @@ export interface IdentityLookup {
   resolveRefresh(tokenHash: string): Promise<ResolvedRefreshToken | null>;
   /**
    * The org that issued an authorization code, or null (unknown code, or a store that needs no answer). The token endpoint runs a
-   * grant as this org, not the client's: a client may be used from every org.
+   * grant as this org, not the client's: a client is not tied to one org.
    */
   resolveCodeOrg(code: string, clientId: string): Promise<string | null>;
   /** The org of a live refresh token (raw token), or null. */

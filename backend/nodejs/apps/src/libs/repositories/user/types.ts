@@ -165,7 +165,7 @@ export interface UserRepository {
   findActiveByEmail(
     email: string,
   ): Promise<{ _id: string; orgId: string; email: string } | null>;
-  /** The live accounts at this address in every organisation, as `{ _id, orgId }`. */
+  /** The live accounts at this address, as `{ _id, orgId }`. */
   listLiveMembershipsByEmail(
     email: string,
   ): Promise<Array<{ _id: string; orgId: string }>>;

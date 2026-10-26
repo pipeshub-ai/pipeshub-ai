@@ -4,7 +4,7 @@
  *
  * Every question here answers with the least that lets the caller continue. The sign-in
  * lookup returns ids only; the caller then reads the account inside that organisation's own
- * unit of work. Nothing here lists the accounts of other organisations or writes into them.
+ * unit of work. Nothing here lists or writes accounts outside the org the unit runs as.
  */
 import type { CredentialRepository } from '../credential/types';
 
