@@ -750,6 +750,26 @@ export class OAuthProviderController {
       { recheckAppScopes: true },
     );
 
+    // A replay of this code that ran while the tokens were being minted could
+    // not revoke them yet; it left a flag, so the winner takes its own pair back.
+    if (
+      await this.authorizationCodeService.wasReplayed(request.code, clientId)
+    ) {
+      await this.oauthTokenService.revokeToken(
+        tokens.accessToken,
+        clientId,
+        'access_token',
+      );
+      if (tokens.refreshToken) {
+        await this.oauthTokenService.revokeToken(
+          tokens.refreshToken,
+          clientId,
+          'refresh_token',
+        );
+      }
+      throw new InvalidGrantError('Authorization code has already been used');
+    }
+
     this.logger.info('Authorization code grant completed', {
       clientId,
       userId: codeResult.userId,

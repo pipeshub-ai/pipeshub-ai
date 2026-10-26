@@ -68,6 +68,7 @@ describe('OAuthProviderController', () => {
     mockAuthCodeService = {
       generateCode: sinon.stub(),
       exchangeCode: sinon.stub(),
+      wasReplayed: sinon.stub().resolves(false),
     }
     mockScopeValidatorService = {
       parseScopes: sinon.stub().returns(['org:read']),
@@ -547,6 +548,28 @@ describe('OAuthProviderController', () => {
         grant_type: 'authorization_code', client_id: 'cid', user_agent: 'cursor/1.2', channel: 'docs',
       })
       expect(JSON.stringify(events[0])).to.not.include('secret-at')
+    })
+
+    it('takes back its own tokens when the code was replayed while it was minting them', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ orgId: 'o1', isConfidential: false, allowedGrantTypes: ['authorization_code'], allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'] })
+      mockOAuthTokenService.generateTokens.resolves({ accessToken: 'at', refreshToken: 'rt', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read' })
+      mockAuthCodeService.wasReplayed.resolves(true)
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token({
+        body: { grant_type: 'authorization_code', client_id: 'cid', code: 'c', redirect_uri: 'https://example.com/cb' },
+        headers: {},
+      } as any, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.revokeToken.calledWith('at', 'cid', 'access_token')).to.be.true
+      expect(mockOAuthTokenService.revokeToken.calledWith('rt', 'cid', 'refresh_token')).to.be.true
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockRes.json.firstCall.args[0]).to.have.property('error', 'invalid_grant')
+      expect(mockRes.json.firstCall.args[0].access_token).to.be.undefined
     })
 
     it('records nothing when no token is issued', async () => {
