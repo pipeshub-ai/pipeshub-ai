@@ -645,6 +645,7 @@
       "empty": "Leer",
       "paused": "Pausiert",
       "needsMultimodalModel": "Multimodales Modell erforderlich",
+      "passwordProtected": "Passwortgeschützt",
       "skipped": "Übersprungen",
       "pending": "Ausstehend"
     },
@@ -2763,6 +2764,8 @@
         "statFailedSub": "Fehler (API- / Berechtigungsprobleme)",
         "statUnsupported": "Nicht unterstützt",
         "statUnsupportedSub": "Kann nicht verarbeitet werden",
+        "statPasswordProtected": "Passwortgeschützt",
+        "statPasswordProtectedSub": "Ohne Passwort nicht lesbar",
         "statInProgressSub": "Wird noch indexiert",
         "statQueued": "Warteschlange",
         "statQueuedSub": "Warten auf Indizierung",

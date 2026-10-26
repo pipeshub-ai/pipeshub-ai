@@ -161,7 +161,8 @@ export type IndexingStatus =
   | 'EMPTY'
   | 'PAUSED'
   | 'ENABLE_MULTIMODAL_MODELS'
-  | 'SKIPPED';
+  | 'SKIPPED'
+  | 'PASSWORD_PROTECTED';
 export type SharingStatus = 'private' | 'team' | 'personal' | 'shared';
 
 /**
