@@ -11481,6 +11481,16 @@ components:
             is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
             `false` ignores the field and never runs a timeline.
           example: created
+        saveHistory:
+          type: boolean
+          default: true
+          description: |
+            Whether the search is saved to the caller's search history (`GET /search`)
+            with a citation for each match. Set it to `false` for searches that are not
+            the user's own, such as an agent searching on their behalf: nothing is
+            stored and the response has no `searchId`. A server older than this field
+            ignores it and saves the search.
+          example: false
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -12186,16 +12196,17 @@ components:
       additionalProperties: false
       description: |
         Immediate POST `/search` response: persisted search id plus the raw retrieval payload.
+        `searchId` is absent when the request set `saveHistory` to `false`.
         SDK-oriented modeling: named fields only at this level; dynamic-key maps inside `searchResponse` use
         `additionalProperties` with a `$ref` (e.g. `virtual_to_record_map`) rather than boolean `additionalProperties: true`,
         so generated clients retain typed values where possible.
       required:
-        - searchId
         - searchResponse
       properties:
         searchId:
           type: string
           format: objectId
+          description: The saved search, for `GET /search/{searchId}`. Absent when `saveHistory` is `false`.
         searchResponse:
           $ref: '#/components/schemas/SemanticSearchAiResponse'
     PersistedSemanticSearchBoundingBox:
@@ -47301,7 +47312,8 @@ paths:
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
         source document's metadata. Past searches can be retrieved via
-        `GET /search`.
+        `GET /search`. With `saveHistory: false` nothing is saved and
+        there is no `searchId`.
 
         **Scopes:** an OAuth token needs `semantic:write`. The gateway also lets a token holding
         only `semantic:read` through, but the search service then refuses it with the same `403`

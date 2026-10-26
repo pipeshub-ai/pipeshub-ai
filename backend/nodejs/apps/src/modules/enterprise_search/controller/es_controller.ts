@@ -5506,7 +5506,8 @@ export const search =
     const orgId = req.user?.orgId;
     const userId = req.user?.userId;
     try {
-      const { query, limit, filters, rewriteQuery, timeline } = req.body;
+      const { query, limit, filters, rewriteQuery, timeline, saveHistory } =
+        req.body;
       // Only the bounds the caller set, so a search without dates sends what it always did.
       const body = req.body as Record<string, unknown>;
       const dateBounds: Record<string, string> = {};
@@ -5568,6 +5569,17 @@ export const search =
           },
           'Search',
         );
+      }
+
+      // An agent searching on a user's behalf sends false: its searches are not
+      // the user's history, and saving one stores a citation for every hit.
+      if (saveHistory === false) {
+        res.status(HTTP_STATUS.OK).json({
+          searchResponse: buildSearchResponseForClient(
+            aiResponse.data as AiSearchResponse & Record<string, unknown>,
+          ),
+        });
+        return;
       }
 
       const results = aiResponse.data.searchResults;
