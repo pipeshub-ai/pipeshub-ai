@@ -174,6 +174,7 @@ class RecordType(str, Enum):
     ARTIFACT = "ARTIFACT"
     CODE_FILE = "CODE_FILE"
     SQL_TABLE = "SQL_TABLE"
+    SQL_COLUMN = "SQL_COLUMN"
     SQL_VIEW = "SQL_VIEW"
     OTHERS = "OTHERS"
 
@@ -2297,6 +2298,7 @@ class SQLViewRecord(Record):
     source_tables: Optional[List[str]] = Field(default_factory=list, description="Tables referenced by this view")
     is_secure: bool = Field(default=False, description="Whether this is a secure view")
     comment: Optional[str] = Field(default=None, description="View description/comment")
+    ddl: str | None = Field(default=None, description="CREATE VIEW DDL, or synthetic column-based DDL when unavailable")
 
     def to_arango_record(self) -> Dict:
         return {
@@ -2310,6 +2312,7 @@ class SQLViewRecord(Record):
             "sourceTables": self.source_tables,
             "isSecure": self.is_secure,
             "comment": self.comment,
+            "ddl": self.ddl,
         }
 
     @staticmethod
@@ -2354,6 +2357,7 @@ class SQLViewRecord(Record):
             is_secure=view_doc.get("isSecure", False),
             comment=view_doc.get("comment"),
             access_rule=read_access_rule(record_doc),
+            ddl=view_doc.get("ddl"),
             **Record.delete_state_from_arango(record_doc),
         )
 
@@ -2386,6 +2390,8 @@ class SQLTableRecord(Record):
     schema_name: Optional[str] = Field(default=None, description="Schema containing the table")
     fqn: Optional[str] = Field(default=None, description="Fully qualified name: database.schema.table")
     row_count: Optional[int] = Field(default=None, description="Number of rows in the table")
+    db_row_count: int | None = Field(default=None, description="Exact row count from COUNT(*) in the database")
+    indexed_row_count: int | None = Field(default=None, description="Number of rows indexed (capped by max rows per table)")
     size_bytes: Optional[int] = Field(default=None, description="Size of the table in bytes")
     column_count: Optional[int] = Field(default=None, description="Number of columns in the table")
     ddl: Optional[str] = Field(default=None, description="CREATE TABLE DDL statement")
@@ -2402,6 +2408,8 @@ class SQLTableRecord(Record):
             "schemaName": self.schema_name,
             "fqn": self.fqn,
             "rowCount": self.row_count,
+            "dbRowCount": self.db_row_count,
+            "indexedRowCount": self.indexed_row_count,
             "sizeInBytes": self.size_bytes,
             "columnCount": self.column_count,
             "ddl": self.ddl,
@@ -2448,6 +2456,8 @@ class SQLTableRecord(Record):
             schema_name=table_doc.get("schemaName"),
             fqn=table_doc.get("fqn"),
             row_count=table_doc.get("rowCount"),
+            db_row_count=table_doc.get("dbRowCount"),
+            indexed_row_count=table_doc.get("indexedRowCount"),
             size_bytes=table_doc.get("sizeInBytes"),
             column_count=table_doc.get("columnCount"),
             ddl=table_doc.get("ddl"),
@@ -2480,6 +2490,136 @@ class SQLTableRecord(Record):
             "parentExternalRecordId": self.parent_external_record_id,
         }
 
+
+class SQLColumnRecord(Record):
+    """Record for a column on a synced SQL table."""
+
+    fqn: str | None = Field(default=None, description="Fully qualified name: table_fqn.column_name")
+    table_fqn: str | None = Field(default=None, description="Parent table FQN")
+    data_type: str | None = Field(default=None)
+    nullable: bool = Field(default=False)
+    is_primary_key: bool = Field(default=False)
+    is_unique: bool = Field(default=False)
+    is_part_of_composite_primary_key: bool = Field(default=False)
+    is_part_of_composite_unique: bool = Field(default=False)
+    default: str | None = Field(default=None)
+    ordinal_position: int | None = Field(default=None)
+    distinct_count: int | None = Field(default=None)
+    null_count: int | None = Field(default=None)
+    cardinality_ratio: float | None = Field(default=None)
+    confidence_score: str | None = Field(default=None)
+    # Value profile. Values and frequencies are parallel lists because Neo4j
+    # cannot store a list of maps as a property.
+    top_values: list[str] | None = Field(default=None, description="Most common values, descending")
+    top_value_frequencies: list[float] | None = Field(
+        default=None, description="Fraction of non-null rows for each of top_values, same order"
+    )
+    min_value: str | None = Field(default=None)
+    max_value: str | None = Field(default=None)
+    numeric_text: bool | None = Field(
+        default=None, description="Text column whose observed values all parse as numbers"
+    )
+    profiled_at: int | None = Field(default=None, description="Epoch ms of the value profile")
+
+    def to_arango_record(self) -> dict:
+        return {
+            "_key": self.id,
+            "orgId": self.org_id,
+            "name": self.record_name,
+            "fqn": self.fqn,
+            "tableFqn": self.table_fqn,
+            "dataType": self.data_type,
+            "nullable": self.nullable,
+            "isPrimaryKey": self.is_primary_key,
+            "isUnique": self.is_unique,
+            "isPartOfCompositePrimaryKey": self.is_part_of_composite_primary_key,
+            "isPartOfCompositeUnique": self.is_part_of_composite_unique,
+            "default": self.default,
+            "ordinalPosition": self.ordinal_position,
+            "distinctCount": self.distinct_count,
+            "nullCount": self.null_count,
+            "cardinalityRatio": self.cardinality_ratio,
+            "confidenceScore": self.confidence_score,
+            "topValues": self.top_values,
+            "topValueFrequencies": self.top_value_frequencies,
+            "minValue": self.min_value,
+            "maxValue": self.max_value,
+            "numericText": self.numeric_text,
+            "profiledAt": self.profiled_at,
+        }
+
+    @staticmethod
+    def from_arango_record(column_doc: dict, record_doc: dict) -> "SQLColumnRecord":
+        conn_name_value = record_doc.get("connectorName")
+        try:
+            connector_name = Connectors(conn_name_value) if conn_name_value else Connectors.KNOWLEDGE_BASE
+        except ValueError:
+            connector_name = Connectors.KNOWLEDGE_BASE
+
+        return SQLColumnRecord(
+            id=record_doc.get("id", record_doc.get("_key")),
+            org_id=record_doc["orgId"],
+            record_name=record_doc["recordName"],
+            record_type=RecordType(record_doc["recordType"]),
+            external_record_id=record_doc["externalRecordId"],
+            external_revision_id=record_doc.get("externalRevisionId"),
+            external_record_group_id=record_doc.get("externalGroupId"),
+            parent_external_record_id=record_doc.get("externalParentId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            version=record_doc["version"],
+            origin=OriginTypes(record_doc["origin"]),
+            connector_name=connector_name,
+            connector_id=record_doc.get("connectorId"),
+            mime_type=record_doc.get("mimeType", MimeTypes.UNKNOWN.value),
+            weburl=record_doc.get("webUrl"),
+            created_at=record_doc.get("createdAtTimestamp"),
+            updated_at=record_doc.get("updatedAtTimestamp"),
+            source_created_at=record_doc.get("sourceCreatedAtTimestamp"),
+            source_updated_at=record_doc.get("sourceLastModifiedTimestamp"),
+            is_dependent_node=record_doc.get("isDependentNode", False),
+            parent_node_id=record_doc.get("parentNodeId"),
+            is_internal=record_doc.get("isInternal", False),
+            indexing_status=record_doc.get("indexingStatus", ProgressStatus.AUTO_INDEX_OFF.value),
+            fqn=column_doc.get("fqn"),
+            table_fqn=column_doc.get("tableFqn"),
+            data_type=column_doc.get("dataType"),
+            nullable=column_doc.get("nullable", False),
+            is_primary_key=column_doc.get("isPrimaryKey", False),
+            is_unique=column_doc.get("isUnique", False),
+            is_part_of_composite_primary_key=column_doc.get("isPartOfCompositePrimaryKey", False),
+            is_part_of_composite_unique=column_doc.get("isPartOfCompositeUnique", False),
+            default=column_doc.get("default"),
+            ordinal_position=column_doc.get("ordinalPosition"),
+            distinct_count=column_doc.get("distinctCount"),
+            null_count=column_doc.get("nullCount"),
+            cardinality_ratio=column_doc.get("cardinalityRatio"),
+            confidence_score=column_doc.get("confidenceScore"),
+            top_values=column_doc.get("topValues"),
+            top_value_frequencies=column_doc.get("topValueFrequencies"),
+            min_value=column_doc.get("minValue"),
+            max_value=column_doc.get("maxValue"),
+            numeric_text=column_doc.get("numericText"),
+            profiled_at=column_doc.get("profiledAt"),
+            access_rule=read_access_rule(record_doc),
+            **Record.delete_state_from_arango(record_doc),
+        )
+
+    def to_kafka_record(self) -> dict:
+        return {
+            "recordId": self.id,
+            "orgId": self.org_id,
+            "recordName": self.record_name,
+            "recordType": self.record_type.value,
+            "externalRecordId": self.external_record_id,
+            "version": self.version,
+            "origin": self.origin.value,
+            "connectorName": self.connector_name.value,
+            "connectorId": self.connector_id,
+            "mimeType": self.mime_type,
+            "parentExternalRecordId": self.parent_external_record_id,
+        }
+
+
 # What the GitHub connector stores as a pull request's status, spelled out.
 # `_status_from_pr` (connectors/sources/github_teams/pull_requests.py) writes
 # DONE for a merged PR, CANCELLED for one closed without merging, and OPEN for
@@ -2498,6 +2638,7 @@ _REQUESTED_REVIEWER_CONNECTORS: frozenset[Connectors] = frozenset({
     Connectors.GITHUB,
     Connectors.GITHUB_TEAMS,
 })
+
 
 
 class PullRequestRecord(Record):

@@ -266,7 +266,8 @@ class GraphTransactionStore(TransactionStore):
         return AppMetadata.from_db_document(doc) if doc else None
 
     async def get_record_by_external_id(
-        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL
+        self, connector_id: str, external_id: str, visibility: RecordVisibility = RecordVisibility.ALL,
+        *, raise_on_error: bool = False,
     ) -> Optional[Record]:
         # Sync decides create-or-update on this answer; hiding a trashed record
         # would mint a second record for the same source item.
@@ -278,7 +279,8 @@ class GraphTransactionStore(TransactionStore):
         if key in self._memo:
             return self._memo[key]  # type: ignore[return-value]
         value = await self.graph_provider.get_record_by_external_id(
-            connector_id, external_id, transaction=self.txn, visibility=visibility
+            connector_id, external_id, transaction=self.txn, visibility=visibility,
+            **({"raise_on_error": True} if raise_on_error else {}),
         )
         self._memo_put(key, value)
         return value

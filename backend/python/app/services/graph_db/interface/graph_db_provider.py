@@ -1974,6 +1974,8 @@ class IGraphDBProvider(ABC):
         external_id: str,
         transaction: str | None = None,
         visibility: RecordVisibility = RecordVisibility.LIVE,
+        *,
+        raise_on_error: bool = False,
     ) -> Optional['Record']:
         """
         Get a record by its external ID from the source system.
@@ -1987,6 +1989,8 @@ class IGraphDBProvider(ABC):
             transaction (Optional[Any]): Optional transaction context
             visibility: ``LIVE`` (default) leaves out records in the trash,
                 ``DELETED`` returns only those, ``ALL`` returns both.
+            raise_on_error (bool): Raise when the lookup fails, rather than
+                answer None as if no record existed
 
         Returns:
             Optional['Record']: Record data if found, None otherwise. None means

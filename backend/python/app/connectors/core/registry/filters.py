@@ -263,6 +263,16 @@ class SyncFilterKey(str, Enum):
     USERS = "users"
     GROUPS = "groups"
 
+    # SQL Connectors
+    TABLES = "tables"
+    SCHEMAS = "schemas"
+    DATABASES = "databases"
+    VIEWS = "views"
+    STAGES = "stages"
+    FILES = "files"
+    MAX_ROWS_PER_TABLE = "max_rows_per_table"
+    DERIVE_CONSTRAINTS = "derive_constraints"
+
 
 class IndexingFilterKey(str, Enum):
     """
