@@ -152,7 +152,7 @@ class KbPushService:
         if hint is None:
             return None, None
         parts = hint.rsplit(":", 2)
-        if len(parts) != 3 or parts[0] != org_id or parts[1] != kb_id or not parts[2].isdigit() or len(parts[2]) > 6:
+        if len(parts) != 3 or parts[0] != org_id or parts[1] != kb_id or not (parts[2].isascii() and parts[2].isdigit()) or len(parts[2]) > 6:
             raise PushRefusal(422, "SCHEMA_MISMATCH", "metadata.schemaId does not name a schema of this knowledge base.",
                               "metadata.schemaId", extra={"code": "ENVELOPE_INVALID"})
         schema = await self.schemas.get(org_id, kb_id, int(parts[2]))

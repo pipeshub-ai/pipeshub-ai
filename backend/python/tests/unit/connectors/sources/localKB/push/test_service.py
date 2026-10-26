@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, MagicMock
 
+import pytest
+
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     PushClaimRefused,
     PushOutcome,
 )
 from app.connectors.sources.localKB.push import contract as C
+from app.connectors.sources.localKB.push.contract import PushRefusal
 from app.connectors.sources.localKB.push.service import KbPushService
 from app.connectors.sources.localKB.push.worker import Validated
 from app.models.entities import FileRecord, RecordType
@@ -121,3 +124,16 @@ async def test_a_document_stored_for_a_lost_attempt_is_cleaned_up_when_the_retry
     assert result.status == "updated"
     svc._cleanup_unless_referenced.assert_awaited_once()
     assert svc._cleanup_unless_referenced.await_args.args[1:] == ("o", "kb", "doc-new")
+
+
+@pytest.mark.parametrize("version", ["²", "١", "1²"])
+async def test_a_schema_version_with_non_ascii_digits_is_a_schema_mismatch(version: str) -> None:
+    """str.isdigit() accepts them but int() does not: the push must answer 422, not 500."""
+    svc = _service(MagicMock())
+    body = ('{"metadata": {"schemaId": "o:kb:' + version + '"}}').encode()
+
+    with pytest.raises(PushRefusal) as raised:
+        await svc._load_schema("o", "kb", body)
+
+    assert (raised.value.status, raised.value.reason) == (422, "SCHEMA_MISMATCH")
+    svc.schemas.get.assert_not_called()
