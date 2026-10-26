@@ -2,7 +2,7 @@
 
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
+import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
 import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
 import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
 import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
@@ -191,7 +191,7 @@ function ChatContent() {
   const rawProjectParam = searchParams.get('projectId');
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
   useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
@@ -828,7 +828,7 @@ function ChatContent() {
       }
     }
 
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: suggestion.text }],
       startRun: true,
@@ -936,7 +936,7 @@ function ChatContent() {
     // pre-uploaded (the widget triggered the upload at attach-time), so we
     // forward the refs verbatim — same shape as a regular send from the
     // main composer.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
@@ -950,7 +950,7 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
+  }, [conversationId, aui, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
   const isBelowDesktop = useIsBelowDesktop();

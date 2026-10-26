@@ -183,6 +183,7 @@ from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
     is_live_record,
 )
+from app.services.graph_db.common.team_grant_role import aql_team_grant_role
 from app.services.graph_db.common.utils import (
     CANONICAL_PARENT_RELATION_TYPES,
     CONTAINER_INHERIT_MAX_DEPTH,
@@ -337,6 +338,9 @@ NODE_COLLECTIONS = [
 
 #: Retired collection roles, which read as READER.
 _RETIRED_ROLES_AQL = "[" + ", ".join(f'"{r}"' for r in sorted(RETIRED_ROLES)) + "]"
+
+# What a member gets from a team's grant; the loops name the edges team_grant and team_member.
+_TEAM_GRANT_ROLE_AQL = aql_team_grant_role("team_grant", "team_member")
 
 _WRITE_CONFLICT_ATTEMPTS = 6
 # Candidates per permitted-records query; see _walk_permitted_windows.
@@ -643,6 +647,12 @@ _STAGE_STATE_INDEXES: tuple[tuple[str, ...], ...] = (
 # hint it over the primary index, which would also serve `_key > @after` but scan every
 # connector's states.
 _STAGE_STATE_PAGE_INDEX = "stage_state_connector_stage_status_key"
+
+# "Did this connector index anything since?", asked for a record about to fail
+# on its rate-limit wait; named, so the query can hint it over the
+# (connectorId, indexingStatus, reason, _key) index, which the optimizer
+# otherwise takes and then filters every completed record of the connector.
+_INDEXED_SINCE_INDEX = "records_connector_status_indexed_at"
 _STAGE_STATE_PAGE_FIELDS = ["connectorId", "stage", "status", "_key"]
 # Blocks per batch when deleting a connector's or a record set's blocks.
 BLOCK_DELETE_BATCH_SIZE = 1000
@@ -1187,6 +1197,15 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         await self.http_client.ensure_persistent_index(
             CollectionNames.RECORDS.value,
             ["connectorId", "indexingStatus", "reason", "_key"],
+        )
+
+        # COMPOUND: "did this connector index anything since?", asked for a
+        # record about to fail on its rate-limit wait. The timestamp trails so
+        # a hit and a miss are both a range seek, not a read of the connector.
+        await self.http_client.ensure_persistent_index(
+            CollectionNames.RECORDS.value,
+            ["connectorId", "indexingStatus", "lastIndexTimestamp"],
+            name=_INDEXED_SINCE_INDEX,
         )
 
         # SINGLE: duplicateReconcilePending. The reconcile retry sweep looks for
@@ -2860,6 +2879,98 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             bind_vars,
         )
         return [(str(row["key"]), [str(k) for k in row["records"]]) for row in rows]
+
+    @override
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        ids = sorted({vrid for vrid in virtual_record_ids if vrid})
+        found: list[tuple[str, str]] = []
+        for start in range(0, len(ids), _STAGE_STATE_VRID_BATCH):
+            rows = await self._stage_aql(
+                f"""
+                FOR vrid IN @ids
+                    FOR state IN @@collection
+                        FILTER state.virtualRecordId == vrid AND state.rev != null
+                        COLLECT v = state.virtualRecordId, rev = state.rev
+                            AGGREGATE newest = MAX(state.updatedAtMs)
+                        FILTER (newest || 0) < @before
+                        LET held = (
+                            FOR record IN {CollectionNames.RECORDS.value}
+                                FILTER record.virtualRecordId == v AND record.contentRev == rev
+                                LIMIT 1
+                                RETURN 1
+                        )
+                        FILTER LENGTH(held) == 0
+                        SORT v, rev
+                        RETURN [v, rev]
+                """,
+                {"ids": ids[start:start + _STAGE_STATE_VRID_BATCH], "before": updated_before_ms},
+            )
+            found.extend((str(v), str(rev)) for v, rev in rows)
+        return found
+
+    @override
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        pairs = sorted({(v, r) for v, r in revisions if v and r})
+        deleted = 0
+        for start in range(0, len(pairs), _STAGE_STATE_VRID_BATCH):
+            # The rule is evaluated again here: a record may have moved back onto the
+            # revision, or its stage claimed again, since it was read.
+            rows = await self._stage_aql(
+                f"""
+                FOR pair IN @pairs
+                    LET held = (
+                        FOR record IN {CollectionNames.RECORDS.value}
+                            FILTER record.virtualRecordId == pair[0] AND record.contentRev == pair[1]
+                            LIMIT 1
+                            RETURN 1
+                    )
+                    FILTER LENGTH(held) == 0
+                    LET states = (
+                        FOR state IN @@collection
+                            FILTER state.virtualRecordId == pair[0] AND state.rev == pair[1]
+                            RETURN state
+                    )
+                    FILTER LENGTH(states) > 0 AND (MAX(states[*].updatedAtMs) || 0) < @before
+                    FOR state IN states
+                        REMOVE state IN @@collection
+                        COLLECT WITH COUNT INTO removed
+                        RETURN removed
+                """,
+                {"pairs": [list(p) for p in pairs[start:start + _STAGE_STATE_VRID_BATCH]], "before": updated_before_ms},
+            )
+            deleted += int(rows[0]) if rows else 0
+        return deleted
+
+    @override
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        after = "FILTER doc._key > @after_key" if after_key is not None else ""
+        bind_vars: dict[str, Any] = {
+            "@collection": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, "limit": limit,
+        }
+        if after_key is not None:
+            bind_vars["after_key"] = after_key
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                {after}
+                SORT doc._key
+                LIMIT @limit
+                RETURN {{
+                    virtualRecordId: doc._key, orgId: doc.orgId,
+                    currentRev: doc.currentRev, previousRev: doc.previousRev
+                }}
+            """,
+            bind_vars,
+        )
+        return [dict(row) for row in rows or []]
 
     @override
     async def get_record_content_revs(
@@ -13897,12 +14008,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
 
             LET team_roles = (
-                FOR team_info IN user_teams
-                    FOR kb_team_perm IN @@permissions_collection
-                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
-                        FILTER kb_team_perm._to == kb_to
-                        FILTER kb_team_perm.type == "TEAM"
-                        RETURN { role: team_info.role, priority: team_info.priority }
+                FOR team_member IN user_teams
+                    FOR team_grant IN @@permissions_collection
+                        FILTER team_grant._from == CONCAT('teams/', team_member.team_id)
+                        FILTER team_grant._to == kb_to
+                        FILTER team_grant.type == "TEAM"
+                        LET team_role = __TEAM_GRANT_ROLE__
+                        FILTER team_role != null
+                        RETURN { role: team_role, priority: @role_priority[team_role] || 0 }
             )
 
             // Combine direct + team roles and return highest permission
@@ -13917,7 +14030,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN r.role
             )
             RETURN best
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_AQL)
 
             result = await self.http_client.execute_aql(
                 query,
@@ -14018,12 +14131,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }}
                 )
 
-                FOR team_info IN user_teams
-                    FOR kb_team_perm IN @@permissions_collection
-                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
-                        FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
-                        LET kb = DOCUMENT(kb_team_perm._to)
+                FOR team_member IN user_teams
+                    FOR team_grant IN @@permissions_collection
+                        FILTER team_grant._from == CONCAT('teams/', team_member.team_id)
+                        FILTER team_grant.type == "TEAM"
+                        FILTER STARTS_WITH(team_grant._to, "apps/")
+                        LET team_role = {_TEAM_GRANT_ROLE_AQL}
+                        FILTER team_role != null
+                        LET kb = DOCUMENT(team_grant._to)
                         FILTER kb != null
                         FILTER kb.orgId == @org_id
                         FILTER kb.type == @kb_type
@@ -14032,8 +14147,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         RETURN {{
                             kb_id: kb._key,
                             kb_doc: kb,
-                            role: team_info.role,
-                            priority: team_info.priority,
+                            role: team_role,
+                            priority: @role_priority[team_role] || 0,
                             is_direct: false
                         }}
             )
@@ -14125,12 +14240,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }}
                 )
 
-                FOR team_info IN user_teams
-                    FOR kb_team_perm IN @@count_permissions_collection
-                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
-                        FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
-                        LET kb = DOCUMENT(kb_team_perm._to)
+                FOR team_member IN user_teams
+                    FOR team_grant IN @@count_permissions_collection
+                        FILTER team_grant._from == CONCAT('teams/', team_member.team_id)
+                        FILTER team_grant.type == "TEAM"
+                        FILTER STARTS_WITH(team_grant._to, "apps/")
+                        LET team_role = {_TEAM_GRANT_ROLE_AQL}
+                        FILTER team_role != null
+                        LET kb = DOCUMENT(team_grant._to)
                         FILTER kb != null
                         FILTER kb.orgId == @count_org_id
                         FILTER kb.type == @count_kb_type
@@ -14138,8 +14255,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         {additional_filters.replace('@search_term', '@count_search_term') if additional_filters else ''}
                         RETURN {{
                             kb_id: kb._key,
-                            role: team_info.role,
-                            priority: team_info.priority,
+                            role: team_role,
+                            priority: @count_role_priority[team_role] || 0,
                             is_direct: false
                         }}
             )
@@ -14196,21 +14313,23 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         }
                 )
 
-                FOR team_info IN user_teams
-                    FOR kb_team_perm IN @@filters_permissions_collection
-                        FILTER kb_team_perm._from == CONCAT('teams/', team_info.team_id)
-                        FILTER kb_team_perm.type == "TEAM"
-                        FILTER STARTS_WITH(kb_team_perm._to, "apps/")
-                        LET kb = DOCUMENT(kb_team_perm._to)
+                FOR team_member IN user_teams
+                    FOR team_grant IN @@filters_permissions_collection
+                        FILTER team_grant._from == CONCAT('teams/', team_member.team_id)
+                        FILTER team_grant.type == "TEAM"
+                        FILTER STARTS_WITH(team_grant._to, "apps/")
+                        LET team_role = __TEAM_GRANT_ROLE__
+                        FILTER team_role != null
+                        LET kb = DOCUMENT(team_grant._to)
                         FILTER kb != null
                         FILTER kb.orgId == @filters_org_id
                         FILTER kb.type == @filters_kb_type
                         FILTER kb.isHidden != true
                         RETURN {
                             kb_id: kb._key,
-                            permission: team_info.role,
+                            permission: team_role,
                             kb_name: kb.name,
-                            priority: team_info.priority,
+                            priority: @filters_role_priority[team_role] || 0,
                             is_direct: false
                         }
             )
@@ -14229,7 +14348,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     permission: FIRST(sorted_roles),
                     kb_name: FIRST(roles).kb_name
                 }
-            """
+            """.replace("__TEAM_GRANT_ROLE__", _TEAM_GRANT_ROLE_AQL)
 
             main_bind_vars: dict[str, Any] = {
                 "user_from": f"users/{user_id}",
@@ -22244,18 +22363,19 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "COMMENTER": 1
                 }}
                 LET team_roles = (
-                    FOR kb_team_perm IN @@permission
-                        FILTER kb_team_perm._to == kb._id
-                        FILTER kb_team_perm.type == "TEAM"
-                        LET team_id = PARSE_IDENTIFIER(kb_team_perm._from).key
+                    FOR team_grant IN @@permission
+                        FILTER team_grant._to == kb._id
+                        FILTER team_grant.type == "TEAM"
                         // Check if user is a member of this team
-                        FOR user_team_perm IN @@permission
-                            FILTER user_team_perm._from == userDoc._id
-                            FILTER user_team_perm._to == CONCAT('teams/', team_id)
-                            FILTER user_team_perm.type == "USER"
+                        FOR team_member IN @@permission
+                            FILTER team_member._from == userDoc._id
+                            FILTER team_member._to == team_grant._from
+                            FILTER team_member.type == "USER"
+                            LET team_role = {_TEAM_GRANT_ROLE_AQL}
+                            FILTER team_role != null
                             RETURN {{
-                                role: user_team_perm.role,
-                                priority: role_priority[user_team_perm.role]
+                                role: team_role,
+                                priority: role_priority[team_role]
                             }}
                 )
                 LET highest_role = LENGTH(team_roles) > 0 ? FIRST(
@@ -22857,20 +22977,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 : role_target_perm.role
             )
 
-            // Path 7: User -> Team -> target (uses user->team role only)
+            // Path 7: User -> Team -> target, the role the team's grant gives
             LET path7_roles = (
                 FOR target_id IN permission_targets
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from IN principal_ids
-                        AND user_team_perm.type == "USER"
-                        AND STARTS_WITH(user_team_perm._to, "teams/")
-                        AND user_team_perm.role != null
-                        AND user_team_perm.role != ""
-                        FOR team_target_perm IN permission
-                            FILTER team_target_perm._from == user_team_perm._to
-                            AND team_target_perm._to == target_id
-                            AND team_target_perm.type == "TEAM"
-                            RETURN user_team_perm.role
+                    FOR team_member IN permission
+                        FILTER team_member._from IN principal_ids
+                        AND team_member.type == "USER"
+                        AND STARTS_WITH(team_member._to, "teams/")
+                        FOR team_grant IN permission
+                            FILTER team_grant._from == team_member._to
+                            AND team_grant._to == target_id
+                            AND team_grant.type == "TEAM"
+                            LET team_role = {_TEAM_GRANT_ROLE_AQL}
+                            FILTER team_role != null
+                            RETURN team_role
             )
 
             // Path 9: User -> Org -> target (direct org permission)
@@ -23016,20 +23136,20 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                                 : role_target_perm.role
             )
 
-            // Path 4: User -> Team -> target (uses user->team role only; TEAM edge is access grant)
+            // Path 4: User -> Team -> target, the role the team's grant gives
             LET path4_roles = (
                 FOR target_id IN permission_targets
-                    FOR user_team_perm IN permission
-                        FILTER user_team_perm._from IN principal_ids
-                        AND user_team_perm.type == "USER"
-                        AND STARTS_WITH(user_team_perm._to, "teams/")
-                        AND user_team_perm.role != null
-                        AND user_team_perm.role != ""
-                        FOR team_target_perm IN permission
-                            FILTER team_target_perm._from == user_team_perm._to
-                            AND team_target_perm._to == target_id
-                            AND team_target_perm.type == "TEAM"
-                            RETURN user_team_perm.role
+                    FOR team_member IN permission
+                        FILTER team_member._from IN principal_ids
+                        AND team_member.type == "USER"
+                        AND STARTS_WITH(team_member._to, "teams/")
+                        FOR team_grant IN permission
+                            FILTER team_grant._from == team_member._to
+                            AND team_grant._to == target_id
+                            AND team_grant.type == "TEAM"
+                            LET team_role = {_TEAM_GRANT_ROLE_AQL}
+                            FILTER team_role != null
+                            RETURN team_role
             )
 
             // Path 5: User -> Org -> target
@@ -23139,18 +23259,17 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     RETURN perm
             )
 
-            // KB collection team share: user→team (USER, role) + team→app (TEAM, access only)
+            // KB collection team share: user→team (USER) + team→app (TEAM), the role the team's grant gives
             LET team_kb_roles = (
-                FOR user_team_perm IN {CollectionNames.PERMISSION.value}
-                    FILTER user_team_perm._from == {user_var}._id
-                    AND user_team_perm.type == "USER"
-                    AND STARTS_WITH(user_team_perm._to, "{CollectionNames.TEAMS.value}/")
-                    AND user_team_perm.role != null AND user_team_perm.role != ""
-                    FOR team_app_perm IN {CollectionNames.PERMISSION.value}
-                        FILTER team_app_perm._from == user_team_perm._to
-                        AND team_app_perm._to == {node_var}._id
-                        AND team_app_perm.type == "TEAM"
-                        RETURN user_team_perm.role
+                FOR team_member IN {CollectionNames.PERMISSION.value}
+                    FILTER team_member._from == {user_var}._id
+                    AND team_member.type == "USER"
+                    AND STARTS_WITH(team_member._to, "{CollectionNames.TEAMS.value}/")
+                    FOR team_grant IN {CollectionNames.PERMISSION.value}
+                        FILTER team_grant._from == team_member._to
+                        AND team_grant._to == {node_var}._id
+                        AND team_grant.type == "TEAM"
+                        RETURN {_TEAM_GRANT_ROLE_AQL}
             )
             LET team_kb_role = FIRST(
                 FOR r IN team_kb_roles
@@ -24784,7 +24903,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             RETURN {{
                 vid: r.virtualRecordId, id: r._key, connectorId: r.connectorId,
                 connectorName: r.connectorName, recordGroupId: r.recordGroupId,
-                recordName: r.recordName, webUrl: r.webUrl,
+                recordName: r.recordName, webUrl: r.webUrl, contentRev: r.contentRev,
                 isDeleted: r.isDeleted == true
             }}
         """
@@ -24827,6 +24946,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             query, {"virtual_record_ids": wanted}, transaction
         )
         return {vrid for vrid in results or [] if vrid}
+
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.has_records_indexed_since`."""
+        # A range seek on the (connectorId, indexingStatus, lastIndexTimestamp)
+        # index, for a hit and a miss alike. Asked only for a record about to
+        # fail on its wait.
+        query = f"""
+        FOR record IN {CollectionNames.RECORDS.value} OPTIONS {{ indexHint: "{_INDEXED_SINCE_INDEX}" }}
+            FILTER record.connectorId == @connector_id
+            AND record.indexingStatus == @completed
+            AND record.lastIndexTimestamp > @since_ms
+            LIMIT 1
+            RETURN 1
+        """
+        results = await self.http_client.execute_aql(
+            query,
+            {
+                "connector_id": connector_id,
+                "completed": ProgressStatus.COMPLETED.value,
+                "since_ms": since_ms,
+            },
+            transaction,
+        )
+        return bool(results)
 
     async def get_records_by_virtual_record_id(
         self,
@@ -26409,7 +26558,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Add only schema-allowed fields
             # Note: tools, connectors, kb, vectorDBs are handled via edges, not agent document
-            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
+            allowed_fields = ["name", "description", "startMessage", "systemPrompt", "instructions", "tags", "isActive", "isServiceAccount", "serviceAccountUserId", "sendUserContext", "webSearch", "defaultReasoningEffort", "apiToolsetTools"]
             for field in allowed_fields:
                 if field in agent_updates:
                     update_data[field] = agent_updates[field]

@@ -5,6 +5,7 @@ S3 or Azure (or, on local storage, to a storage-service route). A signed URL
 is a bearer credential: nothing here logs one or puts one in an error.
 """
 
+import json
 import logging
 import threading
 from collections.abc import Sequence
@@ -15,8 +16,10 @@ from yarl import URL
 
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import Routes
+from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.modules.artifacts.models import RevisionUploadPlan, SignedFileUrl
 from app.modules.transformers.blob_storage import (
+    _storage_error_detail,
     _storage_status_error,
     get_shared_session,
 )
@@ -73,6 +76,8 @@ class _Availability:
 
 
 ARTIFACT_ROUTES = _Availability()
+#: Whether the storage service takes ``properties.json``; one older than the file refuses it.
+PROPERTIES_FILE = _Availability()
 
 
 def artifact_writes_available() -> bool:
@@ -129,10 +134,16 @@ class NodeArtifactStore:
             raise ArtifactRoutesUnavailable(response.status)
         if response.status != HttpStatusCode.SUCCESS.value:
             # Error bodies come from the storage service itself, never with a signed URL.
-            detail = (await response.text())[:300]
-            raise _storage_status_error(
-                response.status, f"artifact request {route} failed (HTTP {response.status}): {detail}"
+            text = await response.text()
+            error = _storage_status_error(
+                response.status, f"artifact request {route} failed (HTTP {response.status}): {text[:300]}"
             )
+            if isinstance(error, StorageRequestRejectedError):
+                try:
+                    error.detail = _storage_error_detail(json.loads(text))
+                except ValueError:
+                    error.detail = None
+            raise error
         body = await response.json()
         if not isinstance(body, dict):
             raise ArtifactStoreError(f"artifact request {route} answered a non-object body")

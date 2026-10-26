@@ -17,8 +17,8 @@ const thread = vi.hoisted(() => ({
 const loadOlder = vi.hoisted(() => vi.fn<(slotId: string) => Promise<void>>());
 
 vi.mock('@assistant-ui/react', () => ({
-  useThread: () => ({ messages: thread.messages }),
-  useThreadRuntime: () => ({ append: thread.append }),
+  useAuiState: (select: (state: unknown) => unknown) => select({ thread: { messages: thread.messages } }),
+  useAui: () => ({ thread: () => ({ append: thread.append }) }),
 }));
 
 vi.mock('../../../streaming', () => ({

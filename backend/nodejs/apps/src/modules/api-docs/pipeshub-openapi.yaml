@@ -844,10 +844,10 @@ components:
       description: |
         A file inside an artifact set. Only these are accepted: `manifest.json`,
         `metadata.json`, `groups.json`, `reconciliation.json`, `record.json`,
-        `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
+        `properties.json`, `blocks/part-NNNN.jsonl`, `text/part-NNNN.jsonl`,
         `images/{sha256}.png|jpg|webp` and `enrich/{name}@{version}.json`.
         Anything else, including `..`, a leading `/` or a backslash, is refused.
-      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
+      pattern: '^(?:manifest\.json|metadata\.json|groups\.json|reconciliation\.json|record\.json|properties\.json|(?:blocks|text)/part-\d{4}\.jsonl|images/[0-9a-f]{64}\.(?:png|jpg|webp)|enrich/[a-z0-9_.-]+@\d+\.json)$'
     ArtifactFileUrl:
       type: object
       required:
@@ -10957,8 +10957,10 @@ components:
           type: boolean
           default: true
           description: |
-            Whether the AI model rewrites the query and adds expanded variants before
-            searching. Set it to `false` to search the query exactly as sent, with no
+            Whether the AI model's rewrite of the query and its expanded variants are
+            searched as well. The query as sent is always searched, so an exact code or
+            name in it is never lost to the rewrite. Set it to `false` to search the query
+            exactly as sent and nothing else, with no
             model call: faster, and suited to callers that write their own queries, such
             as an agent. The results can differ from a search with the rewrite.
           example: false
@@ -11248,6 +11250,13 @@ components:
             a table) brought the whole section back: how many blocks it sits from the passage
             the search matched nearest to it. `0` is a matched passage. Absent when the hit matched
             directly or the section matched as a whole.
+        block_group_index:
+          type: integer
+          nullable: true
+          description: |
+            Set on each passage of a section brought back whole (see `distanceFromMatch`): the
+            index of that section in its record, so passages of two sections of one record can be
+            told apart. Absent on a hit that matched directly.
         timelinePeriod:
           type: integer
           minimum: 0
@@ -13021,6 +13030,13 @@ components:
         isServiceAccount:
           type: boolean
           description: Whether this agent is a service-account agent.
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent searches knowledge
+            as, or null when it searches as its creator. Only set on a
+            service-account agent.
         access_type:
           type: string
           description: How the user can access this agent.
@@ -13111,6 +13127,13 @@ components:
         isServiceAccount:
           type: boolean
           description: Whether this agent is a service-account agent.
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent searches knowledge
+            as, or null when it searches as its creator. Only set on a
+            service-account agent.
         models:
           type: array
           description: |
@@ -13393,6 +13416,7 @@ components:
         - clickup
         - confluence
         - confluencedatacenter
+        - docs
         - drive
         - github
         - gmail
@@ -13405,6 +13429,7 @@ components:
         - redshift
         - salesforce
         - sharepoint
+        - sheets
         - slack
         - teams
         - zoom
@@ -13542,6 +13567,15 @@ components:
           type: boolean
           default: false
           description: Create the agent as a service-account agent
+        serviceAccountUserId:
+          type: string
+          description: |
+            The `userId` of the service account this agent should search
+            knowledge as, as returned by the service accounts API. Only valid
+            on a service-account agent: sending it without `isServiceAccount`
+            is refused rather than ignored, so a request cannot quietly create
+            an agent that searches as its creator. Omit it and the agent
+            searches as its creator.
         toolsets:
           type: array
           maxItems: 100
@@ -13779,6 +13813,13 @@ components:
           type: boolean
         isServiceAccount:
           type: boolean
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent searches knowledge
+            as, or null when it searches as its creator. Only set on a
+            service-account agent.
         createdBy:
           type: string
         updatedBy:
@@ -13890,6 +13931,16 @@ components:
           type: boolean
           default: false
           description: Mark agent as a service account
+        serviceAccountUserId:
+          type: string
+          nullable: true
+          description: |
+            The `userId` of the service account this agent should search
+            knowledge as. Only valid on a service-account agent, checked
+            against what the agent will be once the request is applied, so one
+            request may convert an agent and bind it. Null is accepted on any
+            agent and clears the binding, going back to searching as the
+            agent's creator.
         toolsets:
           type: array
           maxItems: 100

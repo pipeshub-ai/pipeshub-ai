@@ -532,6 +532,32 @@ class TestProjectToRecords:
         connector.data_entities_processor.get_records_by_parent.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("stored_updated_at, refreshed", [("same", False), (1, True)])
+    async def test_a_project_counts_as_refreshed_only_when_it_is_reindexed(
+        self, stored_updated_at, refreshed,
+    ) -> None:
+        project = _make_project_data()
+        project["teams"] = _teams(("team-1", False))
+        connector = self._connector(project)
+        same = connector._parse_linear_datetime(project["updatedAt"])
+        existing = ProjectRecord(
+            id="node-proj", org_id="org-1", record_name="Project", record_type=RecordType.PROJECT,
+            external_record_id="proj-1", version=3, origin=OriginTypes.CONNECTOR,
+            connector_name=Connectors.LINEAR, connector_id=connector.connector_id,
+            external_record_group_id="team-1", record_group_type=RecordGroupType.PROJECT,
+            source_updated_at=same if stored_updated_at == "same" else stored_updated_at,
+        )
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_record_id: existing if external_record_id == "proj-1" else None)
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
+
+        await connector._project_to_records("proj-1", {"team-1"})
+
+        # Stored again unchanged it is not re-indexed, so the comment and
+        # children-stamp passes must still be free to refresh it.
+        assert ("proj-1" in connector._refreshed_project_ids) is refreshed
+
+    @pytest.mark.asyncio
     async def test_the_other_synced_teams_are_shared_groups_of_every_record(self) -> None:
         """Linear shows a project, and its documents, links and files, to anyone who can
         see one of its teams: each record is filed under the home team and shared with

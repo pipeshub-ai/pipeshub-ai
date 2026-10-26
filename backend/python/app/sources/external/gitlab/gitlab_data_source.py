@@ -26,6 +26,7 @@ import httpx
 from gitlab import Gitlab
 
 from app.sources.client.gitlab.gitlab import GitLabResponse
+from app.sources.client.http.address_guard import guarded_async_client
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -89,7 +90,7 @@ class GitLabDataSource:
     def http_client(self) -> httpx.AsyncClient:
         """Return the lazily-initialised shared async HTTP client."""
         if self._http_client is None or self._http_client.is_closed:
-            self._http_client = httpx.AsyncClient(
+            self._http_client = guarded_async_client(
                 follow_redirects=True,
                 timeout=60.0,
             )

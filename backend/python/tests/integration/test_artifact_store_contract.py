@@ -9,7 +9,9 @@ starts MongoDB, MinIO and Azurite for it. Environment:
 - ``ARTIFACTS_IT_STORAGE_TYPE``: the storage it is configured with: local, s3 or azureBlob
 - ``ARTIFACTS_IT_ORG_ID`` (optional): the organization id to write under
 
-Skipped when ``ARTIFACTS_IT_STORAGE_URL`` is not set.
+Skipped when ``ARTIFACTS_IT_STORAGE_URL`` is not set. The retention test stands a
+fake graph in front of the real store: the graph side has its own test against
+real engines (``test_revision_retention_e2e.py``).
 """
 
 from __future__ import annotations
@@ -19,6 +21,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 import uuid
 from typing import TYPE_CHECKING, Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -32,6 +35,7 @@ from app.models.entities import Record, RecordType
 from app.modules.artifacts import sidecars as sidecars_module
 from app.modules.artifacts import store as store_module
 from app.modules.artifacts.models import MANIFEST_PATH
+from app.modules.artifacts.retention import RevisionRetentionSweep
 from app.modules.artifacts.sidecars import ArtifactSidecars, sidecar_path
 from app.modules.artifacts.store import NodeArtifactStore
 from app.modules.artifacts.writer import ArtifactWriter, canonical_json
@@ -215,3 +219,36 @@ async def test_a_sidecar_lands_in_its_revisions_document(blob: BlobStorage) -> N
     assert json.loads(await store.get(urls[MANIFEST_PATH]))["artifacts"].keys() == written.manifest.artifacts.keys()
     assert [r["documentId"] for r in await store.list_revisions(ORG_ID, vrid)] == [document_id]
     assert await store.delete_revision(ORG_ID, document_id) == 1
+
+
+async def test_retention_retires_old_revisions_through_the_storage_service(blob: BlobStorage) -> None:
+    """Revisions neither current nor previous go, tree and document; the two kept still read."""
+    vrid = str(uuid.uuid4())
+    revs = [uuid.uuid4().hex[:16] for _ in range(4)]
+    store = NodeArtifactStore(blob, logger)
+    writer = ArtifactWriter(store, logger)
+    written = {}
+    for i, rev in enumerate(revs):
+        record = _record(vrid, [Block(index=0, type=BlockType.TEXT, data=f"version {i}")])
+        written[rev] = await writer.write_revision(record, ORG_ID, vrid, rev, record.block_containers)
+    graph = MagicMock()
+    graph.get_revision_pointers = AsyncMock(return_value=[
+        {"virtualRecordId": vrid, "orgId": ORG_ID, "currentRev": revs[3], "previousRev": revs[2]},
+    ])
+    graph.get_virtual_record_ids_in_use = AsyncMock(return_value=set())
+    graph.stage_states_unheld_revisions = AsyncMock(return_value=[])
+    graph.get_document = AsyncMock(return_value={"currentRev": revs[3], "previousRev": revs[2]})
+    graph.get_virtual_record_holders = AsyncMock(return_value={vrid: [{"contentRev": revs[3], "isDeleted": False}]})
+    # Two days on, so the revisions just written are past the grace.
+    sweep = RevisionRetentionSweep(graph, store, logger, now_ms=lambda: int(time.time() * 1000) + 48 * 3600 * 1000)
+
+    try:
+        _, report = await sweep.run_page(None)
+
+        assert report.revisions_deleted == 2 and report.failed == 0
+        assert sorted(r["rev"] for r in await store.list_revisions(ORG_ID, vrid)) == sorted(revs[2:])
+        current = written[revs[3]].manifest_ref.document_id
+        urls = await store.read_urls(ORG_ID, current, [MANIFEST_PATH])
+        assert json.loads(await store.get(urls[MANIFEST_PATH]))["rev"] == revs[3]
+    finally:
+        await blob.purge_virtual_record_documents(ORG_ID, vrid)

@@ -40,6 +40,8 @@ from tests.integration.gitlab_simulated.glsim.model import (
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+HOST = "127.0.0.1"
+
 
 class Reply(Exception):
     def __init__(self, status: int, body: Any = None, headers: dict[str, str] | None = None,  # noqa: ANN401
@@ -702,10 +704,10 @@ class Server:
             def do_DELETE(self) -> None:
                 server.handle(self, "DELETE")
 
-        self.httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.httpd = ThreadingHTTPServer((HOST, 0), Handler)
         self.httpd.daemon_threads = True
         port = self.httpd.server_address[1]
-        self.gl.base_url = f"http://127.0.0.1:{port}"
+        self.gl.base_url = f"http://{HOST}:{port}"
         self.thread = threading.Thread(target=self.httpd.serve_forever, daemon=True, name="glsim")
         self.thread.start()
         return self.gl.base_url

@@ -1260,6 +1260,8 @@ class LinkRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -1628,6 +1630,8 @@ class TicketRecord(Record):
             creator_source_timestamp=ticket_doc.get("creatorSourceTimestamp"),
             reporter_source_timestamp=ticket_doc.get("reporterSourceTimestamp"),
             labels=ticket_doc.get("labels"),
+            # With it lost, the email fields (then the source's user ids) read as emails.
+            is_email_hidden=bool(ticket_doc.get("is_email_hidden")),
             resolved_at=ticket_doc.get("resolvedAtTimestamp"),
             due_date=ticket_doc.get("dueDateTimestamp"),
             **Record.delete_state_from_arango(record_doc),
@@ -1713,6 +1717,8 @@ class ProjectRecord(Record):
             external_record_id=record_doc["externalRecordId"],
             external_revision_id=record_doc.get("externalRevisionId"),
             external_record_group_id=record_doc.get("externalGroupId"),
+            record_group_id=record_doc.get("recordGroupId"),
+            root_record_group_id=record_doc.get("rootRecordGroupId"),
             parent_external_record_id=record_doc.get("externalParentId"),
             version=record_doc["version"],
             origin=OriginTypes(record_doc["origin"]),
@@ -3306,6 +3312,7 @@ class AppUser(BaseModel):
     is_active: bool = Field(default=False, description="Whether the user is active")
     title: str | None = Field(default=None, description="Title of the user")
     is_guest: bool = Field(default=False, description="Whether the source directory lists the user as a guest; a synced guest is not made an org member")
+    source_role: str | None = Field(default=None, description="The user's administrative role in the source (e.g. team admin); not a job title and not stored")
 
     def to_arango_base_user(self) -> dict:
         return {
@@ -3317,6 +3324,8 @@ class AppUser(BaseModel):
             "isActive": self.is_active,
             "createdAtTimestamp": self.created_at,
             "updatedAtTimestamp": self.updated_at,
+            # "designation" is the graph user field the schema already allows; it rejects null.
+            **({"designation": self.title} if self.title else {}),
         }
 
     @staticmethod
@@ -3328,6 +3337,7 @@ class AppUser(BaseModel):
             user_id=data.get("userId"),
             is_active=data.get("isActive", False),
             full_name=data.get("fullName"),
+            title=data.get("designation") or data.get("title"),
             source_user_id=data.get("sourceUserId", ""),
             app_name=Connectors(data.get("appName", Connectors.UNKNOWN.value).replace("_", " ").upper()),
             connector_id=data.get("connectorId", ""),

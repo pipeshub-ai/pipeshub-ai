@@ -10,6 +10,7 @@ from gitlab import Gitlab
 from pydantic import BaseModel, Field  # type: ignore
 
 from app.config.configuration_service import ConfigurationService
+from app.sources.client.http.address_guard import AddressGuardAdapter
 from app.sources.client.iclient import IClient
 from app.utils.oauth_config import resolve_instance_url
 
@@ -131,7 +132,8 @@ class _TokenSafeSession(requests.Session):
 
 
 def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
-    """A session that never carries the GitLab token off its server or onto plain http.
+    """A session that never carries the GitLab token off its server or onto plain http,
+    and never reaches an address the deployment forbids (see ``AddressGuardAdapter``).
 
     python-gitlab follows redirects on GET and HEAD. Each redirect target must
     pass the same rule as the instance URL before it is requested, and a
@@ -145,6 +147,9 @@ def _secure_session(logger: logging.Logger | None = None) -> requests.Session:
 
     session = _TokenSafeSession()
     session.hooks["response"].append(refuse_insecure_redirect)
+    guard = AddressGuardAdapter()
+    session.mount("http://", guard)
+    session.mount("https://", guard)
     return session
 
 

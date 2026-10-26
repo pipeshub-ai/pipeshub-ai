@@ -10,6 +10,8 @@ from typing import Literal
 from pydantic import BaseModel, Field
 
 MANIFEST_PATH = "manifest.json"
+#: The record's typed property values (``RecordMetadata``); readers that do not use it skip it.
+PROPERTIES_PATH = "properties.json"
 #: Bumped when a file's layout changes in a way a reader must know about.
 #: 2: image blocks keep a non-canonical media type; record.json holds the container's
 #: fields and the stored copy's identity (the owner's, for shared content).

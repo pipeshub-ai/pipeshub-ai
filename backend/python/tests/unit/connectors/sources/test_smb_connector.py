@@ -502,13 +502,14 @@ class TestSmbConnectorSync:
         assert written["last_sync_time"] == int(NOW.timestamp() * 1000)
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
-    async def test_run_sync_skips_prune_when_listing_incomplete(self, mock_filters, smb_connector, mock_processor):
+    async def test_run_sync_removes_nothing_when_the_share_root_fails(self, mock_filters, smb_connector, mock_processor):
         mock_filters.return_value = _empty_filters()
         ds = _ds(fail_dirs={(SHARE, "")})
         smb_connector.data_source = ds
         smb_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
         await smb_connector.run_sync()
-        mock_processor.get_records_by_record_type.assert_not_awaited()
         mock_processor.on_record_deleted.assert_not_awaited()
         smb_connector.record_sync_point.update_sync_point.assert_not_awaited()
         assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Sync could not read the share"
@@ -525,6 +526,63 @@ class TestSmbConnectorSync:
         await smb_connector.run_sync()
         mock_processor.on_record_deleted.assert_not_awaited()
         smb_connector.notify.assert_not_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_failed_subfolder_keeps_only_its_own_records(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("flaky", is_directory=True, file_id=5), _entry("kept.txt", file_id=6)]},
+            fail_dirs={(SHARE, "flaky")},
+        )
+        smb_connector.configured_share = SHARE
+        inside = _file_record(ext_id=f"{SHARE}/flaky/report.txt", revision="old", record_id="inside")
+        # Shares the failed folder's name as a prefix without being inside it.
+        sibling = _file_record(ext_id=f"{SHARE}/flaky-old.txt", revision="old", record_id="sibling")
+        gone = _file_record(ext_id=f"{SHARE}/gone.txt", revision="old", record_id="gone")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[inside, sibling, gone])
+        await smb_connector.run_sync()
+        deleted = {call.args[0] for call in mock_processor.on_record_deleted.await_args_list}
+        assert deleted == {"sibling", "gone"}
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_what_was_synced_from_a_denied_subfolder_is_removed(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(
+            tree={(SHARE, ""): [_entry("private", is_directory=True, file_id=5)]},
+            denied_dirs={(SHARE, "private")},
+        )
+        smb_connector.configured_share = SHARE
+        folder = _file_record(ext_id=f"{SHARE}/private", revision="old", record_id="folder", is_file=False)
+        inside = _file_record(ext_id=f"{SHARE}/private/secret.txt", revision="old", record_id="inside")
+        gone = _file_record(ext_id=f"{SHARE}/gone.txt", revision="old", record_id="gone")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[folder, inside, gone])
+        await smb_connector.run_sync()
+        deleted = {call.args[0] for call in mock_processor.on_record_deleted.await_args_list}
+        assert deleted == {"inside", "gone"}
+        smb_connector.notify.assert_not_awaited()
+        smb_connector.record_sync_point.update_sync_point.assert_awaited()
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_denied_share_root_removes_nothing(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(denied_dirs={(SHARE, "")})
+        smb_connector.configured_share = SHARE
+        stored = _file_record(ext_id=f"{SHARE}/a.txt", revision="old")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
+        await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
+        assert smb_connector.notify.await_args.kwargs["title"] == "SMB: Sync could not read the share"
+
+    @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
+    async def test_a_share_walk_that_raises_removes_nothing(self, mock_filters, smb_connector, mock_processor):
+        mock_filters.return_value = _empty_filters()
+        smb_connector.data_source = _ds(tree={(SHARE, ""): [_entry("a.txt", file_id=5)]})
+        smb_connector.configured_share = SHARE
+        mock_processor.on_new_records = AsyncMock(side_effect=RuntimeError("graph unavailable"))
+        stored = _file_record(ext_id=f"{SHARE}/b.txt", revision="old")
+        mock_processor.get_records_by_record_type = AsyncMock(return_value=[stored])
+        await smb_connector.run_sync()
+        mock_processor.on_record_deleted.assert_not_awaited()
 
     @patch("app.connectors.sources.smb.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_same_revision_reuses_existing_id(self, mock_filters, smb_connector, mock_processor):

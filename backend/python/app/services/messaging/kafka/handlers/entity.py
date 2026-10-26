@@ -268,6 +268,19 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
+                # Set on the existing node too: a service account that is
+                # restored, or recreated under an address the graph already
+                # knows, arrives here rather than below. Left alone when
+                # absent, so an older producer cannot blank a value a newer
+                # one has already set. Nodes that predate the field are filled
+                # in by the backfill, not from here.
+                if payload.get("kind"):
+                    user_data["kind"] = payload["kind"]
+                # Sent by restore, which has just switched the account back on
+                # in the collection that owns the answer. Left alone when
+                # absent, so a producer that says nothing cannot change it.
+                if payload.get("isDisabled") is not None:
+                    user_data["isDisabled"] = bool(payload["isDisabled"])
             else:
                 user_key = str(uuid4())
                 user_data = {
@@ -282,6 +295,16 @@ class EntityEventService(BaseEventService):
                     "designation": payload.get("designation", ""),
                     "businessPhones": payload.get("businessPhones", []),
                     "isActive": True,
+                    # Absence means a person. Every producer of a service
+                    # account sends this; nothing else needs to.
+                    "kind": payload.get("kind") or "human",
+                # Absence means not disabled, so only a true value is worth
+                # storing; a person never carries this at all.
+                **(
+                    {"isDisabled": True}
+                    if payload.get("isDisabled") is True
+                    else {}
+                ),
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -421,9 +444,27 @@ class EntityEventService(BaseEventService):
                 "designation": payload.get("designation", ""),
                 "businessPhones": payload.get("businessPhones", []),
 
-                "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
+
+            # `isActive` is deliberately absent from the fields above. Soft
+            # delete writes `isActive: False` (`_handle_user_deleted`) and
+            # these upserts merge, so any `True` here would overwrite it. The
+            # two handlers run at the same time: delete and update are
+            # separate event types on one stream, the chart runs two connector
+            # replicas in the same consumer group
+            # (`app/services/messaging/utils.py:239`), and each can take one.
+            # A `True` decided before a delete commits would land after it and
+            # put a removed user back. The field belongs to the events that
+            # own it — create, delete and restore. A rename is no evidence
+            # that a user still exists.
+
+            # The only signal the graph gets that an account was switched
+            # off. Written only when the event carries it, so an update that
+            # says nothing about it — one from a producer that predates the
+            # field — cannot switch an account back on.
+            if payload.get("isDisabled") is not None:
+                user_data["isDisabled"] = bool(payload["isDisabled"])
 
             # Add only non-null optional fields
             optional_fields = [
@@ -445,6 +486,22 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+
+            # A node written before the field existed carries no `isActive`,
+            # and the permission reads filter on `isActive == true`, so such a
+            # node drops out of them. Stamped here rather than merged above
+            # because the condition is evaluated inside the write: a delete
+            # that lands first leaves `False` in place and this does nothing.
+            # Skipped outright when the read already saw the field, which is
+            # every account created since.
+            if existing_user.get("isActive") is None:
+                await self.graph_provider.update_node_fields_if_match(
+                    user_id,
+                    CollectionNames.USERS.value,
+                    {"isActive": True},
+                    {"isActive": None},
+                )
+
             self.logger.info(f"✅ Successfully updated user: {payload['email']}")
             return True
 

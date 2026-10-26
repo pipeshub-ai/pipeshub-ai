@@ -93,6 +93,7 @@ from app.models.blocks import (
     GroupType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.sources.client.http.address_guard import AddressNotAllowedError, guarded_async_client
 from app.sources.client.salesforce.salesforce import (
     SalesforceClient,
     SalesforceConfig,
@@ -1036,7 +1037,7 @@ class SalesforceConnector(BaseConnector):
             self.data_source = SalesforceDataSource(client)
             self.salesforce_instance_url = instance_url
 
-            self._http_client = httpx.AsyncClient()
+            self._http_client = guarded_async_client()
 
             self.logger.info("Salesforce client initialized successfully.")
             return True
@@ -1195,7 +1196,7 @@ class SalesforceConnector(BaseConnector):
         path = f"/services/data/v{api_version}/sobjects/ContentVersion/{record.external_revision_id}/VersionData"
         url = f"{base}{path}"
         timeout = httpx.Timeout(FILE_STREAM_TIMEOUT_TOTAL_S, connect=FILE_STREAM_CONNECT_TIMEOUT_S)
-        http_client = self._http_client or httpx.AsyncClient()
+        http_client = self._http_client or guarded_async_client()
         owns_client = http_client is not self._http_client
         try:
             async with http_client.stream(
@@ -1217,7 +1218,7 @@ class SalesforceConnector(BaseConnector):
                     )
                 async for chunk in response.aiter_bytes(STREAM_CHUNK_SIZE):
                     yield chunk
-        except httpx.HTTPError as e:
+        except (httpx.HTTPError, AddressNotAllowedError) as e:
             self.logger.error(f"Error streaming Salesforce file {record.id}: {e}")
             raise to_stream_error(e, connector=self.display_name) from e
         finally:
@@ -1299,7 +1300,7 @@ class SalesforceConnector(BaseConnector):
                     return None
                 headers["Authorization"] = f"Bearer {access_token}"
 
-            http_client = self._http_client or httpx.AsyncClient()
+            http_client = self._http_client or guarded_async_client()
             response = await http_client.get(full_url, headers=headers, follow_redirects=True)
 
             # If public fetch 404s, retry once with an auth token
@@ -1839,13 +1840,15 @@ class SalesforceConnector(BaseConnector):
     
     async def _process_html_images(self, html_content: str) -> str:
         """Embed Salesforce public-asset images as inline base64 data URIs."""
-        return await embed_html_images_as_base64(
-            html_content,
-            self._http_client,
-            self.logger,
-            # Only inline images hosted on Salesforce public file-asset URLs.
-            url_filter=lambda src: bool(re.search(r"/file-asset-public/[^?]+", src)),
-        )
+        # Whoever writes the record chooses these URLs, so they may only reach public addresses.
+        async with guarded_async_client(allow_private=False) as http_client:
+            return await embed_html_images_as_base64(
+                html_content,
+                http_client,
+                self.logger,
+                # Only inline images hosted on Salesforce public file-asset URLs.
+                url_filter=lambda src: bool(re.search(r"/file-asset-public/[^?]+", src)),
+            )
 
     async def stream_record(self, record: Record, user_id: Optional[str] = None, convertTo: Optional[str] = None) -> StreamingResponse:
         """

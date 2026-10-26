@@ -29,13 +29,19 @@ class StoredPut:
 @dataclass
 class FakeStorage:
     """``vendor``: which signed headers presign hands out (azure, s3 or local).
-    ``missing_status``: the answer to a GET of a missing file (S3 may say 403)."""
+    ``missing_status``: the answer to a GET of a missing file (S3 may say 403).
+    ``refused_paths``: paths presign does not take, refusing the whole call as
+    the storage service's validation does (an older one, without a newer file).
+    ``refuse_other_with_properties``: a 400 with this message for any set that names
+    properties.json, whatever the cause, and accepted without it."""
 
     vendor: str = "azure"
     missing_status: int = 404
     put_status: int = 201
     presign_status: int = 200
     fail_paths: set[str] = field(default_factory=set)
+    refused_paths: set[str] = field(default_factory=set)
+    refuse_other_with_properties: str = ""
     presign_calls: list[dict[str, Any]] = field(default_factory=list)
     puts: dict[str, StoredPut] = field(default_factory=dict)
     put_order: list[str] = field(default_factory=list)
@@ -98,6 +104,12 @@ class FakeStorage:
             return web.json_response({"error": {"message": "no"}}, status=self.presign_status)
         files = body["files"]
         paths = [f["path"] for f in files]
+        if self.refuse_other_with_properties and "properties.json" in paths:
+            return web.json_response({"error": {"message": self.refuse_other_with_properties}}, status=400)
+        if refused := self.refused_paths.intersection(paths):
+            # One line per path, as the storage service's validation reports them.
+            message = "\n".join(["Not a file an artifact set can hold"] * len(refused))
+            return web.json_response({"error": {"code": "VALIDATION_ERROR", "message": message}}, status=400)
         if not 1 <= len(files) <= 1000 or len(set(paths)) != len(paths):
             return web.json_response({"error": {"message": "bad files"}}, status=400)
         vrid, rev = body["virtualRecordId"], body["rev"]

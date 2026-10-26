@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useRef, useMemo, useCallback, useState } from 'react';
-import { useThread, useThreadRuntime } from '@assistant-ui/react';
+import { useAui, useAuiState } from '@assistant-ui/react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { ChatResponse } from './chat-response';
@@ -189,15 +189,15 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   const { t, i18n } = useTranslation();
   const isMobile = useIsMobile();
 
-  // Use useThread to get reactive thread state
-  const thread = useThread();
-  const threadRuntime = useThreadRuntime();
+  // Reactive thread messages plus the client used to append follow-up messages
+  const threadMessages = useAuiState((s) => s.thread.messages);
+  const aui = useAui();
 
-  // Track thread.messages changes as a render reason
-  const prevThreadMsgsRef = useRef(thread.messages);
-  if (thread.messages !== prevThreadMsgsRef.current) {
-    debugLog.reason('[chat] [MessageList]', ['thread.messages']);
-    prevThreadMsgsRef.current = thread.messages;
+  // Track threadMessages changes as a render reason
+  const prevThreadMsgsRef = useRef(threadMessages);
+  if (threadMessages !== prevThreadMsgsRef.current) {
+    debugLog.reason('[chat] [MessageList]', ['threadMessages']);
+    prevThreadMsgsRef.current = threadMessages;
   }
 
   // Callback ref setter for message elements
@@ -212,14 +212,14 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Build message pairs (user question + assistant answer) in chronological order
   const messagePairs = useMemo<MessagePair[]>(
     () =>
-      buildMessagePairs(thread.messages, {
+      buildMessagePairs(threadMessages, {
         isStreaming,
         streamingQuestion,
         pendingCollections,
         regenerateMessageId,
         emptyCitationMaps: EMPTY_CITATION_MAPS,
       }),
-    [thread.messages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
+    [threadMessages, isStreaming, streamingQuestion, pendingCollections, regenerateMessageId]
   );
 
   // The highest version any message in this conversation has shown for a
@@ -294,12 +294,12 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── Diagnostic: log message pair count for rendering pipeline debugging ──
   if (process.env.NODE_ENV === 'development') {
-    const assistantMsgs = thread.messages.filter(m => m.role === 'assistant').length;
-    const userMsgs = thread.messages.filter(m => m.role === 'user').length;
-    if (messagePairs.length === 0 && thread.messages.length > 0) {
+    const assistantMsgs = threadMessages.filter(m => m.role === 'assistant').length;
+    const userMsgs = threadMessages.filter(m => m.role === 'user').length;
+    if (messagePairs.length === 0 && threadMessages.length > 0) {
       console.warn(
         '[debugging] [MessageList] 0 pairs but',
-        thread.messages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
+        threadMessages.length, 'thread msgs (user:', userMsgs, ', assistant:', assistantMsgs, ')',
         'isStreaming:', isStreaming
       );
     }
@@ -816,8 +816,8 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // bottom-tracking scroll.
   //
   // IMPORTANT: `messagePairs` (the full array) is intentionally NOT in the
-  // deps — only `messagePairs.length` is. During streaming, `useThread()` may
-  // return a new `thread.messages` reference on every render (even with the
+  // deps — only `messagePairs.length` is. During streaming, `useAuiState()` may
+  // return a new `threadMessages` reference on every render (even with the
   // same logical content), which would invalidate the `messagePairs` useMemo
   // and produce a new array reference ~60fps. If the full array were a dep,
   // this effect would re-run on every render, its cleanup would cancel the
@@ -1037,13 +1037,13 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
   // Handle Ask More question click — send through runtime
   const handleAskMoreClick = useCallback(
     (question: string) => {
-      threadRuntime.append({
+      aui.thread().append({
         role: 'user',
         content: [{ type: 'text', text: question }],
         startRun: true,
       });
     },
-    [threadRuntime]
+    [aui]
   );
 
   // Lands on the end of the latest message and, if an answer is streaming, re-arms tail-follow.

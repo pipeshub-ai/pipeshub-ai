@@ -434,7 +434,91 @@ class TestUserUpdated:
         call_args = graph_provider.batch_upsert_nodes.call_args
         user_data = call_args[0][0][0]
         assert user_data["fullName"] == "Alice Smith Updated"
-        assert user_data["isActive"] is True
+        # `isActive` is no longer one of the merged fields. This node has
+        # never carried it, so it is stamped by the conditional write that
+        # follows instead — see
+        # `test_a_node_from_before_the_field_is_still_marked_active`.
+        assert "isActive" not in user_data
+        graph_provider.update_node_fields_if_match.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_user_is_not_put_back(self) -> None:
+        """Soft delete is `isActive: False`, and these upserts merge. An update
+        event still in flight, or one from a request that raced the delete,
+        would otherwise bring a removed user back — and for a service account
+        that is the field a bound agent's identity is checked against."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1", "isActive": False},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        result = await svc.process_event(
+            "userUpdated",
+            {
+                "userId": "u-1",
+                "orgId": "org-1",
+                "email": "alice@test.com",
+                "fullName": "Alice Smith Updated",
+            },
+        )
+        assert result is True
+
+        user_data = graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        assert "isActive" not in user_data
+        assert user_data["fullName"] == "Alice Smith Updated"
+        graph_provider.update_node_fields_if_match.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_node_from_before_the_field_is_still_marked_active(self) -> None:
+        """A node written before `isActive` existed is not evidence of a
+        deletion, and the permission reads filter on `isActive == true`, so it
+        is stamped. Through the conditional write, not the merge: a delete
+        that commits first leaves `False` and this must not undo it."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1"},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+        graph_provider.update_node_fields_if_match = AsyncMock(return_value=True)
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        await svc.process_event(
+            "userUpdated",
+            {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"},
+        )
+
+        assert "isActive" not in graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        key, collection, updates, expected = (
+            graph_provider.update_node_fields_if_match.call_args[0]
+        )
+        assert key == "user-key-1"
+        assert collection == CollectionNames.USERS.value
+        assert updates == {"isActive": True}
+        assert expected == {"isActive": None}
+
+    @pytest.mark.asyncio
+    async def test_an_active_user_is_not_restamped(self) -> None:
+        """The read already saw the field, so there is nothing to backfill and
+        no reason to spend a second write on every rename."""
+        graph_provider = AsyncMock()
+        graph_provider.get_user_by_user_id = AsyncMock(
+            return_value={"id": "user-key-1", "_key": "user-key-1", "isActive": True},
+        )
+        graph_provider.batch_upsert_nodes = AsyncMock()
+
+        svc = _make_entity_service(graph_provider=graph_provider)
+
+        await svc.process_event(
+            "userUpdated",
+            {"userId": "u-1", "orgId": "org-1", "email": "alice@test.com"},
+        )
+
+        assert "isActive" not in graph_provider.batch_upsert_nodes.call_args[0][0][0]
+        graph_provider.update_node_fields_if_match.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_user_not_found_returns_false(self):
