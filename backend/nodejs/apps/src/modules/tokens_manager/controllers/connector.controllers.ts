@@ -1760,7 +1760,11 @@ export const getConnectorStats =
 
 export const getConnectorProgress =
   (appConfig: AppConfig) =>
-  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
     try {
       const { userId, orgId } = req.user || {};
       if (!userId || !orgId) {
@@ -1791,7 +1795,7 @@ export const getConnectorProgress =
         'Getting connector progress',
         'Connector not found',
       );
-    } catch (error: any) {
+    } catch (error: unknown) {
       logger.error('Error getting connector progress', {
         connectorId: req.params.connectorId,
         error,

@@ -175,7 +175,10 @@ def interrupted_run_record(doc: dict, now: int) -> dict:
     """The history fields for a run this process died during: its live snapshot becomes a failed run."""
     # Imported here: every top-level import in this module counts against its E402 baseline.
     from app.connectors.core.sync.sync_errors import SyncErrorCode
-    from app.connectors.core.sync.sync_progress import merged_run_history, parse_json_field
+    from app.connectors.core.sync.sync_progress import (
+        merged_run_history,
+        parse_json_field,
+    )
 
     snapshot = parse_json_field(doc.get(ConnectorStateKeys.SYNC_PROGRESS))
     if not snapshot or not snapshot.get("runId"):

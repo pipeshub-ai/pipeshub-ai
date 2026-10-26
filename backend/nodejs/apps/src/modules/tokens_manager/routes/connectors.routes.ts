@@ -740,7 +740,7 @@ export function createConnectorRouter(
    */
   router.get(
     '/:connectorId/progress',
-    authMiddleware.authenticate,
+    authMiddleware.authenticate.bind(authMiddleware),
     requireScopes(OAuthScopeNames.CONNECTOR_READ, OAuthScopeNames.KB_READ),
     ValidationMiddleware.validate(getConnectorProgressSchema),
     getConnectorProgress(config),
