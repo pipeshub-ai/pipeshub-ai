@@ -3217,6 +3217,22 @@ class TestHandleAttachmentDeletionsFromChangelogCoverage:
 class TestFetchProjectPermissionSchemeCoverage:
 
     @pytest.mark.asyncio
+    async def test_the_default_scheme_with_id_zero_is_read(self) -> None:
+        """Jira's built-in "Default Permission Scheme" has id 0; it was taken for a missing
+        id, so a project using it got no access."""
+        connector = _make_connector()
+        mock_ds = MagicMock()
+        mock_ds.get_assigned_permission_scheme = AsyncMock(
+            return_value=_make_mock_response(200, {"id": 0, "name": "Default Permission Scheme"}))
+        mock_ds.get_permission_scheme_grants = AsyncMock(return_value=_make_mock_response(200, {"permissions": []}))
+        connector._get_fresh_datasource = AsyncMock(return_value=mock_ds)
+
+        permissions = await connector._fetch_project_permission_scheme("PPC")
+
+        assert permissions is not None
+        assert mock_ds.get_permission_scheme_grants.await_args.kwargs["schemeId"] == 0
+
+    @pytest.mark.asyncio
     async def test_user_without_email(self):
         connector = _make_connector()
         mock_ds = MagicMock()

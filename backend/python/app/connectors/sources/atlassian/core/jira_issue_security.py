@@ -83,6 +83,9 @@ class IssueSecurityContext:
     # Set only for a transient scheme read (429, 5xx, network). A 403 or a
     # team-managed project advances the issue cursor; those issues stay closed.
     defer_checkpoint: bool = False
+    # The HTTP status of the scheme or members read that failed, so the warning can tell
+    # a token without the scope (401) from an account without the permission (403).
+    read_status: int | None = None
 
     def level_fingerprints(
         self, app_roles_mapping: dict[str, list[dict[str, Any]]] | None = None,
@@ -192,6 +195,44 @@ async def collect_paged_values(
             return status, None
         if start > 100_000:
             return status, None
+
+
+def scheme_has_no_levels(body: object) -> bool:
+    """A scheme body that lists no level. No issue can carry one, so its members need not
+    be read. The "Simplified" schemes of team-managed projects are like this."""
+    return isinstance(body, dict) and isinstance(body.get("levels"), list) and not body["levels"]
+
+
+UNREADABLE_SCOPE = "scope"
+UNREADABLE_PERMISSION = "permission"
+UNREADABLE_ROLES = "roles"
+UNREADABLE_OTHER = "other"
+
+UNREADABLE_REASONS = {
+    UNREADABLE_SCOPE: (
+        "Jira refused the connector's authorisation (HTTP 401): it does not include reading "
+        "issue security levels"
+    ),
+    UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
+    UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
+    UNREADABLE_OTHER: "the read failed this sync",
+}
+
+
+def unreadable_reason(context: IssueSecurityContext) -> str | None:
+    """Why a project's issue security levels cannot be applied, or None when they can (or
+    the project has no scheme). One of the ``UNREADABLE_*`` keys."""
+    if context.knowledge == SchemeKnowledge.NONE:
+        return None
+    if context.knowledge == SchemeKnowledge.PRESENT and context.members_readable:
+        return None
+    if context.read_status == 401:
+        return UNREADABLE_SCOPE
+    if context.read_status == 403 or context.scheme_forbidden:
+        return UNREADABLE_PERMISSION
+    if context.knowledge == SchemeKnowledge.PRESENT and context.read_status is None and context.members_by_level:
+        return UNREADABLE_ROLES
+    return UNREADABLE_OTHER
 
 
 def classify_scheme_response(

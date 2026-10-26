@@ -2,6 +2,10 @@
 
 from app.config.constants.arangodb import AccessRule, Connectors, OriginTypes
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_OTHER,
+    UNREADABLE_PERMISSION,
+    UNREADABLE_ROLES,
+    UNREADABLE_SCOPE,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_attachment_access,
@@ -10,6 +14,8 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     classify_project_mapping,
     classify_scheme_response,
     resolve_scheme_knowledge,
+    scheme_has_no_levels,
+    unreadable_reason,
 )
 from app.models.entities import Record, RecordType
 from app.models.permission import EntityType
@@ -435,3 +441,37 @@ class TestSettledResult:
         before = _present(members={"20": [holder]}).level_fingerprints()
         after = _present(members={"20": [{**holder, "user": {**holder["user"], "active": False}}]}).level_fingerprints()
         assert before["20"] != after["20"]
+
+class TestUnreadableReason:
+    """Why levels cannot be applied, so the warning names the fix."""
+
+    def test_a_readable_scheme_or_no_scheme_has_no_reason(self) -> None:
+        assert unreadable_reason(_present()) is None
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.NONE)) is None
+
+    def test_a_401_is_the_token_scope_and_a_403_the_account_permission(self) -> None:
+        """A site admin's token without the issue security scope gets 401, not 403."""
+        members_401 = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=401)
+        assert unreadable_reason(members_401) == UNREADABLE_SCOPE
+        members_403 = IssueSecurityContext(knowledge=SchemeKnowledge.PRESENT, scheme_id="9", read_status=403)
+        assert unreadable_reason(members_403) == UNREADABLE_PERMISSION
+        scheme_403 = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True, read_status=403)
+        assert unreadable_reason(scheme_403) == UNREADABLE_PERMISSION
+
+    def test_members_read_but_held_for_unread_roles(self) -> None:
+        held = _present(members={"10": [{"type": "applicationRole", "parameter": "jira-software"}]}, readable=False)
+        assert unreadable_reason(held) == UNREADABLE_ROLES
+
+    def test_any_other_failure(self) -> None:
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, read_status=503)) == UNREADABLE_OTHER
+        assert unreadable_reason(IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN)) == UNREADABLE_OTHER
+
+
+class TestSchemeHasNoLevels:
+    def test_only_an_empty_levels_list_counts(self) -> None:
+        assert scheme_has_no_levels({"id": 10001, "name": "ESP: Simplified Issue Security Scheme", "levels": []})
+        assert not scheme_has_no_levels({"id": 10101, "levels": [{"id": "10102", "name": "admin only"}]})
+        # Absent or malformed: the levels are not known to be none.
+        assert not scheme_has_no_levels({"id": 10101})
+        assert not scheme_has_no_levels({"id": 10101, "levels": None})
+        assert not scheme_has_no_levels(None)

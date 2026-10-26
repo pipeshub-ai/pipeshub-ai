@@ -78,6 +78,7 @@ from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.atlassian.core.apps import JiraApp
 from app.connectors.sources.atlassian.core.adf_markdown import adf_to_markdown
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_REASONS,
     IssueSecurityContext,
     SchemeKnowledge,
     apply_issue_access,
@@ -87,6 +88,8 @@ from app.connectors.sources.atlassian.core.jira_issue_security import (
     custom_field_ids_from_members,
     http_status_is_transient,
     index_members,
+    scheme_has_no_levels,
+    unreadable_reason,
 )
 from app.connectors.sources.atlassian.core.html_utils import (
     attachment_images_not_inlined,
@@ -531,6 +534,9 @@ class JiraConnector(BaseConnector):
         # scheme (projects share schemes, so a scheme is read once per sync).
         self._issue_security: dict[str, IssueSecurityContext] = {}
         self._scheme_members: dict[str, tuple[bool, dict[str, list[dict[str, Any]]]]] = {}
+        # Project key -> why its issue security levels could not be applied this sync,
+        # reported once per sync rather than once per project.
+        self._unreadable_security: dict[str, str] = {}
         self._issue_build_failures = 0  # issues skipped because they failed to build
 
     def _cache_authenticated_jira_profile(self, response: Any) -> None:
@@ -2698,7 +2704,8 @@ class JiraConnector(BaseConnector):
 
             scheme_data = scheme_response.json()
             scheme_id = scheme_data.get("id")
-            if not scheme_id:
+            # Jira's built-in "Default Permission Scheme" has id 0, so only a missing id counts.
+            if scheme_id is None:
                 # Without an id the grants URL is malformed and can only fail; skip rather
                 # than burn the retry budget. The caller keeps the project's stored access.
                 self.logger.warning(
@@ -3937,6 +3944,7 @@ class JiraConnector(BaseConnector):
         failed_project_statuses: dict[str, Optional[int]] = {}
         full_sync_project_ids: set[str] = set()
         leveled_reread_project_ids: set[str] = set()
+        self._unreadable_security = {}
 
         for project, _ in projects:
             try:
@@ -3957,6 +3965,8 @@ class JiraConnector(BaseConnector):
                 failed_project_statuses[project.short_name] = getattr(e, "status", None)
                 self.logger.error(f"❌ Error processing issues for project {project.short_name}: {e}", exc_info=True)
                 continue
+
+        self._warn_unreadable_security()
 
         return {
             "total_synced": total_synced,
@@ -3993,8 +4003,12 @@ class JiraConnector(BaseConnector):
             scheme_id=scheme_id,
             scheme_forbidden=response.status == HttpStatusCode.FORBIDDEN.value,
             defer_checkpoint=http_status_is_transient(response.status),
+            read_status=response.status if knowledge == SchemeKnowledge.UNKNOWN else None,
         )
         if knowledge != SchemeKnowledge.PRESENT or scheme_id is None:
+            return context
+        if scheme_has_no_levels(body):
+            context.members_readable = True
             return context
         members = self._scheme_members.get(scheme_id) if cached else None
         if members is None:
@@ -4011,6 +4025,7 @@ class JiraConnector(BaseConnector):
             status, values = await collect_paged_values(fetch_page)
             if values is None:
                 context.defer_checkpoint = http_status_is_transient(status)
+                context.read_status = status
                 return context  # members_readable stays False: leveled issues are closed
             members = (True, index_members(values))
             if cached:
@@ -4057,12 +4072,8 @@ class JiraConnector(BaseConnector):
         self._issue_security[project_id] = security
         self._issue_build_failures = 0
         readable = security.knowledge == SchemeKnowledge.PRESENT and security.members_readable
-        if not readable and security.knowledge != SchemeKnowledge.NONE:
-            self.logger.warning(
-                f"Project {project_key}: the issue security scheme or its level members cannot be read "
-                "(Administer Jira permission is required for the sync account). Issues that carry a "
-                "security level are closed to everyone until it can be read."
-            )
+        if (reason := unreadable_reason(security)) is not None:
+            self._unreadable_security[project_key] = reason
         try:  # a sync point holds primitives only, so the digests are kept as a JSON string
             stored_levels = json.loads((project_sync_data or {}).get("security_levels"))
         except (TypeError, ValueError):
@@ -4207,6 +4218,19 @@ class JiraConnector(BaseConnector):
         if created_before:
             conditions.append(f'created <= "{self._jql_datetime(created_before, upper_bound=True)}"')
         return conditions
+
+    def _warn_unreadable_security(self) -> None:
+        """One warning per reason for the projects whose issue security levels could not be
+        applied this sync."""
+        by_reason: dict[str, list[str]] = {}
+        for project_key, reason in self._unreadable_security.items():
+            by_reason.setdefault(reason, []).append(project_key)
+        for reason, project_keys in by_reason.items():
+            self.logger.warning(
+                "Issues with a security level in %s project(s) are closed to everyone until their "
+                "levels can be read; %s: %s",
+                len(project_keys), UNREADABLE_REASONS[reason], ", ".join(sorted(project_keys)),
+            )
 
     def _hold_levels_naming_unread_roles(self, security: IssueSecurityContext) -> IssueSecurityContext:
         """A level naming an application role is unknown, not narrower, while the role list

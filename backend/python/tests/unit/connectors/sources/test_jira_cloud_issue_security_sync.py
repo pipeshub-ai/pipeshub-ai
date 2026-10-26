@@ -13,8 +13,11 @@ import pytest
 
 from app.config.constants.arangodb import AccessRule
 from app.connectors.sources.atlassian.core.jira_issue_security import (
+    UNREADABLE_PERMISSION,
+    UNREADABLE_SCOPE,
     IssueSecurityContext,
     SchemeKnowledge,
+    unreadable_reason,
 )
 from app.connectors.sources.atlassian.core.read_outcome import JiraReadError
 from app.connectors.sources.atlassian.jira_cloud.connector import (
@@ -234,6 +237,45 @@ class TestLoadIssueSecurity:
         ctx = await c._load_issue_security("PROJ")
         assert ctx.knowledge == SchemeKnowledge.PRESENT and ctx.members_readable is False
 
+    @pytest.mark.asyncio
+    async def test_a_scheme_with_no_levels_is_readable_without_reading_members(self) -> None:
+        """A team-managed project's "Simplified" scheme lists no level, so no issue can carry one."""
+        c = _connector()
+        c._call_with_retry = AsyncMock(return_value=_resp(
+            200, {"id": 10001, "name": "ESP: Simplified Issue Security Scheme", "levels": []}))
+        ctx = await c._load_issue_security("ESP")
+        assert ctx.knowledge == SchemeKnowledge.PRESENT and ctx.members_readable is True
+        assert c._call_with_retry.await_count == 1
+        assert unreadable_reason(ctx) is None
+
+    @pytest.mark.asyncio
+    async def test_members_refused_for_the_token_scope_are_told_from_a_missing_permission(self) -> None:
+        c = _connector()
+        c._call_with_retry = AsyncMock(side_effect=[
+            _resp(200, SCHEME), _resp(401, {"code": 401, "message": "Unauthorized; scope does not match"})])
+        ctx = await c._load_issue_security("PROJ")
+        assert ctx.members_readable is False and ctx.read_status == 401
+        assert unreadable_reason(ctx) == UNREADABLE_SCOPE
+
+
+class TestUnreadableSecurityWarning:
+    def test_one_warning_per_reason_lists_its_projects(self, caplog: pytest.LogCaptureFixture) -> None:
+        c = _connector()
+        c._unreadable_security = {"PWEBSITE": UNREADABLE_SCOPE, "PST": UNREADABLE_SCOPE, "QA": UNREADABLE_PERMISSION}
+        with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
+            c._warn_unreadable_security()
+        messages = sorted(r.getMessage() for r in caplog.records)
+        assert len(messages) == 2
+        scope, permission = (m for m in messages if "HTTP 401" in m), (m for m in messages if "HTTP 403" in m)
+        assert next(scope).endswith("PST, PWEBSITE")
+        assert next(permission).endswith("QA")
+
+    def test_nothing_unreadable_logs_nothing(self, caplog: pytest.LogCaptureFixture) -> None:
+        c = _connector()
+        with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
+            c._warn_unreadable_security()
+        assert not caplog.records
+
 
 class TestMemberChangeRereadsOnlyTheAffectedLevels:
     async def _sync(
@@ -318,6 +360,7 @@ class TestMemberChangeRereadsOnlyTheAffectedLevels:
         ctx = IssueSecurityContext(knowledge=SchemeKnowledge.UNKNOWN, scheme_forbidden=True)
         with caplog.at_level(logging.WARNING, logger="test.jira.sec"):
             c, _, calls, _ = await self._sync(stored_levels=None, ctx=ctx)
+            c._warn_unreadable_security()
         assert calls[1]["leveled_only"] is True
         assert len([r for r in caplog.records if "Administer Jira" in r.getMessage()]) == 1
         saved = c.issues_sync_point.update_sync_point.await_args.args[1]
