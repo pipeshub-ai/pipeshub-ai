@@ -10,7 +10,7 @@
 import { NextFunction, Request, Response, Router } from 'express';
 import { Container } from 'inversify';
 import { AuthMiddleware } from '../../../config';
-import { UnauthorizedError } from '../../../libs/errors/http.errors';
+import { BaseError } from '../../../libs/errors/base.error';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { handleMCPRequest } from '../controller/mcp.controller';
 
@@ -46,11 +46,13 @@ export function createMCPRouter(container: Container): Router {
   )
 
   // An MCP client learns where to authorize from this header on a 401 (MCP
-  // authorization spec, RFC 9728 section 5.1); without it, one with no token
-  // cannot start OAuth. The error then goes on to the app's error handler.
+  // authorization spec, RFC 9728 section 5.1); without it, one with no token,
+  // or with an expired or revoked one, cannot start OAuth again. Every 401
+  // counts: a rejected bearer token is an OAuth error class, not
+  // UnauthorizedError. The error then goes on to the app's error handler.
   router.use(
     (err: unknown, _req: Request, res: Response, next: NextFunction) => {
-      if (err instanceof UnauthorizedError) {
+      if (err instanceof BaseError && err.statusCode === 401) {
         res.setHeader(
           'WWW-Authenticate',
           `Bearer resource_metadata="${appConfig.oauthIssuer}/.well-known/oauth-protected-resource/mcp"`,

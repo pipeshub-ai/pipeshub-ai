@@ -6,6 +6,8 @@ import express from 'express'
 import { AddressInfo } from 'net'
 import { createMCPRouter } from '../../../../src/modules/mcp/routes/mcp.routes'
 import { UnauthorizedError } from '../../../../src/libs/errors/http.errors'
+import { BaseError } from '../../../../src/libs/errors/base.error'
+import { ExpiredTokenError, InvalidTokenError } from '../../../../src/libs/errors/oauth.errors'
 
 describe('MCP Routes — createMCPRouter', () => {
   let container: Container
@@ -262,7 +264,7 @@ describe('MCP Routes — createMCPRouter', () => {
       const app = express()
       app.use('/mcp', createMCPRouter(container))
       app.use((err: any, _req: any, res: any, _next: any) => {
-        res.status(err instanceof UnauthorizedError ? 401 : 500).json({ error: err.message })
+        res.status(err instanceof BaseError ? err.statusCode : 500).json({ error: err.message })
       })
       const server = app.listen(0)
       try {
@@ -280,6 +282,19 @@ describe('MCP Routes — createMCPRouter', () => {
         'Bearer resource_metadata="https://pipeshub.example.com/.well-known/oauth-protected-resource/mcp"',
       )
     })
+
+    for (const [name, error] of [
+      ['an expired token', new ExpiredTokenError('Access token has expired')],
+      ['an invalid or revoked token', new InvalidTokenError('Invalid access token')],
+    ] as const) {
+      it(`sends the same challenge for ${name}`, async () => {
+        const res = await post(error)
+        expect(res.status).to.equal(401)
+        expect(res.headers.get('www-authenticate')).to.equal(
+          'Bearer resource_metadata="https://pipeshub.example.com/.well-known/oauth-protected-resource/mcp"',
+        )
+      })
+    }
 
     it('adds no challenge to an error that is not about authentication', async () => {
       const res = await post(new Error('boom'))
