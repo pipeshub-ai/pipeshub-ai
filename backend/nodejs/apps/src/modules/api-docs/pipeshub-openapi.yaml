@@ -3196,6 +3196,17 @@ components:
             allowedGrantTypes:
               items:
                 enum: [client_credentials, refresh_token]
+      # A client_credentials app must name tokenIdentityUserId (oauth.app.service.ts createApp).
+      not:
+        required: [allowedGrantTypes]
+        properties:
+          allowedGrantTypes:
+            not:
+              items:
+                not:
+                  enum: [client_credentials]
+        not:
+          required: [tokenIdentityUserId]
     UpdateOAuthAppRequest:
       type: object
       description: |
@@ -14112,6 +14123,14 @@ components:
             When true (default), include the current user's name, email, and
             organization in this agent's system prompt. When false, omit that
             profile data.
+      # serviceAccountUserId needs isServiceAccount: true (the refine on createAgentSchema).
+      not:
+        required: [serviceAccountUserId]
+        not:
+          required: [isServiceAccount]
+          properties:
+            isServiceAccount:
+              enum: [true]
     AgentCreateWarning:
       type: object
       additionalProperties: false
