@@ -1366,18 +1366,20 @@ describe('OAuthTokenService - branch coverage', () => {
 
       function storedRefreshToken(clientId: string) {
         return {
+          _id: new Types.ObjectId(),
           clientId,
           userId,
           orgId,
           scopes: ['user:read', 'offline_access'],
           isRevoked: false,
-          revokedAt: undefined as Date | undefined,
           rotationCount: 0,
-          save: sinon.stub().resolves(),
         }
       }
 
+      let rotate: sinon.SinonStub
+
       beforeEach(() => {
+        rotate = sinon.stub(OAuthRefreshToken, 'updateOne').resolves({ modifiedCount: 1 } as any)
         stubCurrentApp({ allowedScopes: ['user:read', 'offline_access'] })
       })
 
@@ -1393,6 +1395,25 @@ describe('OAuthTokenService - branch coverage', () => {
         createdBy: new Types.ObjectId(),
       }) as any
 
+      it('refuses the second of two refreshes presenting the same token and issues nothing', async () => {
+        const stored = storedRefreshToken('client-a')
+        sinon.stub(OAuthRefreshToken, 'findOne').resolves(stored as any)
+        rotate.resolves({ modifiedCount: 0 } as any)
+        const accessCreate = sinon.stub(OAuthAccessToken, 'create').resolves({ _id: new Types.ObjectId() } as any)
+        const refreshCreate = sinon.stub(OAuthRefreshToken, 'create').resolves({} as any)
+
+        let error: unknown
+        try {
+          await service.refreshTokens(app('client-a'), signRefreshToken('client-a'))
+        } catch (e) {
+          error = e
+        }
+        expect(error).to.be.instanceOf(InvalidGrantError)
+        expect((error as Error).message).to.include('already been used')
+        expect(accessCreate.called).to.be.false
+        expect(refreshCreate.called).to.be.false
+      })
+
       it('rotates and issues new tokens when the presenting client matches the issuing client', async () => {
         const stored = storedRefreshToken('client-a')
         sinon.stub(OAuthRefreshToken, 'findOne')
@@ -1405,8 +1426,9 @@ describe('OAuthTokenService - branch coverage', () => {
 
         expect(result.accessToken).to.be.a('string')
         expect(result.refreshToken).to.be.a('string')
-        expect(stored.isRevoked).to.be.true
-        expect(stored.save.calledOnce).to.be.true
+        const [filter, update] = rotate.firstCall.args as any[]
+        expect(filter).to.deep.equal({ _id: stored._id, isRevoked: false })
+        expect(update.$set.isRevoked).to.equal(true)
         expect(accessCreate.calledOnce).to.be.true
         expect(refreshCreate.calledOnce).to.be.true
       })
@@ -1464,7 +1486,7 @@ describe('OAuthTokenService - branch coverage', () => {
           expect(error).to.be.instanceOf(InvalidScopeError)
         }
 
-        expect(stored.save.called).to.be.false
+        expect(rotate.called).to.be.false
         expect(stored.isRevoked).to.be.false
         expect(accessCreate.called).to.be.false
       })
@@ -1486,7 +1508,7 @@ describe('OAuthTokenService - branch coverage', () => {
           expect(error).to.be.instanceOf(InvalidScopeError)
         }
 
-        expect(stored.save.called).to.be.false
+        expect(rotate.called).to.be.false
         expect(stored.isRevoked).to.be.false
       })
 
@@ -1525,7 +1547,7 @@ describe('OAuthTokenService - branch coverage', () => {
 
         expect(stored.isRevoked).to.be.false
         expect(stored.revokedAt).to.be.undefined
-        expect(stored.save.called).to.be.false
+        expect(rotate.called).to.be.false
       })
 
       it('binds to the stored clientId, not the client_id claim inside the JWT', async () => {

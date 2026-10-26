@@ -481,10 +481,16 @@ export class OAuthTokenService {
       );
     }
 
-    // Revoke old refresh token (rotation)
-    storedToken.isRevoked = true;
-    storedToken.revokedAt = new Date();
-    await storedToken.save();
+    // Revoke old refresh token (rotation), atomically: of two refreshes
+    // presenting the same token only one rotates it; the other has lost the
+    // token and must not be issued a second pair.
+    const rotated = await OAuthRefreshToken.updateOne(
+      { _id: storedToken._id, isRevoked: false },
+      { $set: { isRevoked: true, revokedAt: new Date() } },
+    );
+    if (rotated.modifiedCount !== 1) {
+      throw new InvalidGrantError('Refresh token has already been used');
+    }
 
     // Generate new tokens
     const newTokens = await this.generateTokens(
