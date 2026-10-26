@@ -55,7 +55,7 @@ class GraphSpy:
         return call
 
 
-def build_app(*, with_push: bool, flag: bool | Exception, user: str) -> tuple[FastAPI, GraphSpy]:
+def build_app(*, with_push: bool, flag: object, user: str) -> tuple[FastAPI, GraphSpy]:
     app = FastAPI()
     app.include_router(R.kb_router)
     if with_push:
@@ -127,7 +127,7 @@ def test_flag_on_without_the_gate_dependency_order_would_differ() -> None:
 
 @pytest.mark.parametrize("flag", [RuntimeError("config store down"), False, None, 0])
 def test_an_unreadable_or_false_flag_is_off(flag: object) -> None:
-    app, _ = build_app(with_push=True, flag=flag if isinstance(flag, Exception) else bool(flag), user="plain")
+    app, _ = build_app(with_push=True, flag=flag, user="plain")
     assert ask(app, "POST", PATHS[0])[0] == 405
     assert ask(app, "PUT", PATHS[3])[0] == 404
 
