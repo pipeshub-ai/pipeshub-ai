@@ -107,6 +107,8 @@ from app.utils.user_errors import (
     STORED_CONTENT_DAMAGED,
     STORED_CONTENT_MISSING,
     duplicate_failed,
+    duplicate_password_protected,
+    is_password_protected,
     rate_limited_gave_up,
     rate_limited_will_retry,
     to_user_reason,
@@ -241,6 +243,7 @@ class RecordEventHandler(BaseEventService):
         ProgressStatus.AUTO_INDEX_OFF.value,
         ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value,
         ProgressStatus.FAILED.value,
+        ProgressStatus.PASSWORD_PROTECTED.value,
     })
     # A live handler owns this record. The stale-IN_PROGRESS scan republishes
     # if that handler actually died; rewriting FAILED here races the worker
@@ -452,17 +455,23 @@ class RecordEventHandler(BaseEventService):
         record_id: str,
         virtual_record_id: str | None,
         reason: str | None,
+        *,
+        status: ProgressStatus = ProgressStatus.FAILED,
     ) -> None:
-        """Mark same-MD5 QUEUED copies failed when the primary copy fails.
+        """Mark same-MD5 QUEUED copies with the primary's terminal *status* (FAILED or PASSWORD_PROTECTED).
 
         Does not re-run indexing for queued copies. Re-OCR on identical content
         would usually repeat the same failure (e.g. rate limits) and waste resources.
         """
         try:
-            propagated_reason = duplicate_failed(reason)
+            propagated_reason = (
+                duplicate_password_protected(reason)
+                if status is ProgressStatus.PASSWORD_PROTECTED
+                else duplicate_failed(reason)
+            )
             updated = await self.event_processor.graph_provider.update_queued_duplicates_status(
                 record_id,
-                ProgressStatus.FAILED.value,
+                status.value,
                 virtual_record_id,
                 reason=propagated_reason,
             )
@@ -2217,6 +2226,12 @@ class RecordEventHandler(BaseEventService):
                     # Traceback logged once here (not on every transient retry attempt)
                     # so final, unrecoverable failures remain fully debuggable.
                     user_reason = to_user_reason(last_exception, record=record, source=source_name)
+                    # Chosen from the exception's type, not its text (see is_password_protected).
+                    terminal_status = (
+                        ProgressStatus.PASSWORD_PROTECTED
+                        if is_password_protected(last_exception)
+                        else ProgressStatus.FAILED
+                    )
                     if (refusal := too_large_refusal(last_exception)) is not None:
                         # A metrics fault must not stop the record being marked FAILED.
                         with contextlib.suppress(Exception):
@@ -2228,8 +2243,14 @@ class RecordEventHandler(BaseEventService):
                     try:
                         record = await self.__update_document_status(
                             record_id=record_id,
-                            indexing_status=ProgressStatus.FAILED.value,
-                            extraction_status=ProgressStatus.FAILED.value,
+                            indexing_status=terminal_status.value,
+                            # Classification does not apply to a file nobody can read; it
+                            # is not a classification failure either (stats, retry button).
+                            extraction_status=(
+                                ProgressStatus.SKIPPED.value
+                                if terminal_status is ProgressStatus.PASSWORD_PROTECTED
+                                else ProgressStatus.FAILED.value
+                            ),
                             reason=user_reason,
                         )
                     except Exception as status_exc:
@@ -2238,7 +2259,7 @@ class RecordEventHandler(BaseEventService):
                         # DocumentProcessingError or a CancelledError) with a
                         # new one that the consumer would reclassify/mishandle.
                         self.logger.error(
-                            f"Failed to persist FAILED status for record {record_id} "
+                            f"Failed to persist {terminal_status.value} status for record {record_id} "
                             f"(original error preserved): {status_exc}"
                         )
                         if last_exception is not None:
@@ -2257,7 +2278,8 @@ class RecordEventHandler(BaseEventService):
                                 f"propagating failure to all queued duplicates"
                             )
                             await self._propagate_primary_failure_to_queued_duplicates(
-                                record_id, virtual_record_id, user_reason
+                                record_id, virtual_record_id, user_reason,
+                                status=terminal_status,
                             )
                         else:
                             # Transient error exhausted retries → try next duplicate

@@ -220,3 +220,66 @@ def test_the_surface_is_still_compared_while_a_window_is_open(conns):
     finally:
         restore_window.close_window(admin, migrate, abandon=True)
     assert org_db.violations() == []
+
+
+def test_the_org_defaults_to_the_only_one_with_rows(conns, tmp_path):
+    org_db, admin, migrate, backup = conns
+    with pytest.raises(restore_window.Refused, match="more than one org"):                    # the fixture holds two
+        restore_window.sole_org(admin, admin)
+    order = restore_window.export_org(migrate, backup, ORG_B, tmp_path)
+    assert restore_window.org_in_files(tmp_path) == ORG_B and order
+    (tmp_path / "kt.cfg.csv").write_text("org_id,k,v\n" + f"{ORG_A},x,y\n{ORG_B},x,y\n")
+    with pytest.raises(restore_window.Refused, match="2 orgs"):
+        restore_window.org_in_files(tmp_path)
+    (tmp_path / "kt.cfg.csv").write_text("org_id,k,v\n")
+    for f in tmp_path.glob("*.csv"):
+        f.write_text(f.read_text().splitlines()[0] + "\n")
+    with pytest.raises(restore_window.Refused, match="no rows"):
+        restore_window.org_in_files(tmp_path)
+    with admin.transaction() as tx:                                                           # one org left: it is the default
+        for t in ("kt.docs", "kt.events", "kt.cfg", "kt.apps"):
+            admin.execute(f"DELETE FROM {t} WHERE org_id <> %s", (ORG_B,))
+        assert restore_window.sole_org(admin, admin) == ORG_B
+        raise psycopg.Rollback(tx)
+
+
+def test_export_and_load_take_the_org_from_the_data(conns, tmp_path):
+    org_db, admin, migrate, backup = conns
+    env = {"PG_ADMIN_URL": f"postgresql://postgres@127.0.0.1:{org_db.cluster.port}/{org_db.name}",
+           "PG_MIGRATE_URL": f"postgresql+psycopg://pipeshub_migrate@127.0.0.1:{org_db.cluster.port}/{org_db.name}",
+           "PG_BACKUP_URL": f"postgresql://pipeshub_backup@127.0.0.1:{org_db.cluster.port}/{org_db.name}", "PYTHONPATH": str(BACKEND)}
+    r = subprocess.run([sys.executable, "-m", "db.restore_window", "export", "--dir", str(tmp_path)], env=env, capture_output=True, text=True)
+    assert r.returncode == restore_window.EXIT_REFUSED and "pass --org" in r.stderr                  # two orgs have rows here
+    r = subprocess.run([sys.executable, "-m", "db.restore_window", "export", "--dir", str(tmp_path), "--dir", str(tmp_path)], env=env, capture_output=True, text=True)
+    assert r.returncode == 2                                                                         # an option given twice is usage
+
+
+def test_bad_options_are_usage_errors_before_any_connection(tmp_path):
+    env = {"PYTHONPATH": str(BACKEND), "PATH": "/usr/bin:/bin"}                        # no database credentials at all
+
+    def code(*args):
+        return subprocess.run([sys.executable, "-m", "db.restore_window", *args], env=env, capture_output=True, text=True).returncode
+    d = str(tmp_path)
+    for bad in (["export", "--dir", d, "--dir", d],                                    # an option twice
+                ["export", "--foo", "x", "--dir", d],                                  # an unknown option
+                ["export", "--org", "--dir", "--dir", d],                              # an option name where the org goes
+                ["export", "--org", "", "--dir", d],                                   # an empty value
+                ["load", "--org", ORG_B, "--dir", d, "--dir", d],
+                ["sequences", "--unknown", "value"], ["close", "--unknown"],
+                ["open", "--org", "--hours", "1"], ["open", "--org", NEW_ORG, "--hours", "soon"]):
+        assert code(*bad) == 2, bad
+
+
+def test_export_refuses_what_is_not_an_org_or_has_no_rows(conns, tmp_path):
+    org_db, admin, migrate, backup = conns
+    env = {"PG_MIGRATE_URL": f"postgresql+psycopg://pipeshub_migrate@127.0.0.1:{org_db.cluster.port}/{org_db.name}",
+           "PG_BACKUP_URL": f"postgresql://pipeshub_backup@127.0.0.1:{org_db.cluster.port}/{org_db.name}", "PYTHONPATH": str(BACKEND)}
+
+    def run(org):
+        return subprocess.run([sys.executable, "-m", "db.restore_window", "export", "--org", org, "--dir", str(tmp_path)],
+                              env=env, capture_output=True, text=True)
+    r = run("not-an-org")
+    assert r.returncode == restore_window.EXIT_REFUSED and "not an org id" in r.stderr
+    r = run(NEW_ORG)                                                                   # well formed, but nothing to export
+    assert r.returncode == restore_window.EXIT_REFUSED and "no rows" in r.stderr
+    assert not list(tmp_path.glob("*.csv"))

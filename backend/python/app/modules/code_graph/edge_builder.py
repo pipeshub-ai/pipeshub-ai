@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import time
 import uuid
 from dataclasses import dataclass, field, replace
@@ -243,6 +244,44 @@ async def _index_blocks(graph_provider: IGraphDBProvider, org_id: str,
     return index
 
 
+_EXPR_DEPTH = 6
+_CLASS_ARG_CALLS = frozenset({"createInstance", "get"})
+_SEGMENT = re.compile(r"[A-Za-z_$][\w$]*")
+
+
+def _receiver_segments(expr: str) -> list[tuple[str, bool, str]] | None:
+    """`this._editor.getModel()!` -> [(this, False, ''), (_editor, False, ''), (getModel, True, '')].
+
+    The third item is a call's first argument; an index (`a[0]`) or any other syntax gives None.
+    """
+    out: list[tuple[str, bool, str]] = []
+    i, n = 0, len(expr)
+    while i < n:
+        m = _SEGMENT.match(expr, i)
+        if not m:
+            return None
+        name, i, called, first_arg = m.group(), m.end(), False, ""
+        while i < n and expr[i] in "!?<(":
+            if expr[i] in "<(":
+                close = {"<": ">", "(": ")"}[expr[i]]
+                open_, depth, start = expr[i], 0, i
+                while i < n:
+                    depth += (expr[i] == open_) - (expr[i] == close)
+                    i += 1
+                    if depth == 0:
+                        break
+                if open_ == "(":
+                    called, first_arg = True, expr[start + 1:i - 1].split(",", 1)[0].strip()
+            else:
+                i += 1
+        out.append((name, called, first_arg))
+        if i < n:
+            if expr[i] != ".":
+                return None
+            i += 1
+    return out
+
+
 class _Builder:
     def __init__(self, index: SymbolIndex, org_id: str, record_group_id: str,
                  log: logging.Logger, repo_paths: set[str] | None = None) -> None:
@@ -267,6 +306,7 @@ class _Builder:
         self.re_exports: dict[str, set[str]] = {}
         self.imports = ImportResolution(set(index.record_by_file) | (repo_paths or set()))
         self._interface_memo: dict[str, bool] = {}
+        self._expr_memo: dict[tuple, str | None] = {}
         self._bases_memo: dict[str, list[str]] = {}
         # (record, name) -> blocks: the same-file and imported-module rungs look
         # up one file's definitions instead of filtering every same-named block.
@@ -399,6 +439,11 @@ class _Builder:
                       if self.index.file_by_block.get(cid) == target_file]
         top_level = [cid for cid in candidates if not self._parent_of(cid)]
         candidates = top_level or candidates
+        if len(candidates) > 1 and family == "js":
+            # TS declaration merging: `interface Event` and `namespace Event` are one name;
+            # bind the declaration, and `Event.map()` finds the namespace beside it.
+            declared = [cid for cid in candidates if self.index.rows[cid].kind != "module"]
+            candidates = declared if len(declared) == 1 else candidates
         # A member, not a nested type: `import a.Outer.Inner` still names Inner.
         owner = (self._parent_of(candidates[0])
                  if candidates and family == "jvm" and candidates[0] not in self.index.type_blocks
@@ -681,6 +726,9 @@ class _Builder:
                 return pinned[0], CONFIDENCE_EXTRACTED, RESOLUTION_QUALIFIER
 
         same_file = self._eligible(self._defined_in(call_file, name), family, relation)
+        if family == "js" and relation in _CALL_RELATIONS:
+            # A bare JS/TS call never reaches a method: that takes `this.` or a receiver.
+            same_file = [cid for cid in same_file if self.index.rows[cid].kind != "method"]
         if same_file:
             candidates, confidence, resolution = same_file, CONFIDENCE_EXTRACTED, RESOLUTION_SAME_FILE
         else:
@@ -791,8 +839,14 @@ class _Builder:
         name = fact.get("toName") or ""
         receiver_type = fact.get("receiverType")
         receiver = fact.get("receiver")
-        if not receiver_type and receiver:
+        scoped = bool(fact.get("headType")) and fact.get("qualifiedPrefix") == receiver
+        # `a.f().g()` keeps `f()` as the receiver, which would match a bare `function f()`'s
+        # return type; the chain is evaluated whole below instead.
+        chained_call = receiver.endswith(")") and fact.get("qualifiedPrefix") != receiver if receiver else False
+        if not receiver_type and receiver and not scoped and not chained_call:
             receiver_type = self.index.type_table_by_record.get(record_id, {}).get(receiver)
+        if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
+            receiver_type = None
         if not receiver_type and receiver in ("self", "this"):
             owner = self._enclosing_type(block_id)
             if owner:
@@ -809,6 +863,14 @@ class _Builder:
             bound = self._resolve_bound_receiver(receiver, name, record_id)
             if bound is not None:
                 return bound
+        if not receiver_type and fact.get("qualifiedPrefix") and self._family_of(block_id) == "js":
+            # `this._editor.getModel().getValue()`, `c.run()` with `const c = Ctl.get(e)`.
+            owner = self._expr_type(fact["qualifiedPrefix"], record_id, self._enclosing_type(block_id),
+                                    head_type=fact.get("headType"))
+            if owner:
+                target = self._resolve_self_method(owner, name)
+                if target:
+                    return target, CONFIDENCE_INFERRED, RESOLUTION_TYPE
         if not receiver_type:
             target = self._resolve_module_qualified_call(fact, record_id)
             return target, CONFIDENCE_INFERRED, RESOLUTION_MODULE if target else None
@@ -816,17 +878,151 @@ class _Builder:
         family = self._family_of(block_id)
         if family == "go":
             return self._resolve_go_method(receiver_type, name, record_id)
-        type_candidates = [
-            cid for cid in self.index.candidates(receiver_type)
-            if cid in self.index.type_blocks
-            and (family is None or self._family_of(cid) == family)
-        ]
+        type_candidates = self._type_candidates(receiver_type, record_id, family)
         if len(type_candidates) != 1:  # god-node guard
             if type_candidates:
                 self.result.ambiguous_skipped += 1
             return None, CONFIDENCE_INFERRED, None
         return (self._resolve_self_method(type_candidates[0], name),
                 CONFIDENCE_INFERRED, RESOLUTION_TYPE)
+
+    def _type_candidates(self, type_name: str, record_id: str, family: str | None) -> list[str]:
+        """The types *type_name* can mean in a file: the one it imports or defines, if any."""
+        type_candidates = [
+            cid for cid in self.index.candidates(type_name)
+            if cid in self.index.type_blocks
+            and (family is None or self._family_of(cid) == family)
+        ]
+        if len(type_candidates) > 1:
+            call_file = self.index.file_by_record.get(record_id) or ""
+            bound = self.symbol_bindings.get(call_file, {}).get(type_name)
+            local = [cid for cid in type_candidates
+                     if cid in self.index.rows and self.index.rows[cid].file_path == call_file]
+            if bound in type_candidates:
+                type_candidates = [bound]
+            elif len(local) == 1:
+                type_candidates = local
+        return type_candidates
+
+    def _expr_type(self, expr: str, record_id: str, this_type: str | None, depth: int = 0, *,
+                   head_type: str | None = None, array: bool = False) -> str | None:
+        """The type block a JS/TS receiver expression evaluates to, or None.
+
+        Walks `a.b().c` left to right through the parser's type tables: a
+        variable's declared type or initializer, a field's type on its owner (or a
+        base), a method's or function's declared return type. Each table is read
+        in its own file, so a type name resolves against that file's imports.
+        *head_type* is the first name's type in the calling function, when the
+        parser saw one. An array of T is `[]T`, returned only when *array*; an
+        `xs[*]` expression is one element of `xs`.
+        """
+        element = expr.endswith("[*]")
+        if element:
+            expr = expr[:-3]
+        key = (record_id, this_type, expr, head_type, element)
+        if key not in self._expr_memo:
+            self._expr_memo[key] = None  # a cycle (`a = a.next`) resolves to nothing
+            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type)
+        owner = self._expr_memo[key]
+        if element:
+            return owner[2:] if owner and owner.startswith("[]") else None
+        return owner if array or not owner or not owner.startswith("[]") else None
+
+    def _eval_expr(self, expr: str, record_id: str, this_type: str | None, depth: int,
+                   head_type: str | None) -> str | None:
+        segments = _receiver_segments(expr) if depth < _EXPR_DEPTH else None
+        owner = None
+        if segments:
+            (head, called, first_arg), rest = segments[0], segments[1:]
+            if head == "this" and not called:
+                owner = this_type
+            elif called and head in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
+                owner = self._value_type(first_arg, record_id, this_type, depth)
+            elif called:
+                owner = self._return_type(self._resolve_function(head, record_id), depth)
+            elif head_type:
+                owner = self._declared_type(head_type, record_id, this_type, depth)
+            else:
+                owner = self._value_type(head, record_id, this_type, depth)
+            for name, called, first_arg in rest:
+                if called and name in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
+                    # `accessor.get(IFoo)`, `createInstance(Foo)`: the service or class named,
+                    # whatever the receiver's type.
+                    owner = self._value_type(first_arg, record_id, this_type, depth)
+                    continue
+                if owner is None or owner.startswith("[]"):
+                    owner = None
+                    break
+                owner = (self._return_type(self._resolve_self_method(owner, name), depth) if called
+                         else self._member_type(owner, name, depth))
+        return owner
+
+    def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
+        """A bare name: a typed variable, else a class it names (`Ctl.get()` is static)."""
+        declared = self.index.type_table_by_record.get(record_id, {}).get(name)
+        if declared:
+            return self._declared_type(declared, record_id, this_type, depth)
+        family = lang_family(None, self.index.file_by_record.get(record_id))
+        candidates = self._type_candidates(name, record_id, family)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def _declared_type(self, declared: str, record_id: str, this_type: str | None, depth: int) -> str | None:
+        if declared.startswith("="):
+            return self._expr_type(declared[1:], record_id, this_type, depth + 1, array=True)
+        is_array = declared.endswith("[]")
+        family = lang_family(None, self.index.file_by_record.get(record_id))
+        candidates = self._type_candidates(declared[:-2] if is_array else declared, record_id, family)
+        if len(candidates) != 1:
+            return None
+        return "[]" + candidates[0] if is_array else candidates[0]
+
+    def _member_type(self, owner: str, field_name: str, depth: int) -> str | None:
+        """`owner.field`: its declared type on the owner or the nearest base declaring it."""
+        seen, queue = set(), [owner]
+        while queue:
+            current = queue.pop(0)
+            if current in seen:
+                continue
+            seen.add(current)
+            row = self.index.rows.get(current)
+            if row is not None and row.name:
+                declared = self.index.type_table_by_record.get(row.record_id, {}).get(f"{row.name}.{field_name}")
+                if declared:
+                    return self._declared_type(declared, row.record_id, current, depth)
+            queue.extend(self._base_types_of(current))
+        return None
+
+    def _return_type(self, target: str | None, depth: int) -> str | None:
+        row = self.index.rows.get(target) if target else None
+        if row is None or not row.name:
+            return None
+        owner = self._enclosing_type(target)
+        owner_row = self.index.rows.get(owner) if owner else None
+        key = f"{owner_row.name}.{row.name}()" if owner_row is not None else f"{row.name}()"
+        declared = self.index.type_table_by_record.get(row.record_id, {}).get(key)
+        return self._declared_type(declared, row.record_id, owner, depth) if declared else None
+
+    def _resolve_function(self, name: str, record_id: str) -> str | None:
+        """A bare call's function, by import or same-file definition only: no counters, no guessing."""
+        call_file = self.index.file_by_record.get(record_id) or ""
+        bound = self.symbol_bindings.get(call_file, {}).get(name)
+        if bound in self.index.callable_blocks:
+            return bound
+        local = [cid for cid in self._defined_in(call_file, name) if cid in self.index.callable_blocks]
+        return local[0] if len(local) == 1 else None
+
+    def _namespace_member(self, bound: str, receiver: str, name: str, record_id: str) -> str | None:
+        """`Event.map()`: a function in a TS `namespace Event`, in the file the import
+        binds (where it often shares its name with an interface) or in this file."""
+        bound_row = self.index.rows.get(bound)
+        ns_record, ns_name = (bound_row.record_id, bound_row.name) if bound_row is not None else (record_id, receiver)
+        for ns in self._by_record_name.get((ns_record, ns_name), ()):
+            if self.index.rows[ns].kind != "module":
+                continue
+            for cid in self._by_record_name.get((ns_record, name), ()):
+                if self.index.rows[cid].parent_block_id == ns:
+                    return cid
+        return None
 
     def _resolve_go_method(self, receiver_type: str, name: str, record_id: str,
                            ) -> tuple[str | None, str, str | None]:
@@ -860,6 +1056,9 @@ class _Builder:
         bound = self.symbol_bindings.get(call_file, {}).get(receiver)
         if bound == _EXTERNAL:
             return None, CONFIDENCE_INFERRED, _EXTERNAL
+        member = self._namespace_member(bound or "", receiver, name, record_id)
+        if member:
+            return member, CONFIDENCE_EXTRACTED, RESOLUTION_IMPORT if bound else RESOLUTION_SAME_FILE
         if not bound:
             local = [cid for cid in self.index.blocks_by_record.get(record_id, ())
                      if cid in self.index.type_blocks

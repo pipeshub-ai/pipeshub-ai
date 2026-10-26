@@ -519,22 +519,175 @@ _REFERENCE_CALLEE_HANDLERS = frozenset({"python", "js"})
 # Type tables
 # --------------------------------------------------------------------------
 
+_TS_NAMED_TYPES = ("type_identifier", "generic_type", "nested_type_identifier")
+_TS_OWNER_TYPES = ("class_declaration", "abstract_class_declaration", "interface_declaration")
+# `this._register(new Emitter())`, `store.add(new X())`: these return their argument.
+_TS_PASSTHROUGH_CALLS = frozenset({"_register", "register", "add"})
+_TS_CLASS_ARG_CALLS = frozenset({"createInstance", "get"})
+_TS_HEAD = re.compile(r"[A-Za-z_$][\w$]*")
+_TS_COLLECTIONS = frozenset({"Array", "ReadonlyArray", "Set", "ReadonlySet", "Iterable", "IterableIterator"})
+# `xs.forEach(x => x.run())`: the callback's first parameter is an element of `xs`.
+_TS_ELEMENT_CALLBACKS = frozenset({"forEach", "map", "filter", "some", "every", "find", "findIndex", "flatMap"})
+_TS_SCOPE_TYPES = ("function_declaration", "method_definition", "arrow_function", "function_expression",
+                   "generator_function_declaration", "generator_function")
+
+
+def _ts_named_type(node: Node | None, src: bytes) -> str | None:
+    """`Foo`, `ns.Foo<T>`, `Foo | undefined` -> `Foo`; `Foo[]`, `Array<Foo>` -> `Foo[]`;
+    anything else (unions of two types, function types) -> None."""
+    if node is not None and node.type == "type_annotation":
+        node = node.named_children[0] if node.named_children else None
+    if node is not None and node.type == "union_type":
+        stack, named = [node], []
+        while stack:
+            for c in stack.pop().named_children:
+                if c.type == "union_type":
+                    stack.append(c)
+                elif c.type in _TS_NAMED_TYPES:
+                    named.append(c)
+        node = named[0] if len(named) == 1 else None
+    if node is not None and node.type == "readonly_type" and node.named_children:
+        node = node.named_children[0]
+    if node is not None and node.type == "array_type" and node.named_children:
+        element = _ts_named_type(node.named_children[0], src)  # `Foo[]`: what a for-of yields
+        return f"{element}[]" if element and not element.endswith("[]") else None
+    if node is None or node.type not in _TS_NAMED_TYPES:
+        return None
+    name = _text(node, src).split("<")[0].rsplit(".", 1)[-1]
+    args = _field(node, "type_arguments") if node.type == "generic_type" else None
+    if name in _TS_COLLECTIONS and args is not None and len(args.named_children) == 1:
+        element = _ts_named_type(args.named_children[0], src)
+        return f"{element}[]" if element and not element.endswith("[]") else None
+    return name
+
+
+def _ts_value_type(value: Node | None, src: bytes) -> str | None:
+    """What an initializer says about its variable's type: a class for `new Foo()`,
+    else `=<expression>` for the builder to evaluate (`=Foo.get()`, `=this._model`)."""
+    while value is not None and value.type in ("await_expression", "non_null_expression",
+                                               "parenthesized_expression"):
+        value = value.named_children[0] if value.named_children else None
+    if value is None:
+        return None
+    if value.type in ("as_expression", "satisfies_expression") and len(value.named_children) == 2:
+        return _ts_named_type(value.named_children[1], src)
+    if value.type == "new_expression":
+        ctor = _field(value, "constructor")
+        return _text(ctor, src).rsplit(".", 1)[-1] if ctor is not None else None
+    if value.type == "call_expression":
+        fn, args = _field(value, "function"), _field(value, "arguments")
+        first = args.named_children[0] if args is not None and args.named_children else None
+        callee = _text(fn, src).rsplit(".", 1)[-1] if fn is not None else ""
+        if first is not None and callee in _TS_PASSTHROUGH_CALLS:
+            return _ts_value_type(first, src)
+        # Dependency injection: `createInstance(Foo, ...)` makes a Foo, `accessor.get(IFoo)`
+        # returns the IFoo service.
+        if (first is not None and callee in _TS_CLASS_ARG_CALLS and first.type == "identifier"
+                and _text(first, src)[:1].isupper()):
+            return _text(first, src)
+    if value.type in ("call_expression", "member_expression", "identifier", "this"):
+        text = _text(value, src)
+        if len(text) <= 200 and "\n" not in text:
+            return "=" + text
+    return None
+
+
+def _ts_owner(node: Node, src: bytes) -> str | None:
+    parent = node.parent
+    while parent is not None and parent.type not in _TS_OWNER_TYPES:
+        if parent.type in ("function_declaration", "arrow_function", "function_expression"):
+            return None
+        parent = parent.parent
+    name = _field(parent, "name") if parent is not None else None
+    return _text(name, src) if name is not None else None
+
+
 def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
-    """Harvest `name: Type` bindings from declarations and constructor params."""
-    for node in _nodes_of_types(root, cfg, ("variable_declarator", "required_parameter", "optional_parameter")):
-        if node.type in ("variable_declarator", "required_parameter", "optional_parameter"):
-            name_node = _field(node, "name") or next(
-                (c for c in node.named_children if c.type == "identifier"), None
-            )
-            ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
-            if name_node is not None and ann is not None:
-                type_node = next(
-                    (c for c in ann.named_children if c.type in ("type_identifier", "generic_type")), None
-                )
-                if type_node is not None:
-                    table.setdefault(
-                        _text(name_node, src), _text(type_node, src).split("<")[0]
-                    )
+    """Harvest `name: Type` bindings from declarations, constructor params and class fields
+    (`this._model.run()` resolves through the field), and initializers.
+
+    Members are also keyed by owner -- `Owner.field`, `Owner.method()` (its return
+    type), `fn()` -- so the builder can follow `this._editor.getModel().getValue()`
+    through other files. An `=expr` value is an initializer the builder evaluates.
+    """
+    for node in _nodes_of_types(root, cfg, ("variable_declarator", "required_parameter", "optional_parameter",
+                                            "public_field_definition", "property_signature", "method_definition",
+                                            "method_signature", "abstract_method_signature",
+                                            "function_declaration")):
+        name_node = _field(node, "name") or next(
+            (c for c in node.named_children if c.type in ("identifier", "property_identifier")), None
+        )
+        if name_node is None:
+            continue
+        name = _text(name_node, src)
+        if node.type in ("method_definition", "method_signature", "abstract_method_signature",
+                         "function_declaration"):
+            type_name = _ts_named_type(_field(node, "return_type"), src)
+            if type_name is None:
+                continue
+            owner = _ts_owner(node, src) if node.type != "function_declaration" else None
+            if any(c.type == "get" for c in node.children):  # a getter reads as a field
+                table.setdefault(name, type_name)
+                if owner:
+                    table.setdefault(f"{owner}.{name}", type_name)
+            else:
+                table.setdefault(f"{owner}.{name}()" if owner else f"{name}()", type_name)
+            continue
+        ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
+        type_name = _ts_named_type(ann, src) if ann is not None else _ts_value_type(_field(node, "value"), src)
+        if type_name is None:
+            continue
+        table.setdefault(name, type_name)
+        # A field, an interface property, or a `private readonly x: T` constructor parameter.
+        if node.type in ("public_field_definition", "property_signature") or (
+                node.type in ("required_parameter", "optional_parameter")
+                and any(c.type == "accessibility_modifier" for c in node.named_children)):
+            owner = _ts_owner(node, src)
+            if owner:
+                table.setdefault(f"{owner}.{name}", type_name)
+    _collect_narrowings_ts(root, src, table, cfg)
+
+
+def _element_source(node: Node | None, src: bytes) -> str | None:
+    """`=xs[*]`: an element of the array expression *node*, for the builder to evaluate."""
+    if node is None or node.type not in ("identifier", "member_expression", "call_expression"):
+        return None
+    text = _text(node, src)
+    return f"={text}[*]" if len(text) <= 200 and "\n" not in text else None
+
+
+def _collect_narrowings_ts(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
+    """Types the code implies without declaring: `for (const x of xs)`, `xs.forEach(x => ...)`,
+    and `if (x instanceof Foo)`."""
+    for node in _nodes_of_types(root, cfg, ("for_in_statement", "call_expression", "binary_expression")):
+        if node.type == "for_in_statement":
+            left, op = _field(node, "left"), _field(node, "operator")
+            if left is not None and left.type == "identifier" and op is not None and op.type == "of":
+                element = _element_source(_field(node, "right"), src)
+                if element:
+                    table.setdefault(_text(left, src), element)
+        elif node.type == "call_expression":
+            fn, args = _field(node, "function"), _field(node, "arguments")
+            prop = _field(fn, "property") if fn is not None and fn.type == "member_expression" else None
+            callback = args.named_children[0] if args is not None and args.named_children else None
+            if prop is None or _text(prop, src) not in _TS_ELEMENT_CALLBACKS or callback is None \
+                    or callback.type != "arrow_function":
+                continue
+            param = _field(callback, "parameter")
+            if param is None:
+                params = _field(callback, "parameters")
+                first = params.named_children[0] if params is not None and params.named_children else None
+                if first is not None and first.type == "required_parameter" and not any(
+                        c.type == "type_annotation" for c in first.named_children):
+                    param = _field(first, "pattern")
+            element = _element_source(_field(fn, "object"), src)
+            if param is not None and param.type == "identifier" and element:
+                table.setdefault(_text(param, src), element)
+        else:
+            left, op, right = _field(node, "left"), _field(node, "operator"), _field(node, "right")
+            if (op is not None and op.type == "instanceof" and left is not None and left.type == "identifier"
+                    and right is not None and right.type == "identifier"):
+                table.setdefault(_text(left, src), _text(right, src))
 
 
 def _collect_type_table_js(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
@@ -1333,15 +1486,27 @@ class _Walker:
             to_kind="block",
             is_member_call=is_member,
             receiver=receiver,
-            receiver_type=self._receiver_type(node, receiver),
+            receiver_type=self._receiver_type(node, receiver, qualifier),
             qualified_prefix=qualifier,
+            head_type=self._head_type(node, qualifier),
         ))
 
-    def _receiver_type(self, node: Node, receiver: str | None) -> str | None:
+    def _head_type(self, node: Node, qualifier: str | None) -> str | None:
+        """The function-scoped type of the variable a TS receiver chain starts from."""
+        if not qualifier or self.cfg.type_table_handler_name != "ts":
+            return None
+        head = _TS_HEAD.match(qualifier)
+        return self._ts_scoped_type(node, head.group()) if head and head.group() != "this" else None
+
+    def _receiver_type(self, node: Node, receiver: str | None, qualifier: str | None = None) -> str | None:
         """The receiver's type, from its own function first in Go: one file's
         methods reuse `c` for `*Client` and `*Config`, which the file-wide table
         has to drop."""
         if not receiver:
+            return None
+        if receiver.endswith(")") and qualifier != receiver:
+            # `a.f().g()` keeps only `f()`, the key of a bare `function f()`'s return type;
+            # the builder evaluates the whole chain.
             return None
         if self.cfg.type_table_handler_name == "go":
             scope = node.parent
@@ -1354,7 +1519,28 @@ class _Walker:
                     _collect_type_table_go(scope, self.src, table, self.cfg)
                 if receiver in table:
                     return table[receiver]
-        return self.out.type_table.get(receiver)
+        if self.cfg.type_table_handler_name == "ts":
+            scoped = self._ts_scoped_type(node, receiver)
+            if scoped is not None:
+                return scoped if not scoped.startswith("=") and not scoped.endswith("[]") else None
+        found = self.out.type_table.get(receiver)
+        # `=expr` initializers are evaluated by the builder, which can see other files.
+        return found if found and not found.startswith("=") and not found.endswith("[]") else None
+
+    def _ts_scoped_type(self, node: Node, name: str) -> str | None:
+        """*name*'s type in the innermost function that declares it: one file reuses
+        `provider` or `e` for different types, which a file-wide table cannot hold."""
+        scope = node.parent
+        while scope is not None:
+            if scope.type in _TS_SCOPE_TYPES:
+                table = self._scope_tables.get(scope.start_byte)
+                if table is None:
+                    table = self._scope_tables[scope.start_byte] = {}
+                    _collect_type_table_ts(scope, self.src, table, self.cfg)
+                if name in table:
+                    return table[name]
+            scope = scope.parent
+        return None
 
     def _emit_reference(self, target: Node, enclosing: int) -> None:
         """A CALLS fact for something referenced as a callee without a call node."""
@@ -1365,7 +1551,7 @@ class _Walker:
             relation=Relation.CALLS, to_name=name, line=self._line_at(target.start_byte),
             byte_offset=target.start_byte, from_symbol=enclosing, to_kind="block",
             is_member_call=is_member, receiver=receiver,
-            receiver_type=self._receiver_type(target, receiver),
+            receiver_type=self._receiver_type(target, receiver, qualifier),
             qualified_prefix=qualifier,
         ))
 
@@ -1452,6 +1638,8 @@ def parse_code(source: bytes, language: str) -> ParsedFile:
             fact.is_member_call
             and not fact.receiver_type
             and fact.receiver not in ("self", "this")
+            and not (fact.receiver or "")[:1].isupper()  # `Controller.get(editor)`: a class
+            and fact.receiver not in parsed.type_table
             and fact.to_name in builtin_methods
         )
     ]

@@ -9,19 +9,16 @@ from __future__ import annotations
 
 import asyncio
 import atexit
-import contextlib
-import ctypes
 import logging
 import math
 import multiprocessing
 import os
 import threading
-import time
 from concurrent.futures import ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from functools import lru_cache
 from io import BytesIO
-from typing import TYPE_CHECKING, Dict, List, Optional, Tuple, TypeVar
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 import numpy as np
 import pdfplumber
@@ -29,11 +26,10 @@ import pypdfium2 as pdfium
 from PIL import Image
 
 from app.services.resource_governor.probe import effective_cpu_count
+from app.utils.pool_worker import run_and_release, start_housekeeping
 from app.utils.worker_scaling import scaled
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
-
     from app.services.resource_governor import ResourceGovernor
 
 _logger = logging.getLogger(__name__)
@@ -73,57 +69,12 @@ def pdf_raster_pool_size() -> int:
     return scaled(PDF_RASTER_WORKERS)
 
 
-_T = TypeVar("_T")
-_HOUSEKEEPING_SECONDS = 2.0
-# Set in a pool worker when a task ends; its housekeeping thread then trims.
-_task_ended = threading.Event()
-
-
-def _release_freed_memory() -> None:
-    with contextlib.suppress(OSError, AttributeError):  # not glibc (macOS, musl)
-        ctypes.CDLL("libc.so.6").malloc_trim(0)
-
-
-def _start_worker_housekeeping(parent_pid: int) -> None:
-    """Pool initializer: a thread that keeps an idle worker from holding memory.
-
-    glibc keeps freed heap for reuse, so a worker held ~0.6 GB more than it
-    needed after rendering 32 pages of a 300 MB PDF; it trims after each task.
-    A SIGKILLed parent (OOM kill, an idle parse worker being stopped) never
-    shuts the pool down, and its workers would block on their call queue
-    forever, so a worker exits once it is reparented.
-    """
-
-    def housekeep() -> None:
-        trims_left = 0
-        while os.getppid() == parent_pid:
-            time.sleep(_HOUSEKEEPING_SECONDS)
-            if _task_ended.is_set():
-                _task_ended.clear()
-                # The pool sends the result after the task returns, so the
-                # first trim can run while the worker still holds it.
-                trims_left = 2
-            if trims_left:
-                trims_left -= 1
-                _release_freed_memory()
-        os._exit(0)
-
-    threading.Thread(target=housekeep, name="raster-housekeeping", daemon=True).start()
-
-
-def _run_and_release(fn: Callable[..., _T], *args: object) -> _T:
-    try:
-        return fn(*args)
-    finally:
-        _task_ended.set()
-
-
 @lru_cache(maxsize=1)
 def _get_pdf_raster_pool() -> ProcessPoolExecutor:
     return ProcessPoolExecutor(
         max_workers=pdf_raster_pool_size(),
         mp_context=multiprocessing.get_context("spawn"),
-        initializer=_start_worker_housekeeping,
+        initializer=start_housekeeping,
         initargs=(os.getpid(),),
     )
 
@@ -287,7 +238,7 @@ def _worker_count_chars_from_bytes(pdf_bytes: bytes) -> list[int]:
 
 def _run_in_pool(fn, *args):
     try:
-        return _get_pdf_raster_pool().submit(_run_and_release, fn, *args).result()
+        return _get_pdf_raster_pool().submit(run_and_release, fn, *args).result()
     except BrokenProcessPool:
         _logger.warning(
             "PDF rasterization process pool broke (worker likely OOM-killed); "
@@ -393,7 +344,7 @@ async def render_all_pages_from_bytes(
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(
         _get_pdf_raster_pool(),
-        _run_and_release,
+        run_and_release,
         _worker_render_all_from_bytes,
         pdf_bytes,
         resolution,

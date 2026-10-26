@@ -4834,5 +4834,15 @@
 {"id":"createUserRouter GET /graph/list #0 body-empty","derive":"body-empty","expected":{"status":400,"code":"VALIDATION_ERROR","message":"page must be a positive integer\nlimit must be a positive integer no greater than 100","errors":[["CUSTOM","query.page","page must be a positive integer"],["CUSTOM","query.limit","limit must be a positive integer no greater than 100"]]}},
 {"id":"createUserRouter GET /graph/list #0 query-empty","derive":"query-empty","expected":{"ok":"edb3004c29793865"}},
 {"id":"createUserRouter GET /graph/list #0 params-empty","derive":"params-empty","expected":{"status":400,"code":"VALIDATION_ERROR","message":"page must be a positive integer\nlimit must be a positive integer no greater than 100","errors":[["CUSTOM","query.page","page must be a positive integer"],["CUSTOM","query.limit","limit must be a positive integer no greater than 100"]]}}
+]},
+{"key":"createUserRouter GET /fetch/with-groups #0","cases":[
+{"id":"createUserRouter GET /fetch/with-groups #0 empty-all","payload":{},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request is required.","errors":[["INVALID_TYPE","body","The request is required."]]}},
+{"id":"createUserRouter GET /fetch/with-groups #0 body={}","payload":{"body":{}},"expected":{"ok":"edb3004c29793865"}},
+{"id":"createUserRouter GET /fetch/with-groups #0 body=[]","payload":{"body":[]},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request must be a group of fields.","errors":[["INVALID_TYPE","body","The request must be a group of fields."]]}},
+{"id":"createUserRouter GET /fetch/with-groups #0 body=\"s\"","payload":{"body":"s"},"expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request must be a group of fields.","errors":[["INVALID_TYPE","body","The request must be a group of fields."]]}},
+{"id":"createUserRouter GET /fetch/with-groups #0 body-absent","derive":"body-absent","expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request is required.","errors":[["INVALID_TYPE","body","The request is required."]]}},
+{"id":"createUserRouter GET /fetch/with-groups #0 body-empty","derive":"body-empty","expected":{"ok":"edb3004c29793865"}},
+{"id":"createUserRouter GET /fetch/with-groups #0 query-empty","derive":"query-empty","expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request is required.","errors":[["INVALID_TYPE","body","The request is required."]]}},
+{"id":"createUserRouter GET /fetch/with-groups #0 params-empty","derive":"params-empty","expected":{"status":400,"code":"VALIDATION_ERROR","message":"The request is required.","errors":[["INVALID_TYPE","body","The request is required."]]}}
 ]}
 ]}

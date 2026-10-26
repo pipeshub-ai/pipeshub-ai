@@ -115,3 +115,34 @@ async def test_impact_lists_the_tests_a_change_reaches_apart() -> None:
     assert out["impacted_tests"] == [
         {"file_path": "src/a.py", "symbols": ["function:caller"], "nearest_hop": 1}]
     assert "hidden_tests" not in out
+
+
+async def test_impact_marks_what_builds_on_a_symbol_and_can_follow_calls_only() -> None:
+    """`target` inherits Thing and `caller` calls target: one builds on Thing, one reaches it by a call."""
+    ctx = _ctx(QueryGraphProvider())
+    out = without_marker(await impact_impl(**ctx, file_path="src/b.py", qualified_name="class:Thing"))
+    assert out["impacted_files"] == [
+        {"file_path": "src/b.py", "symbols": ["function:target"], "built_on": ["function:target"],
+         "nearest_hop": 1},
+        {"file_path": "src/a.py", "symbols": ["function:caller"], "nearest_hop": 2}]
+    calls = without_marker(await impact_impl(**ctx, file_path="src/b.py", qualified_name="class:Thing",
+                                             edge_types=["CALLS"]))
+    assert calls["impacted_files"] == []
+    assert "unknown edge_types" in (await impact_impl(**ctx, file_path="src/b.py",
+                                                      qualified_name="class:Thing",
+                                                      edge_types=["CONTAINS"]))["error"]
+
+
+async def test_impact_of_an_unresolved_symbol_is_an_error_not_an_empty_blast_radius() -> None:
+    out = await impact_impl(**_ctx(QueryGraphProvider()), file_path="src/vs/b.py",
+                            qualified_name="function:target")
+    assert "No readable symbol" in out["error"]
+
+
+async def test_hidden_test_neighbours_say_how_to_list_them() -> None:
+    from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+
+    out = await get_neighbour_impl(**_ctx(QueryGraphProvider(file_roles={"rec-a": "test"})),
+                                   file_path="src/b.py", qualified_name="function:target",
+                                   direction="inbound", edge_types=["CALLS"])
+    assert out["hidden_tests"] == 1 and "include_tests=true" in out["hint"]

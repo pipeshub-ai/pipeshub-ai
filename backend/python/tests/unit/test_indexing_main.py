@@ -1247,7 +1247,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock(), cleanup=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.DistributedConcurrencyManager", return_value=mock_manager),
+            patch("app.indexing_main.MessagingFactory.create_lease_manager", return_value=mock_manager),
         ):
             with pytest.raises(RuntimeError, match="redis down"):
                 await start_kafka_consumers(mock_container)

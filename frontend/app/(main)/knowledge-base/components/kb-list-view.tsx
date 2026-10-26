@@ -95,6 +95,7 @@ export function getKbItemStatusLabel(item: TableItem, t: TFunction, withReason =
       case 'PAUSED': baseLabel = t('kb.indexingStatus.paused'); break;
       case 'ENABLE_MULTIMODAL_MODELS': baseLabel = t('kb.indexingStatus.needsMultimodalModel'); break;
       case 'SKIPPED': baseLabel = t('kb.indexingStatus.skipped'); break;
+      case 'PASSWORD_PROTECTED': baseLabel = t('kb.indexingStatus.passwordProtected'); break;
       // Show an unrecognised status as itself: labelling it "Queued" hid real states.
       // It has no translation, since the UI does not know it.
       default: baseLabel = humanizeStatus(item.indexingStatus);
@@ -157,6 +158,8 @@ export function getKbItemStatusIcon(item: TableItem, isFolder: boolean): ReactNo
         return <MaterialIcon name="image_not_supported" size={16} color="var(--amber-11)" />;
       case 'SKIPPED':
         return <MaterialIcon name="skip_next" size={16} color="var(--slate-11)" />;
+      case 'PASSWORD_PROTECTED':
+        return <MaterialIcon name={getIndexStatusIcon(item.indexingStatus)} size={16} color="var(--amber-11)" />;
       default:
         // Neutral, not the "Queued" clock: an unknown status is not a queued one.
         return <MaterialIcon name="help_outline" size={16} color="var(--slate-11)" />;
