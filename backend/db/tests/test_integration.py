@@ -136,7 +136,7 @@ def test_bare_database_as_superuser(bare_db):
     assert run_migrate(url, **skip).returncode == 0                                            # second run: ownership is consistent
     assert epochs(cluster, name) == HEADS
     with connect(cluster, name) as c:
-        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 14
+        assert c.execute("SELECT count(*) FROM pg_roles WHERE rolname LIKE 'pipeshub\\_%' AND NOT rolcanlogin").fetchone()[0] == 15
         assert c.execute("SELECT count(*) FROM pg_tables WHERE schemaname = 'kernel' AND tableowner <> 'pipeshub_owner'").fetchone()[0] == 0
         assert c.execute("SELECT NOT has_database_privilege('pipeshub_query', current_database(), 'TEMP')").fetchone()[0]
 
