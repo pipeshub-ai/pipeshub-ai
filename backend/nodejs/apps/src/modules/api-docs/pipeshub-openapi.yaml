@@ -22,7 +22,7 @@ info:
     ## Behaviour common to every route
     App-level middleware runs before any router, so the following applies to every operation below, before authentication, unless an exception is named.
 
-    **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/` and `/connectors`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` is neither checked nor rewritten, unless it is longer than 100,000 characters.
+    **Markup filter.** A query value, or any string in a JSON or form-encoded body, that looks like markup is refused with `400 HTTP_BAD_REQUEST`. The message names where the value was, for example `HTML tags, scripts, and XSS content are not allowed in the field "name".` or `... in the query parameter "search".` (a field name that is not a plain identifier path reads `the request`), and says what counted: text in angle brackets such as `<id>` counts as an HTML tag, an encoded script tag counts, or script content such as `onclick=`, `javascript:` or `data:text/html` counts. A string over 100,000 characters is refused as too long to check instead: `The value of the field "name" is longer than 100,000 characters, which is too long to check for HTML tags and scripts. Please shorten it and try again.` It looks for an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), and any string longer than 100,000 characters. A string the filter lets through is rewritten before the route sees it: the filter trims surrounding whitespace, drops a lone `<` together with everything after it (`a < b` arrives as `a`), and escapes `>` as `&gt;`. POST and PUT under `/agents/`, `/conversations/`, `/connectors` and `/api-toolsets`, and POST, PUT and PATCH under `/skills`, skip the filter. So does the question of a search: the `query` string of a JSON body sent to `POST /search` or `POST /retrieve` is neither checked nor rewritten, unless it is longer than 100,000 characters.
 
     **Body parsers.** `application/json` bodies (up to 10 MB, 5 MB on `/mcp`) and `application/x-www-form-urlencoded` bodies (up to 100 KB and 1000 fields) are parsed for every method. A JSON body that does not parse, or a body past these limits, is answered `500 INTERNAL_ERROR`, except a JSON body over 5 MB on `/mcp`, which is answered `413` with a JSON-RPC error (see `POST /mcp`). Form values arrive as text and the request validators do not convert them, so a number, a boolean or a free-form object sent form-encoded is refused (`400 VALIDATION_ERROR`) or read as a string. A list sent form-encoded is read as a list only when its key repeats, so a single value or an empty list cannot be sent. The form media type is therefore listed only on operations whose body is a flat object of text fields: every value a string (string enums included), with no lists or nested objects.
 
@@ -11211,21 +11211,29 @@ components:
           minimum: 1
           maximum: 50
           default: 8
-          description: Most chunks to return, best first.
+          description: Most chunks to return, best first. Left out, the AI service uses 8.
         filters:
           $ref: '#/components/schemas/Filters'
         createdAfter:
           type: string
           description: '"YYYY-MM-DD" or an ISO 8601 datetime with an offset, inclusive. When the source record was created.'
+          minLength: 1
+          maxLength: 64
         createdBefore:
           type: string
           description: As `createdAfter`, the other end.
+          minLength: 1
+          maxLength: 64
         modifiedAfter:
           type: string
           description: As `createdAfter`, on when the source record last changed.
+          minLength: 1
+          maxLength: 64
         modifiedBefore:
           type: string
           description: As `modifiedAfter`, the other end.
+          minLength: 1
+          maxLength: 64
         maxChunksPerRecord:
           type: integer
           minimum: 1
@@ -11270,6 +11278,8 @@ components:
             updatedAt:
               type: string
               nullable: true
+          additionalProperties: false
+          required: [recordId, name, connector, mimeType, updatedAt]
         citation:
           type: object
           properties:
@@ -11289,12 +11299,16 @@ components:
             blockIndex:
               type: integer
               nullable: true
+          additionalProperties: false
+          required: [url, recordUrl, pageNum, blockIndex]
+      additionalProperties: false
     RetrieveResponse:
       type: object
       required: [chunks, incomplete]
       properties:
         requestId:
           type: string
+          description: The request's id, as in the `x-request-id` response header.
         chunks:
           type: array
           items:
@@ -11304,7 +11318,9 @@ components:
           description: True when part of the search could not run (for example a source timed out).
         message:
           type: string
-          description: Why `chunks` is empty, when it is.
+          description: Why `chunks` is empty, when it is; `null` when the search gave no reason. Absent when `chunks` is not empty.
+          nullable: true
+      additionalProperties: false
     SemanticSearchRequest:
       type: object
       description: |
@@ -27719,7 +27735,9 @@ paths:
         "Forgot password" (needs email set up), or the server operator can create a single-use
         set-password link with `node dist/scripts/set-password-link.js <email>`.
 
-        Both lists are empty when the upgrade removed nothing.
+        `peopleWithoutPassword` holds only people who may sign in: accounts that have signed in
+        at least once and are neither disabled nor service accounts. Both lists are empty when
+        the upgrade removed nothing. The query string is not read.
 
         **Admin Access Required:** Only organization admins can view this.
       operationId: getSignInRemoval
@@ -27739,6 +27757,7 @@ paths:
                     items:
                       type: string
                       enum: [samlSso, oauth]
+                    description: The sign-in methods the upgrade removed from the stored policy.
                   peopleWithoutPassword:
                     type: array
                     items:
@@ -27749,22 +27768,43 @@ paths:
                           type: string
                         fullName:
                           type: string
+                          description: Absent when the account has no name.
                         email:
                           type: string
-        '401':
-          description: Unauthorized - invalid or expired access token
+                      additionalProperties: false
+                additionalProperties: false
+        '400':
+          description: |
+            No `Authorization` header, or one with no token after the scheme
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an admin of this organization
+          description: |
+            The token does not belong to an active admin of the organization it names: a member,
+            an admin of another organization, or a token issued to an OAuth app
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: |
+            The token carries no `userId` or no `orgId` (`Account not found`)
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Internal server error
+          description: |
+            Internal server error. Also returned when the bearer token cannot be verified
+            (not a JWT, signed with another key, or expired): the verification error is not
+            mapped to `401`. And, before the token is checked, when the request carries a JSON
+            body that does not parse.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
           content:
             application/json:
               schema:
@@ -27776,7 +27816,8 @@ paths:
       summary: Reload authentication settings (Internal)
       description: |
         Internal endpoint the configuration manager calls after settings such as the frontend
-        URL change, so the authentication service picks them up without a restart.
+        URL change, so the authentication service picks them up without a restart. The body and
+        the query string are not read.
       operationId: updateAuthAppConfig
       security:
         - scopedToken: []
@@ -27787,11 +27828,26 @@ paths:
             application/json:
               schema:
                 type: object
+                additionalProperties: false
+                required: [message]
                 properties:
                   message:
                     type: string
+                    example: Auth configuration updated successfully
+        '400':
+          $ref: '#/components/responses/XssRejected'
         '401':
-          description: Missing or invalid service token
+          description: |
+            Unauthorized - scoped token missing, invalid, expired, or lacking the `fetch:config` scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            Internal server error. Also returned, before the token is checked, when the request carries a JSON body that does not parse.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
           content:
             application/json:
               schema:
@@ -27995,7 +28051,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-
   /users/health:
     get:
       tags:
@@ -34702,9 +34757,22 @@ paths:
                     items:
                       $ref: '#/components/schemas/StoredRecordDocument'
         '400':
-          description: The paging parameters are not valid.
+          description: |
+            The paging parameters are not valid.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/records/{virtualRecordId}/documents:
     get:
       tags:
@@ -34739,9 +34807,22 @@ paths:
                     items:
                       $ref: '#/components/schemas/StoredRecordDocument'
         '400':
-          description: The virtual record id is not valid.
+          description: |
+            The virtual record id is not valid.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/records/relocate:
     post:
       tags:
@@ -35067,11 +35148,28 @@ paths:
                     items:
                       $ref: '#/components/schemas/ArtifactFileUrl'
         '400':
-          description: The body is not valid (an id, a revision, or a path that is not accepted).
+          description: |
+            The body is not valid (an id, a revision, or a path that is not accepted).
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The body names a different organisation than the storage token. Nothing was created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/artifacts:
     get:
       tags:
@@ -35122,9 +35220,22 @@ paths:
                           type: integer
                           description: Milliseconds since the epoch.
         '400':
-          description: The virtual record id is missing or not valid.
+          description: |
+            The virtual record id is missing or not valid.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/artifacts/{documentId}:
     delete:
       tags:
@@ -35148,11 +35259,28 @@ paths:
               schema:
                 $ref: '#/components/schemas/StoragePurgeResult'
         '400':
-          description: The document id is not a 24-character hex id.
+          description: |
+            The document id is not a 24-character hex id.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: The files could not be removed; the document was kept so the removal can be retried.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /document/internal/artifacts/{documentId}/read-urls:
     post:
       tags:
@@ -35208,13 +35336,34 @@ paths:
                     items:
                       $ref: '#/components/schemas/ArtifactFileUrl'
         '400':
-          description: The document id or a path is not valid.
+          description: |
+            The document id or a path is not valid.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: The body names a different organisation than the storage token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such revision in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/artifacts/{documentId}/files/{path}:
     parameters:
       - $ref: '#/components/parameters/InternalDocumentId'
@@ -35259,15 +35408,40 @@ paths:
                   size:
                     type: integer
         '400':
-          description: The document id or path is not valid, the body was not sent as bytes, or storage is not local.
+          description: |
+            The document id or path is not valid, the body was not sent as bytes, or storage is not local.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such revision in the caller's organisation.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '413':
           description: The file is larger than 100 MB.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: The file could not be saved. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     get:
       tags:
         - Internal Storage
@@ -35300,13 +35474,34 @@ paths:
                 type: string
                 format: binary
         '400':
-          description: The document id or path is not valid, or storage is not local.
+          description: |
+            The document id or path is not valid, or storage is not local.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: The storage scoped token was missing or invalid.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such revision or file.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '416':
           description: The requested range is outside the file.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/{documentId}/download:
     get:
       tags:
@@ -46521,17 +46716,39 @@ paths:
                 $ref: '#/components/schemas/RetrieveResponse'
         '400':
           description: |
-            Invalid request: `query` missing or empty, `limit` or
-            `maxChunksPerRecord` outside 1-50, a date that does not parse, or
-            a `filters` key the `Filters` schema does not list.
+            Invalid request. `VALIDATION_ERROR` when `query` is missing, empty, not text or longer than
+            100,000 characters, `limit` or `maxChunksPerRecord` is not a whole number from 1 to 50 (a
+            numeric string such as `"8"` is refused too: unlike `POST /search`, these are not read as
+            numbers), `filters` is not an object or holds a key the `Filters` schema does not list (the
+            message names it and lists the allowed keys), an entry of `filters.apps`, `filters.kb`,
+            `filters.recordGroups`, `filters.records` or `filters.recordsExact` is not a UUID, more than 200
+            ids are sent across those keys, `filters.where` is sent at all, `rewriteQuery` is not a
+            boolean, or a date bound is empty or longer than 64 characters (`A date filter cannot be
+            empty`, `A date filter must be at most 64 characters`).
+            `HTTP_BAD_REQUEST` when the query contains a format specifier (`retrieve query contains
+            potentially dangerous format specifiers. ...`), or from the search service when a date bound
+            is not a date it accepts. Markup in `query` is not refused: the app-wide markup filter skips
+            this one field. Unknown body fields are dropped, not refused.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '401':
-          description: Missing or invalid bearer token.
+          description: |
+            Missing or invalid bearer token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: Bearer token lacks the `semantic:write` scope.
+          description: |
+            The OAuth token lacks the `semantic:write` scope (`Insufficient scope. Required: semantic:write`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
             A `recordGroups`, `records` or `recordsExact` selection resolves to
@@ -46551,9 +46768,22 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
-          description: Unexpected server error, or the AI search service was unreachable.
+          description: |
+            Unexpected server error, or the AI search service was unreachable.
+
+            Also returned, before authentication, when the request carries a body that is not valid JSON: the body parser fails and reports code `INTERNAL_ERROR`, not a `400`.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '503':
           description: The search index or the permission check is temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /search:
     post:
       tags:
@@ -54338,8 +54568,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -54447,8 +54677,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -54554,6 +54784,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: |-
             Every request that passes validation: the connector service has no route for it (`Not Found`).
@@ -54597,8 +54829,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -54682,7 +54914,7 @@ paths:
           description: |-
             Only for the ids `oauth-configs`, `instances` and `agents`, the three that reach a backend
             handler: the caller's OAuth access token does not carry the scope that handler requires,
-            `connector:read` (`agent:read` for the id `agents`); the message is `Insufficient scope.
+            `toolset:read` (`agent:read` for the id `agents`); the message is `Insufficient scope.
             Required: <scope>`. Session tokens are not scope-checked.
           content:
             application/json:
@@ -54774,7 +55006,7 @@ paths:
           description: |-
             Only for the ids `oauth-configs`, `instances` and `agents`, the three that reach a backend
             handler: the caller's OAuth access token does not carry the scope that handler requires,
-            `connector:read` (`agent:read` for the id `agents`); the message is `Insufficient scope.
+            `toolset:read` (`agent:read` for the id `agents`); the message is `Insufficient scope.
             Required: <scope>`. Session tokens are not scope-checked.
           content:
             application/json:
@@ -54882,6 +55114,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: |-
             Every request that passes validation, except for the three ids named under `500`: the connector
@@ -54988,8 +55222,8 @@ paths:
         '403':
           description: |-
             Only for the id `instances`: the caller is not an administrator (`Only administrators can update
-            toolset instances.`), or the caller's OAuth access token does not carry the `connector:write`
-            scope (`Insufficient scope. Required: connector:write`).
+            toolset instances.`), or the caller's OAuth access token does not carry the `toolset:write`
+            scope (`Insufficient scope. Required: toolset:write`).
           content:
             application/json:
               schema:
@@ -55058,8 +55292,8 @@ paths:
         '403':
           description: |-
             Only for the id `instances`: the caller is not an administrator (`Only administrators can delete
-            toolset instances.`), or the caller's OAuth access token does not carry the `connector:delete`
-            scope (`Insufficient scope. Required: connector:delete`).
+            toolset instances.`), or the caller's OAuth access token does not carry the `toolset:delete`
+            scope (`Insufficient scope. Required: toolset:delete`).
           content:
             application/json:
               schema:
@@ -55125,6 +55359,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: |-
             Every request, except for the three ids named under `500`: the connector service has no route
@@ -55193,6 +55429,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: |-
             Every request, except for the id named under `500`: the connector service has no route for it
@@ -55289,8 +55527,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
+            Required: toolset:write`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -55538,8 +55776,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56221,8 +56459,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56364,8 +56602,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked. Not being an administrator
+            The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
+            Required: toolset:write`). Session tokens are not scope-checked. Not being an administrator
             is not refused: the instance is created as personal.
           content:
             application/json:
@@ -56468,8 +56706,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56603,8 +56841,8 @@ paths:
             The instance is not the caller's own personal one and the caller is not an administrator
             (`Only administrators can update toolset instances.`, checked before the organization instance
             is looked up, so an unknown id or another user's personal instance also gets 403), or the
-            caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked.
+            caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
+            Required: toolset:write`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56703,8 +56941,8 @@ paths:
             The instance is not the caller's own personal one and the caller is not an administrator
             (`Only administrators can delete toolset instances.`, checked before the organization instance
             is looked up, so an unknown id or another user's personal instance also gets 403), or the
-            caller's OAuth access token does not carry the `connector:delete` scope (`Insufficient scope.
-            Required: connector:delete`). Session tokens are not scope-checked.
+            caller's OAuth access token does not carry the `toolset:delete` scope (`Insufficient scope.
+            Required: toolset:delete`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56814,8 +57052,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
+            Required: toolset:write`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56916,8 +57154,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
+            Required: toolset:write`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -56985,8 +57223,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:delete` scope (`Insufficient scope.
+            Required: toolset:delete`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -57054,8 +57292,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:write` scope (`Insufficient scope.
+            Required: toolset:write`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -57146,8 +57384,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:write` scope (`Insufficient scope.
-            Required: connector:write`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -57234,8 +57472,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -57306,8 +57544,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -57388,7 +57626,7 @@ paths:
           description: |-
             An organization instance's rules, and the caller isn't an administrator (`Only administrators
             can change a toolset's tool approvals.`), or the caller's OAuth access token does not carry the
-            `connector:write` scope (`Insufficient scope. Required: connector:write`). Session tokens are
+            `toolset:write` scope (`Insufficient scope. Required: toolset:write`). Session tokens are
             not scope-checked.
           content:
             application/json:
@@ -57471,8 +57709,8 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |-
-            The caller's OAuth access token does not carry the `connector:read` scope (`Insufficient scope.
-            Required: connector:read`). Session tokens are not scope-checked.
+            The caller's OAuth access token does not carry the `toolset:read` scope (`Insufficient scope.
+            Required: toolset:read`). Session tokens are not scope-checked.
           content:
             application/json:
               schema:
@@ -57578,7 +57816,7 @@ paths:
           description: |-
             The caller is not an administrator (`Only administrators can update OAuth configurations.`,
             checked before the configuration is looked up), or the caller's OAuth access token does not
-            carry the `connector:write` scope (`Insufficient scope. Required: connector:write`).
+            carry the `toolset:write` scope (`Insufficient scope. Required: toolset:write`).
           content:
             application/json:
               schema:
@@ -57652,8 +57890,8 @@ paths:
         '403':
           description: |-
             The caller is not an administrator (`Only administrators can delete OAuth configurations.`), or
-            the caller's OAuth access token does not carry the `connector:delete` scope (`Insufficient
-            scope. Required: connector:delete`).
+            the caller's OAuth access token does not carry the `toolset:delete` scope (`Insufficient
+            scope. Required: toolset:delete`).
           content:
             application/json:
               schema:
@@ -59796,10 +60034,36 @@ paths:
                 $ref: '#/components/schemas/ApiToolsetCompiledSpec'
         '400':
           description: The spec can't be used; the detail says why
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator, or API Toolsets are disabled
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the caller is not an administrator, or API Toolsets are disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A body field is missing, has the wrong type or is too long. The connectors service checks the
+            body and the gateway passes its answer on (`HTTP_UNPROCESSABLE_ENTITY`, with the service's own
+            validation text).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/instances:
     get:
       tags:
@@ -59824,10 +60088,25 @@ paths:
                     type: array
                     items:
                       $ref: '#/components/schemas/ApiToolset'
+        '400':
+          $ref: '#/components/responses/XssRejected'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: API Toolsets are disabled
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:read` scope (`Insufficient scope. Required: connector:read`)
+            - aPI Toolsets are disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
     post:
       tags:
         - API Toolsets
@@ -59859,10 +60138,36 @@ paths:
                 $ref: '#/components/schemas/ApiToolset'
         '400':
           description: Invalid spec, operation, auth scheme, scope, timeout or base URL
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator, or API Toolsets are disabled
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the caller is not an administrator, or API Toolsets are disabled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A body field is missing, has the wrong type or is too long. The connectors service checks the
+            body and the gateway passes its answer on (`HTTP_UNPROCESSABLE_ENTITY`, with the service's own
+            validation text).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/instances/{instanceId}:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -59882,10 +60187,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: |
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
     put:
       tags:
         - API Toolsets
@@ -59913,13 +60239,46 @@ paths:
               schema:
                 $ref: '#/components/schemas/ApiToolset'
         '400':
-          description: Invalid change
+          description: |
+            Invalid change
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A body field is missing, has the wrong type or is too long. The connectors service checks the
+            body and the gateway passes its answer on (`HTTP_UNPROCESSABLE_ENTITY`, with the service's own
+            validation text).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
     delete:
       tags:
         - API Toolsets
@@ -59934,16 +60293,50 @@ paths:
       responses:
         '200':
           description: Deleted
+        '400':
+          description: |
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:delete` scope (`Insufficient scope. Required: connector:delete`)
+            - the caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: An agent uses the toolset; the detail names it
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
         '503':
           description: Which agents use the toolset couldn't be checked, so nothing was deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api-toolsets/instances/{instanceId}/config:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -59965,12 +60358,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ApiToolset'
+        '400':
+          description: |
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:read` scope (`Insufficient scope. Required: connector:read`)
+            - the caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/instances/{instanceId}/credentials:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -59997,11 +60416,39 @@ paths:
         '200':
           description: Connected
         '400':
-          description: A field the auth scheme needs is missing, or the toolset uses a shared credential
+          description: |
+            A field the auth scheme needs is missing, or the toolset uses a shared credential
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A body field is missing, has the wrong type or is too long. The connectors service checks the
+            body and the gateway passes its answer on (`HTTP_UNPROCESSABLE_ENTITY`, with the service's own
+            validation text).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
     delete:
       tags:
         - API Toolsets
@@ -60014,12 +60461,33 @@ paths:
       responses:
         '200':
           description: Disconnected
+        '400':
+          description: |
+            The toolset uses a shared credential
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
-        '400':
-          description: The toolset uses a shared credential
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/instances/{instanceId}/shared-credentials:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -60043,13 +60511,46 @@ paths:
         '200':
           description: Connected
         '400':
-          description: A field is missing, or the toolset has no shared credential
+          description: |
+            A field is missing, or the toolset has no shared credential
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A body field is missing, has the wrong type or is too long. The connectors service checks the
+            body and the gateway passes its answer on (`HTTP_UNPROCESSABLE_ENTITY`, with the service's own
+            validation text).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
     delete:
       tags:
         - API Toolsets
@@ -60063,13 +60564,39 @@ paths:
         '200':
           description: Removed
         '400':
-          description: The toolset has no shared credential
+          description: |
+            The toolset has no shared credential
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:delete` scope (`Insufficient scope. Required: connector:delete`)
+            - the caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/instances/{instanceId}/shared-credentials/oauth/authorize:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -60094,13 +60621,39 @@ paths:
                   authorizationUrl:
                     type: string
         '400':
-          description: The toolset has no shared credential or doesn't use OAuth sign-in
+          description: |
+            The toolset has no shared credential or doesn't use OAuth sign-in
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '403':
-          description: The caller is not an administrator
+          description: |
+            Forbidden — one of:
+            - the OAuth token lacks the `connector:write` scope (`Insufficient scope. Required: connector:write`)
+            - the caller is not an administrator
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/instances/{instanceId}/test:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -60144,13 +60697,56 @@ paths:
                   truncated:
                     type: boolean
         '400':
-          description: Not connected, an unknown operation, or invalid arguments
+          description: |
+            Not connected, an unknown operation, or invalid arguments
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: No such toolset in the organization
-        '502':
-          description: The API could not be reached or did not answer in time
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A body field is missing, has the wrong type or is too long. The connectors service checks the
+            body and the gateway passes its answer on (`HTTP_UNPROCESSABLE_ENTITY`, with the service's own
+            validation text).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: |
+            The API could not be reached, or answered with something that is not HTTP. The connectors
+            service answers `502`, which the gateway reports as `500 INTERNAL_ERROR`.
+
+            Also returned, before authentication, when the request carries a body that is not valid JSON: the body parser fails and reports code `INTERNAL_ERROR`, not a `400`.
+
+            A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, gets the same `INTERNAL_ERROR` from the app-wide body parsers, also before authentication.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The connectors service did not answer within 150 seconds (`HTTP_GATEWAY_TIMEOUT`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /api-toolsets/instances/{instanceId}/oauth/authorize:
     parameters:
       - $ref: '#/components/parameters/ApiToolsetInstanceId'
@@ -60175,11 +60771,32 @@ paths:
                   authorizationUrl:
                     type: string
         '400':
-          description: The toolset doesn't use OAuth sign-in, has no OAuth app, or uses a shared credential
+          description: |
+            The toolset doesn't use OAuth sign-in, has no OAuth app, or uses a shared credential
+
+            A path id holds a character that cannot stand in a URL path segment (`/`, `\`, `?`, `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`, "This address contains an ID that isn't valid. Check the link you followed and try again."). This check runs before authentication.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
         '404':
           description: No such toolset in the organization
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /api-toolsets/oauth/callback:
     get:
       tags:
@@ -60216,11 +60833,26 @@ paths:
                   name:
                     type: string
         '400':
-          description: The sign-in expired, was already used, or was refused by the API
+          description: |
+            The sign-in expired, was already used, or was refused by the API
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '401':
           description: Unauthorized
 
   # -------------------- Skills --------------------
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '403':
+          $ref: '#/components/responses/InsufficientScope'
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /skills:
     get:
       tags:
