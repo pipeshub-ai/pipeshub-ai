@@ -111,3 +111,39 @@ def test_a_long_text_is_cut_by_offset_with_every_character_kept() -> None:
     assert "".join(pieces) == text
     assert all(len(p) <= 1000 for p in pieces)
     assert all(p.endswith("\n") for p in pieces[:-2])
+
+
+def test_a_trailing_context_line_of_spaces_is_kept() -> None:
+    """An empty context line in a unified diff is a single space, so `strip()`
+    reads it as blank and it was carried to a next piece that never came. The
+    last line of the diff went missing with it."""
+    text = "y" * 49 + "\n \n"
+
+    blocks = _code_blocks(fenced_code(text, "diff", max_chars=50))
+
+    assert "\n".join(blocks) == text.rstrip("\n")
+
+
+def test_text_that_is_only_blank_is_still_nothing_to_fence() -> None:
+    """The other side of that: a line of spaces on its own is not content
+    somebody meant to keep, and must not become a block of three spaces."""
+    assert fenced_code("   \n", "diff") == ""
+
+
+def test_a_block_can_exceed_max_chars_by_the_blank_lines_carried_into_it() -> None:
+    """Known, and bounded. Blank lines a piece had no room for are prepended to
+    the next body, which can take it over the limit by the length of that run.
+
+    Pinned rather than fixed: the limit mirrors the prose block size and is a
+    target, not something downstream enforces, and the obvious fix — cutting
+    the body again before fencing — breaks what the blank-line handling is for,
+    because a chunk of only newlines becomes a block and the blocks no longer
+    rebuild the text (`test_blank_lines_at_a_split_are_kept` catches it).
+    Making it exact means reserving the carry before the cut is chosen.
+    """
+    text = "x\n\n" + "y" * 25
+
+    blocks = _code_blocks(fenced_code(text, max_chars=25))
+
+    assert "\n".join(blocks) == text.rstrip("\n")
+    assert max(len(b) for b in blocks) == 26

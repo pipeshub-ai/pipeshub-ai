@@ -85,6 +85,11 @@ def fenced_code(text: str, info: str = "", *, max_chars: int = MAX_CODE_FENCE_CH
     # them, and a piece of blank lines alone joins the next one.
     blocks = []
     carry = ""
+
+    def emit(body: str) -> None:
+        fence = _fence_for(body)
+        blocks.append(f"{fence}{info}\n{body}\n{fence}")
+
     for piece in pieces:
         text_here = carry + piece
         body = text_here.rstrip("\n")
@@ -93,6 +98,13 @@ def fenced_code(text: str, info: str = "", *, max_chars: int = MAX_CODE_FENCE_CH
             continue
         extra = len(text_here) - len(body)
         carry = "\n" * (extra - 1) if extra > 1 else ""
-        fence = _fence_for(body)
-        blocks.append(f"{fence}{info}\n{body}\n{fence}")
+        emit(body)
+    # A tail that never reached a piece with content. Lines of only spaces are
+    # content here — a diff's empty context lines look exactly like that, and
+    # dropping them would lose the last line of a diff. A carry of newlines
+    # alone goes, because the parser strips those anyway, and so does text that
+    # is only blank from the start: `fenced_code("   \n")` is nothing to fence,
+    # not a block holding three spaces.
+    if blocks and carry.rstrip("\n"):
+        emit(carry.rstrip("\n"))
     return "\n\n".join(blocks)
