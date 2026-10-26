@@ -35,6 +35,13 @@ describe('InProcessCacheService', () => {
     expect(await c.increment('n', { ttl: 10 })).to.equal(1)
   })
 
+  it('a counter without a ttl does not expire, as INCR alone sets none in Redis', async () => {
+    const c = new InProcessCacheService()
+    expect(await c.increment('plain')).to.equal(1)
+    clock.tick(365 * 24 * 3600 * 1000)
+    expect(await c.increment('plain')).to.equal(2)
+  })
+
   it('scans for expired entries at most once a minute, not on every write', async () => {
     const c = new InProcessCacheService()
     const size = () => (c as unknown as { entries: Map<string, unknown> }).entries.size
