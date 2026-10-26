@@ -616,7 +616,7 @@ def test_pool_sizes_idle_time_and_minimum_come_from_the_environment(monkeypatch)
         DbConfig.from_env("indexing")
 
 
-def test_sql_start_pattern_is_linear_on_unterminated_comment_runs():
+def test_sql_start_pattern_is_linear_on_unterminated_comment_runs() -> None:
     import time
 
     from app.core.db import sql_lint

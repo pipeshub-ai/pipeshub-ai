@@ -55,7 +55,8 @@ class InProcessRedisProvider(IRedisConnectionProvider):
     ) -> None:
         self._config = config
         self._server = server if server is not None else _shared_server()
-        self._clients: dict[tuple[int, int], "Redis"] = {}
+        # One client per thread, bound to the loop it was made on: a client is replaced when that loop is closed or another one runs.
+        self._clients: dict[int, tuple["Redis", asyncio.AbstractEventLoop | None]] = {}
         self._lock = threading.Lock()
 
     def _new(self, *, decode_responses: bool = False) -> "Redis":
@@ -67,14 +68,16 @@ class InProcessRedisProvider(IRedisConnectionProvider):
 
     def get_client(self) -> "Redis":
         try:
-            loop_id = id(asyncio.get_running_loop())
+            loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
         except RuntimeError:
-            loop_id = 0
-        key = (threading.get_ident(), loop_id)
+            loop = None
+        thread = threading.get_ident()
         with self._lock:
-            client = self._clients.get(key)
-            if client is None:
-                client = self._clients[key] = self._new(decode_responses=_DECODE)
+            held = self._clients.get(thread)
+            if held is not None and held[1] is loop and (loop is None or not loop.is_closed()):
+                return held[0]
+            client = self._new(decode_responses=_DECODE)
+            self._clients[thread] = (client, loop)
             return client
 
     def create_client(self, options: ClientOptions | None = None) -> "Redis":

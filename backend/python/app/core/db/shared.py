@@ -50,11 +50,14 @@ async def acquire_db(cfg: DbConfig) -> KernelDB:
     async with _loop_lock():
         _prune_closed()
         key = (cfg, asyncio.get_running_loop())
-        entry = _entries.get(key)
+        with _entries_guard:
+            entry = _entries.get(key)
         if entry is None:
             db = KernelDB(cfg)
             await db.start()
-            entry = _entries[key] = _Entry(db, 0)
+            entry = _Entry(db, 0)
+            with _entries_guard:
+                _entries[key] = entry
         entry.refs += 1
         return entry.db
 
@@ -62,10 +65,12 @@ async def acquire_db(cfg: DbConfig) -> KernelDB:
 async def release_db(cfg: DbConfig) -> None:
     async with _loop_lock():
         key = (cfg, asyncio.get_running_loop())
-        entry = _entries.get(key)
+        with _entries_guard:
+            entry = _entries.get(key)
         if entry is None:
             return
         entry.refs -= 1
         if entry.refs <= 0:
-            del _entries[key]
+            with _entries_guard:
+                _entries.pop(key, None)
             await entry.db.close()

@@ -1,5 +1,6 @@
 """Every RuntimeDb of a process shares one database runtime per event loop, so a new connector, queue or cache adds no connections."""
 import asyncio
+from collections.abc import Iterator
 
 import pytest
 
@@ -18,9 +19,12 @@ class FakeDb:
 
 
 @pytest.fixture(autouse=True)
-def fake_kernel(monkeypatch) -> None:
+def fake_kernel(monkeypatch) -> Iterator[None]:
     FakeDb.started = 0
     monkeypatch.setattr("app.core.db.uow.KernelDB", FakeDb)
+    pg_runtime._SHARED.clear()
+    yield
+    # the fake databases must not outlive the test: a later test would try to close them with the real loop pruning
     pg_runtime._SHARED.clear()
 
 
