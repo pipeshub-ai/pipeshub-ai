@@ -125,7 +125,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
   beforeEach(async () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'artifact-retention-it-home-'))
     sinon.stub(os, 'homedir').returns(home)
-    vrid = `vr-${Date.now()}-${Math.random().toString(16).slice(2)}`
+    vrid = `vr-${String(Date.now())}-${Math.random().toString(16).slice(2)}`
     rev = [...Array(16)].map(() => Math.floor(Math.random() * 16).toString(16)).join('')
 
     backend = new FakeBackend()
@@ -148,9 +148,9 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     app.use(express.json())
     app.use('/api/v1/document', createStorageRouter(container))
     app.use(ErrorMiddleware.handleError())
-    server = http.createServer(app)
+    server = http.createServer(app as http.RequestListener)
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
-    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    const origin = `http://127.0.0.1:${String((server.address() as AddressInfo).port)}`
     baseUrl = `${origin}/api/v1/document`
     kv.values.set(ENDPOINTS_KEY, JSON.stringify({ cm: { endpoint: backend.url }, storage: { endpoint: origin } }))
     kv.changed(storageEtcdPaths)
@@ -169,7 +169,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     const { documentId, stamp } = await written()
     expect(stamp).to.be.a('number')
 
-    const r = await del(documentId, `?ifUnchangedSince=${stamp}`)
+    const r = await del(documentId, `?ifUnchangedSince=${String(stamp)}`)
 
     expect(r).to.deep.equal({ status: 200, body: { purged: 1 } })
     expect(filesOnDisk()).to.deep.equal([])
@@ -186,7 +186,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     expect(fresh.updatedAt).to.be.greaterThan(stamp)
     expect(fresh.createdAt).to.be.at.most(stamp)
 
-    const r = await del(documentId, `?ifUnchangedSince=${stamp}`)
+    const r = await del(documentId, `?ifUnchangedSince=${String(stamp)}`)
 
     expect(r).to.deep.equal({ status: 409, body: { purged: 0, reason: 'changed' } })
     expect(filesOnDisk()).to.have.length(1)
@@ -205,7 +205,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     expect(p.body.files).to.equal(undefined)
     expect((await listed())[0].retiringAt).to.be.a('number')
 
-    const second = await del(documentId, `?ifUnchangedSince=${stamp}`)
+    const second = await del(documentId, `?ifUnchangedSince=${String(stamp)}`)
     expect(second).to.deep.equal({ status: 409, body: { purged: 0, reason: 'changed' } })
     expect(filesOnDisk()).to.have.length(1)
   })
@@ -215,7 +215,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     const crashed = Date.now() - ARTIFACT_RETIRING_STALE_MS - 1000
     await DocumentModel.updateOne({ _id: documentId }, { $set: { 'artifactSet.retiringAt': crashed } }, { timestamps: false })
 
-    const r = await del(documentId, `?ifUnchangedSince=${stamp}`)
+    const r = await del(documentId, `?ifUnchangedSince=${String(stamp)}`)
 
     expect(r).to.deep.equal({ status: 200, body: { purged: 1 } })
     expect(filesOnDisk()).to.deep.equal([])
@@ -253,7 +253,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
       await gate // a slow tree delete
       return realTree.call(this, p)
     })
-    const pending = del(documentId, `?ifUnchangedSince=${stamp}`)
+    const pending = del(documentId, `?ifUnchangedSince=${String(stamp)}`)
     await until(async () => ((await DocumentModel.findById(documentId).lean<any>())?.artifactSet?.retiringAt ?? 0) > 0 && beat !== undefined)
     const realNow = Date.now.bind(Date)
     let skew = 10 * 60_000
@@ -290,7 +290,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
       await gate
       return realTree.call(this, p)
     })
-    const pending = del(documentId, `?ifUnchangedSince=${stamp}`)
+    const pending = del(documentId, `?ifUnchangedSince=${String(stamp)}`)
     await until(async () => ((await claimOf(documentId)) ?? 0) > 0)
     const realNow = Date.now.bind(Date)
     let offset = 0
@@ -320,7 +320,6 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     if (p.status === 200) { await upload(p, '{"rewritten":true}'); uploaded = true }
     s.release()
     const d = await s.pending
-    const doc = await DocumentModel.findById(documentId).lean<any>()
     expect(p.status).to.equal(409)
     expect(uploaded && filesOnDisk().length === 0).to.equal(false)
     expect(d).to.deep.equal({ status: 200, body: { purged: 1 } })
@@ -394,7 +393,7 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     const { documentId, stamp } = await written()
 
     expect(await listed(OTHER_ORG_ID)).to.deep.equal([])
-    const guarded = await del(documentId, `?ifUnchangedSince=${stamp}`, OTHER_ORG_ID)
+    const guarded = await del(documentId, `?ifUnchangedSince=${String(stamp)}`, OTHER_ORG_ID)
     const plain = await del(documentId, '', OTHER_ORG_ID)
 
     expect(guarded.body.purged).to.equal(0)
@@ -413,20 +412,20 @@ describeIfMongo('Artifact retention routes on a real MongoDB', function () {
     for (let round = 0; round < 30; round += 1) {
       rev = round.toString(16).padStart(16, 'a')
       const { documentId, stamp } = await written()
-      const [d, p] = await Promise.all([del(documentId, `?ifUnchangedSince=${stamp}`), presign()])
+      const [d, p] = await Promise.all([del(documentId, `?ifUnchangedSince=${String(stamp)}`), presign()])
       if (p.status === 200) {
         // Whatever the presign answered must exist: the writer flips the pointer to it.
-        expect(await DocumentModel.countDocuments({ _id: p.body.documentId }), `round ${round}`).to.equal(1)
+        expect(await DocumentModel.countDocuments({ _id: p.body.documentId }), `round ${String(round)}`).to.equal(1)
         if (p.body.documentId === documentId) {
-          expect(d.status, `round ${round}`).to.equal(409)
+          expect(d.status, `round ${String(round)}`).to.equal(409)
           keptByWrite += 1
         } else {
-          expect(d.body.purged, `round ${round}`).to.equal(1)
+          expect(d.body.purged, `round ${String(round)}`).to.equal(1)
           recreated += 1
         }
       } else {
-        expect(p.status, `round ${round} ${JSON.stringify(p.body)}`).to.equal(409)
-        expect(d.body.purged, `round ${round}`).to.equal(1)
+        expect(p.status, `round ${String(round)} ${JSON.stringify(p.body)}`).to.equal(409)
+        expect(d.body.purged, `round ${String(round)}`).to.equal(1)
         deletedFirst += 1
       }
     }

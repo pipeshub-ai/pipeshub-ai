@@ -619,7 +619,7 @@ describe('StorageController artifact sets', () => {
         for (let i = 0; i < 5; i += 1) {
           await clock.tickAsync(4 * MIN)
           presigned = await run('presignArtifactSet', request({ body: presignBody() }))
-          expect(presigned.error, `after ${(i + 1) * 4} min`).to.be.instanceOf(ConflictError)
+          expect(presigned.error, `after ${String((i + 1) * 4)} min`).to.be.instanceOf(ConflictError)
         }
         return { statusCode: 200 }
       })

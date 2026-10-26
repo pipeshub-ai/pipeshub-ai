@@ -239,7 +239,7 @@ describe('Artifact sets over HTTP: the local disk path', () => {
     expect(stamp).to.be.a('number')
     rows[0]!.updatedAt = stamp + 1
 
-    const refused = await call('DELETE', `/internal/artifacts/${p.body.documentId}?ifUnchangedSince=${stamp}`)
+    const refused = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?ifUnchangedSince=${String(stamp)}`)
     expect(refused).to.deep.equal({ status: 409, body: { purged: 0, reason: 'changed' } })
     expect(filesOnDisk()).to.have.length(1)
 
@@ -249,7 +249,7 @@ describe('Artifact sets over HTTP: the local disk path', () => {
     expect(again.body.files).to.be.undefined
     delete rows[0]!.artifactSet.retiringAt
 
-    const purged = await call('DELETE', `/internal/artifacts/${p.body.documentId}?ifUnchangedSince=${stamp + 1}`)
+    const purged = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?ifUnchangedSince=${String(stamp + 1)}`)
     expect(purged).to.deep.equal({ status: 200, body: { purged: 1 } })
     expect(filesOnDisk()).to.deep.equal([])
     expect(rows).to.deep.equal([])
@@ -258,11 +258,11 @@ describe('Artifact sets over HTTP: the local disk path', () => {
   it('refuses an ifUnchangedSince that is not a non-negative integer with 400', async () => {
     const p = await presign([{ path: 'record.json', contentType: 'application/json' }])
     for (const bad of ['soon', '-1', '1.5', '', '1e3']) {
-      const r = await call('DELETE', `/internal/artifacts/${p.body.documentId}?ifUnchangedSince=${bad}`)
+      const r = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?ifUnchangedSince=${bad}`)
       expect(r.status, bad).to.equal(400)
     }
     for (const bad of ['ifUnchangedSince[]=1', 'ifUnchangedSince=1&ifUnchangedSince=2', 'ifUnchangedSince[$gt]=0']) {
-      const r = await call('DELETE', `/internal/artifacts/${p.body.documentId}?${bad}`)
+      const r = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?${bad}`)
       expect(r.status, bad).to.equal(400)
     }
     expect(rows).to.have.length(1)
@@ -271,7 +271,7 @@ describe('Artifact sets over HTTP: the local disk path', () => {
   it('refuses a query key it does not know, so a misspelt stamp is not an unfenced delete', async () => {
     const p = await presign([{ path: 'record.json', contentType: 'application/json' }])
     for (const bad of ['ifunchangedsince=0', 'ifUnchangedSince=0&force=1', 'force=1']) {
-      const r = await call('DELETE', `/internal/artifacts/${p.body.documentId}?${bad}`)
+      const r = await call('DELETE', `/internal/artifacts/${String(p.body.documentId)}?${bad}`)
       expect(r.status, bad).to.equal(400)
     }
     expect(rows).to.have.length(1)
