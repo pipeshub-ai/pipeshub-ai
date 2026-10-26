@@ -1,7 +1,9 @@
 import { expect } from 'chai';
+import sinon from 'sinon';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { READ_METHODS, idsOf, isReadMethod, pathsOf, shadowEnabled, shadowInFlight, shadowWrap, type RunPg } from '../../../src/libs/repositories/shadow';
+import { Logger } from '../../../src/libs/services/logger.service';
 import { docStore, pickStore } from '../../../src/libs/repositories/store-select';
 import { docstoreMetrics } from '../../../src/libs/repositories/metrics';
 
@@ -75,15 +77,15 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
 
   it('a difference is counted per repository and logged with ids and paths only', async () => {
     const logged: unknown[] = [];
-    const { Logger } = require('../../../src/libs/services/logger.service');
-    const inst = Logger.getInstance({ service: 'DocStoreShadow' });
-    const real = inst.warn.bind(inst);
-    inst.warn = (m: string, meta: unknown) => { logged.push(meta); };
+    // Stub the class, not the shared logger instance: an own `warn` left on the instance would shadow every later stub.
+    const warn = sinon.stub(Logger.prototype, 'warn').callsFake((_m: string, meta?: unknown) => {
+      logged.push(meta);
+    });
     try {
       const repo = shadowWrap('thing', { listAllLive: async () => [{ _id: 'a', email: 'secret@example.com' }] }, () => ({ listAllLive: async () => [{ _id: 'a', email: 'other@example.com' }] }), runPg);
       await repo.listAllLive();
       await wait(100);
-    } finally { inst.warn = real; }
+    } finally { warn.restore(); }
     expect(counts['thing:diff']).to.equal(1);
     expect(JSON.stringify(logged)).to.not.match(/example\.com|secret/);
     expect(logged[0]).to.include({ repo: 'thing', method: 'listAllLive' });
