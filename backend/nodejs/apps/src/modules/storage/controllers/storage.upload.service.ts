@@ -257,7 +257,7 @@ export class UploadDocumentService {
         }
       }
       await DocumentModel.deleteOne({
-        _id: documentId,
+        _id: documentId as mongoose.Types.ObjectId,
         [this.storageVendor]: { $exists: false },
       });
     } catch (error) {

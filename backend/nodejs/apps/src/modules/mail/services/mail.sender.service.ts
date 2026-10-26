@@ -11,6 +11,7 @@ import {
   MailSendResult,
   SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
+  smtpProblemOf,
 } from '../types/mail-event.types';
 
 const SMTP_DNS_TIMEOUT_MS = 30_000;
@@ -61,8 +62,17 @@ export class MailSenderService {
   ) {}
 
   /** Resolves the live SMTP config, or null when the org has not set one up. */
-  getSmtpConfig(): SmtpConfig | null {
+  getSmtpConfig(
+    _orgId?: string,
+  ): SmtpConfig | null | Promise<SmtpConfig | null> {
     return (this.getAppConfig().smtp as SmtpConfig | undefined) ?? null;
+  }
+
+  protected renderContent(
+    emailTemplateType: string,
+    templateData: Record<string, unknown>,
+  ): string {
+    return getEmailContent(emailTemplateType, templateData);
   }
 
   /** Releases pooled SMTP connections so shutdown is not held open. */
@@ -237,7 +247,7 @@ export class MailSenderService {
   ): Promise<MailSendResult> {
     let emailContent: string;
     try {
-      emailContent = getEmailContent(
+      emailContent = this.renderContent(
         bodyData.emailTemplateType!,
         bodyData.templateData!,
       );
@@ -257,6 +267,7 @@ export class MailSenderService {
     if (openUntil !== null) {
       return {
         status: 'unavailable',
+        problem: 'unreachable',
         error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
       };
     }
@@ -268,6 +279,7 @@ export class MailSenderService {
           from: smtpConfig.fromEmail,
           to: bodyData.sendEmailTo,
           cc: bodyData.sendCcTo,
+          replyTo: bodyData.replyTo,
           subject: bodyData.subject,
           html: emailContent,
           attachments: bodyData.attachments || [],
@@ -304,8 +316,9 @@ export class MailSenderService {
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
-      this.logger.error('Mail send error', { error: message, kind });
-      return { status: kind, error: message };
+      const problem = smtpProblemOf(error);
+      this.logger.error('Mail send error', { error: message, kind, problem });
+      return { status: kind, error: message, ...(problem && { problem }) };
     }
   }
 }

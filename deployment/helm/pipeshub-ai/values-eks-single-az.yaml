@@ -1,0 +1,42 @@
+# Existing cluster, one availability zone. Layer this after values-eks.yaml.
+# That file pins every pod to node groups this chart does not create, and it
+# spreads databases across zones. An EBS volume cannot move zones, so a pod
+# rescheduled into another zone stays Pending. install.sh sets the zone.
+#
+#   helm upgrade --install pipeshub-ai ./deployment/helm/pipeshub-ai \
+#     -f values-eks.yaml -f values-eks-single-az.yaml
+
+# null removes the key from the values-eks.yaml map. {} would leave it.
+nodeSelector:
+  pipeshub/role: null
+tolerations: []
+spreadAcrossNodes: true
+
+ingress:
+  annotations:
+    alb.ingress.kubernetes.io/scheme: internal
+
+mongodb:
+  builtin:
+    nodeSelector:
+      pipeshub/role: null
+    tolerations: []
+    topologySpreadConstraints: []
+
+redis:
+  builtin:
+    nodeSelector:
+      pipeshub/role: null
+    tolerations: []
+    topologySpreadConstraints: []
+
+qdrant:
+  nodeSelector:
+    pipeshub/role: null
+  tolerations: []
+  topologySpreadConstraints: []
+
+neo4j:
+  nodeSelector:
+    pipeshub/role: null
+  tolerations: []

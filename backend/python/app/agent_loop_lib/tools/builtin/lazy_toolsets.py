@@ -12,9 +12,10 @@ from app.agent_loop_lib.tools.base import (
     ToolOutput,
     ToolParameter,
 )
+from app.agent_loop_lib.tools.budget import MAX_TOOLS_PER_REQUEST
 from app.agent_loop_lib.tools.global_fallback import GlobalCatalogFallback
 from app.agent_loop_lib.tools.index import KeywordToolIndex, ToolIndex
-from app.agent_loop_lib.tools.registry import ToolRegistry
+from app.agent_loop_lib.tools.registry import ToolDeferral, ToolRegistry
 from app.agent_loop_lib.tools.special_route import RouteContext
 
 if TYPE_CHECKING:
@@ -28,6 +29,28 @@ def _grant_set(spec: "AgentSpec") -> set[str] | None:
     must never grow `agent.visible_tools` beyond, regardless of
     `tool_disclosure` — see `AgentSpec.tool_disclosure`'s docstring."""
     return set(spec.tool_names) if spec.tool_names else None
+
+
+def _withheld(registry: ToolRegistry, grant: set[str], denied: list[str]) -> dict[str, Any]:
+    """Tools outside the grant, split into those a granted tool unlocks later
+    and those this agent never gets. A model that looks up a deferred tool
+    before running what unlocks it would otherwise conclude it is unavailable."""
+    deferred: dict[str, ToolDeferral] = {}
+    for name in denied:
+        deferral = registry.deferral(name)
+        if deferral is not None and deferral.unlocked_by in grant:
+            deferred[name] = deferral
+    withheld: dict[str, Any] = {}
+    never = [name for name in denied if name not in deferred]
+    if never:
+        withheld["denied"] = {"reason": "not_granted_to_this_agent", "tools": never}
+    if deferred:
+        withheld["deferred"] = [
+            {"tool": name, "available_after": d.unlocked_by, "condition": d.condition,
+             "message": f"{name} is not callable yet. It becomes callable once {d.unlocked_by} {d.condition}."}
+            for name, d in deferred.items()
+        ]
+    return withheld
 
 
 class ListToolsetsTool(Tool):
@@ -144,6 +167,18 @@ class FetchToolsTool(Tool):
         denied = [n for n in names if grant is not None and n not in grant]
         await obs.write_state(agent, ctx.goal, "running_tool", turn_index=ctx.turn_index, started_at=ctx.started_at, current_tool="fetch_tools")
         await obs.append_timeline(agent, "tool_call", "Calling tool: fetch_tools", "running_tool", {"tool": "fetch_tools", "args": call.arguments})
+        visible = agent.visible_tools or set()
+        if len(visible | set(allowed)) > MAX_TOOLS_PER_REQUEST:
+            # Past the limit the provider refuses the whole request; search_tools loads a few.
+            return CoreToolResult(
+                tool_call_id=call.id, name=call.name, is_error=True,
+                content=(
+                    f"Not loaded: {toolset_name} has {len(allowed)} tools, and with the {len(visible)} already "
+                    f"loaded that is over the {MAX_TOOLS_PER_REQUEST} tools one request can carry. Load only "
+                    "the tools you need: search_tools with the action and the app (for example "
+                    "'create issue linear') makes just the matching tools callable."
+                ),
+            )
         # `execute()` materializes every tool in the toolset (see below) —
         # run it BEFORE growing `agent.visible_tools`, since the turn loop
         # resolves a visible tool's schema synchronously next turn and has
@@ -169,7 +204,7 @@ class FetchToolsTool(Tool):
             data = {
                 **data,
                 "tools": [t for t in data["tools"] if t.get("name") in allowed],
-                "denied": {"reason": "not_granted_to_this_agent", "tools": denied},
+                **_withheld(self._registry, grant or set(), denied),
             }
         return CoreToolResult(
             tool_call_id=call.id, name=call.name,
@@ -238,11 +273,16 @@ class SearchToolsTool(Tool):
     @property
     def description(self) -> str:
         return (
-            "Search across every registered tool (regardless of toolset) by "
-            "describing what you need, e.g. 'edit a file' or 'search the web'. "
-            "Results are ranked by relevance and, by default, made callable "
-            "immediately — no separate fetch_tools call needed. Use this when "
-            "you don't know which toolset (see list_toolsets) has what you need."
+            "Find which tool provides a capability, across every registered tool "
+            "(regardless of toolset). Matching is keyword-based against tool names "
+            "and descriptions, so pass 2-6 words naming the ACTION and the "
+            "SYSTEM/RESOURCE — e.g. 'search indexed knowledge', 'create jira issue', "
+            "'send slack message', 'search the web'. Do NOT include the user's "
+            "question, entity names, or dates, and do not prefix it with phrases like "
+            "'use the ... tool to find'; every extra word lowers relevance. Results "
+            "are ranked by relevance and, by default, made callable immediately — no "
+            "separate fetch_tools call needed. Use this when you don't know which "
+            "toolset (see list_toolsets) has what you need."
         )
 
     @property
@@ -255,7 +295,10 @@ class SearchToolsTool(Tool):
             ToolParameter(
                 name="query",
                 type=ParameterType.STRING,
-                description="Natural-language description of the capability you need",
+                description=(
+                    "Capability keywords only (action + system/resource), e.g. 'search "
+                    "indexed knowledge'. Not your task or the user's question."
+                ),
                 required=True,
             ),
             ToolParameter(
@@ -290,21 +333,30 @@ class SearchToolsTool(Tool):
             if grant is not None:
                 denied = [m["name"] for m in matches if m["name"] not in grant]
                 matches = [m for m in matches if m["name"] in grant]
+            not_loaded: list[str] = []
             if make_visible and matches:
-                names = [m["name"] for m in matches]
+                visible = agent.visible_tools or set()
+                fresh = [m["name"] for m in matches if m["name"] not in visible]
+                room = max(0, MAX_TOOLS_PER_REQUEST - len(visible))
+                fresh, not_loaded = fresh[:room], fresh[room:]
                 # Same ordering requirement as fetch_tools.handle: any
                 # provider-backed match must be materialized before it's
                 # added to visible_tools, since the next turn resolves
                 # schemas synchronously.
-                await self._registry.materialize_many(names)
+                await self._registry.materialize_many(fresh)
                 # Same `|=`-not-stale-snapshot rationale as `FetchToolsTool.
                 # handle()` above.
                 agent.visible_tools = agent.visible_tools or set()
-                made_visible = [n for n in names if n not in agent.visible_tools]
-                agent.visible_tools |= set(names)
+                made_visible = [n for n in fresh if n not in agent.visible_tools]
+                agent.visible_tools |= set(fresh)
             content = {**result.data, "matches": matches, "made_visible": made_visible}
+            if not_loaded:
+                content["not_loaded"] = {
+                    "tools": not_loaded,
+                    "reason": f"over the {MAX_TOOLS_PER_REQUEST} tools one request can carry",
+                }
             if denied:
-                content["denied"] = {"reason": "not_granted_to_this_agent", "tools": denied}
+                content.update(_withheld(self._registry, grant or set(), denied))
             unavailable = result.data.get("unavailable")
             if unavailable:
                 content["unavailable"] = unavailable

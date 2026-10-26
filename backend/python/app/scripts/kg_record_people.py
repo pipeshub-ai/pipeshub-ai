@@ -59,13 +59,19 @@ class _DryRunStore:
         self.edges = 0
         self.people = 0
 
-    async def get_user_by_email(self, email: str) -> User | None:
-        return await self._graph.get_user_by_email(email)
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None:
+        return await self._graph.get_user_by_email(email, raise_on_error=raise_on_error, org_id=org_id)
 
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None:
-        return await self._graph.get_user_by_source_id(source_user_id, connector_id)
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
+    ) -> User | None:
+        return await self._graph.get_user_by_source_id(
+            source_user_id, connector_id, raise_on_error=raise_on_error,
+        )
 
-    async def get_person_by_email(self, email: str, org_id: str) -> Person | None:
+    async def get_person_by_email(self, email: str, org_id: str, *, raise_on_error: bool = False) -> Person | None:
         return await self._graph.get_person_by_email(email, org_id, raise_on_error=True)
 
     async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:

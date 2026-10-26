@@ -6,6 +6,7 @@ import {
   GatewayTimeoutError,
   InternalServerError,
   NotFoundError,
+  PaymentRequiredError,
   ServiceUnavailableError,
   TooManyRequestsError,
   UnauthorizedError,
@@ -168,6 +169,11 @@ export const handleBackendError = (
     );
   }
 
+  if (asText(source.name) === 'TimeoutError') {
+    logger.error(`Timed out waiting for the service during ${operation}`);
+    return transientError(504, undefined, undefined);
+  }
+
   if (isConnectionRefused(source)) {
     logger.error(`Could not reach the service during ${operation}`, {
       cause: asText(asRecord(source.cause)?.code) ?? asText(source.message),
@@ -236,6 +242,10 @@ export const handleBackendError = (
       return new BadRequestError(errorDetail);
     case 401:
       return new UnauthorizedError(errorDetail);
+    case 402:
+      return new PaymentRequiredError(
+        asText(asRecord(bodyDetail)?.message) ?? errorDetail,
+      );
     case 403:
       return new ForbiddenError(errorDetail);
     case 404:

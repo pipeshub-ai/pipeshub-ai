@@ -1,7 +1,8 @@
 """Unit tests for app.sources.client.http.http_client.HTTPClient."""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
+import httpx
 import pytest
 
 from app.sources.client.http.http_client import HTTPClient
@@ -67,6 +68,8 @@ class TestEnsureClient:
                 timeout=30.0,
                 follow_redirects=True,
                 headers={"Authorization": "Bearer t"},
+                transport=ANY,
+                trust_env=False,
             )
             assert result is mock_instance
             assert client.client is mock_instance
@@ -332,12 +335,16 @@ class TestResilience:
         assert HTTPClient(token="t").resilience is None
 
     @pytest.mark.asyncio
-    async def test_plain_client_when_unset(self):
+    async def test_no_resilience_when_unset(self):
         """Regression guard for the 40+ HTTPClient subclasses that pass nothing."""
+        from app.sources.client.http.address_guard import AddressGuardTransport
+
         client = HTTPClient(token="t")
         with patch("app.sources.client.http.http_client.httpx.AsyncClient") as MockAsyncClient:
             await client._ensure_client()
-            assert "transport" not in MockAsyncClient.call_args.kwargs
+            transport = MockAsyncClient.call_args.kwargs["transport"]
+        assert isinstance(transport, AddressGuardTransport)
+        assert transport._resilience is None
 
     @pytest.mark.asyncio
     async def test_installs_transport_when_set(self):
@@ -349,5 +356,7 @@ class TestResilience:
         with patch("app.sources.client.http.http_client.httpx.AsyncClient") as MockAsyncClient:
             await client._ensure_client()
             transport = MockAsyncClient.call_args.kwargs["transport"]
-        assert isinstance(transport, ResilientHTTPTransport)
-        assert transport._policy is policy
+        # The address guard wraps one resilient transport per origin it reaches.
+        inner = transport._guard_for(httpx.Request("GET", "https://api.example.com/x"))._inner
+        assert isinstance(inner, ResilientHTTPTransport)
+        assert inner._policy is policy

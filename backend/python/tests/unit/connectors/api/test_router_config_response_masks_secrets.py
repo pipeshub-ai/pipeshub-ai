@@ -299,7 +299,8 @@ async def test_config_save_that_switches_oauth_app_signs_the_connector_out() -> 
 
     saved = _saved(config_service)
     assert saved["auth"]["oauthConfigId"] == "app-2"
-    assert saved["auth"]["clientSecret"] == _STORED_CLIENT_SECRET
+    # A linked connector keeps no copy of a client secret: its app holds it.
+    assert "clientSecret" not in saved["auth"]
     assert saved["credentials"] is None
     assert saved["oauth"] is None
     updates = request.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]

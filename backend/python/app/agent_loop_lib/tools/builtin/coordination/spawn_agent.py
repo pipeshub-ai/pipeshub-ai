@@ -8,8 +8,15 @@ from app.agent_loop_lib.core.exceptions import ToolError
 from app.agent_loop_lib.core.types import AgentResult, Goal, ToolCall
 from app.agent_loop_lib.core.types import ToolResult as CoreToolResult
 from app.agent_loop_lib.events.base import EventType, ToolCallStatus
-from app.agent_loop_lib.tools.base import ParameterType, Tag, Tool, ToolOutput, ToolParameter
+from app.agent_loop_lib.tools.base import (
+    ParameterType,
+    Tag,
+    Tool,
+    ToolOutput,
+    ToolParameter,
+)
 from app.agent_loop_lib.tools.builtin.coordination.agent_tool import AgentTool
+from app.agent_loop_lib.tools.builtin.coordination.parent_results import parent_request
 from app.agent_loop_lib.tools.special_route import RouteContext
 from app.agent_loop_lib.tools.tags import TAG_SPAWN, TAG_SPAWN_BATCH
 
@@ -152,7 +159,10 @@ async def _run_detached_spawn(agent, call: ToolCall, goal, turn_index: int, star
     # Deferred import: `spawn_scheduler` imports `tools.builtin.coordination
     # .graph_utils`, and `tools/builtin/__init__.py` imports THIS module —
     # a module-level import here would be circular.
-    from app.agent_loop_lib.agent.spawn_scheduler import raw_task_id, record_completed_spawn
+    from app.agent_loop_lib.agent.spawn_scheduler import (
+        raw_task_id,
+        record_completed_spawn,
+    )
 
     task_id = raw_task_id(call)
     try:
@@ -160,6 +170,7 @@ async def _run_detached_spawn(agent, call: ToolCall, goal, turn_index: int, star
         child_result = await run_spawned_child(
             agent.runtime, child_spec, child_goal, agent.run_ctx,
             session_id=agent.session_id, parent_scope=agent.scope,
+            user_request=await parent_request(agent),
         )
         if agent.scope is not None:
             record_completed_spawn(agent.scope, task_id, child_result)
@@ -349,7 +360,9 @@ class SpawnAgentTool(Tool):
             if call.id in spawn_tasks:
                 child_result = await spawn_tasks[call.id]
             else:
-                from app.agent_loop_lib.agent.spawn_scheduler import schedule_spawn_batch
+                from app.agent_loop_lib.agent.spawn_scheduler import (
+                    schedule_spawn_batch,
+                )
                 solo_tasks = await schedule_spawn_batch(
                     agent, ctx.runtime, [call], ctx.scope.turn.run,
                     goal=goal, turn_index=turn_index, started_at=started_at,

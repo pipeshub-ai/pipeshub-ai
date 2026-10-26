@@ -12,15 +12,17 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Awaitable, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Awaitable, Callable, Collection, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 
+from app.config.constants.arangodb import MimeTypes
 from app.models.entities import RecordType
 from app.sources.external.confluence.confluence import (
     ConfluenceDataSource,  # type: ignore[import-not-found]
 )
-from connectors.confluence.constants import (
-    CONFLUENCE_TEST_SETTLE_WAIT_SEC,  # type: ignore[import-not-found]
+from connectors.confluence.constants import (  # type: ignore[import-not-found]
+    CONFLUENCE_TEST_SETTLE_WAIT_SEC,
+    is_test_page,
 )
 from helper.graph_provider_utils import (
     async_poll_until,  # type: ignore[import-not-found]
@@ -76,7 +78,11 @@ async def fetch_space_content_snapshot(
         raise RuntimeError(f"Space '{space_key}' not found")
 
     space_id = str(spaces[0]["id"])
-    pages = await _fetch_content_by_type(datasource, space_key, space_id, "page")
+    # The space's permanent content only: test pages of this or any other run come and go.
+    pages = [
+        page for page in await _fetch_content_by_type(datasource, space_key, space_id, "page")
+        if not is_test_page(page.title)
+    ]
     blogposts = await _fetch_content_by_type(datasource, space_key, space_id, "blogpost")
     folders = await _fetch_content_by_type(datasource, space_key, space_id, "folder")
 
@@ -174,7 +180,7 @@ async def assert_api_content_matches_graph(
             external_record_id=page_item.id,
             record_type=RecordType.CONFLUENCE_PAGE.value,
             record_name=page_item.title,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             external_record_group_id=page_item.space_id,
             external_revision_id=str(page_item.version_number),
         )
@@ -188,7 +194,7 @@ async def assert_api_content_matches_graph(
             external_record_id=blogpost_item.id,
             record_type=RecordType.CONFLUENCE_BLOGPOST.value,
             record_name=blogpost_item.title,
-            mime_type="text/html",
+            mime_type=MimeTypes.BLOCKS.value,
             external_record_group_id=blogpost_item.space_id,
             external_revision_id=str(blogpost_item.version_number),
         )
@@ -243,11 +249,36 @@ def _confluence_extract_cursor_from_next_link(next_url: str | None) -> str | Non
         return None
 
 
+def _counts(title: str, external_id: str, own_ids: Collection[str]) -> bool:
+    """Whether a page belongs in a space-wide count: permanent content, or a test page of the caller's."""
+    return not is_test_page(title) or external_id in own_ids
+
+
+async def count_run_records(
+    graph_provider: "GraphProviderProtocol",
+    connector_id: str,
+    *,
+    own_ids: Collection[str] = (),
+    scoped: bool = False,
+) -> int:
+    """The connector's records, leaving out test pages other than ``own_ids`` (see ``is_test_page``)."""
+    records = await graph_provider.fetch_records_by_type(connector_id, "", scoped=scoped)
+    return sum(
+        1 for r in records
+        if _counts(str(r.get("recordName") or ""), str(r.get("externalRecordId") or ""), own_ids)
+    )
+
+
 async def count_confluence_space_pages_v1_search(
     datasource: ConfluenceDataSource,
     space_key: str,
+    *,
+    own_ids: Collection[str] = (),
 ) -> int:
-    """Count pages in ``space_key`` via Confluence v1 ``/rest/api/content/search`` (paginated)."""
+    """Count pages in ``space_key`` via Confluence v1 ``/rest/api/content/search`` (paginated).
+
+    Leaves out test pages other than ``own_ids`` (see ``is_test_page``).
+    """
     cursor: str | None = None
     seen: set[str] = set()
     batch_size = 50
@@ -267,7 +298,7 @@ async def count_confluence_space_pages_v1_search(
         data = resp.json()
         for item in data.get("results") or []:
             cid = item.get("id")
-            if cid is not None:
+            if cid is not None and _counts(str(item.get("title") or ""), str(cid), own_ids):
                 seen.add(str(cid))
         next_url = (data.get("_links") or {}).get("next")
         if not next_url:
@@ -279,6 +310,34 @@ async def count_confluence_space_pages_v1_search(
     return len(seen)
 
 
+async def wait_for_space_page_count_at_least(
+    datasource: ConfluenceDataSource,
+    space_key: str,
+    minimum: int,
+    *,
+    own_ids: Collection[str] = (),
+    timeout: float = CONFLUENCE_TEST_SETTLE_WAIT_SEC,
+    poll_interval: float = 30,
+) -> int:
+    """The space's v1 search page count once it reaches ``minimum``, or the last count read at the deadline.
+
+    A page created a moment ago can already be found by id while the space-wide
+    listing still leaves it out, so one read right after creating pages can
+    undercount them.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        count = await count_confluence_space_pages_v1_search(datasource, space_key, own_ids=own_ids)
+        remaining = deadline - time.monotonic()
+        if count >= minimum or remaining <= 0:
+            return count
+        logger.info(
+            "⏳ v1 page count for %s is %d, waiting for %d (%.0fs remaining)...",
+            space_key, count, minimum, remaining,
+        )
+        await asyncio.sleep(min(poll_interval, remaining))
+
+
 async def assert_confluence_pages_match_graph_records(
     datasource: ConfluenceDataSource,
     graph_provider: "GraphProviderProtocol",
@@ -286,16 +345,20 @@ async def assert_confluence_pages_match_graph_records(
     space_key: str,
     *,
     phase: str,
+    own_ids: Collection[str] = (),
 ) -> None:
     """Assert v1 page count for the space equals the connector's page record count.
 
     The v1 search returns pages only (``type=page``), while the connector also
     stores the space's blog posts and folders as records, so the graph side
-    counts page records only.
+    counts page records only. Both sides leave out test pages other than ``own_ids``.
     """
-    api_count = await count_confluence_space_pages_v1_search(datasource, space_key)
-    graph_count = await graph_provider.count_records_by_type(
-        connector_id, RecordType.CONFLUENCE_PAGE.value
+    api_count = await count_confluence_space_pages_v1_search(datasource, space_key, own_ids=own_ids)
+    graph_count = sum(
+        1 for r in await graph_provider.fetch_records_by_type(
+            connector_id, RecordType.CONFLUENCE_PAGE.value
+        )
+        if _counts(str(r.get("recordName") or ""), str(r.get("externalRecordId") or ""), own_ids)
     )
     if api_count != graph_count:
         raise AssertionError(

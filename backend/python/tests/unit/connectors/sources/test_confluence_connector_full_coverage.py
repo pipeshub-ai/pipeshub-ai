@@ -236,7 +236,7 @@ class TestTransformToWebpageRecord:
         rec = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_PAGE)
         assert rec is not None
         assert rec.record_name == "Test Page"
-        assert rec.mime_type == MimeTypes.HTML.value
+        assert rec.mime_type == MimeTypes.BLOCKS.value
         assert rec.external_record_group_id == "100"
         assert rec.parent_external_record_id == "p0"
 
@@ -250,7 +250,7 @@ class TestTransformToWebpageRecord:
         }
         rec = c._transform_to_webpage_record(data, RecordType.CONFLUENCE_BLOGPOST)
         assert rec is not None
-        assert rec.mime_type == MimeTypes.HTML.value
+        assert rec.mime_type == MimeTypes.BLOCKS.value
         assert rec.parent_external_record_id == "parent1"
 
     def test_no_space(self):
@@ -528,10 +528,11 @@ class TestGetAppUsersByEmails:
         assert await c._get_app_users_by_emails([]) == []
 
     @pytest.mark.asyncio
-    async def test_error(self):
+    async def test_error_propagates(self):
         c = _c()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_app_users_by_emails(["a@t.com"]) == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 class TestGetSignedUrl:

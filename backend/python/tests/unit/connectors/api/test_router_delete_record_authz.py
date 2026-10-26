@@ -61,10 +61,23 @@ def _provider(
     provider._create_deleted_record_event_payload = AsyncMock(
         return_value={"recordId": RECORD_ID, "virtualRecordId": "vr-1"}
     )
+    # An upload is deleted with what it contains, through the cascade.
+    provider.delete_records_recursive = AsyncMock(
+        return_value={
+            "success": True,
+            "successfully_deleted": 1,
+            "eventData": {
+                "eventType": "deleteRecord",
+                "topic": "record-events",
+                "payloads": [{"recordId": RECORD_ID, "virtualRecordId": "vr-1", **kind}],
+            },
+        }
+    )
     return provider
 
 
 def _assert_untouched(provider: Neo4jProvider, kafka: AsyncMock) -> None:
+    provider.delete_records_recursive.assert_not_awaited()
     provider._delete_records_with_their_types.assert_not_awaited()
     kafka.publish_event.assert_not_awaited()
 
@@ -151,7 +164,8 @@ async def test_same_org_delete_removes_record_and_publishes_vector_cleanup(kind:
     result = await delete_record(RECORD_ID, _request(org_id=ORG_A), provider, kafka)
 
     assert result["success"] is True
-    provider._delete_records_with_their_types.assert_awaited_once()
+    provider.delete_records_recursive.assert_awaited_once()
+    assert provider.delete_records_recursive.await_args.args == ([RECORD_ID], "conn-1")
     kafka.publish_event.assert_awaited_once()
     topic, event = kafka.publish_event.await_args.args
     assert topic == "record-events"

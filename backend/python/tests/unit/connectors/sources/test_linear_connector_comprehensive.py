@@ -43,6 +43,52 @@ from app.models.permission import Permission
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+def _memory_sync_point() -> MagicMock:
+    """An in-memory stand-in for SyncPoint: what is written is what is read back."""
+    store = {}
+
+    async def read(key) -> dict:
+        return dict(store.get(key) or {})
+
+    async def update(key, data) -> None:
+        store[key] = dict(data)
+
+    sync_point = MagicMock()
+    sync_point.store = store
+    sync_point.read_sync_point = AsyncMock(side_effect=read)
+    sync_point.update_sync_point = AsyncMock(side_effect=update)
+    return sync_point
+
+
+def _use_memory_state(connector) -> None:
+    """Checkpoints live in memory, retries do not really sleep, and the processor
+    calls made when records are removed or refreshed can be awaited."""
+    for name in (
+        "issues_sync_point", "attachments_sync_point", "documents_sync_point",
+        "projects_sync_point", "deletion_sync_point", "reconcile_sync_point",
+    ):
+        setattr(connector, name, _memory_sync_point())
+    connector._reconciler._sync_point = connector.reconcile_sync_point
+    connector._sleep = AsyncMock()
+    connector._api._sleep = connector._sleep
+    # The cheap "did anything change" probe is tested on its own.
+    connector._team_has_changes = AsyncMock(return_value=True)
+    processor = connector.data_entities_processor
+    for name, value in (
+        ("get_records_by_parent", []),
+        ("get_records_by_record_type", []),
+        ("get_records_in_record_group", []),
+        ("get_nodes_by_filters", []),
+        ("on_records_deleted_cascade", None),
+        ("on_records_detached_from_parent", None),
+        ("on_record_content_update", None),
+        ("on_record_group_deleted", None),
+        ("on_user_group_deleted", None),
+    ):
+        if not isinstance(getattr(processor, name), AsyncMock):
+            setattr(processor, name, AsyncMock(return_value=value))
+
+
 def _make_connector():
     """Build a LinearConnector with all dependencies mocked."""
     logger = logging.getLogger("test.linear.comp")
@@ -82,6 +128,7 @@ def _make_connector():
         created_by="test-user-id",
     )
     connector._tx_store = mock_tx_store
+    _use_memory_state(connector)
     return connector
 
 

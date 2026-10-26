@@ -9,6 +9,7 @@ This module provides:
 5. Filter/FilterCollection - Runtime filter parsing from config
 """
 
+import contextlib
 import logging
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -242,6 +243,10 @@ class SyncFilterKey(str, Enum):
     GROUP_IDS = "group_ids"
     ORG_IDS = "org_ids"
     REPO_IDS = "repo_ids"
+    # Code repositories: gitignore-style paths whose files get no record
+    EXCLUDE_PATHS = "exclude_paths"
+    # Code repositories: the branch whose files are synced; unset = default branch
+    BRANCH = "branch"
 
     # Content filters
     CONTENT_STATUS = "content_status"
@@ -316,6 +321,7 @@ class IndexingFilterKey(str, Enum):
     # GitLab
     MERGE_REQUESTS = "merge_requests"
     CODE_FILES = "code_files"
+    TEST_FILES = "test_files"
 
     # Knowledge base
     KNOWLEDGE_BASE = "knowledge_base"
@@ -381,6 +387,10 @@ class FilterField:
             filter_type's normal operators (e.g. only "in" for a LIST filter that doesn't
             make sense with "not_in" yet). Must be a non-empty subset of the type's
             operators. Defaults to all operators for filter_type.
+        fallback_operator: The window the connector applies when this filter is
+            not set at all (for example a sync filter that falls back to the last
+            30 days). The UI shows it while the filter is cleared, so the
+            fallback never becomes invisible. Must be one of the field's operators.
 
     Value types by filter_type:
         STRING      → str
@@ -408,6 +418,7 @@ class FilterField:
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
     allowed_operators: list[str] | None = None
+    fallback_operator: str | None = None
     def __post_init__(self) -> None:
         """Validate configuration"""
 
@@ -445,6 +456,12 @@ class FilterField:
                     f"default_operator '{self.default_operator}' must be one of allowed_operators "
                     f"{self.allowed_operators}"
                 )
+
+        if self.fallback_operator is not None and self.fallback_operator not in self.operators:
+            raise ValueError(
+                f"fallback_operator '{self.fallback_operator}' must be one of the field's "
+                f"operators {self.operators}"
+            )
 
     def _get_default_for_type(self) -> str | bool | list[str] | tuple | None:
         """Get default value based on type"""
@@ -499,6 +516,9 @@ class FilterField:
 
         if self.no_implicit_operator_default:
             schema["noImplicitOperatorDefault"] = True
+
+        if self.fallback_operator is not None:
+            schema["fallbackOperator"] = self.fallback_operator
 
         return schema
 
@@ -613,6 +633,20 @@ class Filter(BaseModel):
                                 # Fallback: convert to string
                                 extracted_ids.append(str(item))
                         data['value'] = extracted_ids
+                elif filter_type in (FilterType.NUMBER, FilterType.BOOLEAN) and isinstance(data['value'], str):
+                    # UI inputs are cleared to "" (not omitted) when a field is left
+                    # unset - treat that the same as "no value" instead of failing
+                    # type validation below. Also accept numeric/boolean strings
+                    # since form values commonly arrive as strings.
+                    stripped = data['value'].strip()
+                    if not stripped:
+                        data['value'] = None
+                    elif filter_type == FilterType.NUMBER:
+                        # Left as-is when it is not a number; validation below raises a clear error.
+                        with contextlib.suppress(ValueError):
+                            data['value'] = float(stripped) if '.' in stripped else int(stripped)
+                    elif stripped.lower() in ('true', 'false'):
+                        data['value'] = stripped.lower() == 'true'
 
         return data
 

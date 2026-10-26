@@ -1,5 +1,6 @@
 import type { ClientSession } from 'mongoose';
-import { Users, type UserRole } from '../schema/users.schema';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
+import { Users, type User, type UserRole } from '../schema/users.schema';
 import { Org } from '../schema/org.schema';
 
 /**
@@ -20,28 +21,42 @@ import { Org } from '../schema/org.schema';
 const NOT_A_SERVICE_ACCOUNT = { kind: { $ne: 'service' } } as const;
 
 export const UserAdminRepository = {
+  /**
+   * Reads `kind` alongside the role, which the two queries below instead use
+   * to filter.
+   *
+   * The difference is deliberate. Those answer "who administers this
+   * organisation", so a service account should not be in the answer at all.
+   * This one answers "what is this caller", and the caller may legitimately
+   * be a service account — `GET /api/v1/users/me/role` is how the Python
+   * services learn the role of whoever is asking, and filtering here would
+   * return nothing and sign them out. So the kind comes back and the service
+   * layer clamps it.
+   */
   async findActiveUserRole(
     userId: string,
     orgId: string,
-  ): Promise<{ role?: UserRole | null } | null> {
+  ): Promise<{ role?: UserRole | null; kind?: string | null } | null> {
     return Users.findOne({
       _id: userId,
       orgId,
       isDeleted: { $ne: true },
     })
-      .select('role')
+      .select('role kind')
       .lean();
   },
 
   async findActiveAdminUserIds(
     orgId: string | { toString(): string },
   ): Promise<Array<{ _id?: unknown }>> {
-    return Users.find({
-      orgId,
-      role: 'admin',
-      isDeleted: { $ne: true },
-      ...NOT_A_SERVICE_ACCOUNT,
-    })
+    return Users.find(
+      asQueryFilter<User>({
+        orgId,
+        role: 'admin',
+        isDeleted: { $ne: true },
+        ...NOT_A_SERVICE_ACCOUNT,
+      }),
+    )
       .select('_id')
       .lean();
   },

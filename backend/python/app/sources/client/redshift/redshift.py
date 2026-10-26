@@ -44,7 +44,8 @@ def _int2vector_in(data: bytes, idx: int, length: int) -> list[int]:
 
 def _patch_int2vector_decoder() -> None:
     # Older drivers eval() int2vector column text, so whichever server we connect to
-    # could run code here (CVE-2026-8838). Remove once the pin is >= 2.1.14.
+    # could run code here (CVE-2026-8838). The pin is past the fix; this stays so an
+    # environment that resolves an older driver is still covered.
     if redshift_connector is None or Version(redshift_connector.__version__) >= Version(_SAFE_INT2VECTOR_DRIVER):
         return
     type_utils.vector_in = _int2vector_in

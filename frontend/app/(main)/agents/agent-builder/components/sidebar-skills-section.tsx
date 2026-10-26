@@ -7,6 +7,7 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import type { SkillForBuilder } from '../../types';
 import type { NodeTemplate } from '../types';
 import { prepareDragData } from '../sidebar-utils';
+import { TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
 import { AgentBuilderPaletteSkeletonList } from './agent-builder-palette-skeleton';
 
 const PALETTE_ICON_SIZE = 20;
@@ -41,6 +42,7 @@ function SkillPaletteRow(props: {
   const { template, isBuiltin, structureLocked, onPaletteStructureDragBlocked } = props;
   const [hovered, setHovered] = useState(false);
   const showHover = hovered && !structureLocked;
+  const tapAdd = usePaletteTapAdd(prepareDragData(template), structureLocked);
 
   return (
     <Box
@@ -85,6 +87,7 @@ function SkillPaletteRow(props: {
         style={{ flexShrink: 0 }}
       />
       <span style={rowLabelStyle}>{template.label}</span>
+      <TapAddButton onTap={tapAdd} />
     </Box>
   );
 }

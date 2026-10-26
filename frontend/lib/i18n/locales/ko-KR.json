@@ -9,7 +9,11 @@
       "reindexFailedStart": "실패한 레코드를 다시 인덱싱하는 중…",
       "reindexFailedError": "실패한 레코드의 다시 인덱싱에 실패했습니다",
       "manualIndexStart": "수동 인덱싱 레코드를 인덱싱하는 중…",
-      "manualIndexError": "수동 인덱싱 시작에 실패했습니다"
+      "manualIndexError": "수동 인덱싱 시작에 실패했습니다",
+      "retryClassificationStart": "분류 재시도가 대기열에 추가되었습니다",
+      "retryClassificationError": "분류 재시도에 실패했습니다",
+      "retryEntitiesStart": "개체 추출 재시도가 대기열에 추가되었습니다",
+      "retryEntitiesError": "개체 추출 재시도에 실패했습니다"
     },
     "trash": {
       "menuLabel": "최근 삭제한 항목",
@@ -119,7 +123,8 @@
     "tabYourProjects": "내 프로젝트",
     "tabArchived": "보관됨",
     "archivedEmptyState": "보관된 프로젝트가 없습니다",
-    "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다."
+    "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다.",
+    "actionsLabel": "프로젝트 작업"
   },
   "timeGroup": {
     "today": "오늘",
@@ -133,7 +138,10 @@
     "errorFallback": "오류가 발생했습니다. 다시 시도해 주세요.",
     "askQuestionResumeFailed": "답변을 보내지 못했습니다. 다시 제출해 주세요.",
     "copyCode": "복사",
-    "copiedCode": "복사됨"
+    "copiedCode": "복사됨",
+    "remoteImageBlocked": "외부 이미지가 로드되지 않았습니다",
+    "remoteImageFrom": "{{host}}에서",
+    "remoteImageLoad": "이미지 불러오기"
   },
   "uploadProgress": {
     "uploadFailedDefault": "업로드 실패",
@@ -193,6 +201,7 @@
   },
   "onboarding": {
     "skipEmbeddingDefault": "건너뛰기",
+    "stepOf": "{{total}}단계 중 {{current}}단계: {{title}}",
     "skipEmbeddingTitle": "기본값(시스템 제공) 설정을 열고 모델 추가를 눌러 저장하세요",
     "nextDisabledEmbeddingHint": "아래에서 임베딩 제공자를 추가하거나, 건너뛰기를 사용하여 기본 모델 설정을 여세요",
     "embeddingStepHint": "아래에서 임베딩 제공자를 추가하여 시맨틱 검색을 활성화하거나, 건너뛰기를 클릭하여 기본값(시스템 제공)을 열고 모델 추가를 누르세요. 나중에 워크스페이스 설정에서 변경할 수 있습니다.",
@@ -222,7 +231,7 @@
       }
     },
     "systemConfig": "시스템 구성",
-    "stepHeading": "{{current}}/{{total}} 단계: {{name}} 구성",
+    "stepHeading": "{{name}} 구성",
     "stepAiModel": {
       "stepName": "AI 모델*",
       "addLlmHint": "계속하려면 텍스트(LLM) 제공자를 하나 이상 추가하세요.",
@@ -329,7 +338,6 @@
     "untitledChat": "—",
     "name": "이름",
     "size": "크기",
-    "showing": "{{total}}개 중 {{start}}-{{end}}",
     "types": {
       "IMAGE": "이미지",
       "CHART": "차트",
@@ -338,11 +346,41 @@
       "PRESENTATION": "프레젠테이션",
       "DATA_FILE": "데이터 파일",
       "CODE": "코드",
-      "CODE_OUTPUT": "코드 출력"
-    }
+      "CODE_OUTPUT": "코드 출력",
+      "OTHER": "기타"
+    },
+    "tabs": {
+      "all": "모든 아티팩트",
+      "mine": "내 아티팩트",
+      "shared": "나와 공유됨"
+    },
+    "tabsShort": {
+      "all": "전체",
+      "mine": "내 항목",
+      "shared": "공유됨"
+    },
+    "share": {
+      "title": "아티팩트 공유"
+    },
+    "emptyShared": "아직 공유받은 항목이 없습니다",
+    "emptySharedHint": "팀원이 공유한 아티팩트가 여기에 표시됩니다.",
+    "notAvailable": "이 아티팩트는 더 이상 사용할 수 없습니다",
+    "deleteTitle": "아티팩트를 삭제할까요?",
+    "deleteConfirmMessage": "\"{{name}}\" 및 모든 버전이 영구적으로 삭제됩니다. 이를 표시하는 채팅에서는 더 이상 사용할 수 없음으로 표시됩니다.",
+    "deleteSuccess": "\"{{name}}\" 삭제됨",
+    "preview": "미리보기",
+    "moreActionsFor": "{{name}} 추가 옵션",
+    "loadFailedHint": "연결을 확인한 후 다시 시도하세요.",
+    "noMatches": "필터와 일치하는 아티팩트가 없습니다",
+    "noMatchesHint": "다른 검색어를 사용하거나 필터를 지워 모든 아티팩트를 확인하세요.",
+    "clearFilters": "필터 지우기",
+    "gridView": "그리드 보기",
+    "listView": "목록 보기",
+    "closeSearch": "검색 닫기"
   },
   "notifications": {
     "title": "알림",
+    "close": "알림 닫기",
     "loading": "로드 중…",
     "empty": "아직 알림이 없습니다",
     "emptyUnread": "읽지 않은 알림이 없습니다",
@@ -358,6 +396,13 @@
     "filterOnlyUnread": "읽지 않음",
     "filterArchived": "보관됨",
     "filterTooltip": "필터: {{filter}}",
+    "chatShared": {
+      "title": "{{name}}님이 채팅을 공유했습니다",
+      "titleAgent": "{{name}}님이 에이전트 채팅을 공유했습니다",
+      "body": "이제 \"{{chat}}\"을(를) 열 수 있습니다.",
+      "bodyNoTitle": "이제 \"{{place}}\"에서 열 수 있습니다.",
+      "someone": "동료"
+    },
     "loadFailed": "알림을 불러오지 못했습니다",
     "updateFailed": "알림을 업데이트할 수 없습니다",
     "removeFailed": "알림을 제거할 수 없습니다"
@@ -421,10 +466,12 @@
     "statuses": "상태",
     "sources": "소스",
     "sizes": "크기",
-    "clearFilter": "필터 초기화"
+    "clearFilter": "필터 초기화",
+    "applyFilters": "필터 적용"
   },
   "form": {
     "leaveBlankToKeep": "기존 값을 유지하려면 비워 두세요.",
+    "showStoredValues": "저장된 값 표시",
     "title": "제목",
     "description": "설명",
     "search": "검색",
@@ -434,7 +481,8 @@
     "required": "필수 입력 항목입니다",
     "invalidEmail": "유효하지 않은 이메일 주소입니다",
     "invalidUrl": "유효하지 않은 URL입니다",
-    "name": "이름"
+    "name": "이름",
+    "optional": "(선택 사항)"
   },
   "dialog": {
     "newFolder": "새 컬렉션 폴더",
@@ -457,7 +505,10 @@
     "willBeDeleted": "이(가) 삭제됩니다",
     "willBeReindexed": "이(가) 다시 인덱싱됩니다",
     "reindexConfirm": "이 {{type}}을(를) 다시 인덱싱하시겠습니까?",
-    "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다."
+    "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다.",
+    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 삭제됩니다.",
+    "deleteFolderBody": "'{{name}}' 및 그 안의 모든 항목이 이 컬렉션에서 삭제됩니다.",
+    "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다."
   },
   "table": {
     "fileName": "파일 이름",
@@ -514,6 +565,12 @@
     }
   },
   "common": {
+    "shiftKey": "Shift",
+    "pagination": {
+      "showing": "{{total}}개 중 {{start}}-{{end}}",
+      "pageOf": "{{page}} / {{total}}",
+      "perPage": "페이지당 {{value}}개"
+    },
     "yes": "예",
     "no": "아니요",
     "ok": "확인",
@@ -549,7 +606,19 @@
     "openProfile": "프로필 열기",
     "loading": "불러오는 중...",
     "moreOptions": "추가 옵션",
-    "docs": "문서"
+    "docs": "문서",
+    "enterprise": {
+      "label": "EE에서 제공",
+      "tooltip": "PipesHub Enterprise Edition의 기능입니다"
+    },
+    "errorBoundary": {
+      "title": "문제가 발생했습니다",
+      "body": "페이지의 이 부분을 표시할 수 없습니다. 다시 시도하거나 채팅으로 돌아가세요.",
+      "retry": "다시 시도",
+      "goToChat": "채팅으로 이동",
+      "notFoundTitle": "페이지를 찾을 수 없습니다",
+      "notFoundBody": "이 페이지는 존재하지 않거나 이동되었습니다."
+    }
   },
   "units": {
     "bytes": "바이트",
@@ -583,6 +652,8 @@
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
     "noCollectionsCreatePrompt": "사용 가능한 컬렉션이 없습니다. 새로 만들어 주세요.",
     "seeMoreConnectors": "더 많은 커넥터 보기",
+    "connectMoreApps": "더 많은 앱 연결",
+    "connectMoreAppsHint": "소스가 많을수록 답변이 좋아집니다.",
     "suggestedInWorkspace": "워크스페이스 추천",
     "createSubFolder": "하위 폴더 만들기",
     "more": "더 보기",
@@ -592,7 +663,8 @@
     "open": "사이드바 열기",
     "expand": "사이드바 펼치기",
     "close": "사이드바 닫기",
-    "collapse": "사이드바 접기"
+    "collapse": "사이드바 접기",
+    "navigation": "탐색"
   },
   "menu": {
     "reindex": "다시 인덱싱",
@@ -604,7 +676,8 @@
     "forceReindexing": "강제 다시 인덱싱",
     "retryIndexing": "인덱싱 재시도",
     "rename": "이름 변경",
-    "delete": "삭제"
+    "delete": "삭제",
+    "indexAll": "모두 색인"
   },
   "reindexScope": {
     "description": "\"{{name}}\"에 대해 인덱싱할 범위를 선택하세요.",
@@ -615,6 +688,13 @@
     "title": "강제 다시 인덱싱을 시작하시겠습니까?",
     "message": "이 작업은 문서를 처음부터 다시 인덱싱하며 추가 비용이 발생할 수 있습니다. 검색 결과가 오래되었거나, 인덱싱이 완료된 후에도 문서가 검색되지 않을 때 사용하세요.",
     "confirm": "확인"
+  },
+  "reindexBlocked": {
+    "title": "이 레코드는 단독으로 재인덱싱할 수 없습니다",
+    "message": "GitHub 및 GitLab의 파일은 저장소 전체에 대한 하나의 코드 그래프로 함께 인덱싱됩니다. 파일 하나만 재인덱싱하면 해당 파일이 저장소의 나머지 부분보다 최신 버전이 되어 파일 간 연결이 끊어집니다. 최신 상태로 만들려면 지식 허브에서 저장소 전체를 다시 인덱싱하세요. 그러면 모든 파일이 함께 다시 인덱싱됩니다. 커넥터 동기화는 변경된 파일만 가져옵니다.",
+    "folderTitle": "이 폴더는 단독으로 재인덱싱할 수 없습니다",
+    "folderMessage": "GitHub 및 GitLab의 파일은 저장소 전체에 대한 하나의 코드 그래프로 함께 인덱싱됩니다. 폴더만 재인덱싱하면 해당 파일들이 저장소의 나머지 부분보다 최신 버전이 되어 파일 간 연결이 끊어집니다. 최신 상태로 만들려면 지식 허브에서 저장소 전체를 다시 인덱싱하세요. 그러면 모든 파일이 함께 다시 인덱싱됩니다. 커넥터 동기화는 변경된 파일만 가져옵니다.",
+    "goToConnectors": "커넥터로 이동"
   },
   "kb": {
     "viewToggle": "보기 전환",
@@ -637,7 +717,64 @@
     "searchEmptyHint": "찾으시는 항목이 없습니다. 다른 검색어로 시도해 보세요.",
     "adjustFiltersHint": "다른 소스를 선택하거나 필터를 조정하세요",
     "addFromCollectionsHint": "컬렉션에서 회사 파일이나 폴더를 추가할 수 있습니다",
-    "addFilesHint": "파일이나 폴더를 추가하세요"
+    "addFilesHint": "파일이나 폴더를 추가하세요",
+    "chatWithSelection": "채팅",
+    "chatSelectionLimit": "채팅에는 선택한 항목을 최대 {{max}}개까지 가져올 수 있습니다. 일부 선택을 해제한 후 다시 시도하세요.",
+    "chatTooManyCollections": "채팅은 한 번에 최대 {{max}}개의 컬렉션을 검색할 수 있는데 컬렉션이 더 많습니다. 컬렉션을 열거나 질문할 컬렉션을 선택하세요.",
+    "chatCollectionsLoadFailed": "채팅용 컬렉션을 불러오지 못했습니다. 다시 시도하세요.",
+    "chatNoCollections": "아직 질문할 컬렉션이 없습니다.",
+    "indexingStatus": {
+      "completed": "완료",
+      "inProgress": "진행 중",
+      "failed": "실패",
+      "fileTypeNotSupported": "지원되지 않는 파일 형식",
+      "notStarted": "시작 전",
+      "queued": "대기열에 있음",
+      "manualIndexing": "수동 인덱싱",
+      "empty": "비어 있음",
+      "paused": "일시 중지됨",
+      "needsMultimodalModel": "멀티모달 모델 필요",
+      "skipped": "건너뜀",
+      "pending": "보류 중"
+    },
+    "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
+    "allRecordsLoadFailed": "레코드를 불러오지 못했습니다",
+    "searchResults": "검색 결과",
+    "clearSearch": "검색 지우기",
+    "rowActions": {
+      "open": "열기",
+      "preview": "미리 보기",
+      "goToParent": "상위 폴더로 이동",
+      "goToNamed": "{{name}}(으)로 이동",
+      "moreFor": "{{name}} 추가 옵션",
+      "select": "{{name}} 선택"
+    },
+    "upload": {
+      "title": "데이터 업로드",
+      "documentation": "문서",
+      "filesTitle": "파일 업로드",
+      "filesHint": "파일당 최대 {{maxMb}}MB. 업로드할 때 형식과 크기를 확인합니다.",
+      "foldersTitle": "폴더 업로드",
+      "foldersHint": "업로드할 때 각 파일을 확인합니다(파일당 최대 {{maxMb}}MB).",
+      "or": "또는",
+      "fileCount_one": "파일 {{count}}개",
+      "fileCount_other": "파일 {{count}}개",
+      "folderCount_one": "폴더 {{count}}개",
+      "folderCount_other": "폴더 {{count}}개",
+      "depthWarning_one": "여기에는 폴더 수준을 {{count}}개만 더 넣을 수 있습니다(폴더는 최대 {{max}}단계까지 중첩할 수 있습니다). 계속하려면 일부 폴더를 제거하세요.",
+      "depthWarning_other": "여기에는 폴더 수준을 {{count}}개만 더 넣을 수 있습니다(폴더는 최대 {{max}}단계까지 중첩할 수 있습니다). 계속하려면 일부 폴더를 제거하세요.",
+      "folderLimitReached": "폴더는 최대 {{max}}단계까지 중첩할 수 있으며 이 폴더는 이미 한도에 도달했으므로 여기에 폴더를 업로드할 수 없습니다. 파일은 계속 업로드할 수 있습니다.",
+      "addFiles": "파일 추가",
+      "addFolder": "폴더 추가",
+      "moreBelow": "아래에 더 있음",
+      "removeNamed": "{{name}} 제거",
+      "expandFolder": "폴더 펼치기",
+      "collapseFolder": "폴더 접기"
+    },
+    "createDialog": {
+      "titlePlaceholder": "예: 엔지니어링",
+      "descriptionPlaceholder": "예: 개발팀 문서"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -658,11 +795,19 @@
     "record": "레코드"
   },
   "chat": {
+    "answerReady": {
+      "title": "답변이 준비되었습니다",
+      "open": "채팅 열기",
+      "unread": "새 답변"
+    },
+    "jumpToNewest": "최신 메시지로 이동",
     "recordActions": {
       "preview": "미리보기",
       "open": "{{source}} 열기",
       "openIn": "{{source}}에서 열기",
       "openInCollections": "컬렉션에서 열기",
+      "syncedJustNow": "방금 동기화됨",
+      "syncedAgo": "{{age}} 전 동기화됨",
       "relevance": "관련도: {{percent}}%"
     },
     "results": "결과",
@@ -678,7 +823,7 @@
     "noModelsAvailable": "아직 구성된 AI 모델이 없습니다",
     "failedToLoadModels": "AI 모델을 불러오지 못했습니다",
     "failedToLoadAgentConfig": "이 에이전트의 모델 구성을 불러오지 못했습니다",
-    "openModels": "모델 열기",
+    "openModels": "모델 관리",
     "connectorsCollectionsTitle": "커넥터 및 컬렉션",
     "connectorsTooltip": "커넥터 및 컬렉션",
     "connectorsDefaultScopeHint": "기본적으로 모든 커넥터와 컬렉션이 검색됩니다. 범위를 좁히려면 아래에서 특정 항목을 선택하세요.",
@@ -706,7 +851,11 @@
       "browseWorkspaceMcp": "MCP 서버 살펴보기",
       "browseWorkspaceMcpAria": "연결을 추가하거나 관리하려면 MCP 서버를 여세요",
       "noActionMatches": "검색과 일치하는 작업이 없습니다.",
-      "noMcpMatches": "검색과 일치하는 MCP 서버가 없습니다."
+      "noMcpMatches": "검색과 일치하는 MCP 서버가 없습니다.",
+      "notConnected": "연결 안 됨",
+      "connect": "연결",
+      "actionConnected": "{{name}} 연결됨",
+      "limitedToCount": "· {{count}}개로 제한됨"
     },
     "projectResources": {
       "noConnectors": "이 프로젝트에 활성화된 커넥터가 없습니다.",
@@ -727,6 +876,7 @@
     "recents": "최근 항목",
     "sharedChats": "공유된 채팅",
     "sharedBy": "{{name}}님이 공유함",
+    "agentChat": "에이전트 채팅",
     "noSharedChats": "공유된 채팅이 없습니다",
     "yourChats": "내 채팅",
     "noChatsFound": "채팅을 찾을 수 없습니다",
@@ -734,8 +884,13 @@
     "searchCollections": "커넥터 및 컬렉션 검색",
     "loadingCollections": "컬렉션을 불러오는 중…",
     "failedToLoadCollections": "컬렉션을 불러오지 못했습니다",
+    "treeEmpty": "항목이 없습니다",
+    "treeLoadFailed": "항목을 불러오지 못했습니다",
+    "treeRetry": "다시 시도",
+    "treeIncludedWith": "{{name}}에 포함됨",
+    "treeExpand": "{{name}}의 내용 표시",
+    "treeCollapse": "{{name}}의 내용 숨기기",
     "noCollectionsAvailable": "사용 가능한 컬렉션이 없습니다",
-    "comingSoon": "출시 예정",
     "answer": "답변",
     "sources": "출처",
     "citation": "인용",
@@ -759,6 +914,8 @@
     "like": "도움이 됨",
     "dislike": "도움이 안 됨",
     "copy": "복사",
+    "fork": "채팅 분기",
+    "forkFromHere": "여기서 분기",
     "regenerate": "다시 생성",
     "readAloud": "소리 내어 읽기",
     "stopReading": "읽기 중지",
@@ -767,6 +924,8 @@
     "copiedAsMarkdown": "Markdown으로 복사됨",
     "copiedAsText": "텍스트로 복사됨",
     "citations": "인용",
+    "showMoreCitations_one": "인용 {{count}}개 더 보기",
+    "showMoreCitations_other": "인용 {{count}}개 더 보기",
     "markdownWithCitations": "인용 포함 Markdown",
     "onlyTextWithoutCitations": "인용 없이 텍스트만",
     "differentModesOfQuery": "다양한 질의 모드",
@@ -781,6 +940,7 @@
     "backToChatHome": "모든 채팅",
     "agentSidebarLabel": "에이전트",
     "agentNameLoading": "불러오는 중…",
+    "sharedAgentChat": "공유된 에이전트 채팅",
     "myAgents": "내 에이전트",
     "moreAgents": "더 많은 에이전트",
     "agentHeaderMenuAria": "에이전트 옵션",
@@ -800,6 +960,18 @@
     "rename": "이름 변경",
     "archive": "보관",
     "deleteChat": "삭제",
+    "pin": "고정",
+    "unpin": "고정 해제",
+    "pinned": "고정됨",
+    "pinFailed": "채팅을 고정하지 못했습니다",
+    "unpinFailed": "채팅 고정을 해제하지 못했습니다",
+    "export": {
+      "menuItem": "내보내기",
+      "exporting": "채팅을 내보내는 중…",
+      "done": "채팅을 내보냈습니다",
+      "failed": "채팅을 내보내지 못했습니다",
+      "assistant": "어시스턴트"
+    },
     "renaming": "이름 변경 중...",
     "archiving": "보관 중...",
     "chatRenamed": "채팅 이름이 변경되었습니다",
@@ -818,6 +990,7 @@
     "askAnythingInContext": "\"{{title}}\"에서 무엇이든 물어보세요",
     "expandTable": "표 확장",
     "fullTableView": "전체 표 보기",
+    "downloadCsv": "CSV로 다운로드",
     "expandDiagram": "다이어그램 확장",
     "fullDiagramView": "전체 다이어그램 보기",
     "renderingDiagram": "다이어그램 렌더링 중…",
@@ -830,14 +1003,55 @@
     "showDiagramSource": "소스 표시",
     "hideDiagramSource": "소스 숨기기",
     "stoppedMarker": "중지됨",
+    "toolCard": {
+      "arguments": "인수",
+      "query": "쿼리",
+      "queryCutOff": "이 쿼리는 앞부분만 저장되어 복사할 수 없습니다.",
+      "result": "결과",
+      "error": "오류",
+      "blocked": "차단됨",
+      "awaitingApproval": "승인 대기 중",
+      "viewRaw": "원본 보기",
+      "hideRaw": "원본 숨기기",
+      "showingOf": "{{total}}개 중 {{shown}}개 표시",
+      "open": "열기",
+      "needsApproval": "승인 필요",
+      "approved": "승인됨",
+      "declined": "거부됨",
+      "expired": "만료됨"
+    },
+    "mcpConnect": {
+      "title": "이 에이전트를 사용하려면 다음 MCP 서버를 연결하세요",
+      "connect": "연결",
+      "connecting": "연결 중…",
+      "connected": "연결됨",
+      "removed": "삭제되었습니다. 에이전트 소유자에게 업데이트를 요청하세요.",
+      "waitingForAdmin": "관리자가 공유 자격 증명을 추가하기를 기다리는 중",
+      "setUpInBuilder": "Agent Builder에서 설정",
+      "serviceAccount": "이 에이전트는 자체 자격 증명을 사용합니다. 소유자가 Agent Builder에서 설정합니다.",
+      "openAgentBuilder": "Agent Builder 열기",
+      "allConnected": "모두 연결되었습니다. 계속하려면 메시지를 다시 보내세요.",
+      "tryAgain": "다시 시도",
+      "unavailable": "여기서 로그인을 시작할 수 없습니다. Workspace → MCP 서버에서 연결하세요."
+    },
+    "mcpSignIn": {
+      "title": "이 MCP 서버가 요청한 권한을 부여하려면 다시 로그인하세요",
+      "needs": "필요: {{scopes}}",
+      "signIn": "다시 로그인",
+      "signingIn": "로그인 중…",
+      "signedIn": "로그인됨",
+      "askAnEditor": "이 에이전트를 편집할 수 있는 사람에게 다시 로그인을 요청하세요",
+      "allSignedIn": "로그인되었습니다. 요청을 다시 시도하세요.",
+      "retryMessage": "{{servers}}에 다시 로그인했습니다. 다시 시도해 주세요."
+    },
     "toasts": {
       "stopStreamTitle": "중지 중…",
       "stopStreamDescription": "응답이 곧 중지됩니다. 지금까지 생성된 답변은 유지됩니다.",
-      "editComingSoonTitle": "출시 예정",
-      "editComingSoonDescription": "편집 기능을 준비하고 있습니다",
       "deprecatedTools": "이 에이전트에 더 이상 사용할 수 없는 도구가 있습니다. Agent Builder를 열어 제거하세요.",
       "openAgentBuilder": "Agent Builder 열기",
-      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요."
+      "loadConversationFailed": "이 대화를 열 수 없습니다. 페이지를 새로 고친 후 다시 시도해 주세요.",
+      "forkSuccess": "이 지점부터 새 채팅을 시작했습니다",
+      "forkError": "채팅을 분기하지 못했습니다. 다시 시도하세요."
     },
     "queryModes": {
       "chat": {
@@ -1207,7 +1421,62 @@
       "webSearch": "웹 검색"
     },
     "resizePanels": "채팅 및 미리보기 패널 크기 조정",
-    "mobileProfileComingSoon": "모바일 프로필 페이지는 곧 제공됩니다."
+    "toolApproval": {
+      "noArguments": "세부 정보 없음",
+      "deny": "거부",
+      "showAll": "모두 보기",
+      "showLess": "간단히 보기",
+      "partial": "세부 정보의 앞부분만 표시됩니다. 전체 호출은 더 깁니다.",
+      "cantBeUndone": "되돌릴 수 없음",
+      "allow": "허용",
+      "dontAskAgain": "이 도구는 다시 묻지 않기",
+      "answerFailed": "답변을 보내지 못했습니다. 다시 시도하세요.",
+      "needsApproval": "승인이 필요합니다",
+      "expiresIn_one": "{{count}}분 후 만료",
+      "expiresIn_other": "{{count}}분 후 만료",
+      "expiresSoon": "1분 이내 만료",
+      "notice": {
+        "expired": "{{server}}의 {{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다. 아직 필요하면 다시 요청하세요.",
+        "passed": "{{server}}의 {{tool}}이(가) 승인되지 않아 실행되지 않았습니다.",
+        "waiting": "{{server}}의 {{tool}}이(가) 대화 소유자의 승인을 기다리고 있습니다."
+      },
+      "receipt": {
+        "allowed": "{{tool}}을(를) 허용했습니다",
+        "declined": "{{tool}}을(를) 거부했습니다",
+        "expired": "{{tool}}이(가) 실행되지 않았습니다. 요청이 만료되었습니다",
+        "allowedNotRun": "{{tool}}을(를) 허용했지만 실행되지 않았습니다"
+      }
+    },
+    "selectedAlone": "{{name}} (이 항목만)",
+    "noConnectorsFound": "커넥터를 찾을 수 없습니다",
+    "treeSearching": "검색 중…",
+    "treeSearchFailed": "검색하지 못했습니다. 다시 시도하세요.",
+    "treeSearchMatches": "폴더 및 항목",
+    "nodeSearchTooShort": "2자 이상 입력하세요",
+    "mentionNodes": "항목",
+    "mentionNodesLabel": "일치하는 항목",
+    "mentionTypeToSearch": "검색할 이름을 입력하세요",
+    "mentionSearching": "검색 중…",
+    "mentionNone": "일치하는 항목이 없습니다",
+    "mentionYourApps": "내 앱",
+    "mentionCollections": "컬렉션",
+    "sourceUnavailable": "열 수 없는 소스",
+    "sourceLoading": "로드 중…",
+    "mentionBack": "뒤로",
+    "mentionRemove": "{{name}} 제거",
+    "artifactsPanel": {
+      "generated_other": "아티팩트 {{count}}개 생성됨",
+      "newerVersion": "최신 버전 사용 가능 (v{{version}})",
+      "unavailable": "더 이상 사용할 수 없음",
+      "viewSource": "소스 코드 보기",
+      "loadingSource": "소스 코드 불러오는 중",
+      "viewSourceTitle": "이 아티팩트를 생성한 코드 보기",
+      "preview": "아티팩트 미리보기",
+      "loadingPreview": "미리보기 불러오는 중",
+      "download": "아티팩트 다운로드",
+      "downloading": "아티팩트 다운로드 중"
+    },
+    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다."
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -1300,7 +1569,8 @@
       },
       "roles": {
         "admin": "관리자",
-        "member": "멤버"
+        "member": "멤버",
+        "guest": "게스트"
       },
       "statuses": {
         "active": "활성",
@@ -1534,11 +1804,10 @@
       "searchPlaceholder": "검색...",
       "newApplication": "새 OAuth 애플리케이션",
       "emptyTitle": "OAuth 2.0 애플리케이션 없음",
-      "emptyDescription": "OAuth 2.0 앱을 생성하여 서드파티 통합이 Pipeshub를 통해 조직에 접근할 수 있도록 합니다.",
+      "emptyDescription": "OAuth 2.0 앱을 생성하여 서드파티 통합이 PipesHub를 통해 조직에 접근할 수 있도록 합니다.",
       "loading": "애플리케이션을 불러오는 중...",
       "errorGeneric": "OAuth 애플리케이션을 불러오지 못했습니다",
       "retry": "다시 시도",
-      "docsOpenLabel": "OAuth 문서 열기(준비 중)",
       "scopesBadgeOne": "범위 {{count}}개",
       "scopesBadgeMany": "범위 {{count}}개",
       "manage": "관리",
@@ -1613,7 +1882,14 @@
         "saveErrorTitle": "변경 사항을 저장하지 못했습니다",
         "regenerateSuccessTitle": "시크릿이 재생성됨",
         "regenerateErrorTitle": "시크릿을 재생성하지 못했습니다",
-        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1)."
+        "errorLifetimeInvalid": "유효한 수명을 입력하세요(정수 초, 최소 1).",
+        "identityBoundNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동합니다. 이를 변경하면 이미 발급된 토큰은 취소됩니다.",
+        "identityUnboundNote": "이 애플리케이션의 토큰은 이를 만든 사람으로서, 그 사람의 문서 접근 권한과 역할을 가지고 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다. 대신 서비스 계정을 지정하세요.",
+        "identityAdminOnly": "관리자만 이 애플리케이션에 서비스 계정을 지정할 수 있습니다. 관리자에게 요청하세요.",
+        "identityBindAction": "이 계정 사용",
+        "identityBindRevokes": "이 작업은 애플리케이션이 이미 발급한 토큰을 취소합니다. 이를 사용하는 모든 것은 새 토큰이 필요합니다.",
+        "identityBound": "이제 애플리케이션이 해당 서비스 계정으로서 작동합니다.",
+        "identityBindFailed": "서비스 계정을 변경하지 못했습니다. 잠시 후 다시 시도하세요."
       },
       "create": {
         "panelTitle": "OAuth 2.0 애플리케이션 생성",
@@ -1625,14 +1901,15 @@
         "createDisabledScopesTooltip": "애플리케이션을 생성하려면 하나 이상의 권한 범위를 선택하세요.",
         "tabGeneral": "일반",
         "tabPermissions": "권한 및 범위",
+        "tabGranular": "세부 권한",
         "appNameLabel": "앱 이름",
         "appNamePlaceholder": "내 애플리케이션",
         "descriptionLabel": "설명",
         "descriptionPlaceholder": "이 애플리케이션에 대한 간단한 설명",
         "grantTypesHeading": "권한 부여 유형",
-        "grantAuthorizationCode": "Authorization Code",
-        "grantRefreshToken": "Refresh Token",
-        "grantClientCredentials": "Client Credentials",
+        "grantAuthorizationCode": "Authorization code",
+        "grantRefreshToken": "Refresh token",
+        "grantClientCredentials": "Client credentials",
         "redirectHeading": "리디렉션 URI",
         "redirectHelper": "하나 이상의 콜백 URL이 필요합니다. 프로덕션에서는 HTTPS가 필수입니다.",
         "redirectPlaceholder": "https://yourapp.com/callback",
@@ -1655,7 +1932,7 @@
         "successScreenTitle": "OAuth 애플리케이션이 생성됨",
         "successScreenSubtitle": "클라이언트 시크릿을 안전하게 보관하세요. 다시 표시되지 않습니다.",
         "clientIdLabel": "Client ID",
-        "clientSecretLabel": "Client Secret",
+        "clientSecretLabel": "Client secret",
         "returnToAppsButton": "OAuth 2.0 앱으로 돌아가기",
         "showSecretAria": "클라이언트 시크릿 표시",
         "hideSecretAria": "클라이언트 시크릿 숨기기",
@@ -1670,7 +1947,15 @@
         "errorOptionalUrlInvalid": "선택 URL을 입력하는 경우 유효한 http(s) 주소여야 합니다.",
         "grantRequiredTitle": "권한 부여 유형 필요",
         "grantRequiredDescription": "하나 이상의 권한 부여 유형이 선택된 상태여야 합니다.",
-        "clientCredentialsWarning": "클라이언트 자격 증명 토큰은 토큰 엔드포인트를 호출하는 사람이 아니라 항상 이 애플리케이션을 생성한 사용자로서 Pipeshub에 접근합니다. 부여한 스코프 범위 안에서 토큰은 그 사용자가 접근할 수 있는 모든 것에 접근할 수 있고 그 사용자의 역할까지 물려받으므로, 관리자가 생성한 애플리케이션은 관리자 권한을 갖게 됩니다. 또한 해당 계정이 삭제되면 토큰은 작동을 멈춥니다. 이 애플리케이션이 Authorization Code 플로우도 지원하는 경우, 사용자는 그 방식으로 직접 인증할 수 있습니다."
+        "serviceAccountHeading": "이 애플리케이션이 대신 작업할 서비스 계정",
+        "clientCredentialsIdentityNote": "이 애플리케이션의 토큰은 지정된 서비스 계정으로서 작동하며, 지정된 계정이 없으면 이를 만든 사람으로서 작동합니다. 관리자가 만들었다면 관리자 권한을 갖게 됩니다.",
+        "serviceAccountHelper": "클라이언트 자격 증명 토큰에는 사람이 포함되지 않으므로 이 애플리케이션에는 자체 ID가 필요합니다. 서비스 계정은 항상 구성원이며 관리자가 될 수 없고 로그인할 수 없습니다. 서비스 계정이 없으면 애플리케이션은 이를 만든 사람으로서 작업하게 됩니다.",
+        "serviceAccountPlaceholder": "서비스 계정 선택",
+        "serviceAccountLoading": "서비스 계정을 불러오는 중…",
+        "serviceAccountNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만든 다음 다시 돌아오세요.",
+        "serviceAccountLoadError": "서비스 계정을 불러오지 못했습니다. 잠시 후 다시 시도하세요.",
+        "serviceAccountRetry": "다시 시도",
+        "errorServiceAccountRequired": "이 애플리케이션이 대신 작업할 서비스 계정을 선택하세요."
       }
     },
     "personalAccessTokens": {
@@ -1698,7 +1983,7 @@
         "errorTitle": "토큰을 해지하지 못했습니다"
       },
       "create": {
-        "panelTitle": "개인 액세스 토큰 생성",
+        "panelTitle": "새 개인 액세스 토큰",
         "successPanelTitle": "토큰 생성 완료",
         "createButton": "토큰 생성",
         "doneButton": "완료",
@@ -1857,8 +2142,112 @@
         "video": {
           "label": "비디오",
           "badge": "멀티모달"
+        },
+        "decision": {
+          "label": "의사결정",
+          "badge": "의사결정",
+          "sectionTab": "의사결정용"
         }
-      }
+      },
+      "fetchingModels": "모델을 불러오는 중…",
+      "savedLeaveBlank": "저장됨 — 비워 두면 기존 값을 유지합니다",
+      "modelPickerEmpty": "검색과 일치하는 모델이 없습니다.",
+      "modelPickerDefault": "기본값",
+      "modelPickerFriendlyName": "{{model}}의 표시 이름",
+      "badgeContext": "{{value}} 토큰",
+      "badgeVision": "비전",
+      "badgeReasoning": "추론",
+      "badgeDeprecated": "사용 중단",
+      "batchRetry": "다시 시도",
+      "batchRemove": "제거",
+      "rotateCredentials": "자격 증명 교체",
+      "rotateCredentialsTitle": "자격 증명 교체",
+      "rotateCredentialsHint": "이 연결로 추가된 모든 모델의 키를 업데이트합니다.",
+      "rotateCredentialsPlaceholder": "새 API 키",
+      "rotateCredentialsSave": "키 업데이트",
+      "rotateCredentialsFailed": "키를 업데이트하지 못했습니다",
+      "identity": {
+        "menuItem": "ID 전달",
+        "title": "ID 전달",
+        "hint": "게이트웨이에 요청자를 알려 사용자별 예산, 한도, 모델 접근을 적용하도록 합니다. 이 연결의 모든 모델에 적용됩니다.",
+        "enabled": "사용자 ID 전달",
+        "format": "형식",
+        "formatHeaders": "LiteLLM 헤더",
+        "formatTemplate": "헤더 템플릿",
+        "formatSignedJwt": "서명된 토큰(엔터프라이즈)",
+        "preset": "게이트웨이 프리셋",
+        "presetCustom": "사용자 지정 헤더",
+        "templates": "헤더 템플릿",
+        "templatesHint": "한 줄에 하나씩 Header-Name: value 형식으로 입력합니다. {{placeholders}}를 사용할 수 있습니다.",
+        "serviceKey": "백그라운드 작업용 키",
+        "serviceKeyPlaceholder": "인덱싱 및 추출용 게이트웨이 키",
+        "serviceKeySaved": "저장된 키가 있습니다. 바꾸려면 입력하세요.",
+        "serviceKeyHint": "인덱싱과 추출에는 로그인한 사용자가 없습니다. 비용을 사용자와 분리해 관리할 수 있도록 별도의 게이트웨이 키를 지정하세요.",
+        "serviceKeyRemove": "저장된 키 제거",
+        "preview": "미리보기",
+        "previewTitle": "나에게 전송될 내용",
+        "previewNone": "전송되는 내용이 없습니다.",
+        "previewFailed": "미리보기를 만들 수 없습니다",
+        "save": "저장",
+        "saved": "ID 전달이 저장되었습니다",
+        "saveFailed": "ID 전달을 저장하지 못했습니다"
+      },
+      "identityPolicy": {
+        "open": "ID 정책",
+        "damaged": "저장된 ID 정책을 읽을 수 없어 기본값을 표시합니다. 저장하면 대체됩니다.",
+        "title": "ID 정책",
+        "hint": "PipesHub가 모델 게이트웨이에 요청자에 대해 알려도 되는 정보입니다. ID를 전달하는 모든 연결에 적용됩니다.",
+        "subjectSource": "사용자 식별 기준",
+        "subjectUserId": "사용자 ID",
+        "subjectEmail": "이메일 주소",
+        "subjectIdp": "ID 공급자 개체 ID",
+        "includeEmail": "이메일 주소 포함",
+        "includeDisplayName": "표시 이름 포함",
+        "pseudonymize": "안정적인 가명으로 ID 숨기기",
+        "pseudonymizeHint": "게이트웨이에는 실제 ID 대신 알아볼 수 없는 ID가 보입니다. 매핑은 되돌릴 수 없습니다.",
+        "groups": "그룹 멤버십 전달",
+        "groupsHint": "게이트웨이가 그룹별 접근과 예산을 적용할 수 있습니다.",
+        "allowList": "이 그룹만 전달",
+        "allowListHint": "한 줄에 그룹 ID 하나. 비워 두면 아래 한도까지 모든 그룹을 전달합니다.",
+        "maxGroups": "전달할 최대 그룹 수",
+        "blockMissing": "로그인한 사용자가 없는 요청 거부",
+        "blockMissingHint": "ID를 전달할 때 사용자와 연결할 수 없는 대화형 호출은 서비스로 보내지 않고 거부합니다.",
+        "embeddingAsService": "검색 임베딩을 서비스에 귀속",
+        "embeddingAsServiceHint": "끔: 사용자의 검색어 임베딩 비용은 해당 사용자의 예산에서 차감됩니다.",
+        "servicePrefix": "서비스 ID 접두사",
+        "saved": "ID 정책이 저장되었습니다",
+        "saveFailed": "ID 정책을 저장하지 못했습니다",
+        "loadFailed": "ID 정책을 불러오지 못했습니다"
+      },
+      "batchStatus": {
+        "pending": "대기",
+        "checking": "확인 중",
+        "healthy": "저장됨",
+        "failed": "실패"
+      },
+      "modelPickerSelected": "선택한 모델 ({{count}})",
+      "modelPickerSelectedHint": "각 모델은 따로 확인되고 저장됩니다. 여기서 이름, 컨텍스트 길이, 기능을 설정하세요.",
+      "modelPickerFieldFor": "{{model}}의 {{field}}",
+      "modelPickerDefaultFor": "{{model}}을(를) 기본값으로 설정",
+      "modelPickerRemoveFor": "{{model}} 제거",
+      "modelComboboxAddMore": "다른 모델 추가…",
+      "modelComboboxTypeHint": "모델 이름을 입력하고 Enter 키를 누르세요.",
+      "modelComboboxOtherGroup": "기타 모델",
+      "modelComboboxUseTyped": "\"{{model}}\" 사용",
+      "modelHintManual": "모델 이름을 입력하고 Enter 키를 누르세요. 여러 개를 추가하면 함께 저장됩니다.",
+      "modelHintNeedsFields": "모델 목록을 불러오려면 위의 연결 정보를 입력하거나 모델 이름을 직접 입력하세요.",
+      "modelHintFailed": "모델을 불러오지 못했습니다: {{message}} 모델 이름은 직접 입력할 수 있습니다.",
+      "modelHintNoneFound": "공급자가 이 유형의 모델을 제공하지 않았습니다. 모델 이름을 입력하세요.",
+      "modelHintLoaded_one": "사용 가능한 모델 {{count}}개. 검색하거나 원하는 모델 이름을 입력하세요.",
+      "modelHintLoaded_other": "사용 가능한 모델 {{count}}개. 검색하거나 원하는 모델 이름을 입력하세요.",
+      "modelComboboxPlaceholder": "모델 이름을 선택하거나 입력하세요",
+      "checkingOne": "{{provider}}에서 {{model}} 확인 중…",
+      "checkingMany": "{{provider}}에서 모델 {{total}}개 확인 중…",
+      "checkingProgress": "모델 {{total}}개 중 {{done}}개 확인 완료…",
+      "checkingHint": "각 모델에 짧은 테스트 호출을 보냅니다. 보통 1분 이내에 끝납니다.",
+      "checkFailedOne": "{{model}}이(가) 확인을 통과하지 못했습니다",
+      "checkFailedMany": "모델 {{total}}개 중 {{failed}}개가 확인을 통과하지 못했습니다",
+      "checkFailedHint": "패널을 열어 원인을 확인하고 다시 시도하세요."
     },
     "common": {
       "loadingUsers": "사용자 로드 중...",
@@ -1874,8 +2263,11 @@
       "createdBy": "생성자",
       "createdOn": "생성일"
     },
+    "bulk": {
+      "selected": "{{label}} {{count}}개 선택됨"
+    },
     "pagination": {
-      "showing": "전체 {{total}}개 중 {{from}}-{{to}} 표시",
+      "showing_other": "전체 {{count}}개 중 {{from}}-{{to}} 표시",
       "previous": "이전",
       "next": "다음"
     },
@@ -1915,7 +2307,7 @@
         "webSearch": "웹 검색",
         "tenants": "테넌트",
         "superOrgs": "조직",
-        "oauthApps": "OAuth 앱",
+        "oauthApps": "커넥터 OAuth 앱",
         "serviceAccounts": "서비스 계정"
       }
     },
@@ -1923,7 +2315,7 @@
       "title": "액션",
       "subtitle": "레코드 생성, 필드 업데이트, 워크플로우 트리거 같은 자동화된 액션을 구성합니다. 각 앱에는 지원되는 기능에 맞춘 액션이 있습니다.",
       "yourActionsTitle": "내 액션",
-      "yourActionsSubtitle": "관리자가 내 계정에 제공한 액션을 인증하고 관리합니다.",
+      "yourActionsSubtitle": "관리자가 제공한 액션에 로그인하거나 직접 추가하세요.",
       "tabs": {
         "all": "전체",
         "configured": "구성됨",
@@ -1943,7 +2335,7 @@
         "manage": "관리",
         "unavailable": "사용 불가",
         "notConfigured": "구성되지 않음",
-        "adminSetupRequired": "관리자 설정 필요"
+        "add": "추가"
       },
       "trailingYourActions": "내 액션",
       "loading": "액션을 불러오는 중…",
@@ -2003,7 +2395,7 @@
         "refreshingList": "목록 업데이트 중…",
         "searchInstances": "인스턴스 검색…",
         "teamInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증된 액션은 에이전트에 추가할 수 있습니다.",
-        "personalInstanceInfo": "조직의 액션 인스턴스에 대해 인증합니다. 인증이 완료되면 에이전트에서 이 액션들을 사용할 수 있습니다.",
+        "personalInstanceInfo": "조직의 액션에 로그인하거나 직접 추가하세요. 로그인하면 에이전트에서 사용할 수 있습니다.",
         "instanceTabs": {
           "all": "전체({{count}})",
           "authenticated": "인증됨({{count}})",
@@ -2062,10 +2454,37 @@
         "maxLength": "{{field}}은(는) {{maxLength}}자를 넘을 수 없습니다",
         "email": "{{field}}은(는) 올바른 이메일 주소여야 합니다",
         "url": "{{field}}은(는) 올바른 URL이어야 합니다",
-        "urlProtocol": "{{field}}은(는) http 또는 https를 사용해야 합니다"
+        "urlProtocol": "{{field}}은(는) http 또는 https를 사용해야 합니다",
+        "numberRange": "{{min, number}}에서 {{max, number}} 사이의 정수를 입력하세요.",
+        "numberMin": "{{min, number}} 이상의 정수를 입력하세요.",
+        "numberMax": "{{max, number}} 이하의 정수를 입력하세요."
       },
-      "adminRequiredToast": "관리자만 새 작업을 추가할 수 있습니다. 관리자에게 이 작업을 먼저 구성해 달라고 요청하세요.",
-      "personalNonAdminHint": "\"구성되지 않음\"으로 표시된 작업은 사용하기 전에 관리자가 설정해야 합니다."
+      "toolRules": {
+        "open": "도구 승인",
+        "title": "도구 승인: {{name}}",
+        "description": "어시스턴트나 에이전트가 이 도구를 사용하려고 할 때 어떻게 되는지입니다. 조직의 모든 사용자에게 같은 규칙이 적용됩니다.",
+        "readOnly": "관리자만 변경할 수 있습니다.",
+        "toolsError": "이 도구 모음의 도구를 불러오지 못했습니다.",
+        "defaults": "데이터를 읽거나 변경하는 도구는 실행됩니다. 데이터를 삭제하거나 시트를 비우거나 이메일을 보내는 도구는 PipesHub 앱 채팅에서 먼저 묻고, Slack 봇이나 API처럼 아무도 응답할 수 없는 곳에서는 실행되지 않습니다.",
+        "enterpriseTitle": "조직 도구 승인",
+        "enterpriseDescription": "조직의 모든 사용자에게 이 도구 세트의 어떤 도구를 실행할지, 먼저 물을지, 실행하지 않을지 선택하세요."
+      },
+      "personal": {
+        "setupCallout": "이 액션은 나만 보고 사용할 수 있으며, 조직과 공유된 에이전트에는 추가할 수 없습니다. 추가한 후 로그인하세요.",
+        "yours": "내 액션",
+        "addOwn": "직접 추가",
+        "added": "액션을 추가했습니다.",
+        "delete": "액션 삭제",
+        "deleteTitle": "{{name}}을(를) 삭제할까요?",
+        "deleteBody": "이 액션의 로그인 정보와 도구 승인도 함께 삭제됩니다. 되돌릴 수 없습니다.",
+        "deleted": "액션을 삭제했습니다.",
+        "adminOnly": "{{name}}은(는) 관리자만 추가할 수 있습니다. 호스트 이름으로 서버에 연결하기 때문입니다. 관리자에게 조직용으로 추가해 달라고 요청하세요."
+      },
+      "enterprise": {
+        "userActionsTitle": "구성원의 개인 액션",
+        "userActionsDescription": "조직 구성원이 직접 추가한 액션을 검토하고 삭제합니다."
+      },
+      "appsHeading": "앱 액션"
     },
     "rightPanel": {
       "primaryDisabledHint": "위로 스크롤하여 필수 필드(* 표시)를 작성한 후 계속하세요.",
@@ -2186,7 +2605,9 @@
       },
       "featureFlags": {
         "title": "기능 플래그",
-        "subtitle": "이 워크스페이스의 모든 에이전트에 대해 실험적 기능을 켜거나 끕니다."
+        "subtitle": "이 워크스페이스의 모든 에이전트에 대해 실험적 기능을 켜거나 끕니다.",
+        "advancedTitle": "고급 기능 플래그 표시",
+        "advancedSubtitle": "대부분의 워크스페이스에서 기본값으로 두어도 되는 내부 플래그입니다."
       },
       "vectorStore": {
         "title": "벡터 스토어",
@@ -2196,7 +2617,7 @@
     "authentication": {
       "loading": "인증 설정을 불러오는 중…",
       "configure": "구성",
-      "title": "인증 설정",
+      "title": "인증",
       "subtitle": "사용자가 애플리케이션에 로그인하는 방식을 구성합니다",
       "methodsHeading": "인증 방식",
       "methodsSubtitle": "하나 이상의 인증 방식을 활성화하세요. 사용자는 활성화된 모든 방식으로 로그인할 수 있습니다.",
@@ -2222,17 +2643,11 @@
       "panels": {
         "google": "Google 인증 구성",
         "microsoft": "Microsoft 인증 구성",
-        "samlSso": "SAML SSO 구성",
-        "oauth": "OAuth 2.0 구성",
         "github": "GitHub 인증 구성"
       },
       "jit": {
         "title": "JIT(Just-In-Time) 프로비저닝 활성화",
         "description": "사용자가 {{providerName}}(으)로 처음 로그인할 때 사용자 계정을 자동으로 생성합니다"
-      },
-      "xmlUpload": {
-        "parseError": "이 파일에서 SAML 메타데이터를 파싱할 수 없습니다. 유효한 IdP 메타데이터 XML인지 확인하세요.",
-        "readError": "파일 읽기에 실패했습니다."
       },
       "riskDialog": {
         "title": "인증 변경 확인",
@@ -2245,6 +2660,22 @@
       "userMethods": {
         "heading": "사용자 로그인 방법",
         "subtitle": "모든 조직의 모든 사용자가 사용할 수 있는 로그인 방법을 제어합니다."
+      },
+      "signInRemoval": {
+        "title_other": "PipesHub 1.0에서 {{methods}} 로그인이 제거되었습니다",
+        "nowSignsInWith": "이제 이 워크스페이스는 {{methods}}(으)로 로그인합니다.",
+        "peopleIntro": "다음 사용자는 로그인한 적이 있지만 아직 비밀번호가 없습니다:",
+        "person": "{{name}} ({{email}})",
+        "andMore": "외 {{count}}명",
+        "howToSetPassword": "Google, Microsoft 또는 이메일 OTP로 로그인하지 않는 사용자는 비밀번호를 설정해야 합니다. 로그인 페이지의 '비밀번호 찾기'를 사용할 수 있으며, 이 경우 이메일(SMTP)이 설정되어 있어야 합니다. 또는 PipesHub 서버를 운영하는 담당자가 PipesHub 1.0 업그레이드 가이드에 따라 비밀번호 설정 링크를 만들어 줄 수 있습니다.",
+        "methodNames": {
+          "password": "비밀번호",
+          "otp": "이메일 OTP",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -2300,7 +2731,7 @@
       },
       "successDialog": {
         "title": "인스턴스 구성이 완료되어 동기화할 준비가 되었습니다!",
-        "description": "지금 바로 {{name}} 데이터를 Pipeshub와 동기화하거나,",
+        "description": "지금 바로 {{name}} 데이터를 PipesHub와 동기화하거나,",
         "descriptionSuffix": "나중에 설정에서 진행할 수 있습니다.",
         "later": "나중에 하기",
         "startSync": "지금 동기화 시작"
@@ -2324,6 +2755,12 @@
         "confirm": "동기화 중지",
         "confirmFull": "전체 동기화 중지"
       },
+      "disableSyncConfirm": {
+        "title": "{{name}}의 동기화를 비활성화할까요?",
+        "confirm": "동기화 비활성화",
+        "confirming": "비활성화 중..."
+      },
+      "disabledSearchNotice": "이 커넥터의 레코드는 비활성화한 시점의 접근 권한 그대로 계속 검색됩니다. {{source}}에서 변경한 공유 설정은 다시 활성화할 때까지 PipesHub에 반영되지 않습니다. 레코드를 제거하려면 커넥터를 삭제하세요.",
       "fullSync": {
         "disabledTooltip": "전체 동기화를 시작하기 전에 진행 중인 동기화를 중지하세요"
       },
@@ -2346,7 +2783,8 @@
         "errorFallback": "커넥터를 비활성화하지 못했습니다. 다시 시도해 주세요.",
         "actions": {
           "removeInstance": "이 커넥터 인스턴스를 제거",
-          "saveConfig": "설정 변경 사항을 저장"
+          "saveConfig": "설정 변경 사항을 저장",
+          "saveAuth": "새 자격 증명을 저장"
         }
       },
       "adminAccessDialog": {
@@ -2377,6 +2815,17 @@
         "addRecords": "레코드 추가"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "연결 테스트 중…",
+          "egressTitle": "방화벽에서 PipesHub 허용",
+          "egressDescription": "{{name}}이(가) 방화벽 뒤에 있거나 알려진 IP 주소만 허용하는 경우 다음 주소의 연결을 허용하세요:",
+          "copyIp": "IP 주소 복사",
+          "ipCopied": "IP 주소를 복사했습니다",
+          "copyFailed": "복사할 수 없습니다",
+          "copyFailedDescription": "주소를 직접 복사하거나 이 사이트의 클립보드 접근을 허용하세요.",
+          "failedTitle": "{{name}}에 연결하지 못했습니다",
+          "requestFailed": "연결을 테스트하지 못했습니다. 다시 시도하세요."
+        },
         "methodLabel": "인증 방법",
         "methodPlaceholder": "인증 유형 선택...",
         "credentialsHeading": "{{name}} 자격 증명",
@@ -2426,7 +2875,13 @@
         "syncStrategyHelper": "{{name}}에서 데이터를 동기화하는 방식을 선택하세요",
         "syncInterval": "동기화 주기",
         "syncIntervalPlaceholder": "주기 선택...",
-        "syncIntervalHelper": "{{name}} 데이터를 새로 고칠 주기를 설정하세요"
+        "syncIntervalHelper": "{{name}} 데이터를 새로 고칠 주기를 설정하세요",
+        "lastRunLimit": {
+          "saved": "마지막 동기화: 페이지 {{count, number}}개 저장됨",
+          "stoppedAtLimit": "이 한도에서 중지됨",
+          "leftOut": "{{count, number}}개 제외됨",
+          "nearLimit": "이 커넥터는 이미 이 한도의 90% 이상을 저장하고 있습니다. 이 사이트의 페이지를 더 보관하려면 한도를 늘리세요."
+        }
       },
       "instancePanel": {
         "overview": "개요",
@@ -2459,7 +2914,68 @@
         "recordsByType": "유형별 레코드",
         "noRecordTypes": "사용 가능한 레코드 유형이 없습니다",
         "localWatcherLabel": "로컬 워처",
-        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건"
+        "localWatcherStatus": "{{state}} · 대기 {{pending}}건 · 실패 {{failed}}건",
+        "classification": "분류",
+        "enrichment": {
+          "title": "AI 데이터 추출",
+          "description": "레코드를 검색할 수 있게 된 후 백그라운드에서 실행됩니다. 검색은 이 작업을 기다리지 않습니다.",
+          "classificationHint": "요약, 주제, 카테고리를 추가합니다",
+          "entities": "엔터티 추출",
+          "entitiesHint": "사람, 조직, 장소를 찾습니다",
+          "progress": "{{total}}개 중 {{completed}}개",
+          "waiting": "대기 중",
+          "skipped": "건너뜀",
+          "notStarted": "레코드를 검색할 수 있게 되면 시작됩니다",
+          "inProgress": "진행 중",
+          "done": "완료",
+          "failedCount_one": "{{count}}개 실패",
+          "failedCount_other": "{{count}}개 실패",
+          "retry": "재시도"
+        },
+        "retryFailedClassification": "실패한 분류 재시도",
+        "retryClassificationSuccess": "분류 재시도가 대기열에 추가되었습니다",
+        "retryClassificationError": "분류 재시도에 실패했습니다",
+        "retryFailedEntities": "실패한 개체 추출 재시도",
+        "retryEntitiesSuccess": "개체 추출 재시도가 대기열에 추가되었습니다",
+        "retryEntitiesError": "개체 추출 재시도에 실패했습니다",
+        "codeGraph": {
+          "title": "코드 그래프",
+          "status": {
+            "never_built": "아직 생성되지 않음",
+            "building": "생성 중",
+            "ready": "준비됨",
+            "stale": "업데이트 중",
+            "waiting_on_indexing": "인덱싱 대기 중",
+            "retrying": "재시도 중",
+            "failed": "실패",
+            "too_large": "너무 큼",
+            "unknown": "알 수 없음"
+          }
+        },
+        "lastRun": {
+          "title": "마지막 동기화",
+          "outcome": {
+            "succeeded": "완료",
+            "failed": "실패",
+            "stopped": "중지됨",
+            "skipped": "건너뜀"
+          },
+          "stopReason": {
+            "max_pages": "최대 페이지 한도에 도달함",
+            "time_limit": "시간 제한에 도달함. 다음 동기화에서 이어서 진행합니다",
+            "stalled": "사이트가 응답을 멈춤. 다음 동기화에서 이어서 진행합니다",
+            "rate_limited": "사이트가 요청을 줄여 달라고 계속 응답함. 다음 동기화에서 이어서 진행합니다"
+          },
+          "pagesSaved": "페이지 {{count}}개 저장됨",
+          "failed": "페이지 {{count}}개 실패",
+          "robotsSkipped": "robots.txt로 {{count}}개 건너뜀",
+          "noindexSkipped": "{{count}}개가 색인 제외를 요청함",
+          "skippedMaxPages": "최대 페이지 한도로 {{count}}개 제외됨",
+          "pruned": "사이트에서 사라져 {{count}}개 삭제됨",
+          "sitemapUrls": "사이트맵에서 {{count}}개 발견",
+          "resumed": "완료되지 않은 동기화를 이어서 진행함",
+          "lastSyncedWithOutcome": "{{time}} ({{outcome}})"
+        }
       },
       "settingsTab": {
         "instanceName": "인스턴스 이름",
@@ -2504,7 +3020,9 @@
           "ready": "완료",
           "readyTooltip": "구성과 인증이 완료되었습니다. 활성화하면 동기화를 실행할 수 있습니다.",
           "desktopOffline": "데스크톱 오프라인",
-          "desktopOfflineTooltip": "이 폴더를 관리하는 데스크톱 앱이 연결되어 있지 않습니다. 동기화하려면 해당 컴퓨터에서 앱을 여세요."
+          "desktopOfflineTooltip": "이 폴더를 관리하는 데스크톱 앱이 연결되어 있지 않습니다. 동기화하려면 해당 컴퓨터에서 앱을 여세요.",
+          "actionNeeded": "조치 필요",
+          "actionNeededTooltip": "확인이 필요합니다: {{items}}"
         },
         "sync": {
           "kind": "동기화",
@@ -2576,6 +3094,7 @@
         "add": "필터 추가",
         "incomplete": "여기에 요약을 보려면 아래 각 필터의 연산자와 값을 완성하세요.",
         "empty": "아직 필터가 없습니다. \"필터 추가\"를 사용해 지원되는 필터 중 하나를 선택하세요.",
+        "unsetFallback": "{{field}}: {{value}} (기본값)",
         "operator": "연산자",
         "chooseOperator": "연산자 선택…",
         "value": "값",
@@ -2648,13 +3167,122 @@
           "confirm": "다시 인덱싱 시작"
         },
         "typePrompt": "확인하려면 {{token}}을(를) 입력하세요."
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "시작 URL",
+            "help": "PipesHub가 처음 방문하는 페이지입니다. 저장한 후에는 변경할 수 없으며, 다른 사이트를 크롤링하려면 커넥터를 하나 더 추가하세요."
+          },
+          "type": {
+            "label": "크롤링 범위",
+            "options": {
+              "single": "이 페이지만",
+              "recursive": "이 페이지와 여기에 링크된 페이지"
+            }
+          },
+          "discovery": {
+            "label": "페이지 찾는 방법",
+            "help": "사이트맵이 가장 빠르며, 링크는 사이트맵에 없는 페이지를 찾아냅니다.",
+            "options": {
+              "sitemap_and_links": "사이트맵 및 링크(권장)",
+              "links": "링크만",
+              "sitemap": "사이트맵만"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "이 섹션 안에서만",
+            "help": "시작 URL 경로(예: /docs/) 아래의 페이지만 포함합니다."
+          },
+          "max_pages": {
+            "label": "최대 페이지 수",
+            "help": "PipesHub는 이 사이트에서 최대 이 개수만큼 페이지를 보관합니다. PDF 같은 파일도 페이지로 계산됩니다.",
+            "unit": "페이지"
+          },
+          "url_should_contain": {
+            "label": "URL에 다음이 포함된 페이지만 저장",
+            "help": "모든 페이지를 저장하려면 비워 두세요. 일치하지 않는 페이지는 방문하지 않으므로 그 페이지의 링크도 따라가지 않습니다."
+          },
+          "ignore_query_params": {
+            "label": "같은 페이지, 다른 URL",
+            "help": "sort나 ref처럼 페이지 내용을 바꾸지 않는 URL 매개변수입니다. 모두 무시하려면 *를 사용하세요. 추적 매개변수(utm_…)는 항상 무시됩니다."
+          },
+          "depth": {
+            "label": "시작 페이지에서의 클릭 수",
+            "help": "링크를 따라갈 깊이입니다. 사이트맵에 있는 페이지는 1클릭으로 계산됩니다.",
+            "unit": "클릭"
+          },
+          "max_size_mb": {
+            "label": "다운로드할 최대 파일 크기",
+            "help": "이보다 큰 페이지와 파일은 건너뛰며 마지막 동기화에 표시됩니다.",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "다른 사이트로 연결되는 링크도 따라가기",
+            "help": "보통 꺼 둡니다. 크롤링이 이 사이트를 훨씬 벗어날 수 있습니다."
+          },
+          "use_headless_browser": {
+            "label": "항상 브라우저 사용(느림)",
+            "help": "꺼짐: PipesHub가 JavaScript가 필요한 페이지를 감지하여 해당 사이트에만 브라우저를 사용합니다."
+          },
+          "browser_like_identity": {
+            "label": "웹 브라우저로 식별",
+            "help": "꺼짐: 요청이 PipesHub 크롤러로 식별됩니다. 크롤링이 허용되었지만 크롤러를 차단하는 사이트에만 켜세요. robots.txt는 계속 준수합니다."
+          },
+          "respect_robots_txt": {
+            "label": "robots.txt 준수",
+            "help": "사이트가 크롤러에게 방문하거나 색인하지 말라고 요청한 페이지를 건너뜁니다."
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "웹사이트"
+          },
+          "crawl": {
+            "title": "크롤링 대상"
+          },
+          "skip": {
+            "title": "건너뛸 대상"
+          },
+          "advanced": {
+            "title": "고급",
+            "description": "크롤링 깊이, 파일 크기, 브라우저 및 크롤러 식별 정보."
+          }
+        },
+        "summaryOn": "{{label}} 켜짐",
+        "summaryOff": "{{label}} 꺼짐",
+        "summaryValue": "{{label}}: {{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "시작 설정",
+        "custom": "사용자 지정",
+        "suggested": "이 주소에 추천: {{name}}",
+        "replaceTitle": "현재 설정을 바꾸시겠습니까?",
+        "replaceMessage": "{{name}}(으)로 현재 크롤링 설정이 바뀝니다.",
+        "replaceConfirm": "바꾸기",
+        "web": {
+          "docs": "문서 사이트",
+          "helpCenter": "고객센터",
+          "wholeSite": "사이트 전체",
+          "onePage": "한 페이지"
+        }
+      },
+      "actionItems": {
+        "badge": "조치 필요",
+        "title": "조치 필요",
+        "openAuthentication": "인증 업데이트",
+        "viewSteps": "설정 단계 보기"
       }
     },
     "mcpServers": {
       "searchPlaceholder": "MCP 서버 검색...",
       "loading": "MCP 서버를 불러오는 중…",
       "noResults": "검색과 일치하는 MCP 서버가 없습니다",
-      "addServer": "서버 추가",
+      "replacedNotice": "더 이상 유지 관리되지 않습니다. 대신 {{name}}을(를) 추가하세요.",
+      "addServer": "새 서버",
       "custom": "사용자 지정",
       "inherited": "상속됨",
       "inheritedDeleteTooltip": "상위 조직에서 관리됩니다",
@@ -2662,17 +3290,33 @@
       "sharedAuth": "공유 관리자 인증",
       "toolsCount_one": "도구 {{count}}개",
       "toolsCount_other": "도구 {{count}}개",
+      "toolsCachedAt": "{{time}} 기준 도구",
+      "editImpact": {
+        "title": "저장된 로그인을 삭제할까요?",
+        "body": "이 서버에 접속하거나 로그인하는 방식을 바꾸면 사용자와 에이전트가 저장한 자격 증명이 삭제됩니다. 모두 다시 연결해야 합니다.",
+        "personalBody": "이 서버에 접속하거나 로그인하는 방식을 바꾸면 나와 내 에이전트가 저장한 자격 증명이 삭제됩니다. 다시 연결해야 합니다.",
+        "sharedBody": "공유 자격 증명을 끄면 삭제됩니다. 모두 각자의 자격 증명으로 연결해야 합니다.",
+        "confirm": "저장하고 로그인 삭제"
+      },
       "cta": {
         "manage": "관리",
         "delete": "삭제",
         "reauthenticate": "재인증",
+        "reconnect": "다시 연결",
         "disconnect": "연결 해제",
         "connect": "연결",
-        "addInstance": "인스턴스 추가"
+        "addInstance": "인스턴스 추가",
+        "edit": "편집"
       },
       "status": {
-        "ready": "준비됨",
+        "ready": "연결됨",
         "notConnected": "연결 안 됨",
+        "reconnectNeeded": "다시 연결 필요",
+        "waitingForAdmin": "관리자 대기 중",
+        "sharedCredentialMissing": "공유 자격 증명 없음",
+        "blocked": "정책으로 차단됨",
+        "unreachable": "서버에 연결할 수 없음",
+        "slow": "응답이 느림",
         "needsAuth": "인증 필요",
         "disabled": "비활성화됨"
       },
@@ -2684,9 +3328,17 @@
       },
       "personal": {
         "title": "MCP 서버",
-        "subtitle": "관리자가 제공한 MCP 서버에 인증하세요.",
+        "subtitle": "관리자가 제공한 MCP 서버에 연결하거나 직접 서버를 추가하세요.",
         "emptyTitle": "사용 가능한 MCP 서버가 없습니다",
-        "emptyDescription": "관리자가 아직 MCP 서버를 추가하지 않았습니다."
+        "emptyDescription": "직접 추가하거나 관리자에게 모두를 위한 서버를 추가해 달라고 요청하세요.",
+        "yourServersDescription": "직접 추가한 서버입니다. 나만 보고 사용할 수 있으며, 조직과 공유된 에이전트에는 추가할 수 없습니다.",
+        "tabs": {
+          "all": "전체",
+          "connected": "연결됨",
+          "notConnected": "연결 안 됨"
+        },
+        "yours": "내 서버",
+        "noneInTab": "여기에 MCP 서버가 없습니다."
       },
       "details": {
         "breadcrumbLabel": "MCP 서버",
@@ -2706,12 +3358,14 @@
         "authBannerTitle": "인증 필요",
         "authBannerDescription": "팀 에이전트가 사용할 수 있도록 이 MCP 서버를 인증하세요.",
         "authBannerAuthenticatedTitle": "연결됨",
+        "reconnectBannerDescription": "이 서버의 로그인이 만료되었거나 거부되었습니다. 계속 사용하려면 다시 연결하세요.",
         "authBannerAuthenticatedDescription": "이 MCP 서버를 재인증하거나 연결을 해제할 수 있습니다.",
         "createdBy": "만든 사람"
       },
       "deleteDialog": {
         "title": "MCP 서버를 삭제할까요?",
-        "body": "\"{{name}}\" 서버가 영구적으로 제거됩니다. 이 서버를 사용 중인 팀 구성원은 액세스 권한을 잃게 됩니다."
+        "body": "\"{{name}}\" 서버가 영구적으로 제거됩니다. 이 서버를 사용 중인 팀 구성원은 액세스 권한을 잃게 됩니다.",
+        "personalBody": "\"{{name}}\" 서버와 저장된 자격 증명이 영구적으로 제거됩니다."
       },
       "toasts": {
         "loadError": "MCP 서버를 불러오지 못했습니다",
@@ -2725,10 +3379,15 @@
         "disconnected": "연결이 해제되었습니다",
         "disconnectError": "연결 해제에 실패했습니다",
         "credentialsSaveError": "서버는 저장되었지만 자격 증명을 저장하지 못했습니다. 나중에 관리에서 추가할 수 있습니다.",
+        "credentialsSaved": "자격 증명이 저장됨",
+        "credentialsReset": "MCP 서버가 업데이트되었습니다. 연결이 변경되어 저장된 자격 증명이 삭제되었습니다. 사용하려면 다시 연결하세요.",
+        "oauthTimedOut": "로그인 시간이 너무 오래 걸려 중단되었습니다. 다시 시도하세요.",
+        "oauthProviderError": "로그인 실패: {{message}}",
         "discoveryError": "도구를 검색하지 못했습니다"
       },
       "authDialog": {
         "title": "{{name}} 인증",
+        "docsLink": "찾는 방법",
         "description": "이 MCP 서버에 연결하려면 자격 증명을 입력하세요."
       },
       "form": {
@@ -2740,6 +3399,7 @@
         "argsPlaceholder": "인수 추가",
         "requiredEnv": "필수 환경 변수",
         "requiredEnvPlaceholder": "환경 변수 이름 추가 (예: API_KEY)",
+        "defaultTokenEnvHint": "변수를 지정하지 않으면 토큰이 {{name}}(으)로 명령에 전달됩니다.",
         "url": "URL",
         "authMode": "인증 모드",
         "headerName": "헤더 이름",
@@ -2755,14 +3415,56 @@
         "credentialsHint": "지금 자격 증명을 추가하거나, 건너뛰고 나중에 연결 및 도구 탭에서 연결하세요.",
         "multiEnvIncomplete": "모든 필수 환경 변수를 입력하거나, 나중에 연결하려면 모두 비워 두세요.",
         "oauthPairRequired": "클라이언트 ID와 클라이언트 시크릿을 모두 입력하거나, 둘 다 비워 두세요.",
-        "connectAfterCreateHint": "이 서버를 저장한 후 관리를 다시 열어 연결하세요."
+        "connectAfterCreateHint": "이 서버를 저장한 후 관리를 다시 열어 연결하세요.",
+        "timeoutsHeading": "시간 제한",
+        "connectTimeout": "연결 시간 제한(초)",
+        "callTimeout": "도구 호출 시간 제한(초)",
+        "timeoutRange": "{{min}}에서 {{max}} 사이의 숫자를 입력하거나, 기본값을 사용하려면 비워 두세요."
       },
       "configPanel": {
         "editTitle": "MCP 서버 편집",
-        "createTitle": "MCP 서버 추가",
+        "createTitle": "새 MCP 서버",
         "tabs": {
           "configuration": "구성",
-          "connection": "연결 및 도구"
+          "tools": "도구 및 승인",
+          "toolList": "도구"
+        },
+        "synced": "{{time}} 동기화됨",
+        "refreshTools": "도구 목록 새로 고침",
+        "signInForTools": "이 서버의 도구를 보려면 로그인하세요.",
+        "toolsError": "도구 목록을 불러오지 못했습니다",
+        "toolsErrorSignIn": "서버에서 다시 로그인하라고 요청합니다.",
+        "rulesKept": "저장된 승인 규칙은 유지됩니다.",
+        "tryAgain": "다시 시도",
+        "findingTools": "이 서버의 도구를 찾는 중",
+        "rulesUnlock": "목록이 준비되면 승인 규칙을 설정할 수 있습니다.",
+        "unsaved_one": "저장되지 않은 변경 {{count}}개",
+        "unsaved_other": "저장되지 않은 변경 {{count}}개",
+        "allSaved": "모든 규칙이 저장됨",
+        "discard": "취소",
+        "saveRules": "규칙 저장",
+        "discardTitle": "저장되지 않은 규칙 변경을 취소할까요?",
+        "discardBody_one": "도구 {{count}}개의 규칙을 변경했습니다. 지금 닫으면 변경 사항이 사라집니다.",
+        "discardBody_other": "도구 {{count}}개의 규칙을 변경했습니다. 지금 닫으면 변경 사항이 사라집니다.",
+        "noSignIn": "로그인 필요 없음 · {{transport}}",
+        "signInExpired": "로그인 만료됨",
+        "sharedMissing": "공유 로그인 정보 없음",
+        "signInExpiredBody": "누군가 다시 로그인할 때까지 이 서버의 도구를 실행할 수 없습니다.",
+        "notSignedIn": "로그인하지 않음",
+        "notSignedInDetail": "이 서버의 도구를 사용하려면 로그인하세요.",
+        "signedIn": "로그인됨",
+        "sharedSignIn": "공유 로그인",
+        "signedInDetail": "{{transport}} · {{time}} 로그인",
+        "menu": {
+          "label": "추가 작업",
+          "copyUrl": "서버 URL 복사",
+          "copied": "서버 URL을 복사했습니다",
+          "copyFailed": "서버 URL을 복사하지 못했습니다",
+          "addedBy": "{{name}} 님이 추가함",
+          "disconnectHint": "로그아웃합니다. 설정과 규칙은 유지됩니다.",
+          "remove": "서버 삭제",
+          "removeHint": "모든 사용자에게서 삭제합니다.",
+          "removeHintPersonal": "서버와 로그인 정보를 삭제합니다."
         }
       },
       "oauthConfig": {
@@ -2782,7 +3484,9 @@
         "callbackUrlLabel": "콜백 URL",
         "copyCallbackUrl": "콜백 URL 복사",
         "callbackUrlCopied": "콜백 URL이 복사되었습니다",
-        "providerDocsLink": "공급자 설정 문서 보기"
+        "providerDocsLink": "공급자 설정 문서 보기",
+        "clientSecretPrefixHint": "{{prefix}}(으)로 시작합니다. 이 부분을 포함해 시크릿 전체를 복사하세요.",
+        "clientSecretPrefixMissing": "{{prefix}}(으)로 시작하지 않아 공급자가 거부합니다. 더블클릭으로 복사하면 이 부분이 빠집니다. 시크릿 전체를 복사하세요."
       },
       "oauth": {
         "completingTitle": "로그인을 완료하는 중…",
@@ -2800,18 +3504,79 @@
       "stdioPolicy": {
         "disabledTitle": "이 배포에서 비활성화됨",
         "disabledDescription": "사용자 지정 STDIO 서버는 PipesHub 서버에서 명령을 실행하므로, 운영자가 배포 환경에 {{flag}}=true를 설정하기 전까지는 꺼져 있습니다(Docker Compose .env 또는 Helm의 config.mcpAllowCustomStdio). 그때까지 에이전트는 이 서버의 도구를 사용할 수 없습니다. 서버를 삭제하거나 원격(HTTP) 서버로 전환할 수 있습니다.",
-        "unavailableHint": "이 배포에서는 로컬 명령(STDIO) 서버가 꺼져 있습니다. 허용하려면 운영자가 {{flag}}=true를 설정해야 합니다.",
+        "unavailableHint": "로컬 명령(STDIO) 서버가 꺼져 있습니다. 관리자에게 활성화를 요청하세요.",
         "enabledWarning": "이 명령은 서비스 권한(네트워크 접근 및 자격 증명 포함)으로 PipesHub 서버에서 실행됩니다. 신뢰할 수 있는 명령만 추가하세요."
+      },
+      "addDialog": {
+        "title": "MCP 서버 추가",
+        "description": "카탈로그에서 서버를 선택하거나 URL로 원격 MCP 서버를 연결하세요. 나만 볼 수 있습니다.",
+        "custom": "사용자 지정 서버",
+        "customDescription": "URL로 연결하는 원격 MCP 서버"
+      },
+      "toolRules": {
+        "open": "도구 승인",
+        "title": "도구 승인: {{name}}",
+        "description": {
+          "personal": "어시스턴트나 에이전트가 채팅에서 이 도구를 사용하려고 할 때 어떻게 할지 선택하세요."
+        },
+        "loading": "불러오는 중…",
+        "loadError": "규칙을 불러오지 못했습니다.",
+        "search": "이름 또는 ID로 검색",
+        "empty": "아직 표시할 도구가 없습니다. 서버를 연결하면 도구가 표시됩니다.",
+        "rule": {
+          "allow": "사전 승인",
+          "ask": "승인 시 허용",
+          "block": "거부"
+        },
+        "saved": "도구 승인이 저장되었습니다",
+        "saveError": "도구 승인을 저장하지 못했습니다",
+        "kindSource": {
+          "name": "이름으로 분류됨: 서버가 이 도구의 동작을 알려주지 않습니다.",
+          "none": "서버가 이 도구의 동작을 알려주지 않아 데이터를 변경하는 도구로 취급합니다."
+        },
+        "group": {
+          "destructive": "되돌릴 수 없음",
+          "write": "데이터 변경",
+          "read": "읽기 전용",
+          "notOffered": "현재 제공되지 않음",
+          "byName": "이름으로 설정한 규칙"
+        },
+        "groupHint": {
+          "destructive": "먼저 검토하세요",
+          "read": "조회만 합니다"
+        },
+        "noMatch": "검색과 일치하는 도구가 없습니다.",
+        "clearSearch": "검색 지우기",
+        "noTools": "표시할 도구가 없습니다."
+      },
+      "disconnectDialog": {
+        "title": "{{name}} 연결을 해제할까요?",
+        "yours_one": "다시 로그인할 때까지 이 서버의 도구 {{count}}개를 사용할 수 없습니다.",
+        "yours_other": "다시 로그인할 때까지 이 서버의 도구 {{count}}개를 사용할 수 없습니다.",
+        "yoursUnknown": "다시 로그인할 때까지 이 서버의 도구를 사용할 수 없습니다.",
+        "shared_one": "조직의 에이전트가 Slack과 예약 실행을 포함해 이 서버의 도구 {{count}}개를 즉시 사용할 수 없게 됩니다.",
+        "shared_other": "조직의 에이전트가 Slack과 예약 실행을 포함해 이 서버의 도구 {{count}}개를 즉시 사용할 수 없게 됩니다.",
+        "sharedUnknown": "조직의 에이전트가 Slack과 예약 실행을 포함해 이 서버의 도구를 즉시 사용할 수 없게 됩니다.",
+        "keeps": "서버 설정과 승인 규칙은 유지됩니다",
+        "reconnect": "언제든 다시 로그인하여 연결할 수 있습니다",
+        "deletesYours": "저장된 로그인 정보가 삭제됩니다",
+        "deletesShared": "공유 로그인 정보가 삭제됩니다",
+        "disconnecting": "연결 해제 중…"
+      },
+      "enterprise": {
+        "orgRulesTitle": "조직 승인 규칙",
+        "orgRulesDescription": "조직 전체에서 어떤 도구를 실행하고, 먼저 확인하고, 실행하지 않을지 정합니다. 여기서는 각자 MCP 서버 페이지에서 자신의 규칙을 설정합니다.",
+        "userServersTitle": "구성원의 개인 MCP 서버",
+        "userServersDescription": "조직 구성원이 직접 추가한 MCP 서버를 검토하고 삭제합니다."
       }
     },
     "bots": {
       "subtitle": "봇 자격 증명을 구성하고 필요에 따라 각 봇을 에이전트에 연결합니다",
       "loading": "봇을 불러오는 중…",
       "defaultAssistant": "기본 어시스턴트",
-      "createBot": "봇 만들기",
-      "emptyTitle": "봇 없음",
+      "createBot": "새 봇",
+      "emptyTitle": "아직 봇이 없습니다",
       "emptyDescription": "지금 첫 번째 봇을 설정해 보세요",
-      "addBot": "봇 추가",
       "types": {
         "slack": "Slack 봇",
         "discord": "Discord 봇",
@@ -2854,8 +3619,8 @@
         "deleteBot": "봇 삭제"
       },
       "title": "봇",
-      "noBots": "봇 없음",
-      "setupFirstBot": "지금 첫 번째 봇을 설정해 보세요",
+      "noBots": "아직 봇이 없습니다",
+      "setupFirstBot": "봇을 사용하면 Slack에서 바로 에이전트에게 질문할 수 있습니다. 시작하려면 봇을 추가하세요.",
       "documentation": "문서",
       "configPanelTitle": "봇 구성",
       "selectBotSetup": "봇 설정 선택",
@@ -2895,7 +3660,7 @@
       "subtitle": "에이전트가 사용할 수 있는 커스텀 스킬을 만들어 보세요 — 마크다운 지침, 선택적 스크립트와 참조 파일로 구성되며, Agent Builder의 다른 모든 항목처럼 버전 관리 및 거버넌스가 적용됩니다.",
       "loading": "스킬을 불러오는 중…",
       "refreshed": "새로고침됨",
-      "createSkill": "스킬 만들기",
+      "createSkill": "새 스킬",
       "importSkill": "가져오기",
       "reviewCandidates": "후보 검토",
       "searchPlaceholder": "스킬 검색…",
@@ -3036,7 +3801,8 @@
       "availability": {
         "label": "에이전트에서 사용 가능",
         "description": "끄면 이 스킬은 라이브러리에 남아 있지만 에이전트가 찾거나 불러올 수 없습니다.",
-        "descriptionBuiltin": "끄면 이 기본 제공 스킬은 라이브러리에 남아 있지만 조직 전체의 에이전트가 찾거나 불러올 수 없습니다."
+        "descriptionBuiltin": "끄면 이 기본 제공 스킬은 라이브러리에 남아 있지만 조직 전체의 에이전트가 찾거나 불러올 수 없습니다.",
+        "short": "사용 가능"
       }
     },
     "mail": {
@@ -3128,7 +3894,7 @@
       "configCalloutTitle": "프롬프트 구성",
       "configCalloutDescription": "사용자 지정 시스템 프롬프트는 AI의 동작, 어조, 질문에 대한 답변 방식을 정의하는 데 도움이 됩니다. 프롬프트가 명확하고 조직의 요구에 부합하는지 확인하세요.",
       "resetToDefault": "기본값으로 재설정",
-      "customInstructionsTitle": "사용자 지정 지침",
+      "customInstructionsTitle": "프롬프트",
       "customInstructionsDescription": "채팅 어시스턴트를 위한 사용자 지정 지침을 추가하세요. 예를 들어 특정 언어로 답변하기, 서식 스타일 따르기, 원하는 동작 적용하기 등입니다. 아래 각 모드는 답변 방식이 다르므로 자체 지침을 갖습니다.",
       "scopeHint": "이 지침은 <bold>채팅 어시스턴트</bold>(아래 에이전트 모드)에만 적용됩니다. <bold>Agent Builder</bold>에서 만든 사용자 지정 에이전트에는 영향을 주지 않으며, 각 에이전트는 자체 시스템 프롬프트와 해당 에이전트에 구성된 지침을 사용합니다.",
       "agentTitle": "에이전트",
@@ -3138,7 +3904,7 @@
     },
     "webSearch": {
       "loading": "웹 검색 설정을 불러오는 중…",
-      "title": "웹 검색 구성",
+      "title": "웹 검색",
       "subtitle": "챗봇이 웹을 검색할 때 사용할 웹 검색 공급자를 구성합니다",
       "methodsHeading": "다양한 웹 검색 방식",
       "methodsSubtitle": "사용자가 웹 검색에 사용할 방식을 선택하세요",
@@ -3170,16 +3936,23 @@
         "default": "기본값",
         "configured": "구성됨",
         "notConfigured": "구성되지 않음",
-        "active": "구성됨"
+        "active": "구성됨",
+        "builtIn": "기본 제공"
       },
-      "heading": "웹 검색 구성",
+      "heading": "웹 검색",
       "methodsSection": "다양한 웹 검색 방식",
       "methodsSectionDescription": "사용자가 웹 검색에 사용할 방식을 선택하세요",
       "policyTitle": "웹 검색 공급자 정책",
       "verifying": "연결을 확인하는 중...",
       "disabledReasonConfigure": "활성화하기 전에 먼저 이 공급자를 구성하세요.",
       "disabledReasonActive": "이 공급자를 활성화하기 전에 현재 활성화된 공급자를 비활성화하세요.",
-      "configureTip": "구성"
+      "configureTip": "구성",
+      "actions": {
+        "setDefault": "기본값으로 설정",
+        "settingDefault": "설정 중…",
+        "editConfiguration": "구성 편집",
+        "deleteConfiguration": "구성 삭제"
+      }
     },
     "profile": {
       "subtitle": "개인 프로필 정보를 여기에서 관리합니다",
@@ -3213,7 +3986,7 @@
         "title": "역할 및 권한",
         "role": "역할",
         "groups": "그룹",
-        "roleDescription": "Pipeshub 앱에서의 역할",
+        "roleDescription": "PipesHub 앱에서의 역할",
         "groupsDescription": "소속된 사용자 그룹",
         "noGroups": "사용자 그룹이 없습니다"
       },
@@ -3374,6 +4147,12 @@
           "label": "추출 서비스",
           "description": "LLM 기반 문서 분류 및 메타데이터 추출"
         }
+      },
+      "vectorDbMemory": {
+        "title": "검색 인덱스가 벡터 데이터베이스 메모리에 들어가지 않습니다",
+        "message": "검색 인덱스가 빠르게 동작하려면 약 {{needed}} GB의 메모리가 필요하지만 벡터 데이터베이스에는 약 {{available}} GB만 있습니다. 그래서 검색이 디스크에서 읽어 오며, 여러 검색이 동시에 실행되면 더 느려집니다.",
+        "messageHost": "검색 인덱스가 빠르게 동작하려면 약 {{needed}} GB의 메모리가 필요하지만 벡터 데이터베이스가 실행되는 서버의 전체 메모리는 약 {{available}} GB뿐입니다. 그래서 검색이 디스크에서 읽어 오며, 여러 검색이 동시에 실행되면 더 느려집니다.",
+        "guide": "벡터 데이터베이스 용량 산정 가이드"
       }
     },
     "tenants": {
@@ -3480,7 +4259,7 @@
       }
     },
     "oauthApps": {
-      "title": "OAuth 앱",
+      "title": "커넥터 OAuth 앱",
       "subtitle": "커넥터와 액션에 사용할 OAuth 자격 증명을 관리합니다. \"기본\"으로 표시된 앱은 재정의하지 않는 한 새 연결에 자동으로 사용됩니다.",
       "addButton": "OAuth 앱 추가",
       "tabs": {
@@ -3606,6 +4385,12 @@
         "scopesHelp": "이 토큰이 무엇을 할 수 있는지 선택하세요. 기본값은 없습니다. 무인으로 실행되는 자격 증명은 누군가 의도적으로 선택한 권한만 가져야 합니다.",
         "expiryLabel": "만료 기간",
         "expiryDays": "{{count}}일",
+        "expiryCustom": "사용자 지정",
+        "expiryCustomLabel": "토큰 만료까지 남은 일수",
+        "expiryCustomUnit": "일",
+        "expiryCustomHelp": "1에서 {{max}} 사이의 일수를 입력하세요.",
+        "expiryCustomInvalid": "1에서 {{max}} 사이의 정수 일수를 입력하세요.",
+        "expiryCustomPreview": "{{date}}에 만료",
         "existing": "토큰",
         "none": "이 계정에는 아직 토큰이 없습니다.",
         "lastUsed": "마지막 사용 {{date}}",
@@ -3633,7 +4418,206 @@
       "disableTitle": "이 서비스 계정을 사용 중지할까요?",
       "disableDescription": "{{name}}은(는) 즉시 작동을 멈춥니다. 다음 로그인 때가 아니라 이미 보유한 모든 토큰이 함께 중지됩니다. 다시 사용 설정할 때까지 그 토큰을 사용하는 모든 것이 실패합니다.",
       "disableConfirm": "사용 안 함",
-      "memberBadge": "서비스 계정"
+      "memberBadge": "서비스 계정",
+      "manageDelegations": "누구를 대신할 수 있는지",
+      "delegations": {
+        "title": "다른 사람을 대신하여 작업",
+        "explainer": "이 서비스 계정은 지정된 사람을 대신하도록 허용할 수 있습니다. 그렇게 하면 그 사람이 읽을 수 있는 것만 읽으며, 발급되는 토큰은 5분 동안만 유효합니다. 관리자는 여기에 지정할 수 없습니다.",
+        "unavailableTitle": "특정 사용자를 대신해 작업하는 기능은 Enterprise 기능입니다",
+        "unavailableBody": "이 서비스 계정이 지정된 동료로서 작업하도록 허용하는 것 — 허용 목록, 해당 사용자 이름으로 발급되는 5분짜리 토큰, 그리고 모든 시도의 기록 — 은 Enterprise 에디션의 일부이며 이 에디션에는 포함되어 있지 않습니다.",
+        "unavailableAvailableHere": "이 에디션에 포함된 것: 서비스 계정 자체, 직접 부여한 지식 베이스에 대한 자체 접근 권한, 그리고 발급하고 취소할 수 있는 토큰입니다. 다른 사람의 권한이 아닌 자체 권한으로 동작하는 모든 통합을 포괄합니다.",
+        "addTitle": "누군가를 대신하도록 허용",
+        "subjectLabel": "사용자",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "이 서비스 계정이 대신할 수 있는 사람의 이메일 주소를 입력하세요.",
+        "reasonLabel": "사유",
+        "reasonPlaceholder": "필요한 이유",
+        "reasonHelp": "나중에 이 목록을 검토하는 사람에게 표시됩니다.",
+        "addConfirm": "허용",
+        "listTitle": "대신할 수 있는 사람",
+        "none": "이 서비스 계정은 아무도 대신할 수 없습니다. 자신의 권한으로만 읽습니다.",
+        "loading": "불러오는 중…",
+        "inactive": "더 이상 사용할 수 없음",
+        "revoke": "제거",
+        "revokeTitle": "이 권한을 제거할까요?",
+        "revokeDescription": "이 서비스 계정은 더 이상 {{subject}}을(를) 대신할 수 없습니다.",
+        "revokeSuccessTitle": "권한이 제거되었습니다",
+        "revokeErrorTitle": "권한을 제거하지 못했습니다",
+        "grantSuccessTitle": "권한이 부여되었습니다",
+        "grantErrorTitle": "권한을 부여하지 못했습니다",
+        "loadErrorTitle": "위임 설정을 불러오지 못했습니다",
+        "logTitle": "최근 활동",
+        "logHelp": "이 목록의 모든 변경과, 이 서비스 계정이 누군가를 대신하겠다고 요청한 모든 기록으로, 거부된 경우도 포함됩니다.",
+        "logNone": "아직 기록이 없습니다.",
+        "outcomeIssued": "허용됨",
+        "outcomeRefused": "거부됨",
+        "outcomeGranted": "권한 추가됨",
+        "outcomeRevoked": "권한 제거됨",
+        "byAdmin": "{{admin}}"
+      }
+    },
+    "apiToolsets": {
+      "title": "API 액션",
+      "subtitle": "관리자가 에이전트에 제공한 내부 API입니다. 요청되는 경우 내 자격 증명을 연결하세요.",
+      "subtitleAdmin": "OpenAPI 명세로 내부 REST API를 액션으로 만드세요. 에이전트가 호출할 수 있는 작업과 PipesHub의 로그인 방식을 선택합니다.",
+      "emptyTitle": "첫 API 액션 추가",
+      "emptyAdmin": "내부 REST API의 OpenAPI 3.0 또는 3.1 명세를 업로드하세요.",
+      "card": {
+        "fallbackDescription": "OpenAPI 명세로 추가한 내부 REST API입니다."
+      },
+      "operationCount_other": "작업 {{count}}개",
+      "kind": {
+        "read": "읽기",
+        "write": "쓰기",
+        "destructive": "삭제"
+      },
+      "authType": {
+        "none": "인증 없음",
+        "api_key": "API 키",
+        "http_bearer": "Bearer 토큰",
+        "http_basic": "사용자 이름과 비밀번호",
+        "oauth2_client_credentials": "OAuth 2.0 클라이언트 자격 증명",
+        "oauth2_authorization_code": "OAuth 2.0 로그인"
+      },
+      "status": {
+        "connected": "연결됨",
+        "notConnected": "연결 안 됨",
+        "open": "로그인 필요 없음",
+        "shared": "공유 자격 증명"
+      },
+      "cta": {
+        "add": "API 액션 추가",
+        "connect": "연결",
+        "manageConnection": "연결 관리",
+        "details": "세부 정보",
+        "edit": "편집",
+        "delete": "삭제",
+        "more": "{{name}} 옵션 더 보기"
+      },
+      "toasts": {
+        "loadError": "API 액션을 불러오지 못했습니다",
+        "created": "API 액션을 추가했습니다",
+        "updated": "API 액션을 업데이트했습니다",
+        "saveError": "API 액션을 저장하지 못했습니다",
+        "deleted": "API 액션을 삭제했습니다",
+        "deleteError": "API 액션을 삭제하지 못했습니다",
+        "connected": "연결되었습니다",
+        "disconnected": "연결이 해제되었습니다"
+      },
+      "deleteDialog": {
+        "title": "API 액션 삭제",
+        "body": "{{name}}을(를) 삭제할까요? 저장된 모든 자격 증명이 삭제됩니다. 에이전트가 사용하는 API 액션은 삭제할 수 없습니다."
+      },
+      "editor": {
+        "addTitle": "API 액션 추가",
+        "editTitle": "API 액션 편집",
+        "spec": "OpenAPI 명세",
+        "specHint": "API의 OpenAPI 3.0/3.1 명세를 JSON 또는 YAML 형식으로 업로드하거나 붙여 넣으세요. PipesHub가 작업과 로그인 방식을 읽어 옵니다.",
+        "specEditHint": "현재 명세를 유지하려면 비워 두세요. 새 명세를 올리면 그 작업과 인증 방식 중에서 고를 수 있습니다.",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "명세 읽기",
+        "previewing": "명세를 읽는 중…",
+        "validateError": "명세를 읽지 못했습니다",
+        "warnings": "명세의 일부를 건너뛰었습니다:",
+        "operations": "작업 ({{total}}개 중 {{selected}}개 선택됨)",
+        "operationsHint": "에이전트는 선택한 작업만 호출할 수 있습니다.",
+        "name": "이름",
+        "description": "설명",
+        "baseUrl": "기본 URL",
+        "baseUrlHint": "PipesHub가 요청을 보내는 주소입니다. 작업 경로가 뒤에 붙습니다.",
+        "loopbackHint": "localhost는 PipesHub 서버 자체를 뜻합니다. 네트워크의 호스트 이름처럼 PipesHub가 API에 접근하는 주소를 사용하세요.",
+        "authScheme": "인증",
+        "authSchemeLocked": "인증 방식을 바꾸려면 명세를 다시 올리세요.",
+        "scopes": "범위",
+        "oauthClientId": "OAuth 앱 클라이언트 ID",
+        "oauthClientSecret": "OAuth 앱 클라이언트 시크릿",
+        "keepSecret": "저장된 시크릿을 유지하려면 비워 두세요",
+        "sharedCredential": "공유 자격 증명 하나 사용",
+        "sharedCredentialHint": "자격 증명을 한 번 설정하면 모든 멤버가 사용합니다. 끄면 멤버마다 자신의 자격 증명을 연결합니다.",
+        "sharedCredentialForced": "클라이언트 자격 증명은 사람이 아닌 앱으로 로그인하므로 모두가 설정한 자격 증명을 공유합니다.",
+        "timeout": "시간 제한(초)",
+        "timeoutHint": "API 응답을 기다리는 시간으로, 1~{{max}}초입니다.",
+        "problems": {
+          "name": "이름을 입력하세요.",
+          "baseUrl": "기본 URL을 입력하세요.",
+          "operations": "작업을 하나 이상 선택하세요.",
+          "timeout": "1~120초 사이의 시간 제한을 입력하세요.",
+          "oauthClientId": "OAuth 앱의 클라이언트 ID를 입력하세요."
+        },
+        "create": "API 액션 추가",
+        "specLoadedHint": "이 API 액션의 기반이 되는 명세입니다. 최신 버전에서 고르려면 명세를 교체하세요.",
+        "replaceSpec": "명세 교체",
+        "specUnread": "먼저 새 명세를 읽거나 교체를 취소하세요.",
+        "specSummary_other": "버전 {{version}} · OpenAPI {{openapi}} · 작업 {{count}}개",
+        "dropFile": "명세 파일을 여기에 놓거나 클릭해서 선택하세요",
+        "dropFileHint": "JSON 또는 YAML. 아래에 명세를 붙여 넣을 수도 있습니다.",
+        "sampleHint": "명세가 없나요? 모든 로그인 방식을 갖춘 헬프데스크 API 샘플로 시작하세요.",
+        "sample": {
+          "yaml": "샘플 YAML",
+          "json": "샘플 JSON"
+        },
+        "detailsHeading": "세부 정보",
+        "descriptionHint": "에이전트는 이 내용을 읽고 API를 언제 사용할지 결정합니다.",
+        "authSchemeHint": "에이전트가 API를 호출할 때 PipesHub가 로그인하는 방식입니다.",
+        "redirectUrl": "리디렉션 URL",
+        "redirectUrlHint": "이 URL을 OAuth 앱에 허용된 리디렉션으로 등록하세요.",
+        "noAuthHint": "PipesHub는 자격 증명 없이 API를 호출하므로 명세에서 공개로 표시한 작업만 작동합니다.",
+        "selectReads": "읽기만",
+        "selectAll": "전체",
+        "selectNone": "없음",
+        "unreachableWarning_other": "선택한 작업 {{count}}개에 자격 증명이 필요하므로 인증 없이는 실패합니다.",
+        "deselectUnreachable": "선택 해제",
+        "needsCredentials": "자격 증명 필요",
+        "needsCredentialsHint": "명세에 따르면 이 작업에는 자격 증명이 필요합니다. 인증하지 않으면 API가 요청을 거부합니다.",
+        "advancedHeading": "고급"
+      },
+      "connect": {
+        "mode": {
+          "none": "이 API에는 자격 증명이 필요 없습니다.",
+          "own": "에이전트가 내 자격 증명으로 이 API를 호출합니다.",
+          "shared": "모든 멤버가 여기에서 설정한 자격 증명을 사용합니다.",
+          "managed": "이 API 액션의 자격 증명은 관리자가 관리합니다."
+        },
+        "status": "상태",
+        "signIn": "로그인",
+        "signInAgain": "다시 로그인",
+        "signingIn": "로그인 중…",
+        "fields": {
+          "apiKey": "API 키",
+          "token": "토큰",
+          "username": "사용자 이름",
+          "password": "비밀번호",
+          "clientId": "클라이언트 ID",
+          "clientSecret": "클라이언트 시크릿"
+        },
+        "replaceHint": "저장되었습니다. 바꾸려면 새 값을 입력하세요.",
+        "error": "작업에 실패했습니다. 다시 시도하세요.",
+        "test": "연결 테스트",
+        "testing": "테스트 중…",
+        "testOk": "API가 응답했습니다.",
+        "testFailed": "API가 오류로 응답했습니다.",
+        "testTruncated": "응답의 앞부분만 표시됩니다.",
+        "disconnect": "연결 해제",
+        "disconnecting": "연결 해제 중…",
+        "panelTitle": "API 액션",
+        "connectionHeading": "연결",
+        "testHeading": "연결 테스트",
+        "testHint": "입력이 필요 없는 읽기 작업 하나를 호출합니다.",
+        "testIdle": "테스트 호출을 실행해 API가 무엇을 반환하는지 확인하세요.",
+        "testNeedsConnection": "먼저 연결한 다음 테스트 호출을 실행하세요.",
+        "operationsHeading_other": "에이전트가 호출할 수 있는 작업 {{count}}개"
+      },
+      "sectionTitle": "API 액션",
+      "kindCount": {
+        "read_other": "읽기 {{count}}개",
+        "write_other": "쓰기 {{count}}개",
+        "destructive_other": "삭제 {{count}}개"
+      },
+      "kindPolicy": {
+        "read": "즉시 실행",
+        "write": "먼저 사용자에게 확인",
+        "destructive": "에이전트의 액션 규칙에서 허용하지 않으면 차단"
+      }
     }
   },
   "filePreview": {
@@ -3655,6 +4639,8 @@
     "resizeCitations": "인용 패널 크기 조정",
     "resizePreview": "파일 미리보기 패널 크기 조정",
     "viewCitations": "인용 보기",
+    "preview": "미리보기",
+    "fileDetails": "파일 세부 정보",
     "openNamedInSource": "{{name}}을(를) 원본에서 열기"
   },
   "agentBuilder": {
@@ -3662,20 +4648,17 @@
     "agentName": "이름",
     "createdBy": "작성자",
     "agentNamePlaceholder": "예: 지원 봇",
-    "serviceAccountBadge": "서비스 에이전트",
-    "serviceAccountBadgeTooltip": "이 서비스 에이전트는 전용 툴셋 자격 증명을 사용하며, 사용하는 모든 사람에게 조직 전체의 지식 접근 권한이 적용됩니다.",
-    "convertToServiceAccount": "서비스 에이전트로 전환",
-    "convertToServiceAccountTooltip": "영구적: 에이전트 수준 툴셋과 조직 전체 지식이 적용됩니다. 되돌릴 수 없습니다.",
-    "convertToServiceAccountTooltipNewAgent": "에이전트 수준 툴셋과 조직 전체 지식을 갖춘 서비스 에이전트로 이 에이전트를 생성합니다.",
-    "createAsServiceAccount": "서비스 에이전트",
-    "createAsServiceAccountTooltip": "에이전트 수준 툴셋과 전체 지식 접근 권한으로 생성합니다.",
+    "serviceAgentBadge": "서비스 에이전트",
+    "serviceAgentBadgeTooltip": "이 서비스 에이전트는 자체 툴셋 자격 증명을 사용합니다. 지식 검색은 만든 사람의 접근 권한으로 이루어지므로, 사용하는 모든 사람이 만든 사람이 읽을 수 있는 범위의 결과를 보게 됩니다.",
+    "convertToServiceAgentTooltip": "영구적: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 만든 사람의 접근 권한으로 수행됩니다. 되돌릴 수 없습니다.",
+    "convertToServiceAgentTooltipNewAgent": "이 에이전트를 서비스 에이전트로 만듭니다: 에이전트 수준 툴셋, 조직 전체에 공유, 지식 검색은 본인의 접근 권한으로 수행됩니다.",
     "agentActionsMenuAria": "에이전트 메뉴",
     "agentMenuCreateAsServiceAgent": "서비스 에이전트로 생성",
     "agentMenuConvertToServiceAgent": "서비스 에이전트로 전환",
     "share": "공유",
     "shareWithOrg": "모두와 공유",
     "shareWithOrgTooltip": "조직의 모든 구성원과 이 에이전트를 공유합니다.",
-    "serviceAccountShareTooltip": "서비스 에이전트는 항상 조직 전체와 공유됩니다.",
+    "serviceAgentShareTooltip": "서비스 에이전트는 항상 조직 전체와 공유됩니다.",
     "saving": "저장 중…",
     "saveChanges": "변경 사항 저장",
     "createAgent": "에이전트 생성",
@@ -3684,9 +4667,20 @@
     "userAgent": "사용자 에이전트",
     "userAgentDesc": "사용자별 툴셋 인증을 사용하는 개인 에이전트입니다.",
     "serviceAgent": "서비스 에이전트",
-    "serviceAgentDesc": "에이전트 수준 툴셋 자격 증명을 사용하는 조직 전체 에이전트입니다.",
+    "serviceAgentDesc": "에이전트 수준 툴셋 자격 증명을 사용하는 조직 전체 에이전트입니다. 지식 검색은 만든 사람의 접근 권한으로 수행됩니다.",
+    "identitySearchesAs": "{{identity}}(으)로 검색",
+    "identityCreator": "작성자",
+    "identityBoundUnknown": "서비스 계정",
+    "identityTooltip": "이 에이전트가 지식을 검색할 때 사용할 ID를 선택하세요. 이 에이전트를 쓰는 모든 사람은 해당 ID가 읽을 수 있는 범위의 결과를 보게 됩니다.",
+    "identityDialogTitle": "다음 ID로 지식 검색",
+    "identityDialogBody": "이 에이전트는 조직 전체와 공유되므로, 이 설정이 모두의 질문이 닿을 수 있는 범위를 결정합니다. 기본값은 작성자입니다. 서비스 계정은 관리자가 의도적으로 권한을 부여한 ID입니다.",
+    "identityChoose": "선택",
+    "identityLoading": "서비스 계정을 불러오는 중…",
+    "identityLoadError": "서비스 계정을 불러오지 못했습니다.",
+    "identityRetry": "다시 시도",
+    "identityNone": "아직 서비스 계정이 없습니다. 워크스페이스 → 서비스 계정에서 만드세요.",
     "nameRequired": "계속하려면 이름을 입력하세요.",
-    "saveAsServiceAccountFirst": "먼저 에이전트를 서비스 에이전트로 저장한 후 툴셋 자격 증명을 구성하세요.",
+    "saveAsServiceAgentFirst": "먼저 에이전트를 서비스 에이전트로 저장한 후 툴셋 자격 증명을 구성하세요.",
     "hidePalette": "팔레트 숨기기",
     "showPalette": "팔레트 표시",
     "openInChat": "채팅에서 열기",
@@ -3697,8 +4691,14 @@
     "removeConnectionDesc": "두 노드 간의 링크가 제거됩니다. 핸들에서 다시 연결할 수 있습니다.",
     "remove": "제거",
     "palette": "팔레트",
+    "addToCanvas": "캔버스에 추가",
     "paletteDragHint": "블록을 캔버스로 드래그하세요",
-    "paletteViewOnlyServiceAccount": "보기 전용입니다. 이 조직 서비스 에이전트에서는 팔레트와 툴셋 설정이 잠겨 있습니다.",
+    "paletteTapHint": "+를 탭하여 캔버스에 블록을 추가하세요",
+    "loadingAgent": "에이전트 불러오는 중…",
+    "agentLoadFailedTitle": "이 에이전트를 불러올 수 없습니다",
+    "agentLoadFailedDescription": "연결을 확인하고 다시 시도하세요. 에이전트를 불러올 때까지 아무것도 저장되지 않습니다.",
+    "agentLoadRetry": "다시 시도",
+    "paletteViewOnlyServiceAgent": "보기 전용입니다. 이 조직 서비스 에이전트에서는 팔레트와 툴셋 설정이 잠겨 있습니다.",
     "paletteActionBlockedViewOnly": "보기 전용입니다. 이 조직 서비스 에이전트는 여기에서 변경할 수 없습니다.",
     "viewerPaletteDragBlocked": "보기 전용입니다. 플로우가 잠겨 있습니다. 도구 아래에서 툴셋을 인증하세요.",
     "paletteViewerAuthenticateInTools": "보기 전용입니다. 캔버스 드래그가 비활성화되어 있습니다. 도구 아래에서 툴셋에 로그인하세요.",
@@ -3715,8 +4715,8 @@
     "skillDisabled": "이 스킬은 비활성 상태이며 다시 활성화할 때까지 에이전트에서 사용할 수 없습니다",
     "collapse": "접기",
     "expand": "펼치기",
-    "serviceAccountCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
-    "serviceAccountConverted": "에이전트가 서비스 에이전트로 전환되었습니다. 팔레트의 열쇠 아이콘으로 툴셋 자격 증명을 구성하세요.",
+    "serviceAgentCreated": "서비스 에이전트가 생성되었습니다. 팔레트의 열쇠 아이콘으로 각 툴셋을 구성하세요.",
+    "serviceAgentConverted": "에이전트가 서비스 에이전트로 전환되었습니다. 팔레트의 열쇠 아이콘으로 툴셋 자격 증명을 구성하세요.",
     "unsavedChangesConfirm": "저장하지 않은 변경 사항이 있습니다. 정말 나가시겠습니까?",
     "agentUpdated": "에이전트가 업데이트되었습니다",
     "agentUpdatedDesc": "변경 사항이 저장되었습니다.",
@@ -3865,6 +4865,9 @@
     "configureMcpTooltip": "자격 증명 관리",
     "authenticateMcpTooltip": "이 MCP 서버 인증",
     "mcpAuthUpdatedNotify": "MCP 인증이 업데이트되었습니다.",
+    "mcpServersUnavailable": "이 에이전트의 MCP 서버를 불러올 수 없습니다",
+    "mcpServersUnavailableHint": "여기에 표시되지 않으며 저장해도 변경되지 않습니다. 다시 시도하려면 페이지를 새로고침하세요.",
+    "mcpServersUnavailableNoDrop": "이 에이전트의 MCP 서버를 불러올 수 없어서 페이지를 새로고침하기 전에는 추가할 수 없습니다.",
     "mcpAuthSaveError": "MCP 자격 증명 저장에 실패했습니다.",
     "mcpAuthRemoveError": "MCP 자격 증명 제거에 실패했습니다.",
     "loadingSchema": "스키마 불러오는 중…",
@@ -3963,7 +4966,7 @@
     "removeDeprecatedTools": "지원 중단된 도구 제거",
     "showMore": "더 보기",
     "showLess": "간략히 보기",
-    "mcpServerAlreadyAttachedNotify": "{{name}}은(는) 이미 이 에이전트에 연결되어 있습니다",
+    "mcpServerAlreadyAttachedNotify": "이 에이전트에는 이미 {{name}}과(와) 같은 유형의 다른 서버가 있습니다. 에이전트는 유형별로 서버를 하나만 사용할 수 있습니다.",
     "webSearchOnlyOne": "웹 검색 제공자는 하나만 연결할 수 있습니다",
     "mcpServerNodeSubtitle": "MCP 서버의 도구",
     "noMcpServersAvailable": "사용 가능한 MCP 서버가 없습니다",
@@ -3974,7 +4977,29 @@
     "toolsetOAuthServerError": "인증에 실패했습니다. 다시 시도하거나 관리자에게 문의하세요.",
     "attached": "연결됨",
     "mcpServerWithToolCount_other": "도구 {{count}}개가 있는 MCP 서버",
-    "deprecatedToolsBanner_other": "이 에이전트의 도구 {{count}}개가 더 이상 사용되지 않습니다. 제거하세요: {{tools}}"
+    "deprecatedToolsBanner_other": "이 에이전트의 도구 {{count}}개가 더 이상 사용되지 않습니다. 제거하세요: {{tools}}",
+    "mcpAllTools": "모든 도구",
+    "mcpAllToolsHint": "서버가 나중에 추가하는 도구도 포함됩니다.",
+    "mcpServerUnavailable": "사용할 수 없음",
+    "mcpServerUnavailableHint": "이 서버는 내 MCP 서버에 없습니다. 삭제되었거나 나와 공유되지 않았습니다.",
+    "mcpToolNotOnServer": "서버에 없음",
+    "mcpToolNotOnServerHint": "서버가 더 이상 이 도구를 제공하지 않습니다. 제거하지 않으면 에이전트가 사용할 수 없습니다.",
+    "mcpAllToolsNoneYet": "서버가 아직 도구를 제공하지 않았습니다. 에이전트는 서버가 제공하는 모든 도구를 사용합니다.",
+    "mcpNoToolsSelected": "선택한 도구가 없습니다. 도구를 추가하거나 \"모든 도구\"를 켜세요.",
+    "mcpServerNeedsToolsTooltip": "모든 MCP 서버에 대해 도구를 선택하거나 \"모든 도구\"를 켜세요.",
+    "mcpServerNeedsToolsBanner": "{{names}}에 대해 도구를 하나 이상 선택하거나 \"모든 도구\"를 켜세요.",
+    "mcpPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 MCP 서버입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
+    "mcpAgentApprovalsEnterprise": "에이전트별 도구 승인은 Enterprise Edition 기능입니다. 여기서는 각자의 도구 승인 설정이 적용됩니다.",
+    "mcpAgentApprovals": "에이전트별 도구 승인",
+    "limitSource": "{{name}}에서 검색할 범위 선택",
+    "limitSourceHint": "소스 전체를 선택된 상태로 두거나, 선택을 해제하고 에이전트가 검색할 폴더와 항목을 선택하세요.",
+    "limitSourceCount": "선택한 {{count}}개 항목으로 제한됨",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}}은(는) 개인 액션입니다. 조직과 공유된 에이전트나 서비스 계정으로 실행되는 에이전트에는 추가할 수 없습니다.",
+    "apiToolsets": {
+      "section": "API 액션",
+      "connectTooltip": "액션에서 연결하세요",
+      "serviceAccountBlocked": "서비스 계정 에이전트는 공유 자격 증명이 있거나 로그인이 필요 없는 API 액션만 사용할 수 있습니다."
+    }
   },
   "recordView": {
     "sections": {
@@ -4002,6 +5027,13 @@
       "noRecordMetadata": "이 항목에 대한 추가 레코드 메타데이터가 없습니다."
     },
     "indexingReasonAria": "인덱싱 실패 상세 정보",
+    "stageTrackLabel": "파이프라인",
+    "stageParsed": "파싱됨",
+    "stageSearchable": "검색 가능",
+    "stageClassified": "분류됨",
+    "stageEntities": "엔터티",
+    "stageAttempt": "시도 {{n}}회",
+    "stageDetailsAria": "단계 세부 정보",
     "tabRecordInformation": "레코드 정보",
     "tabDocumentDetails": "문서 상세 정보",
     "chat": "채팅",
@@ -4089,6 +5121,7 @@
     "missingRecordId": "레코드 ID 없음"
   },
   "oauthConsent": {
+    "workspace": "워크스페이스: {{name}}",
     "loading": "승인 요청을 불러오는 중…",
     "missingParams": "필수 OAuth 매개변수(client_id, redirect_uri)가 누락되었습니다.",
     "noData": "사용 가능한 승인 데이터가 없습니다.",
@@ -4096,6 +5129,9 @@
     "errorTitle": "승인 오류",
     "signedInAs": "{{display}}(으)로 로그인됨",
     "requestHeading": "이 애플리케이션이 다음에 대한 액세스를 요청합니다:",
+    "notGrantedHeading": "이 애플리케이션은 다음 권한도 요청했습니다. 애플리케이션 설정에서 허용하지 않으므로 이 권한은 부여되지 않습니다:",
+    "notGrantedOwnerHint": "이 애플리케이션을 만든 사람이 워크스페이스 설정 → 개발자 설정 → OAuth 2.0 앱에서 이 권한을 추가할 수 있습니다.",
+    "notGrantedOfflineAccess": "애플리케이션이 로그인 상태를 유지하지 않습니다. 세션이 끝나면 다시 로그인해야 합니다.",
     "unreviewedApp": "이 애플리케이션은 스스로 등록했습니다. 검토한 관리자가 없습니다.",
     "legalNotice": "“허용”을 클릭하면 위에 설명된 대로 {{appName}}이(가) 사용자의 데이터에 액세스하는 것을 승인하게 됩니다.",
     "privacyPolicy": "개인정보 처리방침",
@@ -4194,9 +5230,6 @@
       "emailVerifiedDescription": "이메일 주소가 업데이트되었습니다. 새 이메일로 로그인하세요.",
       "emailVerifyFailedTitle": "이메일 인증 실패",
       "emailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다.",
-      "samlErrorTitle": "SAML 로그인 중 오류가 발생했습니다",
-      "samlSignInFailedTitle": "로그인 실패",
-      "samlSignInFailedDescription": "SAML SSO를 완료할 수 없습니다. 다시 시도해 주세요.",
       "orgEmailVerifiedTitle": "조직이 인증되었습니다",
       "orgEmailVerifiedDescription": "조직이 이제 활성화되었습니다. 계속하려면 로그인하세요.",
       "orgEmailVerifyFailedTitle": "인증 실패",
@@ -4226,13 +5259,10 @@
       "signInWithEmailOtp": "이메일 OTP로 로그인",
       "orContinueWith": "또는 {{provider}}(으)로 계속하기",
       "orContinueWithAny": "또는 다음 중 하나로 계속하기",
-      "orContinueWithSso": "또는 Single Sign-On으로 계속하기",
       "googleNotConfigured": "조직에 Google 로그인이 구성되어 있지 않습니다.",
       "microsoftNotConfigured": "조직에 Microsoft 로그인이 구성되어 있지 않습니다.",
-      "oauthNotConfigured": "조직에 OAuth 로그인이 구성되어 있지 않습니다.",
       "googleUnavailable": "현재 Google 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
       "microsoftUnavailable": "현재 Microsoft 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
-      "oauthUnavailable": "현재 OAuth 로그인을 사용할 수 없습니다. 관리자에게 문의하세요.",
       "showPassword": "비밀번호 표시",
       "hidePassword": "비밀번호 숨기기",
       "accountDisabled": "계정이 비활성화되었습니다.",
@@ -4240,6 +5270,7 @@
     },
     "desktopHandoff": {
       "title": "로그인이 PipesHub로 전송되었습니다",
+      "integrationTitle": "인증이 PipesHub로 전송되었습니다",
       "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
       "openApp": "PipesHub 열기"
     }
@@ -4268,7 +5299,12 @@
     "back": "뒤로",
     "skip": "건너뛰기",
     "next": "다음",
-    "submit": "제출"
+    "submit": "제출",
+    "selectOne": "하나 선택",
+    "selectMany": "해당하는 항목 모두 선택",
+    "skipAll": "모두 건너뛰기",
+    "expired": "이 질문은 만료되었습니다. 계속하려면 채팅에서 답장하세요.",
+    "repliedInChat": "채팅에서 답장했습니다."
   },
   "oauthDevice": {
     "title": "기기 연결",
@@ -4281,6 +5317,39 @@
     "doneLine": "터미널로 돌아가셔도 됩니다. 이 창은 닫아도 좋습니다.",
     "deniedTitle": "요청이 거부되었습니다",
     "deniedLine": "기기에 접근 권한이 부여되지 않았습니다."
+  },
+  "knowledgeLimit": {
+    "title": "{{appName}}에서 무엇을 볼 수 있나요?",
+    "help": "여기서 허용한 항목만 검색하고 읽을 수 있으며, 회원님이 볼 수 있는 것보다 더 많이 볼 수는 없습니다.",
+    "everything": "내가 볼 수 있는 모든 항목",
+    "everythingHint": "나중에 추가하는 소스도 포함됩니다.",
+    "only": "내가 선택한 항목만",
+    "onlyHint": "소스 전체를 선택하거나, 소스를 열어 스페이스, 폴더 또는 파일을 선택하세요.",
+    "pickOne": "소스, 스페이스, 폴더 또는 파일을 하나 이상 선택하세요.",
+    "tooMany": "최대 {{max}}개 항목을 선택하거나, 대신 소스 전체를 선택하세요.",
+    "selectedCount_other": "{{count}}개 항목 선택됨",
+    "canSeeEverything": "볼 수 있는 항목: 회원님이 볼 수 있는 모든 항목",
+    "canSeeSome_other": "볼 수 있는 항목: 선택한 {{count}}개 항목",
+    "thisToken": "이 토큰",
+    "app": {
+      "thisApp": "이 앱",
+      "help": "이 앱을 연결한 사용자는 여기에서 선택한 항목만 검색하고 읽을 수 있으며, 본인이 볼 수 있는 범위를 넘지 않습니다.",
+      "everything": "각 사용자가 볼 수 있는 모든 항목",
+      "everythingHint": "나중에 추가되는 소스도 포함됩니다."
+    },
+    "appLimited_other": "{{appName}}은(는) 작성자가 선택한 {{count}}개 항목 중 회원님이 볼 수 있는 항목만 볼 수 있습니다."
+  },
+  "errorToast": {
+    "accessDenied": "액세스 거부됨",
+    "invalidRequest": "잘못된 요청",
+    "notFound": "찾을 수 없음",
+    "actionRequired": "조치 필요",
+    "connectionError": "연결 오류",
+    "serverError": "서버 오류",
+    "timedOut": "요청 시간 초과",
+    "somethingWentWrong": "문제가 발생했습니다",
+    "tryAgainShortly": "잠시 후 다시 시도해 주세요",
+    "connectedServiceProblem": "연결된 서비스에 문제가 있습니다"
   },
   "validation": {
     "password": {
@@ -4299,7 +5368,8 @@
     "isAnyOf": "다음 중 하나",
     "loadingOptions": "옵션을 불러오는 중…",
     "refreshingOptions": "옵션을 새로 고치는 중…",
-    "loadingMore": "더 불러오는 중…"
+    "loadingMore": "더 불러오는 중…",
+    "clear": "{{label}} 필터 지우기"
   },
   "moveFolder": {
     "moving": "이동 중...",

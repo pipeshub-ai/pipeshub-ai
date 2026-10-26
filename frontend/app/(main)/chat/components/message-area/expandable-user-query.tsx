@@ -1,9 +1,13 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { Box, Flex, Heading, Text, Button, IconButton } from '@radix-ui/themes';
+import { Box, Flex, Heading, Text, Button, IconButton, Tooltip } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
+import { MentionIcon } from '@/chat/components/mention-icon';
+import { locateMentionNames, mentionLabel, type MentionNode } from '@/chat/utils/node-mentions';
+import { CHAT_LINK_STYLE, cutOutsideUrl, findUrls, shortLinkLabel } from '@/chat/utils/link-label';
 
 export const QUESTION_CHAR_LIMIT = 250;
 export const EXPANDED_MAX_HEIGHT_PX = 360;
@@ -14,6 +18,84 @@ export interface ExpandableUserQueryProps {
   messageId?: string;
   isStreaming?: boolean;
   onEdit?: () => void;
+  /** Nodes the question was scoped to; where the text names one, it shows as a chip. */
+  mentions?: readonly MentionNode[];
+}
+
+function MentionChip({ node }: { node: MentionNode }) {
+  const text = mentionLabel(node);
+  // The icon is glued to the first word, so a line never breaks between them.
+  const firstBreak = text.search(/\s/);
+  const head = firstBreak < 0 ? text : text.slice(0, firstBreak);
+  const rest = firstBreak < 0 ? '' : text.slice(firstBreak);
+  const chip = (
+    <span
+      style={{
+        background: 'var(--accent-a3)',
+        color: 'var(--accent-a11)',
+        boxShadow: 'inset 0 0 0 1px var(--accent-a6)',
+        borderRadius: 6,
+        padding: '0 6px',
+        margin: '0 2px',
+        boxDecorationBreak: 'clone',
+        WebkitBoxDecorationBreak: 'clone',
+      }}
+    >
+      <span style={{ whiteSpace: 'nowrap' }}>
+        <span style={{ display: 'inline-flex', verticalAlign: '-0.12em', marginRight: 5, lineHeight: 0 }} aria-hidden>
+          <MentionIcon
+            nodeType={node.nodeType}
+            connector={node.connector}
+            extension={node.extension}
+            mimeType={node.mimeType}
+            name={node.name}
+            size={15}
+          />
+        </span>
+        {head}
+      </span>
+      {rest}
+    </span>
+  );
+  return text === node.name ? chip : <Tooltip content={node.name}>{chip}</Tooltip>;
+}
+
+function withLinks(text: string, keyPrefix: string): React.ReactNode[] {
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const { start, end, url } of findUrls(text)) {
+    if (start > cursor) out.push(text.slice(cursor, start));
+    out.push(
+      <a
+        key={`${keyPrefix}-${start}`}
+        href={url}
+        target="_blank"
+        rel="noopener noreferrer"
+        title={url}
+        style={CHAT_LINK_STYLE}
+      >
+        {shortLinkLabel(url)}
+      </a>
+    );
+    cursor = end;
+  }
+  if (cursor < text.length) out.push(text.slice(cursor));
+  return out;
+}
+
+function withMentions(text: string, mentions: readonly MentionNode[]): React.ReactNode {
+  const spans = locateMentionNames(text, mentions);
+  const out: React.ReactNode[] = [];
+  let cursor = 0;
+  for (const span of spans) {
+    if (span.start > cursor) out.push(...withLinks(text.slice(cursor, span.start), `t${cursor}`));
+    out.push(
+      <MentionChip key={`${span.node.id}-${span.start}`} node={span.node} />
+    );
+    cursor = span.end;
+  }
+  if (cursor < text.length) out.push(...withLinks(text.slice(cursor), `t${cursor}`));
+  return out;
 }
 
 function ActionIconButton({
@@ -134,13 +216,15 @@ function QueryActions({
 
 export function ExpandableUserQuery({
   question,
-  isMobile: _isMobile = false,
+  isMobile = false,
   messageId,
   isStreaming = false,
   onEdit,
+  mentions = [],
 }: ExpandableUserQueryProps) {
   const [expanded, setExpanded] = useState(false);
   const [hovered, setHovered] = useState(false);
+  const canHover = useCanHover();
 
   useEffect(() => setExpanded(false), [question]);
 
@@ -151,7 +235,7 @@ export function ExpandableUserQuery({
   if (!isLong || !expanded) {
     const displayed =
       isLong && !expanded
-        ? question.slice(0, QUESTION_CHAR_LIMIT).trimEnd() + '…'
+        ? question.slice(0, cutOutsideUrl(question, QUESTION_CHAR_LIMIT)).trimEnd() + '…'
         : question;
 
     return (
@@ -171,7 +255,7 @@ export function ExpandableUserQuery({
             wordBreak: 'break-word',
           }}
         >
-          {displayed}
+          {withMentions(displayed, mentions)}
           <span
             data-testid="user-query-inline-actions"
             style={{ marginLeft: 'var(--space-2)', verticalAlign: 'middle', display: 'inline-flex' }}
@@ -180,7 +264,7 @@ export function ExpandableUserQuery({
               question={question}
               showEdit={showEdit}
               onEdit={onEdit}
-              visible={hovered}
+              visible={hovered || isMobile || !canHover}
             />
           </span>
         </Heading>
@@ -218,7 +302,7 @@ export function ExpandableUserQuery({
             overflowY: 'auto',
           }}
         >
-          {question}
+          {withMentions(question, mentions)}
         </Text>
         <Flex
           data-testid="user-query-actions"

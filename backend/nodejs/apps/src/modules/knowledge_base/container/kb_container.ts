@@ -2,7 +2,6 @@ import { Container } from 'inversify';
 import { Logger } from '../../../libs/services/logger.service';
 import { ConfigurationManagerConfig } from '../../configuration_manager/config/config';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
-import { RecordsEventProducer } from '../services/records_events.service';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
 import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { AppConfig } from '../../tokens_manager/config/config';
@@ -65,20 +64,6 @@ export class KnowledgeBaseContainer {
       container
         .bind<IMessageProducer>('MessageProducer')
         .toConstantValue(messageProducer);
-
-      this.logger.info('before events producer');
-
-      const recordsEventProducer = new RecordsEventProducer(
-        messageProducer,
-        this.logger,
-      );
-      await recordsEventProducer.start();
-
-      container
-        .bind<RecordsEventProducer>('RecordsEventProducer')
-        .toConstantValue(recordsEventProducer);
-
-      this.logger.info('After events producer binding');
 
       const syncEventProducer = new SyncEventProducer(
         messageProducer,

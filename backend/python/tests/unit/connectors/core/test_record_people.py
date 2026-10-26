@@ -39,10 +39,10 @@ SOURCE_MEMBERS = {"src-ann": "u-ann", "src-dan": "u-dan"}
 def _store() -> MagicMock:
     store = MagicMock()
     store.get_user_by_email = AsyncMock(
-        side_effect=lambda email: SimpleNamespace(id=MEMBERS[email]) if email in MEMBERS else None,
+        side_effect=lambda email, **_: SimpleNamespace(id=MEMBERS[email]) if email in MEMBERS else None,
     )
     store.get_user_by_source_id = AsyncMock(
-        side_effect=lambda sid, connector_id: SimpleNamespace(id=SOURCE_MEMBERS[sid]) if sid in SOURCE_MEMBERS else None,
+        side_effect=lambda sid, connector_id, **_: SimpleNamespace(id=SOURCE_MEMBERS[sid]) if sid in SOURCE_MEMBERS else None,
     )
     store.delete_edges_between_collections = AsyncMock()
     store.batch_create_entity_relations = AsyncMock()
@@ -168,17 +168,35 @@ class TestWriteBehaviour:
         assert await link_record_people(file_record, store, logging.getLogger("t"), may_have_edges=False) == 0
         store.delete_edges_between_collections.assert_not_awaited()
 
-    async def test_a_failed_lookup_skips_that_person_only_and_logs_no_address(self, caplog) -> None:
+    async def test_a_failed_member_read_is_raised_not_read_as_nobody(self) -> None:
+        """Read as "not a member" it would commit the record without the edge
+        (or with a stand-in person) until the record next changes."""
+        import pytest
+
         store = _store()
-        store.get_user_by_email.side_effect = lambda email: (
+        store.get_user_by_email.side_effect = lambda email, **_: (
             (_ for _ in ()).throw(RuntimeError("db")) if email == "bob@acme.com" else SimpleNamespace(id=MEMBERS[email])
         )
-        with caplog.at_level(logging.WARNING, logger="t"):
+        with pytest.raises(RuntimeError, match="db"):
             await link_record_people(
                 _mail(from_email="ann@acme.com", to_emails=["bob@acme.com"]), store, logging.getLogger("t"),
             )
+        store.batch_create_entity_relations.assert_not_awaited()
+
+    async def test_member_reads_ask_to_raise_and_the_email_read_is_scoped_to_the_org(self) -> None:
+        store = _store()
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
+        store.get_user_by_email.assert_awaited_once_with("ann@acme.com", raise_on_error=True, org_id="org-1")
+
+    async def test_another_orgs_user_with_the_address_does_not_hide_this_orgs_member(self) -> None:
+        """The same address in a second org must not decide the answer: the
+        lookup is for this record's org, wherever else the address exists."""
+        store = _store()
+        users = {("org-2", "ann@acme.com"): SimpleNamespace(id="u-other", org_id="org-2"),
+                 ("org-1", "ann@acme.com"): SimpleNamespace(id="u-ann", org_id="org-1")}
+        store.get_user_by_email.side_effect = lambda email, org_id=None, **_: users.get((org_id, email))
+        await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
         assert _edges(store) == {("users/u-ann", "AUTHORED_BY")}
-        assert "bob" not in caplog.text
 
     async def test_the_number_of_edges_per_record_is_capped(self, monkeypatch) -> None:
         monkeypatch.setattr(record_people, "MAX_LINKED_PEOPLE", 2)
@@ -201,7 +219,7 @@ class TestReviewFixes:
 
     async def test_a_user_of_another_org_is_never_linked(self) -> None:
         store = _store()
-        store.get_user_by_email.side_effect = lambda email: SimpleNamespace(id="u-x", org_id="org-2")
+        store.get_user_by_email.side_effect = lambda email, **_: SimpleNamespace(id="u-x", org_id="org-2")
         await link_record_people(_mail(from_email="ann@acme.com"), store, logging.getLogger("t"))
         store.batch_create_entity_relations.assert_not_awaited()
 
@@ -241,6 +259,49 @@ class TestReviewFixes:
                 TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE),
                 store, logging.getLogger("t"),
             )
+
+
+class TestFailuresTheCallerMustSee:
+    """A conflict the caller retries, or a failure that ended its transaction,
+    is raised; any other failure keeps the record's sync going."""
+
+    @staticmethod
+    def _ticket() -> TicketRecord:
+        return TicketRecord(record_type=RecordType.TICKET, assignee_email="ann@acme.com", **BASE)
+
+    async def test_a_failed_clear_is_raised_when_the_caller_needs_it(self) -> None:
+        import pytest
+
+        store = _store()
+        store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("deadlock"))
+        with pytest.raises(RuntimeError, match="deadlock"):
+            await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: True)
+        store.batch_create_entity_relations.assert_not_awaited()
+
+    async def test_a_failed_person_write_is_raised_when_the_caller_needs_it(self) -> None:
+        import pytest
+
+        store = _person_store()
+        store.upsert_person_by_source_key = AsyncMock(side_effect=RuntimeError("deadlock"))
+        file_record = _file(last_modified_by=SourcePerson(source_id="acc-9"))
+        with pytest.raises(RuntimeError, match="deadlock"):
+            await link_record_people(file_record, store, logging.getLogger("t"), lambda exc: True)
+
+    async def test_a_failed_new_edge_write_is_raised_when_the_caller_needs_it(self) -> None:
+        import pytest
+
+        store = _store()
+        store.batch_create_entity_relations = AsyncMock(side_effect=RuntimeError("deadlock"))
+        with pytest.raises(RuntimeError, match="deadlock"):
+            await link_record_people(
+                _mail(from_email="ann@acme.com"), store, logging.getLogger("t"), lambda exc: True,
+            )
+
+    async def test_other_failures_to_clear_do_not_fail_the_record(self) -> None:
+        store = _store()
+        store.delete_edges_between_collections = AsyncMock(side_effect=RuntimeError("boom"))
+        written = await link_record_people(self._ticket(), store, logging.getLogger("t"), lambda exc: False)
+        assert written == 1
 
 
 def test_hidden_email_ticket_fields_survive_a_graph_round_trip() -> None:

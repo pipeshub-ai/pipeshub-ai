@@ -3,6 +3,7 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
+import { PurgeConversationParams } from '../../../../src/modules/storage/validators/validators'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
 import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import express, { Request, Response } from 'express'
@@ -38,6 +39,10 @@ describe('Storage Routes', () => {
       abortDirectUpload: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
       moveTree: sinon.stub().resolves(),
+      relocateVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
+      listConnectorVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
+      findMissingDocuments: sinon.stub().resolves(),
+      purgeConversationDocuments: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
 
@@ -265,6 +270,131 @@ describe('Storage Routes', () => {
     })
   })
 
+  describe('missing-documents route', () => {
+    it('registers POST /internal/missing behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route && layer.route.path === '/internal/missing' && layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
+      expect(mockAuthMiddleware.scopedTokenValidator.calledWith('storage:token')).to.be.true
+      const handles = route.route.stack.map((h: any) => h.handle)
+      expect(handles[0]).to.equal(mockAuthMiddleware.scopedTokenValidator.returnValues[0])
+    })
+  })
+
+  describe('conversation purge route', () => {
+    it('registers DELETE /internal/conversations/:conversationId/purge behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/conversations/:conversationId/purge' &&
+          layer.route.methods.delete,
+      )
+      expect(route).to.not.be.undefined
+      const handles = route.route.stack.map((h: any) => h.handle)
+      const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+        .getCalls()
+        .filter((call: any) => call.args[0] === 'storage:token')
+        .map((call: any) => call.returnValue)
+      expect(storageTokenChecks).to.include(handles[0])
+    })
+
+    it('is documented in the OpenAPI spec as a scoped-token route', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const yaml = require('js-yaml')
+      const spec = yaml.load(
+        require('fs').readFileSync(
+          require('path').join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+          'utf8',
+        ),
+      )
+      const op = spec.paths['/document/internal/conversations/{conversationId}/purge']?.delete
+      expect(op?.operationId).to.equal('internalPurgeConversationDocuments')
+      expect(op?.security).to.deep.equal([{ scopedToken: [] }])
+    })
+
+    it('accepts only a conversation id, so no path can reach the purge query', () => {
+      const ok = PurgeConversationParams.safeParse({ params: { conversationId: '507f1f77bcf86cd799439011' } })
+      expect(ok.success).to.be.true
+      for (const bad of ['..', '507f1f77bcf86cd79943901', 'abc/def', '507f1f77bcf86cd799439011/x', '']) {
+        expect(PurgeConversationParams.safeParse({ params: { conversationId: bad } }).success, bad).to.be.false
+      }
+    })
+  })
+
+  describe('virtual-record documents route', () => {
+    it('should register GET /internal/records/:virtualRecordId/documents behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const routes = (router as any).stack
+
+      const listRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/records/:virtualRecordId/documents' &&
+          layer.route.methods.get,
+      )
+      expect(listRoute).to.not.be.undefined
+      const handles = listRoute.route.stack.map((h: any) => h.handle)
+      const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+        .getCalls()
+        .filter((call: any) => call.args[0] === 'storage:token')
+        .map((call: any) => call.returnValue)
+      expect(storageTokenChecks).to.include(handles[0])
+    })
+  })
+
+  describe('artifact set routes', () => {
+    const artifactRoutes: Array<[string, string, string]> = [
+      ['post', '/internal/artifacts/presign', 'internalPresignArtifactSet'],
+      ['get', '/internal/artifacts', 'internalListArtifactSets'],
+      ['post', '/internal/artifacts/:documentId/read-urls', 'internalGetArtifactReadUrls'],
+      ['put', '/internal/artifacts/:documentId/files/*', 'internalPutArtifactFile'],
+      ['get', '/internal/artifacts/:documentId/files/*', 'internalGetArtifactFile'],
+      ['delete', '/internal/artifacts/:documentId', 'internalPurgeArtifactSet'],
+    ]
+    const specPath = (route: string) =>
+      `/document${route.replace(':documentId', '{documentId}').replace(/\*/g, '{path}')}`
+
+    for (const [method, route, operationId] of artifactRoutes) {
+      it(`registers ${method.toUpperCase()} ${route} behind the storage token, documented as ${operationId}`, () => {
+        const router = createStorageRouter(container)
+        const layer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === route && l.route.methods[method],
+        )
+        expect(layer, route).to.not.be.undefined
+        const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+          .getCalls()
+          .filter((call: any) => call.args[0] === 'storage:token')
+          .map((call: any) => call.returnValue)
+        expect(storageTokenChecks).to.include(layer.route.stack[0].handle)
+
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const yaml = require('js-yaml')
+        const spec = yaml.load(
+          require('fs').readFileSync(
+            require('path').join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+            'utf8',
+          ),
+        )
+        const op = spec.paths[specPath(route)]?.[method]
+        expect(op?.operationId).to.equal(operationId)
+        expect(op?.security).to.deep.equal([{ scopedToken: [] }])
+      })
+    }
+
+    it('registers them ahead of /internal/:documentId, which would take "artifacts" for an id', () => {
+      const router = createStorageRouter(container)
+      const paths: string[] = (router as any).stack.filter((l: any) => l.route).map((l: any) => l.route.path)
+      const firstById = paths.indexOf('/internal/:documentId')
+      for (const [, route] of artifactRoutes) {
+        expect(paths.indexOf(route), route).to.be.lessThan(firstById)
+      }
+    })
+  })
+
   describe('config update route', () => {
     it('should register POST /updateAppConfig route', () => {
       const router = createStorageRouter(container)
@@ -285,8 +415,10 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-// 16 service-token /internal routes (incl. move-tree, connector delete and the two purges) + updateAppConfig
-      expect(routes.length).to.equal(17)
+// 28 service-token /internal routes (incl. move-tree, connector delete, its
+// handover pair, missing, the three purges, the virtual-record document listing,
+// the flat-layout listing and the six artifact-set routes) + updateAppConfig
+      expect(routes.length).to.equal(29)
     })
   })
 
@@ -761,6 +893,76 @@ describe('Storage Routes', () => {
       await handler(mockReq, mockRes, mockNext)
 
       expect(mockNext.calledOnce).to.be.true
+    })
+  })
+
+  describe('shared-content handover routes', () => {
+    const serve = async (fn: (port: number) => Promise<void>) => {
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(container))
+      app.use(ErrorMiddleware.handleError())
+      const server = app.listen(0)
+      try {
+        await fn((server.address() as AddressInfo).port)
+      } finally {
+        server.close()
+      }
+    }
+    const relocate = (port: number, body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/v1/document/internal/records/relocate`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const move = { virtualRecordId: 'v1', newPath: 'records/conn-b/Drive', connectorId: 'conn-b' }
+
+    it('guards both routes with the storage service token', () => {
+      const router = createStorageRouter(container)
+      for (const [path, method] of [
+        ['/internal/records/relocate', 'post'],
+        ['/internal/connector/:connectorId/virtual-records', 'get'],
+      ] as const) {
+        const index = (router as any).stack
+          .filter((l: any) => l.route)
+          .findIndex((l: any) => l.route.path === path && l.route.methods[method])
+        expect(index, path).to.be.greaterThan(-1)
+        const layer = (router as any).stack.filter((l: any) => l.route)[index]
+        expect(layer.route.stack[0].handle).to.equal(
+          mockAuthMiddleware.scopedTokenValidator.getCall(index).returnValue,
+        )
+        expect(mockAuthMiddleware.scopedTokenValidator.getCall(index).args[0]).to.equal('storage:token')
+      }
+    })
+
+    it('accepts a valid relocate batch and refuses unsafe or oversized ones', async () => {
+      await serve(async (port) => {
+        expect((await relocate(port, { fromConnectorId: 'conn-a', moves: [move] })).status).to.equal(200)
+        const refused = [
+          { fromConnectorId: 'conn-a', moves: [] },
+          { fromConnectorId: 'conn-a', moves: Array(101).fill(move) },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, newPath: 'records/../x' }] },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, newPath: 'attachments/r1' }] },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, virtualRecordId: 'v1/../x' }] },
+          { moves: [move] },
+        ]
+        for (const body of refused) {
+          expect((await relocate(port, body)).status, JSON.stringify(body).slice(0, 80)).to.equal(400)
+        }
+        expect(mockStorageController.relocateVirtualRecords.calledOnce).to.be.true
+      })
+    })
+
+    it('routes the virtual-record listing and validates its paging', async () => {
+      await serve(async (port) => {
+        const url = `http://127.0.0.1:${port}/api/v1/document/internal/connector/conn-a/virtual-records`
+        const headers = { authorization: 'Bearer service-token' }
+        expect((await fetch(`${url}?limit=10&after=65f000000000000000000001`, { headers })).status).to.equal(200)
+        expect((await fetch(`${url}?limit=5000`, { headers })).status).to.equal(400)
+        expect((await fetch(`${url}?after=nope`, { headers })).status).to.equal(400)
+        expect(mockStorageController.listConnectorVirtualRecords.calledOnce).to.be.true
+        expect(mockStorageController.getDocumentById.called).to.be.false
+      })
     })
   })
 })

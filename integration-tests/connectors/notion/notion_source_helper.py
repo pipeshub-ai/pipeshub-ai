@@ -29,6 +29,7 @@ import httpx
 from app.sources.client.notion.notion import (  # type: ignore[import-not-found]
     NotionClient,
     NotionTokenConfig,
+    notion_api_base_url,
 )
 from app.sources.external.notion.notion import NotionDataSource  # type: ignore[import-not-found]
 from sample_data import ensure_sample_data_files_root  # type: ignore[import-not-found]
@@ -41,7 +42,7 @@ from connectors.notion.constants import (  # type: ignore[import-not-found]
 
 logger = logging.getLogger("notion-source-helper")
 
-_NOTION_API_BASE = "https://api.notion.com/v1"
+_NOTION_API_BASE = notion_api_base_url()
 
 # Notion returns 409 on concurrent edits to the same parent and 429 when the ~3 rps budget is
 # exhausted; both are safe to retry. 5xx is retried too — creates are idempotent enough here

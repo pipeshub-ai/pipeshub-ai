@@ -100,6 +100,11 @@ class AuthField:
     accepted_file_types: list[str] = field(default_factory=list)
     validation_rules: list[FileContentValidationRule] = field(default_factory=list)
     options: list[str] = field(default_factory=list)
+    # Shown only on an instance that already has a value saved for it, never on a new one:
+    # a way of signing in kept for instances set up with it, offered to no new ones.
+    saved_only: bool = False
+    # Required, except on an instance that has a value saved for this other field.
+    required_unless_saved: str = ""
 
 
 @dataclass
@@ -116,6 +121,14 @@ class CustomField:
     max_length: Optional[int] = None
     is_secret: bool = False
     non_editable: bool = False
+    # Optional presentation and validation metadata; connectors that set none render as before.
+    min_value: int | None = None  # NUMBER: smallest allowed value
+    max_value: int | None = None  # NUMBER: largest allowed value
+    unit: str = ""  # NUMBER: shown next to the input, e.g. "pages"
+    option_labels: dict[str, str] = field(default_factory=dict)  # SELECT: label per option value
+    group: str = ""  # name of a group added with with_sync_field_group
+    show_when: dict[str, list[Any]] = field(default_factory=dict)  # shown only while each field has one of these values
+    placeholder: str = ""
 
 
 @dataclass

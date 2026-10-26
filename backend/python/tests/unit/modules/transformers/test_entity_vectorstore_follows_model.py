@@ -13,8 +13,9 @@ import asyncio
 import logging
 import threading
 from typing import TYPE_CHECKING
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
+import fakeredis.aioredis
 import pytest
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
@@ -25,6 +26,7 @@ from app.modules.transformers.entity_vectorstore import (
     EMBEDDING_MODEL_FIELD,
     EntityVectorStore,
 )
+from app.services.vector_db.models import ScrollWindowExceededError, VectorPoint
 from tests.support.embedding_config import (
     another_process,
     config_service,
@@ -35,6 +37,7 @@ from tests.support.entity_vector_db import (
     FakeEmbeddingModel,
     FakeEntityVectorDB,
     embedding_models,
+    recreate_lock_redis,
 )
 
 if TYPE_CHECKING:
@@ -87,6 +90,12 @@ def _models() -> Iterator[None]:
         yield
 
 
+@pytest.fixture(autouse=True)
+def _recreate_lock() -> Iterator[None]:
+    with recreate_lock_redis():
+        yield
+
+
 def _store(db: FakeEntityVectorDB, config: ConfigurationService, *, owner: bool = True) -> EntityVectorStore:
     return EntityVectorStore(
         logger=logging.getLogger("entity-model-test"), config_service=config,
@@ -110,7 +119,7 @@ async def _leader_tick(store: EntityVectorStore) -> str:
 def _models_of(db: FakeEntityVectorDB) -> dict[str, tuple[str, float]]:
     return {
         point.payload["metadata"]["entityId"]: (point.payload["metadata"][EMBEDDING_MODEL_FIELD], point.dense_vector[0])
-        for point in db.points.values()
+        for point in db.entity_points.values()
     }
 
 
@@ -159,6 +168,76 @@ class TestWrites:
             await store.embedding_fingerprint()
         assert db.deletions == 0
         assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_points_from_before_the_model_was_recorded_do_not_hide_the_others(self, monkeypatch) -> None:
+        """Older points scroll first on OpenSearch and Redis; the probe pages past them."""
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 10)
+        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic(f"t{i}") for i in range(120)], merge_membership=False)
+        for point in list(db.points.values())[:119]:
+            del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
+
+        await switch_embedding_model(config, SMALL_CONFIG)
+        with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-ada-002"):
+            await _store(db, config, owner=False).embedding_fingerprint()
+        assert db.deletions == 0
+
+    @staticmethod
+    def _window(db: FakeEntityVectorDB, monkeypatch: pytest.MonkeyPatch, ceiling: int) -> None:
+        """Pages past ``ceiling`` refused, as Redis refuses offsets past its window."""
+        scroll = db.scroll
+
+        async def window(*args: object, offset: str | None = None, **kwargs: object) -> object:
+            if int(offset or 0) >= ceiling:
+                raise ScrollWindowExceededError("past MAXSEARCHRESULTS")
+            return await scroll(*args, offset=offset, **kwargs)
+
+        monkeypatch.setattr(db, "scroll", window)
+
+    async def _old_model_at(self, index: int, total: int) -> tuple[FakeEntityVectorDB, ConfigurationService]:
+        db, config = FakeEntityVectorDB(), config_service(ADA_CONFIG)
+        await _store(db, config).upsert_entities_batch(
+            [_topic(f"t{i}") for i in range(total)], merge_membership=False,
+        )
+        for i, point in enumerate(db.points.values()):
+            if i != index:
+                del point.payload["metadata"][EMBEDDING_MODEL_FIELD]
+        await switch_embedding_model(config, SMALL_CONFIG)
+        return db, config
+
+    async def test_the_last_page_inside_the_window_is_read(self, monkeypatch) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        db, config = await self._old_model_at(5, total=8)
+        self._window(db, monkeypatch, ceiling=6)
+
+        with pytest.raises(VectorStoreError, match="embedded by openAI:text-embedding-ada-002"):
+            await _store(db, config, owner=False).embedding_fingerprint()
+        assert db.deletions == 0
+
+    async def test_past_the_window_the_model_is_unknown(self, monkeypatch, caplog) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        db, config = await self._old_model_at(7, total=8)
+        self._window(db, monkeypatch, ceiling=6)
+
+        with caplog.at_level(logging.WARNING, logger="entity-model-test"):
+            assert await _store(db, config, owner=False)._model_of_a_stored_point() is None
+        assert any("cannot read further" in r.getMessage() for r in caplog.records)
+
+    async def test_any_other_failed_page_fails_the_probe(self, monkeypatch) -> None:
+        monkeypatch.setattr(module, "_MODEL_PROBE_PAGE", 2)
+        db, config = await self._old_model_at(7, total=8)
+        scroll = db.scroll
+
+        async def timeout_on_page_two(*args: object, offset: str | None = None, **kwargs: object) -> object:
+            if offset:
+                raise TimeoutError("scroll timed out")
+            return await scroll(*args, offset=offset, **kwargs)
+
+        monkeypatch.setattr(db, "scroll", timeout_on_page_two)
+        store = _store(db, config, owner=False)
+        with pytest.raises(TimeoutError):
+            await store.embedding_fingerprint()
+        assert not store._initialized
 
     async def test_points_from_before_the_model_was_recorded_keep_the_collection(self) -> None:
         """Their model is unknown; the rebuild re-embeds them in place."""
@@ -295,6 +374,192 @@ class TestReplicas:
         assert _models_of(db) == {"t1": (ADA_FP, ADA.value)}
 
 
+class TestFreshInstall:
+    """The rebuild leader creates the collection with the default model before
+    an admin configures one; the configured model has another dimension."""
+
+    async def _created_before_any_model(self) -> tuple[FakeEntityVectorDB, ConfigurationService, EntityVectorStore]:
+        db, config = FakeEntityVectorDB(), config_service()
+        leader = _store(db, config)
+        assert await _leader_tick(leader) == BGE_FP
+        await leader.collection_stamp()
+        assert db.dimension == BGE.dimension and not db.entity_points
+        return db, config, leader
+
+    async def test_the_first_write_recreates_it_for_the_configured_model(self) -> None:
+        db, config, _ = await self._created_before_any_model()
+        replica = _store(db, another_process(config))
+        await switch_embedding_model(config, SMALL_CONFIG)
+
+        outcome = await replica.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert outcome.written == 1
+        assert db.dimension == SMALL.dimension
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_the_leader_restamps_the_recreated_collection(self) -> None:
+        db, config, leader = await self._created_before_any_model()
+        old_stamp = db.stamp
+        await switch_embedding_model(config, SMALL_CONFIG)
+        await _store(db, another_process(config)).upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert await _leader_tick(leader) == SMALL_FP
+        assert await leader.collection_stamp() != old_stamp
+        assert db.deletions == 1
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_a_query_service_leaves_it_to_indexing(self) -> None:
+        db, config, _ = await self._created_before_any_model()
+        reader = _store(db, another_process(config), owner=False)
+        await switch_embedding_model(config, SMALL_CONFIG)
+
+        with pytest.raises(VectorStoreError, match="indexing service recreates it"):
+            await reader.search_entities("pricing", ORG, set(), {"c1"})
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+
+    async def test_a_collection_holding_entities_waits_for_the_leader(self, caplog) -> None:
+        db, config, leader = await self._created_before_any_model()
+        await leader.upsert_entities_batch([_topic()], merge_membership=False)
+        replica = _store(db, another_process(config))
+        await switch_embedding_model(config, SMALL_CONFIG)
+
+        with caplog.at_level(logging.ERROR, logger="entity-model-test"), \
+                pytest.raises(VectorStoreError, match="dimension 4"):
+            await replica.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+        assert _models_of(db) == {"t1": (BGE_FP, BGE.value)}
+        assert any("rebuild leader" in r.getMessage() for r in caplog.records if r.levelno == logging.ERROR)
+
+
+OLD = FakeEmbeddingModel(4.0, 4)
+OLD_CONFIG = embedding_config("openAI", "old-model")
+
+
+class TestAStaleModelDropsNothing:
+    """A process that missed the change notification still holds the old
+    model in its config cache. Judged against that model, the collection
+    another replica recreated for the new one looks mismatched."""
+
+    @pytest.fixture(autouse=True)
+    def _old_model(self) -> Iterator[None]:
+        with embedding_models({**MODELS, "old-model": OLD}):
+            yield
+
+    async def _recreated_by_a_replica(self) -> tuple[FakeEntityVectorDB, EntityVectorStore]:
+        db, config = FakeEntityVectorDB(), config_service(OLD_CONFIG)
+        leader = _store(db, config)
+        await _leader_tick(leader)
+        await leader.collection_stamp()
+        replica_config = another_process(config)
+        # Only the replica hears of the change.
+        await switch_embedding_model(replica_config, SMALL_CONFIG)
+        await _store(db, replica_config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert db.dimension == SMALL.dimension
+        return db, leader
+
+    async def test_the_leader_takes_the_stored_model_instead_of_dropping(self) -> None:
+        db, leader = await self._recreated_by_a_replica()
+        old_fp = await _leader_tick(leader)
+        assert old_fp.endswith(":4")
+
+        await leader.collection_stamp()
+
+        assert db.dimension == SMALL.dimension
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+        assert db.deletions == 1
+        assert await leader.embedding_fingerprint() == SMALL_FP
+
+    async def test_a_replica_reinitialising_drops_nothing_and_takes_the_stored_model(self) -> None:
+        db, stale = await self._recreated_by_a_replica()
+        stale._invalidate()  # as a failed search on the recreated collection does
+        db.points.clear()  # written, but not yet visible to a search (OpenSearch)
+
+        with pytest.raises(VectorStoreError, match="changed while the entity store was initialising"):
+            await stale.upsert_entities_batch([_topic("t2")], merge_membership=False)
+        assert (db.deletions, db.dimension) == (1, SMALL.dimension)
+
+        assert (await stale.upsert_entities_batch([_topic("t2")], merge_membership=False)).written == 1
+        assert db.dimension == SMALL.dimension
+
+
+class TestOneRecreateAtATime:
+    """The vector stores delete a collection by name only, so drops and
+    re-creates by different replicas are serialised by a Redis lock."""
+
+    async def test_a_replica_racing_a_recreate_does_not_lose_its_write(self, monkeypatch) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        first, second = _store(db, config), _store(db, another_process(config))
+        delete = db.delete_collection
+        raced: list[object] = []
+
+        async def delete_while_another_writes(collection_name: str) -> None:
+            # The second replica found the same mismatch and writes now, between
+            # the first one's last read and its drop.
+            try:
+                raced.append(await second.upsert_entities_batch([_topic("t2")], merge_membership=False))
+            except VectorStoreError as exc:
+                raced.append(exc)
+            await delete(collection_name)
+
+        monkeypatch.setattr(db, "delete_collection", delete_while_another_writes)
+        assert (await first.upsert_entities_batch([_topic("t1")], merge_membership=False)).written == 1
+
+        assert isinstance(raced[0], VectorStoreError) and "being recreated" in str(raced[0])
+        monkeypatch.setattr(module, "_INIT_RETRY_SECONDS", 0.0)
+        assert (await second.upsert_entities_batch([_topic("t2")], merge_membership=False)).written == 1
+        assert set(_models_of(db)) == {"t1", "t2"}
+        assert db.deletions == 1
+
+    async def test_an_entity_written_before_the_lock_keeps_the_collection(self, monkeypatch) -> None:
+        """An old-model write in flight lands after the emptiness check: the
+        collection then holds entities and is left to the leader."""
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        acquire = module.RebuildJobLock.try_acquire
+
+        async def a_write_lands_first(lock: module.RebuildJobLock) -> bool:
+            db.points["late"] = VectorPoint(
+                id="late", dense_vector=[BGE.value] * BGE.dimension,
+                payload={"metadata": {"entityId": "late", "entityType": "topic", "orgId": ORG}},
+            )
+            return await acquire(lock)
+
+        monkeypatch.setattr(module.RebuildJobLock, "try_acquire", a_write_lands_first)
+        with pytest.raises(VectorStoreError, match="received entities while it was being recreated"):
+            await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+        assert "late" in db.points
+
+    async def test_while_another_replica_holds_the_lock_nothing_is_dropped(self) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        with recreate_lock_redis() as server:
+            await fakeredis.aioredis.FakeRedis(server=server).set(module._recreate_lock_key("entities"), "another-replica")
+            with pytest.raises(VectorStoreError, match="being recreated"):
+                await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+
+    async def test_the_lock_is_released_after_a_recreate_and_after_a_failed_one(self, monkeypatch) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        with recreate_lock_redis() as server:
+            redis = fakeredis.aioredis.FakeRedis(server=server)
+            monkeypatch.setattr(db, "create_collection", AsyncMock(side_effect=RuntimeError("create failed")))
+            with pytest.raises(RuntimeError, match="create failed"):
+                await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+            assert await redis.get(module._recreate_lock_key("entities")) is None
+
+            monkeypatch.undo()
+            assert (await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)).written == 1
+            assert await redis.get(module._recreate_lock_key("entities")) is None
+        assert db.dimension == SMALL.dimension
+
+    async def test_without_redis_nothing_is_dropped(self) -> None:
+        db, config = FakeEntityVectorDB(BGE.dimension), config_service(SMALL_CONFIG)
+        with patch.object(module, "redis_from_config_service", AsyncMock(side_effect=ConnectionError("redis down"))), \
+                pytest.raises(ConnectionError):
+            await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        assert (db.deletions, db.dimension) == (0, BGE.dimension)
+
+
 class TestRecreateOnSwitch:
     async def test_a_failed_point_read_fails_the_switch_and_is_retried(self, monkeypatch) -> None:
         """An unread collection may still hold the old model's vectors, so the
@@ -387,3 +652,240 @@ class TestConfigReads:
 
         assert db.deletions == 0
         assert outcome.unchanged == 1
+
+
+class TestACollectionChangedFromOutside:
+    """The store sets its collection up when it initialises. One dropped or
+    recreated afterwards (by hand, or by a records rebuild in a release that
+    took the entity index with it) stayed as it was left until a restart."""
+
+    async def test_a_dropped_collection_is_created_again(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        assert (await store.upsert_entities_batch([_topic()], merge_membership=False)).failed == 1
+
+        await store.ensure_collection()
+        outcome = await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert db.dimension == SMALL.dimension
+        assert outcome.written == 1
+
+    async def test_a_collection_recreated_at_another_dimension_is_replaced(self) -> None:
+        """The old rebuild recreated it at the dimension the manifest recorded
+        when it was adopted, which a model change since had left behind."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        db.dimension = BGE.dimension
+
+        await store.ensure_collection()
+
+        assert db.dimension == SMALL.dimension
+
+    async def test_a_healthy_collection_keeps_its_points(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        await store.ensure_collection()
+
+        assert db.deletions == 0
+        assert _models_of(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_a_store_that_does_not_own_the_collection_never_drops_it(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config, owner=False)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        db.dimension = BGE.dimension
+
+        with pytest.raises(VectorStoreError, match="dimension 4"):
+            await store.ensure_collection()
+
+        assert db.deletions == 1 and db.dimension == BGE.dimension
+
+
+class TestCollectionStamp:
+    """A token kept in the collection as a point of its own, so it is gone
+    exactly when the collection's points are. The rebuild puts it in its
+    marker: a count cannot tell an emptied collection that indexing has since
+    written a few points to from one that holds everything."""
+
+    async def test_it_is_written_once_and_read_back(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        db.upsert_points = AsyncMock(wraps=db.upsert_points)
+
+        stamp = await store.collection_stamp()
+
+        assert stamp == db.stamp and not stamp.isdigit()
+        assert [await store.collection_stamp() for _ in range(3)] == [stamp] * 3
+        db.upsert_points.assert_awaited_once()
+        assert await _store(db, config).collection_stamp() == stamp
+
+    async def test_it_is_not_one_of_the_entities(self) -> None:
+        """Deletes are checked on the real backends, whose filters they use."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        stamp = await store.collection_stamp()
+
+        await store.upsert_entities_batch([_topic("t1"), _topic("t2")], merge_membership=False)
+        refs, _ = await store.page_entity_points(ORG, [t.value for t in EntityType])
+
+        assert sorted(ref.entity_id for ref in refs) == ["t1", "t2"]
+        assert await store._model_of_a_stored_point() == SMALL_FP
+        assert await store.collection_stamp() == stamp
+
+    async def test_search_never_returns_it(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.collection_stamp()
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        hits = await store.search_entities("pricing", ORG, set(), {"c1"})
+
+        assert [hit["entityId"] for hit in hits] == ["t1"]
+
+    async def test_a_dropped_collection_is_set_up_again_under_a_new_stamp(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        first = await store.collection_stamp()
+        await db.delete_collection("entities")
+
+        second = await store.collection_stamp()
+
+        assert second != first and db.stamp == second
+        assert db.dimension == SMALL.dimension
+
+    async def test_a_collection_recreated_from_outside_gets_a_new_stamp(self) -> None:
+        """Even once indexing has written points to it: they do not bring
+        back what the old collection held."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        first = await store.collection_stamp()
+        await db.delete_collection("entities")
+        db.dimension = SMALL.dimension
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+
+        second = await store.collection_stamp()
+
+        assert second != first
+        assert _models_of_entities(db) == {"t1": (SMALL_FP, SMALL.value)}
+
+    async def test_a_recreation_for_a_new_model_gets_a_new_stamp(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        first = await store.collection_stamp()
+
+        await switch_embedding_model(config, embedding_config("openAI", "text-embedding-3-small-wide"))
+        with embedding_models({**MODELS, "text-embedding-3-small-wide": FakeEmbeddingModel(4.0, 8)}):
+            await _leader_tick(store)
+            second = await store.collection_stamp()
+
+        assert db.dimension == 8 and second != first
+
+    async def test_a_read_that_fails_is_not_a_missing_stamp(self) -> None:
+        """Stamping anew on a failed read would re-run every pass each time
+        the vector DB stumbled."""
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        stamp = await store.collection_stamp()
+
+        with patch.object(db, "retrieve_points", side_effect=RuntimeError("vector db timeout")), \
+                pytest.raises(RuntimeError, match="vector db timeout"):
+            await store.collection_stamp()
+
+        assert db.stamp == stamp
+
+    async def test_a_stamp_that_cannot_be_written_is_not_handed_out(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.embedding_fingerprint()
+
+        with patch.object(db, "upsert_points", side_effect=RuntimeError("vector db down")), \
+                pytest.raises(RuntimeError, match="vector db down"):
+            await store.collection_stamp()
+
+        assert db.stamp is None
+        assert await store.collection_stamp() == db.stamp
+
+    async def test_a_store_that_does_not_own_the_collection_does_not_replace_it(self) -> None:
+        db, config = FakeEntityVectorDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config, owner=False)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await db.delete_collection("entities")
+        db.dimension = BGE.dimension
+
+        with pytest.raises(VectorStoreError, match="dimension 4"):
+            await store.collection_stamp()
+
+        assert db.stamp is None and db.dimension == BGE.dimension
+
+
+def _models_of_entities(db: FakeEntityVectorDB) -> dict[str, tuple[str, float]]:
+    return {
+        point.payload["metadata"]["entityId"]: (point.payload["metadata"][EMBEDDING_MODEL_FIELD], point.dense_vector[0])
+        for point in db.entity_points.values()
+    }
+
+
+class _SchemaBoundDB(FakeEntityVectorDB):
+    """Refuses a filter on a field it holds no index for: the strict reading
+    of a backend whose index is its schema (Redis)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.indexes: set[str] = set()
+
+    async def delete_collection(self, collection_name: str) -> None:
+        await super().delete_collection(collection_name)
+        self.indexes.clear()
+
+    async def create_index(self, collection_name: str, field_name: str, field_schema: dict) -> None:
+        await super().create_index(collection_name, field_name, field_schema)
+        self.indexes.add(field_name)
+
+    async def scroll(self, collection_name: str, scroll_filter: dict, *args: object, **kwargs: object) -> object:
+        missing = sorted(set(scroll_filter["must"]) - self.indexes)
+        if missing:
+            raise RuntimeError(f"Unknown field {missing}")
+        return await super().scroll(collection_name, scroll_filter, *args, **kwargs)
+
+
+class TestACollectionWithoutItsPayloadIndexes:
+    """As a records rebuild left the entities collection in a release that
+    took it along: created through the records registry, so without the
+    entity indexes. The stored-model check filters on one of them and ran
+    before they were ensured."""
+
+    @staticmethod
+    async def _recreated_from_outside(db: _SchemaBoundDB) -> None:
+        await db.delete_collection("entities")
+        db.dimension = SMALL.dimension
+
+    async def test_a_restarted_store_initialises_on_it(self) -> None:
+        db, config = _SchemaBoundDB(), config_service(SMALL_CONFIG)
+        await _store(db, config).upsert_entities_batch([_topic()], merge_membership=False)
+        await self._recreated_from_outside(db)
+
+        restarted = _store(db, config)
+        outcome = await restarted.upsert_entities_batch([_topic()], merge_membership=False)
+
+        assert outcome.written == 1
+        assert {"metadata.entityType", "metadata.entityId", "metadata.level"} <= db.indexes
+        refs, _ = await restarted.page_entity_points(ORG, ["topic"])
+        assert [ref.entity_id for ref in refs] == ["t1"]
+
+    async def test_the_running_store_gives_it_its_indexes_back_when_it_stamps_it(self) -> None:
+        db, config = _SchemaBoundDB(), config_service(SMALL_CONFIG)
+        store = _store(db, config)
+        await store.upsert_entities_batch([_topic()], merge_membership=False)
+        await self._recreated_from_outside(db)
+
+        await store.collection_stamp()
+
+        assert {"metadata.orgId", "metadata.entityType", "metadata.entityId", "metadata.level"} <= db.indexes
+        assert db.deletions == 1

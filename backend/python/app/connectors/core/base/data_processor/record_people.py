@@ -12,15 +12,15 @@ Two sources of people:
 
 Each link is resolved to an organisation member (``users``) by the
 connector's user id, then by email. Someone who is not a member gets a
-``people`` node when a connector names them in an authorship or ticket role
-(decision D2); mail recipients do not, or every outside address on every
+``people`` node when a connector names them in an authorship or ticket role;
+mail recipients do not, or every outside address on every
 mail would become a node. Bcc recipients are never linked.
 """
 from __future__ import annotations
 
 from dataclasses import dataclass
 from email.utils import getaddresses, parseaddr
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Callable, Protocol
 
 from app.config.constants.arangodb import CollectionNames, EntityOrigin, EntityRelations
 from app.models.entities import (
@@ -80,9 +80,15 @@ class PersonLink:
 
 
 class PeopleStore(Protocol):
-    async def get_user_by_email(self, email: str) -> User | None: ...
-    async def get_user_by_source_id(self, source_user_id: str, connector_id: str) -> User | None: ...
-    async def get_person_by_email(self, email: str, org_id: str) -> Person | None: ...
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> User | None: ...
+    async def get_user_by_source_id(
+        self, source_user_id: str, connector_id: str, *, raise_on_error: bool = False,
+    ) -> User | None: ...
+    async def get_person_by_email(
+        self, email: str, org_id: str, *, raise_on_error: bool = False,
+    ) -> Person | None: ...
     async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None: ...
     async def upsert_person_by_email(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
     async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None: ...
@@ -218,9 +224,12 @@ class _PersonResolver:
     connector's user id, then by email; otherwise, in a role that warrants
     it, a person node. Each identity is resolved once per record."""
 
-    def __init__(self, record: Record, store: PeopleStore) -> None:
+    def __init__(
+        self, record: Record, store: PeopleStore, must_propagate: Callable[[Exception], bool] | None = None,
+    ) -> None:
         self._record = record
         self._store = store
+        self._must_propagate = must_propagate or (lambda _exc: False)
         self._resolved: dict[tuple[str, str], tuple[str, str] | None] = {}
         self.failed = 0
 
@@ -238,34 +247,29 @@ class _PersonResolver:
     async def resolve(self, link: PersonLink) -> tuple[str, str] | None:
         identity = self.identity(link)
         if identity not in self._resolved:
-            try:
-                member = await self._member(*identity)
-                self._resolved[identity] = (
-                    None if member is _ANOTHER_ORG else member or await self._person(link, *identity)
-                )
-            except Exception as exc:
-                if self._store.is_transient_error(exc) is True:
-                    # A lock held by a concurrent sync: fail the record so its
-                    # transaction is retried, rather than commit it without the edge.
-                    raise
-                # Otherwise one unresolved person must not drop the others.
-                self.failed += 1
-                self._resolved[identity] = None
+            # A failed read raises out of here, so the record's transaction
+            # rolls back and is retried: read as "nobody", it would commit the
+            # record without the edge, or with a stand-in person for a member.
+            member = await self._member(*identity)
+            self._resolved[identity] = (
+                None if member is _ANOTHER_ORG else member or await self._person(link, *identity)
+            )
         return self._resolved[identity]
 
     async def _member(self, source_id: str, email: str) -> tuple[str, str] | object | None:
         user = None
         if source_id:
-            user = await self._store.get_user_by_source_id(source_id, self._record.connector_id)
+            user = await self._store.get_user_by_source_id(
+                source_id, self._record.connector_id, raise_on_error=True,
+            )
         if user is None and email:
-            user = await self._store.get_user_by_email(email)
+            user = await self._store.get_user_by_email(email, raise_on_error=True, org_id=self._record.org_id)
         if user is None or not user.id:
             return None
         user_org = getattr(user, "org_id", None)
         if user_org is not None and user_org != self._record.org_id:
-            # Email lookups are not org-scoped; another tenant's member sharing
-            # an address is not this record's person, and recording the
-            # address as an outsider here could misfile this org's own member.
+            # Not this org's member; recording the address as an outsider here
+            # could misfile this org's own member.
             return _ANOTHER_ORG
         return CollectionNames.USERS.value, user.id
 
@@ -276,21 +280,36 @@ class _PersonResolver:
         source_key = f"{self._record.connector_id}:{source_id}" if source_id else None
         # Read first: an upsert of a node that exists still takes its write lock
         # inside the sync transaction, so popular outsiders would serialise syncs.
+        # A failed read raises, as for members.
         existing = (
             source_key and await self._store.get_person_by_source_key(source_key, org_id)
-        ) or (email and await self._store.get_person_by_email(email, org_id))
+        ) or (email and await self._store.get_person_by_email(email, org_id, raise_on_error=True))
         if existing:
             return CollectionNames.PEOPLE.value, existing.id
         person = Person(email=email or None, source_key=source_key, org_id=org_id, full_name=link.display_name)
-        key = await (
-            self._store.upsert_person_by_email(person, raise_on_error=True) if email
-            else self._store.upsert_person_by_source_key(person, raise_on_error=True)
-        )
+        try:
+            key = await (
+                self._store.upsert_person_by_email(person, raise_on_error=True) if email
+                else self._store.upsert_person_by_source_key(person, raise_on_error=True)
+            )
+        except Exception as exc:
+            if self._must_propagate(exc) or self._store.is_transient_error(exc) is True:
+                # A lock held by a concurrent sync, or a failure that ended the
+                # record's transaction: fail the record so it is retried.
+                raise
+            # Otherwise one person that cannot be written must not drop the others.
+            self.failed += 1
+            return None
         return (CollectionNames.PEOPLE.value, key) if key else None
 
 
 async def link_record_people(
-    record: Record, store: PeopleStore, logger: Logger, *, may_have_edges: bool = True,
+    record: Record,
+    store: PeopleStore,
+    logger: Logger,
+    must_propagate: Callable[[Exception], bool] | None = None,
+    *,
+    may_have_edges: bool = True,
 ) -> int:
     """Replace ``record``'s person edges with the people it names now.
 
@@ -298,9 +317,11 @@ async def link_record_people(
     are removed and the current ones written, so a re-sync that drops an
     assignee drops the edge. Its other ``entityRelations`` edges
     (organisations) are left to their own writers. Returns the number of
-    edges written. A failed lookup or person write skips that person (logged
-    by record id, never by address); the others are still linked, unless it
-    collided with a concurrent sync, which fails the record for a retry.
+    edges written. A failed read of a member or person is raised, so the
+    record's transaction rolls back and is retried; a person node that cannot
+    be written is skipped (logged by record id, never by address) and the
+    others are still linked, unless it collided with a concurrent sync or
+    ended the transaction (``must_propagate``), which fails the record too.
 
     ``may_have_edges`` is False for a record being created: one that names
     nobody then costs no query. An existing record is always cleared, so
@@ -309,15 +330,18 @@ async def link_record_people(
     links = person_links(record)
     if not links and not may_have_edges and not isinstance(record, LINKED_RECORD_TYPES):
         return 0
+    propagate = must_propagate or (lambda _exc: False)
     for target in (CollectionNames.USERS.value, CollectionNames.PEOPLE.value):
         try:
             await store.delete_edges_between_collections(
                 record.id, CollectionNames.RECORDS.value, CollectionNames.ENTITY_RELATIONS.value, target,
             )
         except Exception as exc:  # stale edges are rewritten below
+            if propagate(exc) or store.is_transient_error(exc) is True:
+                raise
             logger.warning("Could not clear %s edges of record %s: %s", target, record.id, exc)
 
-    resolver = _PersonResolver(record, store)
+    resolver = _PersonResolver(record, store, propagate)
     seen: set[tuple[str, str, str]] = set()
     edges: list[dict] = []
     now = get_epoch_timestamp_in_ms()
@@ -348,7 +372,7 @@ async def link_record_people(
         edges.append(edge)
 
     if resolver.failed:
-        logger.warning("Record %s: %d person lookups failed", record.id, resolver.failed)
+        logger.warning("Record %s: %d people could not be written", record.id, resolver.failed)
     established = [e for e in edges if e["edgeType"] not in _NEW_EDGE_TYPES]
     added = [e for e in edges if e["edgeType"] in _NEW_EDGE_TYPES]
     if established:
@@ -357,6 +381,8 @@ async def link_record_people(
         try:
             await store.batch_create_entity_relations(added)
         except Exception as exc:  # see _NEW_EDGE_TYPES
+            if propagate(exc):
+                raise
             logger.warning("Record %s: %d person edges not written: %s", record.id, len(added), type(exc).__name__)
             return len(established)
     return len(edges)

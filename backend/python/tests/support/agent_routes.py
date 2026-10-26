@@ -50,10 +50,14 @@ class GraphOutage(RuntimeError):
 
 
 class InMemoryGraph:
-    def __init__(self, *, rollback_undoes_writes: bool = True) -> None:
+    def __init__(self, *, rollback_undoes_writes: bool = True, honours_explicit: bool = True) -> None:
         # False behaves like Neo4j without explicit transactions: every write commits
         # at once and rollback only closes the session.
         self.rollback_undoes_writes = rollback_undoes_writes
+        # Neo4j still opens a real transaction for begin_transaction(explicit=True),
+        # unless NEO4J_CREATE_TRANSACTIONS=false (honours_explicit=False).
+        self.honours_explicit = honours_explicit
+        self.explicit_requests: list[bool | None] = []
         self.nodes: dict[str, dict[str, dict[str, Any]]] = {}
         self.edges: dict[str, list[dict[str, Any]]] = {}
         self.failures: dict[str, BaseException] = {}
@@ -64,6 +68,7 @@ class InMemoryGraph:
         # every write made inside it.
         self._snapshots: dict[str, tuple[dict, dict]] = {}
         self._txn = itertools.count(1)
+        self.logger = logging.getLogger("test.agent_routes.graph")
         for name, user in USERS.items():
             self.add_node(USERS_COLL, {"_key": user_key(name), **user, "fullName": name.title()})
         for org in ("org-1", "org-2"):
@@ -120,15 +125,31 @@ class InMemoryGraph:
         return [(a, k) for m, a, k in self.calls if m == method]
 
     # -- IGraphDBProvider surface used by the agent routes -------------------
-    async def get_user_by_user_id(self, user_id: str, **_: Any) -> dict[str, Any] | None:
-        self._enter("get_user_by_user_id", user_id)
+    async def get_user_by_user_id(
+        self, user_id: str, *, raise_on_error: bool = False, **_: Any,
+    ) -> dict[str, Any] | None:
+        try:
+            self._enter("get_user_by_user_id", user_id)
+        except Exception:
+            # Like the real providers: a failed read is None unless the caller asks.
+            if raise_on_error:
+                raise
+            return None
         for doc in self.nodes.get(USERS_COLL, {}).values():
             if doc.get("userId") == user_id:
                 return copy.deepcopy(doc)
         return None
 
-    async def get_document(self, document_key: str, collection: str, transaction: str | None = None) -> dict | None:
-        self._enter("get_document", document_key, collection)
+    async def get_document(
+        self, document_key: str, collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> dict | None:
+        try:
+            self._enter("get_document", document_key, collection)
+        except Exception:
+            # Like the real providers: a failed read is None unless the caller asks.
+            if raise_on_error:
+                raise
+            return None
         doc = self.nodes.get(collection, {}).get(document_key)
         return copy.deepcopy(doc) if doc is not None else None
 
@@ -305,10 +326,27 @@ class InMemoryGraph:
         return True
 
     # generic writes
-    async def begin_transaction(self, read: list[str], write: list[str]) -> str:
+    def is_write_conflict(self, error: BaseException) -> bool:
+        # The configured failures stand in for outages, never for a collision.
+        return False
+
+    def is_transient_error(self, error: BaseException, *, explicit: bool | None = None) -> bool:
+        return False
+
+    def _real_transaction(self, explicit: bool | None) -> bool:
+        if explicit is None or (explicit and not self.honours_explicit):
+            return self.rollback_undoes_writes
+        return explicit
+
+    def opens_explicit_transaction(self, explicit: bool | None) -> bool:
+        return self._real_transaction(explicit)
+
+    async def begin_transaction(self, read: list[str], write: list[str], explicit: bool | None = None) -> str:
         self._enter("begin_transaction", read, write)
+        self.explicit_requests.append(explicit)
         txn = f"txn-{next(self._txn)}"
-        self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))
+        if self._real_transaction(explicit):
+            self._snapshots[txn] = (copy.deepcopy(self.nodes), copy.deepcopy(self.edges))
         return txn
 
     async def commit_transaction(self, transaction: str) -> None:
@@ -319,7 +357,7 @@ class InMemoryGraph:
     async def rollback_transaction(self, transaction: str) -> None:
         self._enter("rollback_transaction", transaction)
         snapshot = self._snapshots.pop(transaction, None)
-        if snapshot is not None and self.rollback_undoes_writes:
+        if snapshot is not None:
             self.nodes, self.edges = snapshot
         self.rolled_back.append(transaction)
 
@@ -359,6 +397,23 @@ class InMemoryGraph:
     async def get_edges_from_node(self, node_id: str, edge_collection: str, transaction: str | None = None) -> list[dict]:
         self._enter("get_edges_from_node", node_id, edge_collection)
         return copy.deepcopy(self.edges_from(edge_collection, node_id))
+
+    async def get_edges_from_node_with_target_name(
+        self, node_id: str, edge_collection: str, transaction: str | None = None, *, raise_on_error: bool = False,
+    ) -> list[dict]:
+        # Like the real providers: a failed read is [] unless raise_on_error.
+        try:
+            self._enter("get_edges_from_node_with_target_name", node_id, edge_collection)
+        except Exception:
+            if raise_on_error:
+                raise
+            return []
+        out = []
+        for edge in self.edges_from(edge_collection, node_id):
+            collection, key = edge["_to"].split("/", 1)
+            target = self.nodes.get(collection, {}).get(key, {})
+            out.append({**copy.deepcopy(edge), "name": target.get("name", key)})
+        return out
 
     async def delete_all_edges_for_node(self, node_key: str, collection: str, transaction: str | None = None) -> int:
         self._enter("delete_all_edges_for_node", node_key, collection)
@@ -408,7 +463,9 @@ class FakeConfigService:
     def __init__(self, values: dict[str, Any] | None = None) -> None:
         self.values = values or {}
 
-    async def get_config(self, key: str, default: Any = None, use_cache: bool = True) -> Any:
+    async def get_config(
+        self, key: str, default: Any = None, use_cache: bool = True, *, raise_on_error: bool = False,
+    ) -> Any:
         return copy.deepcopy(self.values.get(key, default))
 
     async def list_keys_in_directory(self, directory: str) -> list[str]:

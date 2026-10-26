@@ -3,24 +3,22 @@
 import React, { useMemo } from 'react';
 import { Flex, Box, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
-import { ChatResponse, emptyCitationMaps } from '@/chat/components';
+import { ChatResponse, buildCitationMapsFromApi } from '@/chat/components';
 import { ChatPixelIcon } from '@/app/components/ui/chat-pixel-icon';
 import type { ConversationMessage } from '../types';
-
-// Stable empty citation maps — avoids creating new objects per render.
-const EMPTY_CITATION_MAPS = emptyCitationMaps();
 
 interface MessagePair {
   key: string;
   question: string;
   answer: string;
+  citationMaps: ReturnType<typeof buildCitationMapsFromApi>;
 }
 
 /**
  * Group raw ConversationMessage[] into user→bot pairs.
  * A user_query without a following bot_response is kept with an empty answer.
  */
-function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
+export function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
   const pairs: MessagePair[] = [];
 
   for (let i = 0; i < messages.length; i++) {
@@ -28,17 +26,17 @@ function buildMessagePairs(messages: ConversationMessage[]): MessagePair[] {
     if (msg.messageType !== 'user_query') continue;
 
     const next = messages[i + 1];
-    const answer =
-      next?.messageType === 'bot_response' ? next.content : '';
+    const bot = next?.messageType === 'bot_response' ? next : undefined;
 
     pairs.push({
       key: msg._id,
       question: msg.content,
-      answer,
+      answer: bot?.content ?? '',
+      citationMaps: buildCitationMapsFromApi(bot?.citations ?? []),
     });
 
-    // Skip the bot_response in the outer loop
-    if (answer) i++;
+    // Skip the bot_response in the outer loop, even an empty one
+    if (bot) i++;
   }
 
   return pairs;
@@ -147,7 +145,7 @@ export function ArchivedChatView({
                 key={pair.key}
                 question={pair.question}
                 answer={pair.answer}
-                citationMaps={EMPTY_CITATION_MAPS}
+                citationMaps={pair.citationMaps}
                 isStreaming={false}
                 isLastMessage={false}
               />

@@ -39,6 +39,7 @@ export const configPaths = {
   },
   aiModels: '/services/aiModels',
   aiModelsEmbedding: '/services/aiModels/embedding',
+  aiGatewayIdentityPolicy: '/services/aiGateway/identityPolicy',
   systemPrompts: '/services/systemPrompts',
   // v2 re-runs the same backfill after the BullMQ queue prefix moved from the
   // default `bull` to the hash-tagged `{crawling}` (needed so BullMQ's
@@ -50,6 +51,8 @@ export const configPaths = {
   chatKbFiltersMigration: '/migrations/chat_kb_filters_v1',
   adminRoleMigration: '/migrations/admin_role_v1',
   documentOrgIdMigration: '/migrations/document_orgid_v1',
+  signInMethodsRemovalMigration: '/migrations/sign_in_methods_removal_v1',
+  serviceAccountKindBackfill: '/migrations/service_account_kind_v1',
   // Value: JSON.stringify({ conversationsMigrated, agentConversationsMigrated, ... }).
   // See chat_sessions.migration.ts.
   chatSessionsMigration: '/migrations/chat_sessions_v1',

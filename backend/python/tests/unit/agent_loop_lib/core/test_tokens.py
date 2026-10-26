@@ -91,3 +91,25 @@ class TestCountMessageTokensToolMessage:
     def test_system_and_user_messages_unaffected(self) -> None:
         assert extract_text(SystemMessage(content="sys")) == "sys"
         assert extract_text(UserMessage(content="hi")) == "hi"
+
+
+class TestCountsWhatIsSent:
+    """UC-11 (CE-22): the estimate follows what transports put on the wire."""
+
+    def test_step_footer_is_counted(self) -> None:
+        bare = ToolMessage(content="result", tool_call_id="tc1")
+        with_footer = ToolMessage(content="result", tool_call_id="tc1", step_footer="x" * 4_000)
+        assert count_message_tokens(with_footer) - count_message_tokens(bare) == 1_000
+
+    def test_step_footer_is_counted_on_multipart_results(self) -> None:
+        image = ImagePart(source=ImageSource(type="base64", media_type="image/png", data="abc"), width=28, height=28)
+        bare = ToolMessage(content=[TextPart(text="r"), image], tool_call_id="tc1")
+        with_footer = bare.model_copy(update={"step_footer": "y" * 400})
+        assert count_message_tokens(with_footer) - count_message_tokens(bare) == 100
+
+    def test_thinking_no_transport_resends_is_not_counted(self) -> None:
+        from app.agent_loop_lib.core.messages import AssistantMessage, ThinkingPart
+
+        text_only = AssistantMessage(content=[TextPart(text="answer")])
+        with_thinking = AssistantMessage(content=[ThinkingPart(thinking="t" * 40_000), TextPart(text="answer")])
+        assert count_message_tokens(with_thinking) == count_message_tokens(text_only)

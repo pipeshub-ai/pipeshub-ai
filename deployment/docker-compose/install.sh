@@ -76,6 +76,24 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 ENV_FILE="${SCRIPT_DIR}/.env"
 COMPOSE_FILE="${SCRIPT_DIR}/docker-compose.yml"
+# PIPESHUB_IMAGE and PIPESHUB_COMPOSE_OVERRIDES are saved in .env when the
+# installer writes it, so later runs (--stop, --upgrade, ...) keep using them.
+_saved_env_val() { [[ -f "$ENV_FILE" ]] && grep -E "^$1=" "$ENV_FILE" | tail -1 | cut -d= -f2- || true; }
+PIPESHUB_IMAGE="${PIPESHUB_IMAGE:-$(_saved_env_val PIPESHUB_IMAGE)}"
+PIPESHUB_COMPOSE_OVERRIDES="${PIPESHUB_COMPOSE_OVERRIDES:-$(_saved_env_val PIPESHUB_COMPOSE_OVERRIDES)}"
+
+# Every compose call reads docker-compose.yml plus the files listed in
+# PIPESHUB_COMPOSE_OVERRIDES (colon-separated; relative paths start here).
+COMPOSE_FILES=(-f "$COMPOSE_FILE")
+if [[ -n "${PIPESHUB_COMPOSE_OVERRIDES:-}" ]]; then
+  IFS=':' read -r -a _compose_overrides <<< "$PIPESHUB_COMPOSE_OVERRIDES"
+  for _override in "${_compose_overrides[@]}"; do
+    [[ -n "$_override" ]] || continue
+    [[ -f "$_override" ]] || die "PIPESHUB_COMPOSE_OVERRIDES: $_override not found"
+    COMPOSE_FILES+=(-f "$_override")
+  done
+fi
+APP_IMAGE_REPO="${PIPESHUB_IMAGE:-pipeshubai/pipeshub-ai}"
 DEFAULT_PROJECT="pipeshub-ai"
 PROJECT_NAME="$DEFAULT_PROJECT"
 INSTALL_SEPARATE=false
@@ -135,6 +153,11 @@ Environment overrides (bypass prompts in CI):
   PIPESHUB_VERSION       image tag (prebuilt) or local build tag (default: local)
   PIPESHUB_PORT          host port (default: 3000; 3200 when installing a second copy)
   PIPESHUB_PROJECT       Compose project name (default: pipeshub-ai)
+  PIPESHUB_IMAGE         app image repository (default: pipeshubai/pipeshub-ai)
+  PIPESHUB_COMPOSE_OVERRIDES  extra compose files, colon-separated, layered over docker-compose.yml
+                         (relative paths start in this directory; saved in .env with PIPESHUB_IMAGE)
+  PIPESHUB_ENV_EXTRA     file whose lines are appended to a newly written .env (no keys the
+                         installer writes itself; relative paths start in this directory)
   PIPESHUB_PUBLIC_URL    public HTTPS URL (e.g. https://pipeshub.yourdomain.com)
 EOF
 }
@@ -421,7 +444,7 @@ warn_pinned_container_rename() {
 
 # Exec in the app service (Compose name, not a pinned container_name).
 compose_app_exec() {
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" exec -T pipeshub-ai "$@"
+  docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" --env-file "$ENV_FILE" exec -T pipeshub-ai "$@"
 }
 
 app_service_is_running() {
@@ -641,7 +664,7 @@ if $FLAG_STOP; then
   # ("Resource is still in use"). --remove-orphans clears containers left by a
   # previously-active profile too.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down --remove-orphans
+  docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down --remove-orphans
   success "PipesHub stopped (project ${PROJECT_NAME}). Data volumes are preserved."
   info "To start again: ./install.sh"
   exit 0
@@ -664,7 +687,7 @@ if $FLAG_UNINSTALL; then
   # previously-used profile (e.g. arango_data after switching to neo4j) would
   # be silently left behind.
   export COMPOSE_PROFILES="graph-arango,graph-neo4j,kv-etcd,broker-kafka,sandbox"
-  docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" down -v --remove-orphans
+  docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" down -v --remove-orphans
   success "PipesHub stopped and all data volumes removed (project ${PROJECT_NAME})."
   exit 0
 fi
@@ -1022,12 +1045,12 @@ if ! ${SKIP_WIZARD:-false}; then
     # Default: "local". Can be overridden with --version for versioned dev builds.
     if [[ -n "$CLI_VERSION" ]]; then
       IMAGE_TAG="$CLI_VERSION"
-      info "Building from source, image will be tagged: pipeshubai/pipeshub-ai:${IMAGE_TAG}"
+      info "Building from source, image will be tagged: ${APP_IMAGE_REPO}:${IMAGE_TAG}"
     elif [[ -n "${PIPESHUB_VERSION:-}" ]]; then
       IMAGE_TAG="$PIPESHUB_VERSION"
     else
       IMAGE_TAG="local"
-      info "Building from source — image will be tagged: pipeshubai/pipeshub-ai:local"
+      info "Building from source — image will be tagged: ${APP_IMAGE_REPO}:local"
     fi
     SANDBOX_DOCKER_IMAGE="pipeshubai/pipeshub-sandbox:${IMAGE_TAG}"
     warn "First local build can take 10–30+ minutes depending on your machine."
@@ -1171,6 +1194,9 @@ if ! ${SKIP_WIZARD:-false}; then
   MONGO_IMAGE_TAG="$(get_existing_val MONGO_IMAGE_TAG "")"
   MONGO_CACHE_GB="$(get_existing_val MONGO_CACHE_GB "")"
   MONGO_MEMORY_LIMIT="$(get_existing_val MONGO_MEMORY_LIMIT "")"
+  # Qdrant's memory limit decides search speed once the index grows
+  # (docs/deployment/vector-db-sizing.md); keep an operator's value.
+  QDRANT_MEMORY_LIMIT="$(get_existing_val QDRANT_MEMORY_LIMIT "${QDRANT_MEMORY_LIMIT:-}")"
 
   # Same for the private-address switch: dropping it on --reconfigure would let AI
   # model endpoints reach internal addresses again without anyone noticing.
@@ -1336,6 +1362,10 @@ $(optional_env_line PIPESHUB_BLOCK_PRIVATE_ADDRESSES "$PIPESHUB_BLOCK_PRIVATE_AD
 
 # ── Qdrant ───────────────────────────────────────────────────────────────────
 QDRANT_API_KEY=${QDRANT_API_KEY}
+# Qdrant's container memory limit, also given to the app for the Services page
+# warning. Search stays fast only while the index fits; size it from
+# docs/deployment/vector-db-sizing.md.
+$(optional_env_line QDRANT_MEMORY_LIMIT "$QDRANT_MEMORY_LIMIT" "6G")
 
 # ── Indexing concurrency ─────────────────────────────────────────────────────
 # Do not write MAX_CONCURRENT_* / EMBEDDING_*_CONCURRENCY here. Empty values
@@ -1370,6 +1400,10 @@ PIPESHUB_ACCESSIBLE_RECORDS_CACHE=
 PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL=300
 # 0 disables the signed-URL cache. Keep well under the 3600s signing lifetime.
 PIPESHUB_SIGNED_URL_CACHE_SECONDS=0
+# Most characters one agent turn may stream (text, reasoning and tool-call
+# arguments together) before it is stopped as a runaway. Blank keeps the
+# built-in 1000000; 0 removes the limit.
+PIPESHUB_AGENT_MAX_TURN_OUTPUT_CHARS=
 
 # ── ML performance ───────────────────────────────────────────────────────────
 # Caps PyTorch / OpenBLAS / MKL thread fan-out per operation.
@@ -1393,6 +1427,25 @@ ENVFILE
   # secret key in plain text. Guarantee this regardless of the caller's umask
   # (a permissive umask would otherwise leave it world-readable).
   chmod 600 "$ENV_FILE" 2>/dev/null || true
+
+  if [[ -n "${PIPESHUB_IMAGE:-}" ]]; then
+    printf 'PIPESHUB_IMAGE=%s\n' "$PIPESHUB_IMAGE" >> "$ENV_FILE"
+  fi
+  if [[ -n "${PIPESHUB_COMPOSE_OVERRIDES:-}" ]]; then
+    printf 'PIPESHUB_COMPOSE_OVERRIDES=%s\n' "$PIPESHUB_COMPOSE_OVERRIDES" >> "$ENV_FILE"
+  fi
+  if [[ -n "${PIPESHUB_ENV_EXTRA:-}" ]]; then
+    [[ -f "$PIPESHUB_ENV_EXTRA" ]] || die "PIPESHUB_ENV_EXTRA: $PIPESHUB_ENV_EXTRA not found"
+    # A key the installer already wrote would appear twice and be read back wrong.
+    while IFS= read -r _extra_line; do
+      _extra_key="${_extra_line%%=*}"
+      [[ "$_extra_line" == *=* && "$_extra_key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+      if grep -qE "^${_extra_key}=" "$ENV_FILE"; then
+        die "PIPESHUB_ENV_EXTRA sets ${_extra_key}, which the installer already writes; remove it from $PIPESHUB_ENV_EXTRA"
+      fi
+    done < "$PIPESHUB_ENV_EXTRA"
+    { printf '\n# From %s\n' "$PIPESHUB_ENV_EXTRA"; cat "$PIPESHUB_ENV_EXTRA"; } >> "$ENV_FILE"
+  fi
 
   success ".env written to $ENV_FILE (permissions: owner read/write only)"
 
@@ -1725,8 +1778,8 @@ _USE_BUILD=false
 _is_tty=false; [[ -t 1 ]] && _is_tty=true
 _PROGRESS=(--progress "$(resolve_compose_progress "$_is_tty")")
 
-compose_up()        { docker compose "${_PROGRESS[@]}" -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d "$@"; }
-compose_logs_tail() { docker compose -f "$COMPOSE_FILE" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true; }
+compose_up()        { docker compose "${_PROGRESS[@]}" "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" --env-file "$ENV_FILE" up -d "$@"; }
+compose_logs_tail() { docker compose "${COMPOSE_FILES[@]}" -p "$PROJECT_NAME" --env-file "$ENV_FILE" logs --tail 30 2>&1 || true; }
 
 # Start the stack, healing a MongoDB rseq segfault once if that is what stopped
 # it. A segfault fails `up` within seconds rather than later: the app's
@@ -1776,6 +1829,16 @@ should_pull_image() { # args: use_build flag_no_pull env_no_pull -> "true"|"fals
   echo true
 }
 
+# Version and commit of the checkout, as build args for the image. The running
+# container has no git history, so they are read here, on the host. A value
+# already in the environment wins; a checkout without git leaves them empty.
+export_build_info() { # args: repo_root
+  local repo_root="$1" tag
+  tag="$(git -C "$repo_root" describe --tags --abbrev=0 --match 'v*' 2>/dev/null || true)"
+  export APP_VERSION="${APP_VERSION:-${tag#v}}"
+  export GIT_COMMIT="${GIT_COMMIT:-$(git -C "$repo_root" rev-parse HEAD 2>/dev/null || true)}"
+}
+
 _DO_PULL="$(should_pull_image "$_USE_BUILD" "$FLAG_NO_PULL" "${PIPESHUB_NO_PULL:-}")"
 # Rotation without --upgrade must not refresh images; the operator asked only
 # to replace signing secrets.
@@ -1785,7 +1848,7 @@ fi
 # Pinning a specific tag (--version / PIPESHUB_VERSION) still benefits from the
 # pull: it fetches exactly that immutable tag rather than a moving :latest, so
 # reproducibility is preserved while a stale local copy is corrected.
-_APP_IMAGE="pipeshubai/pipeshub-ai:${IMAGE_TAG:-latest}"
+_APP_IMAGE="${APP_IMAGE_REPO}:${IMAGE_TAG:-latest}"
 _SANDBOX_IMAGE="${SANDBOX_DOCKER_IMAGE:-pipeshubai/pipeshub-sandbox:${IMAGE_TAG:-latest}}"
 
 if project_has_pinned_container_names; then
@@ -1800,6 +1863,7 @@ if $_USE_BUILD; then
   $FLAG_UPGRADE && info "Rebuilding image from source for tag: ${IMAGE_TAG:-local}..."
   info "Building image from source and starting containers..."
   info "(This may take 10–30+ minutes on first run)"
+  export_build_info "$(cd "${SCRIPT_DIR}/../../" && pwd)"
   if ! compose_up_with_mongo_heal "up --build" --build; then
     die "Fix the error above and re-run install.sh."
   fi
@@ -1814,7 +1878,7 @@ else
     _PULL_SERVICES=(pipeshub-ai)
     [[ "${DEPLOY_TYPE:-}" != "eval" ]] && _PULL_SERVICES+=(sandbox-image)
     if ! docker compose "${_PROGRESS[@]}" \
-        -f "$COMPOSE_FILE" \
+        "${COMPOSE_FILES[@]}" \
         -p "$PROJECT_NAME" \
         --env-file "$ENV_FILE" \
         pull "${_PULL_SERVICES[@]}" 2>&1; then
@@ -1848,7 +1912,7 @@ fi
 if $FLAG_ROTATE_SIGNING_SECRETS; then
   info "Recreating the app container so it applies the new signing secrets..."
   if ! docker compose "${_PROGRESS[@]}" \
-      -f "$COMPOSE_FILE" \
+      "${COMPOSE_FILES[@]}" \
       -p "$PROJECT_NAME" \
       --env-file "$ENV_FILE" \
       up -d --force-recreate --no-deps pipeshub-ai; then

@@ -157,3 +157,29 @@ class TestEnableTogglePassesTheRegistryLookupableType:
         request = _request(NO_REPO)
         result = await _toggle(request, _instance(type="SLACK"))
         assert result["success"] is True
+
+
+class TestTurningSyncOnRecordsWhen:
+    """The stranded-record sweep ages records parked while the connector was
+    off from enabledAtTimestamp, so it does not send them beside the
+    appEnabled re-queue."""
+
+    @staticmethod
+    def _written(request: MagicMock) -> dict[str, Any]:
+        return request.app.state.connector_registry.update_connector_instance.await_args.kwargs["updates"]
+
+    async def test_turning_sync_on_stamps_enabled_at(self) -> None:
+        request = _request(REPO_SELECTED)
+        await _toggle(request, _instance())
+        assert self._written(request)["enabledAtTimestamp"] == 1000
+
+    async def test_turning_sync_off_leaves_it(self) -> None:
+        request = _request(REPO_SELECTED)
+        await _toggle(request, _instance(isActive=True))
+        assert "enabledAtTimestamp" not in self._written(request)
+
+    async def test_turning_the_agent_on_leaves_it(self) -> None:
+        request = _request(REPO_SELECTED)
+        request.json = AsyncMock(return_value={"type": "agent"})
+        await _toggle(request, _instance(isActive=True, supportsAgent=True))
+        assert "enabledAtTimestamp" not in self._written(request)

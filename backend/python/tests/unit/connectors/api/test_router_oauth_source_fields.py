@@ -608,7 +608,7 @@ class TestReadingAConnectorLeavesRegistryDefaultsAlone:
         }
         request = _request({})
         # The registry returns a new top-level dict per call; what it shares is the nested metadata.
-        request.app.state.connector_registry.get_connector_instance = AsyncMock(side_effect=lambda **_: dict(registry_metadata))
+        request.app.state.connector_registry.get_connector_instance_for_view = AsyncMock(side_effect=lambda **_: dict(registry_metadata))
         service = _config_service({"authorizeUrl": CLIENT_URLS["authorizeUrl"], "tokenUrl": CLIENT_URLS["tokenUrl"]})
         with (
             patch(f"{_ROUTER}.resolve_config_service", return_value=service),

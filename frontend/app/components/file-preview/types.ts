@@ -123,6 +123,12 @@ export interface FilePreviewProps {
   /** Callback when fullscreen toggle button is clicked */
   onToggleFullscreen?: () => void;
 
+  /**
+   * Start a chat scoped to the record being previewed. Omitted for previews
+   * that are not a knowledge record (a citation or a generated artifact).
+   */
+  onChat?: () => void;
+
   /** Loading state */
   isLoading?: boolean;
 
@@ -166,6 +172,13 @@ export interface FilePreviewProps {
    * to keep behaviour stable for previews that don't expect it.
    */
   showDownload?: boolean;
+
+  /**
+   * When set, the Download button calls this instead of saving the loaded
+   * preview bytes under `file.name`. Needed when those bytes were converted
+   * for display (PPTX streamed as PDF) and the saved file must stay the original.
+   */
+  onDownload?: () => void;
 
   /**
    * Highest known version for `file` — enables the version-switcher header

@@ -62,6 +62,8 @@ class FakeEntityVectorStore:
         self.upserts: list[list[Any]] = []
         self.match_calls: list[tuple[list[str], str, str, str | None]] = []
         self.fail_matches = False
+        # Fails this many searches, then answers: a blip rather than an outage.
+        self.fail_next_matches = 0
         self.force_winner: dict[str, str] = {}
         self.graph = graph
 
@@ -122,6 +124,9 @@ class FakeEntityVectorStore:
         self.match_calls.append((list(names), org_id, entity_type, level))
         if self.fail_matches:
             raise RuntimeError("vector store down")
+        if self.fail_next_matches:
+            self.fail_next_matches -= 1
+            raise TimeoutError("vector store timed out")
         candidates = [
             p for (o, t, _k), p in self.points.items()
             if o == org_id and t == entity_type and (p.get("level") or None) == (level or None)
@@ -221,6 +226,11 @@ class ScriptedModel:
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _no_lookup_retry_delay(monkeypatch) -> None:
+    monkeypatch.setattr("app.modules.entity_resolution.lookup.LOOKUP_RETRY_DELAY_SECONDS", 0.0)
 
 
 @pytest.fixture
@@ -332,7 +342,7 @@ def make_transformer(fake_graph) -> Callable[[], GraphDBTransformer]:
 
         transformer.graph_data_store = MagicMock()
         transformer.graph_data_store.graph_provider = fake_graph
-        transformer.graph_data_store.transaction = MagicMock(side_effect=lambda: _Txn())
+        transformer.graph_data_store.transaction = MagicMock(side_effect=lambda explicit=None: _Txn())
         transformer.graph_data_store.execute_idempotent_in_transaction = partial(
             GraphDataStore.execute_idempotent_in_transaction, transformer.graph_data_store,
         )

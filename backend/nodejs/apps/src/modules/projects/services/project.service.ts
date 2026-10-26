@@ -1,4 +1,4 @@
-import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
@@ -10,6 +10,7 @@ import { ChatSession } from '../../enterprise_search/schema/chat.session.schema'
 import {
   IProject,
   IProjectDocument,
+  IProjectKnowledgeScope,
   IProjectMember,
   ProjectAccess,
   ProjectContext,
@@ -38,7 +39,7 @@ export interface CreateProjectInput {
   icon?: string;
   color?: string;
   instructions?: string;
-  knowledgeScope?: { apps?: string[]; kb?: string[] };
+  knowledgeScope?: IProjectKnowledgeScope;
   appliedFilters?: IProjectDocument['appliedFilters'];
   tools?: string[];
 }
@@ -208,7 +209,7 @@ export class ProjectService {
       .filter((id) => Types.ObjectId.isValid(id))
       .map((id) => new Types.ObjectId(id));
 
-    const scopeOr: FilterQuery<IProjectDocument>[] = [];
+    const scopeOr: QueryFilter<IProjectDocument>[] = [];
     if (opts.scope === 'mine' || opts.scope === 'all') {
       scopeOr.push({ userId: userObjId });
     }
@@ -228,7 +229,7 @@ export class ProjectService {
       scopeOr.push({ visibility: 'org' });
     }
 
-    const filter: FilterQuery<IProjectDocument> = {
+    const filter: QueryFilter<IProjectDocument> = {
       orgId: orgObjId,
       isDeleted: false,
       $or: scopeOr,

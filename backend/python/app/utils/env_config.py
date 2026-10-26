@@ -31,6 +31,34 @@ def _warn(name: str, raw: str, default: object) -> None:
     )
 
 
+_warned_choices: set[tuple[str, str]] = set()
+
+
+def env_choice(name: str, default: str, choices: tuple[str, ...]) -> str:
+    """Read a switch that takes one of ``choices`` (case-insensitive).
+
+    An unrecognised value falls back to ``default`` with a warning, once per
+    value: a typo in a setting meant to turn something off must not pass
+    silently.
+    """
+    raw = os.getenv(name)
+    if raw is None or not raw.strip():
+        return default
+    value = raw.strip().lower()
+    if value in choices:
+        return value
+    if (name, raw) not in _warned_choices:
+        _warned_choices.add((name, raw))
+        _logger.warning(
+            "Ignoring unrecognised %s=%r (expected one of %s); falling back to %r",
+            name,
+            raw,
+            ", ".join(choices),
+            default,
+        )
+    return default
+
+
 def env_int(name: str, default: int) -> int:
     """Read an int env var, treating empty/malformed as unset."""
     raw = os.getenv(name)

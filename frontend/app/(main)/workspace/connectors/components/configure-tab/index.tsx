@@ -65,10 +65,14 @@ export function ConfigureTab({ readOnly = false }: { readOnly?: boolean }) {
       {customSyncFields.length > 0 && (
         <CustomSyncFieldsSection
           fields={customSyncFields}
+          groups={syncConfig?.customFieldGroups}
           values={formData.sync.customValues}
           errors={formErrors}
           onChange={setSyncFormValue}
           connectorConfig={connectorConfig}
+          connectorType={panelConnector.type}
+          lastSyncSummary={panelConnector.lastSyncSummary}
+          isNewConnector={!connectorConfig?.isConfigured}
           readOnly={readOnly}
         />
       )}

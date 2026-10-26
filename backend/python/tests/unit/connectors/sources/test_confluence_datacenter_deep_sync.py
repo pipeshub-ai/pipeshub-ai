@@ -135,6 +135,7 @@ class TestConfluenceRunSync:
             connector._sync_spaces = AsyncMock(return_value=[rg])
             connector._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
             connector._sync_permission_changes_from_audit_log = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock()
 
             await connector.run_sync()
 
@@ -162,6 +163,7 @@ class TestConfluenceRunSync:
             connector._sync_spaces = AsyncMock(return_value=[_space_rg("S1"), _space_rg("S2")])
             connector._sync_content = AsyncMock(return_value=ContentListing(full=True, complete=True, seen=frozenset(), checkpoint_key="k"))
             connector._sync_permission_changes_from_audit_log = AsyncMock()
+            connector._sweep_placeholder_records = AsyncMock()
 
             await connector.run_sync()
             # 2 spaces * 2 types (page + blogpost) = 4
@@ -1006,7 +1008,8 @@ class TestFetchPagePermissions:
         assert len(perms) == 1
 
     @pytest.mark.asyncio
-    async def test_api_failure_returns_none(self):
+    async def test_api_failure_returns_none_not_empty(self):
+        """Decision 76: "could not determine" is not "no restrictions"."""
         connector = _make_connector()
         ds = MagicMock()
         ds.get_page_relevant_view_restrictions_v1 = AsyncMock(

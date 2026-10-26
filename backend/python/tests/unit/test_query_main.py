@@ -11,6 +11,11 @@ from fastapi.responses import JSONResponse
 from app.services.messaging.config import MessageBrokerType
 from tests.support.host_header import POISONED_HOSTS, request_with_host
 
+@pytest.fixture(autouse=True)
+def _no_inherited_worker_healthcheck_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("UVICORN_WORKER_HEALTHCHECK_TIMEOUT_SECONDS", raising=False)
+
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -767,6 +772,57 @@ class TestValidationExceptionHandler:
         assert body["detail"][0]["loc"] == ["body", "query"]
         assert body["detail"][1]["type"] == "int_parsing"
 
+    async def test_logged_url_has_no_credentials(self, caplog):
+        """The warning logs the request URL; a token in its query must not reach the log."""
+        import logging
+
+        from app.query_main import validation_exception_handler
+
+        mock_request = MagicMock()
+        mock_request.method = "GET"
+        mock_request.url = "http://test/api/v1/search?token=fake-token-value&page=2"
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [{"loc": ["query", "q"], "msg": "field required"}]
+
+        with caplog.at_level(logging.WARNING):
+            await validation_exception_handler(mock_request, mock_exc)
+
+        assert "Request validation failed" in caplog.text
+        assert "fake-token-value" not in caplog.text
+        assert "page=2" in caplog.text
+
+    async def test_logged_errors_do_not_echo_the_rejected_input(self, caplog) -> None:
+        """Each error carries the rejected value as ``input``, which for a
+        password field is the password; the log keeps only where and why."""
+        import logging
+
+        from app.query_main import validation_exception_handler
+        from app.utils.logger import RedactingFormatter
+
+        mock_request = MagicMock()
+        mock_request.method = "POST"
+        mock_request.url = "http://test/api/v1/connect"
+        mock_exc = MagicMock(spec=RequestValidationError)
+        mock_exc.errors.return_value = [{
+            "type": "string_too_long",
+            "loc": ["body", "password"],
+            "msg": "String should have at most 4 characters",
+            "input": "SENTINEL-422-pw",
+            "ctx": {"max_length": 4, "value": "SENTINEL-422-ctx"},
+        }]
+
+        with caplog.at_level(logging.WARNING, logger="app.query_main"):
+            result = await validation_exception_handler(mock_request, mock_exc)
+
+        assert result.status_code == 422
+        records = [r for r in caplog.records if "Request validation failed" in r.getMessage()]
+        assert records
+        formatter = RedactingFormatter("%(name)s - %(levelname)s - %(message)s")
+        for text in (records[0].getMessage(), formatter.format(records[0])):
+            assert "SENTINEL-422" not in text
+            assert "password" in text
+            assert "string_too_long" in text
+
     async def test_body_parse_failure_still_returns_422(self):
         """When request.json() raises, handler still returns 422."""
         from app.query_main import validation_exception_handler
@@ -824,6 +880,7 @@ class TestRun:
             log_level="info",
             reload=False,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
     def test_run_defaults(self):
@@ -849,6 +906,7 @@ class TestRun:
             log_level="info",
             reload=True,
             workers=1,
+            timeout_worker_healthcheck=60,
         )
 
 
@@ -885,6 +943,7 @@ class TestRunWorkersWarning:
                 log_level="info",
                 reload=True,
                 workers=1,
+                timeout_worker_healthcheck=60,
             )
 
     def test_falls_back_to_one_worker_when_exec_fails(self) -> None:
@@ -972,7 +1031,7 @@ class TestRunWorkersWarning:
         mock_execvp.assert_called_once()
         argv = mock_execvp.call_args[0][1]
         assert argv[1:4] == ["-m", "uvicorn", "app.query_main:app"]
-        assert argv[-2:] == ["--workers", "4"]
+        assert argv[-4:] == ["--workers", "4", "--timeout-worker-healthcheck", "60"]
 
     def test_single_worker_does_not_exec(self) -> None:
         """The default path must stay in-process -- no exec, no behaviour change."""

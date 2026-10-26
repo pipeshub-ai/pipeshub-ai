@@ -1,0 +1,37 @@
+# Vetted SECURITY DEFINER functions of schema kernel. Format and rules: db/lib/vetted.py.
+# After editing: python -m db.lib.vetted render versions/kernel/vetted/manifest.yaml
+functions:
+  # Called by org_lineage only. An extra migration location may replace the body (extends: true); the signature is frozen,
+  # and nobody else can execute it, so the body may trust that p_org is the caller's own org.
+  - name: kernel.org_parent_ids
+    class: read
+    scope: helper
+    args:
+      - {name: p_org, type: text, pattern: '^[0-9a-f]{24}$'}
+    returns: "text[]"
+    body: |
+      RETURN '{}';
+    test:
+      checks: [privileges, catalog]
+
+  # The ancestor list the unit of work puts in app.org_lineage: the caller's org first, then its parents (at most 16, sorted,
+  # well-formed ids only, so a comma or a stray value can never widen the lineage policy). Asking for another org's lineage
+  # answers like having no org.
+  - name: kernel.org_lineage
+    class: read
+    scope: lineage
+    org_arg: p_org
+    args:
+      - {name: p_org, type: text, pattern: '^[0-9a-f]{24}$'}
+    returns: "text[]"
+    no_org: "'{}'"
+    body: |
+      RETURN ARRAY[v_org] || ARRAY(
+        SELECT DISTINCT q FROM unnest(kernel.org_parent_ids(v_org)) q
+        WHERE q ~ '^[0-9a-f]{24}$' AND q <> v_org ORDER BY q LIMIT 16);
+    test:
+      args: ["{org}"]
+      own_result: [[["{org}"]]]
+      other_result: [[[]]]
+      no_org_result: [[[]]]
+      bad_args: [["not-an-org"], ["{org},{org}"], [null]]

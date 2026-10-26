@@ -8,7 +8,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.utils.libreoffice_convert import convert_with_libreoffice
+from app.services.parsing.interface import ParseError, ParseErrorCode
+from app.utils.libreoffice_convert import (
+    LibreOfficeCouldNotReadFileError,
+    convert_with_libreoffice,
+    unreadable_file_as_parse_error,
+)
 
 
 def _fake_proc(returncode: int = 0, stderr: bytes = b"") -> MagicMock:
@@ -88,3 +93,25 @@ async def test_success_returns_output_bytes() -> None:
         result = await convert_with_libreoffice(b"doc data", "doc", "docx")
 
     assert result == fake_output
+
+
+def test_unreadable_file_is_reported_as_parse_error() -> None:
+    original = LibreOfficeCouldNotReadFileError("nope", details={"reason": "bad"})
+
+    with pytest.raises(ParseError) as exc_info:
+        with unreadable_file_as_parse_error("docx"):
+            raise original
+
+    parse_error = exc_info.value
+    assert parse_error.code == ParseErrorCode.PARSE_FAILED
+    assert ".docx" in parse_error.message
+    assert parse_error.details == {"reason": "bad"}
+    assert parse_error.__cause__ is original
+
+
+def test_other_errors_propagate_unchanged() -> None:
+    with pytest.raises(RuntimeError, match="not installed") as exc_info:
+        with unreadable_file_as_parse_error("docx"):
+            raise RuntimeError("not installed")
+
+    assert not isinstance(exc_info.value, ParseError)

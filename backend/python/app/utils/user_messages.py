@@ -15,6 +15,18 @@ RETRY_HINT = "Please try again; if it keeps failing, contact your admin."
 
 SOMETHING_WENT_WRONG = f"Something went wrong. {RETRY_HINT}"
 
+# Node repeats this 503 word for word (READER_WRITTEN_MESSAGES in
+# backend/nodejs/apps/src/libs/errors/reader-friendly.ts); change both together.
+DATABASE_UNREACHABLE = "We couldn't reach PipesHub's database just now. Please try again in a few seconds."
+
+
+
+def where_to_authenticate(*, is_service_account: bool) -> str:
+    """Where a toolset's sign-in is fixed: a service-account agent signs in once, on the agent."""
+    if is_service_account:
+        return "this agent's settings in the agent builder (someone who can edit the agent has to do it)"
+    return "Your actions"
+
 
 PEOPLE_GONE = (
     "Some people you picked are no longer in this workspace. "
@@ -43,6 +55,18 @@ def not_found(thing: str) -> str:
     workspace owns. ``thing`` starts the sentence, e.g. ``"This folder"``.
     """
     return f"{thing} was removed, or you no longer have access. Refresh the page and try again."
+
+
+def folder_in_trash(folder_name: str | None, action: str) -> str:
+    """The folder someone picked to put something in is in the trash.
+
+    ``action`` completes "you can't …", e.g. ``"move items into it"``.
+    """
+    folder = f"'{folder_name}'" if folder_name else "That folder"
+    return (
+        f"{folder} is in Recently deleted, so you can't {action}. "
+        "Restore it first, or choose another folder."
+    )
 
 
 _CLIENT_ERROR_MIN = 400

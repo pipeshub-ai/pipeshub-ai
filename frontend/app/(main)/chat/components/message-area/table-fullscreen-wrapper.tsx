@@ -8,6 +8,8 @@ import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 
 interface TableFullscreenWrapperProps {
   children: React.ReactNode;
+  /** Saves the table's rows as a CSV file. Leave out where the rows are not known. */
+  onDownloadCsv?: () => void;
 }
 
 /**
@@ -26,7 +28,7 @@ interface TableFullscreenWrapperProps {
  *   --table-cell-max-width   : none   (removes the 280 px per-column cap)
  *   --table-wrapper-max-height : none (removes the 55 vh row cap)
  */
-export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps) {
+export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscreenWrapperProps) {
   const [open, setOpen] = useState(false);
   const { t } = useTranslation();
 
@@ -34,11 +36,12 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
     <Box style={{ marginBottom: 'var(--space-3)' }}>
       {/* ── Expand toolbar ── */}
       <Flex
+        className="touch-row"
         justify="end"
         align="center"
         style={{ marginBottom: '2px' }}
       >
-        <IconButton
+        <IconButton className="touch-hit"
           size="1"
           variant="ghost"
           color="gray"
@@ -48,6 +51,19 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
         >
           <MaterialIcon name="open_in_full" size={ICON_SIZES.SECONDARY} />
         </IconButton>
+        {onDownloadCsv && (
+          <IconButton className="touch-hit"
+            size="1"
+            variant="ghost"
+            color="gray"
+            title={t('chat.downloadCsv')}
+            aria-label={t('chat.downloadCsv')}
+            style={{ cursor: 'pointer', color: 'var(--slate-9)', marginLeft: 'var(--space-1)' }}
+            onClick={onDownloadCsv}
+          >
+            <MaterialIcon name="download" size={ICON_SIZES.SECONDARY} />
+          </IconButton>
+        )}
       </Flex>
 
       {/* ── Constrained table ── */}
@@ -72,8 +88,8 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
           style={{
             maxWidth: '92vw',
             width: '92vw',
+            // No fixed height: a short table gets a short dialog; the scroller below takes over at the max.
             maxHeight: '88vh',
-            height: '88vh',
             padding: 0,
             overflow: 'hidden',
             display: 'flex',
@@ -98,16 +114,31 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
             <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
               {t('chat.fullTableView')}
             </Text>
-            <Dialog.Close>
-              <IconButton
-                size="1"
-                variant="ghost"
-                color="gray"
-                style={{ cursor: 'pointer' }}
-              >
-                <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
-              </IconButton>
-            </Dialog.Close>
+            <Flex className="touch-row" align="center" gap="1">
+              {onDownloadCsv && (
+                <IconButton className="touch-hit"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  title={t('chat.downloadCsv')}
+                  aria-label={t('chat.downloadCsv')}
+                  style={{ cursor: 'pointer' }}
+                  onClick={onDownloadCsv}
+                >
+                  <MaterialIcon name="download" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+              )}
+              <Dialog.Close>
+                <IconButton className="touch-hit"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  style={{ cursor: 'pointer' }}
+                >
+                  <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+              </Dialog.Close>
+            </Flex>
           </Flex>
 
           {/*
@@ -124,6 +155,7 @@ export function TableFullscreenWrapper({ children }: TableFullscreenWrapperProps
            * removing the normal-view width and height caps.
            */}
           <Box
+            data-table-scroll-area
             style={{
               flex: 1,
               minHeight: 0,

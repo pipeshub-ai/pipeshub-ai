@@ -22,13 +22,16 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import (
+    AccessRule,
     CollectionNames,
-    Connectors as ConnectorsEnum,
     EntityRelations,
     MimeTypes,
     OriginTypes,
     ProgressStatus,
     RecordRelations,
+)
+from app.config.constants.arangodb import (
+    Connectors as ConnectorsEnum,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     ARANGO_NODE_ID_PARTS,
@@ -56,7 +59,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 from app.services.graph_db.common.record_visibility import RecordVisibility
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -137,6 +139,7 @@ def _make_tx_store():
     tx_store.batch_create_entity_relations = AsyncMock()
     tx_store.get_edges_from_node = AsyncMock(return_value=[])
     tx_store.delete_record_by_key = AsyncMock()
+    tx_store.delete_single_record = AsyncMock(return_value={"success": True, "eventData": None})
     tx_store.get_app_role_by_external_id = AsyncMock(return_value=None)
     tx_store.batch_upsert_app_users = AsyncMock()
     tx_store.batch_upsert_user_groups = AsyncMock()
@@ -148,7 +151,7 @@ def _make_tx_store():
     tx_store.get_app_creator_user = AsyncMock(return_value=None)
     tx_store.create_record_groups_relation = AsyncMock()
     tx_store.get_edges_to_node = AsyncMock(return_value=[])
-    tx_store.batch_upsert_record_relations = AsyncMock()
+    tx_store.batch_upsert_node_relations = AsyncMock()
     return tx_store
 
 
@@ -163,6 +166,148 @@ def _make_ctx(tx_store):
 # ===========================================================================
 # _create_placeholder_parent_record - PULL_REQUEST type (line 205)
 # ===========================================================================
+
+
+class TestPlaceholdersAreRestricted:
+    """A stand-in whose permissions nobody has read is RESTRICTED."""
+
+    def test_a_placeholder_parent_record_is_restricted(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        stub = _make_processor()._create_placeholder_parent_record("ext-parent", RecordType.FILE, _make_record())
+        assert stub.is_placeholder and stub.access_rule == AccessRule.RESTRICTED
+
+    def test_a_placeholder_is_never_shown_as_queued(self) -> None:
+        # No indexing event is published for a stub, so QUEUED would never move.
+        from app.config.constants.arangodb import ProgressStatus
+
+        stub = _make_processor()._create_placeholder_parent_record("ext-parent", RecordType.TICKET, _make_record())
+        assert stub.indexing_status == ProgressStatus.AUTO_INDEX_OFF.value
+
+    @pytest.mark.asyncio
+    async def test_withdraw_app_user_access_deletes_each_user_app_relation(self) -> None:
+        from app.config.constants.arangodb import CollectionNames, Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.delete_edge = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        user = AppUser(id="node-1", app_name=Connectors.JIRA, connector_id="c", source_user_id="a", email="a@x.com", full_name="a")
+
+        await proc.withdraw_app_user_access("conn-1", [user, user])
+
+        tx_store.delete_edge.assert_awaited_once_with(
+            "node-1", CollectionNames.USERS.value, "conn-1", CollectionNames.APPS.value,
+            CollectionNames.USER_APP_RELATION.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_withdraw_drops_the_access_cache_when_a_later_delete_fails(self) -> None:
+        # Without explicit transactions the first delete has already committed.
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.delete_edge = AsyncMock(side_effect=[None, RuntimeError("boom")])
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._access_changed = AsyncMock()
+        users = [
+            AppUser(id=f"node-{i}", app_name=Connectors.JIRA, connector_id="c", source_user_id=str(i),
+                    email=f"{i}@x.com", full_name=str(i))
+            for i in (1, 2)
+        ]
+
+        with pytest.raises(RuntimeError):
+            await proc.withdraw_app_user_access("conn-1", users)
+
+        proc._access_changed.assert_awaited_once_with({"conn-1"})
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_parent_group_is_restricted(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import RecordGroup, RecordGroupType
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        group = RecordGroup(
+            name="child", external_group_id="ext-child", group_type=RecordGroupType.DRIVE,
+            connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1",
+            parent_external_group_id="ext-missing-parent",
+        )
+        await proc.on_new_record_groups([(group, [])])
+
+        placeholders = [
+            g for call in tx_store.batch_upsert_record_groups.await_args_list for g in call.args[0]
+            if g.external_group_id == "ext-missing-parent"
+        ]
+        assert [g.access_rule for g in placeholders] == [AccessRule.RESTRICTED]
+
+
+class TestAccessRuleFollowsTheSource:
+    """A restriction can change at the source without a content edit. The
+    record's revision is then unchanged; the upsert every stored record gets
+    carries the rule, or it would stay OPEN (an over-share) until the content
+    moved."""
+
+    @staticmethod
+    def _existing(rule, *, revision="rev-1") -> MagicMock:
+        from app.config.constants.arangodb import AccessRule
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.weburl = "https://example.com"
+        existing.external_revision_id = revision
+        existing.record_group_id = None
+        existing.is_placeholder = False
+        existing.access_rule = AccessRule(rule)
+        return existing
+
+    @staticmethod
+    def _written(tx_store) -> "Record":
+        tx_store.batch_upsert_records.assert_awaited_once()
+        return tx_store.batch_upsert_records.await_args.args[0][0]
+
+    @pytest.mark.asyncio
+    async def test_a_changed_rule_is_written_without_a_content_edit(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = self._existing("OPEN")
+        tx_store.batch_update_nodes = AsyncMock()
+        record = _make_record(external_revision_id="rev-1", access_rule=AccessRule.RESTRICTED)
+
+        await proc._process_record(record, [], tx_store)
+
+        written = self._written(tx_store)
+        assert written.id == "existing-id" and written.access_rule == AccessRule.RESTRICTED
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_rule_is_written_as_it_was(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = self._existing("STRICT")
+        tx_store.batch_update_nodes = AsyncMock()
+        record = _make_record(external_revision_id="rev-1", access_rule=AccessRule.STRICT)
+
+        await proc._process_record(record, [], tx_store)
+
+        assert self._written(tx_store).access_rule == AccessRule.STRICT
+        tx_store.batch_update_nodes.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_does_not_reset_a_real_records_rule(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_record_by_external_id.return_value = self._existing("RESTRICTED")
+        tx_store.batch_update_nodes = AsyncMock()
+        record = _make_record(external_revision_id="rev-1", is_placeholder=True)
+
+        await proc._process_record(record, [], tx_store)
+
+        assert self._written(tx_store).access_rule == AccessRule.RESTRICTED
+        tx_store.batch_update_nodes.assert_not_called()
 
 
 class TestCreatePlaceholderPullRequest:
@@ -720,10 +865,20 @@ class TestOnNewRecordGroupsAdvanced:
 
     @pytest.mark.asyncio
     async def test_parent_record_group_id_creates_relation(self):
-        """Creates record groups relation when parent_record_group_id is set."""
+        """A parent given by internal id gets the same edges as one given by
+        external id: membership, hierarchy and inheritance, with or without grants."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        parent = RecordGroup(
+            id="parent-rg-internal-id",
+            external_group_id="ext-site",
+            name="Site",
+            group_type="DRIVE",
+            connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1",
+        )
+        tx_store.get_record_group_by_id = AsyncMock(return_value=parent)
 
         rg = RecordGroup(
             external_group_id="ext-g1",
@@ -732,18 +887,39 @@ class TestOnNewRecordGroupsAdvanced:
             connector_name=ConnectorsEnum.GOOGLE_MAIL,
             connector_id="conn-1",
             parent_record_group_id="parent-rg-internal-id",
+            inherit_permissions=True,
         )
 
-        # Add a permission so we reach the parent_record_group_id check after permissions
-        perm = Permission(
-            type=PermissionType.READ,
-            entity_type=EntityType.ORG,
+        await proc.on_new_record_groups([(rg, [])])
+
+        written = {
+            (c.kwargs.get("collection"), e["from_id"], e["to_id"])
+            for c in tx_store.batch_create_edges.await_args_list
+            for e in c.args[0]
+        }
+        assert (CollectionNames.BELONGS_TO.value, rg.id, "parent-rg-internal-id") in written
+        assert (CollectionNames.NODE_RELATIONS.value, "parent-rg-internal-id", rg.id) in written
+        assert (CollectionNames.INHERIT_PERMISSIONS.value, rg.id, "parent-rg-internal-id") in written
+
+    @pytest.mark.asyncio
+    async def test_unknown_grants_keep_the_stored_ones(self) -> None:
+        """None means the connector could not read the grants."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id = AsyncMock(
+            return_value=RecordGroup(id="rg-1", external_group_id="ext-g1", name="G", group_type="DRIVE",
+                                     connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1"),
         )
+        rg = RecordGroup(external_group_id="ext-g1", name="G", group_type="DRIVE",
+                         connector_name=ConnectorsEnum.GOOGLE_MAIL, connector_id="conn-1")
 
-        await proc.on_new_record_groups([(rg, [perm])])
+        await proc.on_new_record_groups([(rg, None)])
+        tx_store.replace_edges_to.assert_not_awaited()
 
-        tx_store.create_record_groups_relation.assert_awaited_once_with(
-            rg.id, "parent-rg-internal-id"
+        await proc.on_new_record_groups([(rg, [])])
+        tx_store.replace_edges_to.assert_awaited_once_with(
+            "rg-1", CollectionNames.RECORD_GROUPS.value, [], CollectionNames.PERMISSION.value
         )
 
     @pytest.mark.asyncio
@@ -813,10 +989,13 @@ class TestOnNewRecordGroupsMovesBlobsOnRename:
             connector_id="conn-1",
         )
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v1", "v2"])
         await proc.on_new_record_groups([(rg, [])])
 
+        # Named content only: another group whose name sanitizes the same shares the prefix.
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project"
+            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project",
+            virtual_record_ids=["v1", "v2"],
         )
 
     @pytest.mark.asyncio
@@ -1162,6 +1341,23 @@ class TestOnNewAppRoles:
         proc.logger.error.assert_called()
 
 
+class TestGetUserGroupByExternalId:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("raise_on_error", [False, True])
+    async def test_the_caller_chooses_whether_a_failed_read_is_raised(self, raise_on_error: bool) -> None:
+        """A caller that acts on "no such group" has to be able to tell it from a read that failed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        found = await proc.get_user_group_by_external_id("conn-1", "ext-grp", raise_on_error=raise_on_error)
+
+        assert found is tx_store.get_user_group_by_external_id.return_value
+        tx_store.get_user_group_by_external_id.assert_awaited_once_with(
+            "conn-1", "ext-grp", raise_on_error=raise_on_error
+        )
+
+
 # ===========================================================================
 # on_user_group_member_removed (lines 1425-1436)
 # ===========================================================================
@@ -1212,11 +1408,17 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "group-1"
         mock_group.name = "Test Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = True
+        tx_store.batch_delete_edges.return_value = 1
 
         result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
         assert result is True
+        # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+        tx_store.batch_delete_edges.assert_awaited_once_with(
+            [{"from_id": "user-1", "from_collection": "users", "to_id": "group-1", "to_collection": "groups"}],
+            collection="permission",
+        )
+        tx_store.delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_edge_not_found(self):
@@ -1233,7 +1435,7 @@ class TestOnUserGroupMemberRemoved:
         mock_group.id = "group-1"
         mock_group.name = "Test Group"
         tx_store.get_user_group_by_external_id.return_value = mock_group
-        tx_store.delete_edge.return_value = False
+        tx_store.batch_delete_edges.return_value = 0
 
         result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
@@ -1241,18 +1443,52 @@ class TestOnUserGroupMemberRemoved:
         proc.logger.warning.assert_called()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, it read as "was not a member" and the user kept the group's access."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        mock_group = MagicMock()
+        mock_group.id = "group-1"
+        mock_group.name = "Test Group"
+        tx_store.get_user_group_by_external_id.return_value = mock_group
+        tx_store.batch_delete_edges.side_effect = RuntimeError("write conflict")
+
+        with pytest.raises(RuntimeError, match="write conflict"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("lookup", ["get_user_by_email", "get_user_group_by_external_id"])
+    async def test_a_failed_lookup_is_raised(self, lookup: str) -> None:
+        """Taken for "no such user" or "no such group", it returned with the membership in place."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        mock_user = MagicMock()
+        mock_user.id = "user-1"
+        tx_store.get_user_by_email.return_value = mock_user
+        getattr(tx_store, lookup).side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
+
+        assert getattr(tx_store, lookup).await_args.kwargs["raise_on_error"] is True
+        tx_store.batch_delete_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_transaction_that_cannot_start_is_raised(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
         ctx = _make_ctx(tx_store)
         ctx.__aenter__.side_effect = RuntimeError("db fail")
         proc.data_store_provider.transaction.return_value = ctx
 
-        result = await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
-
-        assert result is False
-        proc.logger.error.assert_called()
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_user_group_member_removed("ext-grp", "user@test.com", "conn-1")
 
 
 # ===========================================================================
@@ -1393,8 +1629,8 @@ class TestOnUserGroupDeleted:
         tx_store.delete_nodes_and_edges.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, nobody had to look, and the group kept giving its members access."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1405,10 +1641,22 @@ class TestOnUserGroupDeleted:
         tx_store.get_user_group_by_external_id.return_value = mock_group
         tx_store.delete_nodes_and_edges.side_effect = RuntimeError("db fail")
 
-        result = await proc.on_user_group_deleted("ext-grp", "conn-1")
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_user_group_deleted("ext-grp", "conn-1")
 
-        assert result is False
-        proc.logger.error.assert_called()
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised(self) -> None:
+        """Taken for "no such group", it was reported as already deleted, and stayed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_user_group_by_external_id.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_user_group_deleted("ext-grp", "conn-1")
+
+        assert tx_store.get_user_group_by_external_id.await_args.kwargs["raise_on_error"] is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1861,8 +2109,8 @@ class TestOnAppRoleDeleted:
         )
 
     @pytest.mark.asyncio
-    async def test_exception_returns_false(self):
-        """Returns False on exception."""
+    async def test_a_failed_delete_is_raised(self) -> None:
+        """Answered False, nobody had to look, and the role kept giving its members access."""
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
@@ -1873,10 +2121,22 @@ class TestOnAppRoleDeleted:
         tx_store.get_app_role_by_external_id.return_value = mock_role
         tx_store.delete_nodes_and_edges.side_effect = RuntimeError("db fail")
 
-        result = await proc.on_app_role_deleted("ext-role-1", "conn-1")
+        with pytest.raises(RuntimeError, match="db fail"):
+            await proc.on_app_role_deleted("ext-role-1", "conn-1")
 
-        assert result is False
-        proc.logger.error.assert_called()
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_raised(self) -> None:
+        """Taken for "no such role", the deletion was dropped and the role stayed."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_app_role_by_external_id.side_effect = RuntimeError("read failed")
+
+        with pytest.raises(RuntimeError, match="read failed"):
+            await proc.on_app_role_deleted("ext-role-1", "conn-1")
+
+        assert tx_store.get_app_role_by_external_id.await_args.kwargs["raise_on_error"] is True
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
 
 
 # ===========================================================================
@@ -1935,21 +2195,97 @@ class TestOnRecordGroupDeleted:
         assert result is False
         proc.logger.error.assert_called()
 
+    @pytest.mark.asyncio
+    async def test_the_subtree_goes_whichever_edge_shape_the_provider_returns(self) -> None:
+        """Child groups and every record in them go with the group.
+        Arango returns `_from`; Neo4j returns from_collection/from_id."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id.return_value = MagicMock(id="g1", name="G")
+        edges = {
+            "recordGroups/g1": [{"_from": "records/r1"}, {"_from": "recordGroups/g2"}, {"_from": "records/r1"}],
+            "recordGroups/g2": [{"from_collection": "records", "from_id": "r2"},
+                                {"from_collection": "recordGroups", "from_id": "g1"}],
+        }
+        tx_store.get_edges_to_node = AsyncMock(side_effect=lambda node, _collection: edges[node])
+        proc.GROUP_DELETE_BATCH = 1
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+
+        assert await proc.on_record_group_deleted("ext-grp-1", "conn-1") is True
+
+        deleted = [c.args[0] for c in proc.on_records_deleted_cascade.await_args_list]
+        assert deleted == [["r1"], ["r2"]]
+        # A record in the trash must not outlive its group.
+        assert all(
+            c.kwargs == {"cascade_children": False, "include_trashed_roots": True, "soft_delete": False}
+            for c in proc.on_records_deleted_cascade.await_args_list
+        )
+        tx_store.delete_nodes_and_edges.assert_awaited_once_with(["g1", "g2"], CollectionNames.RECORD_GROUPS.value)
+
+    @pytest.mark.asyncio
+    async def test_with_the_trash_on_the_records_are_trashed_and_the_groups_kept(self) -> None:
+        """The trash keeps a record's group and edges, so a restore puts it back."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id.return_value = MagicMock(id="g1", name="G")
+        tx_store.get_edges_to_node = AsyncMock(return_value=[{"_from": "records/r1"}])
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "softDeleted": True})
+
+        with patch("app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled", AsyncMock(return_value=True)):
+            assert await proc.on_record_group_deleted("ext-grp-1", "conn-1", trash_live_records=True) is True
+
+        proc.on_records_deleted_cascade.assert_awaited_once_with(
+            ["r1"], "conn-1", cascade_children=False, include_trashed_roots=True, soft_delete=True,
+        )
+        tx_store.delete_nodes_and_edges.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_with_the_trash_on_a_group_without_records_is_deleted(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id.return_value = MagicMock(id="g1", name="G")
+        tx_store.get_edges_to_node = AsyncMock(return_value=[])
+
+        with patch("app.connectors.core.base.data_processor.data_source_entities_processor.is_soft_delete_enabled", AsyncMock(return_value=True)):
+            assert await proc.on_record_group_deleted("ext-grp-1", "conn-1") is True
+
+        tx_store.delete_nodes_and_edges.assert_awaited_once_with(["g1"], CollectionNames.RECORD_GROUPS.value)
+
+    @pytest.mark.asyncio
+    async def test_the_group_stays_when_its_records_could_not_be_deleted(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_group_by_external_id.return_value = MagicMock(id="g1", name="G")
+        tx_store.get_edges_to_node = AsyncMock(return_value=[{"_from": "records/r1"}])
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "db"})
+
+        assert await proc.on_record_group_deleted("ext-grp-1", "conn-1") is False
+        tx_store.delete_nodes_and_edges.assert_not_called()
+
     @staticmethod
     def _kept_for_the_trash(marked: bool | None) -> tuple:
         proc = _make_processor()
         tx_store = _make_tx_store()
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
         group = MagicMock()
-        group.id = "rg-internal-1"
+        group.id = "g1"
         group.name = "Team"
         tx_store.get_record_group_by_external_id.return_value = group
-        tx_store.get_records_by_status = AsyncMock(return_value=[MagicMock()])
+        edges = {
+            "recordGroups/g1": [{"_from": "records/r1"}, {"_from": "recordGroups/g2"}],
+            "recordGroups/g2": [],
+        }
+        tx_store.get_edges_to_node = AsyncMock(side_effect=lambda node, _collection: edges[node])
         tx_store.batch_update_nodes = AsyncMock(return_value=marked)
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "softDeleted": True})
         return proc, tx_store
 
     @pytest.mark.asyncio
-    async def test_a_group_kept_for_the_trash_is_marked_for_the_purge(self) -> None:
+    async def test_groups_kept_for_the_trash_are_marked_for_the_purge(self) -> None:
         proc, tx_store = self._kept_for_the_trash(marked=True)
 
         with patch(
@@ -1962,8 +2298,10 @@ class TestOnRecordGroupDeleted:
         tx_store.delete_nodes_and_edges.assert_not_awaited()
         [nodes, collection] = tx_store.batch_update_nodes.await_args.args
         assert collection == CollectionNames.RECORD_GROUPS.value
-        assert nodes[0]["id"] == "rg-internal-1" and nodes[0]["isDeletedAtSource"] is True
-        assert isinstance(nodes[0]["deletedAtSourceTimestamp"], int)
+        # The child group is kept with the trashed records too, so the purge needs it marked.
+        assert [n["id"] for n in nodes] == ["g1", "g2"]
+        assert all(n["isDeletedAtSource"] is True for n in nodes)
+        assert all(isinstance(n["deletedAtSourceTimestamp"], int) for n in nodes)
 
     @pytest.mark.asyncio
     async def test_a_kept_group_the_store_would_not_mark_is_retried(self) -> None:
@@ -2453,12 +2791,14 @@ class TestUpdateRecordGroupNameMovesBlobs:
         )
         proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v9"])
         await proc.update_record_group_name(
             "ext-folder", "New Space", old_name="Old Space", connector_id="conn-1"
         )
 
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space"
+            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space",
+            virtual_record_ids=["v9"],
         )
 
     @pytest.mark.asyncio
@@ -2639,6 +2979,44 @@ class TestOnUpdatedRecordPermissionsAdditional:
             await proc.on_updated_record_permissions(record, [])
 
         proc.logger.error.assert_called()
+
+    @staticmethod
+    def _nested(inherit: bool) -> tuple:
+        from app.config.constants.arangodb import AccessRule
+
+        proc, tx_store = _make_processor(), _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_edges_from_node.return_value = [{"_to": "recordGroups/rg-1"}]
+        tx_store.batch_update_nodes = AsyncMock()
+        tx_store.create_inherit_permissions_relation_record = AsyncMock()
+        tx_store.delete_inherit_permissions_relation_record = AsyncMock()
+        parent = MagicMock()
+        parent.id = "parent-1"
+        tx_store.get_record_by_external_id.return_value = parent
+        record = _make_record(
+            parent_external_record_id="ext-parent", inherit_permissions=inherit,
+            access_rule=AccessRule.RESTRICTED,
+        )
+        record.id = "rec-1"
+        return proc, tx_store, record
+
+    @pytest.mark.asyncio
+    async def test_a_nested_record_that_stops_inheriting_leaves_its_parent(self) -> None:
+        """SharePoint unique permissions: keeping the edge to the parent
+        record would keep granting the parent's readers."""
+        proc, tx_store, record = self._nested(inherit=False)
+        await proc.on_updated_record_permissions(record, [])
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("rec-1", "parent-1")
+        tx_store.create_inherit_permissions_relation_record.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_the_restriction_is_written_with_the_permissions(self) -> None:
+        proc, tx_store, record = self._nested(inherit=True)
+        await proc.on_updated_record_permissions(record, [])
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("rec-1", "parent-1")
+        tx_store.batch_update_nodes.assert_awaited_once_with(
+            [{"_key": "rec-1", "accessRule": "RESTRICTED"}], CollectionNames.RECORDS.value,
+        )
 
     @pytest.mark.asyncio
     async def test_no_belongs_to_edges_runs_process_record(self):
@@ -2929,7 +3307,7 @@ class TestNameChangedTriggersMove:
         )
 
         assert len(moves) == 1
-        assert moves[0][3] == "vrid-abc-123"
+        assert moves[0][3] == ("vrid-abc-123",)
 
 
 # ===========================================================================
@@ -3495,8 +3873,8 @@ class TestHandleRelatedExternalRecordsBatchUpsert:
 
         await proc._handle_related_external_records(record, [rel_ext], tx_store)
 
-        tx_store.batch_upsert_record_relations.assert_awaited_once()
-        edges = tx_store.batch_upsert_record_relations.call_args[0][0]
+        tx_store.batch_upsert_node_relations.assert_awaited_once()
+        edges = tx_store.batch_upsert_node_relations.call_args[0][0]
         assert len(edges) == 1
         edge = edges[0]
         assert edge["relationshipType"] == RecordRelations.FOREIGN_KEY.value
@@ -3560,8 +3938,8 @@ class TestHandleRelatedExternalRecordsBatchUpsert:
 
         await proc._handle_related_external_records(record, [rel_ext], tx_store)
 
-        tx_store.batch_upsert_record_relations.assert_awaited_once()
-        edge = tx_store.batch_upsert_record_relations.call_args[0][0][0]
+        tx_store.batch_upsert_node_relations.assert_awaited_once()
+        edge = tx_store.batch_upsert_node_relations.call_args[0][0][0]
         assert edge["sourceColumn"] == "dept_id"
         assert edge["targetColumn"] == "id"
         assert edge["childTableName"] == "employees"
@@ -3918,7 +4296,7 @@ class TestHandleRelatedEdgeCases:
         await proc._handle_related_external_records(record, [{"bad": "data"}], tx_store)
 
         proc.logger.warning.assert_called()
-        tx_store.batch_upsert_record_relations.assert_not_awaited()
+        tx_store.batch_upsert_node_relations.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_empty_external_record_id(self):
@@ -3937,7 +4315,7 @@ class TestHandleRelatedEdgeCases:
 
         await proc._handle_related_external_records(record, [rel_ext], tx_store)
 
-        tx_store.batch_upsert_record_relations.assert_not_awaited()
+        tx_store.batch_upsert_node_relations.assert_not_awaited()
 
 
 # ===========================================================================
@@ -3965,7 +4343,7 @@ class TestLinkRecordToGroupEdgeCases:
         # One call: apart, a failure between them left the record out of its old
         # group but still inheriting that group's permissions.
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "new-grp", inherit=False, leaving_group_id="old-grp"
+            "rec-1", "new-grp", inherit=False, leaving_group_id="old-grp", browse_root=True
         )
         tx_store.delete_edge.assert_not_awaited()
         tx_store.create_record_group_relation.assert_not_awaited()
@@ -3990,7 +4368,7 @@ class TestLinkRecordToGroupEdgeCases:
 
         assert moved is True
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", None, inherit=False, leaving_group_id="old-grp"
+            "rec-1", None, inherit=False, leaving_group_id="old-grp", browse_root=None
         )
 
     @pytest.mark.asyncio
@@ -4011,7 +4389,7 @@ class TestLinkRecordToGroupEdgeCases:
         await proc._link_record_to_group(record, "main-grp", tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "main-grp", inherit=None, leaving_group_id=None
+            "rec-1", "main-grp", inherit=None, leaving_group_id=None, browse_root=True
         )
         tx_store.create_record_group_relation.assert_awaited_once_with("rec-1", "shared-grp-id")
 
@@ -4028,7 +4406,7 @@ class TestLinkRecordToGroupEdgeCases:
         await proc._link_record_to_group(record, "grp-1", tx_store)
 
         tx_store.link_record_to_group.assert_awaited_once_with(
-            "rec-1", "grp-1", inherit=True, leaving_group_id=None
+            "rec-1", "grp-1", inherit=True, leaving_group_id=None, browse_root=True
         )
 
 
@@ -4603,6 +4981,37 @@ class TestOnRecordsDetachedFromParent:
         )
 
     @pytest.mark.asyncio
+    async def test_a_detached_record_is_re_pointed_at_its_group(self) -> None:
+        """The parent's hierarchy and inheritance edges go with the parent, so
+        the record of a parent that hung off the group hangs off it instead,
+        inheriting from it only if it inherited from the parent."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=True)
+        tx_store.get_record_by_key = AsyncMock(return_value={
+            "_key": "a", "connectorId": "conn-1", "externalParentId": "ext-parent", "recordGroupId": "rg-1",
+        })
+        tx_store.get_record_by_external_id = AsyncMock(
+            return_value=MagicMock(id="parent-1", parent_external_record_id=None)
+        )
+        tx_store.get_edge = AsyncMock(return_value={"_from": "records/a"})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_detached_from_parent(["a"])
+
+        tx_store.delete_edge.assert_awaited_once_with(
+            "parent-1", CollectionNames.RECORDS.value, "a", CollectionNames.RECORDS.value,
+            CollectionNames.NODE_RELATIONS.value,
+        )
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("a", "parent-1")
+        hierarchy = [
+            c for c in tx_store.batch_create_edges.await_args_list
+            if c.kwargs.get("collection") == CollectionNames.NODE_RELATIONS.value
+        ]
+        assert [(e["from_id"], e["to_id"]) for c in hierarchy for e in c.args[0]] == [("rg-1", "a")]
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("a", "rg-1")
+
+    @pytest.mark.asyncio
     async def test_raises_when_a_record_was_not_updated(self) -> None:
         proc = _make_processor()
         tx_store = _make_tx_store()
@@ -4617,6 +5026,53 @@ class TestOnRecordsDetachedFromParent:
         proc = _make_processor()
 
         await proc.on_records_detached_from_parent([])
+
+        proc.data_store_provider.transaction.assert_not_called()
+
+
+class TestOnRecordsAttachedToParent:
+    @pytest.mark.asyncio
+    async def test_moves_each_record_from_its_group_to_the_parent(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        docs = {
+            "folder": {"recordGroupId": "g1"},
+            "a": {"recordGroupId": "g1"},
+            "b": {"recordGroupId": "g1"},
+        }
+        tx_store.get_record_by_key = AsyncMock(side_effect=lambda key, **_: docs.get(key))
+        # a inherited from the group after its parent was deleted; b had its own grants.
+        tx_store.link_record_to_group = AsyncMock(side_effect=lambda rid, *_a, **_k: 1 if rid == "a" else 0)
+        tx_store.create_inherit_permissions_relation_record = AsyncMock()
+        proc._create_hierarchy_edge = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_attached_to_parent("folder", ["a", "b"])
+
+        assert [c.args for c in tx_store.link_record_to_group.await_args_list] == [("a", "g1"), ("b", "g1")]
+        for call in tx_store.link_record_to_group.await_args_list:
+            assert call.kwargs == {"inherit": False, "browse_root": False}
+        assert [c.args[1:] for c in proc._create_hierarchy_edge.await_args_list] == [
+            ("folder", CollectionNames.RECORDS.value, "a", CollectionNames.RECORDS.value),
+            ("folder", CollectionNames.RECORDS.value, "b", CollectionNames.RECORDS.value),
+        ]
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("a", "folder")
+
+    @pytest.mark.asyncio
+    async def test_a_missing_parent_fails_loudly(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_key = AsyncMock(return_value=None)
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with pytest.raises(ValueError):
+            await proc.on_records_attached_to_parent("folder", ["a"])
+
+    @pytest.mark.asyncio
+    async def test_nothing_to_attach_touches_nothing(self) -> None:
+        proc = _make_processor()
+
+        await proc.on_records_attached_to_parent("folder", [])
 
         proc.data_store_provider.transaction.assert_not_called()
 
@@ -4692,6 +5148,42 @@ class TestOnRecordMetadataUpdateAndDelete:
         assert written.storage_document_id == "live-doc"
 
     @pytest.mark.asyncio
+    async def test_metadata_update_with_a_new_revision_stores_it_and_keeps_the_record_indexed(self) -> None:
+        """A Google Doc's version moves on a sharing change. Drive writes that through this
+        path, so the new revision is stored and the indexed record is not queued again."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.external_revision_id = "7"
+        existing.version = 0
+        existing.record_group_id = None
+        existing.weburl = "https://example.com"
+        existing.is_placeholder = False
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.parsing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        existing.processing_started_at = None
+        existing.reason = None
+        existing.is_vlm_ocr_processed = False
+        existing.md5_hash = None
+        existing.storage_document_id = "live-doc"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record(external_revision_id="8")
+        record.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_record_metadata_update(record)
+
+        written = tx_store.batch_upsert_records.await_args.args[0][0]
+        assert written.external_revision_id == "8"
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+        assert written.storage_document_id == "live-doc"
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_metadata_update_keeps_caller_supplied_md5(self):
         """A connector that does report a checksum still wins over the stored one."""
         proc = _make_processor()
@@ -4731,14 +5223,99 @@ class TestOnRecordMetadataUpdateAndDelete:
         existing = {"_key": "rec-1", "orgId": "org-1", "version": 1,
                     "virtualRecordId": "v1", "connectorId": "conn-1"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        tx_store.delete_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "deleteRecord", "topic": "record-events", "payloads": [
+                {"recordId": "rec-1", "virtualRecordId": "v1", "orgId": "org-1", "connectorId": "conn-1"},
+            ]},
+        })
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_parent_child_edge_to_record.assert_awaited_with("rec-1")
-        tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        # The provider's single-record delete takes every edge and the isOfType
+        # type doc. A separate parent-edge delete can commit on its own on Neo4j
+        # and leave the record live.
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
+        tx_store.delete_record_by_key.assert_not_awaited()
+        tx_store.delete_parent_child_edge_to_record.assert_not_called()
+        tx_store.get_record_by_key.assert_awaited_with("rec-1", raise_on_error=True)
         proc.messaging_producer.send_message.assert_awaited_once()
         assert proc.messaging_producer.send_message.await_args[0][1]["eventType"] == "deleteRecord"
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_removes_a_record_in_the_trash(self) -> None:
+        """The single-record delete skips a trashed record, and a removal scan
+        must still delete one the source no longer has."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_key = AsyncMock(return_value={
+            "_key": "rec-1", "connectorId": "conn-1", "externalRecordId": "ext-1", "isDeleted": True,
+        })
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+
+        await proc.on_record_deleted("rec-1")
+
+        proc.on_records_deleted_cascade.assert_awaited_once_with(
+            ["rec-1"], "conn-1", cascade_children=False, include_trashed_roots=True,
+        )
+        tx_store.delete_single_record.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_retries_a_deadlock(self) -> None:
+        """The provider re-raises inside the caller's transaction, so a Neo4j
+        deadlock reaches retry_on_deadlock instead of becoming a failed result."""
+
+        class TransientError(Exception):
+            pass
+
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_key = AsyncMock(return_value={"id": "rec-1"})
+        tx_store.delete_single_record = AsyncMock(side_effect=[
+            TransientError("Neo.TransientError.Transaction.DeadlockDetected"),
+            {"success": True, "eventData": {"eventType": "deleteRecord", "topic": "record-events",
+                                            "payloads": [{"recordId": "rec-1"}]}},
+        ])
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("rec-1")
+
+        assert tx_store.delete_single_record.await_count == 2
+        proc.messaging_producer.send_message.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("method, args, store_call", [
+        ("batch_upsert_records", ([],), "batch_upsert_records"),
+        ("batch_update_nodes", ([], "records"), "batch_update_nodes"),
+        ("delete_records_and_relations", ("rec-1",), "delete_records_and_relations"),
+    ])
+    async def test_plain_write_entry_points_retry_a_deadlock_only(self, monkeypatch, method, args, store_call) -> None:
+        class TransientError(Exception):
+            pass
+
+        monkeypatch.setattr("app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock())
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        setattr(tx_store, store_call, AsyncMock(side_effect=[
+            TransientError("Neo.TransientError.Transaction.DeadlockDetected"), None,
+        ]))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        await getattr(proc, method)(*args)
+        assert getattr(tx_store, store_call).await_count == 2
+
+        other = AsyncMock(side_effect=ValueError("not transient"))
+        setattr(tx_store, store_call, other)
+        with pytest.raises(ValueError):
+            await getattr(proc, method)(*args)
+        assert other.await_count == 1
+
+        always = AsyncMock(side_effect=TransientError("Neo.TransientError.Transaction.DeadlockDetected"))
+        setattr(tx_store, store_call, always)
+        with pytest.raises(TransientError):
+            await getattr(proc, method)(*args)
+        assert always.await_count > 1
 
     @pytest.mark.asyncio
     async def test_record_deleted_no_event_data(self):
@@ -4749,7 +5326,7 @@ class TestOnRecordMetadataUpdateAndDelete:
 
         await proc.on_record_deleted("rec-1")
 
-        tx_store.delete_record_by_key.assert_awaited_with("rec-1")
+        tx_store.delete_single_record.assert_awaited_once_with("rec-1")
         proc.messaging_producer.send_message.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -4760,6 +5337,13 @@ class TestOnRecordMetadataUpdateAndDelete:
         existing = {"_key": "rec-1", "orgId": "org-1", "version": 3,
                     "virtualRecordId": "vr-1", "connectorId": "conn-1"}
         tx_store.get_record_by_key = AsyncMock(return_value=existing)
+        tx_store.delete_single_record = AsyncMock(return_value={
+            "success": True,
+            "eventData": {"eventType": "deleteRecord", "topic": "record-events", "payloads": [
+                {"recordId": "rec-1", "virtualRecordId": "vr-1", "orgId": "org-1", "version": 3,
+                 "connectorId": "conn-1"},
+            ]},
+        })
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
 
         await proc.on_record_deleted("rec-1")
@@ -4769,6 +5353,46 @@ class TestOnRecordMetadataUpdateAndDelete:
         assert payload["eventType"] == "deleteRecord"
         assert payload["payload"]["virtualRecordId"] == "vr-1"
         assert payload["payload"]["connectorId"] == "conn-1"
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_reparents_children_after_the_delete(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_key = AsyncMock(return_value={
+            "id": "rec-1", "connectorId": "conn-1", "externalRecordId": "ext-1",
+        })
+        child = MagicMock()
+        child.id = "child-1"
+        child.record_group_id = "rg-1"
+        tx_store.get_records_by_parent = AsyncMock(return_value=[child])
+        tx_store.get_edge = AsyncMock(return_value={"_key": "ip"})
+        calls: list[str] = []
+        tx_store.delete_single_record = AsyncMock(
+            side_effect=lambda *_: calls.append("delete") or {"success": True}
+        )
+        tx_store.create_inherit_permissions_relation_record_group = AsyncMock(
+            side_effect=lambda *_: calls.append("inherit")
+        )
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("rec-1")
+
+        assert calls == ["delete", "inherit"]
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with(
+            "child-1", "rg-1"
+        )
+
+    @pytest.mark.asyncio
+    async def test_record_deleted_failure_raises_and_reparents_nothing(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_single_record = AsyncMock(return_value={"success": False, "reason": "boom"})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        with pytest.raises(RuntimeError):
+            await proc.on_record_deleted("rec-1")
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        proc.messaging_producer.send_message.assert_not_awaited()
 
 
 # ===========================================================================
@@ -5101,7 +5725,7 @@ class TestProcessRecordRevisionMatch:
         proc = _make_processor()
         tx_store = _make_tx_store()
         tx_store.get_user_by_email = AsyncMock(
-            side_effect=lambda email: SimpleNamespace(id=f"u-{email.split('@')[0]}"),
+            side_effect=lambda email, **_: SimpleNamespace(id=f"u-{email.split('@')[0]}"),
         )
         tx_store.batch_create_entity_relations = AsyncMock()
         mail = MailRecord(
@@ -5418,7 +6042,7 @@ def _make_old_record(
 def _live_lookup(record) -> AsyncMock:
     """An external-id lookup that finds *record* (live) and nothing in the trash."""
 
-    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> object:
+    async def lookup(*_args, visibility=RecordVisibility.ALL, **_kwargs) -> Record | None:
         return None if visibility is RecordVisibility.DELETED else record
 
     return AsyncMock(side_effect=lookup)
@@ -5920,7 +6544,9 @@ class TestKbUploadProcessRecord:
         tx_store.create_record_relation.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_preserves_explicit_org_id(self):
+    async def test_an_upload_naming_another_org_is_written_to_the_processors_org(self) -> None:
+        # The knowledge-base route hands out a processor only for the request's
+        # own org, so a different org on the record can only be a mistake.
         proc = _make_processor()
         proc.org_id = "org-default"
         tx_store = _make_tx_store()
@@ -5931,7 +6557,7 @@ class TestKbUploadProcessRecord:
         ):
             await proc._process_record(record, [], tx_store)
 
-        assert record.org_id == "org-explicit"
+        assert record.org_id == "org-default"
 
     @pytest.mark.asyncio
     async def test_existing_upload_does_not_requeue_completed(self):
@@ -6006,6 +6632,28 @@ class TestOnRecordsDeletedCascade:
         result = await proc.on_records_deleted_cascade(["r1"], "kb-123")
         assert result["success"] is False
         proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_delete_rolls_its_transaction_back(self) -> None:
+        """The provider answers a failure instead of raising; leaving the block
+        normally would commit what ran before it (the survivors' cut edges)."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(return_value={
+            "success": False,
+            "reason": "write-write conflict",
+            "reparented": [{"record_id": "s1", "record_group_id": "g1", "inherits": True}],
+        })
+        ctx = _make_ctx(tx_store)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        with patch.object(proc, "_reparent_orphans", new_callable=AsyncMock) as reparent:
+            result = await proc.on_records_deleted_cascade(["r1"], "conn-1", cascade_children=False)
+
+        assert result["success"] is False
+        exc_type = ctx.__aexit__.await_args.args[0]
+        assert exc_type is not None, "the transaction was left normally, so it commits"
+        reparent.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_publish_failure_after_retries_reports_success_with_cleanup_pending(self):
@@ -6098,6 +6746,50 @@ class TestOnRecordsDeletedCascadeAttachmentOnly:
 
         await proc.on_records_deleted_cascade(["r1"], "conn-123", cascade_children=False)
         proc.messaging_producer.send_message.assert_not_awaited()
+
+
+class TestDeleteRecordByExternalId:
+    """A connector record gone at the source (Outlook) goes through the cascade:
+    attachments with it, children re-pointed, vectors cleaned."""
+
+    @pytest.mark.asyncio
+    async def test_the_record_goes_through_the_cascade_without_its_children(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(id="mail-1"))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": True})
+
+        await proc.delete_record_by_external_id("conn-1", "msg-1", "user-1")
+
+        tx_store.get_record_by_external_id.assert_awaited_once_with("conn-1", "msg-1")
+        proc.on_records_deleted_cascade.assert_awaited_once_with(
+            ["mail-1"], "conn-1", cascade_children=False, include_trashed_roots=True,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_delete_the_cascade_reports_failed_raises(self) -> None:
+        """The cascade answers a failure instead of raising; a sync that went on
+        would never come back to the record."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(id="mail-1"))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.on_records_deleted_cascade = AsyncMock(return_value={"success": False, "reason": "edge sweep failed"})
+
+        with pytest.raises(RuntimeError, match="Deletion failed: edge sweep failed"):
+            await proc.delete_record_by_external_id("conn-1", "msg-1", "user-1")
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_record_is_a_no_op(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc.on_records_deleted_cascade = AsyncMock()
+
+        await proc.delete_record_by_external_id("conn-1", "gone", None)
+
+        proc.on_records_deleted_cascade.assert_not_called()
 
 
 class TestOnNewRecordsKbUpload:
@@ -6219,8 +6911,8 @@ class TestOnRecordsMovedKeepsStoredState:
 
 
 class TestOnRecordsMovedKbUpload:
-    @pytest.mark.asyncio
-    async def test_upload_with_parent_creates_edge(self):
+    @staticmethod
+    def _moving(parent_external_record_id: str | None) -> tuple:
         proc = _make_processor()
         tx_store = _make_tx_store()
         old = MagicMock(
@@ -6231,32 +6923,70 @@ class TestOnRecordsMovedKbUpload:
             record_name="upload.pdf",
         )
         tx_store.get_record_by_external_id = _live_lookup(old)
-        new_record = _make_kb_upload_record(parent_external_record_id="parent-folder")
+        new_record = _make_kb_upload_record(parent_external_record_id=parent_external_record_id)
         proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
-
-        await proc.on_records_moved([("old-ext", new_record, [])])
-
-        tx_store.create_record_relation.assert_awaited_once_with(
-            "parent-folder", "r1", RecordRelations.PARENT_CHILD.value
-        )
+        return proc, tx_store, new_record
 
     @pytest.mark.asyncio
-    async def test_upload_to_root_no_parent_edge(self):
-        proc = _make_processor()
-        tx_store = _make_tx_store()
-        old = MagicMock(
-            id="r1",
-            external_revision_id="rev1",
-            indexing_status=ProgressStatus.COMPLETED.value,
-            mime_type="application/pdf",
-            record_name="upload.pdf",
-        )
-        tx_store.get_record_by_external_id = _live_lookup(old)
-        new_record = _make_kb_upload_record(parent_external_record_id=None)
-        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+    async def test_a_move_under_a_folder_is_one_write(self) -> None:
+        proc, tx_store, new_record = self._moving("parent-folder")
 
         await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.upsert_record_under_parent.assert_awaited_once_with(new_record, "parent-folder")
+        assert new_record.id == "r1"
+        # Not the three writes it replaces: on Neo4j each commits on its own.
+        tx_store.delete_parent_child_edge_to_record.assert_not_awaited()
+        tx_store.batch_upsert_records.assert_not_awaited()
         tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_move_to_the_root_leaves_no_parent(self) -> None:
+        proc, tx_store, new_record = self._moving(None)
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        tx_store.upsert_record_under_parent.assert_awaited_once_with(new_record, None)
+        tx_store.create_record_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_the_move_is_the_last_write(self) -> None:
+        """A write that failed after it would report a failed move for an item that had moved."""
+        proc, tx_store, new_record = self._moving("parent-folder")
+        writes: list[str] = []
+        tx_store.batch_create_edges = AsyncMock(side_effect=lambda _edges, collection: writes.append(collection))
+        tx_store.upsert_record_under_parent = AsyncMock(side_effect=lambda *_: writes.append("move"))
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert writes == [CollectionNames.BELONGS_TO.value, CollectionNames.INHERIT_PERMISSIONS.value, "move"]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_move_is_raised_before_any_stored_file_moves(self) -> None:
+        proc, tx_store, new_record = self._moving("parent-folder")
+        tx_store.upsert_record_under_parent = AsyncMock(side_effect=RuntimeError("lock timeout"))
+        proc._flush_pending_blob_moves = AsyncMock()
+
+        with pytest.raises(RuntimeError, match="lock timeout"):
+            await proc.on_records_moved([("old-ext", new_record, [])])
+
+        proc._flush_pending_blob_moves.assert_not_awaited()
+        proc.messaging_producer.send_messages.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_connector_move_keeps_its_own_writes(self) -> None:
+        """Its parent is looked up by external id after the record is written, so it stays as it was."""
+        proc, tx_store, _ = self._moving(None)
+        new_record = _make_record(id="new-id", external_record_id="new-ext", parent_external_record_id=None)
+        writes: list[str] = []
+        tx_store.delete_parent_child_edge_to_record = AsyncMock(side_effect=lambda *_: writes.append("delete edge"))
+        tx_store.batch_upsert_records = AsyncMock(side_effect=lambda *_, **__: writes.append("upsert"))
+
+        await proc.on_records_moved([("old-ext", new_record, [])])
+
+        assert writes == ["delete edge", "upsert"]
+        tx_store.delete_parent_child_edge_to_record.assert_awaited_once_with("r1")
+        tx_store.upsert_record_under_parent.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_missing_old_record_treated_as_add(self):
@@ -6590,6 +7320,26 @@ class TestPlaceholderFlag:
         assert incoming.version == 0
 
     @pytest.mark.asyncio
+    async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self) -> None:
+        """A stub written OPEN by an earlier sync is corrected when the sweep learns its level."""
+        for knows, expected in ((True, AccessRule.RESTRICTED), (False, AccessRule.OPEN)):
+            proc = _make_processor()
+            tx_store = _make_tx_store()
+            existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            existing.id = "rec-1"
+            existing.access_rule = AccessRule.OPEN
+            existing.indexing_status = ProgressStatus.NOT_STARTED.value
+            tx_store.get_record_by_external_id.return_value = existing
+            for name in ("_handle_record_group", "_handle_new_record", "_handle_updated_record",
+                         "_link_record_to_group", "_handle_parent_record", "_handle_record_permissions"):
+                setattr(proc, name, AsyncMock(return_value=MagicMock(permissions_from_group=False, parent_outside_group=False)))
+            incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            incoming.access_rule = AccessRule.RESTRICTED if knows else AccessRule.STRICT
+            incoming.rewrite_permissions = knows
+            await proc._process_record(incoming, [], tx_store)
+            assert incoming.access_rule == expected
+
+    @pytest.mark.asyncio
     async def test_process_record_bumps_version_on_real_revision_change(self):
         """Non-placeholder updates still bump version when revision changes."""
         proc = _make_processor()
@@ -6712,7 +7462,11 @@ class TestOnRecordsMovedDuplicateGuard:
         await proc.on_records_moved([("/ns/-/blob/HEAD/src/old.py", new_record, [])])
 
         tx_store.delete_record_by_key.assert_awaited_once_with("rec-duplicate")
-        tx_store.delete_parent_child_edge_to_record.assert_any_await("rec-duplicate")
+        # One statement: the delete takes the duplicate's parent edge with it. A
+        # separate edge delete could commit on its own (Neo4j) and leave the
+        # duplicate live but in no folder.
+        edge_deletes = [c.args for c in tx_store.delete_parent_child_edge_to_record.await_args_list]
+        assert ("rec-duplicate",) not in edge_deletes
         # The move still reuses the original vertex, so its edges survive.
         assert new_record.id == "rec-original"
 
@@ -6768,7 +7522,7 @@ class TestOnRecordsMovedDuplicateGuard:
 
         tx_store.get_edges_from_node.assert_awaited_once_with(
             f"{CollectionNames.RECORDS.value}/rec-duplicate",
-            CollectionNames.RECORD_RELATIONS.value,
+            CollectionNames.NODE_RELATIONS.value,
         )
         tx_store.create_record_relation.assert_any_await(
             "rec-original", "child-1", RecordRelations.PARENT_CHILD.value
@@ -7004,6 +7758,51 @@ class TestRecordGroupMoveRefreshesVectorMembership:
         assert [e["payload"]["virtualRecordId"] for e in events] == ["vr-1"]
 
     @pytest.mark.asyncio
+    async def test_an_indexed_standalone_record_joining_a_group_refreshes(self) -> None:
+        """A Drive item a grantee stored with no group, later filed under its shared
+        drive: its chunks were written without the drive, so they need it now."""
+        stored = _stored(None)
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-drive")
+
+        incoming = _make_record(external_record_group_id="sd-1")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        assert [e["payload"]["virtualRecordId"] for e in _membership_events(proc)] == ["vr-1"]
+
+    @pytest.mark.asyncio
+    async def test_a_standalone_record_not_indexed_yet_publishes_nothing(self) -> None:
+        stored = _stored(None, virtual_record_id=None)
+        proc, _ = self._proc_for_move(stored, new_group_id="rg-drive")
+
+        incoming = _make_record(external_record_group_id="sd-1")
+        incoming.external_revision_id = "rev-1"
+
+        await proc.on_record_metadata_update(incoming)
+
+        assert _membership_events(proc) == []
+
+    @pytest.mark.asyncio
+    async def test_joining_from_no_group_leaves_no_old_group(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+
+        moved = await proc._link_record_to_group(record, "rg-drive", tx_store, _stored(None))
+
+        assert moved is True
+        assert tx_store.link_record_to_group.await_args.kwargs["leaving_group_id"] is None
+
+    @pytest.mark.asyncio
+    async def test_a_first_link_with_no_stored_record_is_not_a_move(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        record = _make_record()
+        record.id = "rec-1"
+
+        assert await proc._link_record_to_group(record, "rg-new", tx_store, None) is False
+
+    @pytest.mark.asyncio
     async def test_nothing_is_published_when_the_transaction_fails(self):
         """An event published for a rolled-back move would recompute the *old*
         membership and write it back, which looks like a successful refresh."""
@@ -7015,6 +7814,353 @@ class TestRecordGroupMoveRefreshesVectorMembership:
             await proc.on_new_records([(_make_record(external_record_group_id="ext-rg-new"), [])])
 
         assert _membership_events(proc) == []
+
+
+class TestOrphansKeepTheirOwnAcl:
+    """A deleted record's children are re-pointed at their record group.
+    Only a child that inherited from the deleted parent may inherit from
+    the group: one with its own ACL would gain the group's readers."""
+
+    @staticmethod
+    def _child(child_id: str) -> MagicMock:
+        child = MagicMock()
+        child.id = child_id
+        child.record_group_id = "rg-1"
+        return child
+
+    @pytest.mark.asyncio
+    async def test_collect_reports_which_children_inherited(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_records_by_parent = AsyncMock(
+            return_value=[self._child("inheriting"), self._child("own-acl")],
+        )
+        tx_store.get_edge = AsyncMock(
+            side_effect=lambda from_id, *_a: {"_from": from_id} if from_id == "inheriting" else None,
+        )
+        tx_store.batch_update_nodes = AsyncMock()
+        tx_store.delete_inherit_permissions_relation_record = AsyncMock()
+
+        orphans = await proc._collect_orphans(
+            tx_store, {"connectorId": "conn-1", "externalRecordId": "ext-parent"}, "parent-1",
+        )
+
+        assert {o["record_id"]: o["inherits"] for o in orphans} == {"inheriting": True, "own-acl": False}
+
+    @pytest.mark.asyncio
+    async def test_only_an_inheriting_orphan_inherits_from_the_group(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+
+        await proc._reparent_orphans(tx_store, [
+            {"record_id": "inheriting", "record_group_id": "rg-1", "inherits": True},
+            {"record_id": "own-acl", "record_group_id": "rg-1", "inherits": False},
+        ])
+
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("inheriting", "rg-1")
+
+
+class TestCascadeDeleteWriteConflict:
+    """An Arango write-write conflict (the indexing update right after an upload)
+    runs the rolled-back delete again; any other error is a failed result, never an
+    exception, so a connector sync goes on."""
+
+    CONFLICT = 'Query failed (status=409): {"errorMessage":"AQL: write-write conflict","errorNum":1200}'
+
+    @pytest.mark.asyncio
+    async def test_a_conflict_is_run_again(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(side_effect=[
+            RuntimeError(self.CONFLICT),
+            {"success": True, "successfully_deleted": 1, "reparented": [], "eventData": None},
+        ])
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        result = await proc.on_records_deleted_cascade(["r1"], "kb-1")
+
+        assert result["success"] is True
+        assert tx_store.delete_records_recursive.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_another_error_is_a_failed_result(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.delete_records_recursive = AsyncMock(side_effect=RuntimeError("disk full"))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        result = await proc.on_records_deleted_cascade(["r1"], "kb-1")
+
+        assert result["success"] is False and "disk full" in result["reason"]
+        assert tx_store.delete_records_recursive.await_count == 1
+
+
+# ===========================================================================
+# A batch asks once for a group or user it meets again
+# ===========================================================================
+
+
+class TestBatchLookups:
+    @pytest.mark.asyncio
+    async def test_a_repeated_lookup_is_answered_from_the_first(self) -> None:
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            _BatchLookups,
+        )
+
+        store = _make_tx_store()
+        group = MagicMock(id="rg-1")
+        store.get_record_group_by_external_id = AsyncMock(return_value=group)
+        store.get_user_by_email = AsyncMock(side_effect=lambda email: MagicMock(id=f"id-of-{email}"))
+        lookups = _BatchLookups(store)
+
+        for _ in range(5):
+            assert await lookups.get_record_group_by_external_id(connector_id="c", external_id="P1") is group
+        assert (await lookups.get_user_by_email("a@x.com")).id == "id-of-a@x.com"
+        assert (await lookups.get_user_by_email("a@x.com")).id == "id-of-a@x.com"
+        assert (await lookups.get_user_by_email("b@x.com")).id == "id-of-b@x.com"
+
+        assert store.get_record_group_by_external_id.await_count == 1
+        assert store.get_user_by_email.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_miss_is_asked_again(self) -> None:
+        # A missing record group is created as a stub right after the miss; the
+        # next record of the batch has to find it.
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            _BatchLookups,
+        )
+
+        store = _make_tx_store()
+        created = MagicMock(id="rg-stub")
+        store.get_record_group_by_external_id = AsyncMock(side_effect=[None, created, AssertionError("kept")])
+        lookups = _BatchLookups(store)
+
+        assert await lookups.get_record_group_by_external_id(connector_id="c", external_id="P1") is None
+        assert await lookups.get_record_group_by_external_id(connector_id="c", external_id="P1") is created
+        assert await lookups.get_record_group_by_external_id(connector_id="c", external_id="P1") is created
+
+    @pytest.mark.asyncio
+    async def test_record_lookups_and_writes_go_to_the_store_every_time(self) -> None:
+        from app.connectors.core.base.data_processor.data_source_entities_processor import (
+            _BatchLookups,
+        )
+
+        store = _make_tx_store()
+        store.get_record_by_external_id = AsyncMock(return_value=MagicMock(id="r"))
+        lookups = _BatchLookups(store)
+
+        await lookups.get_record_by_external_id(connector_id="c", external_id="1")
+        await lookups.get_record_by_external_id(connector_id="c", external_id="1")
+        await lookups.batch_upsert_records(["r"])
+
+        assert store.get_record_by_external_id.await_count == 2
+        store.batch_upsert_records.assert_awaited_once_with(["r"])
+
+    @pytest.mark.asyncio
+    async def test_on_new_records_asks_once_for_the_group_its_records_share(self) -> None:
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="rg-1"))
+
+        batch = []
+        for i in range(4):
+            record = _make_record()
+            record.id = f"rec-{i}"
+            record.external_record_id = f"ext-{i}"
+            record.external_record_group_id = "P1"
+            record.is_internal = True
+            batch.append((record, []))
+        await proc.on_new_records(batch)
+
+        assert tx_store.get_record_group_by_external_id.await_count == 1
+        assert tx_store.link_record_to_group.await_count == 4
+
+
+class TestStaleGroupEdgesOfARecordWithANewExternalId:
+    @pytest.mark.asyncio
+    async def test_a_record_not_found_by_external_id_still_gets_the_removals(self) -> None:
+        """S3, GCS, Azure Blob and Files and network shares keep a record's id
+        across a move and give it a new external id: the record is stored and
+        can hold the edges of where it was."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=None)
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id="rg-1"))
+        record = _make_record(
+            external_record_id="bucket/folder/moved.txt", external_record_group_id="bucket",
+            parent_external_record_id="bucket/folder", inherit_permissions=False,
+        )
+        record.id = "rec-1"
+        tx_store.get_record_by_key = AsyncMock(return_value=record.model_copy())
+        _expand_group_writes(tx_store)
+
+        await proc._process_record(record, [], tx_store)
+
+        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once_with("rec-1", "rg-1")
+        tx_store.delete_edge.assert_awaited_once_with(
+            "rg-1", CollectionNames.RECORD_GROUPS.value, "rec-1", CollectionNames.RECORDS.value,
+            CollectionNames.NODE_RELATIONS.value,
+        )
+
+
+class TestRecordBatchTransactions:
+    @pytest.mark.asyncio
+    async def test_records_are_written_in_real_transactions_of_bounded_size(self) -> None:
+        from app.connectors.core.base.data_processor import (
+            data_source_entities_processor as module,
+        )
+
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        seen: list[str] = []
+
+        async def process(record, permissions, store, moved, **kwargs) -> tuple:
+            seen.append(record.external_record_id)
+            return None, []
+
+        proc._process_record = process
+        batch = []
+        for i in range(2 * module._RECORDS_PER_TRANSACTION + 5):
+            record = _make_record()
+            record.external_record_id = f"ext-{i}"
+            batch.append((record, []))
+
+        await proc.on_new_records(batch)
+
+        calls = proc.data_store_provider.transaction.call_args_list
+        assert len(calls) == 3
+        assert all(c.kwargs == {"explicit": True} for c in calls)
+        assert seen == [f"ext-{i}" for i in range(len(batch))]
+
+    @pytest.mark.asyncio
+    async def test_blobs_of_committed_slices_move_when_a_later_slice_fails(self) -> None:
+        """A re-run finds the committed records already renamed and computes no
+        move for them, so their blobs have to follow them now. The failed
+        slice rolled back and moves nothing."""
+        from app.connectors.core.base.data_processor import (
+            data_source_entities_processor as module,
+        )
+
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        proc._snapshot_old_paths = AsyncMock(return_value={})
+        proc._flush_pending_blob_moves = AsyncMock()
+        size = module._RECORDS_PER_TRANSACTION
+
+        async def process(record, permissions, store, moved, **kwargs) -> tuple:
+            index = int(record.external_record_id)
+            if index == size + 1:
+                raise RuntimeError("boom")
+            return None, [("org-1", f"old/{index}", f"new/{index}", None)]
+
+        proc._process_record = process
+        batch = []
+        for i in range(size + 5):
+            record = _make_record()
+            record.external_record_id = str(i)
+            batch.append((record, []))
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_records(batch)
+
+        proc._flush_pending_blob_moves.assert_awaited_once()
+        flushed = proc._flush_pending_blob_moves.await_args.args[0]
+        assert [move[1] for move in flushed] == [f"old/{i}" for i in range(size)]
+
+    @staticmethod
+    def _two_slices(process) -> tuple:
+        """A processor whose batch is one full slice and five records of a second."""
+        from app.connectors.core.base.data_processor import (
+            data_source_entities_processor as module,
+        )
+
+        proc = _make_processor()
+        proc.data_store_provider.transaction.return_value = _make_ctx(_make_tx_store())
+        proc._snapshot_old_paths = AsyncMock(return_value={})
+        proc._flush_pending_blob_moves = AsyncMock()
+        size = module._RECORDS_PER_TRANSACTION
+
+        async def process_record(record, permissions, store, moved, **kwargs) -> tuple:
+            index = int(record.external_record_id)
+            record.id = f"rec-{index}"
+            return await process(record, index, size, moved)
+
+        proc._process_record = process_record
+        batch = []
+        for i in range(size + 5):
+            record = _make_record()
+            record.external_record_id = str(i)
+            batch.append((record, []))
+        return proc, batch, size
+
+    @pytest.mark.asyncio
+    async def test_events_and_refreshes_of_committed_slices_are_sent_when_a_later_slice_fails(self) -> None:
+        """A re-run finds the committed records unchanged and sends no membership
+        refresh for them. The failed slice rolled back and publishes nothing."""
+        async def process(record, index, size, moved) -> tuple:
+            if index == size + 1:
+                raise RuntimeError("boom")
+            moved.append((f"vr-{index}", "conn-1"))
+            return record, []
+
+        proc, batch, size = self._two_slices(process)
+
+        with pytest.raises(RuntimeError):
+            await proc.on_new_records(batch)
+
+        new_records = [
+            key
+            for call in proc.messaging_producer.send_messages.await_args_list
+            for key, message in call.args[1]
+            if message["eventType"] == "newRecord"
+        ]
+        assert new_records == [f"rec-{i}" for i in range(size)]
+        assert [e["payload"]["virtualRecordId"] for e in _membership_events(proc)] == [
+            f"vr-{i}" for i in range(size)
+        ]
+
+    @pytest.mark.asyncio
+    async def test_blobs_of_committed_slices_move_when_a_later_slice_is_cancelled(self) -> None:
+        """asyncio.CancelledError is not an Exception: the record-processing
+        timeout must not leave the committed records' blobs behind."""
+        import asyncio
+
+        async def process(record, index, size, moved) -> tuple:
+            if index == size + 1:
+                raise asyncio.CancelledError
+            return None, [("org-1", f"old/{index}", f"new/{index}", None)]
+
+        proc, batch, size = self._two_slices(process)
+
+        with pytest.raises(asyncio.CancelledError):
+            await proc.on_new_records(batch)
+
+        proc._flush_pending_blob_moves.assert_awaited_once()
+        flushed = proc._flush_pending_blob_moves.await_args.args[0]
+        assert [move[1] for move in flushed] == [f"old/{i}" for i in range(size)]
+
+    @pytest.mark.asyncio
+    async def test_a_slice_reads_its_old_paths_after_the_slice_before_moved_its_blobs(self) -> None:
+        """Read for the whole batch up front, the old path of a record in a
+        folder that an earlier slice renamed would name where its blob no
+        longer is."""
+        async def process(record, index, size, moved) -> tuple:
+            return None, [("org-1", f"old/{index}", f"new/{index}", None)]
+
+        proc, batch, size = self._two_slices(process)
+        order: list[tuple[str, int]] = []
+        proc._snapshot_old_paths = AsyncMock(
+            side_effect=lambda records, store: order.append(("old paths", len(records))) or {}
+        )
+        proc._flush_pending_blob_moves = AsyncMock(
+            side_effect=lambda moves: order.append(("blobs moved", len(moves)))
+        )
+
+        await proc.on_new_records(batch)
+
+        assert order == [("old paths", size), ("blobs moved", size), ("old paths", 5), ("blobs moved", 5)]
 
 
 # ===========================================================================
@@ -7109,6 +8255,596 @@ class TestOnRecordsMovedFlushBeforePublish:
         assert "publish" in call_order
 
 
+def _hierarchy_edges(tx_store) -> list[tuple[str, str]]:
+    """(parent, child) of every hierarchy edge written through batch_create_edges."""
+    return [
+        (edge["from_id"], edge["to_id"])
+        for call in tx_store.batch_create_edges.await_args_list
+        if call.kwargs.get("collection") == CollectionNames.NODE_RELATIONS.value
+        for edge in call.args[0]
+    ]
+
+
+def _group_to_record_edge(group_id: str, record_id: str) -> tuple:
+    return (
+        group_id, CollectionNames.RECORD_GROUPS.value,
+        record_id, CollectionNames.RECORDS.value,
+        CollectionNames.NODE_RELATIONS.value,
+    )
+
+
+def _expand_group_writes(tx_store) -> None:
+    """Spell link_record_to_group and replace_record_permissions as the edge writes they stand for."""
+
+    async def link(record_id, group_id, *, inherit, leaving_group_id=None, browse_root=None) -> None:
+        if leaving_group_id:
+            await tx_store.delete_inherit_permissions_relation_record_group(record_id, leaving_group_id)
+            await tx_store.delete_edge(*_group_to_record_edge(leaving_group_id, record_id))
+        if group_id:
+            await tx_store.create_record_group_relation(record_id, group_id)
+            if inherit is True:
+                await tx_store.create_inherit_permissions_relation_record_group(record_id, group_id)
+            elif inherit is False:
+                await tx_store.delete_inherit_permissions_relation_record_group(record_id, group_id)
+            if browse_root:
+                await tx_store.batch_create_edges(
+                    [{"from_id": group_id, "to_id": record_id}],
+                    collection=CollectionNames.NODE_RELATIONS.value,
+                )
+            elif browse_root is False:
+                await tx_store.delete_edge(*_group_to_record_edge(group_id, record_id))
+
+    async def replace(record_id, edges, group_id, *, inherit) -> None:
+        if group_id and inherit:
+            await tx_store.create_inherit_permissions_relation_record_group(record_id, group_id)
+        elif group_id:
+            await tx_store.delete_inherit_permissions_relation_record_group(record_id, group_id)
+
+    tx_store.link_record_to_group = AsyncMock(side_effect=link)
+    tx_store.replace_record_permissions = AsyncMock(side_effect=replace)
+
+
+class TestParentRecordInAnotherGroup:
+    """A Jira story of project B under an epic of project A is read by B's
+    members: it inherits from its own group, and the epic only lists it."""
+
+    @staticmethod
+    def _epic(**overrides) -> Record:
+        epic = _make_record(external_record_id="ext-epic", **overrides)
+        epic.id = "epic-1"
+        return epic
+
+    @staticmethod
+    def _story(**overrides) -> Record:
+        story = _make_record(
+            external_record_id="ext-story", external_record_group_id="ext-b",
+            parent_external_record_id="ext-epic", parent_record_type=RecordType.FILE, **overrides,
+        )
+        story.id = "story-1"
+        return story
+
+    @staticmethod
+    def _store(records: dict, group_id: str = "rg-b") -> AsyncMock:
+        tx_store = _make_tx_store()
+        tx_store.create_inherit_permissions_relation_record = AsyncMock()
+        tx_store.delete_inherit_permissions_relation_record = AsyncMock()
+        tx_store.get_records_by_parent = AsyncMock(return_value=[])
+        tx_store.get_record_group_by_external_id = AsyncMock(return_value=MagicMock(id=group_id))
+        tx_store.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_id, **_: records.get(external_id)
+        )
+        _expand_group_writes(tx_store)
+        return tx_store
+
+    @pytest.mark.asyncio
+    async def test_a_record_stored_nowhere_has_no_group_inheritance_to_remove(self) -> None:
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-b")})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_parent_of_the_same_group_is_the_only_parent(self) -> None:
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-b")})
+        tx_store.get_record_by_key = AsyncMock(return_value=self._story())
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        tx_store.create_record_relation.assert_awaited_once_with(
+            "epic-1", "story-1", RecordRelations.PARENT_CHILD.value
+        )
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        tx_store.delete_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once_with("story-1", "rg-b")
+        assert _hierarchy_edges(tx_store) == []
+        tx_store.delete_edge.assert_awaited_once_with(*_group_to_record_edge("rg-b", "story-1"))
+
+    @pytest.mark.asyncio
+    async def test_a_parent_of_another_group_lists_the_record_and_lends_no_audience(self) -> None:
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a")})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        tx_store.create_record_relation.assert_awaited_once_with(
+            "epic-1", "story-1", RecordRelations.PARENT_CHILD.value
+        )
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("story-1", "rg-b")
+        tx_store.delete_inherit_permissions_relation_record_group.assert_not_awaited()
+        assert _hierarchy_edges(tx_store) == [("rg-b", "story-1")]
+        tx_store.delete_edge.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_record_with_its_own_acl_under_another_group_inherits_from_neither(self) -> None:
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a")})
+        tx_store.get_record_by_key = AsyncMock(return_value=self._story())
+
+        await proc._process_record(self._story(inherit_permissions=False), [], tx_store)
+
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        tx_store.delete_inherit_permissions_relation_record_group.assert_awaited_once_with("story-1", "rg-b")
+        assert _hierarchy_edges(tx_store) == [("rg-b", "story-1")]
+
+    @pytest.mark.asyncio
+    async def test_a_placeholder_parent_keeps_the_record_hidden_behind_it(self) -> None:
+        """The parent has not synced: the stub is RESTRICTED and the record
+        inherits from it alone, whatever group the stub was put in."""
+        proc = _make_processor()
+        tx_store = self._store({})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        stub = next(
+            r for call in tx_store.batch_upsert_records.await_args_list for r in call.args[0]
+            if r.external_record_id == "ext-epic"
+        )
+        assert stub.is_placeholder
+        tx_store.create_record_relation.assert_awaited_once_with(
+            stub.id, "story-1", RecordRelations.PARENT_CHILD.value
+        )
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("story-1", stub.id)
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with(stub.id, "rg-b")
+        assert _hierarchy_edges(tx_store) == [("rg-b", stub.id)]
+        tx_store.delete_edge.assert_awaited_once_with(*_group_to_record_edge("rg-b", "story-1"))
+
+    @pytest.mark.asyncio
+    async def test_a_link_stub_without_a_group_joins_its_childs_group(self) -> None:
+        """A Jira issue first seen as a link target is a stub with no project; named
+        as a parent later, it takes the child's, or the ancestor backfill skips it."""
+        proc = _make_processor()
+        stub = self._epic(is_placeholder=True, external_record_group_id=None, record_group_id=None)
+        tx_store = self._store({"ext-epic": stub})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        assert stub.external_record_group_id == "ext-b"
+        tx_store.batch_update_nodes.assert_any_await(
+            [{"id": "epic-1", "externalGroupId": "ext-b", "recordGroupId": "rg-b"}], CollectionNames.RECORDS.value
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stored_placeholder_of_another_group_still_hides_the_record(self) -> None:
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a", is_placeholder=True)})
+
+        await proc._process_record(self._story(), [], tx_store)
+
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        assert _hierarchy_edges(tx_store) == []
+
+    @pytest.mark.asyncio
+    async def test_a_promoted_placeholder_hands_children_of_other_groups_back_to_their_group(self) -> None:
+        """The stub sat in the child's group. Synced for real in another one, it
+        must not lend that group's audience to the children it already has."""
+        from app.services.graph_db.common.record_visibility import RecordVisibility
+
+        proc = _make_processor()
+        stub = self._epic(record_group_id="rg-b", is_placeholder=True)
+        tx_store = self._store({"ext-epic": stub}, group_id="rg-a")
+        story = MagicMock(id="story-1", record_group_id="rg-b")
+        sibling = MagicMock(id="sibling-1", record_group_id="rg-a")
+        tx_store.get_records_by_parent = AsyncMock(return_value=[story, sibling])
+        tx_store.get_edge = AsyncMock(return_value={"_key": "inherits"})
+
+        await proc._process_record(self._epic(external_record_group_id="ext-a"), [], tx_store)
+
+        tx_store.get_records_by_parent.assert_awaited_once_with(
+            "conn-1", "ext-epic", visibility=RecordVisibility.ALL
+        )
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        assert [c.args for c in tx_store.create_inherit_permissions_relation_record_group.await_args_list] == [
+            ("epic-1", "rg-a"), ("story-1", "rg-b"),
+        ]
+        assert _hierarchy_edges(tx_store) == [("rg-a", "epic-1"), ("rg-b", "story-1")]
+        parent_to_child = (
+            "epic-1", CollectionNames.RECORDS.value, "story-1", CollectionNames.RECORDS.value,
+            CollectionNames.NODE_RELATIONS.value,
+        )
+        assert parent_to_child not in [c.args for c in tx_store.delete_edge.await_args_list]
+
+    @pytest.mark.asyncio
+    async def test_a_promoted_child_with_its_own_acl_gains_no_group_audience(self) -> None:
+        proc = _make_processor()
+        stub = self._epic(record_group_id="rg-b", is_placeholder=True)
+        tx_store = self._store({"ext-epic": stub}, group_id="rg-a")
+        tx_store.get_records_by_parent = AsyncMock(
+            return_value=[MagicMock(id="story-1", record_group_id="rg-b")]
+        )
+        tx_store.get_edge = AsyncMock(return_value=None)
+
+        await proc._process_record(self._epic(external_record_group_id="ext-a"), [], tx_store)
+
+        assert [c.args for c in tx_store.create_inherit_permissions_relation_record_group.await_args_list] == [
+            ("epic-1", "rg-a"),
+        ]
+        assert _hierarchy_edges(tx_store) == [("rg-a", "epic-1"), ("rg-b", "story-1")]
+
+    @pytest.mark.asyncio
+    async def test_a_permission_update_keeps_the_record_on_its_own_group(self) -> None:
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a")})
+        tx_store.get_edges_from_node.return_value = [{"_to": "recordGroups/rg-b"}]
+        tx_store.batch_update_nodes = AsyncMock()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_updated_record_permissions(self._story(), [])
+
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("story-1", "rg-b")
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+
+    @pytest.mark.asyncio
+    async def test_a_record_linked_to_no_group_keeps_inheriting_from_its_parent(self) -> None:
+        """With no group of its own to fall back on, losing the parent's audience
+        would leave it with none."""
+        proc = _make_processor()
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a")})
+        story = self._story(record_group_id="rg-b")
+        story.external_record_group_id = None
+
+        await proc._process_record(story, [], tx_store)
+
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("story-1", "epic-1")
+        tx_store.create_record_group_relation.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_moved_record_is_placed_the_same_way(self) -> None:
+        proc = _make_processor()
+        proc._get_storage_cleanup = MagicMock(return_value=None)
+        stored = _make_record(external_record_id="ext-story-old", record_group_id="rg-b")
+        stored.id = "story-1"
+        tx_store = self._store({"ext-epic": self._epic(record_group_id="rg-a"), "ext-story-old": stored})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_moved([("ext-story-old", self._story(), [])])
+
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("story-1", "rg-b")
+        assert _hierarchy_edges(tx_store) == [("rg-b", "story-1")]
+
+
+class TestSurvivorsFollowTheDeletedRecordsParent:
+    """Confluence: A (restricted) > B > C. With B deleted, C moves under A at
+    the source. Re-pointed at the space instead, C would be read by everyone in
+    it until its next sync."""
+
+    @staticmethod
+    def _store(parent_group_id: str = "rg-1", *, inherits: bool = True) -> AsyncMock:
+        above = _make_record(external_record_id="ext-a", record_group_id=parent_group_id)
+        above.id = "a-1"
+        deleted = _make_record(external_record_id="ext-b", parent_external_record_id="ext-a")
+        deleted.id = "b-1"
+        tx_store = _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=True)
+        tx_store.create_inherit_permissions_relation_record = AsyncMock()
+        tx_store.delete_inherit_permissions_relation_record = AsyncMock()
+        tx_store.get_record_by_external_id = AsyncMock(
+            side_effect=lambda connector_id, external_id: {"ext-a": above, "ext-b": deleted}.get(external_id)
+        )
+        tx_store.get_records_by_parent = AsyncMock(
+            side_effect=lambda connector_id, external_id, **_: (
+                [MagicMock(id="c-1", record_group_id="rg-1")] if external_id == "ext-b" else []
+            )
+        )
+        tx_store.get_edge = AsyncMock(return_value={"_key": "inherits"} if inherits else None)
+        return tx_store
+
+    @staticmethod
+    def _deleted_doc(**overrides) -> dict:
+        return {
+            "id": "b-1", "connectorId": "conn-1", "externalRecordId": "ext-b",
+            "externalParentId": "ext-a", **overrides,
+        }
+
+    @staticmethod
+    def _assert_under_the_parent_record(tx_store) -> None:
+        assert _hierarchy_edges(tx_store) == [("a-1", "c-1")]
+        tx_store.create_inherit_permissions_relation_record.assert_awaited_once_with("c-1", "a-1")
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+        assert tx_store.batch_update_nodes.await_args_list[-1].args == (
+            [{"id": "c-1", "externalParentId": "ext-a"}], CollectionNames.RECORDS.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_records_child_goes_under_the_record_above_it(self) -> None:
+        proc, tx_store = _make_processor(), self._store()
+        tx_store.get_record_by_key = AsyncMock(return_value=self._deleted_doc())
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("b-1")
+
+        self._assert_under_the_parent_record(tx_store)
+
+    @pytest.mark.asyncio
+    async def test_a_child_with_its_own_acl_inherits_from_nothing(self) -> None:
+        proc, tx_store = _make_processor(), self._store(inherits=False)
+        tx_store.get_record_by_key = AsyncMock(return_value=self._deleted_doc())
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("b-1")
+
+        assert _hierarchy_edges(tx_store) == [("a-1", "c-1")]
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.create_inherit_permissions_relation_record_group.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_child_of_a_record_directly_under_the_group_goes_to_the_group(self) -> None:
+        proc, tx_store = _make_processor(), self._store()
+        tx_store.get_record_by_key = AsyncMock(return_value=self._deleted_doc(externalParentId=None))
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("b-1")
+
+        assert _hierarchy_edges(tx_store) == [("rg-1", "c-1")]
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("c-1", "rg-1")
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.batch_update_nodes.assert_awaited_once_with(
+            [{"id": "c-1", "externalParentId": None}], CollectionNames.RECORDS.value,
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_record_above_in_another_group_lists_the_child_and_lends_no_audience(self) -> None:
+        proc, tx_store = _make_processor(), self._store(parent_group_id="rg-other")
+        tx_store.get_record_by_key = AsyncMock(return_value=self._deleted_doc())
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_record_deleted("b-1")
+
+        assert _hierarchy_edges(tx_store) == [("a-1", "c-1"), ("rg-1", "c-1")]
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("c-1", "rg-1")
+
+    @pytest.mark.asyncio
+    async def test_a_detached_record_goes_under_the_record_above_its_parent(self) -> None:
+        proc, tx_store = _make_processor(), self._store()
+        tx_store.get_record_by_key = AsyncMock(return_value={
+            "_key": "c-1", "connectorId": "conn-1", "externalParentId": "ext-b", "recordGroupId": "rg-1",
+        })
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_detached_from_parent(["c-1"])
+
+        tx_store.delete_edge.assert_awaited_once_with(
+            "b-1", CollectionNames.RECORDS.value, "c-1", CollectionNames.RECORDS.value,
+            CollectionNames.NODE_RELATIONS.value,
+        )
+        tx_store.delete_inherit_permissions_relation_record.assert_awaited_once_with("c-1", "b-1")
+        self._assert_under_the_parent_record(tx_store)
+
+    @pytest.mark.asyncio
+    async def test_a_delete_without_cascade_puts_the_survivor_under_the_record_above(self) -> None:
+        proc, tx_store = _make_processor(), self._store()
+        tx_store.get_record_by_key = AsyncMock(return_value=self._deleted_doc())
+        tx_store.delete_records_recursive = AsyncMock(return_value={
+            "success": True, "deleted_records": [{"record_id": "b-1"}],
+            "reparented": [{"record_id": "c-1", "record_group_id": "rg-1", "inherits": True}],
+            "eventData": None,
+        })
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        result = await proc.on_records_deleted_cascade(["b-1"], "conn-1", cascade_children=False)
+
+        self._assert_under_the_parent_record(tx_store)
+        assert result["reparented"] == [{"record_id": "c-1", "record_group_id": "rg-1", "inherits": True}]
+
+    @pytest.mark.asyncio
+    async def test_a_record_above_that_is_deleted_too_is_passed_over(self) -> None:
+        proc, tx_store = _make_processor(), self._store()
+        docs = {
+            "a-1": {"id": "a-1", "connectorId": "conn-1", "externalRecordId": "ext-a"},
+            "b-1": self._deleted_doc(),
+        }
+        tx_store.get_record_by_key = AsyncMock(side_effect=lambda key: docs.get(key))
+        tx_store.delete_records_recursive = AsyncMock(return_value={
+            "success": True, "deleted_records": [{"record_id": "a-1"}, {"record_id": "b-1"}],
+            "reparented": [{"record_id": "c-1", "record_group_id": "rg-1", "inherits": True}],
+            "eventData": None,
+        })
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        await proc.on_records_deleted_cascade(["a-1", "b-1"], "conn-1", cascade_children=False)
+
+        assert _hierarchy_edges(tx_store) == [("rg-1", "c-1")]
+        tx_store.create_inherit_permissions_relation_record.assert_not_awaited()
+        tx_store.create_inherit_permissions_relation_record_group.assert_awaited_once_with("c-1", "rg-1")
+
+
+class TestDeletesThatRepointSurvivorsAreOneTransaction:
+    """Neo4j commits each statement on its own unless asked otherwise. A failure
+    between cutting the survivors loose and re-pointing them would leave them
+    with no parent and no inheritance, where the retry cannot find them."""
+
+    @staticmethod
+    def _proc() -> DataSourceEntitiesProcessor:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.batch_update_nodes = AsyncMock(return_value=True)
+        tx_store.delete_records_recursive = AsyncMock(return_value={"success": True})
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+        return proc
+
+    @pytest.mark.asyncio
+    async def test_on_record_deleted(self) -> None:
+        proc = self._proc()
+        await proc.on_record_deleted("rec-1")
+        proc.data_store_provider.transaction.assert_called_once_with(explicit=True)
+
+    @pytest.mark.asyncio
+    async def test_on_records_detached_from_parent(self) -> None:
+        proc = self._proc()
+        await proc.on_records_detached_from_parent(["rec-1"])
+        proc.data_store_provider.transaction.assert_called_once_with(explicit=True)
+
+    @pytest.mark.asyncio
+    async def test_on_records_deleted_cascade(self) -> None:
+        proc = self._proc()
+        await proc.on_records_deleted_cascade(["rec-1"], "conn-1", cascade_children=False)
+        proc.data_store_provider.transaction.assert_called_once_with(explicit=True)
+
+
+class TransientError(Exception):
+    """Named as retry_on_deadlock recognises a Neo4j deadlock, without the driver."""
+
+
+_DEADLOCK_MESSAGE = "{code: Neo.TransientError.Transaction.DeadlockDetected} can't acquire ExclusiveLock"
+_WRITE_CONFLICT_MESSAGE = 'Query failed (status=409): {"errorMessage":"AQL: write-write conflict","errorNum":1200}'
+
+
+def _user_permission(email: str = "a@x.com") -> Permission:
+    return Permission(email=email, type=PermissionType.READ, entity_type=EntityType.USER)
+
+
+class TestAConflictInsideARecordSliceIsNotSwallowed:
+    """A statement that fails inside the slice's transaction ends it. Logged and
+    passed over, a deadlock surfaced as a generic error on the next statement,
+    which retry_on_deadlock did not run again, and the batch failed."""
+
+    @pytest.fixture(autouse=True)
+    def _no_backoff(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "app.connectors.core.base.data_store.graph_data_store.asyncio.sleep", AsyncMock()
+        )
+
+    @staticmethod
+    def _record() -> Record:
+        record = _make_record()
+        record.id = "rec-1"
+        return record
+
+    @pytest.mark.asyncio
+    async def test_a_deadlock_writing_permission_edges_runs_the_batch_again(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
+        permission_writes: list[int] = []
+
+        async def create_edges(edges, collection) -> None:
+            if collection == CollectionNames.PERMISSION.value:
+                permission_writes.append(len(edges))
+                if len(permission_writes) == 1:
+                    raise TransientError(_DEADLOCK_MESSAGE)
+
+        tx_store.batch_create_edges = AsyncMock(side_effect=create_edges)
+        ctx = _make_ctx(tx_store)
+        proc.data_store_provider.transaction.return_value = ctx
+
+        await proc.on_new_records([(self._record(), [_user_permission()])])
+
+        assert permission_writes == [1, 1]
+        first_exit, second_exit = ctx.__aexit__.await_args_list
+        assert first_exit.args[0] is TransientError, "the failed attempt must leave its transaction by the error"
+        assert second_exit.args[0] is None
+        proc.messaging_producer.send_messages.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_deadlock_resolving_a_principal_reaches_the_caller(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_user_by_email = AsyncMock(side_effect=TransientError(_DEADLOCK_MESSAGE))
+
+        with pytest.raises(TransientError):
+            await proc._resolve_principal("a@x.com", tx_store)
+        with pytest.raises(TransientError):
+            await proc._handle_record_permissions(self._record(), [_user_permission()], tx_store)
+
+    @pytest.mark.asyncio
+    async def test_an_arango_write_conflict_reaches_the_caller(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
+        tx_store.batch_create_edges = AsyncMock(side_effect=RuntimeError(_WRITE_CONFLICT_MESSAGE))
+
+        with pytest.raises(RuntimeError, match="write-write conflict"):
+            await proc._handle_record_permissions(self._record(), [_user_permission()], tx_store)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("failing_call", [
+        "delete_edges_by_relationship_types", "delete_edges_between_collections", "delete_edges_to", "get_user_by_email",
+    ])
+    async def test_a_deadlock_in_an_optional_edge_write_reaches_the_caller(self, failing_call: str) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        setattr(tx_store, failing_call, AsyncMock(side_effect=TransientError(_DEADLOCK_MESSAGE)))
+        record = MagicMock(
+            id="rec-1", connector_id="conn-1", assignee_email="a@x.com", lead_email="a@x.com",
+            mentioned_user_ids=[], mentioned_group_ids=[], involved_user_source_ids=[], author_id=None,
+        )
+        record_fields = dict(
+            id="rec-1", org_id="org-1", external_record_id="ext-1", record_name="r",
+            origin=OriginTypes.CONNECTOR.value, connector_name=ConnectorsEnum.GOOGLE_MAIL,
+            connector_id="conn-1", version=1, source_created_at=1000, source_updated_at=2000,
+        )
+        project = ProjectRecord(record_type=RecordType.PROJECT, lead_email="a@x.com", **record_fields)
+        ticket = TicketRecord(record_type=RecordType.TICKET, assignee_email="a@x.com", **record_fields)
+        handlers = {
+            "delete_edges_by_relationship_types": lambda: proc._handle_related_external_records(record, [], tx_store),
+            "delete_edges_between_collections": lambda: proc._handle_record_people(project, tx_store),
+            "delete_edges_to": lambda: proc._handle_message_entity_edges(record, tx_store),
+            "get_user_by_email": lambda: proc._handle_record_people(ticket, tx_store),
+        }
+
+        with pytest.raises(TransientError):
+            await handlers[failing_call]()
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_ended_an_explicit_transaction_reaches_the_caller(self) -> None:
+        neo4j_exceptions = pytest.importorskip("neo4j.exceptions")
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.explicit = True
+        tx_store.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
+        tx_store.batch_create_edges = AsyncMock(side_effect=neo4j_exceptions.ClientError("constraint"))
+
+        with pytest.raises(neo4j_exceptions.ClientError):
+            await proc._handle_record_permissions(self._record(), [_user_permission()], tx_store)
+
+    @pytest.mark.asyncio
+    async def test_the_same_failure_with_a_commit_per_statement_reaches_the_caller(self) -> None:
+        neo4j_exceptions = pytest.importorskip("neo4j.exceptions")
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.explicit = False
+        tx_store.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
+        tx_store.batch_create_edges = AsyncMock(side_effect=neo4j_exceptions.ClientError("constraint"))
+
+        with pytest.raises(neo4j_exceptions.ClientError):
+            await proc._handle_record_permissions(self._record(), [_user_permission()], tx_store)
+
+    @pytest.mark.asyncio
+    async def test_a_failure_that_left_the_transaction_open_reaches_the_caller(self) -> None:
+        proc, tx_store = _make_processor(), _make_tx_store()
+        tx_store.explicit = True
+        tx_store.get_user_by_email = AsyncMock(return_value=MagicMock(id="user-1"))
+        tx_store.batch_create_edges = AsyncMock(side_effect=ValueError("edge failed validation"))
+
+        with pytest.raises(ValueError):
+            await proc._handle_record_permissions(self._record(), [_user_permission()], tx_store)
+
+
 class TestMovesAgainstTheTransactionCache:
     """on_records_moved retires whatever already holds a destination path. With
     the transaction store caching lookups, a path vacated earlier in the same
@@ -7131,6 +8867,7 @@ class TestMovesAgainstTheTransactionCache:
                 created_at=1, parsing_status=None, extraction_status=None,
                 processing_started_at=None, reason=None, is_vlm_ocr_processed=False,
                 md5_hash=None, size_in_bytes=None, storage_document_id=None,
+                parent_external_record_id=None,
             )
             for rid, ext in rows.items()
         }

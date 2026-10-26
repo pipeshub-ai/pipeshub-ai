@@ -167,6 +167,15 @@ export class FakeCrawlingQueue {
     return existed
   }
 
+  async removeRepeatableByKey(key: string): Promise<boolean> {
+    this.guard()
+    const existed = this.store.repeatables.delete(key)
+    for (const job of [...this.store.jobs.values()]) {
+      if (job.opts.repeatJobKey === key && job.state === 'delayed') this.store.jobs.delete(job.id)
+    }
+    return existed
+  }
+
   private byState(state: JobState): Promise<FakeJob[]> {
     return this.getJobs([state])
   }

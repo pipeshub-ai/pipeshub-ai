@@ -38,6 +38,14 @@ class FakeGraph:
         self.copy_ok: dict[str, bool] = {}
         self.updates: list[tuple[str, dict[str, Any]]] = []
         self.pending_queries: list[tuple[int, int]] = []
+        self.mention_copies: list[tuple[str, str]] = []
+        self.mention_copy_error: Exception | None = None
+
+    async def copy_named_entity_mentions(self, source: str, target: str) -> int:
+        if self.mention_copy_error is not None:
+            raise self.mention_copy_error
+        self.mention_copies.append((source, target))
+        return 1
 
     async def get_records_by_virtual_record_id(self, vrid: str) -> list[str]:
         return list(self.siblings.get(vrid, []))
@@ -106,6 +114,37 @@ class TestReconciler:
         reconciler, sink = _reconciler(graph)
         assert await reconciler.reconcile("p1", "vr1") is True
         assert [c.args[0]["_key"] for c in sink.sync_entities_for_duplicate.await_args_list] == ["s1", "s2"]
+
+    async def test_named_entity_mentions_follow_the_taxonomy_copy(self) -> None:
+        graph = FakeGraph()
+        _group(graph, siblings=("s1", "s2"))
+        reconciler, _ = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is True
+        assert graph.mention_copies == [("p1", "s1"), ("p1", "s2")]
+
+    async def test_a_sibling_of_another_org_gets_no_mentions(self) -> None:
+        graph = FakeGraph()
+        _group(graph, siblings=("s1", "other"))
+        graph.docs["other"]["orgId"] = "org-2"
+        reconciler, _ = _reconciler(graph)
+        await reconciler.reconcile("p1", "vr1")
+        assert graph.mention_copies == [("p1", "s1")]
+
+    async def test_a_sibling_whose_taxonomy_copy_failed_gets_no_mentions(self) -> None:
+        graph = FakeGraph()
+        _group(graph)
+        graph.copy_ok["s1"] = False
+        reconciler, _ = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is False
+        assert graph.mention_copies == []
+
+    async def test_a_failed_mention_copy_still_syncs_entities_and_stays_pending(self) -> None:
+        graph = FakeGraph()
+        _group(graph, siblings=("s1", "s2"))
+        graph.mention_copy_error = RuntimeError("boom")
+        reconciler, sink = _reconciler(graph)
+        assert await reconciler.reconcile("p1", "vr1") is False
+        assert sink.sync_entities_for_duplicate.await_count == 2
 
     async def test_a_failed_entity_sync_is_a_failed_reconcile(self) -> None:
         """The flag used to be cleared although the sibling had no entity points."""

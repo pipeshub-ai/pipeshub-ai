@@ -1,0 +1,3037 @@
+{
+ "chat": {
+  "embeddable": [
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "d113b714-9c55-571c-a0a8-f9a164146aa7",
+    "entity_type": "named_entity",
+    "kind": "product",
+    "level": null,
+    "name": "redwood-instruct-2025-v2.1",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "b068a47f-f31b-5cf4-9863-576da10b6302",
+    "entity_type": "named_entity",
+    "kind": "organization",
+    "level": null,
+    "name": "Redwood Labs",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "913fd5b2-16a3-5a62-91f5-6d5544eee127",
+    "entity_type": "named_entity",
+    "kind": "organization",
+    "level": null,
+    "name": "eng-ml",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   }
+  ],
+  "extraction": {
+   "entities": [
+    {
+     "display_name": "100%",
+     "kind": "percentage",
+     "mentions": [
+      {
+       "block_id": "chat-b0",
+       "block_index": 0,
+       "char_end": 57,
+       "char_start": 53,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "100%"
+      }
+     ],
+     "norm_key": "pct:1",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "value": "1",
+      "value_type": "percent"
+     }
+    },
+    {
+     "display_name": "redwood-instruct-2025-v2.1",
+     "kind": "product",
+     "mentions": [
+      {
+       "block_id": "chat-b0",
+       "block_index": 0,
+       "char_end": 49,
+       "char_start": 23,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "redwood-instruct-2025-v2.1"
+      }
+     ],
+     "norm_key": "name:product:redwood-instruct-2025-v2.1",
+     "normalized_raw": "",
+     "tags": [
+      "Product"
+     ],
+     "value": {
+      "canonical": "redwood-instruct-2025-v2.1",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "Redwood Labs",
+     "kind": "organization",
+     "mentions": [
+      {
+       "block_id": "chat-b1",
+       "block_index": 1,
+       "char_end": 77,
+       "char_start": 65,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Redwood Labs"
+      }
+     ],
+     "norm_key": "name:organization:redwood labs",
+     "normalized_raw": "",
+     "tags": [
+      "Organization"
+     ],
+     "value": {
+      "canonical": "Redwood Labs",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "Priya Raman",
+     "kind": "person",
+     "mentions": [
+      {
+       "block_id": "chat-b1",
+       "block_index": 1,
+       "char_end": 38,
+       "char_start": 27,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Priya Raman"
+      }
+     ],
+     "norm_key": "name:person:priya raman",
+     "normalized_raw": "",
+     "tags": [
+      "Person"
+     ],
+     "value": {
+      "canonical": "Priya Raman",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "eng-ml",
+     "kind": "organization",
+     "mentions": [
+      {
+       "block_id": "chat-b1",
+       "block_index": 1,
+       "char_end": 25,
+       "char_start": 19,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "eng-ml"
+      }
+     ],
+     "norm_key": "name:organization:eng-ml",
+     "normalized_raw": "",
+     "tags": [
+      "Organization"
+     ],
+     "value": {
+      "canonical": "eng-ml",
+      "value_type": "name"
+     }
+    }
+   ],
+   "extractor_version": "ner-1",
+   "key_scheme": 1,
+   "reference_time_ms": null,
+   "schema_version": 1,
+   "stats": {
+    "accepted": 5,
+    "chars_truncated": false,
+    "deterministic": 1,
+    "dropped_cap": 0,
+    "rejected": 0,
+    "rejected_reasons": {},
+    "submitted": 5,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "tool_calls": 0,
+    "turns": 0,
+    "units": 2,
+    "windows_failed": 0,
+    "windows_run": 1,
+    "windows_total": 1
+   },
+   "status": "COMPLETED",
+   "strategy": "single_call",
+   "termination_reason": "single_call",
+   "tz": "UTC"
+  },
+  "graph": [
+   [
+    "find",
+    "product",
+    [
+     "name:product:redwood-instruct-2025-v2.1"
+    ]
+   ],
+   [
+    "find",
+    "organization",
+    [
+     "name:organization:eng-ml",
+     "name:organization:redwood labs"
+    ]
+   ],
+   [
+    "find",
+    "person",
+    [
+     "name:person:priya raman"
+    ]
+   ],
+   [
+    "create",
+    [
+     {
+      "aliases": [
+       "redwood-instruct-2025-v2.1"
+      ],
+      "category": "Product",
+      "id": "d113b714-9c55-571c-a0a8-f9a164146aa7",
+      "keyScheme": 1,
+      "kind": "product",
+      "name": "redwood-instruct-2025-v2.1",
+      "normKey": "name:product:redwood-instruct-2025-v2.1",
+      "normalizedAliases": [
+       "name:product:redwood-instruct-2025-v2.1"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Product"
+      ]
+     },
+     {
+      "aliases": [
+       "Redwood Labs"
+      ],
+      "category": "Organization",
+      "id": "b068a47f-f31b-5cf4-9863-576da10b6302",
+      "keyScheme": 1,
+      "kind": "organization",
+      "name": "Redwood Labs",
+      "normKey": "name:organization:redwood labs",
+      "normalizedAliases": [
+       "name:organization:redwood labs"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Organization"
+      ]
+     },
+     {
+      "aliases": [
+       "eng-ml"
+      ],
+      "category": "Organization",
+      "id": "913fd5b2-16a3-5a62-91f5-6d5544eee127",
+      "keyScheme": 1,
+      "kind": "organization",
+      "name": "eng-ml",
+      "normKey": "name:organization:eng-ml",
+      "normalizedAliases": [
+       "name:organization:eng-ml"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Organization"
+      ]
+     },
+     {
+      "aliases": [
+       "Priya Raman"
+      ],
+      "category": "Person",
+      "id": "8d7e6118-5586-5816-801a-b51fd5a6a9e3",
+      "keyScheme": 1,
+      "kind": "person",
+      "name": "Priya Raman",
+      "normKey": "name:person:priya raman",
+      "normalizedAliases": [
+       "name:person:priya raman"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Person"
+      ]
+     }
+    ]
+   ],
+   [
+    "edges",
+    "mentionsEntity",
+    [
+     {
+      "blockIds": [
+       "chat-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "extractedNames": [
+       "Priya Raman"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-chat",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "8d7e6118-5586-5816-801a-b51fd5a6a9e3"
+     },
+     {
+      "blockIds": [
+       "chat-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "extractedNames": [
+       "eng-ml"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-chat",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "913fd5b2-16a3-5a62-91f5-6d5544eee127"
+     },
+     {
+      "blockIds": [
+       "chat-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "extractedNames": [
+       "Redwood Labs"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-chat",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "b068a47f-f31b-5cf4-9863-576da10b6302"
+     },
+     {
+      "blockIds": [
+       "chat-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "redwood-instruct-2025-v2.1"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-chat",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "d113b714-9c55-571c-a0a8-f9a164146aa7"
+     }
+    ]
+   ],
+   [
+    "values",
+    "rec-chat",
+    [
+     {
+      "blockIds": [
+       "chat-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "100%"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "68202f15-251a-5fef-a89e-8bb5279f34ed",
+      "kind": "percentage",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "100%",
+      "normKey": "pct:1",
+      "numericValue": 1.0,
+      "orgId": "org-golden",
+      "recordId": "rec-chat",
+      "schemaVersion": 1
+     }
+    ]
+   ]
+  ],
+  "resolved": [
+   [
+    "4bdfa109-eb3d-5de1-9987-268ad789ea72",
+    null,
+    null,
+    "pct:1"
+   ],
+   [
+    "d113b714-9c55-571c-a0a8-f9a164146aa7",
+    null,
+    null,
+    "name:product:redwood-instruct-2025-v2.1"
+   ],
+   [
+    "b068a47f-f31b-5cf4-9863-576da10b6302",
+    null,
+    null,
+    "name:organization:redwood labs"
+   ],
+   [
+    "913fd5b2-16a3-5a62-91f5-6d5544eee127",
+    null,
+    null,
+    "name:organization:eng-ml"
+   ],
+   [
+    "8d7e6118-5586-5816-801a-b51fd5a6a9e3",
+    null,
+    null,
+    "name:person:priya raman"
+   ]
+  ]
+ },
+ "contract": {
+  "embeddable": [
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "8f281589-f48b-5586-a4ca-c4c2e13de3a8",
+    "entity_type": "named_entity",
+    "kind": "organization",
+    "level": null,
+    "name": "Müller & Söhne",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "6f4395f1-daa9-5125-b2d3-f0705cad5a72",
+    "entity_type": "named_entity",
+    "kind": "organization",
+    "level": null,
+    "name": "Zoë Café",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "22a760c6-38e1-5fb4-a776-d9cfa8e5c004",
+    "entity_type": "named_entity",
+    "kind": "city",
+    "level": null,
+    "name": "São Paulo",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "c21748bf-ad45-53f4-82aa-1a1986fcacb6",
+    "entity_type": "named_entity",
+    "kind": "country_region",
+    "level": null,
+    "name": "Brazil",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "45a4e9d6-4396-5b5e-b468-40e285194770",
+    "entity_type": "named_entity",
+    "kind": "person_type",
+    "level": null,
+    "name": "CFO",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   }
+  ],
+  "extraction": {
+   "entities": [
+    {
+     "display_name": "15 March 2027",
+     "kind": "date",
+     "mentions": [
+      {
+       "block_id": "contract-b0",
+       "block_index": 0,
+       "char_end": 90,
+       "char_start": 77,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "15 March 2027"
+      }
+     ],
+     "norm_key": "date:day:1805068800000:1805155200000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "explicit",
+      "anchored": false,
+      "end_ms": 1805155200000,
+      "granularity": "day",
+      "start_ms": 1805068800000,
+      "timex": "2027-03-15",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "this quarter",
+     "kind": "date_range",
+     "mentions": [
+      {
+       "block_id": "contract-b4",
+       "block_index": 4,
+       "char_end": 35,
+       "char_start": 23,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "this quarter"
+      }
+     ],
+     "norm_key": "date:quarter:1775001600000:1782864000000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "record",
+      "anchored": true,
+      "end_ms": 1782864000000,
+      "granularity": "quarter",
+      "start_ms": 1775001600000,
+      "timex": "2026-Q2",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "EUR 12,500",
+     "kind": "currency",
+     "mentions": [
+      {
+       "block_id": "contract-b1",
+       "block_index": 1,
+       "char_end": 21,
+       "char_start": 11,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "EUR 12,500"
+      }
+     ],
+     "norm_key": "money:EUR:12500",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "amount": "12500",
+      "amount_float": 12500.0,
+      "currency": "EUR",
+      "currency_ambiguous": false,
+      "value_type": "money"
+     }
+    },
+    {
+     "display_name": "last week",
+     "kind": "date_range",
+     "mentions": [
+      {
+       "block_id": "contract-b4",
+       "block_index": 4,
+       "char_end": 21,
+       "char_start": 12,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "last week"
+      }
+     ],
+     "norm_key": "date:week:1779062400000:1779667200000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "record",
+      "anchored": true,
+      "end_ms": 1779667200000,
+      "granularity": "week",
+      "start_ms": 1779062400000,
+      "timex": "2026-W21",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "12 April",
+     "kind": "date",
+     "mentions": [
+      {
+       "block_id": "contract-b4",
+       "block_index": 4,
+       "char_end": 45,
+       "char_start": 37,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "12 April"
+      }
+     ],
+     "norm_key": "date:unresolved:XXXX-04-12",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": true,
+      "anchor_source": "",
+      "anchored": false,
+      "end_ms": null,
+      "granularity": "day",
+      "start_ms": null,
+      "timex": "XXXX-04-12",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "09/18-09",
+     "kind": "date",
+     "mentions": [
+      {
+       "block_id": "contract-b4",
+       "block_index": 4,
+       "char_end": 55,
+       "char_start": 47,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "09/18-09"
+      }
+     ],
+     "norm_key": "date:day:1253232000000:1253318400000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "record",
+      "anchored": true,
+      "end_ms": 1253318400000,
+      "granularity": "day",
+      "start_ms": 1253232000000,
+      "timex": "2009-09-18T00:00:00+00:00",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "2.5m USD",
+     "kind": "currency",
+     "mentions": [
+      {
+       "block_id": "contract-b1",
+       "block_index": 1,
+       "char_end": 95,
+       "char_start": 87,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "2.5m USD"
+      }
+     ],
+     "norm_key": "money:USD:2500000",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "amount": "2500000.0",
+      "amount_float": 2500000.0,
+      "currency": "USD",
+      "currency_ambiguous": false,
+      "value_type": "money"
+     }
+    },
+    {
+     "display_name": "30 days",
+     "kind": "duration",
+     "mentions": [
+      {
+       "block_id": "contract-b1",
+       "block_index": 1,
+       "char_end": 71,
+       "char_start": 64,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "30 days"
+      }
+     ],
+     "norm_key": "duration:P30D",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "approx": false,
+      "iso": "P30D",
+      "seconds": 2592000.0,
+      "value_type": "duration"
+     }
+    },
+    {
+     "display_name": "FY2027",
+     "kind": "date_range",
+     "mentions": [
+      {
+       "block_id": "contract-b1",
+       "block_index": 1,
+       "char_end": 79,
+       "char_start": 73,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "FY2027"
+      }
+     ],
+     "norm_key": "date:year:1798761600000:1830297600000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "explicit",
+      "anchored": true,
+      "end_ms": 1830297600000,
+      "granularity": "year",
+      "start_ms": 1798761600000,
+      "timex": "2027",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "€50k",
+     "kind": "currency",
+     "mentions": [
+      {
+       "block_id": "contract-b1",
+       "block_index": 1,
+       "char_end": 39,
+       "char_start": 35,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "€50k"
+      }
+     ],
+     "norm_key": "money:EUR:50000",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "amount": "50000",
+      "amount_float": 50000.0,
+      "currency": "EUR",
+      "currency_ambiguous": false,
+      "value_type": "money"
+     }
+    },
+    {
+     "display_name": "5 km",
+     "kind": "dimension",
+     "mentions": [
+      {
+       "block_id": "contract-b2",
+       "block_index": 2,
+       "char_end": 57,
+       "char_start": 53,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "5 km"
+      }
+     ],
+     "norm_key": "qty:length:5000",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "dimension": "length",
+      "si_unit": "m",
+      "si_value": 5000.0,
+      "unit": "km",
+      "value": "5",
+      "value_type": "quantity"
+     }
+    },
+    {
+     "display_name": "Müller & Söhne",
+     "kind": "organization",
+     "mentions": [
+      {
+       "block_id": "contract-b0",
+       "block_index": 0,
+       "char_end": 19,
+       "char_start": 0,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Müller & Söhne GmbH"
+      }
+     ],
+     "norm_key": "name:organization:müller & söhne",
+     "normalized_raw": "",
+     "tags": [
+      "Organization"
+     ],
+     "value": {
+      "canonical": "Müller & Söhne",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "Zoë Café",
+     "kind": "organization",
+     "mentions": [
+      {
+       "block_id": "contract-b0",
+       "block_index": 0,
+       "char_end": 44,
+       "char_start": 31,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Zoë Café Ltd."
+      }
+     ],
+     "norm_key": "name:organization:zoë café",
+     "normalized_raw": "",
+     "tags": [
+      "Organization"
+     ],
+     "value": {
+      "canonical": "Zoë Café",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "jane o'neil",
+     "kind": "person",
+     "mentions": [
+      {
+       "block_id": "contract-b2",
+       "block_index": 2,
+       "char_end": 33,
+       "char_start": 22,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "jane o'neil"
+      },
+      {
+       "block_id": "contract-b3",
+       "block_index": 3,
+       "char_end": 5421,
+       "char_start": 5410,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Jane O'Neil"
+      }
+     ],
+     "norm_key": "name:person:jane o'neil",
+     "normalized_raw": "",
+     "tags": [
+      "Person"
+     ],
+     "value": {
+      "canonical": "jane o'neil",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "São Paulo",
+     "kind": "city",
+     "mentions": [
+      {
+       "block_id": "contract-b0",
+       "block_index": 0,
+       "char_end": 57,
+       "char_start": 48,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "São Paulo"
+      }
+     ],
+     "norm_key": "name:city:são paulo",
+     "normalized_raw": "",
+     "tags": [
+      "Location",
+      "City"
+     ],
+     "value": {
+      "canonical": "São Paulo",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "Brazil",
+     "kind": "country_region",
+     "mentions": [
+      {
+       "block_id": "contract-b0",
+       "block_index": 0,
+       "char_end": 65,
+       "char_start": 59,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Brazil"
+      }
+     ],
+     "norm_key": "name:country_region:brazil",
+     "normalized_raw": "",
+     "tags": [
+      "Location",
+      "CountryRegion"
+     ],
+     "value": {
+      "canonical": "Brazil",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "72 F",
+     "kind": "dimension",
+     "mentions": [
+      {
+       "block_id": "contract-b2",
+       "block_index": 2,
+       "char_end": 70,
+       "char_start": 66,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "72 F"
+      }
+     ],
+     "norm_key": "qty:temperature:295.372222222",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "dimension": "temperature",
+      "si_unit": "K",
+      "si_value": 295.3722222222222,
+      "unit": "f",
+      "value": "72",
+      "value_type": "quantity"
+     }
+    },
+    {
+     "display_name": "CFO",
+     "kind": "person_type",
+     "mentions": [
+      {
+       "block_id": "contract-b2",
+       "block_index": 2,
+       "char_end": 16,
+       "char_start": 13,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "CFO"
+      }
+     ],
+     "norm_key": "name:person_type:cfo",
+     "normalized_raw": "",
+     "tags": [
+      "Person"
+     ],
+     "value": {
+      "canonical": "CFO",
+      "value_type": "name"
+     }
+    }
+   ],
+   "extractor_version": "ner-1",
+   "key_scheme": 1,
+   "reference_time_ms": 1780000000000,
+   "schema_version": 1,
+   "stats": {
+    "accepted": 14,
+    "chars_truncated": false,
+    "deterministic": 11,
+    "dropped_cap": 0,
+    "rejected": 9,
+    "rejected_reasons": {
+     "not_in_block": 8,
+     "unparsed": 1
+    },
+    "submitted": 27,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "tool_calls": 0,
+    "turns": 0,
+    "units": 5,
+    "windows_failed": 0,
+    "windows_run": 5,
+    "windows_total": 7
+   },
+   "status": "PARTIAL",
+   "strategy": "single_call",
+   "termination_reason": "single_call",
+   "tz": "UTC"
+  },
+  "graph": [
+   [
+    "find",
+    "organization",
+    [
+     "name:organization:müller & söhne",
+     "name:organization:zoë café"
+    ]
+   ],
+   [
+    "find",
+    "person",
+    [
+     "name:person:jane o'neil"
+    ]
+   ],
+   [
+    "find",
+    "city",
+    [
+     "name:city:são paulo"
+    ]
+   ],
+   [
+    "find",
+    "country_region",
+    [
+     "name:country_region:brazil"
+    ]
+   ],
+   [
+    "find",
+    "person_type",
+    [
+     "name:person_type:cfo"
+    ]
+   ],
+   [
+    "create",
+    [
+     {
+      "aliases": [
+       "Müller & Söhne"
+      ],
+      "category": "Organization",
+      "id": "8f281589-f48b-5586-a4ca-c4c2e13de3a8",
+      "keyScheme": 1,
+      "kind": "organization",
+      "name": "Müller & Söhne",
+      "normKey": "name:organization:müller & söhne",
+      "normalizedAliases": [
+       "name:organization:müller & söhne"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Organization"
+      ]
+     },
+     {
+      "aliases": [
+       "Zoë Café"
+      ],
+      "category": "Organization",
+      "id": "6f4395f1-daa9-5125-b2d3-f0705cad5a72",
+      "keyScheme": 1,
+      "kind": "organization",
+      "name": "Zoë Café",
+      "normKey": "name:organization:zoë café",
+      "normalizedAliases": [
+       "name:organization:zoë café"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Organization"
+      ]
+     },
+     {
+      "aliases": [
+       "jane o'neil"
+      ],
+      "category": "Person",
+      "id": "node-jane",
+      "keyScheme": 1,
+      "kind": "person",
+      "name": "jane o'neil",
+      "normKey": "name:person:jane o'neil",
+      "normalizedAliases": [
+       "name:person:jane o'neil"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Person"
+      ]
+     },
+     {
+      "aliases": [
+       "São Paulo"
+      ],
+      "category": "Location",
+      "id": "22a760c6-38e1-5fb4-a776-d9cfa8e5c004",
+      "keyScheme": 1,
+      "kind": "city",
+      "name": "São Paulo",
+      "normKey": "name:city:são paulo",
+      "normalizedAliases": [
+       "name:city:são paulo"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Location",
+       "City"
+      ]
+     },
+     {
+      "aliases": [
+       "Brazil"
+      ],
+      "category": "Location",
+      "id": "c21748bf-ad45-53f4-82aa-1a1986fcacb6",
+      "keyScheme": 1,
+      "kind": "country_region",
+      "name": "Brazil",
+      "normKey": "name:country_region:brazil",
+      "normalizedAliases": [
+       "name:country_region:brazil"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Location",
+       "CountryRegion"
+      ]
+     },
+     {
+      "aliases": [
+       "CFO"
+      ],
+      "category": "Person",
+      "id": "45a4e9d6-4396-5b5e-b468-40e285194770",
+      "keyScheme": 1,
+      "kind": "person_type",
+      "name": "CFO",
+      "normKey": "name:person_type:cfo",
+      "normalizedAliases": [
+       "name:person_type:cfo"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Person"
+      ]
+     }
+    ]
+   ],
+   [
+    "alias",
+    [
+     "org-golden",
+     "person",
+     "node-jane",
+     [
+      "jane o'neil"
+     ],
+     [
+      "name:person:jane o'neil"
+     ]
+    ]
+   ],
+   [
+    "edges",
+    "mentionsEntity",
+    [
+     {
+      "blockIds": [
+       "contract-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "São Paulo"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-contract",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "22a760c6-38e1-5fb4-a776-d9cfa8e5c004"
+     },
+     {
+      "blockIds": [
+       "contract-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "extractedNames": [
+       "CFO"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-contract",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "45a4e9d6-4396-5b5e-b468-40e285194770"
+     },
+     {
+      "blockIds": [
+       "contract-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "Zoë Café Ltd."
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-contract",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "6f4395f1-daa9-5125-b2d3-f0705cad5a72"
+     },
+     {
+      "blockIds": [
+       "contract-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "Müller & Söhne GmbH"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-contract",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "8f281589-f48b-5586-a4ca-c4c2e13de3a8"
+     },
+     {
+      "blockIds": [
+       "contract-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "Brazil"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-contract",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "c21748bf-ad45-53f4-82aa-1a1986fcacb6"
+     },
+     {
+      "blockIds": [
+       "contract-b2",
+       "contract-b3"
+      ],
+      "blockIndexes": [
+       2,
+       3
+      ],
+      "extractedNames": [
+       "jane o'neil",
+       "Jane O'Neil"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-contract",
+      "maxEvidence": 1.0,
+      "mentionCount": 2,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "node-jane"
+     }
+    ]
+   ],
+   [
+    "values",
+    "rec-contract",
+    [
+     {
+      "blockIds": [
+       "contract-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "endMs": 1805155200000,
+      "extractedNames": [
+       "15 March 2027"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "day",
+      "id": "7ad8a290-aa85-5e4f-a0a6-197f2a989909",
+      "kind": "date",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "15 March 2027",
+      "normKey": "date:day:1805068800000:1805155200000",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "startMs": 1805068800000,
+      "timex": "2027-03-15"
+     },
+     {
+      "blockIds": [
+       "contract-b4"
+      ],
+      "blockIndexes": [
+       4
+      ],
+      "endMs": 1782864000000,
+      "extractedNames": [
+       "this quarter"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "quarter",
+      "id": "a419b961-569d-54dc-8996-acc240172399",
+      "kind": "date_range",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "this quarter",
+      "normKey": "date:quarter:1775001600000:1782864000000",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "startMs": 1775001600000,
+      "timex": "2026-Q2"
+     },
+     {
+      "amount": "12500",
+      "amountFloat": 12500.0,
+      "blockIds": [
+       "contract-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "currency": "EUR",
+      "extractedNames": [
+       "EUR 12,500"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "cb08e6e7-55e6-5c9e-af11-1df2b04b4a82",
+      "kind": "currency",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "EUR 12,500",
+      "normKey": "money:EUR:12500",
+      "numericValue": 12500.0,
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "contract-b4"
+      ],
+      "blockIndexes": [
+       4
+      ],
+      "endMs": 1779667200000,
+      "extractedNames": [
+       "last week"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "week",
+      "id": "385da24b-bc78-53a8-8b6c-61bf886bd1b3",
+      "kind": "date_range",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "last week",
+      "normKey": "date:week:1779062400000:1779667200000",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "startMs": 1779062400000,
+      "timex": "2026-W21"
+     },
+     {
+      "blockIds": [
+       "contract-b4"
+      ],
+      "blockIndexes": [
+       4
+      ],
+      "extractedNames": [
+       "12 April"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "61986b85-e4b8-55a7-ab2e-9d680892d972",
+      "kind": "date",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "12 April",
+      "normKey": "date:unresolved:XXXX-04-12",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "contract-b4"
+      ],
+      "blockIndexes": [
+       4
+      ],
+      "endMs": 1253318400000,
+      "extractedNames": [
+       "09/18-09"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "day",
+      "id": "5d10ed95-8f01-57d4-8a96-272dd898a568",
+      "kind": "date",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "09/18-09",
+      "normKey": "date:day:1253232000000:1253318400000",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "startMs": 1253232000000,
+      "timex": "2009-09-18T00:00:00+00:00"
+     },
+     {
+      "amount": "2500000.0",
+      "amountFloat": 2500000.0,
+      "blockIds": [
+       "contract-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "currency": "USD",
+      "extractedNames": [
+       "2.5m USD"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "bb757234-0e7b-52b9-9b49-e0eb58029f87",
+      "kind": "currency",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "2.5m USD",
+      "normKey": "money:USD:2500000",
+      "numericValue": 2500000.0,
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "contract-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "durationIso": "P30D",
+      "durationSeconds": 2592000.0,
+      "extractedNames": [
+       "30 days"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "5cf04ddf-f45e-53b5-8513-11f95f3f1055",
+      "kind": "duration",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "30 days",
+      "normKey": "duration:P30D",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "contract-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "endMs": 1830297600000,
+      "extractedNames": [
+       "FY2027"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "year",
+      "id": "c13f7ef3-0e57-5ce3-85d5-36254106e687",
+      "kind": "date_range",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "FY2027",
+      "normKey": "date:year:1798761600000:1830297600000",
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "startMs": 1798761600000,
+      "timex": "2027"
+     },
+     {
+      "amount": "50000",
+      "amountFloat": 50000.0,
+      "blockIds": [
+       "contract-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "currency": "EUR",
+      "extractedNames": [
+       "€50k"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "a867f38d-bf9e-5c46-8b1b-e219a9040dfd",
+      "kind": "currency",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "€50k",
+      "normKey": "money:EUR:50000",
+      "numericValue": 50000.0,
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "contract-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "dimension": "length",
+      "extractedNames": [
+       "5 km"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "9a9e7871-1341-5533-a070-c10c73c5f3b2",
+      "kind": "dimension",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "5 km",
+      "normKey": "qty:length:5000",
+      "numericValue": 5.0,
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "siValue": 5000.0,
+      "unit": "km"
+     },
+     {
+      "blockIds": [
+       "contract-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "dimension": "temperature",
+      "extractedNames": [
+       "72 F"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "id": "95f3f904-cd41-5b70-8170-044929ea21df",
+      "kind": "dimension",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "name": "72 F",
+      "normKey": "qty:temperature:295.372222222",
+      "numericValue": 72.0,
+      "orgId": "org-golden",
+      "recordId": "rec-contract",
+      "schemaVersion": 1,
+      "siValue": 295.3722222222222,
+      "unit": "f"
+     }
+    ]
+   ]
+  ],
+  "resolved": [
+   [
+    "aac7763a-d4be-58db-9e5c-f7d91add2e1a",
+    null,
+    null,
+    "date:day:1805068800000:1805155200000"
+   ],
+   [
+    "44baf130-1e72-5d42-85fc-74434c00e1a4",
+    null,
+    null,
+    "date:quarter:1775001600000:1782864000000"
+   ],
+   [
+    "c306ad28-f68d-5b81-b989-dd490b0f8d1f",
+    null,
+    null,
+    "money:EUR:12500"
+   ],
+   [
+    "01d0810d-5a9a-5e98-bbe2-c5ae0e9c7c49",
+    null,
+    null,
+    "date:week:1779062400000:1779667200000"
+   ],
+   [
+    "d1aebfab-004d-5b53-9425-434a882a3748",
+    null,
+    null,
+    "date:unresolved:XXXX-04-12"
+   ],
+   [
+    "96957a4d-cb64-5e92-8460-e28d318c1e2f",
+    null,
+    null,
+    "date:day:1253232000000:1253318400000"
+   ],
+   [
+    "30b6482e-0f03-591c-89e5-6c5f5f89dd6c",
+    null,
+    null,
+    "money:USD:2500000"
+   ],
+   [
+    "1eefae0f-0635-53c0-a706-4cf25e26d956",
+    null,
+    null,
+    "duration:P30D"
+   ],
+   [
+    "fa0a1a88-bb1b-50bb-8cc9-5737e60ca8f1",
+    null,
+    null,
+    "date:year:1798761600000:1830297600000"
+   ],
+   [
+    "81f37420-6f3b-595b-b919-f46d546b21be",
+    null,
+    null,
+    "money:EUR:50000"
+   ],
+   [
+    "414fd16a-816c-5e53-b6d1-7bef8ffb94f8",
+    null,
+    null,
+    "qty:length:5000"
+   ],
+   [
+    "f2aa00ea-95e0-5d39-bd14-98dbe2145908",
+    null,
+    null,
+    "qty:temperature:295.372222222"
+   ],
+   [
+    "8f281589-f48b-5586-a4ca-c4c2e13de3a8",
+    null,
+    null,
+    "name:organization:müller & söhne"
+   ],
+   [
+    "6f4395f1-daa9-5125-b2d3-f0705cad5a72",
+    null,
+    null,
+    "name:organization:zoë café"
+   ],
+   [
+    "node-jane",
+    "node-jane",
+    null,
+    "name:person:jane o'neil"
+   ],
+   [
+    "22a760c6-38e1-5fb4-a776-d9cfa8e5c004",
+    null,
+    null,
+    "name:city:são paulo"
+   ],
+   [
+    "c21748bf-ad45-53f4-82aa-1a1986fcacb6",
+    null,
+    null,
+    "name:country_region:brazil"
+   ],
+   [
+    "45a4e9d6-4396-5b5e-b468-40e285194770",
+    null,
+    null,
+    "name:person_type:cfo"
+   ]
+  ]
+ },
+ "incident": {
+  "embeddable": [
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "node-acme-2",
+    "entity_type": "named_entity",
+    "kind": "organization",
+    "level": null,
+    "name": "Acme Payments",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   },
+   {
+    "aliases": [],
+    "canonical_name": "",
+    "connector_ids": [],
+    "description": "",
+    "domain": null,
+    "entity_id": "2f083255-41aa-50d0-bdb8-eac6e873a20d",
+    "entity_type": "named_entity",
+    "kind": "skill",
+    "level": null,
+    "name": "ticket",
+    "org_id": "org-golden",
+    "record_group_ids": [],
+    "type_category": "predefined"
+   }
+  ],
+  "extraction": {
+   "entities": [
+    {
+     "display_name": "https://docs.acmepay.example/runbooks/rollback?id=7",
+     "kind": "url",
+     "mentions": [
+      {
+       "block_id": "incident-b4",
+       "block_index": 4,
+       "char_end": 73,
+       "char_start": 6,
+       "evidence_score": 0.9,
+       "extractor": "pattern",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "https://docs.acmepay.example/runbooks/rollback?id=7&utm_source=mail"
+      }
+     ],
+     "norm_key": "url:https://docs.acmepay.example/runbooks/rollback?id=7",
+     "normalized_raw": "",
+     "tags": [
+      "URL"
+     ],
+     "value": {
+      "canonical": "https://docs.acmepay.example/runbooks/rollback?id=7",
+      "scheme": "url",
+      "value_type": "contact"
+     }
+    },
+    {
+     "display_name": "maria.gonzalez@acmepay.example",
+     "kind": "email",
+     "mentions": [
+      {
+       "block_id": "incident-b1",
+       "block_index": 1,
+       "char_end": 153,
+       "char_start": 123,
+       "evidence_score": 0.95,
+       "extractor": "pattern",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "maria.gonzalez@acmepay.example"
+      }
+     ],
+     "norm_key": "email:maria.gonzalez@acmepay.example",
+     "normalized_raw": "",
+     "tags": [
+      "Email"
+     ],
+     "value": {
+      "canonical": "maria.gonzalez@acmepay.example",
+      "scheme": "email",
+      "value_type": "contact"
+     }
+    },
+    {
+     "display_name": "2026-03-04T04:12:08Z",
+     "kind": "date_time",
+     "mentions": [
+      {
+       "block_id": "incident-b1",
+       "block_index": 1,
+       "char_end": 53,
+       "char_start": 33,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "2026-03-04T04:12:08Z"
+      }
+     ],
+     "norm_key": "date:minute:1772597520000:1772597580000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "explicit",
+      "anchored": true,
+      "end_ms": 1772597580000,
+      "granularity": "minute",
+      "start_ms": 1772597520000,
+      "timex": "2026-03-04T04:12",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "March 3, 2026",
+     "kind": "date",
+     "mentions": [
+      {
+       "block_id": "incident-b0",
+       "block_index": 0,
+       "char_end": 74,
+       "char_start": 61,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "March 3, 2026"
+      }
+     ],
+     "norm_key": "date:day:1772496000000:1772582400000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "explicit",
+      "anchored": false,
+      "end_ms": 1772582400000,
+      "granularity": "day",
+      "start_ms": 1772496000000,
+      "timex": "2026-03-03",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "next Friday",
+     "kind": "date",
+     "mentions": [
+      {
+       "block_id": "incident-b2",
+       "block_index": 2,
+       "char_end": 55,
+       "char_start": 44,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "next Friday"
+      },
+      {
+       "block_id": "incident-b2",
+       "block_index": 2,
+       "char_end": 33,
+       "char_start": 25,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "tomorrow"
+      }
+     ],
+     "norm_key": "date:day:1767312000000:1767398400000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "record",
+      "anchored": true,
+      "end_ms": 1767398400000,
+      "granularity": "day",
+      "start_ms": 1767312000000,
+      "timex": "2026-01-02",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "-$1,250.50",
+     "kind": "currency",
+     "mentions": [
+      {
+       "block_id": "incident-b1",
+       "block_index": 1,
+       "char_end": 90,
+       "char_start": 80,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "-$1,250.50"
+      }
+     ],
+     "norm_key": "money:USD:-1250.5",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "amount": "-1250.50",
+      "amount_float": -1250.5,
+      "currency": "USD",
+      "currency_ambiguous": true,
+      "value_type": "money"
+     }
+    },
+    {
+     "display_name": "Q3 2026",
+     "kind": "date_range",
+     "mentions": [
+      {
+       "block_id": "incident-b4",
+       "block_index": 4,
+       "char_end": 89,
+       "char_start": 82,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Q3 2026"
+      }
+     ],
+     "norm_key": "date:quarter:1782864000000:1790812800000",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "ambiguous": false,
+      "anchor_source": "explicit",
+      "anchored": true,
+      "end_ms": 1790812800000,
+      "granularity": "quarter",
+      "start_ms": 1782864000000,
+      "timex": "2026-Q3",
+      "value_type": "date_range"
+     }
+    },
+    {
+     "display_name": "450 ms",
+     "kind": "duration",
+     "mentions": [
+      {
+       "block_id": "incident-b2",
+       "block_index": 2,
+       "char_end": 83,
+       "char_start": 77,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "450 ms"
+      }
+     ],
+     "norm_key": "duration:PT0.45S",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "approx": false,
+      "iso": "PT0.45S",
+      "seconds": 0.45,
+      "value_type": "duration"
+     }
+    },
+    {
+     "display_name": "3 days",
+     "kind": "duration",
+     "mentions": [
+      {
+       "block_id": "incident-b2",
+       "block_index": 2,
+       "char_end": 95,
+       "char_start": 89,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "3 days"
+      }
+     ],
+     "norm_key": "duration:P3D",
+     "normalized_raw": "",
+     "tags": [
+      "DateTime"
+     ],
+     "value": {
+      "approx": false,
+      "iso": "P3D",
+      "seconds": 259200.0,
+      "value_type": "duration"
+     }
+    },
+    {
+     "display_name": "($300)",
+     "kind": "currency",
+     "mentions": [
+      {
+       "block_id": "incident-b1",
+       "block_index": 1,
+       "char_end": 101,
+       "char_start": 95,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "($300)"
+      }
+     ],
+     "norm_key": "money:USD:-300",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "amount": "-300",
+      "amount_float": -300.0,
+      "currency": "USD",
+      "currency_ambiguous": true,
+      "value_type": "money"
+     }
+    },
+    {
+     "display_name": "35%",
+     "kind": "percentage",
+     "mentions": [
+      {
+       "block_id": "incident-b2",
+       "block_index": 2,
+       "char_end": 73,
+       "char_start": 70,
+       "evidence_score": 0.8,
+       "extractor": "value",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "35%"
+      }
+     ],
+     "norm_key": "pct:0.35",
+     "normalized_raw": "",
+     "tags": [
+      "Quantity"
+     ],
+     "value": {
+      "value": "0.35",
+      "value_type": "percent"
+     }
+    },
+    {
+     "display_name": "Acme Payments",
+     "kind": "organization",
+     "mentions": [
+      {
+       "block_id": "incident-b0",
+       "block_index": 0,
+       "char_end": 38,
+       "char_start": 20,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "Acme Payments Inc."
+      }
+     ],
+     "norm_key": "name:organization:acme payments",
+     "normalized_raw": "",
+     "tags": [
+      "Organization"
+     ],
+     "value": {
+      "canonical": "Acme Payments",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "Maria Gonzalez",
+     "kind": "person",
+     "mentions": [
+      {
+       "block_id": "incident-b0",
+       "block_index": 0,
+       "char_end": 14,
+       "char_start": 0,
+       "evidence_score": 0.7,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "fuzzy",
+       "surface": "Maria Gonzalez"
+      }
+     ],
+     "norm_key": "name:person:maria gonzalez",
+     "normalized_raw": "",
+     "tags": [
+      "Person"
+     ],
+     "value": {
+      "canonical": "Maria Gonzalez",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "Sam Patel",
+     "kind": "person",
+     "mentions": [
+      {
+       "block_id": "incident-b2",
+       "block_index": 2,
+       "char_end": 9,
+       "char_start": 0,
+       "evidence_score": 0.7,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "fuzzy",
+       "surface": "Sam Patel"
+      }
+     ],
+     "norm_key": "name:person:sam patel",
+     "normalized_raw": "",
+     "tags": [
+      "Person"
+     ],
+     "value": {
+      "canonical": "Sam Patel",
+      "value_type": "name"
+     }
+    },
+    {
+     "display_name": "ticket",
+     "kind": "skill",
+     "mentions": [
+      {
+       "block_id": "incident-b0",
+       "block_index": 0,
+       "char_end": 52,
+       "char_start": 46,
+       "evidence_score": 1.0,
+       "extractor": "single_call",
+       "extractor_version": "ner-1",
+       "grounding": "exact",
+       "surface": "ticket"
+      }
+     ],
+     "norm_key": "name:skill:ticket",
+     "normalized_raw": "",
+     "tags": [
+      "Skill"
+     ],
+     "value": {
+      "canonical": "ticket",
+      "value_type": "name"
+     }
+    }
+   ],
+   "extractor_version": "ner-1",
+   "key_scheme": 1,
+   "reference_time_ms": 1767225600000,
+   "schema_version": 1,
+   "stats": {
+    "accepted": 12,
+    "chars_truncated": false,
+    "deterministic": 11,
+    "dropped_cap": 0,
+    "rejected": 5,
+    "rejected_reasons": {
+     "not_in_block": 2,
+     "secret": 1,
+     "unparsed": 2
+    },
+    "submitted": 19,
+    "tokens_in": 0,
+    "tokens_out": 0,
+    "tool_calls": 0,
+    "turns": 0,
+    "units": 5,
+    "windows_failed": 0,
+    "windows_run": 1,
+    "windows_total": 1
+   },
+   "status": "COMPLETED",
+   "strategy": "single_call",
+   "termination_reason": "single_call",
+   "tz": "UTC"
+  },
+  "graph": [
+   [
+    "find",
+    "organization",
+    [
+     "name:organization:acme payments"
+    ]
+   ],
+   [
+    "find",
+    "person",
+    [
+     "name:person:maria gonzalez",
+     "name:person:sam patel"
+    ]
+   ],
+   [
+    "find",
+    "skill",
+    [
+     "name:skill:ticket"
+    ]
+   ],
+   [
+    "create",
+    [
+     {
+      "aliases": [
+       "https://docs.acmepay.example/runbooks/rollback?id=7"
+      ],
+      "category": "URL",
+      "id": "0b31bdfa-2022-5bb0-8ba5-8ee7b1b32a7b",
+      "keyScheme": 1,
+      "kind": "url",
+      "name": "https://docs.acmepay.example/runbooks/rollback?id=7",
+      "normKey": "url:https://docs.acmepay.example/runbooks/rollback?id=7",
+      "normalizedAliases": [
+       "url:https://docs.acmepay.example/runbooks/rollback?id=7"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "URL"
+      ]
+     },
+     {
+      "aliases": [
+       "maria.gonzalez@acmepay.example"
+      ],
+      "category": "Email",
+      "id": "db29b21e-e207-57c4-a2ee-8788586de1d5",
+      "keyScheme": 1,
+      "kind": "email",
+      "name": "maria.gonzalez@acmepay.example",
+      "normKey": "email:maria.gonzalez@acmepay.example",
+      "normalizedAliases": [
+       "email:maria.gonzalez@acmepay.example"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Email"
+      ]
+     },
+     {
+      "aliases": [
+       "Acme Payments"
+      ],
+      "category": "Organization",
+      "id": "node-acme-2",
+      "keyScheme": 1,
+      "kind": "organization",
+      "name": "Acme Payments",
+      "normKey": "name:organization:acme payments",
+      "normalizedAliases": [
+       "name:organization:acme payments"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Organization"
+      ]
+     },
+     {
+      "aliases": [
+       "Maria Gonzalez"
+      ],
+      "category": "Person",
+      "id": "node-maria",
+      "keyScheme": 1,
+      "kind": "person",
+      "name": "Maria Gonzalez",
+      "normKey": "name:person:maria gonzalez",
+      "normalizedAliases": [
+       "name:person:maria gonzalez"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Person"
+      ]
+     },
+     {
+      "aliases": [
+       "Sam Patel"
+      ],
+      "category": "Person",
+      "id": "ed17a6bd-db7c-5a31-8ebf-253c76b75b1f",
+      "keyScheme": 1,
+      "kind": "person",
+      "name": "Sam Patel",
+      "normKey": "name:person:sam patel",
+      "normalizedAliases": [
+       "name:person:sam patel"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Person"
+      ]
+     },
+     {
+      "aliases": [
+       "ticket"
+      ],
+      "category": "Skill",
+      "id": "2f083255-41aa-50d0-bdb8-eac6e873a20d",
+      "keyScheme": 1,
+      "kind": "skill",
+      "name": "ticket",
+      "normKey": "name:skill:ticket",
+      "normalizedAliases": [
+       "name:skill:ticket"
+      ],
+      "orgId": "org-golden",
+      "schemaVersion": 1,
+      "tags": [
+       "Skill"
+      ]
+     }
+    ]
+   ],
+   [
+    "alias",
+    [
+     "org-golden",
+     "organization",
+     "node-acme-2",
+     [
+      "Acme Payments"
+     ],
+     [
+      "name:organization:acme payments"
+     ]
+    ]
+   ],
+   [
+    "alias",
+    [
+     "org-golden",
+     "person",
+     "node-maria",
+     [
+      "Maria Gonzalez"
+     ],
+     [
+      "name:person:maria gonzalez"
+     ]
+    ]
+   ],
+   [
+    "edges",
+    "mentionsEntity",
+    [
+     {
+      "blockIds": [
+       "incident-b4"
+      ],
+      "blockIndexes": [
+       4
+      ],
+      "extractedNames": [
+       "https://docs.acmepay.example/runbooks/rollback?id=7"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "pattern"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-incident",
+      "maxEvidence": 0.9,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "0b31bdfa-2022-5bb0-8ba5-8ee7b1b32a7b"
+     },
+     {
+      "blockIds": [
+       "incident-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "ticket"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-incident",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "2f083255-41aa-50d0-bdb8-eac6e873a20d"
+     },
+     {
+      "blockIds": [
+       "incident-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "extractedNames": [
+       "maria.gonzalez@acmepay.example"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "pattern"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-incident",
+      "maxEvidence": 0.95,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "db29b21e-e207-57c4-a2ee-8788586de1d5"
+     },
+     {
+      "blockIds": [
+       "incident-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "extractedNames": [
+       "Sam Patel"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-incident",
+      "maxEvidence": 0.7,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "ed17a6bd-db7c-5a31-8ebf-253c76b75b1f"
+     },
+     {
+      "blockIds": [
+       "incident-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "Acme Payments Inc."
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-incident",
+      "maxEvidence": 1.0,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "node-acme-2"
+     },
+     {
+      "blockIds": [
+       "incident-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "extractedNames": [
+       "Maria Gonzalez"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call"
+      ],
+      "from_collection": "records",
+      "from_id": "rec-incident",
+      "maxEvidence": 0.7,
+      "mentionCount": 1,
+      "orgId": "org-golden",
+      "to_collection": "namedEntities",
+      "to_id": "node-maria"
+     }
+    ]
+   ],
+   [
+    "values",
+    "rec-incident",
+    [
+     {
+      "blockIds": [
+       "incident-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "endMs": 1772597580000,
+      "extractedNames": [
+       "2026-03-04T04:12:08Z"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "minute",
+      "id": "281897de-65a1-563a-a393-c775e551832e",
+      "kind": "date_time",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "2026-03-04T04:12:08Z",
+      "normKey": "date:minute:1772597520000:1772597580000",
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1,
+      "startMs": 1772597520000,
+      "timex": "2026-03-04T04:12"
+     },
+     {
+      "blockIds": [
+       "incident-b0"
+      ],
+      "blockIndexes": [
+       0
+      ],
+      "endMs": 1772582400000,
+      "extractedNames": [
+       "March 3, 2026"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "day",
+      "id": "e80da6f1-891a-548a-afc1-5728b326156b",
+      "kind": "date",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "March 3, 2026",
+      "normKey": "date:day:1772496000000:1772582400000",
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1,
+      "startMs": 1772496000000,
+      "timex": "2026-03-03"
+     },
+     {
+      "blockIds": [
+       "incident-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "endMs": 1767398400000,
+      "extractedNames": [
+       "next Friday",
+       "tomorrow"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "single_call",
+       "value"
+      ],
+      "granularity": "day",
+      "id": "d9f3389f-52f7-5027-a8ec-690e181cb1d6",
+      "kind": "date",
+      "maxEvidence": 1.0,
+      "mentionCount": 2,
+      "name": "next Friday",
+      "normKey": "date:day:1767312000000:1767398400000",
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1,
+      "startMs": 1767312000000,
+      "timex": "2026-01-02"
+     },
+     {
+      "amount": "-1250.50",
+      "amountFloat": -1250.5,
+      "blockIds": [
+       "incident-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "currency": "USD",
+      "extractedNames": [
+       "-$1,250.50"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "0ff286b7-ba3e-50f9-8373-880a37ddde58",
+      "kind": "currency",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "-$1,250.50",
+      "normKey": "money:USD:-1250.5",
+      "numericValue": -1250.5,
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "incident-b4"
+      ],
+      "blockIndexes": [
+       4
+      ],
+      "endMs": 1790812800000,
+      "extractedNames": [
+       "Q3 2026"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "granularity": "quarter",
+      "id": "ee35f8f6-6067-59a3-b955-3778a5a3ecf9",
+      "kind": "date_range",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "Q3 2026",
+      "normKey": "date:quarter:1782864000000:1790812800000",
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1,
+      "startMs": 1782864000000,
+      "timex": "2026-Q3"
+     },
+     {
+      "blockIds": [
+       "incident-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "durationIso": "PT0.45S",
+      "durationSeconds": 0.45,
+      "extractedNames": [
+       "450 ms"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "b8d1cbdb-f3db-52f8-9a85-a27edd3e27c3",
+      "kind": "duration",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "450 ms",
+      "normKey": "duration:PT0.45S",
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "incident-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "durationIso": "P3D",
+      "durationSeconds": 259200.0,
+      "extractedNames": [
+       "3 days"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "9e120869-7a88-5c18-af0c-dea65fdb6180",
+      "kind": "duration",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "3 days",
+      "normKey": "duration:P3D",
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1
+     },
+     {
+      "amount": "-300",
+      "amountFloat": -300.0,
+      "blockIds": [
+       "incident-b1"
+      ],
+      "blockIndexes": [
+       1
+      ],
+      "currency": "USD",
+      "extractedNames": [
+       "($300)"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "ca94ab12-c956-5894-ba87-b8da5a7c4bfb",
+      "kind": "currency",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "($300)",
+      "normKey": "money:USD:-300",
+      "numericValue": -300.0,
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1
+     },
+     {
+      "blockIds": [
+       "incident-b2"
+      ],
+      "blockIndexes": [
+       2
+      ],
+      "extractedNames": [
+       "35%"
+      ],
+      "extractorVersion": "ner-1",
+      "extractors": [
+       "value"
+      ],
+      "id": "cdc60446-11fa-536e-ad32-8dbb7851b4ab",
+      "kind": "percentage",
+      "maxEvidence": 0.8,
+      "mentionCount": 1,
+      "name": "35%",
+      "normKey": "pct:0.35",
+      "numericValue": 0.35,
+      "orgId": "org-golden",
+      "recordId": "rec-incident",
+      "schemaVersion": 1
+     }
+    ]
+   ]
+  ],
+  "resolved": [
+   [
+    "0b31bdfa-2022-5bb0-8ba5-8ee7b1b32a7b",
+    null,
+    null,
+    "url:https://docs.acmepay.example/runbooks/rollback?id=7"
+   ],
+   [
+    "db29b21e-e207-57c4-a2ee-8788586de1d5",
+    null,
+    null,
+    "email:maria.gonzalez@acmepay.example"
+   ],
+   [
+    "2a759560-1b67-56c7-a962-50221bac442b",
+    null,
+    null,
+    "date:minute:1772597520000:1772597580000"
+   ],
+   [
+    "08bfb9f1-0cf8-5cc6-894e-d32c55b46b34",
+    null,
+    null,
+    "date:day:1772496000000:1772582400000"
+   ],
+   [
+    "7d867e9d-e363-50e6-9e9d-f0cc4271645e",
+    null,
+    null,
+    "date:day:1767312000000:1767398400000"
+   ],
+   [
+    "27112992-b846-5dd7-b6df-bb336f37ce54",
+    null,
+    null,
+    "money:USD:-1250.5"
+   ],
+   [
+    "70c5dc6d-1e78-5341-88da-9b65b0eedb72",
+    null,
+    null,
+    "date:quarter:1782864000000:1790812800000"
+   ],
+   [
+    "c098a2a5-d681-5d52-910b-1a9d1985a562",
+    null,
+    null,
+    "duration:PT0.45S"
+   ],
+   [
+    "f4568159-2d0f-5196-ae48-940053cbd28e",
+    null,
+    null,
+    "duration:P3D"
+   ],
+   [
+    "222a9b60-f808-54ce-92b4-623bcf4aa4d1",
+    null,
+    null,
+    "money:USD:-300"
+   ],
+   [
+    "4259231c-32fa-5947-ad70-e119dba5db82",
+    null,
+    null,
+    "pct:0.35"
+   ],
+   [
+    "node-acme-2",
+    "node-acme-2",
+    null,
+    "name:organization:acme payments"
+   ],
+   [
+    "node-maria",
+    "node-maria",
+    null,
+    "name:person:maria gonzalez"
+   ],
+   [
+    "ed17a6bd-db7c-5a31-8ebf-253c76b75b1f",
+    null,
+    null,
+    "name:person:sam patel"
+   ],
+   [
+    "2f083255-41aa-50d0-bdb8-eac6e873a20d",
+    null,
+    null,
+    "name:skill:ticket"
+   ]
+  ]
+ }
+}

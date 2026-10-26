@@ -272,7 +272,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=["test_coll", "other"])
+        registry.recreate_records_collections = AsyncMock(return_value=["test_coll", "other"])
         registry.ensure_collection = AsyncMock()
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -280,7 +280,7 @@ class TestRecreateCollection:
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        registry.recreate_all_collections.assert_awaited_once()
+        registry.recreate_records_collections.assert_awaited_once()
         # Nothing to backfill when the registry already rebuilt something.
         registry.ensure_collection.assert_not_awaited()
 
@@ -296,7 +296,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=[])
+        registry.recreate_records_collections = AsyncMock(return_value=[])
         registry.ensure_collection = AsyncMock(return_value="test_coll")
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -311,7 +311,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(side_effect=Exception("fail"))
+        registry.recreate_records_collections = AsyncMock(side_effect=Exception("fail"))
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
 
@@ -809,7 +809,10 @@ class TestPerformEmbeddingHealthCheck:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        mock_get.assert_called_once_with(provider="openai", config=config, model_name="model-a")
+        assert [call.kwargs["model_name"] for call in mock_get.call_args_list] == [
+            "model-a",
+            "model-b",
+        ]
 
 
 class TestHealthCheckEndpoint:
@@ -1339,7 +1342,7 @@ class TestRecreateCollectionFullCoverage:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=["test_coll", "other"])
+        registry.recreate_records_collections = AsyncMock(return_value=["test_coll", "other"])
         registry.ensure_collection = AsyncMock()
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -1347,7 +1350,7 @@ class TestRecreateCollectionFullCoverage:
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        registry.recreate_all_collections.assert_awaited_once()
+        registry.recreate_records_collections.assert_awaited_once()
         # Nothing to backfill when the registry already rebuilt something.
         registry.ensure_collection.assert_not_awaited()
 
@@ -1363,7 +1366,7 @@ class TestRecreateCollectionFullCoverage:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=[])
+        registry.recreate_records_collections = AsyncMock(return_value=[])
         registry.ensure_collection = AsyncMock(return_value="test_coll")
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -1378,7 +1381,7 @@ class TestRecreateCollectionFullCoverage:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(side_effect=Exception("fail"))
+        registry.recreate_records_collections = AsyncMock(side_effect=Exception("fail"))
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
 
@@ -1865,7 +1868,10 @@ class TestPerformEmbeddingHealthCheckFullCoverage:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        mock_get.assert_called_once_with(provider="openai", config=config, model_name="model-a")
+        assert [call.kwargs["model_name"] for call in mock_get.call_args_list] == [
+            "model-a",
+            "model-b",
+        ]
 
 
 class TestHealthCheckEndpointFullCoverage:
@@ -2239,4 +2245,49 @@ class TestLlmHealthCheckNeedsOutbound:
         # 400, not 500: nothing broke, the admin left the model name empty.
         assert resp.status_code == 400
         assert "No valid model names" in resp.body.decode()
+
+
+class TestOpenAIListedModelProbe:
+    @pytest.mark.asyncio
+    async def test_keyless_server_gets_the_placeholder_key(self, monkeypatch):
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        created: dict = {}
+        client = MagicMock()
+        client.models.retrieve = AsyncMock(return_value=MagicMock(id="kokoro"))
+        client.close = AsyncMock()
+
+        def factory(**kwargs):
+            created.update(kwargs)
+            return client
+
+        with patch("openai.AsyncOpenAI", side_effect=factory):
+            from app.api.routes.health import _probe_openai_listed_model
+            await _probe_openai_listed_model({"endpoint": "http://127.0.0.1:8080/v1"}, "kokoro")
+
+        assert created["api_key"] == "not-needed"
+        assert created["base_url"] == "http://127.0.0.1:8080/v1"
+
+    @pytest.mark.asyncio
+    async def test_configured_key_and_env_key_are_kept(self, monkeypatch):
+        created: dict = {}
+        client = MagicMock()
+        client.models.retrieve = AsyncMock(return_value=MagicMock(id="gpt-4o"))
+        client.close = AsyncMock()
+
+        def factory(**kwargs):
+            created.clear()
+            created.update(kwargs)
+            return client
+
+        with patch("openai.AsyncOpenAI", side_effect=factory):
+            from app.api.routes.health import _probe_openai_listed_model
+            await _probe_openai_listed_model({"apiKey": "sk-real"}, "gpt-4o")
+        assert created["api_key"] == "sk-real"
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-env")
+        created.clear()
+        with patch("openai.AsyncOpenAI", side_effect=factory):
+            from app.api.routes.health import _probe_openai_listed_model
+            await _probe_openai_listed_model({}, "gpt-4o")
+        assert "api_key" not in created
 

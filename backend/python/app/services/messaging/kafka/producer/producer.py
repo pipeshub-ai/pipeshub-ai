@@ -1,13 +1,16 @@
 import asyncio
 import json
-import ssl
 from logging import Logger
 from typing import Any, Dict, List, Optional
 
 from aiokafka import AIOKafkaProducer  # type: ignore
 
+from app.core.envelope import sign_message
 from app.services.messaging.interface.producer import IMessagingProducer
-from app.services.messaging.kafka.config.kafka_config import KafkaProducerConfig
+from app.services.messaging.kafka.config.kafka_config import (
+    KafkaProducerConfig,
+    kafka_security_kwargs,
+)
 from app.utils.loop_bridge import run_on_loop
 from app.utils.request_context import inject_envelope
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -37,17 +40,7 @@ class KafkaMessagingProducer(IMessagingProducer):
             'client_id': kafka_config.client_id,
         }
 
-        # Add SSL/SASL configuration
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
 
         return config
 
@@ -121,7 +114,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         """Send a message to a Kafka topic"""
         # Stamped before the hop: the owner loop's context has no request id.
         return await run_on_loop(
-            self._owner_loop, self._send_message(topic, inject_envelope(message), key)
+            self._owner_loop, self._send_message(topic, sign_message(topic, inject_envelope(message)), key)
         )
 
     async def _send_message(
@@ -171,7 +164,7 @@ class KafkaMessagingProducer(IMessagingProducer):
         """
         if not messages:
             return []
-        stamped = [(key, inject_envelope(message)) for key, message in messages]
+        stamped = [(key, sign_message(topic, inject_envelope(message))) for key, message in messages]
         return await run_on_loop(self._owner_loop, self._send_messages(topic, stamped))
 
     async def _send_messages(

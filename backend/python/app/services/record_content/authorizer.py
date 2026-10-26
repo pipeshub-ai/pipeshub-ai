@@ -1,21 +1,19 @@
 """`TieredRecordAuthorizer` — cheapest-first, no bypass.
 
-Four tiers, each a real check:
+Three tiers, each a real check:
 
 0. The record is live. A record in the trash keeps its permission edges so it
    can be restored, and tier 2 would otherwise grant access from the edge alone.
    Raises `RecordNotFoundError`: to the reader the item is gone.
 1. Org scope: `record.org_id == actor.org_id`. O(1), always runs.
-2. Direct permission-edge lookup: the same single `get_edge` call
-   `AccessPolicy._authorize` already uses. Covers artifacts and user-uploaded
-   chat attachments without touching the 10-path AQL union query.
-   If `resolve_user_key` raises (actor has no user node), tier 2 is skipped
-   — not treated as denial, just falls through to tier 3.
-3. `check_record_access_with_details` as the completeness backstop, covering
-   KB membership, team, group, record-group, org, and anyone-link paths.
+2. `check_record_access_with_details`, which decides through the batch access
+   check: connector and collection records by the permission model, and
+   artifacts and chat attachments (records outside every App) by a grant on
+   the record itself.
 
-Tiers are additive, not alternative — tier 3 only runs when tiers 1 and 2
-both fail to confirm access. No bypass path exists; service-account callers
+A direct user-to-record edge is not accepted on its own: it would skip the
+STRICT/RESTRICTED rule and the connector gate, and these bytes leave the
+system. No bypass path exists; service-account callers
 follow the same gate (see plan §Authorization — Open decision).
 """
 
@@ -24,8 +22,6 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from app.config.constants.arangodb import CollectionNames
-from app.services.artifact_registry.access import ArtifactNotFoundError
 from app.services.graph_db.common.record_visibility import is_live_record
 
 from .models import RecordAccessDeniedError, RecordNotFoundError
@@ -72,12 +68,7 @@ class TieredRecordAuthorizer:
             record.get("_key") if isinstance(record, dict) else None
         )
 
-        # Tier 2 — direct permission-edge point lookup
-        tier2_granted = await self._try_direct_edge(actor, record_id)
-        if tier2_granted:
-            return
-
-        # Tier 3 — full ACL union query (KB, team, group, record-group, org, anyone-link)
+        # Tier 2 — the permission model
         tier3_result = await self._graph.check_record_access_with_details(
             actor.user_id, actor.org_id, record_id
         )
@@ -92,31 +83,3 @@ class TieredRecordAuthorizer:
         raise RecordAccessDeniedError(
             f"Actor {actor.user_id} is not authorized to read record {record_id}"
         )
-
-    async def _try_direct_edge(self, actor: Any, record_id: str | None) -> bool:
-        """Attempt tier-2 via a single `get_edge` call. Returns True if the
-        actor has a direct permission edge to the record. Returns False (rather
-        than raising) when:
-        - `actor.user_id` has no graph user node (service account with no node)
-        - the permission edge does not exist
-        Any unexpected I/O error propagates to the caller.
-        """
-        if not record_id:
-            return False
-
-        try:
-            from app.services.artifact_registry.access import AccessPolicy
-            access = AccessPolicy(self._graph)
-            user_key = await access.resolve_user_key(actor)
-        except ArtifactNotFoundError:
-            # Actor has no graph user node — skip tier 2, let tier 3 decide.
-            return False
-
-        edge = await self._graph.get_edge(
-            from_id=user_key,
-            from_collection=CollectionNames.USERS.value,
-            to_id=record_id,
-            to_collection=CollectionNames.RECORDS.value,
-            collection=CollectionNames.PERMISSION.value,
-        )
-        return edge is not None

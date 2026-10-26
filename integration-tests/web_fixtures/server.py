@@ -11,6 +11,8 @@ filesystem shared between the test runner and this container.
     GET    /__fixtures__/health         200 once serving
     POST   /__fixtures__/openai/v1/chat/completions
                                         a stand-in OpenAI-compatible model
+    POST   /__fixtures__/openai/v1/embeddings
+                                        a stand-in OpenAI-compatible embedding model
     PUT    /__fixtures__/faults/<path>  misbehave at /<path>; JSON body, see Fault
     GET    /__fixtures__/faults/<path>  that fault, with how many requests it hit
     DELETE /__fixtures__/faults/<path>  behave again at /<path>
@@ -23,6 +25,8 @@ each other's, and ``reset`` clears them all. Faults answer GET only.
 The stand-in model lets a test configure an AI model through the product's
 own form, health check included, without a paid provider account. It answers
 every prompt with the same short reply, streamed or not, and ignores tools.
+Its embeddings are small fixed-size vectors derived from each input's hash, so
+the same text always gets the same vector.
 
 ``{{BASE_URL}}`` in a served text file becomes ``--base-url``, so feeds can
 carry absolute links that work from wherever the connector runs.
@@ -33,6 +37,7 @@ Standard library only, so the service runs on a stock Python image.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import mimetypes
 import threading
@@ -45,6 +50,7 @@ from urllib.parse import quote
 
 CONTROL = "/__fixtures__"
 STAND_IN_REPLY = "OK"
+STAND_IN_EMBEDDING_SIZE = 16
 BASE_URL_TOKEN = b"{{BASE_URL}}"
 _TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -313,6 +319,9 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
             if path == f"{CONTROL}/openai/v1/chat/completions":
                 self._chat_completion()
                 return
+            if path == f"{CONTROL}/openai/v1/embeddings":
+                self._embeddings()
+                return
             if path != f"{CONTROL}/reset":
                 self._send(HTTPStatus.NOT_FOUND)
                 return
@@ -358,7 +367,35 @@ def make_handler(site: Site, base_url: str) -> type[BaseHTTPRequestHandler]:
             events.append("data: [DONE]\n\n")
             self._send(HTTPStatus.OK, "".join(events).encode(), "text/event-stream")
 
+        def _embeddings(self) -> None:
+            length = int(self.headers.get("Content-Length") or 0)
+            try:
+                request = json.loads(self.rfile.read(length) or b"{}")
+            except ValueError:
+                self._send(HTTPStatus.BAD_REQUEST, b"invalid JSON")
+                return
+            inputs = request.get("input")
+            # One text, a list of texts, or token arrays, as OpenAI accepts.
+            if not isinstance(inputs, list) or (inputs and isinstance(inputs[0], int)):
+                inputs = [inputs]
+            data = [
+                {"object": "embedding", "index": i, "embedding": _stand_in_vector(json.dumps(item))}
+                for i, item in enumerate(inputs)
+            ]
+            body = {
+                "object": "list",
+                "data": data,
+                "model": str(request.get("model") or "stand-in"),
+                "usage": {"prompt_tokens": len(data), "total_tokens": len(data)},
+            }
+            self._send(HTTPStatus.OK, json.dumps(body).encode(), "application/json")
+
     return Handler
+
+
+def _stand_in_vector(text: str) -> list[float]:
+    digest = hashlib.sha256(text.encode()).digest()
+    return [(byte - 127.5) / 127.5 for byte in digest[:STAND_IN_EMBEDDING_SIZE]]
 
 
 def main() -> None:

@@ -1,5 +1,9 @@
 import mongoose from 'mongoose';
-import { UserGroups } from '../../user_management/schema/userGroup.schema';
+import {
+  UserGroup,
+  UserGroups,
+} from '../../user_management/schema/userGroup.schema';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
 import { findOrgAdminUserIds } from '../../user_management/services/user-admin.service';
 
 const SUPPORTED_GROUP_ROLE_TYPES = new Set(['standard', 'everyone', 'custom']);
@@ -40,11 +44,13 @@ export async function resolveRoleRecipientUserIds(
 
   const groupRoles = validRoles.filter((r) => SUPPORTED_GROUP_ROLE_TYPES.has(r));
   if (groupRoles.length > 0) {
-    const groups = await UserGroups.find({
-      orgId,
-      type: { $in: groupRoles },
-      isDeleted: { $ne: true },
-    })
+    const groups = await UserGroups.find(
+      asQueryFilter<UserGroup>({
+        orgId,
+        type: { $in: groupRoles },
+        isDeleted: { $ne: true },
+      }),
+    )
       .select('users')
       .lean();
 

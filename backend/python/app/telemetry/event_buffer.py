@@ -8,6 +8,8 @@ import threading
 from datetime import datetime, timezone
 from typing import Any
 
+from app.telemetry.flag import telemetry_enabled
+
 MAX_EVENTS = 5000
 
 
@@ -43,6 +45,8 @@ def record_event(event: str, props: dict[str, Any] | None = None) -> None:
     but must NOT carry document/query content — the collector drops
     content-smelling keys as a backstop.
     """
+    if not telemetry_enabled():
+        return
     event_buffer.enqueue(
         {
             "event": event,

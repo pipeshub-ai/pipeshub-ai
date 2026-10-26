@@ -22,52 +22,80 @@ same occurrence (`Agent.emit()`'s `_AG_UI_ALIASES` table), so matching only
 the alias side (exactly like `AGUIEventEmitter` does) avoids collecting
 every tool call / run lifecycle event twice.
 
-Full external tool results are never stored here beyond the ~200-char
-preview `agent_loop_lib/agent/tool_loop.py::execute_tool_call` already
-truncates `TOOL_RESULT`/`TOOL_BLOCKED` payloads to before emission — this
-collector only ever sees that already-bounded preview, never the raw
-tool output, so "don't store full external tool results" holds by
-construction, not by an extra truncation step here.
+Full external tool results are never stored here beyond the bounded
+preview (`RESULT_PREVIEW_CHARS`) `agent_loop_lib/agent/tool_loop.py`
+truncates `TOOL_RESULT` payloads to before emission — this collector only
+ever sees that already-bounded preview, never the raw tool output, so
+"don't store full external tool results" holds by construction. A tool's
+small view of its result (`resultView`, a table or a record's fields) is
+kept too, within a per-reply budget (`result_views.py`).
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import TYPE_CHECKING, Any, Literal, TypedDict
 
+from app.agent_loop_lib.agent.tool_loop import RESULT_PREVIEW_CHARS
 from app.agent_loop_lib.events.base import EventEmitter, EventType, ToolCallStatus
+from app.agents.agent_loop.protocol.result_views import ResultViewBudget
+from app.utils.citations import (
+    kept_citation_link_text,
+    rewrite_request_refs,
+    sub_in_order,
+)
 
 # Matches [text](url) where text is NOT purely digits (already-numbered
 # citations are left alone) and the target is a citation reference:
-#   - tiny ref:   [source](ref5)  or  [source](https://ref5.xyz)
-#   - record URL: [source](https://host/record/{uuid}/preview#blockIndex=N)
+#   - tiny ref:   [source](ref5)  or  [source](https://ref5.xyz)  -> group "ref"
+#   - record URL: [source](https://host/record/{uuid}/preview#blockIndex=N)  -> group "record"
 # The tiny-ref path is the primary one (TINY_URL_THRESHOLD=0 aliases all URLs).
-_NON_NUMBERED_TINY_REF_LINK_RE = re.compile(
-    r'\[(?!\d+\])([^\]]*)\]\(((?:https?://)?ref(\d+)(?:\.xyz/?)?[^)]*)\)'
-)
-_NON_NUMBERED_RECORD_LINK_RE = re.compile(
-    r'\[(?!\d+\])([^\]]*)\]\(([^)]*\/record\/([a-f0-9-]+)[^)]*)\)'
+# One pattern, so a link sees every earlier one already rewritten.
+_NON_NUMBERED_CITATION_LINK_RE = re.compile(
+    r'\[(?!\d+\])([^\]]*)\]\(('
+    r'(?:https?://)?ref(?P<ref>\d+)(?:\.xyz/?)?[^)]*'
+    r'|[^)]*\/record\/(?P<record>[a-f0-9-]+)[^)]*'
+    r')\)'
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Mapping
+
     from app.agent_loop_lib.core.context import RunContext
     from app.agent_loop_lib.events.base import AgentEvent
 
-__all__ = ["MessagePart", "TranscriptCollector"]
+__all__ = ["MessagePart", "TranscriptCollector", "serialize_tool_args"]
+
+logger = logging.getLogger(__name__)
 
 # Tool args are already bounded by whatever the model produced this turn;
 # this is a defensive cap, not the primary truncation mechanism (that's
-# tool_loop.py's 200-char result preview).
+# tool_loop.py's result preview, which this matches).
 _MAX_TOOL_ARGS_CHARS = 2000
-_MAX_TOOL_RESULT_CHARS = 500
+_MAX_TOOL_RESULT_CHARS = RESULT_PREVIEW_CHARS
 
 # Longest single argument value kept verbatim. Anything longer is shortened
-# in place, leaving the surrounding JSON intact — see `_serialize_tool_args`.
+# in place, leaving the surrounding JSON intact — see `serialize_tool_args`.
 _MAX_ARG_VALUE_CHARS = 1200
 
+# A URL that runs to the end of a preview's head: cutting there would leave a shorter URL that can
+# name a different block ("blockIndex=1" of "=12").
+_URL_AT_END_RE = re.compile(r"https?://[^\s\"'<>()\[\]]*\Z")
+_URL_END_CHARS = frozenset(" \t\n\"'<>()[]")
 
-def _serialize_tool_args(args: object) -> str:
+
+def _head_outside_url(text: str, size: int) -> str:
+    """The first `size` characters of `text`, shorter if they would end inside a URL."""
+    head = text[:size]
+    url = _URL_AT_END_RE.search(head)
+    if url is not None and size < len(text) and text[size] not in _URL_END_CHARS:
+        return head[: url.start()]
+    return head
+
+
+def serialize_tool_args(args: object) -> str:
     """Serialize tool arguments to JSON that always parses, however large the
     inputs were.
 
@@ -85,6 +113,10 @@ def _serialize_tool_args(args: object) -> str:
     other way this goes wrong. The full source of a `run_code` call is
     durable anyway as its CODE artifact — this transcript only has to stay
     honest about being a summary.
+
+    `AGUIEventEmitter` sends it as the live `TOOL_CALL_ARGS` frame's
+    `argsPreview`, so the open session cuts a value where a reload does; the
+    saved copy also stores this request's citation refs as URLs (`_durable_args`).
     """
     if not isinstance(args, dict):
         args = {"value": args}
@@ -93,7 +125,7 @@ def _serialize_tool_args(args: object) -> str:
     for key, value in args.items():
         if isinstance(value, str) and len(value) > _MAX_ARG_VALUE_CHARS:
             shortened[str(key)] = (
-                f"{value[:_MAX_ARG_VALUE_CHARS]}"
+                f"{_head_outside_url(value, _MAX_ARG_VALUE_CHARS)}"
                 f"… [truncated, {_MAX_ARG_VALUE_CHARS} of {len(value)} chars]"
             )
         else:
@@ -116,17 +148,27 @@ def _serialize_tool_args(args: object) -> str:
 
 
 class MessagePart(TypedDict, total=False):
-    type: Literal["text", "reasoning", "tool_call", "sub_agent"]
+    type: Literal["text", "reasoning", "tool_call", "sub_agent", "mcp_sign_in"]
+    # On the `mcp_sign_in` part (`mcp_sign_in.py`): the servers to sign in to again.
+    servers: list[dict[str, Any]]
     content: str
     toolCallId: str
     toolName: str
     displayName: str
     args: str
     argsSummary: str
-    status: Literal["running", "completed", "failed", "blocked"]
+    status: Literal["running", "completed", "failed", "blocked", "awaiting_approval"]
     resultPreview: str
     resultSummary: str
+    # A small table / field list of the result for the tool card (`Tool.result_view`).
+    resultView: dict[str, Any]
     artifactId: str
+    # A call waiting for a person's approval: what the approval card shows.
+    approval: dict[str, Any]
+    # The call a person approved, run when they answered.
+    approved: bool
+    # How a call that waited for approval was settled: allowed, declined or expired.
+    approvalAnswer: Literal["allowed", "declined", "expired"]
     runId: str
     roleName: str
     parts: list["MessagePart"]
@@ -147,7 +189,11 @@ class TranscriptCollector(EventEmitter):
     `run_id`-keyed bookkeeping exactly, just building `MessagePart`s
     instead of wire frames."""
 
-    def __init__(self) -> None:
+    def __init__(self, ref_to_url: Callable[[], Mapping[str, str] | None] | None = None) -> None:
+        """`ref_to_url` reads this request's citation refs when a tool part is
+        saved: the saved text is replayed to later requests, which number
+        their refs afresh, so each ref is stored as the URL it stands for."""
+        self._ref_to_url = ref_to_url
         self.parts: list[MessagePart] = []
         # run_id -> the ordered list this run's own parts append to: the
         # top-level `self.parts` for the root run, or a parent `sub_agent`
@@ -163,9 +209,17 @@ class TranscriptCollector(EventEmitter):
         # `_prenormalize_source_citations`, so a reply continued after the
         # output-token limit is rejoined from the model's own text.
         self._last_text: dict[str, tuple[MessagePart, str]] = {}
+        # run_id -> where the current model call's parts start in its container.
+        self._model_call_start: dict[str, int] = {}
+        self._view_budget = ResultViewBudget()
 
     async def emit(self, event: "AgentEvent") -> None:
         self._collect(event)
+
+    def append_final_text(self, content: str) -> None:
+        """Adds the final answer after the text already streamed instead of replacing it: a
+        turn that ended waiting for approval keeps what the model said before it asked."""
+        self.parts.append({"type": "text", "content": content, "isFinal": True})
 
     def replace_final_text(self, content: str) -> None:
         """Swaps the ROOT run's last streamed `text` part for the
@@ -192,7 +246,8 @@ class TranscriptCollector(EventEmitter):
 
     @staticmethod
     def _prenormalize_source_citations(text: str) -> str:
-        """Convert ``[source](refN)`` / ``[source](/record/…)`` → ``[N](…)``.
+        """Convert ``[source](refN)`` / ``[source](/record/…)`` → ``[N](…)``,
+        keeping descriptive link text in front of the badge.
 
         During streaming the LLM emits ``[source](ref5)`` (or the tiny-URL
         variant ``[source](https://ref5.xyz)``) instead of ``[N](url)``.
@@ -208,23 +263,17 @@ class TranscriptCollector(EventEmitter):
         """
         seen: dict[str, int] = {}
 
-        def _ref_replacer(m: re.Match) -> str:
-            key = f"ref{m.group(3)}"
-            url = m.group(2)
+        def _badge(m: re.Match[str], written: str, num: int, url: str) -> str:
+            kept = kept_citation_link_text(m.group(1), written)
+            return f"{kept} [{num}]({url})" if kept else f"[{num}]({url})"
+
+        def _replacer(m: re.Match[str], written: str) -> str:
+            key = f"ref{m.group('ref')}" if m.group('ref') is not None else m.group('record')
             if key not in seen:
                 seen[key] = len(seen) + 1
-            return f"[{seen[key]}]({url})"
+            return _badge(m, written, seen[key], m.group(2))
 
-        def _record_replacer(m: re.Match) -> str:
-            record_id = m.group(3)
-            url = m.group(2)
-            if record_id not in seen:
-                seen[record_id] = len(seen) + 1
-            return f"[{seen[record_id]}]({url})"
-
-        text = _NON_NUMBERED_TINY_REF_LINK_RE.sub(_ref_replacer, text)
-        text = _NON_NUMBERED_RECORD_LINK_RE.sub(_record_replacer, text)
-        return text
+        return sub_in_order(_NON_NUMBERED_CITATION_LINK_RE, text, _replacer)
 
     def _detach_last_text(self, container: list[MessagePart], run_id: str) -> str:
         """Removes `run_id`'s last ended text part (a reply cut off at the
@@ -240,6 +289,47 @@ class TranscriptCollector(EventEmitter):
                 del container[i]
                 return raw
         return ""
+
+    def _rewrite_refs(self, text: str) -> tuple[str, int, int]:
+        return rewrite_request_refs(text, self._ref_to_url() if self._ref_to_url is not None else None)
+
+    @staticmethod
+    def _log_rewrites(expanded: int, unresolved: int, tool_call_id: str) -> None:
+        if expanded or unresolved:
+            logger.info(
+                "transcript: stored %d citation ref(s) as URLs, %d made uncitable (tool_call_id=%s)",
+                expanded, unresolved, tool_call_id,
+            )
+
+    def _durable(self, text: str, tool_call_id: str, cap: int | None = None) -> str:
+        """`text` with this request's citation refs replaced by their URLs,
+        within `cap` characters and never ending inside a URL."""
+        text, expanded, unresolved = self._rewrite_refs(text)
+        self._log_rewrites(expanded, unresolved, tool_call_id)
+        if cap is None or len(text) <= cap:
+            return text
+        return _head_outside_url(text, cap - 1) + "…"
+
+    def _durable_args(self, args: object, tool_call_id: str) -> str:
+        """Tool arguments as saved: refs replaced in every string value before any value is cut,
+        so a cut ref ("ref1" of "ref12") is never resolved as a shorter one."""
+        counts = [0, 0]
+
+        def _walk(value: object) -> object:
+            if isinstance(value, str):
+                text, expanded, unresolved = self._rewrite_refs(value)
+                counts[0] += expanded
+                counts[1] += unresolved
+                return text
+            if isinstance(value, dict):
+                return {key: _walk(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [_walk(item) for item in value]
+            return value
+
+        rewritten = _walk(args)
+        self._log_rewrites(counts[0], counts[1], tool_call_id)
+        return serialize_tool_args(rewritten)
 
     def _container_for(self, run_id: str) -> list[MessagePart]:
         return self._containers.setdefault(run_id, self.parts)
@@ -276,7 +366,7 @@ class TranscriptCollector(EventEmitter):
                 "type": "tool_call",
                 "toolCallId": tool_call_id,
                 "toolName": payload.get("tool", "tool"),
-                "args": _serialize_tool_args(payload.get("args", {})),
+                "args": self._durable_args(payload.get("args", {}), tool_call_id),
                 "status": "running",
                 "runId": run_id,
             }
@@ -286,6 +376,10 @@ class TranscriptCollector(EventEmitter):
             args_summary = payload.get("args_summary")
             if isinstance(args_summary, str):
                 part["argsSummary"] = args_summary
+            if payload.get("approved") is True:
+                part["approved"] = True
+            if payload.get("approval_answer") in ("allowed", "declined", "expired"):
+                part["approvalAnswer"] = payload["approval_answer"]
             self._container_for(run_id).append(part)
             self._open_tool_calls[tool_call_id] = part
             return
@@ -299,15 +393,22 @@ class TranscriptCollector(EventEmitter):
             # TOOL_RESULT and TOOL_BLOCKED alias to TOOL_CALL_END, and only
             # `payload["status"]` (set by the producer — see `ToolCallStatus`)
             # says which one this actually was.
-            if payload.get("status") == ToolCallStatus.BLOCKED:
-                part["status"] = "blocked"
+            if payload.get("status") in (ToolCallStatus.BLOCKED, ToolCallStatus.AWAITING_APPROVAL):
+                part["status"] = "blocked" if payload.get("status") == ToolCallStatus.BLOCKED else "awaiting_approval"
                 part["resultPreview"] = str(payload.get("reason", ""))[:_MAX_TOOL_RESULT_CHARS]
+                if part["status"] == "awaiting_approval" and isinstance(payload.get("approval"), dict):
+                    # Kept with the conversation, so the card is there after a reload too.
+                    part["approval"] = payload["approval"]
             else:
                 part["status"] = "failed" if payload.get("is_error") else "completed"
-                part["resultPreview"] = str(payload.get("content", ""))[:_MAX_TOOL_RESULT_CHARS]
+                part["resultPreview"] = self._durable(
+                    str(payload.get("content", "")), tool_call_id, _MAX_TOOL_RESULT_CHARS,
+                )
                 result_summary = payload.get("result_summary")
                 if isinstance(result_summary, str):
-                    part["resultSummary"] = result_summary
+                    part["resultSummary"] = self._durable(result_summary, tool_call_id)
+                if result_view := self._view_budget.admit(payload.get("result_view")):
+                    part["resultView"] = result_view
                 artifact_id = payload.get("artifact_id")
                 if isinstance(artifact_id, str):
                     part["artifactId"] = artifact_id
@@ -315,7 +416,9 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TEXT_MESSAGE_START:
             text_part: MessagePart = {"type": "text", "content": "", "runId": run_id}
-            self._container_for(run_id).append(text_part)
+            container = self._container_for(run_id)
+            self._model_call_start[run_id] = len(container)
+            container.append(text_part)
             self._open_turn_parts[(run_id, "text")] = text_part
             return
 
@@ -327,6 +430,13 @@ class TranscriptCollector(EventEmitter):
 
         if event.event_type == EventType.TEXT_MESSAGE_END:
             part = self._open_turn_parts.pop((run_id, "text"), None)
+            start = self._model_call_start.pop(run_id, None)
+            if payload.get("discarded"):
+                # The model call failed mid-stream; none of it is in the history.
+                self._open_turn_parts.pop((run_id, "reasoning"), None)
+                if part is not None and start is not None:
+                    del self._container_for(run_id)[start:]
+                return
             if part is not None:
                 raw = part.get("content", "")
                 if payload.get("joins_truncated"):

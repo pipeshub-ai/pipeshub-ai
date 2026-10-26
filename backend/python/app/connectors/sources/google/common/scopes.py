@@ -161,13 +161,10 @@ GOOGLE_TOOLSET_SCOPES = {
         "https://www.googleapis.com/auth/calendar",
         "https://www.googleapis.com/auth/calendar.events",
     ],
-    "meet": [
-        "https://www.googleapis.com/auth/calendar",
-        "https://www.googleapis.com/auth/calendar.events",
-        "https://www.googleapis.com/auth/meetings.space.created",
-        # meetings.space.created only covers meetings this app created; the conference-record tools read any.
-        "https://www.googleapis.com/auth/meetings.space.readonly",
-    ],
+    # Each Google toolset has its own OAuth sign-in, so these are asked for only when
+    # someone connects Docs or Sheets; a Drive, Gmail or Calendar connection is untouched.
+    "docs": ["https://www.googleapis.com/auth/documents"],
+    "sheets": ["https://www.googleapis.com/auth/spreadsheets"],
 }
 
 # What the Gmail Workspace connector's service account asks for when it impersonates a

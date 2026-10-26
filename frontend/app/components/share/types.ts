@@ -7,7 +7,7 @@ import type { TFunction } from 'i18next';
 // ============================================================================
 
 /** Supported entity types for sharing */
-export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent' | 'project';
+export type ShareEntityType = 'collection' | 'conversation' | 'search' | 'connector' | 'agent' | 'project' | 'artifact';
 
 /** Permission roles */
 export type ShareRole = 'OWNER' | 'WRITER' | 'READER';
@@ -86,6 +86,11 @@ export interface ShareAdapter {
 
   supportsRoles: boolean;
   supportsTeams: boolean;
+  /** Narrow the role picker to some roles and/or reword them (default: all three, house labels). */
+  roleOptions?: {
+    roles: ShareRole[];
+    labels?: Record<ShareRole, { label: string; description: string }>;
+  };
 
   getSharedMembers: () => Promise<SharedMember[]>;
   share: (submission: ShareSubmission) => Promise<void>;

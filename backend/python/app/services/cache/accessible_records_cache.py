@@ -45,6 +45,7 @@ from app.services.cache.interface import (
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.services.redis.loop_clients import LoopBoundClients
+from app.utils.loop_local import LoopLocal
 
 if TYPE_CHECKING:
     from logging import Logger
@@ -78,6 +79,7 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     """Read-through cache of accessible-record maps, shared across workers."""
 
     KEY_PREFIX = "pipeshub:accessible_records:v1"
+    _EPOCH_SEGMENT = "cgen"
     ENV_ENABLED = "PIPESHUB_ACCESSIBLE_RECORDS_CACHE"
     ENV_TTL = "PIPESHUB_ACCESSIBLE_RECORDS_CACHE_TTL"
     DEFAULT_TTL_SECONDS = 300
@@ -92,6 +94,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     # Waits between background attempts at a delete that failed; the last
     # repeats until the delete lands or the entries' TTL has passed.
     INVALIDATION_RETRY_DELAYS_SECONDS = (0.5, 1.0, 2.0, 5.0, 10.0)
+    # A connector's epoch must outlive any fill that read it, or an expired
+    # epoch reads as unchanged; a day is far beyond any search.
+    EPOCH_TTL_SECONDS = 86400
 
     def __init__(
         self,
@@ -124,8 +129,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         # stays empty when a raw `redis_client` is injected directly without
         # a namespace (mostly tests), same as an unset namespace.
         self._key_namespace = key_namespace
-        self._locks: tuple[asyncio.Lock, ...] = tuple(
-            asyncio.Lock() for _ in range(self.LOCK_STRIPES)
+        # Per loop, as a Lock binds to its first waiter's loop: a stripe excludes misses within one loop only.
+        self._lock_stripes: LoopLocal[tuple[asyncio.Lock, ...]] = LoopLocal(
+            lambda: tuple(asyncio.Lock() for _ in range(self.LOCK_STRIPES))
         )
 
     @classmethod
@@ -226,6 +232,9 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
     def _user_connector_key(self, org_id: str, connector_id: str) -> str:
         return f"{self._namespaced_prefix()}:cusr:{org_id}:{connector_id}"
 
+    def _connector_epoch_key(self, org_id: str, connector_id: str) -> str:
+        return f"{self._namespaced_prefix()}:{self._EPOCH_SEGMENT}:{org_id}:{connector_id}"
+
     # ---- read-through -------------------------------------------------
 
     async def get_or_compute_kb(
@@ -237,19 +246,24 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         self, org_id: str, connector_id: str, loader: Loader
     ) -> dict[str, str]:
         return await self._get_or_compute(
-            self._app_connector_key(org_id, connector_id), None, loader
+            self._app_connector_key(org_id, connector_id), None, loader,
+            self._connector_epoch_key(org_id, connector_id),
         )
 
     async def get_or_compute_user_connector(
         self, org_id: str, connector_id: str, user_id: str, loader: Loader
     ) -> dict[str, str]:
         return await self._get_or_compute(
-            self._user_connector_key(org_id, connector_id), user_id, loader
+            self._user_connector_key(org_id, connector_id), user_id, loader,
+            self._connector_epoch_key(org_id, connector_id),
         )
 
     async def _get_or_compute(
-        self, key: str, field: str | None, loader: Loader
+        self, key: str, field: str | None, loader: Loader, epoch_key: str | None = None
     ) -> dict[str, str]:
+        """``epoch_key``: the map is written only if that epoch did not move while
+        ``loader()`` ran, so a fill that read the graph before a permission
+        change cannot put the old map back after the change dropped it."""
         if not self.enabled:
             return await loader()
 
@@ -273,15 +287,20 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             if cached is not None:
                 return cached
 
+            epoch = await self._read_epoch(epoch_key) if epoch_key else None
+            # An unreadable epoch fails closed for the write, open for the search.
+            if not self.enabled:
+                return await loader()
             value = await loader()
             if self.enabled:
-                await self._write(key, field, value)
+                await self._write(key, field, value, epoch_key, epoch)
             return value
 
     def _lock_for(self, lock_key: str) -> asyncio.Lock:
         """Stripe for this key. crc32 rather than hash() so the mapping is
         stable across processes and test runs."""
-        return self._locks[zlib.crc32(lock_key.encode()) % len(self._locks)]
+        stripes = self._lock_stripes.get()
+        return stripes[zlib.crc32(lock_key.encode()) % len(stripes)]
 
     async def _read(self, key: str, field: str | None) -> dict[str, str] | None:
         try:
@@ -315,26 +334,62 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             return None
         return stored
 
-    async def _write(self, key: str, field: str | None, value: dict[str, str]) -> None:
+    async def _read_epoch(self, epoch_key: str) -> str | None:
+        """The epoch, ``""`` when never bumped; None (and the breaker tripped)
+        when Redis could not answer."""
+        try:
+            return await self._client().get(epoch_key) or ""
+        except Exception as e:
+            self._mark_down("read", e)
+            return None
+
+    async def _write(
+        self,
+        key: str,
+        field: str | None,
+        value: dict[str, str],
+        epoch_key: str | None = None,
+        epoch: str | None = None,
+    ) -> None:
+        """Checked against the epoch before and after, not atomically: on a
+        Redis Cluster the epoch and the map sit in different hash slots, so a
+        script or MULTI over both is refused. Two reads are enough because every
+        bump is followed by a delete: a bump before the second read makes this
+        write remove itself, and one after it is followed by a delete that does."""
+        written = False
         try:
             client = self._client()
+            if epoch_key is not None and (await client.get(epoch_key) or "") != epoch:
+                return
             if field is None:
                 await client.set(key, json.dumps(value, separators=(",", ":")), ex=self._ttl)
             else:
                 envelope = json.dumps({"t": int(time.time()), "m": value}, separators=(",", ":"))
                 await client.hset(key, field, envelope)
                 await client.expire(key, self._ttl)
+            written = True
+            if epoch_key is not None and (await client.get(epoch_key) or "") != epoch:
+                await (client.delete(key) if field is None else client.hdel(key, field))
         except Exception as e:
             self._mark_down("write", e)
+            if written and epoch_key is not None:
+                # Could not confirm the epoch held, so this map may predate a change.
+                self._retry_later((key,))
 
     # ---- invalidation -------------------------------------------------
 
     async def invalidate_connector(self, org_id: str, connector_id: str) -> None:
         """Drop a connector's entry regardless of its permission model."""
         await self._delete(
+            self._connector_epoch_key(org_id, connector_id),
             self._app_connector_key(org_id, connector_id),
             self._user_connector_key(org_id, connector_id),
         )
+
+    async def mark_connector_changed(self, org_id: str, connector_id: str) -> None:
+        """Reject every fill of this connector already in flight, without deleting
+        what is cached. The caller owes a delete after it."""
+        await self._delete(self._connector_epoch_key(org_id, connector_id))
 
     async def invalidate_kb(self, org_id: str, kb_id: str) -> None:
         await self._delete(self._kb_key(org_id, kb_id))
@@ -372,11 +427,29 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
         # loop (a consumer restarting its worker thread); pick them up here.
         self._ensure_retry_task()
 
+    def _is_epoch_key(self, key: str) -> bool:
+        return key.startswith(f"{self._namespaced_prefix()}:{self._EPOCH_SEGMENT}:")
+
     async def _delete_now(self, keys: "list[str] | tuple[str, ...]") -> None:
-        async with self._client().pipeline(transaction=False) as pipe:
-            for key in keys:
-                pipe.delete(key)
-            await pipe.execute()
+        """Epoch keys are bumped, never deleted -- a deleted epoch reads the same
+        as one never bumped, so a fill that began before both would pass. They
+        go first, in their own round trip: on a cluster one pipeline's commands
+        run on several nodes in no set order, and a delete that landed before
+        the bump would leave a gap for a stale fill to write into."""
+        epochs = [key for key in keys if self._is_epoch_key(key)]
+        others = [key for key in keys if not self._is_epoch_key(key)]
+        client = self._client()
+        if epochs:
+            async with client.pipeline(transaction=False) as pipe:
+                for key in epochs:
+                    pipe.incr(key)
+                    pipe.expire(key, self.EPOCH_TTL_SECONDS)
+                await pipe.execute()
+        if others:
+            async with client.pipeline(transaction=False) as pipe:
+                for key in others:
+                    pipe.delete(key)
+                await pipe.execute()
 
     def _retry_later(self, keys: tuple[str, ...]) -> None:
         """Queue keys for the one retry task on this loop, starting it if none runs.
@@ -465,6 +538,16 @@ class AccessibleRecordsCache(IAccessibleRecordsCache):
             )
 
 
+class _SettleRun:
+    """One connector's coalesced permission-change deletes."""
+
+    __slots__ = ("changed", "org_id", "task")
+
+    def __init__(self, org_id: str) -> None:
+        self.org_id = org_id
+        self.changed = False
+        self.task: asyncio.Task[None]
+
 
 class AccessibleRecordsInvalidator:
     """Invalidation façade for the services that write records.
@@ -473,6 +556,16 @@ class AccessibleRecordsInvalidator:
     error: dropping a cache entry must never fail a sync, a delete, or the
     indexing pipeline. A failed Redis delete is retried by the cache itself.
     """
+
+    # The coalescing window for permission-change deletes. While changes keep
+    # arriving, the connector's entries are deleted once per window; the window
+    # after the last change ends the run.
+    PERMISSION_CHANGE_SETTLE_SECONDS = 5.0
+    # The same coalescing for connector records that finish indexing, which
+    # arrive in bursts of thousands during a sync. Per process: N indexing
+    # processes cost at most N deletes per window, fewer than one permission
+    # window's worth.
+    RECORD_INDEXED_SETTLE_SECONDS = 30.0
 
     def __init__(
         self,
@@ -483,6 +576,108 @@ class AccessibleRecordsInvalidator:
         self.logger = logger
         self.cache = cache
         self.graph_provider = graph_provider
+        # connector id -> its settle run, one map per kind of change. Thread
+        # lock: the indexing service calls in from its consumer's worker loop too.
+        self._settling: dict[str, _SettleRun] = {}
+        self._indexed_settling: dict[str, _SettleRun] = {}
+        self._settle_lock = threading.Lock()
+
+    async def on_connector_permissions_changed(
+        self, connector_id: str, org_id: str | None = None
+    ) -> None:
+        """Drop a connector's entries now, and keep dropping them while changes arrive.
+
+        Waiting for the sync to finish left a user who lost access searching the
+        old map until the sync ended or the entry expired. Every change bumps
+        the connector's epoch, so no fill that read the graph before it can be
+        written. Deletes are coalesced: the first change deletes at once, and a
+        change inside the window is deleted when the window ends, then the
+        window starts again -- a sync narrowing access record after record
+        costs one delete per window, not one per record.
+        """
+        try:
+            if not connector_id:
+                return
+            run = self._join_settle_run(self._settling, connector_id, org_id)
+            if run is not None:
+                await self.cache.mark_connector_changed(run.org_id, connector_id)
+                return
+            org_id = org_id or await self._org_for_app(connector_id)
+            if not org_id:
+                self.logger.warning(
+                    "Skipping accessible-records cache invalidation for connector %s after a "
+                    "permission change: could not resolve its org, so searches keep the old "
+                    "list until the sync finishes or the entry expires",
+                    connector_id,
+                )
+                return
+            run = self._join_settle_run(
+                self._settling, connector_id, org_id,
+                start_window=self.PERMISSION_CHANGE_SETTLE_SECONDS,
+            )
+            if run is not None:
+                await self.cache.mark_connector_changed(run.org_id, connector_id)
+                return
+            await self.cache.invalidate_connector(org_id, connector_id)
+        except Exception as e:
+            self.logger.warning(
+                "Could not invalidate accessible-records cache for connector %s after a "
+                "permission change: %s",
+                connector_id, str(e),
+            )
+
+    def _join_settle_run(
+        self,
+        runs: dict[str, _SettleRun],
+        connector_id: str,
+        org_id: str | None,
+        *,
+        start_window: float | None = None,
+    ) -> "_SettleRun | None":
+        """The running settle run in ``runs``, marked as owing a delete; None when
+        there was none, after starting one with ``start_window`` (the caller then
+        deletes at once)."""
+        with self._settle_lock:
+            run = runs.get(connector_id)
+            if run is not None and not run.task.done():
+                run.changed = True
+                if org_id:
+                    run.org_id = org_id
+                return run
+            if start_window is not None and org_id:
+                run = _SettleRun(org_id)
+                run.task = asyncio.get_running_loop().create_task(
+                    self._settle(runs, connector_id, run, start_window)
+                )
+                runs[connector_id] = run
+            return None
+
+    async def _settle(
+        self,
+        runs: dict[str, _SettleRun],
+        connector_id: str,
+        run: "_SettleRun",
+        window: float,
+    ) -> None:
+        try:
+            while True:
+                await asyncio.sleep(window)
+                with self._settle_lock:
+                    changed, run.changed = run.changed, False
+                    if not changed:
+                        del runs[connector_id]
+                        return
+                try:
+                    await self.cache.invalidate_connector(run.org_id, connector_id)
+                except Exception as e:
+                    self.logger.warning(
+                        "Could not invalidate accessible-records cache for connector %s: %s",
+                        connector_id, str(e),
+                    )
+        finally:
+            with self._settle_lock:
+                if runs.get(connector_id) is run:
+                    del runs[connector_id]
 
     async def on_connector_sync_completed(
         self, connector_id: str, org_id: str | None = None
@@ -537,18 +732,22 @@ class AccessibleRecordsInvalidator:
         external_record_group_id: str | None = None,
         org_id: str | None = None,
     ) -> None:
-        """Invalidate when a KB record becomes searchable.
+        """Invalidate when a record becomes searchable.
 
-        Deliberately KB-only. Connector records also flip to COMPLETED here, but
-        a full sync does that thousands of times in a burst; dropping the
-        connector entry per record would leave the cache empty exactly when the
-        graph is busiest. Connectors invalidate once, on sync completion.
+        A KB record drops its KB's entry at once. A connector record finishes
+        indexing after its sync completed, so the delete at sync completion
+        does not cover it; but a full sync flips thousands of records here in a
+        burst, and a delete per record would leave the cache empty exactly when
+        the graph is busiest. Those deletes are coalesced instead: the first
+        deletes at once, the rest once per window while records keep arriving.
         """
         try:
             from app.config.constants.arangodb import Connectors
 
             name = getattr(connector_name, "value", connector_name)
             if name != Connectors.KNOWLEDGE_BASE.value:
+                if name:
+                    await self._on_connector_record_indexed(connector_id, org_id)
                 return
             kb_id = connector_id or external_record_group_id
             if not kb_id:
@@ -563,6 +762,23 @@ class AccessibleRecordsInvalidator:
             self.logger.warning(
                 "Could not invalidate accessible-records cache after indexing: %s", str(e)
             )
+
+    async def _on_connector_record_indexed(
+        self, connector_id: str | None, org_id: str | None
+    ) -> None:
+        if not connector_id:
+            return
+        if self._join_settle_run(self._indexed_settling, connector_id, org_id) is not None:
+            return
+        org_id = org_id or await self._org_for_app(connector_id)
+        if not org_id:
+            return
+        run = self._join_settle_run(
+            self._indexed_settling, connector_id, org_id,
+            start_window=self.RECORD_INDEXED_SETTLE_SECONDS,
+        )
+        if run is None:
+            await self.cache.invalidate_connector(org_id, connector_id)
 
     async def _app_doc(self, app_id: str) -> dict | None:
         from app.config.constants.arangodb import CollectionNames
