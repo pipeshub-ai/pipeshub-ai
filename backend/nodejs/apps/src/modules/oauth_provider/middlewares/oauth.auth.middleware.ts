@@ -14,6 +14,10 @@ import {
 import { UnauthorizedError } from '../../../libs/errors/http.errors';
 import { getUserRepository } from '../../../libs/repositories/user';
 import { assertDelegationStillHolds } from '../services/delegation-guard';
+import {
+  makeOrgContext,
+  runWithOrgContext,
+} from '../../../libs/context/orgContext';
 
 /**
  * A delegated token has to satisfy the rules that issued it on every request,
@@ -29,6 +33,20 @@ import { assertDelegationStillHolds } from '../services/delegation-guard';
  * off. Refused as an invalid token so the answer keeps its RFC 6750 shape and
  * says why.
  */
+/** Runs `fn` as the verified token's user and organisation (never a client field); PostgreSQL reads need it bound. */
+function asToken<T>(payload: OAuthTokenPayload, fn: () => T): T {
+  if (!payload.orgId) return fn();
+  return runWithOrgContext(
+    makeOrgContext({
+      orgId: payload.orgId,
+      userId: payload.userId || null,
+      kind: 'user',
+      source: 'oauth-token',
+    }),
+    fn,
+  );
+}
+
 async function assertDelegatedTokenStillHolds(
   payload: OAuthTokenPayload,
 ): Promise<void> {
@@ -152,7 +170,7 @@ export class OAuthAuthMiddleware {
         throw new InvalidTokenError('Token carries no scopes');
       }
 
-      await assertDelegatedTokenStillHolds(payload);
+      await asToken(payload, () => assertDelegatedTokenStillHolds(payload));
 
       // Attach OAuth info to request
       req.oauth = {
@@ -163,7 +181,8 @@ export class OAuthAuthMiddleware {
         payload,
       };
 
-      next();
+      // The handlers after this one run in the token's organisation.
+      asToken(payload, next);
     } catch (error) {
       // RFC 6750 Section 3.1: Always include WWW-Authenticate header on 401
       if (error instanceof ExpiredTokenError) {
