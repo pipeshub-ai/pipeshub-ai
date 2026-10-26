@@ -112,6 +112,7 @@ import {
   isAGUI,
   resolveProtocol,
 } from '../utils/agui';
+import { notifyChatShared } from '../utils/share-notification';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import EnterpriseSemanticSearch, {
   IEnterpriseSemanticSearch,
@@ -2811,6 +2812,16 @@ const createShareConversationHandler =
         accessLevel: accessLevel || 'read',
       }));
 
+      // Only users who did not already have access are told; re-sharing or a level change is not news.
+      const alreadySharedIds = new Set(
+        (ownedConversation.sharedWith || []).map((share) =>
+          String(share.userId).toLowerCase(),
+        ),
+      );
+      const newlySharedIds = recipientIds.filter(
+        (id) => !alreadySharedIds.has(id),
+      );
+
       async function performShareConversation(session?: ClientSession | null) {
         // Update object for conversation
         const updateObject: Partial<IConversation> = {
@@ -2898,6 +2909,15 @@ const createShareConversationHandler =
         ...grantor,
         records: 'artifacts',
         body: { conversationId, userIds },
+      });
+
+      await notifyChatShared({
+        orgId: String(orgId),
+        ownerId: String(userId),
+        recipientIds: newlySharedIds,
+        conversationId: String(conversationId),
+        chatTitle: updatedConversation.title,
+        agentKey: scope.agentKey as string | undefined,
       });
 
       logger.debug('Conversation shared successfully', {

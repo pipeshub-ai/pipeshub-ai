@@ -34,7 +34,7 @@ import {
 } from '../types/oauth.types';
 import { Users } from '../../user_management/schema/users.schema';
 import {
-  sameKnowledgeLimit,
+  isKnowledgeLimitWithin,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import { Org } from '../../user_management/schema/org.schema';
@@ -698,9 +698,12 @@ export class OAuthProviderController {
       throw new InvalidGrantError(APP_WORKSPACE_MISMATCH_MESSAGE);
     }
 
-    // The user agreed to the limit the code was issued under, and an edit
-    // since then revokes tokens but cannot reach a code.
-    if (!sameKnowledgeLimit(codeResult.knowledgeLimit, app.knowledgeLimit)) {
+    // The user agreed to the limit the code was issued under, and its tokens
+    // carry that limit. The app may have widened since; a narrowing revokes
+    // tokens but cannot reach a code, so it is refused here.
+    if (
+      !isKnowledgeLimitWithin(codeResult.knowledgeLimit, app.knowledgeLimit)
+    ) {
       throw new InvalidGrantError(
         "The application's permissions changed after you allowed it. Sign in again.",
       );
@@ -747,7 +750,10 @@ export class OAuthProviderController {
       true,
       fullName,
       accountType,
-      { recheckAppScopes: true },
+      {
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: codeResult.knowledgeLimit ?? null,
+      },
     );
 
     this.logger.info('Authorization code grant completed', {

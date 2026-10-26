@@ -69,6 +69,7 @@ import * as conversationArtifacts from '../../../../src/modules/artifacts/servic
 import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
+import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
@@ -1919,6 +1920,17 @@ describe('Enterprise Search Controller', () => {
   })
 
   describe('shareConversationById', () => {
+    beforeEach(() => {
+      // A share tells the new recipients in their inbox; neither lookup reaches a database here.
+      restoreIfStubbed(Users, 'findOne')
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().returnsThis(),
+        exec: sinon.stub().resolves({ fullName: 'Owner Person' }),
+      } as any)
+      sinon.stub(Notifications, 'create').resolves({ toObject: () => ({}) } as any)
+    })
+
     it('should return a handler function', () => {
       const handler = shareConversationById(createMockAppConfig())
       expect(handler).to.be.a('function')

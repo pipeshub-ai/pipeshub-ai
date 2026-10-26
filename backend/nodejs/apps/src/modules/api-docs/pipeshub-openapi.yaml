@@ -3070,8 +3070,11 @@ components:
           maximum: 31536000
         knowledgeLimit:
           description: |
-            `null` lifts the limit. Any change, a lift included, revokes the
-            app's outstanding tokens, so users connect again.
+            `null` lifts the limit. A change that takes anything away revokes
+            the app's outstanding tokens, so users connect again. A change
+            that only adds (a lift included) keeps them: each token, and each
+            refresh of it, stays at the limit its user agreed to, and the new
+            items reach a user once they connect again.
           nullable: true
           allOf:
             - $ref: '#/components/schemas/KnowledgeLimit'
@@ -21011,6 +21014,15 @@ paths:
             OAuth app not found or not visible to this caller (each user only sees apps they
             created), or the service account the application is bound to no longer exists or
             is not a service account.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ApplicationJsonErrorResponse'
+        '409':
+          description: >-
+            The request changes `knowledgeLimit`, and the app's limit changed after this
+            request read it (another edit saved first). Nothing was saved. Reload the app
+            and save again.
           content:
             application/json:
               schema:

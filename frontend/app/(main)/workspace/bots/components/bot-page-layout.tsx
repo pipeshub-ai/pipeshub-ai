@@ -23,6 +23,8 @@ const DEFAULT_ASSISTANT_ID = '__default_assistant__';
 interface BotPageLayoutProps {
   configs: SlackBotConfig[];
   agents: AgentOption[];
+  /** The agent list arrived whole, so an agent absent from it is a deleted one. */
+  agentsComplete: boolean;
   isLoading: boolean;
   onCreateBot: () => void;
   onRefresh: () => void;
@@ -36,6 +38,7 @@ interface BotPageLayoutProps {
 export function BotPageLayout({
   configs,
   agents,
+  agentsComplete,
   isLoading,
   onCreateBot,
   onRefresh,
@@ -105,7 +108,10 @@ export function BotPageLayout({
           style={{ width: '100%' }}
         >
           {configs.map((config) => {
-            const isDefault = !config.agentId || config.agentId === DEFAULT_ASSISTANT_ID;
+            const isDefault =
+              !config.agentId ||
+              config.agentId === DEFAULT_ASSISTANT_ID ||
+              (agentsComplete && !agentMap.has(config.agentId));
             const agentName = isDefault
               ? t('workspace.bots.defaultAssistant')
               : agentMap.get(config.agentId!) ?? config.agentId;

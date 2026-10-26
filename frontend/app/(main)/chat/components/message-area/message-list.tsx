@@ -892,6 +892,11 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
 
   // ── 3. ResizeObserver on scroll container (window resize) and composer dock ──
   const hasComposer = composer != null;
+  // Measured before paint: the blur is capped at this height, so a first frame at 0 would show
+  // the last lines of the transcript unblurred until the effect below ran.
+  useLayoutEffect(() => {
+    setComposerDockHeight(composerDockRef.current?.offsetHeight ?? 0);
+  }, [hasComposer]);
   useEffect(() => {
     const container = scrollContainerRef.current;
     if (!container) return;
@@ -1203,7 +1208,10 @@ export function MessageList({ composer }: { composer?: React.ReactNode } = {}) {
             pointerEvents: 'none',
           }}
         >
-          <ProgressiveBlur height={COMPOSER_BLUR_HEIGHT_PX} />
+          {/* Capped at the dock: a viewer with no input has only the footer links here, and a
+              taller blur would sit over the last lines of the transcript, which cannot scroll
+              clear of it. */}
+          <ProgressiveBlur height={Math.min(COMPOSER_BLUR_HEIGHT_PX, composerDockHeight)} />
           <Flex
             direction="column"
             align="center"

@@ -1102,16 +1102,63 @@ describe('OAuthProviderController', () => {
         grant_type: 'authorization_code', client_id: 'cid', code: 'code',
         redirect_uri: 'https://ex.com/cb',
       })
-      const narrow = { apps: [], recordGroups: [], records: ['f1'] }
+      const agreed = { apps: [], recordGroups: [], records: ['f1', 'f2'] }
+      const narrowed = { apps: [], recordGroups: [], records: ['f1'] }
 
-      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'], knowledgeLimit: narrowed })
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
-      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: narrow })
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: agreed })
 
       await controller.token(req, mockRes, mockNext)
 
       expect(mockOAuthTokenService.generateTokens.called).to.be.false
       expect(mockRes.status.calledWith(400)).to.be.true
+    })
+
+    it('issues with the limit on the code when the app limit has widened since', async () => {
+      const req = tokenRequest({
+        grant_type: 'authorization_code', client_id: 'cid', code: 'code',
+        redirect_uri: 'https://ex.com/cb',
+      })
+      const agreed = { apps: [], recordGroups: [], records: ['f1'] }
+
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: agreed })
+      mockOAuthTokenService.generateTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
+      })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: agreed,
+      })
+    })
+
+    it('issues with no limit for a code issued under none', async () => {
+      const req = tokenRequest({
+        grant_type: 'authorization_code', client_id: 'cid', code: 'code',
+        redirect_uri: 'https://ex.com/cb',
+      })
+
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'] })
+      mockOAuthTokenService.generateTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
+      })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.have.property('grantedKnowledgeLimit', null)
     })
 
     it('issues for a code whose limit is the app limit listed in another order', async () => {
