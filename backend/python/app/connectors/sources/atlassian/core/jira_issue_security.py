@@ -210,8 +210,8 @@ UNREADABLE_OTHER = "other"
 
 UNREADABLE_REASONS = {
     UNREADABLE_SCOPE: (
-        "Jira refused the connector's authorisation (HTTP 401): it does not include reading "
-        "issue security levels"
+        "Jira refused the connector's authorisation (HTTP 401). Add read:issue-security-level:jira "
+        "and read:issue-security-scheme:jira to the Atlassian app, then reconnect the connector"
     ),
     UNREADABLE_PERMISSION: "the sync account lacks the Administer Jira permission (HTTP 403)",
     UNREADABLE_ROLES: "a level names an application role whose members could not be read this sync",
