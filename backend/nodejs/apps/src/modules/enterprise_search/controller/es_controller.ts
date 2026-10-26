@@ -3425,7 +3425,8 @@ function repeatsCardAnswers(
   for (let j = i + 1; j < older.length; j += 1) {
     const row = older[j];
     if (!row || row.messageType !== 'user_query') continue;
-    if (!isAskUserQuestionAnswer(row.content) || !answersCardBefore(older, j)) return false;
+    if (!isAskUserQuestionAnswer(row.content) || !answersCardBefore(older, j))
+      return false;
     for (const question of quotedCardQuestions(row.content)) {
       if (quoted.has(question)) return true;
     }
