@@ -66,6 +66,8 @@ def test_statement_splitter_ignores_semicolons_in_bodies_and_strings():
     ("ALTER TABLE a.b ADD CONSTRAINT c CHECK (x > 0)", "NOT VALID"),
     ("ALTER TABLE a.b ADD FOREIGN KEY (x) REFERENCES a.c (id)", "NOT VALID"),
     ("CREATE TABLE a.b (org_id text, id text)", "apply_rls"),
+    ("CREATE TABLE a.items (org_id text, id text); SELECT kernel.apply_rls('a.items_history', 'org')", "table a.items has org_id but no kernel.apply_rls"),   # a different table
+    ("CREATE TABLE y.x (org_id text, id text); SELECT kernel.apply_rls('y.x.items', 'org')", "table y.x has org_id but no kernel.apply_rls"),
     ("CREATE FUNCTION f() RETURNS int LANGUAGE sql SECURITY DEFINER AS $$ SELECT 1 $$", "SECURITY DEFINER"),
     ("create function f() returns int language sql security\n\tdefiner as $$ select 1 $$", "SECURITY DEFINER"),
     ("CREATE FUNCTION f() RETURNS int LANGUAGE sql SECURITY   DEFINER AS $$ SELECT 1 $$", "SECURITY DEFINER"),

@@ -119,11 +119,13 @@ def add_partition(conn: Connection, root: str, leaf: str, bounds: str, check: st
         return
     if _scalar(conn, "SELECT to_regclass(%s) IS NULL", leaf):
         _retry(conn, lambda: conn.exec_driver_sql(f"CREATE TABLE {leaf} (LIKE {root} INCLUDING ALL EXCLUDING IDENTITY)"))
-        if root == POSTINGS:
-            conn.exec_driver_sql(f"ALTER TABLE {leaf} SET ({POSTINGS_OPTIONS})")
+    # Every step below is safe to repeat. A leaf that exists but is not attached was left by a run that stopped after CREATE TABLE
+    # (a statement of its own): it has no row security yet and must get all of it before it can join the tree.
+    if root == POSTINGS:
+        conn.exec_driver_sql(f"ALTER TABLE {leaf} SET ({POSTINGS_OPTIONS})")
+    if not _scalar(conn, "SELECT EXISTS (SELECT 1 FROM pg_constraint WHERE conrelid = to_regclass(%s) AND conname = %s)", leaf, con):
         conn.exec_driver_sql(f"ALTER TABLE {leaf} ADD CONSTRAINT {con} CHECK ({check})")
-        _retry(conn, lambda: conn.exec_driver_sql("SELECT kernel.apply_rls_partition(%s::regclass, %s::regclass)",
-                                                  (leaf, root)))
+    _retry(conn, lambda: conn.exec_driver_sql("SELECT kernel.apply_rls_partition(%s::regclass, %s::regclass)", (leaf, root)))
     _retry(conn, lambda: conn.exec_driver_sql(f"ALTER TABLE {root} ATTACH PARTITION {leaf} FOR VALUES {bounds}"))
     conn.exec_driver_sql(f"ALTER TABLE {leaf} DROP CONSTRAINT IF EXISTS {con}")
 

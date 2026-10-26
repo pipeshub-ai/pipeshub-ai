@@ -378,7 +378,8 @@ def lint_file(path: Path) -> list[str]:
                 and "NOT VALID" not in u:
             flag(f"constraint on existing table {m.group(1)} without NOT VALID")
         m = re.match(rf"CREATE (?:UNLOGGED )?TABLE (?:IF NOT EXISTS )?({_N})(.*)", s, re.I)
-        if m and re.search(r"\borg_id\b", m.group(2), re.I) and m.group(1).lower() not in rls:
+        if m and re.search(r"\borg_id\b", m.group(2), re.I) and not re.search(
+                rf"\bapply_rls\s*\(\s*(?:p_rel\s*=>\s*)?'{re.escape(_key(m.group(1)))}'", rls):
             flag(f"table {m.group(1)} has org_id but no kernel.apply_rls call in this file")
     if py_text and not compat_ok:
         for call in (n for n in ast.walk(ast.parse(py_text)) if isinstance(n, ast.Call)):

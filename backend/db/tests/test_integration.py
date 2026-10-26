@@ -355,6 +355,20 @@ def test_add_partition_does_not_wait_for_a_reader(autocommit):
     ddl.add_partition(conn, "d.ev", "d.ev_2026_02", "FROM ('2026-02-01') TO ('2026-03-01')", "ts >= '2026-02-01' AND ts < '2026-03-01'")  # idempotent
 
 
+def test_add_partition_secures_a_leaf_that_an_interrupted_run_left_unattached(autocommit):
+    cluster, name, conn = autocommit
+    conn.exec_driver_sql("""
+      CREATE TABLE d.ev (org_id text NOT NULL, ts timestamptz NOT NULL, v int) PARTITION BY RANGE (ts);
+      CREATE TABLE d.ev_2026_01 PARTITION OF d.ev FOR VALUES FROM ('2026-01-01') TO ('2026-02-01')""")
+    conn.exec_driver_sql("SELECT kernel.apply_rls('d.ev', 'org')")
+    conn.exec_driver_sql("CREATE TABLE d.ev_2026_02 (LIKE d.ev INCLUDING ALL EXCLUDING IDENTITY)")    # the run stopped right here
+    assert not conn.exec_driver_sql("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'd.ev_2026_02'::regclass").scalar()
+    ddl.add_partition(conn, "d.ev", "d.ev_2026_02", "FROM ('2026-02-01') TO ('2026-03-01')", "ts >= '2026-02-01' AND ts < '2026-03-01'")
+    assert conn.exec_driver_sql("SELECT count(*) FROM pg_inherits WHERE inhparent = 'd.ev'::regclass").scalar() == 2
+    assert conn.exec_driver_sql("SELECT relforcerowsecurity FROM pg_class WHERE oid = 'd.ev_2026_02'::regclass").scalar()   # secured before it joined
+    assert conn.exec_driver_sql("SELECT count(*) FROM kernel.rls_violations").scalar() == 0
+
+
 # ---- real PgBouncer (set MIGRATE_TEST_PGBOUNCER to the binary) ------------------------------------------------------
 
 @pytest.mark.parametrize("pool_size", [1, 8])

@@ -1,7 +1,9 @@
 """A restore happens only in maintenance mode, for one org, and the migrator sets the sequences."""
+import csv
 import subprocess
 import sys
 import time
+import uuid
 
 import psycopg
 import pytest
@@ -185,13 +187,19 @@ def test_load_is_one_transaction_and_never_runs_file_supplied_names(conns, tmp_p
     order = restore_window.export_org(migrate, backup, ORG_B, tmp_path)
     for f in tmp_path.glob("*.csv"):                                      # retarget the export at a new, empty org
         f.write_text(f.read_text().replace(ORG_B, NEW_ORG))
+    apps = list(csv.reader((tmp_path / "kt.apps.csv").read_text().splitlines()))
+    apps[1][apps[0].index("client_id")] = str(uuid.uuid4())             # client_id is unique across orgs: the copy needs its own
+    with (tmp_path / "kt.apps.csv").open("w", newline="") as f:
+        csv.writer(f).writerows(apps)
     cfg = (tmp_path / "kt.cfg.csv").read_text().splitlines()
     (tmp_path / "kt.cfg.csv").write_text("\n".join([*cfg, cfg[1]]) + "\n")      # a duplicate key in a later table
     restore_window.open_window(admin, migrate, backup, NEW_ORG, PASSWORD, hours=1)
     try:
         with as_restore(org_db) as r:
-            with pytest.raises(pg.UniqueViolation):
+            with pytest.raises(pg.UniqueViolation) as exc:
                 restore_window.load_org(r, NEW_ORG, tmp_path, set(order))
+            assert exc.value.diag.table_name == "cfg"                       # the duplicate key, not an earlier table
+            assert admin.execute("SELECT count(*) FROM kt.apps WHERE org_id = %s", (NEW_ORG,)).fetchone()[0] == 0      # kt.apps loaded first and was rolled back
             assert admin.execute("SELECT count(*) FROM kt.docs WHERE org_id = %s", (NEW_ORG,)).fetchone()[0] == 0     # nothing is left behind
             (tmp_path / "order.txt").write_text("kt.docs\nkt.docs; DROP TABLE kt.cfg; --\n")
             with pytest.raises(restore_window.Refused, match="not a registered table"):
