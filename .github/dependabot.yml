@@ -39,8 +39,7 @@ updates:
         versions: [">=3"]
       - dependency-name: "mariadb"
         versions: [">=3"]
-      # Held until the code moves with them; integration-tests imports app code, so both
-      # manifests hold the same versions. 0.137 nests included routers, which changes the
+      # Held until the code moves with it. 0.137 nests included routers, which changes the
       # matched route path used as the request-metrics label.
       - dependency-name: "fastapi"
         versions: [">=0.137"]
@@ -60,6 +59,8 @@ updates:
       - dependency-name: "langchain-google-genai"
         versions: [">=4.4"]
 
+  # The backend's packages come in through the ai-service path dependency, so this entry only
+  # moves the suites' own packages and the lock; backend/python above moves the rest.
   - package-ecosystem: uv
     directory: /integration-tests
     schedule: { interval: weekly, day: monday }
@@ -67,29 +68,6 @@ updates:
     groups:
       integration-tests-minor-and-patch:
         update-types: [minor, patch]
-    ignore:
-      - dependency-name: "Pillow"
-        versions: [">=14"]
-      # Held until the code moves with them; integration-tests imports app code, so both
-      # manifests hold the same versions. 0.137 nests included routers, which changes the
-      # matched route path used as the request-metrics label.
-      - dependency-name: "fastapi"
-        versions: [">=0.137"]
-      # 12.20+ change download and listing response shapes the Azure Files source reads.
-      - dependency-name: "azure-storage-file-share"
-        versions: [">=12.20"]
-      # 2.9+ change compare_commits, which the GitHub source calls.
-      - dependency-name: "PyGithub"
-        versions: [">=2.9"]
-      # 1.2+ count cached tokens inside input tokens, so Bedrock usage would be counted twice.
-      - dependency-name: "langchain-aws"
-        versions: [">=1.2"]
-      # 1.6+ move ChatAnthropic's HTTP clients, so the model egress guard is not installed.
-      - dependency-name: "langchain-anthropic"
-        versions: [">=1.6"]
-      # 4.4+ need google-cloud-storage 3, which conflicts with langchain-google-vertexai on 3.13+.
-      - dependency-name: "langchain-google-genai"
-        versions: [">=4.4"]
 
   - package-ecosystem: github-actions
     directory: /

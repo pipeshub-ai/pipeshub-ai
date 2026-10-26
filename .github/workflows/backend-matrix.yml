@@ -14,6 +14,26 @@ name: backend-matrix
 # (the env below) and gives its backend parameter the id "neo4j" or "arango";
 # each job runs that backend's cases from every such file. New real-graph tests
 # that follow the convention run here without editing this workflow.
+#
+# The storage job is the same idea for the file stores. A storage test is any
+# file under tests/integration that reads ARTIFACTS_IT_STORAGE_URL; the job runs
+# every one of them against the Node API's real storage routes (the same code
+# the product serves, started by tests/support/storage-it-server.ts) on MongoDB
+# and each of local disk, S3 (MinIO) and Azure Blob (Azurite). The S3 leg is
+# virtual-hosted: MinIO answers <bucket>.s3.us-east-1.amazonaws.com over TLS
+# with a throwaway CA, and both the storage service and the tests resolve
+# *.amazonaws.com to it, because the S3 adapter reads stored records only through
+# such URLs (ARTIFACTS_IT_S3_VHOST=1 tells the tests so). Nothing reaches AWS. A
+# discovered file that contributes no test case (for example, one missing
+# pytest.mark.integration) fails the job, as does any skip, except a reason that
+# begins "not applicable on <store>:" on the leg running that store.
+#
+# A test that needs a graph store and storage together names both
+# ARTIFACTS_IT_STORAGE_URL and NEO4J_IT_URI or ARANGO_IT_URL. The graph jobs leave
+# such a file out (they have no storage service, so it could only skip there); the
+# storage job runs it, and when it finds one starts Neo4j and ArangoDB beside the
+# file store, on every leg. Both engines run on every leg because the file's
+# backend parameter covers both and a backend that is not configured skips.
 
 on:
   pull_request:
@@ -39,6 +59,31 @@ on:
       # Where real-graph tests live.
       - 'backend/python/tests/integration/*.py'
       - 'backend/python/tests/integration/graph_db/**'
+      - 'backend/python/tests/integration/compose/**'
+      # The storage job: the storage routes and what they load (found by tracing
+      # what tests/support/storage-it-server.ts requires), the SDK versions that
+      # sign their URLs, and the Python artifact code and what the storage tests import.
+      - 'backend/nodejs/apps/src/modules/storage/**'
+      - 'backend/nodejs/apps/src/libs/middlewares/**'
+      - 'backend/nodejs/apps/src/libs/utils/**'
+      - 'backend/nodejs/apps/src/libs/keyValueStore/**'
+      - 'backend/nodejs/apps/src/libs/services/authtoken.service.ts'
+      - 'backend/nodejs/apps/src/libs/services/keyValueStore.service.ts'
+      - 'backend/nodejs/apps/src/libs/services/logger.service.ts'
+      - 'backend/nodejs/apps/src/libs/services/mongo.service.ts'
+      - 'backend/nodejs/apps/tests/support/**'
+      - 'backend/nodejs/apps/package.json'
+      - 'backend/nodejs/apps/package-lock.json'
+      - 'backend/nodejs/apps/tsconfig.json'
+      - 'backend/nodejs/apps/tsconfig.test.json'
+      - 'backend/python/app/modules/artifacts/**'
+      - 'backend/python/app/modules/record_metadata/**'
+      - 'backend/python/app/models/**'
+      - 'backend/python/app/services/cache/**'
+      - 'backend/python/app/exceptions/storage_exceptions.py'
+      - 'backend/python/app/utils/jwt.py'
+      - 'backend/python/app/utils/storage_path.py'
+      - 'backend/python/app/utils/storage_move.py'
       # The GitHub Teams connector end to end against a simulated GitHub
       # (tests/integration/github_teams): any change to the connector or its clients.
       - 'backend/python/tests/integration/github_teams/**'
@@ -213,7 +258,9 @@ jobs:
         working-directory: backend/python
         run: |
           if [ -n "$DISCOVER" ]; then
-            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort | tr '\n' ' ')
+            # Files that also need storage run in the storage job.
+            TESTS=$(grep -rlE --include='*.py' "$DISCOVER" tests/integration | sort \
+              | xargs -r grep -LE 'ARTIFACTS_IT_STORAGE_URL' | tr '\n' ' ')
             echo "Discovered: $TESTS"
           fi
           # shellcheck disable=SC2086
@@ -257,3 +304,186 @@ jobs:
           files=()
           for f in $COMPOSE; do files+=(-f "$f"); done
           docker compose "${files[@]}" down -v
+
+  # The storage tests find their own files (see the header). Each leg runs the
+  # same tests against one file store.
+  storage:
+    name: storage · ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - backend: local
+            storage_type: local
+            services: mongodb-storage-it
+          - backend: s3
+            storage_type: s3
+            services: mongodb-storage-it minio-vhost-storage-it
+          - backend: azure
+            storage_type: azureBlob
+            services: mongodb-storage-it azurite-storage-it
+
+    env:
+      SERVICES: ${{ matrix.services }}
+      REPORT: ${{ github.workspace }}/storage-results.xml
+      COMPOSE_FILE: ${{ github.workspace }}/backend/python/tests/integration/compose/storage.yml
+      STORAGE_PORT: '13000'
+      MONGO_STORAGE_IT_PORT: '19117'
+      MINIO_VHOST_STORAGE_IT_PORT: '19143'
+      # The graph stores, for the tests that need one beside storage (same as the
+      # backend job above; they are started only when such a test is found).
+      NEO4J_IT_URI: bolt://localhost:17687
+      NEO4J_IT_PASSWORD: ensure-it-pass
+      ARANGO_IT_URL: http://localhost:18529
+      ARANGO_IT_PASSWORD: ensure-it-pass
+      # Throwaway: the stores are on this runner's loopback interface.
+      SCOPED_SECRET: storage-it-scoped-secret
+      S3_KEY: storage-it
+      S3_SECRET: storage-it-secret
+      # Azurite's published development account.
+      AZURE_CONNECTION_STRING: DefaultEndpointsProtocol=http;AccountName=devstoreaccount1;AccountKey=Eby8vdM02xNOcqFlqUwJPLlmEtlCDXJ1OUzFT50uSRZ6IFsuFq2UVErCz4I6tq/K1SZFPTOtr/KBHBeksoGMGw==;BlobEndpoint=http://127.0.0.1:19101/devstoreaccount1;
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: 'npm'
+          cache-dependency-path: backend/nodejs/apps/package-lock.json
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libmariadb-dev
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Free disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet
+          df -h /
+
+      - name: Install dependencies
+        run: |
+          uv pip install --system pytest pytest-asyncio pytest-timeout
+          (cd backend/python && uv pip install --system -e ".[dev]")
+          (cd backend/nodejs/apps && npm ci)
+          df -h /
+
+      # S3 only: a CA and a MinIO certificate for the *.s3.us-east-1.amazonaws.com
+      # names, and the settings both sides need to send those names to MinIO.
+      - name: Prepare the virtual-hosted S3 endpoint
+        if: matrix.backend == 's3'
+        run: |
+          backend/python/tests/integration/compose/vhost-certs.sh "$RUNNER_TEMP/storage-it-certs"
+          {
+            echo "STORAGE_IT_CERTS=$RUNNER_TEMP/storage-it-certs"
+            echo "STORAGE_IT_S3_VHOST=1"
+            echo "ARTIFACTS_IT_S3_VHOST=1"
+            echo "STORAGE_IT_S3_VHOST_ADDR=127.0.0.1:$MINIO_VHOST_STORAGE_IT_PORT"
+            echo "S3_ENDPOINT=https://127.0.0.1:$MINIO_VHOST_STORAGE_IT_PORT"
+            echo "NODE_EXTRA_CA_CERTS=$RUNNER_TEMP/storage-it-certs/ca.crt"
+            echo "SSL_CERT_FILE=$RUNNER_TEMP/storage-it-certs/ca.crt"
+          } >> "$GITHUB_ENV"
+
+      # Every file that reads the storage URL. Those that also name a graph store
+      # need Neo4j and ArangoDB running as well.
+      - name: Find the storage tests
+        id: discover
+        working-directory: backend/python
+        run: |
+          TESTS=$(grep -rlE --include='*.py' 'ARTIFACTS_IT_STORAGE_URL' tests/integration | sort | tr '\n' ' ')
+          echo "Discovered: $TESTS"
+          echo "$TESTS" > "$RUNNER_TEMP/storage-discovered.txt"
+          # shellcheck disable=SC2086
+          if grep -lE 'NEO4J_IT_URI|ARANGO_IT_URL' $TESTS; then
+            echo "graph=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "graph=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Start ${{ matrix.backend }} storage
+        run: |
+          # shellcheck disable=SC2086
+          docker compose -f "$COMPOSE_FILE" --profile vhost up -d --wait --wait-timeout 300 $SERVICES
+
+      - name: Start Neo4j and ArangoDB
+        if: steps.discover.outputs.graph == 'true'
+        working-directory: deployment/docker-compose
+        run: docker compose -f docker-compose.integration.graph-db.yml up -d --wait --wait-timeout 300 neo4j-graph-it arango-graph-it
+
+      - name: Start the storage service
+        working-directory: backend/nodejs/apps
+        env:
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+          PORT: ${{ env.STORAGE_PORT }}
+          MONGO_URL: mongodb://127.0.0.1:${{ env.MONGO_STORAGE_IT_PORT }}/storage_it
+          TS_NODE_PROJECT: tsconfig.test.json
+          # S3 sends *.amazonaws.com to MinIO; the other legs add nothing.
+          NODE_OPTIONS: ${{ matrix.backend == 's3' && format('--require {0}/backend/nodejs/apps/tests/support/vhost-pin.js', github.workspace) || '' }}
+        run: |
+          setsid nohup npx ts-node --transpile-only tests/support/storage-it-server.ts > "$RUNNER_TEMP/storage-it-server.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/storage-it-server.pid"
+          for _ in $(seq 1 90); do
+            grep -q '^READY ' "$RUNNER_TEMP/storage-it-server.log" && exit 0
+            kill -0 "$(cat "$RUNNER_TEMP/storage-it-server.pid")" 2>/dev/null || break
+            sleep 2
+          done
+          cat "$RUNNER_TEMP/storage-it-server.log"
+          echo "::error::the storage service did not start"
+          exit 1
+
+      - name: Run storage tests on ${{ matrix.backend }}
+        working-directory: backend/python
+        env:
+          ARTIFACTS_IT_STORAGE_URL: http://127.0.0.1:${{ env.STORAGE_PORT }}
+          ARTIFACTS_IT_SCOPED_SECRET: ${{ env.SCOPED_SECRET }}
+          ARTIFACTS_IT_STORAGE_TYPE: ${{ matrix.storage_type }}
+        run: |
+          TESTS=$(cat "$RUNNER_TEMP/storage-discovered.txt")
+          # shellcheck disable=SC2086
+          pytest $TESTS -m integration -v -rs --timeout=300 --junitxml="$REPORT"
+
+      # Every skip fails, and so does a discovered file that contributed no test.
+      # The one allowance: a test that cannot apply to this store says so with a
+      # reason beginning "not applicable on <store>:", counted only on that leg.
+      - name: Fail if anything skipped
+        working-directory: backend/python
+        env:
+          DISCOVERED: ${{ runner.temp }}/storage-discovered.txt
+          STORAGE_TYPE: ${{ matrix.storage_type }}
+        run: python tests/integration/compose/check_storage_junit.py
+
+      - name: Dump service logs
+        if: failure()
+        run: |
+          echo "::group::storage service"
+          cat "$RUNNER_TEMP/storage-it-server.log" || true
+          echo "::endgroup::"
+          docker compose -f "$COMPOSE_FILE" --profile vhost logs --no-color --timestamps
+          (cd deployment/docker-compose && docker compose -f docker-compose.integration.graph-db.yml logs --no-color --timestamps)
+
+      - name: Tear down
+        if: always()
+        run: |
+          if [ -f "$RUNNER_TEMP/storage-it-server.pid" ]; then
+            # setsid made the service its own process group; npx has a node child.
+            kill -- "-$(cat "$RUNNER_TEMP/storage-it-server.pid")" 2>/dev/null || true
+          fi
+          docker compose -f "$COMPOSE_FILE" --profile vhost down -v
+          (cd deployment/docker-compose && docker compose -f docker-compose.integration.graph-db.yml down -v)

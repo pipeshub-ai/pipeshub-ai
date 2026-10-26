@@ -359,6 +359,10 @@ class PgMessagingConsumer(IMessagingConsumer):
             )
         finally:
             self._held.pop((d.topic, d.message_id), None)
+            # A hand-back or a retry sets a due time and sends no notification: an idle loop must re-read the next due time, or it
+            # sleeps until the claim it was waiting on would have expired.
+            if self._wake is not None:
+                self._wake.set()
 
     async def _settle(self, d: Delivery) -> None:
         group, max_attempts = self.config.group_id, messaging_env.max_delivery_attempts

@@ -91,7 +91,7 @@ def _rest_search(base_url: str, token: str, query: str, filters: dict | None = N
 
 
 async def _call_tools(url: str, token: str, calls: list[tuple[str, dict]]) -> list[tuple[str, bool]]:
-    async with Client(StreamableHttpTransport(url, auth=token), timeout=300) as client:
+    async with Client(StreamableHttpTransport(url, auth=token), timeout=300, mode="legacy") as client:
         results = []
         for name, args in calls:
             result = await client.call_tool_mcp(name, args)

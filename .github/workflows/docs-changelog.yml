@@ -119,7 +119,7 @@ jobs:
 
       - name: Run the release-changelog skill
         if: steps.notes.outputs.run_skill == 'true'
-        uses: anthropics/claude-code-action@ae68417a745a5df4b2124873632bd73a2255e6f6 # v1
+        uses: anthropics/claude-code-action@16f9f71ab9c490faf367f94dd294897edc25be33 # v1
         env:
           GH_TOKEN: ${{ github.token }}
         with:
