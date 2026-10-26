@@ -15,6 +15,7 @@ import { safeParsePagination } from '../../../utils/safe-integer';
 import { buildPaginationMetadata } from '../../enterprise_search/utils/utils';
 import { escapeRegExp } from '../../../utils/escape-regexp';
 import type { UserGroupFilter, UserFilter } from '../types/user_management.types';
+import { isUserOrgAdmin } from '../services/user-admin.service';
 
 const RESERVED_GROUP_NAMES = ['admin', 'everyone', 'standard'];
 const GROUP_EXISTS_MESSAGE = 'Group already exists';
@@ -206,7 +207,46 @@ export class UserGroupController {
       throw new NotFoundError('UserGroup not found');
     }
 
+    // `users` is a list of Mongo ids, and a service account's is the value an
+    // agent stores when it is bound to that account. Every service account is
+    // put in the everyone group when it is created, so without this the group
+    // every member can read hands out all of them. The ids of colleagues stay,
+    // because they are already the member's to see.
+    if (Array.isArray(userGroup.users)) {
+      userGroup.users = await this.visibleMembers(req, orgId, userGroup.users);
+    }
     res.json(userGroup);
+  }
+
+  /**
+   * ``ids`` without the service accounts among them, unless the caller
+   * administers the organisation. The lookup only runs when one is actually in
+   * the list, so an ordinary group costs nothing.
+   */
+  private async visibleMembers(
+    req: AuthenticatedUserRequest,
+    orgId: unknown,
+    ids: readonly mongoose.Types.ObjectId[],
+  ): Promise<mongoose.Types.ObjectId[]> {
+    const members = [...ids];
+    if (members.length === 0) return members;
+
+    const accounts = (await Users.find({
+      _id: { $in: members },
+      kind: 'service',
+    })
+      .select('_id')
+      .lean()
+      .exec()) as Array<{ _id: mongoose.Types.ObjectId }>;
+    if (accounts.length === 0) return members;
+
+    const isAdmin =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+    if (isAdmin) return members;
+
+    const hidden = new Set(accounts.map((u) => u._id.toString()));
+    return members.filter((id) => !hidden.has(id.toString()));
   }
 
   async updateGroup(
@@ -372,6 +412,16 @@ export class UserGroupController {
 
     // Fetch user details with optional search filter
     const userFilter: UserFilter = { _id: { $in: allUserIds }, isDeleted: { $ne: true } };
+    // This page carries each member's id, name and email, so a service account
+    // in the group would be fully identifiable — and its id is what binds an
+    // agent to it. Applied to the filter rather than the page, so the count
+    // agrees with what comes back.
+    const maySeeServiceAccounts =
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+    if (!maySeeServiceAccounts) {
+      userFilter.kind = { $ne: 'service' };
+    }
     if (search) {
       const escaped = escapeRegExp(search);
       userFilter.$or = [

@@ -17,9 +17,25 @@ import {
 import { ClusterRedisProvider } from './clusterRedisProvider';
 import { IRedisConnectionProvider } from './connectionProvider.interface';
 import { StandaloneRedisProvider } from './standaloneRedisProvider';
+import { NoRedisProvider } from './noRedisProvider';
 import { Logger } from '../logger.service';
 
 const logger = Logger.getInstance({ service: 'redis-provider-factory' });
+
+/**
+ * `REDIS_MODE`, or `postgres` when the key-value store and the broker are both PostgreSQL (nothing then needs a Redis server).
+ * `postgres` and `inprocess` name deployments with no Redis: the provider they give out refuses to open a connection.
+ */
+export function defaultRedisMode(): string {
+  const explicit = process.env.REDIS_MODE;
+  if (explicit) return explicit;
+  if (
+    (process.env.KV_STORE_TYPE ?? '').toLowerCase() === 'postgres' &&
+    (process.env.MESSAGE_BROKER ?? '').toLowerCase() === 'postgres'
+  )
+    return 'postgres';
+  return 'standalone';
+}
 
 type ProviderCtor = (config: RedisConnectionConfig) => IRedisConnectionProvider;
 
@@ -41,7 +57,7 @@ export class RedisConnectionProviderFactory {
     mode?: string,
   ): IRedisConnectionProvider {
     const resolvedConfig = config ?? redisConnectionConfigFromEnv();
-    const resolvedMode = mode ?? process.env.REDIS_MODE ?? 'standalone';
+    const resolvedMode = mode ?? defaultRedisMode();
 
     const providerFactory = this.registry.get(resolvedMode);
     if (!providerFactory) {
@@ -161,7 +177,7 @@ export function getRedisProvider(
   mode?: string,
 ): IRedisConnectionProvider {
   const resolvedConfig = config ?? redisConnectionConfigFromEnv();
-  const resolvedMode = mode ?? process.env.REDIS_MODE ?? 'standalone';
+  const resolvedMode = mode ?? defaultRedisMode();
   const key = fingerprint(resolvedConfig, resolvedMode);
 
   const existing = providerCache.get(key);
@@ -233,4 +249,13 @@ RedisConnectionProviderFactory.register(
 RedisConnectionProviderFactory.register(
   'cluster',
   (config) => new ClusterRedisProvider(config),
+);
+// No Redis server: nothing to connect to, and a clear refusal if something tries.
+RedisConnectionProviderFactory.register(
+  'postgres',
+  (config) => new NoRedisProvider(config, 'postgres'),
+);
+RedisConnectionProviderFactory.register(
+  'inprocess',
+  (config) => new NoRedisProvider(config, 'inprocess'),
 );

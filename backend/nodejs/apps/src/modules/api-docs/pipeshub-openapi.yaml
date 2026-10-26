@@ -28652,6 +28652,11 @@ paths:
 
         The email field may be omitted from the response if the `HIDE_EMAIL` environment variable
         is set to `true`.
+
+        A service account answers `404` for a caller who does not administer the
+        organisation, the same answer an id that is not there gets. Its `userId`
+        is what binds an agent to it, and the screens that manage these accounts
+        are admin-only, so whether one exists is an administrator's to know.
       operationId: getUserById
       security:
         - bearerAuth: []
@@ -30002,7 +30007,15 @@ paths:
         (`/api/v1/entity/user/list`). The response from the connector is then enriched locally
         with profile pictures, `hasLoggedIn` flags, group memberships, and role.
 
-        Only `page`, `limit`, and `search` are forwarded to the connector.
+        Only `page`, `limit`, `search` and `includeServiceAccounts` are forwarded
+        to the connector.
+
+        Service accounts are left out unless the caller is an organisation
+        administrator and asks for them. The connector decides that, from the
+        live role of the caller's own credentials, because the query that
+        returns these rows lives there; the gateway only passes the flag along.
+        Each row carries the `userId` that binds an agent to a service account,
+        and the gateway then attaches the groups it belongs to.
 
         **Query validation** (Zod at route layer): `page` and `limit` must be positive integer
         strings when provided; `limit` is capped at 100. The `search` parameter is additionally
@@ -30048,6 +30061,16 @@ paths:
             type: string
             maxLength: 1000
             example: "john"
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also lists service accounts, which are otherwise left out.
+            Honoured only for an organisation administrator; for anyone else it
+            is ignored rather than refused, as on `GET /users`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Paginated list of enriched users from the connector backend
@@ -30284,12 +30307,31 @@ paths:
         `hasLoggedIn`, and `groups` (array of `{ name, type }` objects for non-deleted groups
         in the same org).
 
-        Accessible by any authenticated user with `user:read` scope — no admin check. Not
-        paginated, and it takes no query parameters: any that are sent are ignored.
+        Service accounts are left out unless the caller is an organisation
+        administrator and asks for them with `includeServiceAccounts=true`.
+        Each row carries the `userId` that binds an agent to a service account,
+        next to the groups it belongs to, so this listing would otherwise say
+        which machine identity an administrator put in which group.
+
+        Accessible by any authenticated user with `user:read` scope — no admin
+        check on the route itself, only on that flag. Not paginated, and
+        `includeServiceAccounts` is the only query parameter it reads; any
+        other is ignored.
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
         - oauth2: [user:read]
+      parameters:
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns service accounts, which are otherwise left out.
+            Honoured only for an organisation administrator; for anyone else it
+            is ignored rather than refused, as on `GET /users`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users with group data retrieved successfully
@@ -30377,6 +30419,12 @@ paths:
         requester's organization. IDs that match nobody are left out, so an array of only
         unknown IDs gives `[]`. Any authenticated member may call it (no admin check), and
         body fields other than `userIds` are ignored.
+
+        A service account among the ids is dropped unless the caller is an
+        organisation administrator, and is left out the same way an unknown id
+        is — nothing says it was there. Its `userId` is what binds an agent to
+        it, so resolving one here would be a way around the admin-only service
+        accounts screen.
       operationId: getUsersByIds
       security:
         - bearerAuth: []
@@ -31868,6 +31916,13 @@ paths:
       description: |
         Paginated list of teams the authenticated user belongs to, with optional filters.
 
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
+
         **Gateway contract:**
         Query validated by `getUserTeamsQuerySchema`: `page`, `limit`, `search` (same rules as org list), optional `created_by` (Mongo userId of creator), `created_after` / `created_before` (positive epoch ms).
 
@@ -32032,6 +32087,14 @@ paths:
         Membership is not required: any user of the organization can read any of its teams,
         members included. For a caller who is not an OWNER, `canEdit`, `canDelete` and
         `canManageMembers` are `false`.
+
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
+
       operationId: getTeamById
       security:
         - bearerAuth: []
@@ -32392,6 +32455,13 @@ paths:
         `canManageMembers` are `false`. Query parameters not listed here are dropped by the
         gateway. A fractional `page` or `limit` (`1.5`) passes the gateway and is refused by the
         service with `422`.
+
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
       operationId: getTeamUsers
       security:
         - bearerAuth: []
@@ -33756,6 +33826,12 @@ paths:
 
         A soft-deleted group is still returned, with `isDeleted: true` and `deletedBy`.
         Query parameters are dropped.
+
+        The `users` array leaves out any service account in the group unless the
+        caller is an organisation administrator. A service account's id is what
+        binds an agent to it, and every one is put in the built-in `everyone`
+        group when it is created, so the group every member can read would
+        otherwise hand out all of them.
       operationId: getUserGroupById
       security:
         - bearerAuth: []
@@ -34307,6 +34383,11 @@ paths:
         Returns user details (`fullName`, `email`) with profile picture data URIs.
         Supports pagination and search by name or email. Accessible by any authenticated user.
         Member ids that name no (or a deleted) user are left out of `users` and of `totalCount`.
+
+        Service accounts in the group are left out the same way for a caller who
+        does not administer the organisation, `totalCount` included. This page
+        carries each member's id, name and address, so a service account here
+        would be fully identifiable — and its id is what binds an agent to it.
 
         `page` and `limit` are not validated by the gateway: a value below 1, a `limit` above
         100 or a non-numeric value is answered `500 INTERNAL_ERROR`, and a fractional value is

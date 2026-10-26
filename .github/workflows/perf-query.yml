@@ -98,7 +98,7 @@ jobs:
       # hourly cap. The token is read-only: PR code on the runner can read it.
       - name: Log in to Docker Hub (read-only)
         if: env.DOCKERHUB_PULL_LOGIN == 'true'
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}

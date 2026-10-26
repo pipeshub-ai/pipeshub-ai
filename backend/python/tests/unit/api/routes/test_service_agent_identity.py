@@ -14,11 +14,13 @@ from typing import Any
 import pytest
 from fastapi import HTTPException
 
+from app.api.middlewares.caller_role import CallerRole, CallerRoleStatus
 from app.api.routes.agent import (
     AgentNotFoundError,
     InvalidRequestError,
     _checked_service_account_binding,
     _enrich_user_info_for_service_account_agent_chat,
+    _only_an_administrator_may_bind,
     _resolve_service_account_binding,
 )
 
@@ -39,6 +41,23 @@ ACCOUNT = {
     "email": "svc-nightly-org1@service.pipeshub.internal",
     "kind": "service",
 }
+
+
+class Caller:
+    """Stands in for the live role lookup, and counts whether it was consulted.
+
+    The real one asks Node what role the request's own credentials carry; here
+    the answer is decided up front so a test can say who is asking.
+    """
+
+    def __init__(self, *, admin: bool) -> None:
+        self.admin = admin
+        self.asked = 0
+
+    async def __call__(self) -> None:
+        self.asked += 1
+        if not self.admin:
+            raise HTTPException(status_code=403, detail="not an administrator")
 
 
 class FakeGraph:
@@ -351,7 +370,7 @@ async def test_no_binding_is_allowed_on_an_agent_that_is_not_a_service_agent() -
 
     assert (
         await _checked_service_account_binding(
-            None, graph, ORG, is_service_account=False,
+            None, graph, ORG, is_service_account=False, admin_check=Caller(admin=True),
         )
         is None
     )
@@ -366,7 +385,7 @@ async def test_no_binding_is_allowed_on_a_service_agent_too() -> None:
 
     assert (
         await _checked_service_account_binding(
-            None, graph, ORG, is_service_account=True,
+            None, graph, ORG, is_service_account=True, admin_check=Caller(admin=True),
         )
         is None
     )
@@ -381,6 +400,7 @@ async def test_a_binding_on_a_regular_agent_is_refused_not_dropped() -> None:
     with pytest.raises(InvalidRequestError):
         await _checked_service_account_binding(
             ACCOUNT["userId"], graph, ORG, is_service_account=False,
+            admin_check=Caller(admin=True),
         )
 
 
@@ -391,6 +411,155 @@ async def test_a_binding_on_a_service_agent_is_resolved() -> None:
     assert (
         await _checked_service_account_binding(
             ACCOUNT["userId"], graph, ORG, is_service_account=True,
+            admin_check=Caller(admin=True),
         )
         == ACCOUNT["userId"]
     )
+
+
+# ---------------------------------------------------------------------------
+# Who is allowed to choose the account. The binding spends what an
+# administrator granted the service account, usually through group
+# membership, so setting one is an administrator's decision even though
+# creating and editing an agent is not.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_bind_an_agent_to_a_service_account() -> None:
+    """The whole finding: creating an agent needs only a session, so without
+    this any colleague could point one at an account an administrator put in a
+    sensitive group and ask questions with its reach."""
+    graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
+    graph.raised = True  # the account must not be looked up for a member
+    caller = Caller(admin=False)
+
+    with pytest.raises(HTTPException) as refused:
+        await _checked_service_account_binding(
+            ACCOUNT["userId"], graph, ORG,
+            is_service_account=True, admin_check=caller,
+        )
+
+    assert refused.value.status_code == 403
+    assert caller.asked == 1
+
+
+@pytest.mark.asyncio
+async def test_an_administrator_can_still_bind() -> None:
+    graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
+    caller = Caller(admin=True)
+
+    bound = await _checked_service_account_binding(
+        ACCOUNT["userId"], graph, ORG,
+        is_service_account=True, admin_check=caller,
+    )
+
+    assert bound == ACCOUNT["userId"]
+    assert caller.asked == 1
+
+
+@pytest.mark.asyncio
+async def test_re_saving_the_same_binding_asks_no_one() -> None:
+    """A client that reads an agent and saves it back sends this field every
+    time, so an owner renaming a bound agent must not be turned away."""
+    graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
+    caller = Caller(admin=False)
+
+    bound = await _checked_service_account_binding(
+        ACCOUNT["userId"], graph, ORG,
+        is_service_account=True, admin_check=caller,
+        current=ACCOUNT["userId"],
+    )
+
+    assert bound == ACCOUNT["userId"]
+    assert caller.asked == 0
+
+
+@pytest.mark.asyncio
+async def test_leaving_an_unbound_agent_unbound_asks_no_one() -> None:
+    graph = FakeGraph()
+    graph.raised = True
+    caller = Caller(admin=False)
+
+    assert (
+        await _checked_service_account_binding(
+            None, graph, ORG, is_service_account=True, admin_check=caller,
+        )
+        is None
+    )
+    assert caller.asked == 0
+
+
+@pytest.mark.asyncio
+async def test_a_member_cannot_clear_an_administrators_binding() -> None:
+    """Clearing is a change too: it returns the agent to searching as its
+    creator, the wider identity the binding was set to get away from."""
+    graph = FakeGraph(by_user_id={ACCOUNT["userId"]: ACCOUNT})
+    caller = Caller(admin=False)
+
+    with pytest.raises(HTTPException) as refused:
+        await _checked_service_account_binding(
+            None, graph, ORG,
+            is_service_account=True, admin_check=caller,
+            current=ACCOUNT["userId"],
+        )
+
+    assert refused.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_refused_before_the_account_is_looked_up() -> None:
+    """A refusal must not depend on whether the id exists, or it would say so."""
+    empty = FakeGraph()  # nothing to find
+    caller = Caller(admin=False)
+
+    with pytest.raises(HTTPException) as refused:
+        await _checked_service_account_binding(
+            "u-does-not-exist", empty, ORG,
+            is_service_account=True, admin_check=caller,
+        )
+
+    assert refused.value.status_code == 403
+
+
+# --- the role lookup behind the gate ---------------------------------------
+
+
+class FakeRequest:
+    headers: dict[str, str] = {}
+
+
+@pytest.mark.asyncio
+async def test_an_administrator_passes_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def valid_admin(_request: object, _config: object) -> CallerRole:
+        return CallerRole(CallerRoleStatus.VALID, "admin")
+
+    monkeypatch.setattr("app.api.routes.agent.fetch_caller_role", valid_admin)
+    await _only_an_administrator_may_bind(FakeRequest(), None)
+
+
+@pytest.mark.asyncio
+async def test_a_member_is_refused_by_the_gate(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def valid_member(_request: object, _config: object) -> CallerRole:
+        return CallerRole(CallerRoleStatus.VALID, "member")
+
+    monkeypatch.setattr("app.api.routes.agent.fetch_caller_role", valid_member)
+
+    with pytest.raises(HTTPException) as refused:
+        await _only_an_administrator_may_bind(FakeRequest(), None)
+    assert refused.value.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_an_unconfirmed_role_is_not_a_refusal(monkeypatch: pytest.MonkeyPatch) -> None:
+    """503, not 403. "You are not an administrator" is the wrong thing to tell
+    an administrator whose save failed because the lookup timed out — and it
+    still does not let the change through."""
+    async def unknown(_request: object, _config: object) -> CallerRole:
+        return CallerRole(CallerRoleStatus.UNKNOWN)
+
+    monkeypatch.setattr("app.api.routes.agent.fetch_caller_role", unknown)
+
+    with pytest.raises(HTTPException) as refused:
+        await _only_an_administrator_may_bind(FakeRequest(), None)
+    assert refused.value.status_code == 503
