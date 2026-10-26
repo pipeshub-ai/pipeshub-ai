@@ -60,6 +60,25 @@ describe('BotsApi.getAgents', () => {
   it('returns nothing for an empty or malformed response', async () => {
     get.mockResolvedValueOnce({ data: {} });
 
-    expect((await BotsApi.getAgents()).agents).toEqual([]);
+    const result = await BotsApi.getAgents();
+
+    expect(result.agents).toEqual([]);
+    expect(result.complete).toBe(false);
+  });
+
+  it('does not call the list complete when a page carries no pagination metadata', async () => {
+    get.mockResolvedValueOnce({ data: { agents: [{ _key: 'a', name: 'Agent a' }] } });
+
+    const result = await BotsApi.getAgents();
+
+    expect(get).toHaveBeenCalledTimes(1);
+    expect(result.agents).toEqual([{ id: 'a', name: 'Agent a' }]);
+    expect(result.complete).toBe(false);
+  });
+
+  it('does not call the list complete when hasNext is not a boolean', async () => {
+    get.mockResolvedValueOnce({ data: { agents: [{ _key: 'a' }], pagination: { hasNext: 'no' } } });
+
+    expect((await BotsApi.getAgents()).complete).toBe(false);
   });
 });

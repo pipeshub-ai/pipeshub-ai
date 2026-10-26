@@ -51,7 +51,11 @@ export const BotsApi = {
       options.push(
         ...agents.map((agent) => ({ id: agent._key, name: agent.name || agent._key })),
       );
-      if (!data?.pagination?.hasNext) return { agents: options, complete: true };
+      const hasNext: unknown = data?.pagination?.hasNext;
+      // Only an explicit `false` says this was the last page; a response without usable pagination
+      // metadata is not known to be the whole list.
+      if (hasNext === false) return { agents: options, complete: true };
+      if (hasNext !== true) return { agents: options, complete: false };
     }
     // Stopped at the cap with more pages left: a bot's agent missing from this list is not known to be deleted.
     return { agents: options, complete: false };
