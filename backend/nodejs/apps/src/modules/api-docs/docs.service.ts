@@ -289,7 +289,7 @@ export class ApiDocsService {
       ...(Array.isArray(overlayNav) ? (overlayNav as unknown[]) : []),
     ] as (NavCategorySpec | undefined)[];
     for (const categorySpec of navSpec) {
-      if (!categorySpec?.name) continue;
+      if (typeof categorySpec?.name !== 'string' || !categorySpec.name) continue;
       // Merge by name, so an overlay can add nav items to a heading of the base spec.
       let category = categories.find((c) => c.name === categorySpec.name);
       if (!category) {
@@ -303,7 +303,7 @@ export class ApiDocsService {
       }
       const moduleSpecs = Array.isArray(categorySpec.modules) ? categorySpec.modules : [];
       for (const moduleSpec of moduleSpecs as (NavModuleSpec | undefined)[]) {
-        if (!moduleSpec?.name) continue;
+        if (typeof moduleSpec?.name !== 'string' || !moduleSpec.name) continue;
         const tags = (Array.isArray(moduleSpec.tags) ? moduleSpec.tags : []).filter(
           (t) => usedTags.has(t) && !claimed.has(t),
         );
