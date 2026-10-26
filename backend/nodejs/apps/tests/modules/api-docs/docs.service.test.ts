@@ -103,11 +103,10 @@ describe('api-docs/docs.service', () => {
     it('should return spec for valid module', async () => {
       await service.initialize()
       const spec = service.getModuleSpec('authentication')
-      if (spec) {
-        expect(spec).to.have.property('openapi', '3.0.0')
-        expect(spec).to.have.property('info')
-        expect(spec.info).to.have.property('title', 'Authentication')
-      }
+      expect(spec).to.not.be.null
+      expect(spec).to.have.property('openapi', '3.0.0')
+      expect(spec!.info).to.have.property('title', 'Authentication')
+      expect(Object.keys(spec!.paths)).to.not.be.empty
     })
   })
 
