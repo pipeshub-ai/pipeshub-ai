@@ -205,7 +205,10 @@ class BaseDataStore(ABC):
         pass
 
     @abstractmethod
-    async def get_user_by_email(self, email: str, *, raise_on_error: bool = False) -> Optional[User]:
+    async def get_user_by_email(
+        self, email: str, *, raise_on_error: bool = False, org_id: str | None = None,
+    ) -> Optional[User]:
+        """With ``org_id``, only a user of that organisation answers."""
         pass
 
     @abstractmethod
@@ -262,6 +265,14 @@ class BaseDataStore(ABC):
     async def get_person_by_email(
         self, email: str, org_id: str, *, raise_on_error: bool = False
     ) -> Optional[Person]:
+        pass
+
+    @abstractmethod
+    async def get_person_by_source_key(self, source_key: str, org_id: str) -> Person | None:
+        pass
+
+    @abstractmethod
+    async def upsert_person_by_source_key(self, person: Person, *, raise_on_error: bool = False) -> str | None:
         pass
 
     @abstractmethod

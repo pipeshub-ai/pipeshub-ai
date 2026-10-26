@@ -336,9 +336,9 @@ class SourceCatalog:
                 entity_content_hint = ""
             lines.extend([
                 "**Entities.** Records are tagged with departments, categories, subcategories, "
-                "topics and languages; record groups (a project, space, folder, channel), the "
-                "colleagues records name, customer and prospect companies (CRM accounts) and "
-                "record titles are indexed too. When a question names one, call "
+                "topics and languages; record groups (a project, space, folder, channel), "
+                "colleagues, customer companies (CRM accounts) and record titles are indexed "
+                "too. When a question names one, call "
                 f"`{search_entities}(query=...)`: it returns the entity's type, the apps it "
                 "appears in, and a few openable records for the best matches. "
                 "`knowledgegraph__find_records_by_entity(entity_id=...)` (available after "

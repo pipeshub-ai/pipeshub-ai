@@ -97,6 +97,7 @@ from app.connectors.core.registry.types import (
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.microsoft.common.apps import SharePointOnlineApp
+from app.connectors.sources.microsoft.common.graph_people import source_person
 from app.connectors.sources.microsoft.common.msgraph_client import (
     MSGraphClient,
     RecordUpdate,
@@ -1732,6 +1733,8 @@ class SharePointConnector(BaseConnector):
                 crc32_hash=hashes.get('crc32_hash'),
                 sha1_hash=hashes.get('sha1_hash'),
                 sha256_hash=hashes.get('sha256_hash'),
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2142,7 +2145,9 @@ class SharePointConnector(BaseConnector):
                 weburl=getattr(item, 'web_url', None),
                 parent_external_record_id=list_id,
                 external_record_group_id=site_id,
-                semantic_metadata=metadata
+                semantic_metadata=metadata,
+                authored_by=source_person(getattr(item, 'created_by', None)),
+                last_modified_by=source_person(getattr(item, 'last_modified_by', None)),
             )
 
         except Exception as e:
@@ -2310,6 +2315,8 @@ class SharePointConnector(BaseConnector):
                 inherit_permissions=True,
                 semantic_metadata=metadata,
                 preview_renderable=False,
+                authored_by=source_person(getattr(page, 'created_by', None)),
+                last_modified_by=source_person(getattr(page, 'last_modified_by', None)),
             )
 
         except Exception as e:

@@ -1727,7 +1727,9 @@ class DataSourceEntitiesProcessor:
 
         return moved
 
-    async def _handle_record_people(self, record: Record, tx_store: TransactionStore) -> None:
+    async def _handle_record_people(
+        self, record: Record, tx_store: TransactionStore, *, may_have_edges: bool = True,
+    ) -> None:
         """Link the record to the members it names (assignee, sender,
         reviewer...) and to the CRM account it belongs to; see
         ``record_people`` and ``record_organizations``."""
@@ -1735,7 +1737,7 @@ class DataSourceEntitiesProcessor:
         def propagate(error: Exception) -> bool:
             return self._must_propagate(error, tx_store)
 
-        await link_record_people(record, tx_store, self.logger, propagate)
+        await link_record_people(record, tx_store, self.logger, propagate, may_have_edges=may_have_edges)
         await link_record_organization(record, tx_store, self.logger, propagate)
 
     async def _handle_message_entity_edges(self, message: MessageRecord, tx_store: TransactionStore) -> None:
@@ -2045,6 +2047,16 @@ class DataSourceEntitiesProcessor:
                     resolved = await self._resolve_principal(permission.email, tx_store)
                     if resolved:
                         from_id, from_collection = resolved
+                elif permission.external_id:
+                    # A source that hides emails grants by its own user id.
+                    user = await tx_store.get_user_by_source_id(permission.external_id, record.connector_id)
+                    if user is None:
+                        self.logger.warning(
+                            "User with source id %s for connector %s not found; record %s gets no grant from it",
+                            permission.external_id, record.connector_id, record.id,
+                        )
+                        continue
+                    from_id, from_collection = user.id, CollectionNames.USERS.value
 
             elif permission.entity_type == EntityType.GROUP.value:
                 user_group = None
@@ -2696,7 +2708,7 @@ class DataSourceEntitiesProcessor:
 
         # Edges to the members a ticket, project, mail, comment, pull request
         # or deal names (ASSIGNED_TO, AUTHORED_BY, ADDRESSED_TO, ...).
-        await self._handle_record_people(record, tx_store)
+        await self._handle_record_people(record, tx_store, may_have_edges=existing_record is not None)
 
         # Create message entity relation edges (MENTIONED_IN, INVOLVED_IN) if record is a MessageRecord
         if isinstance(record, MessageRecord):
@@ -3382,6 +3394,8 @@ class DataSourceEntitiesProcessor:
                                 parent_in_other_group=placement.permissions_from_group,
                                 parent_outside_group=placement.parent_outside_group,
                             )
+
+                        await self._handle_record_people(new_record, tx_store)
 
                         # As in _process_record: only a complete, fetched list
                         # replaces the grants, and only on the record's first

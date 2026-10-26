@@ -289,7 +289,7 @@ class GraphDBTransformer(Transformer):
                         collection, entity.key, exc,
                     )
 
-    async def _link_organizations(self, record: object, resolution: EntityResolution) -> List[EntityRecord]:
+    async def _link_organizations(self, record: object, resolution: EntityResolution) -> list[EntityRecord]:
         """Replace the record's EXTRACTED links to the organisations it names,
         after its transaction: a connector's INFERRED links are left alone.
         Returns the points of those now searchable.

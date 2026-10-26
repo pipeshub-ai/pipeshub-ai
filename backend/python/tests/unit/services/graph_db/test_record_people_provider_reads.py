@@ -39,6 +39,33 @@ class TestGetUserBySourceId:
 
 
 @pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
+class TestGetUserByEmailOrg:
+    """The same address can exist in several organisations."""
+
+    @staticmethod
+    def _call(p, make):
+        if make is _arango:
+            args = p.http_client.execute_aql.await_args
+            return args.args[0], args.kwargs["bind_vars"]
+        args = p.client.execute_query.await_args
+        return args.args[0], args.kwargs["parameters"]
+
+    @pytest.mark.asyncio
+    async def test_with_an_org_the_lookup_is_restricted_to_it(self, make) -> None:
+        p = make()
+        await p.get_user_by_email("ann@acme.com", org_id="org-1")
+        query, params = self._call(p, make)
+        assert "orgId" in query and params == {"email": "ann@acme.com", "org_id": "org-1"}
+
+    @pytest.mark.asyncio
+    async def test_without_one_it_is_not(self, make) -> None:
+        p = make()
+        await p.get_user_by_email("ann@acme.com")
+        query, params = self._call(p, make)
+        assert "orgId" not in query and params == {"email": "ann@acme.com"}
+
+
+@pytest.mark.parametrize("make", [_arango, _neo4j], ids=["arango", "neo4j"])
 class TestPageRecordIdsByType:
     @pytest.mark.asyncio
     async def test_a_zero_limit_returns_no_ids_and_runs_no_query(self, make) -> None:
