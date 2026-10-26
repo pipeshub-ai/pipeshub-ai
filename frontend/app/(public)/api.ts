@@ -5,6 +5,7 @@ import {
   postUserAccountAuthenticate,
 } from '@/lib/api/post-user-account-authenticate';
 import { UserAccountLoginApi } from '@/app/(main)/workspace/authentication/api';
+import { getSignupSource } from '@/lib/utils/signup-source';
 
 export type { AuthMethod, SignInResponse } from '@/lib/api/auth-public-types';
 
@@ -46,6 +47,7 @@ export const AuthApi = {
         adminFullName: `${payload.firstName} ${payload.lastName}`.trim(),
         password: payload.password,
         accountType: 'business',
+        ...getSignupSource(),
       },
     );
   },

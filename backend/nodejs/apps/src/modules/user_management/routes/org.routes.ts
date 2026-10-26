@@ -30,6 +30,9 @@ export const OrgCreationBody = z
           'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
       }),
     sendEmail: z.boolean().optional(),
+    // Where the signup came from; a malformed value is dropped, never a 400.
+    ref: z.string().optional().catch(undefined),
+    referrerDomain: z.string().optional().catch(undefined),
     permanentAddress: z
       .object({
         addressLine1: z.string().optional(),

@@ -45,7 +45,10 @@ import {
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  signupSource,
+} from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
 
 const ADDRESS_FIELDS = [
@@ -200,10 +203,15 @@ export class OrgController {
         );
       }
 
+      const source = signupSource(
+        req.body as { ref?: unknown; referrerDomain?: unknown },
+      );
       const org = new Org({
         ...req.body,
         domain,
         onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+        signupChannel: source.channel,
+        signupReferrerDomain: source.referrerDomain,
       });
 
       const adminUser = new Users({
@@ -315,6 +323,10 @@ export class OrgController {
         email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
+        channel: source.channel,
+        ...(source.referrerDomain !== undefined
+          ? { referrer_domain: source.referrerDomain }
+          : {}),
       });
 
       if (sendEmail) {

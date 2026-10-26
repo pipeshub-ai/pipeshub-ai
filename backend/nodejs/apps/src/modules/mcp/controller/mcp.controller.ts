@@ -11,7 +11,10 @@ import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Logger, getLogLevel } from '../../../libs/services/logger.service';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  clientTags,
+  domainFromEmail,
+} from '../../../libs/services/telemetry/identity';
 import { recordServiceActivity } from '../../../libs/services/telemetry/modules/activity-metrics';
 import {
   PAT_APP_CLIENT_ID_PREFIX,
@@ -51,8 +54,6 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     : user.isOAuth === true
       ? 'oauth'
       : 'session';
-  const userAgent = productToken(req.headers['user-agent']);
-  const channel = channelOf(req.headers['x-pipeshub-channel']);
   return {
     orgId: typeof user.orgId === 'string' ? user.orgId : undefined,
     userId: typeof user.userId === 'string' ? user.userId : undefined,
@@ -67,28 +68,8 @@ function mcpEventBase(req: AuthenticatedUserRequest): Record<string, unknown> {
     !clientId.startsWith(SERVICE_TOKEN_APP_CLIENT_ID_PREFIX)
       ? { oauth_client_id: clientId }
       : {}),
-    ...(userAgent ? { user_agent: userAgent } : {}),
-    ...(channel ? { channel } : {}),
+    ...clientTags(req.headers),
   };
-}
-
-/** The first product token of a User-Agent (`claude-code/2.1.0`), never the
- *  whole header, which can carry machine and OS details. */
-function productToken(header: unknown): string | undefined {
-  if (typeof header !== 'string') return undefined;
-  const token = header.trim().split(/\s+/)[0] ?? '';
-  // Name with at most one `/version`: no `@` (an address) and no extra path.
-  return /^(?=.{1,80}$)[\w.+-]+(?:\/[\w.+-]+)?$/.test(token)
-    ? token
-    : undefined;
-}
-
-/** `X-PipesHub-Channel`, set by PipesHub's own clients (plugin, CLI, docs
- *  snippets). Anything else is dropped rather than stored as typed. */
-function channelOf(header: unknown): string | undefined {
-  return typeof header === 'string' && /^[a-z0-9][a-z0-9-]{0,39}$/.test(header)
-    ? header
-    : undefined;
 }
 
 /** Props for `mcp_connected`, or undefined when this request is not an

@@ -9,6 +9,7 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserCredentials } from '../../../../src/modules/auth/schema/userCredentials.schema';
 import { OrgAuthConfig } from '../../../../src/modules/auth/schema/orgAuthConfiguration.schema';
+import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer';
 import {
   BadRequestError,
   NotFoundError,
@@ -631,6 +632,30 @@ describe('OrgController', () => {
       } catch (error: any) {
         expect.fail(`Unexpected error: ${error.message}`);
       }
+    });
+
+    it('records where the signup came from on the org and its org_created event', async () => {
+      req.body = {
+        accountType: 'individual',
+        contactEmail: 'admin@example.com',
+        adminFullName: 'Admin User',
+        password: 'ValidPass1!',
+        referrerDomain: 'news.ycombinator.com',
+      };
+      sinon.stub(Org, 'countDocuments').resolves(0);
+      const orgSave = sinon.stub(Org.prototype, 'save').resolves();
+      sinon.stub(Users.prototype, 'save').resolves();
+      sinon.stub(UserCredentials.prototype, 'save').resolves();
+      sinon.stub(UserGroups.prototype, 'save').resolves();
+      sinon.stub(OrgAuthConfig.prototype, 'save').resolves();
+      eventBuffer.drain();
+
+      await controller.createOrg(req, res);
+
+      const org = orgSave.firstCall.thisValue;
+      expect([org.signupChannel, org.signupReferrerDomain]).to.deep.equal(['direct', 'news.ycombinator.com']);
+      const [event] = eventBuffer.drain().filter((e) => e.event === 'org_created');
+      expect(event.props).to.include({ channel: 'direct', referrer_domain: 'news.ycombinator.com' });
     });
 
     it('should send email when sendEmail is true', async () => {

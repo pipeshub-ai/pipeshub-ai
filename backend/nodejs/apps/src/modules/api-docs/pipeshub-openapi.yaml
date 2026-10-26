@@ -25859,6 +25859,18 @@ paths:
                   minLength: 8
                   description: Password for the admin account (min 8 chars)
                   example: "SecurePassword123!"
+                ref:
+                  type: string
+                  description: |
+                    Channel tag from the signup link (`?ref=`). Stored on the organization when it
+                    matches `^[a-z0-9][a-z0-9-]{0,39}$`; any other value is ignored, never rejected.
+                  example: "docs"
+                referrerDomain:
+                  type: string
+                  description: |
+                    Domain of the site that linked to the signup page. Kept only when `ref` is
+                    absent or not a valid tag, and only if it is a plain domain name.
+                  example: "news.ycombinator.com"
               required:
                 - accountType
                 - contactEmail

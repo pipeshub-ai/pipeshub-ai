@@ -17,6 +17,10 @@ export interface IOrg extends Document {
   isDeleted: boolean;
   deletedByUser?: string;
   onBoardingStatus : string;
+  /** Where the signup came from: a `ref` tag, or `direct`. */
+  signupChannel?: string;
+  /** For a `direct` signup, the referring site's domain, if any. */
+  signupReferrerDomain?: string;
   /** Written during admin demotion txns to serialize last-admin checks. */
   adminRoleGuardAt?: Date;
 }
@@ -67,6 +71,8 @@ const orgSchema = new Schema<IOrg>(
       enum: ['configured', 'notConfigured','skipped'], 
 
     },
+    signupChannel: { type: String },
+    signupReferrerDomain: { type: String },
     isDeleted: { type: Boolean, default: false },
     deletedByUser: { type: String },
     adminRoleGuardAt: { type: Date },
