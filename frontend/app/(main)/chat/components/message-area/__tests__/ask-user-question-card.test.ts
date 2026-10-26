@@ -9,6 +9,7 @@ import {
   mergeAskUserQuestionPayloads,
   normalizeAskUserQuestionPayload,
   parseAnswerMessage,
+  showsStoppedMarker,
 } from '../ask-user-question-card';
 import type { AskUserQuestionPayload, PendingAskUserQuestion } from '../../../types';
 
@@ -663,5 +664,23 @@ describe('what a submit sends when earlier answers already went', () => {
     const full = payloadOf(1, 2, 3);
 
     expect(parseAnswerMessage(buildResumeMessage(full, answers, sent), full)).toEqual(pick(3, 'b'));
+  });
+});
+describe('showsStoppedMarker', () => {
+  it('marks a settled reply that Stop cut short', () => {
+    expect(showsStoppedMarker('stopped', false, false)).toBe(true);
+  });
+
+  it('leaves out a stopped reply that asked a question, answered or still waiting', () => {
+    expect(showsStoppedMarker('stopped', false, true)).toBe(false);
+  });
+
+  it('waits until the reply has settled', () => {
+    expect(showsStoppedMarker('stopped', true, false)).toBe(false);
+  });
+
+  it('leaves out a reply that was not stopped', () => {
+    expect(showsStoppedMarker('complete', false, false)).toBe(false);
+    expect(showsStoppedMarker(undefined, false, false)).toBe(false);
   });
 });

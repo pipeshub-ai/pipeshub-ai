@@ -427,6 +427,17 @@ export function askUserQuestionOwnsRow(
   );
 }
 
+/** Whether a settled reply shows the "Stopped" marker. A reply that asked a
+ *  question is left out, waiting or answered: Stop cut nothing short there (the
+ *  card was its whole output), and the card already shows its own state. */
+export function showsStoppedMarker(
+  status: string | undefined,
+  isStreaming: boolean,
+  hasQuestionCard: boolean,
+): boolean {
+  return !isStreaming && status === 'stopped' && !hasQuestionCard;
+}
+
 function hasVisibleSelections(
   questions: AskUserQuestionItem[],
   answers: Record<string, AskUserQuestionAnswer>,

@@ -15,6 +15,7 @@ import { ArtifactsPanel, isArtifactGone } from './artifacts-panel';
 import {
   AskUserQuestionCard,
   askUserQuestionOwnsRow,
+  showsStoppedMarker,
   buildResumeMessage,
   isAskUserQuestionExpired,
 } from './ask-user-question-card';
@@ -830,7 +831,7 @@ export const ChatResponse = React.memo(function ChatResponse({
                 settled (never while still streaming/regenerating) — regenerate
                 remains available via MessageActions below, same as any other
                 completed response. */}
-            {!isStreaming && status === 'stopped' && !questionPending && (
+            {showsStoppedMarker(status, isStreaming, hasQuestionCard) && (
               <Flex
                 align="center"
                 gap="1"
