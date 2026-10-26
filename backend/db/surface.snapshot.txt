@@ -262,6 +262,14 @@ column identity.users.role type=text notnull=true identity= generated= default='
 column identity.users.slug type=text notnull=true identity= generated= default=-
 column identity.users.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column identity.users.version type=integer notnull=true identity= generated= default=0
+column integrations.slack_threads.bot_id type=text notnull=true identity= generated= default=-
+column integrations.slack_threads.conversation_id type=text notnull=true identity= generated= default=-
+column integrations.slack_threads.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column integrations.slack_threads.email type=text notnull=true identity= generated= default=-
+column integrations.slack_threads.org_id type=text notnull=true identity= generated= default=-
+column integrations.slack_threads.thread_id type=text notnull=true identity= generated= default=-
+column integrations.slack_threads.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column integrations.slack_threads.version type=integer notnull=true identity= generated= default=0
 column kernel.alembic_version.version_num type=character varying(32) notnull=true identity= generated= default=-
 column kernel.completed_jobs.finished_at type=timestamp with time zone notnull=true identity= generated= default=now()
 column kernel.completed_jobs.name type=text notnull=true identity= generated= default=-
@@ -346,6 +354,128 @@ column kernel.trigger_exemptions.reviewed_by type=text notnull=true identity= ge
 column kernel.vetted_extension_reads.rel type=regclass notnull=true identity= generated= default=-
 column kernel.vetted_violations.object type=text notnull=false identity= generated= default=-
 column kernel.vetted_violations.rule type=text notnull=false identity= generated= default=-
+column oauth.access_tokens.actor_user_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.access_tokens.client_id type=text notnull=true identity= generated= default=-
+column oauth.access_tokens.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.access_tokens.expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.access_tokens.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.access_tokens.is_revoked type=boolean notnull=true identity= generated= default=false
+column oauth.access_tokens.knowledge_limit type=jsonb notnull=false identity= generated= default=-
+column oauth.access_tokens.last_used_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.access_tokens.name type=text notnull=false identity= generated= default=-
+column oauth.access_tokens.org_id type=text notnull=true identity= generated= default=-
+column oauth.access_tokens.parent_refresh_token_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.access_tokens.revoked_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.access_tokens.revoked_by type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.access_tokens.revoked_reason type=text notnull=false identity= generated= default=-
+column oauth.access_tokens.scopes type=text[] notnull=true identity= generated= default=-
+column oauth.access_tokens.token_hash type=text notnull=true identity= generated= default=-
+column oauth.access_tokens.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.access_tokens.user_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.access_tokens.version type=integer notnull=true identity= generated= default=0
+column oauth.apps.access_token_lifetime type=integer notnull=true identity= generated= default=3600
+column oauth.apps.allowed_grant_types type=text[] notnull=true identity= generated= default='{authorization_code,refresh_token}'::text[]
+column oauth.apps.allowed_scopes type=text[] notnull=true identity= generated= default=-
+column oauth.apps.client_id type=text notnull=true identity= generated= default=-
+column oauth.apps.client_secret_encrypted type=text notnull=true identity= generated= default=-
+column oauth.apps.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.apps.created_by type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.apps.deleted_by type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.apps.description type=text notnull=false identity= generated= default=-
+column oauth.apps.homepage_url type=text notnull=false identity= generated= default=-
+column oauth.apps.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.apps.is_confidential type=boolean notnull=true identity= generated= default=true
+column oauth.apps.is_deleted type=boolean notnull=true identity= generated= default=false
+column oauth.apps.is_dynamic type=boolean notnull=true identity= generated= default=false
+column oauth.apps.knowledge_limit type=jsonb notnull=false identity= generated= default=-
+column oauth.apps.logo_url type=text notnull=false identity= generated= default=-
+column oauth.apps.name type=text notnull=true identity= generated= default=-
+column oauth.apps.org_id type=text notnull=true identity= generated= default=-
+column oauth.apps.privacy_policy_url type=text notnull=false identity= generated= default=-
+column oauth.apps.redirect_uris type=text[] notnull=true identity= generated= default='{}'::text[]
+column oauth.apps.refresh_token_lifetime type=integer notnull=true identity= generated= default=2592000
+column oauth.apps.slug type=text notnull=true identity= generated= default=-
+column oauth.apps.status type=text notnull=true identity= generated= default='active'::text
+column oauth.apps.terms_of_service_url type=text notnull=false identity= generated= default=-
+column oauth.apps.token_identity_user_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.apps.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.apps.version type=integer notnull=true identity= generated= default=0
+column oauth.authorization_codes.client_id type=text notnull=true identity= generated= default=-
+column oauth.authorization_codes.code_challenge type=text notnull=false identity= generated= default=-
+column oauth.authorization_codes.code_challenge_method type=text notnull=false identity= generated= default=-
+column oauth.authorization_codes.code_hash type=text notnull=true identity= generated= default=-
+column oauth.authorization_codes.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.authorization_codes.expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.authorization_codes.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.authorization_codes.is_used type=boolean notnull=true identity= generated= default=false
+column oauth.authorization_codes.knowledge_limit type=jsonb notnull=false identity= generated= default=-
+column oauth.authorization_codes.org_id type=text notnull=true identity= generated= default=-
+column oauth.authorization_codes.redirect_uri type=text notnull=true identity= generated= default=-
+column oauth.authorization_codes.replayed_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.authorization_codes.scopes type=text[] notnull=true identity= generated= default=-
+column oauth.authorization_codes.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.authorization_codes.used_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.authorization_codes.user_id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.authorization_codes.version type=integer notnull=true identity= generated= default=0
+column oauth.delegation_events.access_token_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.delegation_events.acted_by type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.delegation_events.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.delegation_events.expires_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.delegation_events.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.delegation_events.jti type=text notnull=false identity= generated= default=-
+column oauth.delegation_events.note type=text notnull=false identity= generated= default=-
+column oauth.delegation_events.org_id type=text notnull=true identity= generated= default=-
+column oauth.delegation_events.outcome type=text notnull=true identity= generated= default=-
+column oauth.delegation_events.refused_reason type=text notnull=false identity= generated= default=-
+column oauth.delegation_events.requested_subject type=text notnull=true identity= generated= default=-
+column oauth.delegation_events.scopes type=text[] notnull=true identity= generated= default='{}'::text[]
+column oauth.delegation_events.service_account_id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.delegation_events.subject_user_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.delegation_events.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.delegation_events.version type=integer notnull=true identity= generated= default=0
+column oauth.device_authorizations.approved_user_id type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.device_authorizations.client_id type=text notnull=true identity= generated= default=-
+column oauth.device_authorizations.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.device_authorizations.device_code_hash type=text notnull=true identity= generated= default=-
+column oauth.device_authorizations.expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.device_authorizations.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.device_authorizations.last_polled_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.device_authorizations.limit_apps type=text[] notnull=false identity= generated= default=-
+column oauth.device_authorizations.limit_groups type=text[] notnull=false identity= generated= default=-
+column oauth.device_authorizations.limit_records type=text[] notnull=false identity= generated= default=-
+column oauth.device_authorizations.org_id type=text notnull=true identity= generated= default=-
+column oauth.device_authorizations.poll_interval type=integer notnull=true identity= generated= default=5
+column oauth.device_authorizations.scopes type=text[] notnull=true identity= generated= default=-
+column oauth.device_authorizations.status type=text notnull=true identity= generated= default='pending'::text
+column oauth.device_authorizations.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.device_authorizations.user_code type=text notnull=true identity= generated= default=-
+column oauth.device_authorizations.version type=integer notnull=true identity= generated= default=0
+column oauth.refresh_tokens.client_id type=text notnull=true identity= generated= default=-
+column oauth.refresh_tokens.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.refresh_tokens.expires_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.refresh_tokens.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.refresh_tokens.is_revoked type=boolean notnull=true identity= generated= default=false
+column oauth.refresh_tokens.knowledge_limit type=jsonb notnull=false identity= generated= default=-
+column oauth.refresh_tokens.org_id type=text notnull=true identity= generated= default=-
+column oauth.refresh_tokens.previous_token_hash type=text notnull=false identity= generated= default=-
+column oauth.refresh_tokens.revoked_at type=timestamp with time zone notnull=false identity= generated= default=-
+column oauth.refresh_tokens.revoked_by type=oauth.oid24 notnull=false identity= generated= default=-
+column oauth.refresh_tokens.revoked_reason type=text notnull=false identity= generated= default=-
+column oauth.refresh_tokens.rotation_count type=integer notnull=true identity= generated= default=0
+column oauth.refresh_tokens.scopes type=text[] notnull=true identity= generated= default=-
+column oauth.refresh_tokens.token_hash type=text notnull=true identity= generated= default=-
+column oauth.refresh_tokens.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.refresh_tokens.user_id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.refresh_tokens.version type=integer notnull=true identity= generated= default=0
+column oauth.service_account_delegations.created_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.service_account_delegations.granted_by type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.service_account_delegations.id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.service_account_delegations.org_id type=text notnull=true identity= generated= default=-
+column oauth.service_account_delegations.reason type=text notnull=false identity= generated= default=-
+column oauth.service_account_delegations.service_account_id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.service_account_delegations.subject_user_id type=oauth.oid24 notnull=true identity= generated= default=-
+column oauth.service_account_delegations.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
+column oauth.service_account_delegations.version type=integer notnull=true identity= generated= default=0
 column platform.connectors_config.created_at type=timestamp with time zone notnull=true identity= generated= default=-
 column platform.connectors_config.id type=platform.oid24 notnull=true identity= generated= default=-
 column platform.connectors_config.is_enabled type=boolean notnull=true identity= generated= default=true
@@ -556,6 +686,9 @@ constraint identity.users users_org_id_slug_key u def=604326b322daba494e39338ca6
 constraint identity.users users_pkey p def=655795516b9ce4f89b9340bd560bea63
 constraint identity.users users_role_check c def=530fa89e9e34a78c5b46fd2dce6f13ed
 constraint identity.users users_service_is_not_admin c def=006f4640951535757575c70cc4d37108
+constraint integrations.slack_threads org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint integrations.slack_threads org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint integrations.slack_threads slack_threads_pkey p def=954fbca781352d0fe805d090cbb4f012
 constraint kernel.alembic_version alembic_version_pkc p def=9ff9b7a06b20441038321e312af2b931
 constraint kernel.completed_jobs completed_jobs_pkey p def=c302dc585e3d60f2f29aa138474141ea
 constraint kernel.extension_schemas extension_schemas_pkey p def=ad15a3f885884f639b9ce12e76a1d0b6
@@ -585,6 +718,43 @@ constraint kernel.settings settings_one_check c def=21c1ed2340b0cfd00c3a8b8b5b66
 constraint kernel.settings settings_pkey p def=2f0d4b6d30e5d97037ac5ea5a91e2055
 constraint kernel.trigger_exemptions trigger_exemptions_pkey p def=b664a5b1e44013a75f9cb4978b703ade
 constraint kernel.vetted_extension_reads vetted_extension_reads_pkey p def=e4e9923f49f3d59f199c0867a2422f66
+constraint oauth.access_tokens access_tokens_org_id_token_hash_key u def=a683321849b78094ef9e07f9a8f118fb
+constraint oauth.access_tokens access_tokens_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.access_tokens org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.access_tokens org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.apps apps_org_id_client_id_key u def=2a3e8a4d2af75c8c6e537fc14abcbec2
+constraint oauth.apps apps_org_id_slug_key u def=604326b322daba494e39338ca6eeb282
+constraint oauth.apps apps_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.apps apps_status_check c def=0032582752cf90ce643978b96734bff7
+constraint oauth.apps org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.apps org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.authorization_codes authorization_codes_code_challenge_method_check c def=2530b151dbc88c3fefc9fc565dbd63bf
+constraint oauth.authorization_codes authorization_codes_org_id_code_hash_key u def=051011f5b3afa76cd9c6988678696fa3
+constraint oauth.authorization_codes authorization_codes_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.authorization_codes org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.authorization_codes org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.delegation_events delegation_events_note_check c def=5f8ff9c0f25bd9f5a1e01babe7474014
+constraint oauth.delegation_events delegation_events_outcome_check c def=4a73a5014215d96e1f8df0a88a800f50
+constraint oauth.delegation_events delegation_events_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.delegation_events delegation_events_refused_reason_check c def=93dee427686ab5aa052ba5be89a979ae
+constraint oauth.delegation_events delegation_events_requested_subject_check c def=8588dd7c23366dac30a1e4bd583b738c
+constraint oauth.delegation_events org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.delegation_events org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.device_authorizations device_authorizations_org_id_device_code_hash_key u def=cd015cd7a74a9bb6d63c4fe9073f0e6d
+constraint oauth.device_authorizations device_authorizations_org_id_user_code_key u def=02a24aa09cd16513d325a3e7f6839883
+constraint oauth.device_authorizations device_authorizations_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.device_authorizations device_authorizations_status_check c def=12ba9b717e8ae3e349b88b883acca3b5
+constraint oauth.device_authorizations org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.device_authorizations org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.refresh_tokens org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.refresh_tokens org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.refresh_tokens refresh_tokens_org_id_token_hash_key u def=a683321849b78094ef9e07f9a8f118fb
+constraint oauth.refresh_tokens refresh_tokens_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.service_account_delegations org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
+constraint oauth.service_account_delegations org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint oauth.service_account_delegations service_account_delegations_org_id_service_account_id_subje_key u def=af77b056c4d057f4d6131b66c0263d5f
+constraint oauth.service_account_delegations service_account_delegations_pkey p def=655795516b9ce4f89b9340bd560bea63
+constraint oauth.service_account_delegations service_account_delegations_reason_check c def=15094411b4b557ea3bcb8916a6c66ade
 constraint platform.connectors_config connectors_config_org_id_id_key u def=5ef3b4120fdd7ab25636c8033ea499e9
 constraint platform.connectors_config connectors_config_pkey p def=77f510dfe3515389613d946569fbc8d7
 constraint platform.connectors_config org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
@@ -736,6 +906,7 @@ index identity.users_by_kind on identity.users unique=false exclusion=false vali
 index identity.users_org_id_email_key on identity.users unique=true exclusion=false valid=true def=c5018e3e96b3e1d8f69c9dcaec17494a
 index identity.users_org_id_slug_key on identity.users unique=true exclusion=false valid=true def=56898807ee2b6fc8735919970641f96f
 index identity.users_pkey on identity.users unique=true exclusion=false valid=true def=de515c6449b4090672c06a0b8d8ce9fb
+index integrations.slack_threads_pkey on integrations.slack_threads unique=true exclusion=false valid=true def=6e98f4cafab310f91b4f56efc8aca468
 index kernel.alembic_version_pkc on kernel.alembic_version unique=true exclusion=false valid=true def=c141328fa649632bd48c615b4bb672db
 index kernel.completed_jobs_pkey on kernel.completed_jobs unique=true exclusion=false valid=true def=15027330d42fe41c06bc07732df27c9c
 index kernel.extension_schemas_pkey on kernel.extension_schemas unique=true exclusion=false valid=true def=542ab4475729ca447b06e65f4bccc85c
@@ -752,6 +923,36 @@ index kernel.sequence_waivers_pkey on kernel.sequence_waivers unique=true exclus
 index kernel.settings_pkey on kernel.settings unique=true exclusion=false valid=true def=ed2b9216ae4996a86b1ef1b08bba07c7
 index kernel.trigger_exemptions_pkey on kernel.trigger_exemptions unique=true exclusion=false valid=true def=5a5c9cce9f2561d6615c813ceab48725
 index kernel.vetted_extension_reads_pkey on kernel.vetted_extension_reads unique=true exclusion=false valid=true def=cc195b08ec1797e6cf63209b89a33a6f
+index oauth.access_tokens_by_actor on oauth.access_tokens unique=false exclusion=false valid=true def=bc3d7e0515e91dc35794e4be69c871f8
+index oauth.access_tokens_by_expiry on oauth.access_tokens unique=false exclusion=false valid=true def=607a7c7b97647c3b1fce93682b73ea0a
+index oauth.access_tokens_by_user on oauth.access_tokens unique=false exclusion=false valid=true def=62b4e4d4cb94e24ae60ed13a8a12c028
+index oauth.access_tokens_live_by_client on oauth.access_tokens unique=false exclusion=false valid=true def=2170d734051fe9766e3b38aa5cbb0580
+index oauth.access_tokens_org_id_token_hash_key on oauth.access_tokens unique=true exclusion=false valid=true def=ca972d18ab56fc408e20946a9ab50171
+index oauth.access_tokens_pkey on oauth.access_tokens unique=true exclusion=false valid=true def=b5ea82b7c419f8ffad63620bfbe53086
+index oauth.apps_by_creator on oauth.apps unique=false exclusion=false valid=true def=00e73de6f5edf673eb0548f855f8897f
+index oauth.apps_by_identity on oauth.apps unique=false exclusion=false valid=true def=d6056f467ccd02e7a0635b9a4203b3a4
+index oauth.apps_org_id_client_id_key on oauth.apps unique=true exclusion=false valid=true def=a19a1164edcd2f66aef126d951578bbd
+index oauth.apps_org_id_slug_key on oauth.apps unique=true exclusion=false valid=true def=2609066d1199ac82e192ccc60c833bf5
+index oauth.apps_pkey on oauth.apps unique=true exclusion=false valid=true def=7fcebc8be898b773b87ad6dffa259f5f
+index oauth.authorization_codes_by_client_user on oauth.authorization_codes unique=false exclusion=false valid=true def=6d8348c77a3a09c39544bce5e159026e
+index oauth.authorization_codes_by_expiry on oauth.authorization_codes unique=false exclusion=false valid=true def=3226986ee291ba30b912a37743d0f673
+index oauth.authorization_codes_by_user on oauth.authorization_codes unique=false exclusion=false valid=true def=48b0f5065b808664d44cd8e6ffb826ea
+index oauth.authorization_codes_org_id_code_hash_key on oauth.authorization_codes unique=true exclusion=false valid=true def=5314f9c6ef626dad75215978f21ba04e
+index oauth.authorization_codes_pkey on oauth.authorization_codes unique=true exclusion=false valid=true def=ba765b7b125a46f569a3c53ec23a4073
+index oauth.delegation_events_by_account on oauth.delegation_events unique=false exclusion=false valid=true def=9848f11e908be87f82dc7cdb6039c25e
+index oauth.delegation_events_by_time on oauth.delegation_events unique=false exclusion=false valid=true def=99fa2c1098129f5d82da06d865adf294
+index oauth.delegation_events_pkey on oauth.delegation_events unique=true exclusion=false valid=true def=720320a1acbf394a33123dc1a1d48a47
+index oauth.device_authorizations_by_expiry on oauth.device_authorizations unique=false exclusion=false valid=true def=6b4fb0128fbf7abb06ac9272501b20e1
+index oauth.device_authorizations_org_id_device_code_hash_key on oauth.device_authorizations unique=true exclusion=false valid=true def=6000d5f92fc507bdc15c55118afa5758
+index oauth.device_authorizations_org_id_user_code_key on oauth.device_authorizations unique=true exclusion=false valid=true def=2936c3368f5f9a65a9fc19acccc34ff3
+index oauth.device_authorizations_pkey on oauth.device_authorizations unique=true exclusion=false valid=true def=4029a4604838fb84602afc57977c2e8d
+index oauth.refresh_tokens_by_expiry on oauth.refresh_tokens unique=false exclusion=false valid=true def=25fb1d170f18eea872546dff7ec9485d
+index oauth.refresh_tokens_by_user on oauth.refresh_tokens unique=false exclusion=false valid=true def=128c0700d248477332c05605db584e42
+index oauth.refresh_tokens_live_by_client on oauth.refresh_tokens unique=false exclusion=false valid=true def=dee4089d44fa81e23e8acbc5e9216caf
+index oauth.refresh_tokens_org_id_token_hash_key on oauth.refresh_tokens unique=true exclusion=false valid=true def=3b9a64e610f3cdf3ee2fe26777d48a0b
+index oauth.refresh_tokens_pkey on oauth.refresh_tokens unique=true exclusion=false valid=true def=fe32c30240e1568d6a7b0bf0006f0c0b
+index oauth.service_account_delegations_org_id_service_account_id_subje_key on oauth.service_account_delegations unique=true exclusion=false valid=true def=346305a5d4eb9d9fa41647eaa66311d4
+index oauth.service_account_delegations_pkey on oauth.service_account_delegations unique=true exclusion=false valid=true def=b1e853d51bb5b789eac5aafebe621a18
 index platform.connectors_config_org_id_id_key on platform.connectors_config unique=true exclusion=false valid=true def=09e601289ed5ed8616e86d4121f66d88
 index platform.connectors_config_pkey on platform.connectors_config unique=true exclusion=false valid=true def=8be515e185caba990b91eac1d5005905
 index platform.consumer_inbox_pkey on platform.consumer_inbox unique=true exclusion=false valid=true def=fdd7dcc3e0a1196783a6f4123c894660
@@ -895,6 +1096,35 @@ policy identity.users backup_read cmd=r permissive=true roles=pipeshub_backup us
 policy identity.users jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
 policy identity.users org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy identity.users restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy integrations.slack_threads backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy integrations.slack_threads org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy integrations.slack_threads restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.access_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.access_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.access_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.access_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.apps backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.apps org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.apps restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.authorization_codes backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.authorization_codes jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.authorization_codes org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.authorization_codes restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.delegation_events backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.delegation_events jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.delegation_events org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.delegation_events restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.device_authorizations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.device_authorizations jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.device_authorizations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.device_authorizations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.refresh_tokens backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.refresh_tokens jobs_all cmd=* permissive=true roles=pipeshub_jobs using=true check=true
+policy oauth.refresh_tokens org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.refresh_tokens restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
+policy oauth.service_account_delegations backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
+policy oauth.service_account_delegations org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
+policy oauth.service_account_delegations restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
 policy platform.connectors_config backup_read cmd=r permissive=true roles=pipeshub_backup using=true check=-
 policy platform.connectors_config org_scope cmd=* permissive=true roles=pipeshub_app using=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text)) check=(org_id = NULLIF(current_setting('app.org_id'::text, true), ''::text))
 policy platform.connectors_config restore_insert cmd=a permissive=true roles=pipeshub_restore using=- check=kernel.restore_allows(org_id)
@@ -934,6 +1164,7 @@ rel identity.user_group_members kind=r owner=pipeshub_owner rls=true force=true 
 rel identity.user_groups kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.user_pictures kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel identity.users kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel integrations.slack_threads kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel kernel.alembic_version kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.completed_jobs kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.extension_schemas kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -955,6 +1186,13 @@ rel kernel.surface_skips kind=r owner=pipeshub_owner rls=false force=false optio
 rel kernel.trigger_exemptions kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.vetted_extension_reads kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
 rel kernel.vetted_violations kind=v owner=pipeshub_owner rls=false force=false options=security_invoker=true ext=- def=ac60a8348f9045e9ea4af61a1da3eeac
+rel oauth.access_tokens kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.apps kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.authorization_codes kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.delegation_events kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.device_authorizations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.refresh_tokens kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
+rel oauth.service_account_delegations kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.connectors_config kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.consumer_inbox kind=r owner=pipeshub_owner rls=true force=true options=- ext=-
 rel platform.deployment_profile kind=r owner=pipeshub_owner rls=false force=false options=- ext=-
@@ -1162,11 +1400,69 @@ relacl identity.users pipeshub_node INSERT grantable=false
 relacl identity.users pipeshub_node SELECT grantable=false
 relacl identity.users pipeshub_node UPDATE grantable=false
 relacl identity.users pipeshub_restore INSERT grantable=false
+relacl integrations.slack_threads pipeshub_backup SELECT grantable=false
+relacl integrations.slack_threads pipeshub_node DELETE grantable=false
+relacl integrations.slack_threads pipeshub_node INSERT grantable=false
+relacl integrations.slack_threads pipeshub_node SELECT grantable=false
+relacl integrations.slack_threads pipeshub_node UPDATE grantable=false
+relacl integrations.slack_threads pipeshub_restore INSERT grantable=false
 relacl kernel.restore_window pipeshub_restore SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_connectors SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_indexing SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_node SELECT grantable=false
 relacl kernel.schema_epoch pipeshub_query SELECT grantable=false
+relacl oauth.access_tokens pipeshub_backup SELECT grantable=false
+relacl oauth.access_tokens pipeshub_jobs DELETE grantable=false
+relacl oauth.access_tokens pipeshub_jobs SELECT grantable=false
+relacl oauth.access_tokens pipeshub_node DELETE grantable=false
+relacl oauth.access_tokens pipeshub_node INSERT grantable=false
+relacl oauth.access_tokens pipeshub_node SELECT grantable=false
+relacl oauth.access_tokens pipeshub_node UPDATE grantable=false
+relacl oauth.access_tokens pipeshub_restore INSERT grantable=false
+relacl oauth.apps pipeshub_backup SELECT grantable=false
+relacl oauth.apps pipeshub_node DELETE grantable=false
+relacl oauth.apps pipeshub_node INSERT grantable=false
+relacl oauth.apps pipeshub_node SELECT grantable=false
+relacl oauth.apps pipeshub_node UPDATE grantable=false
+relacl oauth.apps pipeshub_restore INSERT grantable=false
+relacl oauth.authorization_codes pipeshub_backup SELECT grantable=false
+relacl oauth.authorization_codes pipeshub_jobs DELETE grantable=false
+relacl oauth.authorization_codes pipeshub_jobs SELECT grantable=false
+relacl oauth.authorization_codes pipeshub_node DELETE grantable=false
+relacl oauth.authorization_codes pipeshub_node INSERT grantable=false
+relacl oauth.authorization_codes pipeshub_node SELECT grantable=false
+relacl oauth.authorization_codes pipeshub_node UPDATE grantable=false
+relacl oauth.authorization_codes pipeshub_restore INSERT grantable=false
+relacl oauth.delegation_events pipeshub_backup SELECT grantable=false
+relacl oauth.delegation_events pipeshub_jobs DELETE grantable=false
+relacl oauth.delegation_events pipeshub_jobs SELECT grantable=false
+relacl oauth.delegation_events pipeshub_node DELETE grantable=false
+relacl oauth.delegation_events pipeshub_node INSERT grantable=false
+relacl oauth.delegation_events pipeshub_node SELECT grantable=false
+relacl oauth.delegation_events pipeshub_node UPDATE grantable=false
+relacl oauth.delegation_events pipeshub_restore INSERT grantable=false
+relacl oauth.device_authorizations pipeshub_backup SELECT grantable=false
+relacl oauth.device_authorizations pipeshub_jobs DELETE grantable=false
+relacl oauth.device_authorizations pipeshub_jobs SELECT grantable=false
+relacl oauth.device_authorizations pipeshub_node DELETE grantable=false
+relacl oauth.device_authorizations pipeshub_node INSERT grantable=false
+relacl oauth.device_authorizations pipeshub_node SELECT grantable=false
+relacl oauth.device_authorizations pipeshub_node UPDATE grantable=false
+relacl oauth.device_authorizations pipeshub_restore INSERT grantable=false
+relacl oauth.refresh_tokens pipeshub_backup SELECT grantable=false
+relacl oauth.refresh_tokens pipeshub_jobs DELETE grantable=false
+relacl oauth.refresh_tokens pipeshub_jobs SELECT grantable=false
+relacl oauth.refresh_tokens pipeshub_node DELETE grantable=false
+relacl oauth.refresh_tokens pipeshub_node INSERT grantable=false
+relacl oauth.refresh_tokens pipeshub_node SELECT grantable=false
+relacl oauth.refresh_tokens pipeshub_node UPDATE grantable=false
+relacl oauth.refresh_tokens pipeshub_restore INSERT grantable=false
+relacl oauth.service_account_delegations pipeshub_backup SELECT grantable=false
+relacl oauth.service_account_delegations pipeshub_node DELETE grantable=false
+relacl oauth.service_account_delegations pipeshub_node INSERT grantable=false
+relacl oauth.service_account_delegations pipeshub_node SELECT grantable=false
+relacl oauth.service_account_delegations pipeshub_node UPDATE grantable=false
+relacl oauth.service_account_delegations pipeshub_restore INSERT grantable=false
 relacl platform.connectors_config pipeshub_backup SELECT grantable=false
 relacl platform.connectors_config pipeshub_node INSERT grantable=false
 relacl platform.connectors_config pipeshub_node SELECT grantable=false
@@ -1309,7 +1605,9 @@ schema content owner=pipeshub_owner
 schema conversation owner=pipeshub_owner
 schema ext owner=pipeshub_owner
 schema identity owner=pipeshub_owner
+schema integrations owner=pipeshub_owner
 schema kernel owner=pipeshub_owner
+schema oauth owner=pipeshub_owner
 schema platform owner=pipeshub_owner
 schema public owner=pg_database_owner
 schemaacl content pipeshub_backup USAGE grantable=false
@@ -1325,6 +1623,9 @@ schemaacl identity pipeshub_jobs USAGE grantable=false
 schemaacl identity pipeshub_node USAGE grantable=false
 schemaacl identity pipeshub_restore USAGE grantable=false
 schemaacl identity pipeshub_vetted_identity USAGE grantable=false
+schemaacl integrations pipeshub_backup USAGE grantable=false
+schemaacl integrations pipeshub_node USAGE grantable=false
+schemaacl integrations pipeshub_restore USAGE grantable=false
 schemaacl kernel pipeshub_app USAGE grantable=false
 schemaacl kernel pipeshub_connectors_login USAGE grantable=false
 schemaacl kernel pipeshub_indexing_login USAGE grantable=false
@@ -1334,6 +1635,10 @@ schemaacl kernel pipeshub_node_login USAGE grantable=false
 schemaacl kernel pipeshub_query_login USAGE grantable=false
 schemaacl kernel pipeshub_restore USAGE grantable=false
 schemaacl kernel pipeshub_vetted_kernel USAGE grantable=false
+schemaacl oauth pipeshub_backup USAGE grantable=false
+schemaacl oauth pipeshub_jobs USAGE grantable=false
+schemaacl oauth pipeshub_node USAGE grantable=false
+schemaacl oauth pipeshub_restore USAGE grantable=false
 schemaacl platform pipeshub_backup USAGE grantable=false
 schemaacl platform pipeshub_connectors USAGE grantable=false
 schemaacl platform pipeshub_indexing USAGE grantable=false
@@ -1416,4 +1721,5 @@ tablespace pg_global owner=<bootstrap-superuser>
 type content.oid24 kind=d owner=pipeshub_owner
 type conversation.oid24 kind=d owner=pipeshub_owner
 type identity.oid24 kind=d owner=pipeshub_owner
+type oauth.oid24 kind=d owner=pipeshub_owner
 type platform.oid24 kind=d owner=pipeshub_owner

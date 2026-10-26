@@ -41,6 +41,8 @@ def test_catalog_is_clean_and_covers_every_kind(org_db):
         conversation = {f"conversation.{t}": "org" for t in ("chat_sessions", "chat_session_members", "chat_messages", "citations", "semantic_searches", "semantic_search_members")}
         stored = {f"content.{t}": "org" for t in ("documents", "projects", "project_members")}
         stored |= {f"identity.{t}": "org" for t in ("orgs", "users", "user_groups", "user_group_members", "org_auth_config", "user_activities", "used_reset_links", "org_logos", "user_pictures", "slug_counters", "user_credentials")}
+        stored |= {f"oauth.{t}": "org" for t in ("apps", "access_tokens", "refresh_tokens", "authorization_codes", "device_authorizations", "service_account_delegations", "delegation_events")}
+        stored |= {"integrations.slack_threads": "org"}
         stored |= {f"platform.{t}": "org" for t in ("notifications", "mail_log", "connectors_config", "outbox")}
         assert rows == {"kt.docs": "org", "kt.events": "org", "kt.cfg": "lineage", "kt.apps": "org", "kt.tokens": "global",
                 "platform.consumer_inbox": "org", "platform.deployment_profile": "internal", "platform.jobs": "internal",
