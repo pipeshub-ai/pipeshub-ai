@@ -12,6 +12,7 @@ import { CrawlingSchedulerService } from '../../crawling_manager/services/crawli
 import { AppConfig } from '../../tokens_manager/config/config';
 import { ScheduledJobsBackfillMigration } from './migrations/scheduled_jobs_backfill.migration';
 import { ChatKbFiltersMigration } from './migrations/chat_kb_filters.migration';
+import { docStore } from '../../../libs/repositories/store-select';
 import { AdminRoleMigration } from './migrations/admin_role.migration';
 import { DocumentOrgIdBackfillMigration } from './migrations/document_orgid_backfill.migration';
 import { ChatSessionsMigration } from './migrations/chat_sessions.migration';
@@ -144,6 +145,8 @@ export class MigrationService {
   }
 
   async chatKbFiltersMigration(): Promise<void> {
+    // These read legacy MongoDB collections that a PostgreSQL install never had.
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating chat KB filters');
     try {
       const result = await new ChatKbFiltersMigration(
@@ -169,6 +172,7 @@ export class MigrationService {
   }
 
   async chatSessionsMigration(): Promise<void> {
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating legacy conversations into chatSessions');
     try {
       const configuredBatchSize = Number.parseInt(
@@ -201,6 +205,7 @@ export class MigrationService {
   }
 
   async documentOrgIdMigration(): Promise<void> {
+    if (docStore() === 'postgres') return;
     this.logger.info('Migrating document orgId backfill');
     try {
       const result = await new DocumentOrgIdBackfillMigration(

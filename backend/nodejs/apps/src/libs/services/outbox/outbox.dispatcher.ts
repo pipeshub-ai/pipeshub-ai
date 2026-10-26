@@ -1,3 +1,4 @@
+import { spawnDetached } from '../../context/orgContext';
 import { Logger } from '../logger.service';
 import { IMessageProducer, StreamMessage } from '../../types/messaging.types';
 import { getOutboxRepository } from '../../repositories/outbox';
@@ -81,9 +82,12 @@ export class OutboxDispatcher {
   start(): void {
     if (this.timer) return;
     this.stopped = false;
-    this.timer = setInterval(() => {
-      void this.drain();
-    }, this.pollIntervalMs);
+    // the timer outlives the caller: a tick must not carry whichever org was bound when it was created
+    this.timer = spawnDetached(() =>
+      setInterval(() => {
+        void this.drain();
+      }, this.pollIntervalMs),
+    );
     // Long enough between ticks that holding the event loop open would delay
     // shutdown for no reason.
     this.timer.unref();
