@@ -31,6 +31,12 @@ class PlaywrightBrowserSandbox:
     async def _ensure_page(self):
         if self._page is not None:
             return self._page
+        from app.utils.browser_install import BrowserInstallError, ensure_chromium
+
+        try:
+            await ensure_chromium()
+        except BrowserInstallError as e:
+            raise BrowserSandboxError(str(e)) from e
         try:
             from playwright.async_api import async_playwright
         except ImportError as e:

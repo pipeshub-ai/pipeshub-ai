@@ -18,10 +18,10 @@ dependencies = [
   "psycopg[binary]>=3.1",
   "PyMySQL>=1.1",
   "pymongo>=4.5.0",
-  # CPU builds, as in the image (TORCH_VERSION and TORCHVISION_VERSION in Dockerfile.base);
-  # the PyPI wheels pull about 4 GB of CUDA libraries on Linux.
-  "torch==2.12.0",
-  "torchvision==0.27.0",
+  # CPU builds, like the image (backend/python/pyproject.toml names them for the same
+  # reason); the PyPI wheels pull about 4 GB of CUDA libraries on Linux.
+  "torch==2.14.1",
+  "torchvision==0.29.1",
 ]
 
 [tool.setuptools.packages.find]

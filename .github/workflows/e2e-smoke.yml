@@ -55,7 +55,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '22'
 
       - name: Install frontend deps and Playwright browsers
         working-directory: frontend
@@ -63,20 +63,13 @@ jobs:
           npm ci
           npx playwright install chromium --with-deps
 
-      # From GHCR so CI neither spends nor inflates Docker Hub pulls; the compose
-      # build reads the exported names. Docker Hub is the fallback per image.
-      - name: Pull pre-built base images
+      # The bases for this tree's Dockerfile.base and uv.lock, by content hash
+      # (see scripts/docker/ci_base_images.sh); the compose build reads the
+      # exported names.
+      - name: Resolve base images
         run: |
-          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
-            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
-            if ! docker pull "$image"; then
-              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
-              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
-              image="$hub"
-              docker pull "$image" || true
-            fi
-            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
-          done
+          bash scripts/docker/ci_base_images.sh >> "$GITHUB_ENV"
+          echo "PIPESHUB_BUILD_TARGET=runtime-slim" >> "$GITHUB_ENV"
 
       - name: Build stack images
         working-directory: deployment/docker-compose

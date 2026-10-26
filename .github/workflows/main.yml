@@ -26,7 +26,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: backend/nodejs/apps/package-lock.json
 
@@ -69,7 +69,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
           cache-dependency-path: frontend/package-lock.json
 
@@ -249,6 +249,54 @@ jobs:
       - name: Entrypoint ownership pass tests
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/entrypoint_ownership_test.sh
+
+  docker-images:
+    name: Docker image checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Static image checks
+        run: python3 deployment/tests/test_docker_images.py
+
+      - name: Base tag and layer-diff tests
+        run: |
+          bash scripts/docker/base_tag_test.sh
+          python3 scripts/docker/layer_diff_test.py
+
+      - name: Build context budget
+        run: bash deployment/docker-compose/tests/build_context_test.sh
+
+      - name: Lockfile matches pyproject.toml
+        run: |
+          pip install -q 'uv==0.8.22'
+          (cd backend/python && uv lock --check)
+
+      - name: Install hadolint
+        env:
+          HADOLINT_VERSION: 2.12.0
+          HADOLINT_SHA256: 56de6d5e5ec427e17b74fa48d51271c7fc0d61244bf5c90e828aab8362d55010
+        run: |
+          set -euo pipefail
+          url="https://github.com/hadolint/hadolint/releases/download/v${HADOLINT_VERSION}/hadolint-Linux-x86_64"
+          curl -fsSL "$url" -o /tmp/hadolint
+          echo "${HADOLINT_SHA256}  /tmp/hadolint" | sha256sum -c -
+          sudo install -m 0755 /tmp/hadolint /usr/local/bin/hadolint
+
+      - name: Lint Dockerfiles
+        run: |
+          hadolint -c .hadolint.yaml Dockerfile Dockerfile.base \
+            deployment/docker-compose/hot-reload/Dockerfile.dev \
+            deployment/sandbox/Dockerfile
+
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends shellcheck
+
+      - name: Shellcheck entrypoint scripts
+        run: shellcheck -S warning deployment/process_monitor.sh deployment/docker-entrypoint.sh
 
   workflow-lint:
     name: Lint GitHub Actions workflows

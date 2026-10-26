@@ -1,89 +1,48 @@
 # syntax=docker/dockerfile:1
-# pipeshubai/pipeshub-ai-base — slow layers factored out of the root Dockerfile.
-# Build context: repository root (same as Dockerfile).
+# pipeshubai/pipeshub-ai-base — the slow layers the app image is built FROM.
+# Build context: repository root (same as the root Dockerfile).
 #
-# Rebuild :python-deps when backend/python/pyproject.toml or bundled models change.
-# Rebuild :runtime when APT stack, Node major, Neo4j repo, or OCR/LibreOffice needs change.
+# Three targets, tagged by scripts/docker/base_tag.sh from a hash of this file,
+# backend/python/uv.lock and backend/python/pyproject.toml:
 #
-# CI: test workflows pull ghcr.io/pipeshub-ai/pipeshub-ai-base:{python-deps,runtime}
-# (falling back to Docker Hub) before building the app image; avoid unconditional
-# Dockerfile.base builds in CI (slow). .github/workflows/base-images.yml copies these
-# Docker Hub tags to GHCR daily; run it (mode=mirror) to sync sooner after publishing.
+#   python-deps-<hash>   site-packages, from the lockfile, plus NLTK, the
+#                        fastembed BM25 model and Chromium. No embedding or
+#                        reranker weights.
+#   runtime-<hash>       apt runtime stack, Node 22, LibreOffice, Chromium's
+#                        system libraries, cypher-shell. No Python packages.
+#   models-bge-<hash>    python-deps plus BAAI/bge-large-en-v1.5 and
+#                        BAAI/bge-reranker-base. Only the full app image copies
+#                        this layer. Slim downloads those models on first use.
 #
-# Incremental rebuild (when only a few packages change in pyproject.toml):
-#   Pass the currently-published image as PYTHON_DEPS_BASE so uv skips already-satisfied
-#   packages (fast no-op) and only downloads/compiles the delta.  ML model downloads
-#   (NLTK, HuggingFace, fastembed) are also no-ops when already present.
+# A local build of the app image pulls python-deps first. That image is about
+# 2 GB compressed because it holds the Python dependency set; it is cached
+# after the first fetch. The app image itself does not rebuild it.
 #
-#   docker buildx build -f Dockerfile.base --target python-deps \
-#     --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps \
-#     -t pipeshubai/pipeshub-ai-base:python-deps --platform linux/amd64,linux/arm64 --push .
-#
-#   For a full rebuild from scratch (e.g. major dependency overhaul or first-time setup),
-#   omit PYTHON_DEPS_BASE or set it to "build-base" (the default).
-#
-# Image size diagnostics (app image or local tag):
-#   docker history --human pipeshub-ai:latest
-#   docker run --rm pipeshub-ai:latest sh -c 'du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface /root/.cache/fastembed /usr/lib/libreoffice 2>/dev/null || true'
-# For the python-deps stage only: docker build ... --target python-deps -t ph:python-deps . && docker run --rm ph:python-deps du -sh /usr/local/lib/python3.12/site-packages /root/.cache/huggingface
-#
-# Local build + tag (before first registry pull):
 #   docker build -f Dockerfile.base --target python-deps -t pipeshubai/pipeshub-ai-base:python-deps .
 #   docker build -f Dockerfile.base --target runtime-base -t pipeshubai/pipeshub-ai-base:runtime .
+#   docker build -f Dockerfile.base --target models -t pipeshubai/pipeshub-ai-base:models-bge .
 #
-# Multi-arch push (example):
-#   docker buildx build -f Dockerfile.base --target python-deps -t pipeshubai/pipeshub-ai-base:python-deps --platform linux/amd64,linux/arm64 --push .
-#   docker buildx build -f Dockerfile.base --target runtime-base -t pipeshubai/pipeshub-ai-base:runtime --platform linux/amd64,linux/arm64 --push .
-#
-# Versioned release (publish new base before retagging :python-deps / :runtime):
-#   DATE=2026-05-18
-#   docker buildx build -f Dockerfile.base --target python-deps \
-#     -t pipeshubai/pipeshub-ai-base:python-deps-${DATE} --platform linux/amd64,linux/arm64 --push .
-#   docker buildx build -f Dockerfile.base --target runtime-base \
-#     -t pipeshubai/pipeshub-ai-base:runtime-${DATE} --platform linux/amd64,linux/arm64 --push .
-#   # Smoke-test app image with versioned bases, then promote:
-#   docker build --build-arg PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-${DATE} \
-#     --build-arg RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime-${DATE} -t pipeshubai/pipeshub-ai:next .
-#   # After verification passes, retag previous :python-deps as :python-deps-prev, then:
-#   docker buildx imagetools create -t pipeshubai/pipeshub-ai-base:python-deps \
-#     pipeshubai/pipeshub-ai-base:python-deps-${DATE}
-#   docker buildx imagetools create -t pipeshubai/pipeshub-ai-base:runtime \
-#     pipeshubai/pipeshub-ai-base:runtime-${DATE}
-#
-# Slim base (skips ~1.3 GB BAAI/bge-large-en-v1.5 bake-in; model downloads on first use):
-#   docker buildx build -f Dockerfile.base --target python-deps \
-#     --build-arg BUNDLE_BGE_EMBEDDING=0 \
-#     -t pipeshubai/pipeshub-ai-base:python-deps-slim --platform linux/amd64,linux/arm64 --push .
-#   docker buildx build -f Dockerfile \
-#     --build-arg PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-slim \
-#     --build-arg RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime \
-#     -t pipeshubai/pipeshub-ai:slim --platform linux/amd64,linux/arm64 --push .
+# CI publishes the hash tags (and, from main, the floating names above) to
+# Docker Hub and GHCR. See .github/workflows/base-images.yml.
 
-# Default bundles BAAI/bge-large-en-v1.5 into /root/.cache/huggingface (~1.3 GB).
-# Set to 0 for slim images (runtime downloads on first query/index use).
-ARG BUNDLE_BGE_EMBEDDING=1
+ARG PYTHON_IMAGE=python:3.12-slim@sha256:a6e34c598f2467ed0e9a8d349809fcd8b5c603269512df273a0bb1784edc11b1
+ARG NODE_IMAGE=node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.22@sha256:9874eb7afe5ca16c363fe80b294fe700e460df29a55532bbfea234a0f12eddb1
 
-# CPU torch pins (resolved from pytorch.org/whl/cpu; wheels report +cpu local version).
-# Verified against the ML stack pinned in backend/python/pyproject.toml (transformers,
-# sentence-transformers, docling).
-# Bump both together when upgrading ML deps in backend/python/pyproject.toml.
-ARG TORCH_VERSION=2.12.0
-ARG TORCHVISION_VERSION=0.27.0
-
-# Base for the python-deps stage.  Default builds from scratch using the local
-# build-base stage.  Override with the previously-published image for incremental
-# rebuilds — uv skips already-satisfied packages and ML model downloads are no-ops:
-#   --build-arg PYTHON_DEPS_BASE=pipeshubai/pipeshub-ai-base:python-deps
+# Default builds python-deps from scratch. Override with a previously published
+# image so uv only installs what the lock added.
 ARG PYTHON_DEPS_BASE=build-base
 
-# -----------------------------------------------------------------------------
-# Stage: Build Base - Contains all build tools (NOT in final app image)
-# -----------------------------------------------------------------------------
-FROM python:3.12-slim AS build-base
-ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+FROM ${UV_IMAGE} AS uv
 
-# Debian slim ships docker-clean, which wipes /var/cache/apt after installs; remove it so
-# BuildKit cache mounts on /var/cache/apt stay useful across builds.
+# -----------------------------------------------------------------------------
+# Build tools. Not copied into the runtime image.
+# -----------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS build-base
+ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
+# Debian slim ships docker-clean, which wipes /var/cache/apt after installs.
 RUN rm -f /etc/apt/apt.conf.d/docker-clean
 
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
@@ -103,123 +62,151 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     libspatialindex-dev \
     libmariadb-dev \
     git \
+    ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust (needed for maturin wheels e.g. html-to-markdown). /root/.rustup must live
-# in the image layer, not a cache mount, or python-deps cannot run cargo.
+# /root/.rustup must live in the image layer, not a cache mount, or a later
+# stage cannot run cargo when a dependency has no wheel.
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
-    curl https://sh.rustup.rs -sSf | sh -s -- -y --profile minimal --default-toolchain stable
+    curl --proto '=https' --tlsv1.2 -fsSL https://sh.rustup.rs | sh -s -- -y --profile minimal --default-toolchain stable
 ENV PATH="/root/.cargo/bin:${PATH}"
 
-# Install uv for faster pip operations
-RUN --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    pip install uv
+COPY --from=uv /uv /uvx /bin/
 
 # -----------------------------------------------------------------------------
-# Target: python-deps — publish as pipeshubai/pipeshub-ai-base:python-deps
+# Target: python-deps — publish as pipeshubai/pipeshub-ai-base:python-deps-<hash>
 # -----------------------------------------------------------------------------
 FROM ${PYTHON_DEPS_BASE} AS python-deps
-ARG BUNDLE_BGE_EMBEDDING
-ARG TORCH_VERSION
-ARG TORCHVISION_VERSION
 WORKDIR /app/python
 
-COPY ./backend/python/pyproject.toml ./
+COPY backend/python/pyproject.toml backend/python/uv.lock ./
 
-# Install Python dependencies
-# FASTEMBED_CACHE_PATH is set so fastembed writes to a persistent location
-# (by default it uses /tmp/fastembed_cache which we wipe below). The same
-# env var is re-exported in the runtime stage so `FastEmbedSparse(...)` at
-# runtime finds the pre-downloaded model without any code change.
-ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
-# The model pre-download below imports onnxruntime outside the `app` package, which opts services out.
-ENV ORT_DISABLE_TELEMETRY=1
+# FASTEMBED_CACHE_PATH is set so fastembed writes somewhere the app image can
+# copy. The default is /tmp, which the cleanup below deletes.
+ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed \
+    PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright \
+    PATCHRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright \
+    ORT_DISABLE_TELEMETRY=1
 
-# Pre-install pinned CPU-only PyTorch wheels so the resolver in the next step never
-# pulls the CUDA variant (~1.5-2 GB of nvidia-* libs). Override via --build-arg when
-# bumping TORCH_VERSION / TORCHVISION_VERSION above.
+# Hashes come from uv.lock (uv export emits them unless --no-hashes is set).
+# Git sources (etcd3) have no hash; the lock pins them to a commit, so they
+# install separately with --no-deps and their dependencies stay hash-checked.
+# --no-emit-project skips the application itself; the app image copies that
+# source later and runs it from /app/python.
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
-    uv pip install --system \
-        --index-url https://download.pytorch.org/whl/cpu \
-        "torch==${TORCH_VERSION}" "torchvision==${TORCHVISION_VERSION}"
-
-# Cache mounts: uv/pip/cargo speed rebuilds. Do not mount huggingface/fastembed/nltk —
-# those paths are COPY'd into the app image from this stage.
-RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    --mount=type=cache,target=/root/.cache/pip,sharing=locked \
     --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
     rustup default stable && \
-    uv pip install --system -e . && \
-    # Download ML models so the runtime image doesn't have to pull them over
-    # the network on first use (which previously stalled query service
-    # startup by minutes on cold caches).
+    uv export --frozen --no-dev --no-editable --no-emit-project --no-header --quiet -o /tmp/requirements.txt && \
+    { grep -E '^[A-Za-z0-9_.-]+ @ git\+' /tmp/requirements.txt > /tmp/requirements-git.txt || true; } && \
+    grep -vE '^[A-Za-z0-9_.-]+ @ git\+' /tmp/requirements.txt > /tmp/requirements-hashed.txt && \
+    uv pip install --system --require-hashes -r /tmp/requirements-hashed.txt && \
+    if [ -s /tmp/requirements-git.txt ]; then uv pip install --system --no-deps -r /tmp/requirements-git.txt; fi && \
     python -c "import nltk; nltk.download('punkt', quiet=True)" && \
-    if [ "${BUNDLE_BGE_EMBEDDING}" != "0" ]; then \
-        # Default dense embedding model (app/config/constants/ai_models.py).
-        # Skip with --build-arg BUNDLE_BGE_EMBEDDING=0 for slim images (~1.3 GB saved).
-        python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')"; \
-    else \
-        mkdir -p /root/.cache/huggingface; \
-    fi && \
-    # Sparse embedding model used by FastEmbedSparse in RetrievalService.__init__.
     python -c "from langchain_qdrant import FastEmbedSparse; FastEmbedSparse(model_name='Qdrant/BM25')" && \
+    python -m playwright install chromium && \
+    python -m patchright install chromium && \
     rm -rf /tmp/*
 
-# Prune dead weight that COPY'd-into-runtime never executes. Preserves:
-#   - *.dist-info/  (importlib.metadata.distribution() in app/sandbox/local_executor.py)
-#   - dirs named "testing" (public APIs like numpy.testing, torch.testing)
-# Strips debug symbols from compiled extensions (.so) for ~100-200 MB savings.
+# Preserves *.dist-info (importlib.metadata) and packages named "testing".
+# Drops C/C++ headers and torch's cmake files, which nothing runs, and replaces
+# the Node binary each browser driver vendors with a symlink. The runtime image
+# has Node at /usr/bin/node; the symlink is dangling in this stage on purpose.
 RUN set -eux; \
     find /usr/local/lib/python3.12/site-packages -type d -name tests -prune -exec rm -rf {} +; \
     find /usr/local/lib/python3.12/site-packages -type d -name __pycache__ -prune -exec rm -rf {} +; \
     find /usr/local/lib/python3.12/site-packages -type f -name '*.pyc' -delete; \
-    find /usr/local/lib/python3.12/site-packages -type f -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true
+    find /usr/local/lib/python3.12/site-packages -type d -name include -prune -exec rm -rf {} +; \
+    rm -rf /usr/local/lib/python3.12/site-packages/torch/share/cmake; \
+    find /usr/local/lib/python3.12/site-packages -type f -name '*.so' -exec strip --strip-unneeded {} + 2>/dev/null || true; \
+    for pkg in playwright patchright; do \
+        drv="/usr/local/lib/python3.12/site-packages/${pkg}/driver/node"; \
+        if [ -e "$drv" ] && [ ! -L "$drv" ]; then \
+            rm -f "$drv"; \
+            ln -s /usr/bin/node "$drv"; \
+        fi; \
+    done
 
 # -----------------------------------------------------------------------------
-# Target: runtime-base — publish as pipeshubai/pipeshub-ai-base:runtime
+# Target: models — publish as pipeshubai/pipeshub-ai-base:models-bge-<hash>
+# Embedding and reranker weights. The slim app image does not copy this layer.
 # -----------------------------------------------------------------------------
-FROM python:3.12-slim AS runtime-base
+# The heron layout model is the pdfplumber parser's table and figure detector
+# (app/modules/parsers/pdf/table_detector.py pins the same revision); slim
+# downloads it on first use.
+FROM python-deps AS models
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')"
+
+# -----------------------------------------------------------------------------
+# Target: runtime-base — publish as pipeshubai/pipeshub-ai-base:runtime-<hash>
+# Apt packages land in runtime-apt; the published stage adds Node and cypher-shell.
+# -----------------------------------------------------------------------------
+FROM ${PYTHON_IMAGE} AS runtime-apt
 ENV DEBIAN_FRONTEND=noninteractive TZ=Etc/UTC
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN rm -f /etc/apt/apt.conf.d/docker-clean
 
-# Install ONLY runtime dependencies (no build tools!)
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && apt-get install -y --no-install-recommends \
-    # Basic utilities
     curl \
     ca-certificates \
-    # Runtime libraries for RocksDB
     libsnappy1v5 \
     zlib1g \
     liblz4-1 \
     libzstd1 \
-    # Other runtime deps
     libpq5 \
     libmariadb3 \
-    # OpenGL library (required by Docling for PDF processing)
     libgl1 \
     libglib2.0-0 \
-    # LibreOffice - headless document and presentation conversion.
-    # Comment out if not needed - this is still ~300-400MB
     libreoffice-writer-nogui \
     libreoffice-calc-nogui \
     libreoffice-impress-nogui \
-    # CJK fallback fonts used by LibreOffice when documents reference fonts
-    # that are unavailable in the Linux runtime (e.g. Microsoft JhengHei).
     fonts-noto-cjk \
+    libnss3 \
+    libnspr4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libdbus-1-3 \
+    libxkbcommon0 \
+    libatspi2.0-0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libpango-1.0-0 \
+    libcairo2 \
+    libxshmfence1 \
+    libx11-6 \
+    libxcb1 \
+    libxext6 \
+    fonts-liberation \
+    && if apt-cache show libasound2t64 >/dev/null 2>&1; then \
+         apt-get install -y --no-install-recommends libasound2t64; \
+       else \
+         apt-get install -y --no-install-recommends libasound2; \
+       fi \
     && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Install Node.js runtime only (not full dev environment)
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
-    apt-get install -y --no-install-recommends nodejs && \
-    rm -rf /var/lib/apt/lists/*
+# Node from the official image, not NodeSource, so the runtime and the build
+# stages run the same Node build.
+FROM ${NODE_IMAGE} AS node-bins
 
-# Install Neo4j Cypher Shell
+FROM runtime-apt AS runtime-base
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+COPY --from=node-bins /usr/local/bin/node /usr/local/bin/node
+COPY --from=node-bins /usr/local/lib/node_modules /usr/local/lib/node_modules
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm && \
+    ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx && \
+    ln -sf /usr/local/bin/node /usr/bin/node
+
+# Neo4j's apt repo is the only published source for cypher-shell.
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     apt-get update && \
     apt-get install -y --no-install-recommends gnupg && \

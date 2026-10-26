@@ -18,8 +18,14 @@ on:
     # dependency manifests they install from.
     paths:
       - 'Dockerfile'
+      - 'Dockerfile.base'
       - 'deployment/sandbox/**'
       - 'backend/python/pyproject.toml'
+      - 'backend/python/uv.lock'
+      - 'deployment/docker-compose/tests/image_structure_test.sh'
+      - 'deployment/docker-compose/tests/layer_reuse_test.sh'
+      - 'deployment/docker-compose/tests/build_context_test.sh'
+      - 'scripts/docker/**'
       - 'backend/nodejs/apps/package.json'
       - 'backend/nodejs/apps/package-lock.json'
       - 'frontend/package.json'
@@ -44,36 +50,43 @@ env:
 
 jobs:
   slim:
-    name: Build and start slim (arm64)
-    runs-on: ubuntu-24.04-arm
-    timeout-minutes: 45
+    name: Build and start slim (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - name: Confirm the runner is really arm64
+      - name: Confirm the runner is really ${{ matrix.arch }}
         run: |
           set -euo pipefail
           actual="$(dpkg --print-architecture)"
           echo "runner architecture: ${actual}"
-          [ "$actual" = "arm64" ] || { echo "expected arm64, got ${actual}"; exit 1; }
+          [ "$actual" = "${{ matrix.arch }}" ] || { echo "expected ${{ matrix.arch }}, got ${actual}"; exit 1; }
 
-      # From GHCR so CI neither spends nor inflates Docker Hub pulls. Docker Hub
-      # is the fallback per image.
-      - name: Pull pre-built base images
+      # A pull request that changes the base builds python-deps here.
+      - name: Reclaim disk space
         run: |
-          for pair in PYTHON_DEPS_IMAGE=python-deps-slim RUNTIME_BASE_IMAGE=runtime; do
-            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
-            if ! docker pull "$image"; then
-              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
-              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
-              image="$hub"
-              docker pull "$image" || true
-            fi
-            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
-          done
+          set -uo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+
+      # The bases for this tree's Dockerfile.base and uv.lock, by content hash
+      # (see scripts/docker/ci_base_images.sh).
+      - name: Resolve base images
+        run: |
+          bash scripts/docker/ci_base_images.sh >> "$GITHUB_ENV"
 
       # Plain `docker build` puts the image straight into the local image store
       # the installer reads from, with no builder to export out of.
@@ -81,9 +94,16 @@ jobs:
         run: |
           set -euo pipefail
           docker build \
+            --target runtime-slim \
             --build-arg PYTHON_DEPS_IMAGE="${PYTHON_DEPS_IMAGE}" \
             --build-arg RUNTIME_BASE_IMAGE="${RUNTIME_BASE_IMAGE}" \
             -t "pipeshubai/pipeshub-ai:${CI_TAG}" .
+
+      - name: Check the slim image layout
+        env:
+          PIPESHUB_IMAGE: pipeshubai/pipeshub-ai:${{ env.CI_TAG }}
+          PIPESHUB_IMAGE_VARIANT: slim
+        run: bash deployment/docker-compose/tests/image_structure_test.sh
 
       - name: Build the sandbox image
         run: docker build -t "pipeshubai/pipeshub-sandbox:${CI_TAG}" deployment/sandbox
@@ -102,6 +122,38 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: arm64-smoke-slim
+          name: smoke-slim-${{ matrix.arch }}
           path: ${{ runner.temp }}/diag
           if-no-files-found: ignore
+
+  layer-reuse:
+    name: Layer reuse (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+          - arch: amd64
+            runner: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Reclaim disk space
+        run: |
+          set -uo pipefail
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost "${AGENT_TOOLSDIRECTORY:-}" || true
+          sudo docker image prune -af || true
+
+      - name: Resolve base images
+        run: |
+          bash scripts/docker/ci_base_images.sh >> "$GITHUB_ENV"
+
+      - name: Rebuild and compare layers
+        run: bash deployment/docker-compose/tests/layer_reuse_test.sh

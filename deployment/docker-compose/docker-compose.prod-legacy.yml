@@ -351,8 +351,11 @@ services:
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
-      timeout: 3s
-      retries: 5
+      # mongosh is a Node.js CLI that takes 1-4s to start while the rest of the
+      # stack boots; a 3s timeout marked a healthy mongod unhealthy.
+      timeout: 15s
+      retries: 10
+      start_period: 60s
 
   redis:
     image: redis:7.4-bookworm

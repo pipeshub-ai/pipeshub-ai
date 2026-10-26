@@ -613,7 +613,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         # A PyInstaller build cannot do either half of this: sys.executable is the app
         # binary and its bootloader ignores "-m uvicorn", and falling through to
         # uvicorn.run(workers=N) needs multiprocessing.freeze_support(). Refuse rather
-        # than crash-loop. backend/python/Dockerfile produces such a build; no compose
+        # than crash-loop. A PyInstaller freeze produces such a build; no compose
         # file uses it today.
         logging.getLogger(__name__).warning(
             "QUERY_UVICORN_WORKERS=%s ignored: multiple workers are unsupported in a "

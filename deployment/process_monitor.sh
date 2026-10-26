@@ -234,6 +234,15 @@ cleanup() {
 trap cleanup SIGTERM SIGINT SIGQUIT
 
 log "=== Process Monitor Starting ==="
+# Slim does not bake Chromium. Off by default: the first crawl downloads it.
+# A failure here must not stop the other processes.
+if [ "${PIPESHUB_PREFETCH_BROWSERS:-false}" = "true" ]; then
+    log "PIPESHUB_PREFETCH_BROWSERS=true — downloading Chromium in the background"
+    (
+        cd /app/python
+        python -c 'import asyncio; from app.utils.browser_install import ensure_chromium; asyncio.run(ensure_chromium())' || true
+    ) &
+fi
 start_nodejs
 if [ "${PIPESHUB_SKIP_SLACKBOT:-false}" = "true" ]; then
     log "PIPESHUB_SKIP_SLACKBOT=true — skipping Slack Bot"

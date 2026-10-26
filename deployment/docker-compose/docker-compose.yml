@@ -48,10 +48,12 @@ services:
     build:
       context: ../../
       dockerfile: Dockerfile
+      target: ${PIPESHUB_BUILD_TARGET:-runtime}
       args:
         BUILDKIT_INLINE_CACHE: "1"
         PYTHON_DEPS_IMAGE: ${PYTHON_DEPS_IMAGE:-pipeshubai/pipeshub-ai-base:python-deps}
         RUNTIME_BASE_IMAGE: ${RUNTIME_BASE_IMAGE:-pipeshubai/pipeshub-ai-base:runtime}
+        MODELS_IMAGE: ${MODELS_IMAGE:-models-download}
         APP_VERSION: ${APP_VERSION:-}
         GIT_COMMIT: ${GIT_COMMIT:-}
       shm_size: 4gb
@@ -570,8 +572,11 @@ services:
     healthcheck:
       test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping')"]
       interval: 5s
-      timeout: 3s
-      retries: 5
+      # mongosh is a Node.js CLI that takes 1-4s to start while the rest of the
+      # stack boots; a 3s timeout marked a healthy mongod unhealthy.
+      timeout: 15s
+      retries: 10
+      start_period: 60s
 
   redis:
     image: redis:7.4-bookworm

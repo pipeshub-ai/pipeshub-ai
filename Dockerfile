@@ -1,187 +1,192 @@
 # syntax=docker/dockerfile:1
-# Slow layers (APT, Rust, Python deps, ML models, runtime stack) live in Dockerfile.base.
-# Override with local tags if registry images are missing:
-#   docker build --build-arg PYTHON_DEPS_IMAGE=myreg/python-deps --build-arg RUNTIME_BASE_IMAGE=myreg/runtime .
-# Slim app image (no pre-baked BGE; ~1.3 GB smaller — model downloads on first use):
-#   docker build --build-arg PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps-slim -t pipeshubai/pipeshub-ai:slim .
+# App image. Slow layers live in Dockerfile.base and are pulled, not rebuilt:
+#   PYTHON_DEPS_IMAGE   pipeshubai/pipeshub-ai-base:python-deps-<hash>
+#   RUNTIME_BASE_IMAGE  pipeshubai/pipeshub-ai-base:runtime-<hash>
+#   MODELS_IMAGE        pipeshubai/pipeshub-ai-base:models-bge-<hash>
+#                       (only the full target; default builds that stage here)
+#
+# Targets:
+#   runtime-slim   no embedding/reranker weights, Chromium downloaded on first use.
+#                  About 1.5 GB compressed once the dependency layers settle.
+#   runtime        slim plus baked Chromium and the BGE embedding + reranker models.
+#                  Works without Hugging Face or the Playwright CDN.
+#
+# Local full build (downloads the model layer on first build):
+#   docker build -t pipeshub-ai:latest .
+# Slim:
+#   docker build --target runtime-slim -t pipeshub-ai:slim .
 ARG PYTHON_DEPS_IMAGE=pipeshubai/pipeshub-ai-base:python-deps
 ARG RUNTIME_BASE_IMAGE=pipeshubai/pipeshub-ai-base:runtime
+ARG MODELS_IMAGE=models-download
+ARG NODE_IMAGE=node:22-slim@sha256:c3de60bf2f9dd0ac6370e6117950ff62d6e339527e7472301c9c78a017978392
+ARG UV_IMAGE=ghcr.io/astral-sh/uv:0.8.22@sha256:9874eb7afe5ca16c363fe80b294fe700e460df29a55532bbfea234a0f12eddb1
+
+FROM ${UV_IMAGE} AS uv
 
 FROM ${PYTHON_DEPS_IMAGE} AS python-deps
-# The base image bakes in dependencies as of its publish time. Reconcile with the
-# current pyproject.toml so packages added since the base was published (e.g. new
-# connector SDKs like opensearch-py) end up in the app image. uv skips
-# already-satisfied packages, so this is a fast no-op when the base is current and
-# installs only the delta otherwise. The base carries uv + the build toolchain
-# (it is built FROM build-base in Dockerfile.base), so native wheels can still
-# compile here when a new dependency needs it.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+# Reconcile the base with the lock checked out in this build. When the base was
+# published from this lock the install changes nothing, so the site-packages
+# layer copied below stays byte-identical across releases. REQUIRE_CURRENT_BASE=1
+# (the release build) fails instead of silently installing a delta.
+# Git sources have no hash, so they install separately; see Dockerfile.base.
 WORKDIR /app/python
-COPY backend/python/pyproject.toml ./
+COPY --from=uv /uv /uvx /bin/
+COPY backend/python/pyproject.toml backend/python/uv.lock ./
+ARG REQUIRE_CURRENT_BASE=0
 RUN --mount=type=cache,target=/root/.cache/uv,sharing=locked \
-    uv pip install --system -e . && \
-    crawl4ai-setup && \
-    playwright install chromium
-
-
-FROM ${RUNTIME_BASE_IMAGE} AS runtime-base
-
-# Presentation previews are converted to PDF at request time. The published
-# runtime base historically included Writer and Calc only, leaving the soffice
-# wrapper present but unable to load PPT/PPTX files.
-# Install CJK fallback fonts until they are available in the published runtime
-# base image. LibreOffice uses these when documents reference unavailable fonts.
-RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
-    apt-get update && apt-get install -y --no-install-recommends \
-    libreoffice-impress-nogui fonts-noto-cjk \
-    && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
-# -----------------------------------------------------------------------------
-# Stage 1: Node.js Backend Build
-# -----------------------------------------------------------------------------
-FROM node:20-slim AS nodejs-backend
-WORKDIR /app/backend
-
-COPY backend/nodejs/apps/package*.json ./
-COPY backend/nodejs/apps/tsconfig.json ./
-
-# Install dependencies with architecture handling (npm ci: lockfile-speed + reproducible)
-RUN --mount=type=cache,target=/root/.npm,sharing=locked \
-    set -e; \
-    ARCH=$(uname -m); \
-    echo "Building for architecture: $ARCH"; \
-    if [ "$ARCH" = "arm64" ] || [ "$ARCH" = "aarch64" ]; then \
-        echo "Detected ARM architecture"; \
-        npm ci --ignore-scripts && \
-        npm uninstall jpeg-recompress-bin mozjpeg imagemin-mozjpeg 2>/dev/null || true && \
-        npm install sharp --save || true; \
-    else \
-        echo "Detected x86 architecture"; \
-        npm ci; \
+    set -eux; \
+    snap() { find /usr/local/lib/python3.12/site-packages -type f -printf '%P %s\n' | sort | sha256sum | awk '{print $1}'; }; \
+    before="$(snap)"; \
+    uv export --frozen --no-dev --no-editable --no-emit-project --no-header --quiet -o /tmp/requirements.txt; \
+    grep -E '^[A-Za-z0-9_.-]+ @ git\+' /tmp/requirements.txt > /tmp/requirements-git.txt || true; \
+    grep -vE '^[A-Za-z0-9_.-]+ @ git\+' /tmp/requirements.txt > /tmp/requirements-hashed.txt; \
+    uv pip install --system --require-hashes -r /tmp/requirements-hashed.txt; \
+    if [ -s /tmp/requirements-git.txt ]; then uv pip install --system --no-deps -r /tmp/requirements-git.txt; fi; \
+    after="$(snap)"; \
+    if [ "$REQUIRE_CURRENT_BASE" = "1" ] && [ "$before" != "$after" ]; then \
+        echo "python-deps base does not match uv.lock; rebuild it from Dockerfile.base"; \
+        exit 1; \
     fi
 
-COPY backend/nodejs/apps/src ./src
-RUN npm run build && \
-    # Prune dev dependencies after build
-    npm prune --production && \
-    # Clean npm cache
-    npm cache clean --force
+# Used only when MODELS_IMAGE is left at its default. Release builds pass the
+# published models image and BuildKit skips this stage.
+# Same weights as the models stage of Dockerfile.base.
+FROM python-deps AS models-download
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('BAAI/bge-large-en-v1.5', device='cpu')" && \
+    python -c "from sentence_transformers import CrossEncoder; CrossEncoder(model_name='BAAI/bge-reranker-base')" && \
+    python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')"
 
+FROM ${MODELS_IMAGE} AS models
+
+FROM ${NODE_IMAGE} AS node-bin
+
+# Chromium for the full target. A base built from this Dockerfile.base already
+# has the matching revision and both installs are no-ops; an older base gets it
+# downloaded here. The drivers' node is a symlink to /usr/bin/node in a current
+# base, so that binary is supplied for this stage only.
+FROM python-deps AS browsers
+COPY --from=node-bin /usr/local/bin/node /usr/bin/node
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright \
+    PATCHRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+RUN python -m playwright install chromium && \
+    python -m patchright install chromium
+
+# -----------------------------------------------------------------------------
+# Node.js backend. Dependencies and the TypeScript build are separate stages
+# so a source change does not rebuild node_modules.
+# -----------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS nodejs-backend
+WORKDIR /app/backend
+COPY backend/nodejs/apps/package.json backend/nodejs/apps/package-lock.json backend/nodejs/apps/tsconfig.json ./
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci
+COPY backend/nodejs/apps/src ./src
+RUN npm run build
 # tsc does not emit .hbs, and emailTemplates.ts reads them from ${process.cwd()}/src
 # at runtime, so every template under src is staged here with its path kept.
-RUN mkdir -p /app/templates && cd src && find . -name '*.hbs' -exec cp --parents {} /app/templates/ \;
+WORKDIR /app/backend/src
+RUN mkdir -p /app/templates && find . -name '*.hbs' -exec cp --parents {} /app/templates/ \;
+
+FROM ${NODE_IMAGE} AS nodejs-prod-deps
+WORKDIR /app/backend
+COPY backend/nodejs/apps/package.json backend/nodejs/apps/package-lock.json ./
+# Type declarations, source maps, docs and tests are not loaded at runtime.
+# License files stay. bun is a dependency of @pipeshub-ai/mcp that this server
+# never executes (it imports the package's ESM); the platform-variant binaries
+# are most of node_modules, so they are removed here until that package stops
+# declaring bun as a runtime dependency.
+RUN --mount=type=cache,target=/root/.npm,sharing=locked \
+    npm ci --omit=dev && \
+    find node_modules -type d \( -name test -o -name tests -o -name __tests__ -o -name __mocks__ \) -prune -exec rm -rf {} + && \
+    find node_modules -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' -o -name '*.md' \) ! -iname 'LICENSE*' -delete && \
+    rm -rf node_modules/bun node_modules/@oven node_modules/@img/sharp-wasm32
 
 # -----------------------------------------------------------------------------
-# Stage 2: Frontend Build (Next.js in `frontend/`)
+# Frontend. Static export so the Node.js API can serve files from backend/dist/public.
 # -----------------------------------------------------------------------------
-# Static export so the Node.js API can serve files from `backend/dist/public`.
-FROM node:20-slim AS frontend-build
+FROM ${NODE_IMAGE} AS frontend-build
 WORKDIR /app/frontend
-
-COPY frontend/package*.json ./
-
+COPY frontend/package.json frontend/package-lock.json ./
+# The web export never runs Electron; its postinstall downloads a ~100MB binary
+# from GitHub, which stalls and fails the whole build on slow/emulated networks.
+ENV ELECTRON_SKIP_BINARY_DOWNLOAD=1
 RUN --mount=type=cache,target=/root/.npm,sharing=locked \
     npm config set legacy-peer-deps true && \
     npm ci
-
 COPY frontend/ ./
-
-# Force static export for container builds by setting the env flag that
-# `frontend-new/next.config.mjs` already uses to enable `output: 'export'`.
-RUN ELECTRON_STATIC=1 npm run build && \
+RUN --mount=type=cache,target=/app/frontend/.next/cache,sharing=locked \
+    ELECTRON_STATIC=1 npm run build && \
     mkdir -p /out && \
     cp -a out/. /out/
 
 # -----------------------------------------------------------------------------
-# Stage 3: Final Runtime Image
+# Slim runtime. Chromium is not in the image; ensure_chromium() downloads it
+# into /data/pipeshub on first use. Embedding and reranker weights are not
+# baked either.
 # -----------------------------------------------------------------------------
-FROM runtime-base AS runtime
+FROM ${RUNTIME_BASE_IMAGE} AS runtime-slim
 WORKDIR /app
 
-# Unprivileged runtime user (uid/gid 1000, matching the Helm chart's runAsUser).
-# Its home stays /root so every on-disk path is unchanged across the upgrade:
-# local storage records absolute file:// URLs under ~/.local, and existing
-# volumes and custom mounts target /root/.local and /root/.cache/huggingface.
+# uid/gid 1000 matches the Helm chart's runAsUser. Home stays /root so local
+# storage file:// URLs and existing volume mounts keep working.
 # docker-entrypoint.sh hands root-owned data from earlier releases over to it.
 RUN groupadd --gid 1000 pipeshub && \
     useradd --uid 1000 --gid 1000 --home-dir /root --no-create-home \
         --shell /usr/sbin/nologin pipeshub && \
-    install -d -o 1000 -g 1000 /root/.cache /root/.local && \
+    install -d -o 1000 -g 1000 /root/.cache /root/.local /app/python/logs /data/pipeshub /data/pipeshub/ms-playwright && \
     chown 1000:1000 /root
-ENV HOME=/root
-# Pinned so the baked models are still found when HOME is overridden (the
-# Helm chart sets HOME=/home/user).
-ENV HF_HOME=/root/.cache/huggingface \
+ENV HOME=/root \
+    HF_HOME=/root/.cache/huggingface \
     NLTK_DATA=/root/nltk_data \
-    PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+    PLAYWRIGHT_BROWSERS_PATH=/data/pipeshub/ms-playwright \
+    PATCHRIGHT_BROWSERS_PATH=/data/pipeshub/ms-playwright \
+    FASTEMBED_CACHE_PATH=/root/.cache/fastembed \
+    OMP_NUM_THREADS=2 \
+    PYTHONWARNINGS="ignore::SyntaxWarning"
 
-# Point fastembed at the pre-populated cache we copy in below, matching the
-# FASTEMBED_CACHE_PATH used at build time in the python-deps stage.
-ENV FASTEMBED_CACHE_PATH=/root/.cache/fastembed
+COPY --link --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
+COPY --link --from=python-deps /usr/local/bin /usr/local/bin
+COPY --link --chown=1000:1000 --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
+COPY --link --chown=1000:1000 --from=python-deps /root/nltk_data /root/nltk_data
 
-# Cap ML thread fan-out (PyTorch/OpenBLAS/MKL). runtime_threads.py propagates
-# this to all libraries. Override via OMP_NUM_THREADS in .env if needed.
-ENV OMP_NUM_THREADS=2
+COPY --link --from=nodejs-backend /app/backend/dist ./backend/dist
+COPY --link --from=nodejs-backend /app/templates ./backend/src
+COPY --link --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
+COPY --link --from=nodejs-prod-deps /app/backend/node_modules ./backend/dist/node_modules
+COPY --link --from=frontend-build /out ./backend/dist/public
+COPY --link backend/python/app/ /app/python/app/
+COPY --link --chmod=755 deployment/process_monitor.sh /app/process_monitor.sh
+COPY --link --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
 
-# Several third-party deps (talon, pysbd, ...) ship regex string literals with
-# unescaped backslashes and hit Python 3.12+'s SyntaxWarning at import time.
-# We don't control their source, and new deps can hit this same issue, so
-# suppress the class globally rather than patching each import site.
-ENV PYTHONWARNINGS="ignore::SyntaxWarning"
-
-# Copy Python site-packages from build stage
-COPY --from=python-deps /usr/local/lib/python3.12/site-packages /usr/local/lib/python3.12/site-packages
-COPY --from=python-deps /usr/local/bin /usr/local/bin
-
-# Copy ML model data (dense HF embeddings + reranker, sparse fastembed, NLTK)
-COPY --chown=1000:1000 --from=python-deps /root/.cache/huggingface /root/.cache/huggingface
-COPY --chown=1000:1000 --from=python-deps /root/.cache/fastembed /root/.cache/fastembed
-COPY --chown=1000:1000 --from=python-deps /root/nltk_data /root/nltk_data
-
-# Layout model for the pdfplumber PDF parser (tables, figures), so it needs no
-# download at runtime. Only its own cache dir is handed over: a chown of the
-# whole cache would copy every baked model into this layer.
-RUN python -c "from huggingface_hub import hf_hub_download; hf_hub_download('docling-project/docling-layout-heron-onnx', 'model.onnx', revision='40bde044036bb181c130ddf6c51792187268748f')" && \
-    chown -R 1000:1000 /root/.cache/huggingface/hub/models--docling-project--docling-layout-heron-onnx
-
-# Copy Playwright browser binaries
-COPY --chown=1000:1000 --from=python-deps /root/.cache/ms-playwright /root/.cache/ms-playwright
-
-# Copy Node.js backend (already pruned)
-COPY --from=nodejs-backend /app/backend/dist ./backend/dist
-COPY --from=nodejs-backend /app/templates ./backend/src
-COPY --from=nodejs-backend /app/backend/src/modules/api-docs/pipeshub-openapi.yaml ./backend/src/modules/api-docs/pipeshub-openapi.yaml
-COPY --from=nodejs-backend /app/backend/node_modules ./backend/dist/node_modules
-
-# Copy frontend build (normalized to /out by the selected frontend stage)
-COPY --from=frontend-build /out ./backend/dist/public
-
-# Copy Python application code
-COPY backend/python/app/ /app/python/app/
-
-# Copy the process monitor script
-COPY deployment/process_monitor.sh /app/process_monitor.sh
-
-RUN chmod +x /app/process_monitor.sh && \
-    install -d -o 1000 -g 1000 /app/python/logs /data/pipeshub && \
-    chown 1000:1000 /app /app/backend
-
-# Code stays root-owned (read-only to the app); only the dirs above, which the
-# services create log and state files in, belong to the runtime user. The image
-# starts as root so the entrypoint can take over data from earlier root-running
-# releases; it drops to uid 1000 with no capabilities before any service starts.
-COPY --chmod=755 deployment/docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+# process_monitor.sh writes /app/process_monitor.log and the Node server writes
+# under /app/backend. Each --link copy recreates its parent directories as root,
+# so ownership is set after the copies, without recursing into them.
+RUN chown 1000:1000 /app /app/backend
 
 # Which build this image is; each service returns it from /health. Declared
 # last so a new commit rebuilds only these layers. With no build args the
 # variables are empty and the services report null.
 ARG APP_VERSION=""
 ARG GIT_COMMIT=""
+ARG BASE_HASH=""
+ARG NPM_LOCK_HASH=""
 ENV APP_VERSION=${APP_VERSION} \
     GIT_COMMIT=${GIT_COMMIT}
 LABEL org.opencontainers.image.version=${APP_VERSION} \
-      org.opencontainers.image.revision=${GIT_COMMIT}
+      org.opencontainers.image.revision=${GIT_COMMIT} \
+      org.pipeshub.base-hash=${BASE_HASH} \
+      org.pipeshub.npm-lock-hash=${NPM_LOCK_HASH}
 
 EXPOSE 3000 8002 8092 8093
-
 ENTRYPOINT ["/usr/local/bin/docker-entrypoint.sh"]
 CMD ["/app/process_monitor.sh"]
+
+# -----------------------------------------------------------------------------
+# Full runtime: slim plus baked Chromium and the embedding/reranker models.
+# -----------------------------------------------------------------------------
+FROM runtime-slim AS runtime
+ENV PLAYWRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright \
+    PATCHRIGHT_BROWSERS_PATH=/root/.cache/ms-playwright
+COPY --link --chown=1000:1000 --from=browsers /root/.cache/ms-playwright /root/.cache/ms-playwright
+COPY --link --chown=1000:1000 --from=models /root/.cache/huggingface /root/.cache/huggingface
