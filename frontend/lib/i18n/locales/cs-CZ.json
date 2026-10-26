@@ -542,7 +542,7 @@
     "willBeReindexed": "bude přeindexováno",
     "reindexConfirm": "Přeindexovat {{type}}?",
     "reindexDescription": "Tím se aktualizuje vyhledávací index pro {{type}} a jeho obsah.",
-    "deleteCollectionBody": "'{{name}}' a vše v ní bude smazáno.",
+    "deleteCollectionBody": "'{{name}}' a vše v ní bude smazáno. Bude také odebrána ze všech agentů, kteří ji používají.",
     "deleteFolderBody": "'{{name}}' a vše v ní bude z této kolekce smazáno.",
     "deleteFileBody": "'{{name}}' bude z této kolekce smazán."
   },

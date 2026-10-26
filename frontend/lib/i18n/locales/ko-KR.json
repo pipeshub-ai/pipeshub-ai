@@ -506,7 +506,7 @@
     "willBeReindexed": "이(가) 다시 인덱싱됩니다",
     "reindexConfirm": "이 {{type}}을(를) 다시 인덱싱하시겠습니까?",
     "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다.",
-    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 삭제됩니다.",
+    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 삭제됩니다. 이 컬렉션을 사용하는 모든 에이전트에서도 제거됩니다.",
     "deleteFolderBody": "'{{name}}' 및 그 안의 모든 항목이 이 컬렉션에서 삭제됩니다.",
     "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다."
   },

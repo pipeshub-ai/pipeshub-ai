@@ -506,7 +506,7 @@
     "willBeReindexed": "將被重新索引",
     "reindexConfirm": "要重新索引此{{type}}嗎？",
     "reindexDescription": "這將更新此{{type}}及其內容的搜尋索引。",
-    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被刪除。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被刪除。它也會從所有使用它的代理中移除。",
     "deleteFolderBody": "'{{name}}' 及其中的所有內容將從此集合中刪除。",
     "deleteFileBody": "'{{name}}' 將從此集合中刪除。"
   },

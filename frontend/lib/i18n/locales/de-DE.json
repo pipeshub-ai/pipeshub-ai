@@ -422,7 +422,7 @@
     "willBeReindexed": "wird neu indiziert",
     "reindexConfirm": "Diesen {{type}} neu indizieren?",
     "reindexDescription": "Dies aktualisiert den Suchindex für diesen {{type}} und seinen Inhalt.",
-    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht.",
+    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden.",
     "deleteFolderBody": "'{{name}}' und alle Inhalte werden aus dieser Sammlung gelöscht.",
     "deleteFileBody": "'{{name}}' wird aus dieser Sammlung gelöscht."
   },
