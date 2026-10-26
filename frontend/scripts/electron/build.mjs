@@ -13,15 +13,17 @@
 
 import { spawnSync, execSync } from 'child_process';
 import { existsSync, readdirSync, renameSync, rmSync } from 'fs';
-import { dirname, join } from 'path';
+import { dirname, join, resolve } from 'path';
 import { fileURLToPath } from 'url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const ROOT = join(__dirname, '..', '..');
 const DMG_MOUNT_PATH = '/Volumes/PipesHub';
-const MAC_ARCHES = ['--x64', '--arm64'];
-const WIN_ARCHES = ['--x64', '--arm64'];
-const LINUX_ARCHES = ['--x64', '--arm64'];
+// ELECTRON_ARCH=arm64|x64 narrows every platform to one architecture (CI builds mac arm64 only).
+const ONLY_ARCH = process.env.ELECTRON_ARCH ? [`--${process.env.ELECTRON_ARCH}`] : null;
+const MAC_ARCHES = ONLY_ARCH ?? ['--x64', '--arm64'];
+const WIN_ARCHES = ONLY_ARCH ?? ['--x64', '--arm64'];
+const LINUX_ARCHES = ONLY_ARCH ?? ['--x64', '--arm64'];
 const PLATFORM_FLAGS = {
   mac: '--mac',
   win: '--win',
@@ -45,7 +47,8 @@ if (!['mac', 'win', 'linux', 'all'].includes(mode)) {
 const modes = mode === 'all' ? ['mac', 'win', 'linux'] : [mode];
 
 function platformOutDir(targetMode) {
-  return join('dist-electron', targetMode);
+  // ELECTRON_OUT_DIR moves every artifact (an absolute path keeps big builds off the checkout's disk).
+  return join(process.env.ELECTRON_OUT_DIR || 'dist-electron', targetMode);
 }
 
 function fail(message) {
@@ -203,6 +206,11 @@ function buildElectron(targetMode, archFlag, options = {}) {
     '--publish',
     'never',
     archFlag,
+    // Signing plugs in through the environment: CSC_LINK + CSC_KEY_PASSWORD sign,
+    // and these Apple variables additionally notarise. Absent, the build is unsigned.
+    ...(targetMode === 'mac' && process.env.CSC_LINK && process.env.APPLE_TEAM_ID
+      ? ['--config.mac.notarize=true']
+      : []),
   ];
 
   const attempts = retryOnDmgFailure ? 2 : 1;
@@ -245,7 +253,7 @@ function buildWin() {
 function normalizeLinuxArtifactNames(archFlag) {
   if (archFlag !== '--x64') return;
 
-  const outDir = join(ROOT, platformOutDir('linux'));
+  const outDir = resolve(ROOT, platformOutDir('linux'));
   if (!existsSync(outDir)) return;
 
   for (const fileName of readdirSync(outDir)) {
@@ -279,7 +287,7 @@ preflight();
 
 for (const targetMode of modes) {
   const outDir = platformOutDir(targetMode);
-  const outAbs = join(ROOT, outDir);
+  const outAbs = resolve(ROOT, outDir);
   if (existsSync(outAbs)) {
     console.log(`\n==> Cleaning ${outDir}/\n`);
     rmSync(outAbs, { recursive: true, force: true });
@@ -288,6 +296,7 @@ for (const targetMode of modes) {
 
 run('Next.js static export', 'npm', ['run', 'build:electron']);
 run('Electron prepare (tsc + copy out/ + icons)', 'npm', ['run', 'electron:prepare']);
+run('Stage the native launcher bundle', 'node', ['scripts/electron/stage-launcher.mjs']);
 
 for (const targetMode of modes) {
   if (targetMode === 'mac') buildMac();
