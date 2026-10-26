@@ -144,6 +144,38 @@ async def test_typescript_receivers_typed_by_return_types_and_initializers(graph
             "src/model.ts::method:Emitter.fire"} <= calls
 
 
+async def test_a_class_argument_call_types_an_untyped_receiver(graph, index_file) -> None:
+    # vscode: `accessor.get(ICtl).run()` where `accessor` has no type the graph knows.
+    await index_file("ctl", "src/ctl.ts",
+                     b"export class Ctl {\n  goToBottom(): void {}\n}\n"
+                     b"export class Other {\n  goToBottom(): void {}\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Ctl } from './ctl';\n"
+                     b"export function run(accessor: ServicesAccessor) {\n  accessor.get(Ctl).goToBottom();\n}\n",
+                     "typescript")
+    await _build(graph)
+    calls = _targets(graph, CALLS, "src/app.ts")
+    assert "src/ctl.ts::method:Ctl.goToBottom" in calls
+    assert "src/ctl.ts::method:Other.goToBottom" not in calls
+
+
+async def test_a_method_call_result_is_not_typed_by_a_same_named_function(graph, index_file) -> None:
+    # `editor.getModel().getValue()` must not take the return type of a local `function getModel()`.
+    await index_file("model", "src/model.ts",
+                     b"export interface ITextModel {\n  getValue(): string;\n}\n"
+                     b"export interface IEditor {\n  getModel(): ITextModel;\n}\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { IEditor } from './model';\n"
+                     b"export class Foo {\n  getValue(): string { return ''; }\n}\n"
+                     b"function getModel(): Foo { return new Foo(); }\n"
+                     b"export function run(editor: IEditor) {\n  return editor.getModel().getValue();\n}\n",
+                     "typescript")
+    await _build(graph)
+    calls = _targets(graph, CALLS, "src/app.ts")
+    assert "src/model.ts::method:ITextModel.getValue" in calls
+    assert "src/app.ts::method:Foo.getValue" not in calls
+
+
 async def test_a_typescript_namespace_function_is_called_through_the_namespace(graph, index_file) -> None:
     # vscode: `Event.map(...)`, where `namespace Event` shares its name with an interface.
     await index_file("event", "src/event.ts",

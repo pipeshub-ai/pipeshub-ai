@@ -840,7 +840,10 @@ class _Builder:
         receiver_type = fact.get("receiverType")
         receiver = fact.get("receiver")
         scoped = bool(fact.get("headType")) and fact.get("qualifiedPrefix") == receiver
-        if not receiver_type and receiver and not scoped:
+        # `a.f().g()` keeps `f()` as the receiver, which would match a bare `function f()`'s
+        # return type; the chain is evaluated whole below instead.
+        chained_call = receiver.endswith(")") and fact.get("qualifiedPrefix") != receiver if receiver else False
+        if not receiver_type and receiver and not scoped and not chained_call:
             receiver_type = self.index.type_table_by_record.get(record_id, {}).get(receiver)
         if receiver_type and (receiver_type.startswith("=") or receiver_type.endswith("[]")):
             receiver_type = None
@@ -942,13 +945,14 @@ class _Builder:
             else:
                 owner = self._value_type(head, record_id, this_type, depth)
             for name, called, first_arg in rest:
+                if called and name in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
+                    # `accessor.get(IFoo)`, `createInstance(Foo)`: the service or class named,
+                    # whatever the receiver's type.
+                    owner = self._value_type(first_arg, record_id, this_type, depth)
+                    continue
                 if owner is None or owner.startswith("[]"):
                     owner = None
                     break
-                if called and name in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
-                    # `accessor.get(IFoo)`, `createInstance(Foo)`: the service or class named.
-                    owner = self._value_type(first_arg, record_id, this_type, depth)
-                    continue
                 owner = (self._return_type(self._resolve_self_method(owner, name), depth) if called
                          else self._member_type(owner, name, depth))
         return owner

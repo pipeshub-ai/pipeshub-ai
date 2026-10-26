@@ -1486,7 +1486,7 @@ class _Walker:
             to_kind="block",
             is_member_call=is_member,
             receiver=receiver,
-            receiver_type=self._receiver_type(node, receiver),
+            receiver_type=self._receiver_type(node, receiver, qualifier),
             qualified_prefix=qualifier,
             head_type=self._head_type(node, qualifier),
         ))
@@ -1498,11 +1498,15 @@ class _Walker:
         head = _TS_HEAD.match(qualifier)
         return self._ts_scoped_type(node, head.group()) if head and head.group() != "this" else None
 
-    def _receiver_type(self, node: Node, receiver: str | None) -> str | None:
+    def _receiver_type(self, node: Node, receiver: str | None, qualifier: str | None = None) -> str | None:
         """The receiver's type, from its own function first in Go: one file's
         methods reuse `c` for `*Client` and `*Config`, which the file-wide table
         has to drop."""
         if not receiver:
+            return None
+        if receiver.endswith(")") and qualifier != receiver:
+            # `a.f().g()` keeps only `f()`, the key of a bare `function f()`'s return type;
+            # the builder evaluates the whole chain.
             return None
         if self.cfg.type_table_handler_name == "go":
             scope = node.parent
@@ -1547,7 +1551,7 @@ class _Walker:
             relation=Relation.CALLS, to_name=name, line=self._line_at(target.start_byte),
             byte_offset=target.start_byte, from_symbol=enclosing, to_kind="block",
             is_member_call=is_member, receiver=receiver,
-            receiver_type=self._receiver_type(target, receiver),
+            receiver_type=self._receiver_type(target, receiver, qualifier),
             qualified_prefix=qualifier,
         ))
 
