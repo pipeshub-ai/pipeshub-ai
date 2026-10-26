@@ -80,8 +80,11 @@ class TestParseBinary:
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
-                with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
+                with pytest.raises(DocumentProcessingError) as exc_info:
                     parser.parse_binary(b"bad data")
+
+        assert exc_info.value.message == "Failed to parse PPTX: failure"
+        assert exc_info.value.details == {"status": "failure"}
 
     def test_converter_exception_propagates(self):
         mock_converter = MagicMock()
