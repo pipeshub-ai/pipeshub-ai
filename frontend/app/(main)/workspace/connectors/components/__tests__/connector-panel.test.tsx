@@ -516,6 +516,29 @@ describe('ConnectorPanel: editing saved credentials', () => {
     expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
   });
 
+  it('leaves a panel reopened for the same connector while the save ran', async () => {
+    savedJiraConfig();
+    let finishSave: (value: unknown) => void = () => {};
+    api.saveAuthConfig.mockReturnValue(new Promise((resolve) => (finishSave = resolve)));
+    const instance = makeInstance({ isAuthenticated: false, isConfigured: false });
+    await startEdit({ isAuthenticated: false, isConfigured: false });
+    fillCredentials({ token: 'first-try' });
+    fireEvent.click(nextButton());
+    await waitFor(() => expect(api.saveAuthConfig).toHaveBeenCalledWith('conn-1', expect.anything()));
+
+    act(() => useConnectorsStore.getState().closePanel());
+    act(() => useConnectorsStore.getState().openPanel(instance, instance._key, 'team'));
+    await waitFor(() => expect(screen.queryByText('Loading configuration…')).toBeNull());
+    fillCredentials({ token: 'second-try' });
+    const loadsBefore = api.getConnectorConfig.mock.calls.length;
+    await act(async () => finishSave({}));
+
+    await waitFor(() => expect(useConnectorsStore.getState().isSavingAuth).toBe(false));
+    expect(api.getConnectorConfig.mock.calls.length).toBe(loadsBefore);
+    expect(useConnectorsStore.getState().panelActiveTab).toBe('authenticate');
+    expect((inputByLabel('API token') as HTMLInputElement).value).toBe('second-try');
+  });
+
   it('leaves the loading and error state of a connector opened without closing the panel', async () => {
     savedJiraConfig();
     let failSave: (reason: unknown) => void = () => {};

@@ -149,6 +149,21 @@ export function ConnectorPanel() {
   } | null>(null);
   /** Counts edit-mode auth saves, so only the latest one clears the saving state. */
   const authSaveGenRef = useRef(0);
+  /**
+   * Counts panel sessions: closing, opening or switching connector starts a new one, so a save
+   * from a closed session can't touch a reopened panel for the same connector. A store
+   * subscription runs as the store changes, before any save can finish after it.
+   */
+  const panelSessionRef = useRef(0);
+  useEffect(
+    () =>
+      useConnectorsStore.subscribe((state, prev) => {
+        if (state.isPanelOpen !== prev.isPanelOpen || state.panelConnectorId !== prev.panelConnectorId) {
+          panelSessionRef.current += 1;
+        }
+      }),
+    []
+  );
   useEffect(() => {
     if (authAwaitingDisable && (!isPanelOpen || authAwaitingDisable.connectorId !== panelConnectorId)) {
       setAuthAwaitingDisable(null);
@@ -554,9 +569,14 @@ export function ConnectorPanel() {
     // The loading, error and tab state is the panel's, shared by every connector it shows: a save
     // that finishes after the panel moved on to another connector leaves that state alone.
     const editType = connectorType;
+    const session = panelSessionRef.current;
     const isStillOpen = () => {
       const s = useConnectorsStore.getState();
-      return s.panelConnectorId === editId && s.panelConnector?.type === editType;
+      return (
+        panelSessionRef.current === session &&
+        s.panelConnectorId === editId &&
+        s.panelConnector?.type === editType
+      );
     };
     const saveGen = ++authSaveGenRef.current;
     setIsSavingAuth(true);

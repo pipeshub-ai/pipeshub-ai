@@ -11,6 +11,7 @@ import logging
 import re
 import sys
 from datetime import datetime, timedelta, timezone
+from email.utils import format_datetime
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import MagicMock
@@ -2122,13 +2123,17 @@ class TestLookups:
 
         assert db.inherit_edges["f1"] is True
 
+    @pytest.mark.parametrize("retry_after", [
+        lambda: "120",
+        lambda: format_datetime(datetime.now(timezone.utc) + timedelta(seconds=120), usegmt=True),
+    ], ids=["seconds", "http-date"])
     async def test_a_longer_retry_after_than_the_cap_is_not_retried_early(
-        self, cloud, tenant, db, checkpoints, sharepoint_rest
+        self, cloud, tenant, db, checkpoints, sharepoint_rest, retry_after
     ) -> None:
         inheritance_drive(tenant)
         serve_unique_items(cloud, FOLDER_UNIQUE_ID, SHARED_UNIQUE_ID, inheriting=(INHERITING_UNIQUE_ID,))
         cloud.on("GET", item_lookup_path(INHERITING_UNIQUE_ID), [
-            json_response({"error": "throttled"}, status=429, headers={"Retry-After": "120"}),
+            json_response({"error": "throttled"}, status=429, headers={"Retry-After": retry_after()}),
             {"d": {"Id": 3, "HasUniqueRoleAssignments": False}},
         ])
         connector = await certificate_connector(db, checkpoints)

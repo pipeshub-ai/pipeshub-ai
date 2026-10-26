@@ -13,6 +13,8 @@ import re
 import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 from http import HTTPStatus
 from typing import Any, cast
 from urllib.parse import urlparse
@@ -188,16 +190,30 @@ class SharePointPermissionScopeReader:
                     f"SharePoint REST answered {response.status_code} for {url}: {_error_message(response)}",
                     response.status_code,
                 )
-            retry_after = response.headers.get('Retry-After', '')
-            if retry_after.isdigit() and int(retry_after) > SHAREPOINT_REST_MAX_RETRY_AFTER_S:
+            retry_after = _retry_after_seconds(response.headers.get('Retry-After', ''))
+            if retry_after is not None and retry_after > SHAREPOINT_REST_MAX_RETRY_AFTER_S:
                 # Waiting that long would hold up the sync, and asking sooner would be refused
                 # again: give up for this run, so the answer is asked for again on the next one.
                 raise SharePointRestError(
-                    f"SharePoint REST asked to wait {retry_after}s for {url}", response.status_code
+                    f"SharePoint REST asked to wait {retry_after:.0f}s for {url}", response.status_code
                 )
-            delay = int(retry_after) if retry_after.isdigit() else 2 ** attempt
+            delay = retry_after if retry_after is not None else 2 ** attempt
             await asyncio.sleep(min(delay, SHAREPOINT_REST_MAX_RETRY_AFTER_S))
             attempt += 1
+
+
+def _retry_after_seconds(value: str) -> float | None:
+    """A ``Retry-After`` header in seconds from now: it is a number of seconds or an HTTP-date."""
+    value = value.strip()
+    if value.isdigit():
+        return float(value)
+    try:
+        when = parsedate_to_datetime(value)
+    except (TypeError, ValueError):
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return max(0.0, (when - datetime.now(timezone.utc)).total_seconds())
 
 
 def _field(value: object, key: str) -> object:
