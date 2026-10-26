@@ -6,6 +6,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ForbiddenError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   UnauthorizedError,
@@ -37,15 +38,24 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { safeParsePagination } from '../../../utils/safe-integer';
+import { KB_BEING_DELETED_MESSAGE } from '../../../libs/errors/backend-error';
 
 /** Shape of the KB detail response used during pre-upload permission checks. */
 interface KbCheckData {
   userRole?: string;
+  /** `DELETING` while the knowledge base is being deleted. */
+  status?: string;
 }
+
+/** A pushed record's revision id, as the Python service writes it (`pb1:...`). */
+export const PUSHED_REVISION = /^pb[0-9]+:/;
+
+const kbBeingDeleted = (): HttpError =>
+  new HttpError('KB_BEING_DELETED', KB_BEING_DELETED_MESSAGE, 409);
 
 /** Fields of the record detail response read before a file replace. */
 interface RecordDetailData {
-  record?: { externalRecordId?: string };
+  record?: { externalRecordId?: string; externalRevisionId?: string };
   knowledgeBase?: { id?: string };
 }
 import {
@@ -1170,11 +1180,16 @@ const assertKbWritePermission = async (
   if (kbCheckResponse.statusCode !== 200) {
     throw handleBackendError(kbCheckResponse, 'verify knowledge base access');
   }
-  const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+  const kbCheck = kbCheckResponse.data as KbCheckData | undefined;
+  const kbUserRole = kbCheck?.userRole;
   if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
     throw new ForbiddenError(
       'You do not have permission to upload to this knowledge base',
     );
+  }
+  // After the role check, so a caller with no access cannot learn the state of the KB.
+  if (kbCheck.status === 'DELETING') {
+    throw kbBeingDeleted();
   }
 };
 
@@ -1402,6 +1417,18 @@ export const updateRecord =
           kbId,
           req.headers as Record<string, string>,
         );
+
+        // A pushed record's content is whatever its pusher sent; a file replaced here would be
+        // overwritten by the next push and would break the revision the record names.
+        if (
+          PUSHED_REVISION.test(recordDetail.record?.externalRevisionId ?? '')
+        ) {
+          throw new HttpError(
+            'RECORD_IS_PUSHED',
+            'This record was pushed through the API, so its file cannot be replaced here. Push a new version instead.',
+            409,
+          );
+        }
 
         storageDocumentId = recordDetail?.record?.externalRecordId;
 

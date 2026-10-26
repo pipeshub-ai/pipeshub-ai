@@ -167,6 +167,13 @@ class FakeGraph:
     async def _create_reindex_event_payload(self, record, file_record):
         return {"recordId": record["_key"]}
 
+    async def update_knowledge_base(self, kb_id, updates, transaction=None) -> bool:
+        app = self.apps.get(kb_id)
+        if app is None:
+            return False
+        app.update(updates)
+        return True
+
     # -- shared --------------------------------------------------------------
     async def get_document(self, key, collection, **_kw):
         if collection == CollectionNames.APPS.value:
@@ -231,9 +238,12 @@ class FakeConfig:
             return {"cm": {"endpoint": self.endpoint}}
         return self.kv.get(key, default)
 
-    async def set_config(self, key, value):
+    async def set_config(self, key, value, **_kw):
         self.kv[key] = value
         return True
+
+    async def create_config_if_absent(self, key, value, **_kw) -> bool:
+        return self.kv.setdefault(key, value) is value
 
     async def delete_config(self, key):
         # As on Redis: False for a refused delete and for a key already gone.

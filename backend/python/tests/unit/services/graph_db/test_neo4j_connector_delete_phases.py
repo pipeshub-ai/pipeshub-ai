@@ -5,6 +5,7 @@ import inspect
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from neo4j.exceptions import Neo4jError
 
 from app.services.graph_db.neo4j.neo4j_provider import Neo4jProvider
 
@@ -55,7 +56,7 @@ async def test_connector_delete_does_not_open_an_explicit_transaction() -> None:
 async def test_failed_batch_keeps_the_app_node() -> None:
     p = _provider()
     p._collect_connector_entities.return_value["role_keys"] = ["r1"]
-    p._delete_nodes_by_keys.side_effect = lambda _tx, keys, coll: (0, 1) if keys == ["r1"] else (1, 0)
+    p._delete_nodes_by_keys.side_effect = lambda _tx, keys, coll, **_: (0, 1) if keys == ["r1"] else (1, 0)
 
     result = await p._delete_connector_instance("c1", "org")
 
@@ -147,3 +148,119 @@ class TestStash:
         p.client.execute_query.side_effect = [[], ConnectionError("graph down")]
         with pytest.raises(ConnectionError):
             await p._stash_connector_delete_handles("c1", ["g1"], None)
+
+
+# ---- a delete that races a push, or a second deleter (T42u, T42g) ---------------------------------
+
+
+
+def _deadlock() -> Neo4jError:
+    return Neo4jError._hydrate_neo4j(code="Neo.TransientError.Transaction.DeadlockDetected", message="deadlock")
+
+
+def _real_rule(p: Neo4jProvider) -> None:
+    p._assert_none_remain = Neo4jProvider._assert_none_remain.__get__(p)
+
+
+@pytest.mark.asyncio
+async def test_a_second_deleter_that_found_the_nodes_gone_succeeds() -> None:
+    """A rival (the finisher, an owner's retry) removed every node first: nothing remains, so this delete is done."""
+    p = _provider()
+    _real_rule(p)
+    p._collect_connector_entities.return_value.update(record_keys=["r1"], record_group_keys=["g1"])
+    p._delete_nodes_by_keys.side_effect = lambda *a, **k: (0, 0)
+    p.get_existing_keys = AsyncMock(return_value=set())
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is True, result
+    checked = {c.args[0] for c in p.get_existing_keys.await_args_list}
+    assert {"records", "recordGroups", "apps"} <= checked
+
+
+@pytest.mark.asyncio
+async def test_a_node_that_remains_fails_the_delete_and_keeps_the_app() -> None:
+    p = _provider()
+    _real_rule(p)
+    p._collect_connector_entities.return_value.update(record_keys=["r1", "r2"])
+    p._delete_nodes_by_keys.side_effect = lambda *a, **k: (1, 0)
+    p.get_existing_keys = AsyncMock(side_effect=lambda coll, keys, tx=None: {"r2"} if coll == "records" else set())
+
+    result = await p._delete_connector_instance("c1", "org")
+
+    assert result["success"] is False and "remain" in result["error"]
+    p._delete_connector_with_its_delete_handles.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_type_docs_are_measured_per_collection() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    p.client = MagicMock()
+    p._delete_nodes_by_keys = AsyncMock(return_value=(0, 0))
+    p.get_existing_keys = AsyncMock(return_value=set())
+    targets = [{"collection": "files", "key": "f1"}, {"collection": "mails", "key": "m1"}]
+
+    total, _ = await p._delete_isoftype_targets_from_collected("t", targets)
+
+    assert total == 0
+    assert [c.args[0] for c in p.get_existing_keys.await_args_list] == ["files", "mails"]
+    p.get_existing_keys = AsyncMock(side_effect=lambda coll, keys, tx=None: {"m1"} if coll == "mails" else set())
+    with pytest.raises(Exception, match="mails"):
+        await p._delete_isoftype_targets_from_collected("t", targets)
+
+
+def _batch_provider(errors: list[BaseException]) -> tuple[Neo4jProvider, AsyncMock]:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    outcomes = [*errors, [{"deleted_count": 2}]]
+    execute = AsyncMock(side_effect=outcomes)
+    p.client = MagicMock(execute_query=execute)
+    return p, execute
+
+
+@pytest.mark.asyncio
+async def test_a_batch_that_deadlocked_with_a_push_runs_again() -> None:
+    p, execute = _batch_provider([_deadlock()])
+    stats: dict[str, int] = {}
+
+    deleted, failed = await p._delete_nodes_by_keys(None, ["a", "b"], "records", retry_conflicts=True, stats=stats)
+
+    assert (deleted, failed) == (2, 0)
+    assert execute.await_count == 2 and stats == {"retries": 1}
+
+
+@pytest.mark.asyncio
+async def test_without_the_retry_the_deadlock_fails_the_batch() -> None:
+    """Negative control for the cascade retry: the round-3 code left the KB DELETING with its record."""
+    p, execute = _batch_provider([_deadlock()])
+
+    deleted, failed = await p._delete_nodes_by_keys(None, ["a", "b"], "records")
+
+    assert (deleted, failed) == (0, 1) and execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_the_batch_retry_is_bounded_and_ignores_other_errors() -> None:
+    from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+
+    p, execute = _batch_provider([_deadlock() for _ in range(CASCADE_ATTEMPTS)])
+    assert await p._delete_nodes_by_keys(None, ["a"], "records", retry_conflicts=True) == (0, 1)
+    assert execute.await_count == CASCADE_ATTEMPTS
+
+    p, execute = _batch_provider([RuntimeError("syntax")])
+    assert await p._delete_nodes_by_keys(None, ["a"], "records", retry_conflicts=True) == (0, 1)
+    assert execute.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_get_existing_keys_reads_the_collection_and_raises_on_a_failed_read() -> None:
+    p = Neo4jProvider.__new__(Neo4jProvider)
+    p.logger = MagicMock()
+    p.client = MagicMock(execute_query=AsyncMock(return_value=[{"id": "a"}]))
+    assert await p.get_existing_keys("records", ["a", "b", "a", ""]) == {"a"}
+    assert p.client.execute_query.await_args.kwargs["parameters"] == {"keys": ["a", "b"]}
+    p.client.execute_query.side_effect = RuntimeError("down")
+    with pytest.raises(RuntimeError):
+        await p.get_existing_keys("records", ["a"])
+    assert await p.get_existing_keys("records", []) == set()

@@ -5099,6 +5099,11 @@ components:
           type: string
           enum: [OWNER, WRITER, READER]
           description: User's role in this knowledge base
+        status:
+          type: string
+          nullable: true
+          enum: [DELETING]
+          description: '`DELETING` while the knowledge base is being deleted (writes are refused with 409); null otherwise.'
         folders:
           type: array
           items:
@@ -5373,6 +5378,13 @@ components:
           type: string
           enum: [OWNER, WRITER, READER]
           description: User's role in this knowledge base
+        status:
+          type: string
+          nullable: true
+          enum: [DELETING]
+          description: |
+            `DELETING` while the knowledge base is being deleted: reads work, every write is refused with 409
+            (`error.code` `HTTP_KB_BEING_DELETED`), and deleting it again finishes the job. Null otherwise.
         folders:
           type: array
           description: |
@@ -37403,6 +37415,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error — updating knowledge base failed in connector or database.
@@ -37785,7 +37804,10 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
-          description: Another file with the new name already exists in the same folder
+          description: |
+            Another file with the new name already exists in the same folder
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -37865,6 +37887,13 @@ paths:
           description: |
             Record not found, not accessible to the caller, or already in the trash. The message
             is `You do not have access to this record` in every case.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -37972,6 +38001,8 @@ paths:
             in is still in the trash (restore that folder first), another item has taken
             this record's place (delete that item first, then restore), or the record
             changed while it was being restored (refresh and try again).
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -38041,6 +38072,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: OAuth token is missing the required kb:delete scope
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -38497,6 +38535,8 @@ paths:
 
             - A folder with this name already exists at the knowledge base root or within the parent folder
             - The parent folder is in Recently deleted; restore it first, or choose another folder
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -38689,6 +38729,8 @@ paths:
 
             - A folder with this name already exists at the knowledge base root or within the parent folder
             - The parent folder is in Recently deleted; restore it first, or choose another folder
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -38837,6 +38879,8 @@ paths:
             Another folder in the same parent already has this name, ignoring case
             (`Folder '<name>' already exists in collection root` at the root,
             `... already exists in this folder` in a folder).
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -38934,6 +38978,13 @@ paths:
               caller holds no role on it
             - `Folder not found in knowledge base`: `folderId` is not a folder of this knowledge
               base (unknown id, already deleted, or a file)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -39158,6 +39209,8 @@ paths:
             The `folderId` folder is in Recently deleted (`'<folder>' is in Recently deleted, so you
             can't upload files to it. Restore it first, or choose another folder.`), answered before
             the stream starts. Restore the folder first, or choose another folder.
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -39764,6 +39817,8 @@ paths:
               can't move items into it. Restore it first, or choose another folder.` This is checked
               before the already-there check, so it is answered even when the item is already in
               that folder.
+
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -39915,6 +39970,13 @@ paths:
             - Knowledge base does not exist, or the caller holds no role on it
               (`Knowledge base not found` in both cases)
             - Authenticated user not found in graph database
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:
@@ -40149,6 +40211,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
             Internal server error — permission update failed in connector or database.
@@ -40283,6 +40352,13 @@ paths:
             - Authenticated user not found in graph database
             - None of the supplied users or teams have an existing permission to remove
               (`No users or teams with existing permissions found to remove`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The knowledge base is being deleted (`error.code` is `HTTP_KB_BEING_DELETED`): it can no longer be changed. Reads still work and show `status: DELETING`; retry the delete instead.
           content:
             application/json:
               schema:

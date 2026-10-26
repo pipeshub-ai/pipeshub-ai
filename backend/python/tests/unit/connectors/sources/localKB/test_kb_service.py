@@ -738,7 +738,13 @@ class TestDeleteKBStorageCleanup:
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
 
         assert result["success"] is False
-        mock_config_service.delete_config.assert_not_awaited()
+        self._assert_intents_kept(mock_config_service)
+
+    @staticmethod
+    def _assert_intents_kept(config_service) -> None:
+        """The delete lease is a hint the delete removes itself; the intents must stay."""
+        deleted = [c.args[0] for c in config_service.delete_config.await_args_list]
+        assert not [k for k in deleted if "/storageRelease/" in k or "/entityCleanup/" in k], deleted
 
     @pytest.mark.asyncio
     async def test_a_refused_upload_removal_leaves_its_intent_to_the_reconciler(self, service, mock_config_service):
@@ -749,7 +755,7 @@ class TestDeleteKBStorageCleanup:
 
         assert result["code"] == 503
         service.graph_provider.delete_connector_instance.assert_not_called()
-        mock_config_service.delete_config.assert_not_awaited()
+        self._assert_intents_kept(mock_config_service)
 
     @pytest.mark.asyncio
     async def test_a_storage_intent_that_cannot_be_recorded_stops_the_delete(
@@ -1202,6 +1208,7 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "old.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -1244,6 +1251,7 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "same.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
                 {"recordName": "same.pdf"},
@@ -1308,6 +1316,7 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "old.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -2518,6 +2527,7 @@ class TestMoveRecord:
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "a.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -2552,6 +2562,7 @@ class TestMoveRecord:
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "a.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -2575,7 +2586,7 @@ class TestMoveRecord:
         graph.validate_folder_in_kb = AsyncMock(return_value=True)
         graph.is_record_folder = AsyncMock(return_value=False)
         graph.get_document = AsyncMock(
-            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+            side_effect=[{}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
         )
         graph.find_file_by_name_in_parent = AsyncMock(return_value=None)
         graph.get_file_record_by_id = AsyncMock(return_value=stored.model_copy())
@@ -2649,7 +2660,7 @@ class TestMoveRecord:
         tx_store.upsert_record_under_parent.side_effect = MoveDestinationMissing("rec-upload-1", "new-folder")
         service.graph_provider.validate_folder_in_kb = AsyncMock(side_effect=[True, True])
         service.graph_provider.get_document.side_effect = [
-            {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}, {"recordName": "Archive"},
+            {}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}, {"recordName": "Archive"},
         ]
 
         result = await service.move_record("kb1", "rec-upload-1", "new-folder", "user1")
@@ -2695,7 +2706,12 @@ class TestMoveRecord:
         graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         graph.get_record_parent_info = AsyncMock(return_value={"id": "old"})
         graph.validate_folder_in_kb = _folder_in_trash()
-        graph.get_document = AsyncMock(side_effect=RuntimeError("read timed out"))
+        async def read(key: str, collection: str, **_: object) -> dict:
+            if collection == "apps":
+                return {}  # the KB is live; only the folder's name cannot be read
+            raise RuntimeError("read timed out")
+
+        graph.get_document = AsyncMock(side_effect=read)
 
         result = await service.move_record("kb1", "rec1", "trashed-folder", "user1")
 
@@ -2778,7 +2794,7 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old-parent"})
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
-            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+            side_effect=[{}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
         )
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         mock_record = MagicMock()
@@ -2809,7 +2825,7 @@ class TestMoveRecord:
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
-            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+            side_effect=[{}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
         )
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.get_file_record_by_id = AsyncMock(return_value=None)
