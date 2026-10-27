@@ -11,11 +11,10 @@ export class MongoIdentityPort
   implements IdentityPort
 {
   async oldestOrgId(): Promise<string | null> {
-    const orgs = await Org.find({ isDeleted: { $ne: true } })
+    const org = await Org.findOne({ isDeleted: { $ne: true } })
       .sort({ createdAt: 1, _id: 1 })
       .select('_id')
       .lean();
-    const org = orgs[0];
     return org ? String(org._id) : null;
   }
 
