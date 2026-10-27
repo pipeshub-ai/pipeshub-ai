@@ -458,6 +458,7 @@ export class MongoUserRepository implements UserRepository {
   }
 
   async listMembersPage(
+    orgId: string,
     ids: string[],
     q: {
       search?: string;
@@ -468,6 +469,7 @@ export class MongoUserRepository implements UserRepository {
   ): Promise<{ rows: MemberSummaryDto[]; total: number }> {
     const userFilter: Record<string, unknown> = {
       _id: { $in: ids },
+      orgId,
       isDeleted: { $ne: true },
       ...(q.includeServiceAccounts === true ? {} : NOT_A_SERVICE_ACCOUNT),
     };

@@ -211,8 +211,9 @@ export interface UserRepository {
     orgId: string,
     opts?: { includeServiceAccounts?: boolean },
   ): Promise<UserWithGroupsDto[]>;
-  /** One page of a group's members. */
+  /** One page of a group's members; ids of accounts in another organisation are not listed. */
   listMembersPage(
+    orgId: string,
     ids: string[],
     q: {
       search?: string;
