@@ -580,12 +580,12 @@ class TestHandleDoc:
     async def test_converts_doc_to_docx(self):
         parser = _make_parser()
         stream = io.BytesIO(b"fake docx bytes")
-        parser._doc_parser.convert_doc_to_docx = MagicMock(return_value=stream)
+        parser._doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=stream)
         parser.handle_docx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_doc(b"raw", "file.doc")
-        parser._doc_parser.convert_doc_to_docx.assert_called_once_with(b"raw")
+        parser._doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"raw")
         parser.handle_docx.assert_called_once()
 
 
@@ -593,22 +593,22 @@ class TestHandlePptAndXls:
     @pytest.mark.asyncio
     async def test_ppt_converts_to_pptx(self):
         parser = _make_parser()
-        parser._ppt_parser.convert_ppt_to_pptx = MagicMock(return_value=b"pptx bytes")
+        parser._ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx bytes")
         parser.handle_pptx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_ppt(b"raw", "a.ppt")
-        parser._ppt_parser.convert_ppt_to_pptx.assert_called_once_with(b"raw")
+        parser._ppt_parser.convert_ppt_to_pptx_async.assert_awaited_once_with(b"raw")
 
     @pytest.mark.asyncio
     async def test_xls_converts_to_xlsx(self):
         parser = _make_parser()
-        parser._xls_parser.convert_xls_to_xlsx = MagicMock(return_value=b"xlsx bytes")
+        parser._xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx bytes")
         parser.handle_xlsx = AsyncMock(
             return_value=BlocksContainer(blocks=[], block_groups=[])
         )
         await parser.handle_xls(b"raw", "a.xls")
-        parser._xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"raw")
+        parser._xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"raw")
 
 
 class TestHandleXlsx:

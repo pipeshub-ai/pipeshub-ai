@@ -753,7 +753,7 @@ class TestProcessDocDocument:
     async def test_success(self):
         """DOC is converted to DOCX and delegated to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_binary")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         async def _fake_docx(*args, **kwargs):
@@ -768,7 +768,7 @@ class TestProcessDocDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        doc_parser.convert_doc_to_docx.assert_called_once_with(b"docdata")
+        doc_parser.convert_doc_to_docx_async.assert_awaited_once_with(b"docdata")
 
 
 # ============================================================================
@@ -780,7 +780,7 @@ class TestProcessXlsDocument:
     async def test_success(self):
         """XLS is converted to XLSX and delegated to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_binary")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -795,13 +795,13 @@ class TestProcessXlsDocument:
 
         assert any(e.event == "parsing_complete" for e in events)
         assert any(e.event == "indexing_complete" for e in events)
-        xls_parser.convert_xls_to_xlsx.assert_called_once_with(b"xlsdata")
+        xls_parser.convert_xls_to_xlsx_async.assert_awaited_once_with(b"xlsdata")
 
     @pytest.mark.asyncio
     async def test_exception_propagated(self):
         """XLS conversion failure propagates wrapped in DocumentProcessingError."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx.side_effect = RuntimeError("bad xls")
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(side_effect=RuntimeError("bad xls"))
         proc = _make_processor(parsers={"xls": xls_parser})
 
         with pytest.raises(DocumentProcessingError, match="bad xls"):
@@ -2101,7 +2101,7 @@ class TestEventTypeForwarding:
     async def test_doc_forwards_event_type_to_docx(self):
         """process_doc_document forwards event_type to process_docx_document."""
         doc_parser = MagicMock()
-        doc_parser.convert_doc_to_docx.return_value = b"docx_binary"
+        doc_parser.convert_doc_to_docx_async = AsyncMock(return_value=b"docx_binary")
         proc = _make_processor(parsers={"doc": doc_parser})
 
         captured_kwargs = {}
@@ -2122,7 +2122,7 @@ class TestEventTypeForwarding:
     async def test_xls_forwards_event_type_to_excel(self):
         """process_xls_document forwards event_type to process_excel_document."""
         xls_parser = MagicMock()
-        xls_parser.convert_xls_to_xlsx.return_value = b"xlsx_binary"
+        xls_parser.convert_xls_to_xlsx_async = AsyncMock(return_value=b"xlsx_binary")
         proc = _make_processor(parsers={"xls": xls_parser})
 
         async def _fake_excel(*args, **kwargs):
@@ -2138,7 +2138,7 @@ class TestEventTypeForwarding:
     async def test_ppt_forwards_event_type_to_pptx(self):
         """process_ppt_document forwards event_type to process_pptx_document."""
         ppt_parser = MagicMock()
-        ppt_parser.convert_ppt_to_pptx.return_value = b"pptx_binary"
+        ppt_parser.convert_ppt_to_pptx_async = AsyncMock(return_value=b"pptx_binary")
         proc = _make_processor(parsers={"ppt": ppt_parser})
 
         async def _fake_pptx(*args, **kwargs):
