@@ -41,7 +41,7 @@ def _convert(html: str) -> str:
     return _lib.convert(html, _OPTIONS).content
 
 
-def _pieces(node, plain_blocks: list[int]) -> list[str]:
+def _pieces(node: lxml_html.HtmlElement, plain_blocks: list[int]) -> list[str]:
     out: list[str] = []
     buf: list[str] = []
     size = 0

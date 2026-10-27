@@ -4331,7 +4331,7 @@ class TestSyncTicketsForGroupsCheckpoint:
 class TestConverterReachesTheBlock:
     """Nothing here patches the HTML-to-Markdown helper: the real converter runs."""
 
-    async def test_ticket_article_keeps_form_and_hidden_text(self, connector):
+    async def test_ticket_article_keeps_form_and_hidden_text(self, connector) -> None:
         import json
 
         ds = _mock_ds()

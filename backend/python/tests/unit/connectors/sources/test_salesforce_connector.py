@@ -9188,7 +9188,7 @@ class TestConverterReachesTheBlock:
     """Nothing here patches the HTML-to-Markdown helper: the real converter runs."""
 
     @pytest.mark.asyncio
-    async def test_email_body_keeps_header_form_and_hidden_text(self):
+    async def test_email_body_keeps_header_form_and_hidden_text(self) -> None:
         import json
 
         connector = _make_connector()
