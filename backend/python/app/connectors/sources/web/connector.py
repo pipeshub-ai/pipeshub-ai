@@ -92,6 +92,7 @@ from app.connectors.sources.web.crawl4ai_fetcher import (
     get_shared_fetcher,
     release_shared_fetcher,
     resolve_fetch_status_code,
+    shared_fetcher,
 )
 from app.connectors.sources.web.csr_detection import (
     CSR_PROBE_JS,
@@ -672,6 +673,7 @@ class WebConnector(BaseConnector):
         # The script-rendering check waits for a robots.txt that could be read.
         self._script_check_pending = False
         self.crawl4ai_fetcher: Optional[Crawl4AIFetcher] = None
+        self._crawl4ai_fetcher_lock = asyncio.Lock()
         self.max_run_seconds, self.stall_seconds = run_limits({}, os.environ)
         self._budget: CrawlBudget | None = None
         self._page_limit_reached = False
@@ -1208,6 +1210,8 @@ class WebConnector(BaseConnector):
             raise
         finally:
             self._budget = None
+            # Held only for the run: a browser kept between scheduled syncs grew past 1 GB.
+            await self._release_crawl4ai_fetcher()
 
     async def _stored_pages(self) -> AsyncGenerator[Record, None]:
         """Every page, file and failed page stored for this connector; folder placeholders left out."""
@@ -2218,13 +2222,24 @@ class WebConnector(BaseConnector):
 
     async def _ensure_crawl4ai_fetcher(self) -> Optional[Crawl4AIFetcher]:
         """Return the shared crawl4ai fetcher, initialising it on first use."""
-        if self.crawl4ai_fetcher is None:
-            try:
-                self.crawl4ai_fetcher = await get_shared_fetcher(browser_like=self.browser_like_identity)
-            except Exception as e:
-                self.logger.warning("⚠️ Failed to initialise crawl4ai fetcher for fallback: %s", e)
-                return None
+        # Concurrent crawl workers fall back at once; each taking a reference would leak all but one.
+        async with self._crawl4ai_fetcher_lock:
+            if self.crawl4ai_fetcher is None:
+                self.crawl4ai_fetcher = await self._try_shared_fetcher()
         return self.crawl4ai_fetcher
+
+    async def _try_shared_fetcher(self) -> Optional[Crawl4AIFetcher]:
+        """A reference to the shared fetcher, or None when the browser cannot start."""
+        try:
+            return await get_shared_fetcher(browser_like=self.browser_like_identity)
+        except Exception as e:
+            self.logger.warning("⚠️ Failed to initialise crawl4ai fetcher for fallback: %s", e)
+            return None
+
+    async def _release_crawl4ai_fetcher(self) -> None:
+        if self.crawl4ai_fetcher:
+            self.crawl4ai_fetcher = None
+            await asyncio.shield(release_shared_fetcher())
 
     async def _robots_allows(self, url: str) -> bool:
         """Whether the site's robots.txt lets us fetch ``url``; read once per site per crawl."""
@@ -2425,14 +2440,11 @@ class WebConnector(BaseConnector):
             return False
         try:
             # The shared, governed browser: a private one per connector would sit outside every limit.
-            probe = await get_shared_fetcher(browser_like=self.browser_like_identity)
-            try:
+            async with shared_fetcher(browser_like=self.browser_like_identity) as probe:
                 rendered = await probe.fetch(
                     url, browser_like=self.browser_like_identity, context_key=f"{self.connector_id}:csr-probe",
                     js_code=CSR_PROBE_JS, js_code_before_wait=PRE_HYDRATION_CAPTURE_JS,
                 )
-            finally:
-                await release_shared_fetcher()
 
             if not rendered.success or not (rendered.html or "").strip():
                 self.logger.warning(
@@ -2660,13 +2672,17 @@ class WebConnector(BaseConnector):
             record = await self.data_entities_processor.get_file_record_by_id(record.id) or record
         return getattr(record, "etag", None), getattr(record, "ctag", None)
 
-    async def _headless_fetch(self, url: str, *, walk_first: bool = True) -> FetchResponse | None:
+    async def _headless_fetch(
+        self, url: str, *, walk_first: bool = True, fetcher: Crawl4AIFetcher | None = None,
+    ) -> FetchResponse | None:
         """Fetch a single URL via crawl4ai (used outside the BFS crawl loop); documents go over plain HTTP.
 
         ``walk_first=False`` is for fetches that aren't part of a crawl (a stored record opened on
-        demand), and for a retry of a page whose redirects were just walked.
+        demand), and for a retry of a page whose redirects were just walked. ``fetcher`` is one held
+        by the caller; the run's own is used otherwise.
         """
-        if self.crawl4ai_fetcher is None:
+        fetcher = fetcher or self.crawl4ai_fetcher
+        if fetcher is None:
             return None
         # The browser opens file: and other non-http URLs itself, past the guard proxy.
         if await is_unsafe_url(url):
@@ -2675,7 +2691,7 @@ class WebConnector(BaseConnector):
             return await self._fetch_linked_document(url)
         if walk_first and (refused := await self._landing_refused_before_browser(url)) is not None:
             return refused
-        result = await self.crawl4ai_fetcher.fetch(
+        result = await fetcher.fetch(
             url, browser_like=self.browser_like_identity, context_key=self._browser_context_key,
         )
         if result.crashed_browser:
@@ -4172,9 +4188,7 @@ class WebConnector(BaseConnector):
 
     async def cleanup(self) -> None:
         """Cleanup resources."""
-        if self.crawl4ai_fetcher:
-            self.crawl4ai_fetcher = None
-            await release_shared_fetcher()
+        await self._release_crawl4ai_fetcher()
         if self.session:
             await self.session.close()
             self.session = None
@@ -5099,13 +5113,17 @@ class WebConnector(BaseConnector):
             if self.session is None:
                 raise connector_not_ready(self.display_name)
 
-            if self.use_headless_browser and await self._ensure_crawl4ai_fetcher():
+            # Held only for this read, never as self.crawl4ai_fetcher: a sync running now releases that one.
+            fetcher = await self._try_shared_fetcher() if self.use_headless_browser else None
+            if fetcher is not None:
                 try:
-                    result = await self._headless_fetch(record.weburl, walk_first=False)
+                    result = await self._headless_fetch(record.weburl, walk_first=False, fetcher=fetcher)
                 except BrowserUnavailableError as e:
                     # Our browser failed, not the site: the page may be fine, so no site status is reported.
                     self.logger.warning("Headless browser unavailable for record %s: %s", record.id, e)
                     raise internal_service_status(HttpStatusCode.SERVICE_UNAVAILABLE.value) from e
+                finally:
+                    await asyncio.shield(release_shared_fetcher())
             else:
                 result = await fetch_url_with_fallback(
                     browser_like=self.browser_like_identity,

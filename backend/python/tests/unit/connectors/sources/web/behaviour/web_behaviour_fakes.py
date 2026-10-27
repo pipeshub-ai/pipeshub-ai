@@ -376,12 +376,11 @@ async def serve_fake_browser(site: FakeWeb, monkeypatch: pytest.MonkeyPatch) -> 
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_instance", None)
     monkeypatch.setattr(crawl4ai_fetcher, "_ref_count", 0)
     monkeypatch.setattr(crawl4ai_fetcher, "_shared_lock", None)
+    monkeypatch.setattr(crawl4ai_fetcher, "_idle_close", None)
     try:
         yield site
     finally:
-        leftover = crawl4ai_fetcher._shared_instance
-        if leftover is not None:
-            await leftover.close()
+        await crawl4ai_fetcher.close_shared_fetcher()
 
 
 def browser_crawler_class(site: FakeWeb) -> type:

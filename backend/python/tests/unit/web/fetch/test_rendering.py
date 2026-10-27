@@ -1,11 +1,15 @@
 """Pages built by scripts are read through the headless browser; everything else never starts it."""
 
+import asyncio
+from collections.abc import Iterator
+from contextlib import contextmanager
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from web_behaviour_fakes import INTRANET_HOST, FakeWeb, Page
 
+from app.connectors.sources.web import crawl4ai_fetcher
 from app.connectors.sources.web.address_guard import ALLOWED_HOSTS_ENV
 from app.utils.url_fetcher import FetchError, PublicTarget
 from app.web.container import fetchers
@@ -116,10 +120,16 @@ class TestRendererChecks:
     """The renderer alone, with the browser stubbed."""
 
     @staticmethod
-    def browser(**result: object) -> object:
+    @contextmanager
+    def browser(fetch: object = None, **result: object) -> Iterator[SimpleNamespace]:
+        """The shared browser stubbed; ``.get`` and ``.release`` record each reference taken and given back."""
         fields = {"url": "https://a.example/", "html": "<html><body>ok</body></html>", "success": True, "status_code": 200, "error": None}
         fields.update(result)
-        return patch.object(BrowserRenderer, "_shared_fetcher", AsyncMock(return_value=SimpleNamespace(fetch=AsyncMock(return_value=SimpleNamespace(**fields)))))
+        fetcher = SimpleNamespace(fetch=fetch or AsyncMock(return_value=SimpleNamespace(**fields)))
+        shared = SimpleNamespace(get=AsyncMock(return_value=fetcher), release=AsyncMock())
+        with patch.object(crawl4ai_fetcher, "get_shared_fetcher", shared.get), \
+                patch.object(crawl4ai_fetcher, "release_shared_fetcher", shared.release):
+            yield shared
 
     @pytest.fixture(autouse=True)
     def public(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -133,7 +143,18 @@ class TestRendererChecks:
     async def test_an_internal_url_never_reaches_the_browser(self) -> None:
         with self.browser() as shared, pytest.raises(UnsafeUrl):
             await BrowserRenderer().render("http://admin.internal/", deadline())
-        shared.assert_not_called()
+        shared.get.assert_not_called()
+
+    async def test_each_render_gives_the_browser_back(self) -> None:
+        with self.browser() as shared:
+            await BrowserRenderer().render("https://a.example/", deadline())
+            await BrowserRenderer().render("https://a.example/", deadline())
+        assert shared.get.await_count == shared.release.await_count == 2
+
+    async def test_a_failed_render_gives_the_browser_back(self) -> None:
+        with self.browser(fetch=AsyncMock(side_effect=RuntimeError("browser died"))) as shared, pytest.raises(RuntimeError):
+            await BrowserRenderer().render("https://a.example/", deadline())
+        shared.release.assert_awaited_once()
 
     async def test_landing_on_an_internal_address_is_refused(self) -> None:
         with self.browser(url="http://admin.internal/secrets"), pytest.raises(UnsafeUrl):
@@ -147,11 +168,10 @@ class TestRendererChecks:
         with self.browser(html="", success=False, error="net::ERR_EMPTY_RESPONSE", status_code=None), pytest.raises(UpstreamError):
             await BrowserRenderer().render("https://a.example/", deadline())
 
-    async def test_a_slow_render_ends_at_the_deadline(self) -> None:
-        import asyncio
-
+    async def test_a_slow_render_ends_at_the_deadline_and_gives_the_browser_back(self) -> None:
         async def slow(*args: object, **kwargs: object) -> object:
             await asyncio.sleep(30)
 
-        with patch.object(BrowserRenderer, "_shared_fetcher", AsyncMock(return_value=SimpleNamespace(fetch=slow))), pytest.raises(TimedOut):
+        with self.browser(fetch=slow) as shared, pytest.raises(TimedOut):
             await BrowserRenderer().render("https://a.example/", Deadline.after(0.2))
+        shared.release.assert_awaited_once()

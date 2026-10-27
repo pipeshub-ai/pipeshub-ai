@@ -340,6 +340,7 @@ async def test_the_shared_fetcher_is_sized_from_the_container(browser: FakeWeb, 
     monkeypatch.delenv("WEB_BROWSER_MAX_PAGES")
     monkeypatch.delenv("CRAWL4AI_CONCURRENCY", raising=False)
     monkeypatch.setattr(crawl4ai_fetcher, "build_probe", lambda: FakeMemoryProbe(limit_mb=2048, used_mb=200, cpus=2))
+    monkeypatch.setenv("WEB_BROWSER_IDLE_CLOSE_SECONDS", "0")
 
     fetcher = await get_shared_fetcher()
     try:
