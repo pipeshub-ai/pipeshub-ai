@@ -12,7 +12,7 @@
 
 import type { ExternalStoreAdapter } from '@assistant-ui/react';
 import type { ThreadMessageLike } from '@assistant-ui/react';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort, projectAgentCapabilities } from './store';
 import { streamMessageForSlot, cancelStreamForSlot } from './streaming';
 import { showNoModelToast } from './utils/no-model-toast';
 import { showRemoteRunInProgressToast } from './utils/remote-run-toast';
@@ -235,6 +235,9 @@ export function buildStreamChatRequestForSlot(
   // Project context is hydrated from the URL/workspace (`useProjectScopeHydration`), the same
   // way `agentId` is read from the URL above. The server re-applies the allow-list regardless.
   const projectScope = effectiveAgentId ? null : currentState.projectScope;
+  const projectIdForCaps = effectiveAgentId
+    ? null
+    : currentSlot.projectId ?? projectScope?.projectId ?? null;
 
   const toolsSel = effectiveAgentId
     ? currentState.agentStreamTools
@@ -378,7 +381,9 @@ export function buildStreamChatRequestForSlot(
       : isUniversalAgentMode
         ? {
             ...(toolsSel !== null ? { agentStreamTools: streamTools } : {}),
-            agentCapabilities: currentState.settings.agentCapabilities,
+            agentCapabilities: projectIdForCaps
+              ? projectAgentCapabilities(currentState.scopedAgentCapabilities, projectIdForCaps)
+              : currentState.settings.agentCapabilities,
           }
         : {}),
     ...(toolApproval ? { toolApproval } : {}),

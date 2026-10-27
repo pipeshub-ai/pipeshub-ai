@@ -209,6 +209,23 @@ class TestLayering:
         assert "## Project Instructions" in result
         assert "Prefer the Q3 report." in result
 
+    def test_project_instructions_say_how_they_combine_with_an_agents_persona(self) -> None:
+        """An agent started in a project keeps its persona, and the project's instructions
+        render after it with the rule for a conflict, so neither silently drops the other."""
+        context = make_context(
+            system_prompt="You are Aria. Always reply in Marathi.",
+            instructions="Escalate anything about pricing.",
+            project_instructions="Answer in English.",
+        )
+        result = _build(context)
+        identity = result.index("You are Aria.")
+        agent = result.index("## Agent Instructions")
+        project = result.index("## Project Instructions")
+        assert identity < agent < project < result.index("Answer in English.")
+        section = result[project:]
+        assert "take precedence" in section
+        assert "always answer it" in section
+
     def test_project_instructions_and_custom_instructions_coexist(self) -> None:
         context = make_context(
             project_instructions="Prefer the Q3 report.",

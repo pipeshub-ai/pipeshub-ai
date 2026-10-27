@@ -57,6 +57,12 @@ func newBearerClient(token string) *pipeshub.Pipeshub {
 	)
 }
 
+// newAdminClient is for team connectors and OAuth configurations, which are admin-only: the OAuth
+// app's tokens act as a service account, which is never an admin.
+func newAdminClient() *pipeshub.Pipeshub {
+	return newSessionClient()
+}
+
 // newSessionClient is for the OAuth app and personal access token routes, which accept only an
 // interactive session.
 func newSessionClient() *pipeshub.Pipeshub {

@@ -195,13 +195,22 @@ export class ProjectKnowledgeBaseService {
       (member.role === 'editor' ? editorUserIds : viewerUserIds).push(principalId);
     }
 
-    await this.grantUsers(appConfig, headers, kbId, editorUserIds, KB_ROLE_BY_PROJECT_ROLE.editor);
     await this.grantUsers(appConfig, headers, kbId, viewerUserIds, KB_ROLE_BY_PROJECT_ROLE.viewer);
     await this.grantTeams(appConfig, headers, kbId, teamIds);
 
     if (project.visibility === 'org') {
       await this.grantTeams(appConfig, headers, kbId, [allOrgTeamId(project.orgId)]);
     }
+
+    // Editors go last: an editor whose upload created the KB is its OWNER until
+    // this grant makes them WRITER, and only an OWNER may grant the rest.
+    await this.grantUsers(
+      appConfig,
+      headers,
+      kbId,
+      editorUserIds,
+      KB_ROLE_BY_PROJECT_ROLE.editor,
+    );
   }
 
   /** Revokes one principal's KB permission — pair with every `ProjectService.removeMember` call so a removed member doesn't keep a stale READER/WRITER edge. No-op if the project has no linked KB yet, or if the principal never had a KB-level permission (upstream 404). */

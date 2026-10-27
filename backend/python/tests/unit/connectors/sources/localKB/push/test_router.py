@@ -39,21 +39,25 @@ class FakeConfig:
     async def get_config(self, key, default=None, use_cache=True, raise_on_error=False) -> object:
         return self.data.get(key, default)
 
-    async def create_config_if_absent(self, key, value) -> bool:
+    async def create_config_if_absent(self, key, value, **_ttl) -> bool:
         return self.data.setdefault(key, value) is value
 
-    async def set_config(self, key, value) -> bool:
+    async def set_config(self, key, value, **_ttl) -> bool:
         self.data[key] = value
         return True
 
 
 class FakeKb:
-    async def _resolve_user_and_kb_access(self, kb_id, user_id, required_roles=None, permission_denied_reason=None) -> tuple:
+    deleting = False
+
+    async def _resolve_user_and_kb_access(self, kb_id, user_id, required_roles=None, permission_denied_reason=None, for_write=False) -> tuple:
         role = ROLES.get(user_id)
         if role is None:
             return None, None, {"success": False, "code": 404, "reason": "Knowledge base not found"}
         if required_roles and role not in required_roles:
             return None, None, {"success": False, "code": 403, "reason": "no"}
+        if for_write and self.deleting:
+            return None, None, {"success": False, "code": 409, "reason": "This knowledge base is being deleted, so it can't be changed."}
         return f"key-{user_id}", role, None
 
 
@@ -66,10 +70,11 @@ class Harness:
         self.admission = A.Admission()
         self.schemas = MetadataSchemaRegistry(FakeConfig())
         self.user = "writer"
+        self.kb = FakeKb()
 
     def service(self) -> KbPushService:
         svc = KbPushService(
-            graph_provider=MagicMock(), kb_service=FakeKb(), processor_for_kb=AsyncMock(), schema_registry=self.schemas,
+            graph_provider=MagicMock(), kb_service=self.kb, processor_for_kb=AsyncMock(), schema_registry=self.schemas,
             storage=MagicMock(), worker=self.worker, spool=self.spool, publish_event=AsyncMock(),
         )
 
@@ -148,6 +153,22 @@ def test_roles(client, h, user, status, reason) -> None:
     r = client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON)
     assert (r.status_code, error(r)["reason"]) == (status, reason)
     assert spy.await_count == 0 and not h.pushed  # the body was never read
+
+
+def test_a_kb_being_deleted_refuses_a_push_and_a_schema_put_but_not_a_schema_read(client, h) -> None:
+    h.kb.deleting = True
+    h.user = "owner"
+    spy = AsyncMock(wraps=h.admission.read_body)
+    h.admission.read_body = spy
+    r = client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON)
+    assert (r.status_code, error(r)["reason"]) == (409, "KB_BEING_DELETED")
+    assert spy.await_count == 0 and not h.pushed, "the body was never read"
+    r = client.put("/api/v1/kb/kb1/schema", json={"properties": []})
+    assert (r.status_code, error(r)["reason"]) == (409, "KB_BEING_DELETED")
+    r = client.get("/api/v1/kb/kb1/schema")
+    assert error(r)["reason"] == "SCHEMA_NOT_FOUND", "a read still works"
+    h.kb.deleting = False
+    assert client.post("/api/v1/kb/kb1/records", content=raw(envelope()), headers=JSON).status_code == 201, "the control"
 
 
 def test_other_orgs_user_never_reaches_the_body(client, h) -> None:

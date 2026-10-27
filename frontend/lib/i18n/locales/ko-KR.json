@@ -124,7 +124,11 @@
     "tabArchived": "보관됨",
     "archivedEmptyState": "보관된 프로젝트가 없습니다",
     "archivedEmptyStateHint": "보관한 프로젝트가 여기에 표시됩니다.",
-    "actionsLabel": "프로젝트 작업"
+    "actionsLabel": "프로젝트 작업",
+    "noSearchResults": "“{{query}}”와(과) 일치하는 프로젝트가 없습니다",
+    "noSearchResultsHint": "다른 이름을 시도하거나 검색을 지우세요.",
+    "clearSearch": "검색 지우기",
+    "cardActionsLabel": "{{name}} 작업"
   },
   "timeGroup": {
     "today": "오늘",
@@ -1278,7 +1282,6 @@
         "connectorsStatusNone": "없음",
         "connectorsStatusCount_one": "{{count}}개 연결됨",
         "connectorsStatusCount_other": "{{count}}개 연결됨",
-        "toolsStatusDefault": "기본값",
         "toolsStatusCount_one": "{{count}}개 사용 중",
         "toolsStatusCount_other": "{{count}}개 사용 중",
         "membersStatusOnlyYou": "나만",
@@ -1286,7 +1289,20 @@
         "suggestPlanWork": "작업 계획 세우기",
         "suggestWriteInstructions": "프로젝트 지침 작성하기",
         "suggestSummariseDocumentPrompt": "이 프로젝트의 파일 중 가장 중요한 문서를 요약해 주세요.",
-        "suggestPlanWorkPrompt": "이 프로젝트의 작업 계획을 세울 수 있게 도와주세요. 구체적인 다음 단계로 나눠 주세요."
+        "suggestPlanWorkPrompt": "이 프로젝트의 작업 계획을 세울 수 있게 도와주세요. 구체적인 다음 단계로 나눠 주세요.",
+        "visibilityShared": "{{members}}과(와) 공유됨",
+        "visibilityPrivateOwner": "소유자만 볼 수 있음",
+        "toolsStatusNone": "사용 설정된 항목 없음",
+        "toolsSubtitle": "이 프로젝트의 채팅은 여기에서 선택한 도구만 사용할 수 있습니다.",
+        "toolKind": {
+          "read": "데이터 읽기",
+          "write": "변경 수행",
+          "destructive": "삭제하거나 취소할 수 없음",
+          "unknown": "기타"
+        },
+        "toolNeedsApproval": "승인 필요",
+        "toolNeedsApprovalHint": "이 도구는 데이터를 삭제할 수 있습니다. 프로젝트 채팅에서는 누군가 승인한 후에만 실행됩니다.",
+        "indexingStatusLabel": "인덱싱: {{status}}"
       },
       "moveDialog": {
         "title": "프로젝트로 이동",
@@ -1297,16 +1313,71 @@
       },
       "deleteDialog": {
         "title": "이 프로젝트를 삭제하시겠습니까?",
-        "description": "프로젝트가 삭제되고 채팅 연결이 해제됩니다. 채팅 자체는 삭제되지 않습니다.",
+        "description": "프로젝트를 삭제하면 되돌릴 수 없습니다:",
         "confirm": "프로젝트 삭제",
         "deleting": "삭제 중…",
-        "failed": "프로젝트를 삭제하지 못했습니다"
+        "failed": "프로젝트를 삭제하지 못했습니다",
+        "filesDeleted": "프로젝트에 업로드한 파일이 영구적으로 삭제됩니다.",
+        "membersLoseAccess": "공유된 모든 사람이 액세스 권한을 잃습니다.",
+        "chatsKept": "채팅은 유지되지만 더 이상 프로젝트에 속하지 않습니다."
       },
       "roles": {
         "owner": "소유자",
         "editor": "편집자",
         "viewer": "뷰어"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "소유자",
+          "description": "프로젝트를 만들고 사용할 수 있는 사람을 관리합니다"
+        },
+        "editor": {
+          "label": "편집 가능",
+          "description": "이름, 지침, 파일, 커넥터, 도구를 변경하고 프로젝트에서 채팅합니다"
+        },
+        "viewer": {
+          "label": "보기 가능",
+          "description": "프로젝트를 열고 해당 파일과 도구로 채팅합니다"
+        }
+      },
+      "unknownMember": "알 수 없는 멤버",
+      "unknownTeam": "알 수 없는 팀",
+      "allMembersTeam": "조직의 모든 사용자",
+      "ownerCannotChange": "여기에서는 프로젝트 소유자의 액세스 권한을 변경할 수 없습니다.",
+      "sharingSettings": {
+        "saved": "공유 설정을 저장했습니다",
+        "saveFailed": "공유 설정을 저장하지 못했습니다",
+        "visibilityLabel": "이 프로젝트를 찾을 수 있는 사람",
+        "visibilityPrivate": "공유된 사람만",
+        "visibilityOrg": "조직의 모든 사용자",
+        "visibilityPrivateHint": "나와 아래의 사람 또는 팀만 열 수 있습니다.",
+        "visibilityOrgHint": "조직의 누구나 찾아서 열 수 있습니다.",
+        "chatSharingLabel": "이 프로젝트의 새 채팅",
+        "chatSharingPrivate": "시작한 사람만 볼 수 있음",
+        "chatSharingMembers": "프로젝트 멤버와 공유",
+        "chatSharingPrivateHint": "각 채팅은 작성자가 공유하지 않는 한 비공개로 유지됩니다.",
+        "chatSharingMembersHint": "멤버가 새 채팅을 볼 수 있으며, 작성자는 여전히 채팅을 비공개로 설정할 수 있습니다."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "프로젝트 세부 정보 편집",
+        "saved": "프로젝트 세부 정보를 저장했습니다",
+        "saveFailed": "프로젝트 세부 정보를 저장하지 못했습니다"
+      },
+      "editDetails": "이름 및 설명 편집",
+      "leaveProject": "프로젝트 나가기",
+      "leaveDialog": {
+        "title": "{{name}}에서 나갈까요?",
+        "description": "이 프로젝트와 파일에 대한 액세스 권한을 잃게 됩니다. 내 채팅은 그대로 유지됩니다. 소유자가 다시 추가할 수 있습니다.",
+        "leaving": "나가는 중…",
+        "left": "프로젝트에서 나갔습니다",
+        "failed": "프로젝트에서 나가지 못했습니다",
+        "inherited": "이 프로젝트에서 나갈 수 없습니다. 조직이나 팀을 통해 액세스 권한을 받았기 때문입니다. 공유 대상을 변경하도록 소유자에게 요청하세요."
+      },
+      "archiveSuccess": "프로젝트를 보관했습니다",
+      "archivedNoNewChats": "이 프로젝트는 보관되어 새 채팅을 시작할 수 없습니다.",
+      "archivedBanner": "이 프로젝트는 보관되었습니다. 새 채팅을 시작하려면 보관을 해제하세요.",
+      "archivedBannerMember": "이 프로젝트는 보관되어 새 채팅을 시작할 수 없습니다. 소유자에게 보관 해제를 요청하세요."
     },
     "demoHide": "데모 데이터 숨기기",
     "scrollAttachmentsLeft": "첨부 파일 왼쪽으로 스크롤",
@@ -1478,7 +1549,8 @@
       "downloading": "아티팩트 다운로드 중"
     },
     "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
-    "noResultsFor": "“{{query}}”에 대한 결과가 없습니다"
+    "noResultsFor": "“{{query}}”에 대한 결과가 없습니다",
+    "removeSelectedSource": "{{name}} 제거"
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -5464,7 +5536,13 @@
     },
     "team": "팀",
     "teamsNoRoles": "팀에는 역할이 없습니다",
-    "invite": "Pipeshub에 초대"
+    "invite": "Pipeshub에 초대",
+    "searchPlaceholderTeams": "이메일, 팀 또는 이름(쉼표로 구분)",
+    "searchPlaceholderUsers": "이메일 또는 이름(쉼표로 구분)",
+    "alreadyRemoved": "이미 제거됨",
+    "alreadyRemovedDescription": "{{name}} 님은 이미 액세스 권한이 없었습니다",
+    "removeConfirmTitle": "액세스 권한을 제거할까요?",
+    "removeConfirmDescription": "{{name}} 님은 즉시 액세스 권한을 잃습니다. 나중에 다시 공유할 수 있습니다."
   },
   "demoData": {
     "badge": {

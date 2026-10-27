@@ -917,14 +917,21 @@ export class PgConversationRepository implements ConversationRepository {
     });
   }
 
-  async countByProject(projectIds: string[]): Promise<Map<string, number>> {
+  async countByProject(
+    orgId: string,
+    userId: string,
+    projectIds: string[],
+  ): Promise<Map<string, number>> {
     const want = oidsOf(projectIds);
-    if (!want.length) return new Map();
+    const viewer = oidOf(userId);
+    if (!want.length || !viewer) return new Map();
     return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
       const { rows } = await k.query<{ project_id: string; n: number }>(
         `/* pipeshub:conversation.count_by_projects */ SELECT s.project_id, count(*)::int AS n FROM conversation.chat_sessions s
-          WHERE s.org_id = $1 AND s.project_id = ANY($2::text[]) AND NOT s.is_deleted GROUP BY s.project_id`,
-        [k.orgId, want],
+          WHERE s.org_id = $1 AND s.project_id = ANY($2::text[]) AND NOT s.is_deleted
+            AND (s.user_id = $3 OR s.project_visibility = 'project') GROUP BY s.project_id`,
+        [k.orgId, want, viewer],
       );
       return new Map(rows.map((r) => [r.project_id, r.n]));
     });
@@ -940,6 +947,24 @@ export class PgConversationRepository implements ConversationRepository {
         [k.orgId, project, new Date()],
       ),
     );
+  }
+
+  async unlinkFromProject(
+    orgId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<void> {
+    const session = oidOf(sessionId);
+    const project = oidOf(projectId);
+    if (!session || !project) return;
+    await inUnit(undefined, { write: true }, async (k) => {
+      assertOrg(k, orgId);
+      await k.query(
+        `/* pipeshub:conversation.unlink_from_project */ UPDATE conversation.chat_sessions SET project_id = NULL, project_visibility = NULL, updated_at = $4
+          WHERE org_id = $1 AND id = $2::text AND project_id = $3::text`,
+        [k.orgId, session, project, new Date()],
+      );
+    });
   }
 
   // ---- sessions: change

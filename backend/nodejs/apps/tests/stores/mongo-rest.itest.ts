@@ -7,6 +7,7 @@
  */
 import 'reflect-metadata';
 import { randomUUID } from 'crypto';
+import { expect } from 'chai';
 import mongoose from 'mongoose';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
@@ -83,5 +84,26 @@ describe('Org, project and remaining repositories against a real MongoDB', funct
     transactional: rsAvailable,
     newId: () => new mongoose.Types.ObjectId().toString(),
     asNewOrg: (_ids, fn) => fn(),
+  });
+
+  it('lists a legacy project-wide pin first for the owner only', async () => {
+    const repo = new MongoProjectRepository();
+    const org = new mongoose.Types.ObjectId().toHexString();
+    const owner = new mongoose.Types.ObjectId().toHexString();
+    const member = new mongoose.Types.ObjectId().toHexString();
+    const base = { tools: [] as string[] };
+    const old = await repo.create(org, owner, { ...base, name: 'Old' });
+    await repo.create(org, owner, { ...base, name: 'New' });
+    await repo.upsertMembers(old._id, [{ principalId: member, principalType: 'user', role: 'viewer' }], owner);
+    await Project.collection.updateOne({ _id: new mongoose.Types.ObjectId(old._id) }, { $set: { isPinned: true, lastActivityAt: 1 } });
+    const q = { scope: 'all' as const, includeArchived: false, teamIds: [], skip: 0, limit: 10 };
+
+    expect((await repo.list(org, owner, q)).rows.map((r) => r.name)).to.deep.equal(['Old', 'New']);
+    expect((await repo.list(org, member, q)).rows.map((r) => r.name)).to.deep.equal(['Old']);
+    // The owner unpinning clears it; a viewer's unpin leaves it.
+    await repo.setPinned(old._id, member, false, false);
+    expect((await repo.getLive(old._id))?.isPinned).to.equal(true);
+    await repo.setPinned(old._id, owner, false, true);
+    expect((await repo.list(org, owner, q)).rows.map((r) => r.name)).to.deep.equal(['New', 'Old']);
   });
 });

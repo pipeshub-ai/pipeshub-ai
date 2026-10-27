@@ -126,6 +126,8 @@ from app.schema.node_schema_registry import (
 )
 from app.schema.node_validator import NodeSchemaValidator
 from app.services.featureflag.platform_settings import is_kh_scope_listing_enabled
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.common.full_sync_unlink import (
     FULL_SYNC_EDGE_COLLECTIONS,
     split_unseen_by_window,
@@ -643,6 +645,8 @@ def _unique_id_constraint(label: str) -> str:
     name = f"{label.lower()}_id_unique".replace(".", "_")
     return f"CREATE CONSTRAINT {name} IF NOT EXISTS FOR (n:{label}) REQUIRE n.id IS UNIQUE"
 
+
+_EXISTING_KEYS_CHUNK = 20000
 
 class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
@@ -10957,7 +10961,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _delete_isoftype_targets_from_collected(
         self,
         transaction: str,
-        targets: list[dict]
+        targets: list[dict],
+        *,
+        retry_conflicts: bool = False,
+        stats: dict[str, int] | None = None,
     ) -> tuple[int, list[str]]:
         """Delete isOfType target nodes using pre-collected targets.
 
@@ -10983,25 +10990,23 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed_collections = []
 
         for collection, keys in targets_by_collection.items():
-            expected_count = len(keys)
-            deleted, failed_batches = await self._delete_nodes_by_keys(transaction, keys, collection)
+            deleted, failed_batches = await self._delete_nodes_by_keys(
+                transaction, keys, collection, retry_conflicts=retry_conflicts, stats=stats
+            )
             total_deleted += deleted
 
             if failed_batches > 0:
                 failed_collections.append(f"{collection} (failed batches: {failed_batches})")
-            elif deleted < expected_count:
-                failed_collections.append(f"{collection} (deleted {deleted}/{expected_count})")
+                continue
+            # Success is "none of these keys remain": a rival deleter may have removed some.
+            left = await self.get_existing_keys(collection, keys, transaction)
+            if left:
+                failed_collections.append(f"{collection} ({len(left)}/{len(keys)} remain)")
 
         if failed_collections:
             raise Exception(
                 f"CRITICAL: Failed to delete isOfType targets from {len(failed_collections)} collections: {failed_collections}. "
                 f"Expected {total_expected} but deleted {total_deleted}. Transaction will be rolled back."
-            )
-
-        if total_deleted < total_expected:
-            raise Exception(
-                f"CRITICAL: Partial deletion of isOfType targets. Expected {total_expected} but deleted {total_deleted}. "
-                f"Transaction will be rolled back."
             )
 
         self.logger.debug(f"✅ Deleted {total_deleted} isOfType target documents")
@@ -11012,9 +11017,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str,
         keys: list[str],
         collection: str,
-        batch_size: int = 5000
+        batch_size: int = 5000,
+        *,
+        retry_conflicts: bool = False,
+        stats: dict[str, int] | None = None,
     ) -> tuple[int, int]:
-        """Delete documents by their ID values using batching."""
+        """Delete documents by their ID values using batching.
+
+        With ``retry_conflicts`` (auto-committed batches only) a batch that lost to a
+        concurrent writer's lock (a deadlock) is run again: it rolled back whole.
+        """
         if not keys:
             return (0, 0)
 
@@ -11040,11 +11052,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             """
 
             try:
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"keys": batch_keys},
-                    txn_id=transaction
-                )
+                for attempt in range(CASCADE_ATTEMPTS):
+                    try:
+                        results = await self.client.execute_query(
+                            query,
+                            parameters={"keys": batch_keys},
+                            txn_id=transaction
+                        )
+                        break
+                    except Exception as batch_error:
+                        if not (retry_conflicts and attempt + 1 < CASCADE_ATTEMPTS and self.is_write_conflict(batch_error)):
+                            raise
+                        if stats is not None:
+                            stats["retries"] = stats.get("retries", 0) + 1
+                        await cascade_backoff(attempt)
 
                 deleted_in_batch = results[0]["deleted_count"] if results else 0
                 total_deleted += deleted_in_batch
@@ -11397,54 +11418,49 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             try:
                 # Step 1: Delete isOfType target nodes (Files, Mails, Webpages, etc.)
+                cascade_stats: dict[str, int] = {}
                 deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
                     transaction,
-                    isoftype_targets
+                    isoftype_targets,
+                    retry_conflicts=created_transaction,
+                    stats=cascade_stats,
                 )
                 # Same-id type nodes cover records whose IS_OF_TYPE edge was already gone.
                 deleted_isoftype += await self._delete_type_docs_matching_record_keys(
                     transaction, collected["record_keys"]
                 )
 
-                # Step 2: Delete records
-                deleted_records, failed_records = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_keys"],
-                    CollectionNames.RECORDS.value
-                )
-                if len(collected["record_keys"]) > 0 and deleted_records == 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0."
+                # Steps 2-5: records, record groups, roles, groups. Each is measured as "none
+                # of the collected keys remains", so a rival deleter that removed some first
+                # does not fail this one; a batch that deadlocked with a push is run again.
+                removed_counts: dict[str, int] = {}
+                failed_batches: dict[str, int] = {}
+                for collection, keys_key in (
+                    (CollectionNames.RECORDS.value, "record_keys"),
+                    (CollectionNames.RECORD_GROUPS.value, "record_group_keys"),
+                    (CollectionNames.ROLES.value, "role_keys"),
+                    (CollectionNames.GROUPS.value, "group_keys"),
+                ):
+                    removed_counts[collection], failed_batches[collection] = await self._delete_nodes_by_keys(
+                        transaction, collected[keys_key], collection,
+                        retry_conflicts=created_transaction, stats=cascade_stats,
                     )
-
-                # Step 3: Delete record groups
-                deleted_rg, failed_rg = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_group_keys"],
-                    CollectionNames.RECORD_GROUPS.value
-                )
-
-                # Step 4: Delete roles
-                deleted_roles, failed_roles = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["role_keys"],
-                    CollectionNames.ROLES.value
-                )
-
-                # Step 5: Delete groups
-                deleted_groups, failed_groups = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["group_keys"],
-                    CollectionNames.GROUPS.value
-                )
+                deleted_records = removed_counts[CollectionNames.RECORDS.value]
+                deleted_rg = removed_counts[CollectionNames.RECORD_GROUPS.value]
+                deleted_roles = removed_counts[CollectionNames.ROLES.value]
+                deleted_groups = removed_counts[CollectionNames.GROUPS.value]
 
                 # Auto-committed batches report failure by count instead of raising; the
                 # app node is deleted last so a retry can finish what is left.
-                if failed_records or failed_rg or failed_roles or failed_groups:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete some node batches (records={failed_records}, "
-                        f"record groups={failed_rg}, roles={failed_roles}, groups={failed_groups})."
-                    )
+                if any(failed_batches.values()):
+                    raise Exception(f"CRITICAL: Failed to delete some node batches ({failed_batches}).")
+                for collection, keys_key in (
+                    (CollectionNames.RECORDS.value, "record_keys"),
+                    (CollectionNames.RECORD_GROUPS.value, "record_group_keys"),
+                    (CollectionNames.ROLES.value, "role_keys"),
+                    (CollectionNames.GROUPS.value, "group_keys"),
+                ):
+                    await self._assert_none_remain(transaction, collection, collected[keys_key])
 
                 # Step 6: Delete sync points
                 deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
@@ -11475,17 +11491,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
                 # Step 7: Delete the app itself
                 if created_transaction:
-                    deleted_app = await self._delete_connector_with_its_delete_handles(connector_id)
+                    await self._delete_connector_with_its_delete_handles(connector_id)
                 else:
-                    deleted_app, _ = await self._delete_nodes_by_keys(
+                    await self._delete_nodes_by_keys(
                         transaction,
                         [connector_id],
                         CollectionNames.APPS.value
                     )
-                if deleted_app == 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist."
-                    )
+                # Gone is gone, whoever removed it.
+                await self._assert_none_remain(transaction, CollectionNames.APPS.value, [connector_id])
 
                 # Commit transaction
                 if created_transaction:
@@ -11559,6 +11573,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "deleted_groups_count": deleted_groups,
                     "deleted_blocks_count": deleted_blocks,
                     "deleted_isoftype_targets_count": deleted_isoftype,
+                    "cascade_retries": cascade_stats.get("retries", 0),
                     "deleted_orphan_type_docs_count": orphan_types,
                     "deleted_orphan_taxonomy_count": orphan_labels,
                     "virtual_record_ids": collected["virtual_record_ids"],
@@ -13638,6 +13653,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,
                 userRole: $user_role,
+                status: kb.status,
                 folders: folders
             } AS result
             LIMIT 1
@@ -13768,6 +13784,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: kb.updatedAtTimestamp,
                 createdBy: kb.createdBy,
                 userRole: final_role,
+                status: kb.status,
                 folders: folders
             }} AS result
             """
@@ -16105,6 +16122,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             {"keys": keys, "rev": content_rev, "fields": fields},
         )
         return [row["id"] for row in rows if row.get("id")]
+
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``. Raises on a failed read:
+        a delete may only call a collection clear when the store said so."""
+        unique = [k for k in dict.fromkeys(keys) if isinstance(k, str) and k]
+        found: set[str] = set()
+        label = collection_to_label(collection)
+        for i in range(0, len(unique), _EXISTING_KEYS_CHUNK):
+            rows = await self.client.execute_query(
+                f"MATCH (n:{label}) WHERE n.id IN $keys RETURN n.id AS id",
+                parameters={"keys": unique[i:i + _EXISTING_KEYS_CHUNK]},
+                txn_id=transaction,
+            )
+            found.update(row["id"] for row in (rows or []) if row.get("id"))
+        return found
+
+    async def _assert_none_remain(self, transaction: str | None, collection: str, keys: list[str]) -> None:
+        """The success rule of a cascade step: none of the collected keys is left."""
+        if not keys:
+            return
+        left = await self.get_existing_keys(collection, keys, transaction)
+        if left:
+            raise Exception(f"CRITICAL: {len(left)}/{len(keys)} {collection} nodes remain after the delete.")
 
     async def get_existing_record_keys(
         self,

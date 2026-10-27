@@ -273,6 +273,7 @@ class TestAbstractMethodInventory:
         "claim_push_record",
         "retag_push_record",
         "get_existing_record_keys",
+        "get_existing_keys",
         "get_documents_by_status",
         "get_record_by_conversation_index",
         "get_record_by_issue_key",

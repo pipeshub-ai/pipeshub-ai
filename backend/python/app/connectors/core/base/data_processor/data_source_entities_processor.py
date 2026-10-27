@@ -76,7 +76,7 @@ from app.services.cache.invalidation_hooks import (
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
-from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
+from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
@@ -3242,6 +3242,9 @@ class DataSourceEntitiesProcessor:
                 # A rename or version bump: indexing owns its state, which the upsert must not reset.
                 self._preserve_indexing_state(processed, Record.from_arango_base_record(existing))
                 await tx_store.batch_upsert_records([processed])
+            # A push opened before the delete's marker read the KB as live in its snapshot (Arango).
+            # Read it again outside the transaction, so a marker committed since is seen.
+            await self._refuse_if_kb_not_live(record.connector_id)
         await self._publish_membership_sync(moved_virtual_record_ids)
         await self._flush_pending_blob_moves(pending_moves)
         if not content_changed:
@@ -3259,6 +3262,15 @@ class DataSourceEntitiesProcessor:
             return PushOutcome(event=event, published=False)
         await self._mark_queued_after_publish([record.id])
         return PushOutcome(event=event, published=True)
+
+    async def _refuse_if_kb_not_live(self, kb_id: str) -> None:
+        """Raise ``PushClaimRefused`` when the KB is gone or being deleted. A failed read raises as is."""
+        graph = self.data_store_provider.graph_provider
+        kb = await graph.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb is None:
+            raise PushClaimRefused(PushClaim.KB_MISSING)
+        if kb.get("status") == KB_DELETING_STATUS:
+            raise PushClaimRefused(PushClaim.KB_DELETING)
 
     @staticmethod
     def _code_path_changed(new_record: Record, old_record: Record) -> bool:

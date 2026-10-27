@@ -2553,6 +2553,19 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``; raises when the read fails.
+
+        A delete is complete when none of the keys it collected remain, so unlike
+        ``get_existing_record_keys`` a failed read must not look like "nothing remains".
+        """
+
+    @abstractmethod
     async def get_existing_record_keys(
         self,
         record_ids: list[str],

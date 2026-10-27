@@ -132,7 +132,10 @@ import {
 } from '../validators/es_validators';
 import { AppConfig, loadAppConfig } from '../../tokens_manager/config/config';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
-import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
+import {
+  AuthenticatedServiceRequest,
+  AuthenticatedUserRequest,
+} from '../../../libs/middlewares/types';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
 import { KeyValueStoreService } from '../../../libs/services/keyValueStore.service';
@@ -332,7 +335,8 @@ export function createConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_READ),
     ValidationMiddleware.validate(getAllConversationsQuerySchema),
-    getAllConversations,
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) =>
+      getAllConversations(req, res, next, appConfig),
   );
 
   /**
@@ -402,8 +406,11 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/project',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    // A second requireScopes is an AND: moving or sharing a chat changes the project.
+    requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(conversationProjectLinkSchema),
-    setConversationProject,
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) =>
+      setConversationProject(req, res, next, appConfig),
   );
 
   /**
@@ -414,6 +421,8 @@ export function createConversationalRouter(container: Container): Router {
     '/:conversationId/project-visibility',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CONVERSATION_WRITE),
+    // A second requireScopes is an AND: moving or sharing a chat changes the project.
+    requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(conversationProjectVisibilitySchema),
     setConversationProjectVisibility,
   );
@@ -868,7 +877,8 @@ export function createAgentConversationalRouter(container: Container): Router {
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_READ),
     ValidationMiddleware.validate(getAllAgentConversationsQuerySchema),
-    getAllAgentConversations,
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) =>
+      getAllAgentConversations(req, res, next, appConfig),
   );
 
   router.get(
@@ -933,8 +943,11 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/project',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
+    // A second requireScopes is an AND: moving or sharing a chat changes the project.
+    requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(agentConversationProjectLinkSchema),
-    setConversationProject,
+    (req: AuthenticatedUserRequest, res: Response, next: NextFunction) =>
+      setConversationProject(req, res, next, appConfig),
   );
 
   /**
@@ -945,6 +958,8 @@ export function createAgentConversationalRouter(container: Container): Router {
     '/:agentKey/conversations/:conversationId/project-visibility',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.AGENT_WRITE),
+    // A second requireScopes is an AND: moving or sharing a chat changes the project.
+    requireScopes(OAuthScopeNames.PROJECT_WRITE),
     ValidationMiddleware.validate(agentConversationProjectVisibilitySchema),
     setConversationProjectVisibility,
   );

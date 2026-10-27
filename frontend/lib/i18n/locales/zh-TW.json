@@ -124,7 +124,11 @@
     "tabArchived": "已封存",
     "archivedEmptyState": "尚無封存的專案",
     "archivedEmptyStateHint": "您封存的專案會顯示在這裡。",
-    "actionsLabel": "專案操作"
+    "actionsLabel": "專案操作",
+    "noSearchResults": "沒有符合「{{query}}」的專案",
+    "noSearchResultsHint": "請嘗試其他名稱，或清除搜尋。",
+    "clearSearch": "清除搜尋",
+    "cardActionsLabel": "{{name}} 的操作"
   },
   "timeGroup": {
     "today": "今天",
@@ -1278,7 +1282,6 @@
         "connectorsStatusNone": "無",
         "connectorsStatusCount_one": "已連接 {{count}} 個",
         "connectorsStatusCount_other": "已連接 {{count}} 個",
-        "toolsStatusDefault": "預設",
         "toolsStatusCount_one": "已啟用 {{count}} 個",
         "toolsStatusCount_other": "已啟用 {{count}} 個",
         "membersStatusOnlyYou": "僅您自己",
@@ -1286,7 +1289,20 @@
         "suggestPlanWork": "規劃一項工作",
         "suggestWriteInstructions": "撰寫專案指令",
         "suggestSummariseDocumentPrompt": "請總結此專案檔案中最重要的文件。",
-        "suggestPlanWorkPrompt": "請幫我為此專案規劃一項工作，並將其拆分為具體的後續步驟。"
+        "suggestPlanWorkPrompt": "請幫我為此專案規劃一項工作，並將其拆分為具體的後續步驟。",
+        "visibilityShared": "已與 {{members}} 分享",
+        "visibilityPrivateOwner": "僅擁有者可見",
+        "toolsStatusNone": "未啟用",
+        "toolsSubtitle": "此專案中的對話只能使用您在此勾選的工具。",
+        "toolKind": {
+          "read": "讀取資料",
+          "write": "進行變更",
+          "destructive": "刪除或無法復原",
+          "unknown": "其他"
+        },
+        "toolNeedsApproval": "需要核准",
+        "toolNeedsApprovalHint": "此工具可能會刪除資料。在專案對話中，它只有在獲得核准後才會執行。",
+        "indexingStatusLabel": "索引：{{status}}"
       },
       "moveDialog": {
         "title": "移至專案",
@@ -1297,16 +1313,71 @@
       },
       "deleteDialog": {
         "title": "刪除此專案？",
-        "description": "這將刪除專案並取消與對話的關聯。對話本身不會被刪除。",
+        "description": "刪除專案後無法復原：",
         "confirm": "刪除專案",
         "deleting": "刪除中…",
-        "failed": "無法刪除專案"
+        "failed": "無法刪除專案",
+        "filesDeleted": "上傳到專案的檔案將被永久刪除。",
+        "membersLoseAccess": "所有分享對象都將失去存取權。",
+        "chatsKept": "對話會保留，但不再屬於任何專案。"
       },
       "roles": {
         "owner": "擁有者",
         "editor": "編輯者",
         "viewer": "檢視者"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "擁有者",
+          "description": "建立了專案並管理誰可以使用"
+        },
+        "editor": {
+          "label": "可編輯",
+          "description": "變更名稱、指示、檔案、連接器和工具，並在專案中聊天"
+        },
+        "viewer": {
+          "label": "可檢視",
+          "description": "開啟專案並使用其檔案和工具聊天"
+        }
+      },
+      "unknownMember": "未知成員",
+      "unknownTeam": "未知團隊",
+      "allMembersTeam": "您組織中的所有人",
+      "ownerCannotChange": "無法在此變更專案擁有者的存取權。",
+      "sharingSettings": {
+        "saved": "分享設定已儲存",
+        "saveFailed": "無法儲存分享設定",
+        "visibilityLabel": "誰可以找到此專案",
+        "visibilityPrivate": "僅限分享對象",
+        "visibilityOrg": "您組織中的所有人",
+        "visibilityPrivateHint": "只有您和下方的人員或團隊可以開啟。",
+        "visibilityOrgHint": "您組織中的任何人都可以找到並開啟。",
+        "chatSharingLabel": "此專案中的新對話",
+        "chatSharingPrivate": "僅發起者可見",
+        "chatSharingMembers": "與專案成員分享",
+        "chatSharingPrivateHint": "每個對話保持私密，除非其作者分享。",
+        "chatSharingMembersHint": "成員可以看到新對話；作者仍可將其設為私密。"
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "編輯專案詳細資料",
+        "saved": "專案詳細資料已儲存",
+        "saveFailed": "無法儲存專案詳細資料"
+      },
+      "editDetails": "編輯名稱和說明",
+      "leaveProject": "退出專案",
+      "leaveDialog": {
+        "title": "退出 {{name}}？",
+        "description": "您將失去此專案及其檔案的存取權。您的對話仍歸您所有。擁有者可以重新將您加入。",
+        "leaving": "正在退出…",
+        "left": "您已退出專案",
+        "failed": "無法退出專案",
+        "inherited": "您無法退出此專案：您的存取權來自您的組織或某個團隊。請擁有者變更共用對象。"
+      },
+      "archiveSuccess": "專案已封存",
+      "archivedNoNewChats": "此專案已封存，無法在其中開始新對話。",
+      "archivedBanner": "此專案已封存。取消封存後即可開始新對話。",
+      "archivedBannerMember": "此專案已封存，無法開始新對話。請擁有者取消封存。"
     },
     "demoHide": "隱藏示範資料",
     "scrollAttachmentsLeft": "向左捲動附件",
@@ -1478,7 +1549,8 @@
       "downloading": "正在下載產物"
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
-    "noResultsFor": "找不到「{{query}}」的結果"
+    "noResultsFor": "找不到「{{query}}」的結果",
+    "removeSelectedSource": "移除 {{name}}"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -5464,7 +5536,13 @@
     },
     "team": "團隊",
     "teamsNoRoles": "團隊沒有角色",
-    "invite": "邀請加入 Pipeshub"
+    "invite": "邀請加入 Pipeshub",
+    "searchPlaceholderTeams": "電子郵件、團隊或名稱（以逗號分隔）",
+    "searchPlaceholderUsers": "電子郵件或名稱（以逗號分隔）",
+    "alreadyRemoved": "已移除",
+    "alreadyRemovedDescription": "{{name}} 先前已失去存取權",
+    "removeConfirmTitle": "移除存取權？",
+    "removeConfirmDescription": "{{name}} 將立即失去存取權。您之後可以再次分享。"
   },
   "demoData": {
     "badge": {

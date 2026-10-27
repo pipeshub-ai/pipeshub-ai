@@ -58,6 +58,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       setSemanticSearchRepository(searches);
       setUserRepository({ listNamesByIds: () => Promise.resolve([]) } as never);
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
     });
     afterEach(() => {
       sinon.restore();
@@ -194,6 +195,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
       sinon.restore();
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
       const asked = stubAccess([]);
       const asOwner = await run(w.org, w.owner, getConversationById(appConfig) as never, {
         params: { conversationId: w.session._id },
@@ -295,6 +297,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
 
       sinon.restore();
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([]);
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false);
       const asked = stubAccess([]);
       const owner = await run(w.org, w.owner, getSearchById(appConfig) as never, {
         params: { searchId: s._id },

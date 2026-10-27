@@ -355,12 +355,28 @@ describe('ProjectKnowledgeBaseService', () => {
       const bodies = bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST);
       expect(bodies).to.deep.equal([
         { userIds: [OWNER_ID], teamIds: [], role: 'OWNER' },
-        { userIds: [editorA.id, editorB.id], teamIds: [], role: 'WRITER' },
         { userIds: [viewer.id], teamIds: [], role: 'READER' },
         { userIds: [], teamIds: [editorTeam.id, viewerTeam.id] },
+        { userIds: [editorA.id, editorB.id], teamIds: [], role: 'WRITER' },
       ]);
       // The KB API rejects a team grant that carries a role.
-      expect(bodies[3]).to.not.have.property('role');
+      expect(bodies[2]).to.not.have.property('role');
+    });
+
+    it('grants editors after everyone else, so an editor who created the KB can still grant the rest', async () => {
+      const editor = userMember('editor');
+      const viewer = userMember('viewer');
+      exec.resolves(respond(200));
+
+      await ProjectKnowledgeBaseService.syncMemberPermissions(
+        appConfig,
+        HEADERS,
+        makeProject({ linkedKnowledgeBaseId: 'kb-1', visibility: 'org', members: [editor.member, viewer.member] }),
+      );
+
+      const bodies = bodiesSentTo(exec, permissionsUrl('kb-1'), HttpMethod.POST);
+      expect(bodies[bodies.length - 1]).to.deep.equal({ userIds: [editor.id], teamIds: [], role: 'WRITER' });
+      expect(bodies.slice(0, -1).some((body) => body.role === 'WRITER')).to.equal(false);
     });
 
     it('sends no request for an empty bucket', async () => {

@@ -70,6 +70,7 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.backpressure import (
@@ -1357,8 +1358,12 @@ async def _republish_stranded_records(
                 )
                 connector_active[connector_id] = None
             else:
+                # A connector or knowledge base being deleted owns its records' fate: a
+                # re-sent event would index content the delete is about to remove.
                 connector_active[connector_id] = bool(
-                    instance and instance.get("isActive", False)
+                    instance
+                    and instance.get("isActive", False)
+                    and instance.get("status") != APP_STATUS_DELETING
                 )
         # Unreadable is not active either: the record waits for the next pass.
         return connector_active[connector_id] is True

@@ -111,7 +111,8 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   await step('listAgentSharedWithMe', conv.listAgentSharedWithMe({ orgId: ORG, userId: BOB, agentKey: 'ag1', sort: { _id: -1 }, skip: 0, limit: 10 }));
   await step('listVisibleTitles', conv.listVisibleTitles(ORG, CAROL, [s1._id, s2._id, s3._id], [PROJECT]));
   await step('listByProject', conv.listByProject({ orgId: ORG, projectId: PROJECT, userId: BOB, skip: 0, limit: 10 }));
-  await step('countByProject', conv.countByProject([PROJECT, PROJECT2]));
+  await step('countByProject', conv.countByProject(ORG, BOB, [PROJECT, PROJECT2]));
+  await step('countByProject owner', conv.countByProject(ORG, ALICE, [PROJECT, PROJECT2]));
 
   // ---- the run lease and the session record
   const lease = await step('reserveRun', conv.reserveRun(CHAT, s1._id, actor(ALICE)));
@@ -242,6 +243,7 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
 
   await step('set project link', conv.setProjectLink(CHAT, s1._id, { projectId: PROJECT2, projectVisibility: 'private' }));
   await step('set project visibility', conv.setProjectVisibility(CHAT, s1._id, 'project'));
+  await step('unlink from another project', conv.unlinkFromProject(ORG, s1._id, PROJECT));
   await step('unlink project', conv.unlinkProject(PROJECT));
   await step('after unlink', conv.listSessions(q({ projectFilter: { kind: 'unassigned' } })));
   await step('unshare', conv.setSharing(CHAT, s1._id, { isShared: false, sharedWith: [], clearShareLink: true }));

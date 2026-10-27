@@ -40,7 +40,11 @@
     "tabArchived": "Archived",
     "archivedEmptyState": "No archived projects",
     "archivedEmptyStateHint": "Projects you archive will show up here.",
-    "actionsLabel": "Project actions"
+    "actionsLabel": "Project actions",
+    "noSearchResults": "No projects match “{{query}}”",
+    "noSearchResultsHint": "Try a different name, or clear the search.",
+    "clearSearch": "Clear search",
+    "cardActionsLabel": "Actions for {{name}}"
   },
   "timeGroup": {
     "today": "Today",
@@ -1229,7 +1233,6 @@
         "connectorsStatusNone": "None",
         "connectorsStatusCount_one": "{{count}} connected",
         "connectorsStatusCount_other": "{{count}} connected",
-        "toolsStatusDefault": "Default",
         "toolsStatusCount_one": "{{count}} enabled",
         "toolsStatusCount_other": "{{count}} enabled",
         "membersStatusOnlyYou": "Only you",
@@ -1237,7 +1240,20 @@
         "suggestPlanWork": "Plan a piece of work",
         "suggestWriteInstructions": "Write the project instructions",
         "suggestSummariseDocumentPrompt": "Summarize the most important document in this project's files.",
-        "suggestPlanWorkPrompt": "Help me plan a piece of work for this project. Break it down into concrete next steps."
+        "suggestPlanWorkPrompt": "Help me plan a piece of work for this project. Break it down into concrete next steps.",
+        "visibilityShared": "Shared with {{members}}",
+        "visibilityPrivateOwner": "Private to the owner",
+        "toolsStatusNone": "None enabled",
+        "toolsSubtitle": "Chats in this project can use only the tools you tick here.",
+        "toolKind": {
+          "read": "Reads data",
+          "write": "Makes changes",
+          "destructive": "Deletes or can't be undone",
+          "unknown": "Other"
+        },
+        "toolNeedsApproval": "Needs approval",
+        "toolNeedsApprovalHint": "This tool can delete data. In a project chat it runs only after someone approves it.",
+        "indexingStatusLabel": "Indexing: {{status}}"
       },
       "moveDialog": {
         "title": "Move to project",
@@ -1248,16 +1264,71 @@
       },
       "deleteDialog": {
         "title": "Delete this project?",
-        "description": "This removes the project and unlinks its chats. The chats themselves are not deleted.",
+        "description": "Deleting a project can't be undone:",
         "confirm": "Delete project",
         "deleting": "Deleting…",
-        "failed": "Failed to delete project"
+        "failed": "Failed to delete project",
+        "filesDeleted": "Files uploaded to the project are permanently deleted.",
+        "membersLoseAccess": "Everyone it's shared with loses access.",
+        "chatsKept": "Chats are kept, but are no longer part of a project."
       },
       "roles": {
         "owner": "Owner",
         "editor": "Editor",
         "viewer": "Viewer"
-      }
+      },
+      "shareRoles": {
+        "owner": {
+          "label": "Owner",
+          "description": "Created the project and manages who can use it"
+        },
+        "editor": {
+          "label": "Can edit",
+          "description": "Change the name, instructions, files, connectors and tools, and chat in the project"
+        },
+        "viewer": {
+          "label": "Can view",
+          "description": "Open the project and chat with its files and tools"
+        }
+      },
+      "unknownMember": "Unknown member",
+      "unknownTeam": "Unknown team",
+      "allMembersTeam": "Everyone in your organization",
+      "ownerCannotChange": "The project owner's access can't be changed here.",
+      "sharingSettings": {
+        "saved": "Sharing settings saved",
+        "saveFailed": "Couldn't save sharing settings",
+        "visibilityLabel": "Who can find this project",
+        "visibilityPrivate": "Only people it's shared with",
+        "visibilityOrg": "Everyone in your organization",
+        "visibilityPrivateHint": "Only you and the people or teams below can open it.",
+        "visibilityOrgHint": "Anyone in your organization can find and open it.",
+        "chatSharingLabel": "New chats in this project",
+        "chatSharingPrivate": "Private to whoever starts them",
+        "chatSharingMembers": "Shared with project members",
+        "chatSharingPrivateHint": "Each chat stays private unless its author shares it.",
+        "chatSharingMembersHint": "Members can see new chats; an author can still make one private."
+      },
+      "charCount": "{{length}} / {{max}}",
+      "editDialog": {
+        "title": "Edit project details",
+        "saved": "Project details saved",
+        "saveFailed": "Couldn't save project details"
+      },
+      "editDetails": "Edit name and description",
+      "leaveProject": "Leave project",
+      "leaveDialog": {
+        "title": "Leave {{name}}?",
+        "description": "You'll lose access to this project and its files. Your chats stay yours. The owner can add you back.",
+        "leaving": "Leaving…",
+        "left": "You left the project",
+        "failed": "Couldn't leave the project",
+        "inherited": "You can't leave this project: your access comes from your organisation or a team. Ask the owner to change who it's shared with."
+      },
+      "archiveSuccess": "Project archived",
+      "archivedNoNewChats": "This project is archived, so new chats can't be started in it.",
+      "archivedBanner": "This project is archived. Unarchive it to start new chats.",
+      "archivedBannerMember": "This project is archived, so new chats can't be started. Ask its owner to unarchive it."
     },
     "demoHide": "Hide demo data",
     "scrollAttachmentsLeft": "Scroll attachments left",
@@ -1393,7 +1464,8 @@
       "downloading": "Downloading artifact"
     },
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
-    "noResultsFor": "No results found for “{{query}}”"
+    "noResultsFor": "No results found for “{{query}}”",
+    "removeSelectedSource": "Remove {{name}}"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -5532,6 +5604,12 @@
     },
     "team": "Team",
     "teamsNoRoles": "Teams do not have roles",
-    "invite": "Invite to Pipeshub"
+    "invite": "Invite to Pipeshub",
+    "searchPlaceholderTeams": "Emails, teams or names (separated by commas)",
+    "searchPlaceholderUsers": "Emails or names (separated by commas)",
+    "alreadyRemoved": "Already removed",
+    "alreadyRemovedDescription": "{{name}} had already lost access",
+    "removeConfirmTitle": "Remove access?",
+    "removeConfirmDescription": "{{name}} will lose access straight away. You can share with them again later."
   }
 }

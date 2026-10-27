@@ -17,7 +17,8 @@ import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectSummary } from '@/chat/project-types';
 import { useChatStore } from '@/chat/store';
-import { CreateProjectDialog } from '@/chat/sidebar/dialogs';
+import { CreateProjectDialog, DeleteProjectDialog, LeaveProjectDialog } from '@/chat/sidebar/dialogs';
+import { useUserStore } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
 import { formatRelativeTime } from '@/lib/utils/formatters';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
@@ -28,24 +29,50 @@ const PROJECT_LIST_PAGE_SIZE = 30;
 type ProjectListTab = 'active' | 'archived';
 
 const HEADER_ROW_HEIGHT = 32;
-const RESTORE_TRIGGER_SIZE = 22;
+const MENU_TRIGGER_SIZE = 22;
+
+export type ProjectCardAction = 'pin' | 'unpin' | 'archive' | 'unarchive' | 'delete' | 'leave';
+
+/** What the caller may do to a project from its card: pin is per user, the rest follow the role. */
+export function projectCardActions(project: Pick<ProjectSummary, 'role' | 'isPinned' | 'isArchived'>): ProjectCardAction[] {
+  const actions: ProjectCardAction[] = [];
+  if (!project.isArchived) actions.push(project.isPinned ? 'unpin' : 'pin');
+  if (project.role === 'owner') {
+    actions.push(project.isArchived ? 'unarchive' : 'archive', 'delete');
+  } else if (project.role === 'editor' || project.role === 'viewer') {
+    actions.push('leave');
+  }
+  return actions;
+}
+
+const ACTION_ICON: Record<ProjectCardAction, string> = {
+  pin: 'star_outline',
+  unpin: 'star',
+  archive: 'archive',
+  unarchive: 'unarchive',
+  delete: 'delete',
+  leave: 'logout',
+};
+
+const ACTION_LABEL_KEY: Record<ProjectCardAction, string> = {
+  pin: 'chat.projects.pinProject',
+  unpin: 'chat.projects.unpinProject',
+  archive: 'chat.projects.archiveProject',
+  unarchive: 'chat.projects.unarchiveProject',
+  delete: 'chat.projects.deleteProject',
+  leave: 'chat.projects.leaveProject',
+};
 
 interface ProjectCardProps {
   project: ProjectSummary;
   onOpen: () => void;
-  archived?: boolean;
-  onUnarchive?: () => void;
-  isUnarchiving?: boolean;
+  onAction: (action: ProjectCardAction) => void;
+  isBusy?: boolean;
 }
 
-function ProjectCard({
-  project,
-  onOpen,
-  archived = false,
-  onUnarchive,
-  isUnarchiving = false,
-}: ProjectCardProps) {
+function ProjectCard({ project, onOpen, onAction, isBusy = false }: ProjectCardProps) {
   const { t } = useTranslation();
+  const actions = projectCardActions(project);
   const [isHovered, setIsHovered] = useState(false);
   const [isTriggerFocused, setIsTriggerFocused] = useState(false);
   const [isMenuOpen, setIsMenuOpen] = useState(false);
@@ -107,8 +134,8 @@ function ProjectCard({
             <Text size="1" style={{ color: 'var(--slate-10)' }}>
               {t(`chat.projects.roles.${project.role === 'none' ? 'viewer' : project.role}`)}
             </Text>
-            {/* Reserves the slot the absolutely-positioned restore trigger sits over. */}
-            {archived && <Box style={{ width: RESTORE_TRIGGER_SIZE, height: RESTORE_TRIGGER_SIZE, flexShrink: 0 }} />}
+            {/* Reserves the slot the absolutely-positioned menu trigger sits over. */}
+            {actions.length > 0 && <Box style={{ width: MENU_TRIGGER_SIZE, height: MENU_TRIGGER_SIZE, flexShrink: 0 }} />}
           </Flex>
         </Flex>
         <Text
@@ -144,15 +171,15 @@ function ProjectCard({
           </Text>
         </Flex>
       </Box>
-      {archived && (
+      {actions.length > 0 && (
         <Box
           style={{
             position: 'absolute',
             // Vertically centred on the header row.
-            top: `calc(var(--space-4) + ${(HEADER_ROW_HEIGHT - RESTORE_TRIGGER_SIZE) / 2}px)`,
+            top: `calc(var(--space-4) + ${(HEADER_ROW_HEIGHT - MENU_TRIGGER_SIZE) / 2}px)`,
             right: 'var(--space-4)',
-            width: RESTORE_TRIGGER_SIZE,
-            height: RESTORE_TRIGGER_SIZE,
+            width: MENU_TRIGGER_SIZE,
+            height: MENU_TRIGGER_SIZE,
           }}
         >
           <DropdownMenu.Root open={isMenuOpen} onOpenChange={setIsMenuOpen} modal={false}>
@@ -160,7 +187,8 @@ function ProjectCard({
               {/* Always mounted: revealing it on hover alone hid it from keyboard and touch users. */}
               <button
                 type="button"
-                aria-label={t('chat.projects.unarchiveProject')}
+                className="touch-hit"
+                aria-label={t('projects.cardActionsLabel', { name: project.name })}
                 onFocus={() => setIsTriggerFocused(true)}
                 onBlur={() => setIsTriggerFocused(false)}
                 style={{
@@ -181,14 +209,25 @@ function ProjectCard({
               </button>
             </DropdownMenu.Trigger>
             <DropdownMenu.Content side="bottom" align="end" sideOffset={4} style={{ minWidth: 170 }}>
-              <DropdownMenu.Item disabled={isUnarchiving} onSelect={() => onUnarchive?.()}>
-                <Flex align="center" gap="2">
-                  <MaterialIcon name="unarchive" size={16} color="var(--slate-11)" />
-                  <Text size="2" style={{ color: 'var(--slate-11)' }}>
-                    {isUnarchiving ? t('action.loading') : t('chat.projects.unarchiveProject')}
-                  </Text>
-                </Flex>
-              </DropdownMenu.Item>
+              {actions.map((action) => {
+                const danger = action === 'delete' || action === 'leave';
+                const color = danger ? 'var(--red-11)' : 'var(--slate-11)';
+                return (
+                  <DropdownMenu.Item
+                    key={action}
+                    color={danger ? 'red' : undefined}
+                    disabled={isBusy}
+                    onSelect={() => onAction(action)}
+                  >
+                    <Flex align="center" gap="2">
+                      <MaterialIcon name={ACTION_ICON[action]} size={16} color={color} />
+                      <Text size="2" style={{ color }}>
+                        {t(ACTION_LABEL_KEY[action])}
+                      </Text>
+                    </Flex>
+                  </DropdownMenu.Item>
+                );
+              })}
             </DropdownMenu.Content>
           </DropdownMenu.Root>
         </Box>
@@ -220,7 +259,11 @@ export function ProjectList() {
   const [page, setPage] = useState(1);
   const [hasMore, setHasMore] = useState(false);
   const [activeTab, setActiveTab] = useState<ProjectListTab>('active');
-  const [unarchivingId, setUnarchivingId] = useState<string | null>(null);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<ProjectSummary | null>(null);
+  const [pendingLeave, setPendingLeave] = useState<ProjectSummary | null>(null);
+  const myUserId = useUserStore((s) => s.profile?.userId);
+  const removeProjectFromList = useChatStore((s) => s.removeProjectFromList);
 
   // Guards against an in-flight request for a stale query/page overwriting
   // the result of a newer one that resolves first.
@@ -276,18 +319,84 @@ export function ProjectList() {
     router.push(`/projects/?projectId=${encodeURIComponent(projectId)}`);
   };
 
-  const handleUnarchive = async (projectId: string) => {
-    if (unarchivingId) return;
-    setUnarchivingId(projectId);
+  const dropFromView = (projectId: string) => {
+    setProjects((prev) => prev.filter((project) => project._id !== projectId));
+  };
+
+  const runCardAction = async (project: ProjectSummary, action: ProjectCardAction) => {
+    if (action === 'delete') {
+      setPendingDelete(project);
+      return;
+    }
+    if (action === 'leave') {
+      setPendingLeave(project);
+      return;
+    }
+    if (busyId) return;
+    setBusyId(project._id);
     try {
-      await ProjectApi.unarchive(projectId);
-      setProjects((prev) => prev.filter((project) => project._id !== projectId));
-      bumpProjectsVersion();
-      toast.success(t('chat.projects.restoreSuccess'));
+      if (action === 'pin' || action === 'unpin') {
+        const updated = action === 'pin' ? await ProjectApi.pin(project._id) : await ProjectApi.unpin(project._id);
+        setProjects((prev) =>
+          prev.map((row) => (row._id === project._id ? { ...row, isPinned: updated.isPinned } : row)),
+        );
+        upsertProjectInList({ ...project, isPinned: updated.isPinned });
+      } else {
+        await (action === 'archive' ? ProjectApi.archive(project._id) : ProjectApi.unarchive(project._id));
+        dropFromView(project._id);
+        bumpProjectsVersion();
+        toast.success(t(action === 'archive' ? 'chat.projects.archiveSuccess' : 'chat.projects.restoreSuccess'));
+      }
     } catch {
-      toast.error(t('chat.projects.workspace.updateArchiveFailed'));
+      toast.error(
+        t(
+          action === 'pin' || action === 'unpin'
+            ? 'chat.projects.workspace.updatePinFailed'
+            : 'chat.projects.workspace.updateArchiveFailed',
+        ),
+      );
     } finally {
-      setUnarchivingId(null);
+      setBusyId(null);
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    setBusyId(pendingDelete._id);
+    try {
+      await ProjectApi.remove(pendingDelete._id);
+      dropFromView(pendingDelete._id);
+      removeProjectFromList(pendingDelete._id);
+      setPendingDelete(null);
+    } catch {
+      toast.error(t('chat.projects.deleteDialog.failed'));
+    } finally {
+      setBusyId(null);
+    }
+  };
+
+  const confirmLeave = async () => {
+    if (!pendingLeave) return;
+    if (!myUserId) {
+      toast.error(t('chat.projects.leaveDialog.failed'));
+      return;
+    }
+    setBusyId(pendingLeave._id);
+    try {
+      const { removed } = await ProjectApi.removeMember(pendingLeave._id, myUserId);
+      if (!removed) {
+        setPendingLeave(null);
+        toast.error(t('chat.projects.leaveDialog.inherited'));
+        return;
+      }
+      dropFromView(pendingLeave._id);
+      removeProjectFromList(pendingLeave._id);
+      setPendingLeave(null);
+      toast.success(t('chat.projects.leaveDialog.left'));
+    } catch {
+      toast.error(t('chat.projects.leaveDialog.failed'));
+    } finally {
+      setBusyId(null);
     }
   };
 
@@ -326,8 +435,8 @@ export function ProjectList() {
       <SegmentedControl.Root
         value={activeTab}
         onValueChange={(value) => setActiveTab(value as ProjectListTab)}
-        size="2"
-        style={{ alignSelf: 'flex-start' }}
+        size={isMobile ? '3' : '2'}
+        style={{ alignSelf: 'flex-start', ...(isMobile ? { height: 44 } : {}) }}
       >
         <SegmentedControl.Item value="active">
           {t('projects.tabYourProjects')}
@@ -356,6 +465,19 @@ export function ProjectList() {
         <Text size="2" style={{ color: '#ef4444' }}>
           {t('projects.failedToLoad')}
         </Text>
+      ) : sorted.length === 0 && search.trim() ? (
+        <Flex direction="column" align="center" gap="2" role="status" style={{ padding: 'var(--space-8) 0' }}>
+          <MaterialIcon name="search_off" size={40} color="var(--slate-8)" />
+          <Text size="3" weight="medium" style={{ color: 'var(--slate-11)', textAlign: 'center', overflowWrap: 'anywhere' }}>
+            {t('projects.noSearchResults', { query: search.trim() })}
+          </Text>
+          <Text size="2" style={{ color: 'var(--slate-9)' }}>
+            {t('projects.noSearchResultsHint')}
+          </Text>
+          <LoadingButton variant="soft" color="gray" onClick={() => setSearch('')}>
+            {t('projects.clearSearch')}
+          </LoadingButton>
+        </Flex>
       ) : sorted.length === 0 ? (
         <Flex direction="column" align="center" gap="2" style={{ padding: 'var(--space-8) 0' }}>
           <MaterialIcon name="folder_open" size={40} color="var(--slate-8)" />
@@ -387,10 +509,9 @@ export function ProjectList() {
               <ProjectCard
                 key={project._id}
                 project={project}
-                archived={activeTab === 'archived'}
-                isUnarchiving={unarchivingId === project._id}
+                isBusy={busyId === project._id}
                 onOpen={() => openProject(project._id)}
-                onUnarchive={() => void handleUnarchive(project._id)}
+                onAction={(action) => void runCardAction(project, action)}
               />
             ))}
           </Box>
@@ -403,6 +524,22 @@ export function ProjectList() {
           )}
         </Flex>
       )}
+
+      <DeleteProjectDialog
+        open={pendingDelete !== null}
+        onOpenChange={(open) => !open && setPendingDelete(null)}
+        onConfirm={confirmDelete}
+        isDeleting={pendingDelete !== null && busyId === pendingDelete._id}
+        projectName={pendingDelete?.name}
+      />
+
+      <LeaveProjectDialog
+        open={pendingLeave !== null}
+        onOpenChange={(open) => !open && setPendingLeave(null)}
+        projectName={pendingLeave?.name ?? ''}
+        onConfirm={confirmLeave}
+        isLeaving={pendingLeave !== null && busyId === pendingLeave._id}
+      />
 
       <CreateProjectDialog
         open={createOpen}

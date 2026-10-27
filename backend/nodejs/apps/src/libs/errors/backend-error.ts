@@ -4,6 +4,7 @@ import {
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   PaymentRequiredError,
@@ -13,6 +14,10 @@ import {
   UnprocessableEntityError,
 } from './http.errors';
 import { BaseError } from './base.error';
+
+/** The connector service's refusal of a write to a knowledge base that is being deleted. */
+export const KB_BEING_DELETED_MESSAGE =
+  "This knowledge base is being deleted, so it can't be changed.";
 import {
   isReaderWritten,
   markClientSafe,
@@ -273,6 +278,11 @@ const errorForStatus = (
     case 404:
       return new NotFoundError(errorDetail);
     case 409:
+      // The connector service words this refusal the same way everywhere (kb_service.py); it is
+      // the one 409 a client may want to tell apart, because retrying the write can never work.
+      if (errorDetail === KB_BEING_DELETED_MESSAGE) {
+        return new HttpError('KB_BEING_DELETED', KB_BEING_DELETED_MESSAGE, 409);
+      }
       return new ConflictError(errorDetail);
     case 422:
       return new UnprocessableEntityError(errorDetail);

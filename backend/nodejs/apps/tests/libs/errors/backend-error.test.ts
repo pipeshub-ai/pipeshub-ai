@@ -2,12 +2,14 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import {
   handleBackendError,
+  KB_BEING_DELETED_MESSAGE,
   SERVICE_UNAVAILABLE_MESSAGE,
 } from '../../../src/libs/errors/backend-error'
 import { Logger } from '../../../src/libs/services/logger.service'
 import { logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
   InternalServerError,
@@ -264,6 +266,31 @@ describe('handleBackendError', () => {
       const result = handleBackendError({ request: {} }, 'list connectors')
       expect(result).to.be.instanceOf(ServiceUnavailableError)
       expect(result.message).to.equal(SERVICE_UNAVAILABLE_MESSAGE)
+    })
+  })
+
+  describe('a 409 from a knowledge base being deleted', () => {
+    // kb_service.py KB_BEING_DELETED_REASON: the connector service words this refusal the same way everywhere.
+    const PYTHON_WORDING = "This knowledge base is being deleted, so it can't be changed."
+
+    it('carries its own error code, so a client can tell it from other conflicts', () => {
+      expect(KB_BEING_DELETED_MESSAGE).to.equal(PYTHON_WORDING)
+      const result = handleBackendError(
+        { statusCode: 409, data: { detail: PYTHON_WORDING } },
+        'update collection',
+      ) as any
+      expect(result.statusCode).to.equal(409)
+      expect(result.code).to.equal('HTTP_KB_BEING_DELETED')
+      expect(result.message).to.equal(PYTHON_WORDING)
+    })
+
+    it('leaves any other 409 as a conflict (the control)', () => {
+      const result = handleBackendError(
+        { statusCode: 409, data: { detail: "Folder 'a' already exists in KB root" } },
+        'create folder',
+      )
+      expect(result).to.be.instanceOf(ConflictError)
+      expect((result as ConflictError).code).to.equal('HTTP_CONFLICT')
     })
   })
 

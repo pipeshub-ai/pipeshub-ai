@@ -3,6 +3,7 @@ import { cleanup, renderHook, waitFor } from '@testing-library/react';
 
 import { useChatStore } from '@/chat/store';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
+import { useFeatureFlagsStore } from '@/lib/store/feature-flags-store';
 import { useSidebarConversations } from '../use-sidebar-conversations';
 
 const fetchConversations = vi.fn();
@@ -26,6 +27,7 @@ describe('useSidebarConversations', () => {
     vi.clearAllMocks();
     useChatStore.getState().reset();
     useServicesHealthStore.setState({ apiServerReachable: true });
+    useFeatureFlagsStore.setState({ flags: null } as never);
     fetchConversations.mockResolvedValue({ conversations: [], pagination: PAGINATION });
   });
 
@@ -35,8 +37,22 @@ describe('useSidebarConversations', () => {
     renderHook(() => useSidebarConversations());
 
     await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
-    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'owned' });
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
+      source: 'owned',
+      excludeProjectChats: false,
+    });
     expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), { source: 'shared' });
+  });
+
+  it('leaves project chats out of Recents while Projects is on, since they list under their project', async () => {
+    useFeatureFlagsStore.setState({ flags: { ENABLE_PROJECTS: true } } as never);
+    renderHook(() => useSidebarConversations());
+
+    await waitFor(() => expect(fetchConversations).toHaveBeenCalledTimes(2));
+    expect(fetchConversations).toHaveBeenCalledWith(1, expect.any(Number), {
+      source: 'owned',
+      excludeProjectChats: true,
+    });
   });
 
   it('marks the conversation list as failed when it cannot be loaded', async () => {

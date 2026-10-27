@@ -127,6 +127,47 @@ class TestDecide:
         assert decide(source="mcp", own=_BLOCK, kind="write", watched=False).rule == _BLOCK
 
 
+class TestEnabledOnProject:
+    """A project chat loads only the tools the project enables, so one that would start at Block
+    asks instead; what someone set, and an unwatched run, are unchanged."""
+
+    def test_a_deleting_tool_nobody_set_a_rule_for_asks(self) -> None:
+        verdict = decide(source="mcp", own=None, kind="destructive", watched=True, enabled_on_project=True)
+        assert verdict.rule == _ASK
+
+    def test_a_block_someone_set_still_blocks(self) -> None:
+        verdict = decide(source="mcp", own=_BLOCK, kind="destructive", watched=True, enabled_on_project=True)
+        assert verdict == approvals.Verdict(_BLOCK, "own")
+
+    def test_nobody_watching_still_blocks(self) -> None:
+        verdict = decide(source="mcp", own=None, kind="destructive", watched=False, enabled_on_project=True)
+        assert verdict == approvals.Verdict(_BLOCK, "unattended")
+
+    def test_the_approved_call_runs(self) -> None:
+        verdict = decide(
+            source="mcp", own=None, kind="destructive", watched=True, approved_call=True, enabled_on_project=True,
+        )
+        assert verdict.rule == _ALLOW
+
+    @pytest.mark.parametrize("kind,expected", [("read", _ALLOW), ("write", _ASK)])
+    def test_other_kinds_keep_their_starting_rule(self, kind: str, expected: str) -> None:
+        assert decide(source="mcp", own=None, kind=kind, watched=True, enabled_on_project=True).rule == expected  # type: ignore[arg-type]
+
+    async def test_the_gate_shows_a_card_in_a_project_chat(self) -> None:
+        store = _Store()
+        ctx = await _gate(
+            _context(store, project_tools_selected=True), _adapter(read_only=False, name="delete_issue"), key="X-1",
+        )
+        assert ctx.decision == PreDecision.ASK
+        assert ctx.pending_approval is not None
+        assert ctx.pending_approval.details["kind"] == "destructive"
+        assert len(store.pending()) == 1
+
+    async def test_the_gate_still_denies_outside_a_project(self) -> None:
+        ctx = await _gate(_context(), _adapter(read_only=False, name="delete_issue"), key="X-1")
+        assert ctx.decision == PreDecision.DENY
+
+
 class TestToolsetStartingRules:
     """A toolset tool is one of PipesHub's own integrations: its writes run, a deleting call asks."""
 
