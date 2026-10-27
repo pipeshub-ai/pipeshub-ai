@@ -132,6 +132,7 @@ from app.utils.api_call import make_api_call
 from app.utils.jwt import generate_jwt
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_url
 
 
 async def _bytes_async_gen(data: bytes) -> AsyncGenerator[bytes, None]:
@@ -870,7 +871,7 @@ class WebConnector(BaseConnector):
             )
         except Exception as e:
             self.logger.error(f"❌ Failed to access website: {e}")
-            raise ConnectorInitError(f"Website {self.url} is not accessible: it could not be reached.") from e
+            raise ConnectorInitError(f"Website {redact_url(self.url)} is not accessible: it could not be reached.") from e
 
         if result is not None and result.status_code < HttpStatusCode.BAD_REQUEST.value:
             return True
@@ -879,7 +880,7 @@ class WebConnector(BaseConnector):
             reason = "it could not be reached"
         else:
             reason = refusal_reason(result) or f"it returned HTTP status {result.status_code}"
-        message = f"Website {self.url} is not accessible: {reason}."
+        message = f"Website {redact_url(self.url)} is not accessible: {reason}."
         self.logger.warning(f"⚠️ {message}")
         await self.notify(
             type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
