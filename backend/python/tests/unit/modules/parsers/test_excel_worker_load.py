@@ -554,3 +554,68 @@ def _small_xlsx_many_rows(n: int) -> bytes:
     out = io.BytesIO()
     wb.save(out)
     return out.getvalue()
+
+
+# -- structures count, not only text: a cell dict is ~1.1 KB however small the cell ----------------------
+
+
+def _numbers_xlsx(rows: int, cols: int) -> bytes:
+    wb = openpyxl.Workbook()
+    for r in range(rows):
+        wb.active.append([r + c for c in range(cols)])
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_the_basic_parse_charges_every_cell_dict_not_only_text() -> None:
+    cells = 200 * 50  # 10 000 one-digit numbers: no text to speak of
+    data = _numbers_xlsx(200, 50)
+    with pytest.raises(ParseError) as raised:
+        _loaded_with_budget(data, cells * module._CELL_DICT_BYTES // 4)._build_basic_block_container()
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    # the same workbook builds when the budget holds its cells, blocks and text
+    ok = _loaded_with_budget(data, cells * module._CELL_DICT_BYTES * 2)
+    assert ok._build_basic_block_container().blocks
+
+
+@pytest.mark.asyncio
+async def test_the_indexing_tables_charge_their_cell_dicts_and_give_them_back_per_sheet() -> None:
+    wb = openpyxl.Workbook()
+    for name in ("A", "B"):
+        ws = wb.active if name == "A" else wb.create_sheet(name)
+        ws.title = name
+        ws.append([f"h{c}" for c in range(40)])
+        for r in range(100):
+            ws.append([r + c for c in range(40)])
+    out = io.BytesIO()
+    wb.save(out)
+    one_sheet = 101 * 40 * module._CELL_DICT_BYTES  # a sheet's cell dicts, in bytes
+
+    def parser(budget: int) -> ExcelParser:
+        p = _loaded_with_budget(out.getvalue(), budget)
+        _stub_llm(p)
+        p.get_table_summary = AsyncMock(return_value="s")
+        p.get_rows_text = AsyncMock(side_effect=lambda rows, _s: ["r" for _ in rows])
+        return p
+
+    with pytest.raises(ParseError):  # not even one sheet's cells fit
+        await parser(one_sheet // 2).get_blocks_from_workbook(MagicMock())
+    # one sheet's cells (plus rows and blocks) fit, two together would not: they are freed after each sheet
+    container = await parser(int(one_sheet * 1.6)).get_blocks_from_workbook(MagicMock())
+    assert len(container.blocks) == 200
+
+
+def test_a_stray_cell_far_from_the_data_cannot_make_the_parent_build_millions_of_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 8 * MB)  # a 24 MB budget: about 22 000 cell dicts
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = "h"
+    wb.active["A2"] = 1
+    wb.active.cell(60_000, 300, 7)  # 18 M positions below the data
+    out = io.BytesIO()
+    wb.save(out)
+    start = time.monotonic()
+    with pytest.raises(ParseError) as raised:
+        load(out.getvalue())._build_basic_block_container()
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    assert time.monotonic() - start < 15  # refused after ~70 rows of 300 cells, not after 18 M cells

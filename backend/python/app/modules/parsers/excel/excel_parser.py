@@ -82,19 +82,39 @@ EXCEL_LOAD_MAX_MB = env_positive_int("EXCEL_LOAD_MAX_MB", 1536)
 EXCEL_LOAD_MAX_BYTES = EXCEL_LOAD_MAX_MB * 1024 * 1024
 # Backstop on the XML decompressed, all parts together (checked in the worker).
 EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
-# What the parent builds from the model is bounded in UTF-8 bytes of text, in two places that share
-# this number (the name says characters for historical reasons). The worker refuses, before anything
-# is built, a workbook whose cells would put more than this into blocks (a shared string counted per
-# use, the header row once per row). That is an estimate from the input; the real bound is the
-# running ``_OutputBudget`` charged by every block-building path as each row text, header list and
-# name is created, which raises EXCEL_TOO_LARGE as soon as the text produced passes it. Sized from
-# measured parent peaks (about 1.9 bytes of parent memory per byte produced, plus the model's own
-# copy of distinct strings): 512 MB keeps the parent near 2.3 GB.
-EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 512) * 1024 * 1024
+# What the parent builds from the model is bounded twice, from one number (the name says characters
+# for historical reasons; it is UTF-8 bytes of text). The worker refuses, before anything is built, a
+# workbook whose cells would put more than this into blocks (a shared string counted per use, the
+# header row once per row): an estimate from the input. The real bound is the running
+# ``_OutputBudget`` of three times this (1.4 GB by default) in parent memory, charged by every
+# block-building path for the text it produces (x2: string, block copy and serialised form) and for
+# every cell dict, row dict, block and group at its measured size, and released when a sheet's cell
+# dicts are freed. It raises EXCEL_TOO_LARGE as soon as it is spent. 1.4 GB plus the ~0.8 GB import
+# floor and the model keeps the parent near 2.3 GB.
+EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 480) * 1024 * 1024
+
+
+# Parent memory per structure built, measured (tracemalloc and RSS deltas, openpyxl 3.1.5 values from
+# the compact model): one cell dict from `_process_cell` / `_process_sheet` with its style dicts,
+# one TABLE_ROW block with its data dict, a block group, and a `{header: value}` row dict.
+_CELL_DICT_BYTES = 1106
+_BLOCK_BYTES = 2100
+_GROUP_BYTES = 4000
+_ROW_DICT_BASE_BYTES = 64
+_ROW_DICT_CELL_BYTES = 48
+# Memory held per byte of text: the string, its copy in the block, and the serialised form.
+_TEXT_WEIGHT = 2
 
 
 class _OutputBudget:
-    """Running total of the text a parser instance has produced, in UTF-8 bytes."""
+    """Running estimate of the parent memory the parser has built, in bytes.
+
+    Charged as each thing is created: text (UTF-8 bytes x ``_TEXT_WEIGHT``), cell dicts, row dicts,
+    blocks and groups at their measured sizes. What is freed again (the cell dicts of a sheet once
+    its blocks exist) is released, so the figure follows what is live. When it is spent the load is
+    refused as EXCEL_TOO_LARGE. The limit is three times ``EXCEL_MAX_TEXT_CHARS``: 1.4 GB by default,
+    which with the import floor and the model keeps the parent near 2.3 GB.
+    """
 
     __slots__ = ("left",)
 
@@ -104,10 +124,19 @@ class _OutputBudget:
     def charge(self, nbytes: int) -> None:
         self.left -= nbytes
         if self.left < 0:
-            raise _too_large("the blocks would hold more text than the output budget")
+            raise _too_large("the parser would hold more than the output budget")
+
+    def release(self, nbytes: int) -> None:
+        self.left += nbytes
 
     def charge_text(self, *texts: object) -> None:
-        self.charge(sum(_utf8_len(t) for t in texts if isinstance(t, str)))
+        self.charge(_TEXT_WEIGHT * sum(_utf8_len(t) for t in texts if isinstance(t, str)))
+
+    def charge_cells(self, count: int) -> None:
+        self.charge(count * _CELL_DICT_BYTES)
+
+    def release_cells(self, count: int) -> None:
+        self.release(count * _CELL_DICT_BYTES)
 
 
 def _too_large(detail: str = "") -> ParseError:
@@ -437,7 +466,7 @@ class ExcelParser:
         self.config_service = config_service
         self.workbook = None
         self.file_binary = None
-        self._output = _OutputBudget(EXCEL_MAX_TEXT_CHARS)
+        self._output = _OutputBudget(3 * EXCEL_MAX_TEXT_CHARS)
 
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
@@ -487,7 +516,7 @@ class ExcelParser:
         """
         self.logger.info("Loading workbook from binary data")
         self.file_binary = file_binary
-        self._output = _OutputBudget(EXCEL_MAX_TEXT_CHARS)
+        self._output = _OutputBudget(3 * EXCEL_MAX_TEXT_CHARS)
         if not self.file_binary:
             return
         try:
@@ -575,8 +604,11 @@ class ExcelParser:
             sheet_data = self._process_sheet(self.workbook[sheet_name], max_data_rows=remaining)
             headers: list = sheet_data.get("headers") or []
             rows: list = sheet_data.get("data") or []
+            held_cells = len(headers) + sum(len(r) for r in rows)
 
             if not rows:
+                del sheet_data, headers, rows
+                self._output.release_cells(held_cells)
                 continue
 
             col_names = [
@@ -585,6 +617,7 @@ class ExcelParser:
             ]
             # the sheet name is written into the sheet group, the table group and every block
             self._output.charge_text(sheet_name, sheet_name, *col_names)
+            self._output.charge(2 * _GROUP_BYTES)
 
             # SHEET group
             sg_idx = len(block_groups)
@@ -635,6 +668,7 @@ class ExcelParser:
                 bi = len(blocks)
                 row_text = generate_simple_row_text(row_data)
                 self._output.charge_text(row_text, sheet_name)
+                self._output.charge(_BLOCK_BYTES)
                 row_num = row[0].get("row", ri + 2) if row else ri + 2
                 blocks.append(
                     Block(
@@ -661,6 +695,9 @@ class ExcelParser:
                 block_group_indices=[tg_idx]
             )
             rows_emitted += len(rows)
+            # this sheet's cell dicts are freed before the next sheet's are built
+            del sheet_data, headers, rows
+            self._output.release_cells(held_cells)
 
         self.logger.info(
             "Basic (no-LLM) workbook parsing complete: %d blocks, %d block groups",
@@ -693,9 +730,11 @@ class ExcelParser:
             self.logger.info(f"Extracted {len(sheet_data['headers'])} headers from first row")
 
             # Start from second row
+            self._output.charge_cells(len(sheet_data["headers"]))
             for row_idx, row in enumerate(sheet.iter_rows(min_row=2), 2):
                 if max_data_rows is not None and len(sheet_data["data"]) >= max_data_rows:
                     break
+                self._output.charge_cells(len(row))
                 row_data = []
 
                 for col_idx, cell in enumerate(row, 1):
@@ -867,6 +906,8 @@ class ExcelParser:
                         cell_data = self._process_cell(cell, None, row_idx, col)
                         row_values.append(cell_data["value"])
                     first_rows.append(row_values)
+                # only the values are kept; the cell dicts are garbage
+                self._output.release_cells(len(first_rows) * column_count)
 
                 # Step 3: Detect headers with LLM
                 detection = await self.detect_excel_headers_with_llm(first_rows, llm)
@@ -906,6 +947,7 @@ class ExcelParser:
                             cell_data = self._process_cell(cell, None, row_idx, col)
                             row_values.append(cell_data["value"])
                         all_rows.append(row_values)
+                    self._output.release_cells(len(all_rows) * column_count)
 
                     # Select representative sample rows
                     sample_rows = self._select_representative_sample_rows(all_rows, MAX_HEADER_GENERATION_ROWS)
@@ -1025,7 +1067,10 @@ class ExcelParser:
             raise
 
     def _process_cell(self, cell: Cell | MergedCell, header: str | None, row: int, col: int) -> dict[str, Any]:
-        """Process a single cell and return its data with denormalized merged cell values."""
+        """Process a single cell and return its data with denormalized merged cell values.
+
+        The cell dict is charged to the output budget; callers that drop it release it."""
+        self._output.charge_cells(1)
         try:
             # Check if the cell is a merged cell
             if isinstance(cell, (MergedCell, ModelMergedCell)):
@@ -1540,6 +1585,8 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
         # Get tables in the sheet
         tables = await self.get_tables_in_sheet(sheet_name, llm)
+        # the tables' cell dicts live until this sheet is processed; only the row dicts and texts go on
+        table_cells = sum(len(row) for table in tables for row in table["data"])
 
         # Process each table
         processed_tables = []
@@ -1596,6 +1643,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     for row, row_text in zip(batch, row_texts):
                         self._output.charge_text(row_text)
                         if row:
+                            self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                             processed_rows.append(
                                 {
                                     "raw_data": {cell["header"]: cell["value"] for cell in row},
@@ -1611,6 +1659,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                         row_data = {cell["header"]: cell["value"] for cell in row}
                         row_text = generate_simple_row_text(row_data)
                         self._output.charge_text(row_text)
+                        self._output.charge(_ROW_DICT_BASE_BYTES + _ROW_DICT_CELL_BYTES * len(row))
                         processed_rows.append(
                             {
                                 "raw_data": row_data,
@@ -1635,6 +1684,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             )
             self.logger.info(f"Completed processing table {table_idx} with {len(processed_rows)} rows")
 
+        self._output.release_cells(table_cells)
         self.logger.info(f"Completed processing sheet {sheet_name} with {len(processed_tables)} tables")
         return {"sheet_name": sheet_name, "tables": processed_tables}
 
@@ -1679,11 +1729,13 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
             # the sheet name is written into the sheet group, every table group and every block
             self._output.charge_text(sheet_name, sheet_name)
+            self._output.charge(_GROUP_BYTES)
 
             # Add TABLE groups under this sheet
             for table in sheet_result["tables"]:
                 table_group_index = len(block_groups)
                 self._output.charge_text(sheet_name)
+                self._output.charge(_GROUP_BYTES)
 
                 headers = table.get("headers", [])
                 rows = table.get("rows", [])
@@ -1720,6 +1772,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 for i, row in enumerate(rows):
                     block_index = len(blocks)
                     self._output.charge_text(sheet_name)
+                    self._output.charge(_BLOCK_BYTES)
                     blocks.append(
                         Block(
                             index=block_index,
