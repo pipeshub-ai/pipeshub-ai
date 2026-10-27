@@ -22,7 +22,7 @@ from app.modules.code_graph.guards import (
 )
 from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import module_refs_of_path
-from app.modules.code_graph.symbol_index import SymbolIndex
+from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -79,6 +79,10 @@ RESOLUTION_QUALIFIER = "qualifier"
 RESOLUTION_MODULE = "module-import"
 RESOLUTION_TYPE = "receiver-type"
 RESOLUTION_NAME = "name-heuristic"
+# `opts.onClick()`: a call through a function-typed property runs whatever was
+# assigned to it, so the property is not the code that runs. Kept for "who
+# triggers onClick", tagged so a caller can tell it from a call to a definition.
+RESOLUTION_CALLBACK = "callback-property"
 
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
@@ -324,6 +328,10 @@ class _Builder:
         dedup = (from_key, to_key, relation)
         if dedup in self.edges:
             return
+        if relation == RecordRelations.CALLS.value:
+            target = self.index.rows.get(to_key.partition("/")[2])
+            if target is not None and target.kind == "field" and not self._function_valued(target):
+                resolution = RESOLUTION_CALLBACK
         self.edges[dedup] = (confidence, resolution, line)
         self.result.edges_by_type[relation] = self.result.edges_by_type.get(relation, 0) + 1
         if relation == RecordRelations.CALLS.value:
@@ -332,6 +340,11 @@ class _Builder:
             if owner and not self._nested_in(to_key.partition("/")[2], owner):
                 self._add_edge(self._block_key(owner), to_key, relation, confidence=confidence,
                                line=line, resolution=resolution)
+
+    def _function_valued(self, row: BlockRow) -> bool:
+        owner = self.index.rows.get(row.parent_block_id) if row.parent_block_id else None
+        return owner is not None and \
+            f"{owner.name}.{row.name}=>" in self.index.type_table_by_record.get(row.record_id, {})
 
     def _nested_in(self, block_id: str, ancestor: str) -> bool:
         row = self.index.rows.get(block_id)

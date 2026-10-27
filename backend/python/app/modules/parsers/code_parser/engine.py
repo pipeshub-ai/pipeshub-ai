@@ -669,6 +669,11 @@ def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str], cfg: L
             else:
                 table.setdefault(f"{owner}.{name}()" if owner else f"{name}()", type_name)
             continue
+        value = _field(node, "value")
+        if node.type == "public_field_definition" and value is not None \
+                and value.type in ("arrow_function", "function_expression") and (owner := _ts_owner(node, src)):
+            # `static create = () => ...` defines a function; a call to it is not a callback slot.
+            table.setdefault(f"{owner}.{name}=>", "function")
         ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
         type_name = _ts_named_type(ann, src) if ann is not None else _ts_value_type(_field(node, "value"), src)
         if type_name is None and ann is not None and ann.named_children:

@@ -302,3 +302,20 @@ async def test_typescript_receivers_typed_per_function_by_loops_and_instanceof(g
     assert {"src/types.ts::method:Openable.open", "src/types.ts::method:Plain.read",
             "src/types.ts::method:Snippet.move", "src/types.ts::method:Snippet.go",
             "src/types.ts::method:Variable.resolve"} <= calls
+
+
+async def test_a_call_through_a_function_typed_property_is_tagged(graph, index_file) -> None:
+    # vscode: `this.options.showHistoryHint()` on `showHistoryHint?: () => boolean`.
+    await index_file("a", "src/a.ts",
+                     b"export interface Opts {\n  onPick?: (x: number) => void;\n  run(): void;\n}\n"
+                     b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
+                     b"  static make = (n: number) => n;\n"
+                     b"  pick() {\n    this.opts.onPick?.(1);\n    this.opts.run();\n    Box.make(1);\n  }\n}\n",
+                     "typescript")
+    await _build(graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Opts.onPick"] == "callback-property"
+    assert resolution["method:Opts.run"] != "callback-property"
+    # A field holding an arrow function is a definition, not a slot.
+    assert resolution["field:Box.make"] != "callback-property"
