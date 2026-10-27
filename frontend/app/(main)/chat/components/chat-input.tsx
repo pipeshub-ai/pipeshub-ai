@@ -1362,6 +1362,12 @@ export function ChatInput({
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
+      // Whatever menu led to the picker sits over the chips row; a pick that
+      // processFiles turns away early must still close it.
+      setIsPlusMenuOpen(false);
+      setIsMobilePlusMenuOpen(false);
+      setIsCompactMenuOpen(false);
+      setShowUploadArea(false);
       processFiles(e.target.files);
     }
     if (fileInputRef.current) {

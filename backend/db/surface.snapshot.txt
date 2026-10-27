@@ -22,6 +22,7 @@ column content.documents.mime_type type=text notnull=false identity= generated= 
 column content.documents.mutation_count type=integer notnull=true identity= generated= default=1
 column content.documents.org_id type=text notnull=true identity= generated= default=-
 column content.documents.permissions type=text notnull=false identity= generated= default=-
+column content.documents.retired_at type=bigint notnull=false identity= generated= default=-
 column content.documents.s3 type=jsonb notnull=false identity= generated= default=-
 column content.documents.size_in_bytes type=bigint notnull=false identity= generated= default=-
 column content.documents.storage_vendor type=text notnull=true identity= generated= default=-

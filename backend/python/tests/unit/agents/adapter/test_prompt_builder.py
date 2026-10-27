@@ -267,6 +267,20 @@ class TestCitationRules:
             result = _build(context)
         assert "## Citation Rules" in result
 
+    def test_citation_rules_forbid_citing_what_the_source_does_not_say(self) -> None:
+        """A cited answer once added descriptions a CSV of names never held and
+        cited the CSV for them; the rule has to be in both copies."""
+        from app.agent_loop_lib.tools.builtin.planning.final_answer import (
+            _answer_markdown_description,
+        )
+
+        with patch(self._FA_PATCH, return_value=False):
+            context = make_context()
+            context.tool_state["final_results"] = [{"id": "r1"}]
+            result = _build(context)
+        for text in (result, _answer_markdown_description()):
+            assert "actually came from, only for what it states" in " ".join(text.split())
+
     def test_citation_rules_included_when_attachments_present(self) -> None:
         with patch(self._FA_PATCH, return_value=False):
             context = make_context()

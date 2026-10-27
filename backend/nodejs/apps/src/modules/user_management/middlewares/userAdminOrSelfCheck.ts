@@ -2,7 +2,7 @@ import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { isValidId } from '../../../libs/repositories/ids';
 import {
-  BadRequestError,
+  ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { isUserOrgAdmin } from '../services/user-admin.service';
@@ -26,8 +26,8 @@ export const userAdminOrSelfCheck = async (
       !isAdmin &&
       !(isValidId(userId) && userId.toLowerCase() === id.toLowerCase())
     ) {
-      throw new BadRequestError(
-        "You dont have admin access and can't change other users",
+      throw new ForbiddenError(
+        "You don't have admin access and can't change other users",
       );
     }
 

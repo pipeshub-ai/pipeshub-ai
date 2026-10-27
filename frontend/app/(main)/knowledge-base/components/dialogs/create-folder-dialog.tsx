@@ -15,6 +15,8 @@ export interface CreateFolderDialogProps {
   isCreating?: boolean;
   isCollection?: boolean;
   parentFolderName?: string;
+  /** Why the typed name is refused (a path separator, a name already used), or null. */
+  validateName?: (name: string) => string | null;
 }
 
 export function CreateFolderDialog({
@@ -24,6 +26,7 @@ export function CreateFolderDialog({
   isCreating = false,
   isCollection = false,
   parentFolderName,
+  validateName,
 }: CreateFolderDialogProps) {
   const { t } = useTranslation();
   const isMobile = useIsMobile();
@@ -38,8 +41,10 @@ export function CreateFolderDialog({
     }
   }, [open]);
 
+  const nameError = title.trim() ? validateName?.(title.trim()) ?? null : null;
+
   const handleSubmit = () => {
-    if (title.trim()) {
+    if (title.trim() && !nameError) {
       onSubmit(title.trim(), description.trim());
     }
   };
@@ -50,7 +55,7 @@ export function CreateFolderDialog({
     }
   };
 
-  const isCreateDisabled = !title.trim() || isCreating;
+  const isCreateDisabled = !title.trim() || !!nameError || isCreating;
 
   return (
     <Dialog.Root open={open} onOpenChange={onOpenChange}>
@@ -109,7 +114,15 @@ export function CreateFolderDialog({
                 onKeyDown={handleKeyDown}
                 placeholder={t('kb.createDialog.titlePlaceholder')}
                 autoFocus
+                color={nameError ? 'red' : undefined}
+                aria-invalid={!!nameError}
+                aria-describedby={nameError ? 'create-folder-name-error' : undefined}
               />
+              {nameError && (
+                <Text id="create-folder-name-error" size="1" color="red" role="alert">
+                  {nameError}
+                </Text>
+              )}
             </Flex>
 
             {/* Description Field */}
@@ -144,7 +157,7 @@ export function CreateFolderDialog({
               size={isMobile ? '3' : '2'}
               style={touchTarget(isMobile)}
               onClick={handleSubmit}
-              disabled={!title.trim()}
+              disabled={!title.trim() || !!nameError}
               loading={isCreating}
               loadingLabel={t('action.creating')}
             >

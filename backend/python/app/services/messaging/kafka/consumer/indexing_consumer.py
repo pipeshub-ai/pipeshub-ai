@@ -58,6 +58,7 @@ from app.services.messaging.kafka.consumer.remembered import (
 )
 from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.lease import LeaseRenewer
+from app.services.messaging.membership import register_group
 from app.services.messaging.scheduling.drr_scheduler import DRRScheduler
 from app.services.messaging.scheduling.interface import (
     EnqueueResult,
@@ -72,6 +73,7 @@ from app.services.messaging.scheduling.key_extractors import (
 )
 from app.services.messaging.scheduling.offset_tracker import PartitionOffsetTracker
 from app.services.messaging.scheduling.slot_share import SlotShare, SlotSharePlan
+from app.services.messaging.storage_protocol import tagged
 from app.services.resource_governor import ParseTier, Pool
 from app.telemetry.modules import scheduling_metrics as metrics
 from app.utils import indexing_timing as timing
@@ -219,6 +221,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self.consumer: AIOKafkaConsumer | None = None
         self.running = False
         self.kafka_config = kafka_config
+        if kafka_config:
+            register_group(kafka_config.group_id, list(kafka_config.topics))
         self.consume_task = None
         self.retry_manager = retry_manager
         # Told about every message this consumer gives up on, before the commit
@@ -354,7 +358,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             'group_id': kafka_config.group_id,
             'auto_offset_reset': kafka_config.auto_offset_reset,
             'enable_auto_commit': kafka_config.enable_auto_commit,
-            'client_id': kafka_config.client_id,
+            'client_id': tagged(kafka_config.client_id),
             'topics': kafka_config.topics,
             'session_timeout_ms': kafka_config.session_timeout_ms,
             'heartbeat_interval_ms': kafka_config.heartbeat_interval_ms,
@@ -798,7 +802,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             ).items()
             if name not in ("topics", "enable_auto_commit", "auto_offset_reset")
         }
-        client_config["client_id"] = f"{self.kafka_config.client_id}-backlog"
+        client_config["client_id"] = f"{tagged(self.kafka_config.client_id)}-backlog"
         oldest = await read_partition_backlog(
             client_config,
             topic,
@@ -1646,7 +1650,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 if name
                 not in ("topics", "group_id", "enable_auto_commit", "auto_offset_reset")
             }
-            client_config["client_id"] = f"{self.kafka_config.client_id}-fetch-back"
+            client_config["client_id"] = f"{tagged(self.kafka_config.client_id)}-fetch-back"
             self._offset_fetcher = OffsetFetcher(client_config, self.logger)
         return self._offset_fetcher
 

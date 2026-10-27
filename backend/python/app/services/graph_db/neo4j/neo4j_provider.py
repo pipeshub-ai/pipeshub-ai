@@ -489,6 +489,8 @@ _PURGE_LOCK = "purgeLock"
 _MOVE_LOCK = "moveLock"
 # Written and removed before a conditional write reads its expectation, to take the node's write lock.
 _MATCH_LOCK = "matchLock"
+# Set by a create-if-absent statement on the node it created, and removed again in the same statement.
+_CREATED_MARK = "createdMark"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
@@ -688,6 +690,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self._kh_scope_untrusted: set[str] = set()
         # The hinted indexes being read without, so each is logged once.
         self._hint_indexes_missing: set[str] = set()
+        self._unique_id_verified: set[str] = set()
 
 
     # ==================== Connection Management ====================
@@ -4558,6 +4561,69 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return bool(rows)
+
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.create_node_if_absent`."""
+        label = collection_to_label(collection)
+        self.validator.validate_node_update(collection, node)
+        await self._require_unique_id(label)
+        props = self._arango_to_neo4j_node({**node, "id": key}, collection)
+        props.pop("_key", None)
+        # The conversion copies a `_key` in `node` into `id`; the requested key is the one created.
+        props["id"] = key
+        try:
+            rows = await self.client.execute_query(
+                f"""
+                MERGE (n:{label} {{id: $key}})
+                ON CREATE SET n += $props, n.{_CREATED_MARK} = true
+                WITH n, coalesce(n.{_CREATED_MARK}, false) AS created
+                REMOVE n.{_CREATED_MARK}
+                RETURN created
+                """,
+                parameters={"key": key, "props": props},
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            # The id constraint refuses the second of two racing creates. Another unique constraint
+            # (an email, say) refuses with the same words, and that is a failure of this create, not
+            # a node that exists: "not created" is answered only once the requested key is seen.
+            if "already exists" in str(exc) or "ConstraintValidation" in str(exc):
+                try:
+                    found = await self.client.execute_query(
+                        f"MATCH (n:{label} {{id: $key}}) RETURN 1 AS found LIMIT 1",
+                        parameters={"key": key},
+                        txn_id=transaction,
+                    )
+                except Exception:
+                    found = None
+                if found:
+                    return False
+            raise
+        return bool(rows and rows[0].get("created"))
+
+    async def _require_unique_id(self, label: str) -> None:
+        """Refuse to create-if-absent on a label without its unique id constraint.
+
+        MERGE alone does not stop two concurrent creates of one key; the constraint does. ensure_schema
+        only logs a constraint it could not create, so it is checked here, once per label and process.
+        """
+        if label in self._unique_id_verified:
+            return
+        rows = await self.client.execute_query(
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, properties, type "
+            "WHERE $label IN labelsOrTypes AND properties = ['id'] AND type CONTAINS 'UNIQUENESS' "
+            "RETURN count(*) AS found",
+            {"label": label},
+        )
+        if not rows or not rows[0]["found"]:
+            raise RuntimeError(f"the unique constraint on {label}.id is missing")
+        self._unique_id_verified.add(label)
 
     async def update_nodes_fields_if_match(
         self,
@@ -16053,6 +16119,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        after = "m.id > $after_key" if after_key is not None else "m.id IS NOT NULL"
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (m:{label}) WHERE {after}
+            WITH m ORDER BY m.id LIMIT $limit
+            RETURN m.id AS virtualRecordId, m.orgId AS orgId, m.documentId AS documentId,
+                   m.switchSeq AS switchSeq, m.lastSwitchAt AS lastSwitchAt, m.retired AS retired
+            """,
+            {"after_key": after_key, "limit": limit},
+        )
+        out = []
+        for row in rows:
+            item = dict(row)
+            retired = item.get("retired")
+            if isinstance(retired, str):
+                try:
+                    retired = json.loads(retired)
+                except ValueError:
+                    retired = []
+            item["retired"] = retired if isinstance(retired, list) else []
+            out.append(item)
+        return out
+
+    @override
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
@@ -23612,6 +23706,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         include_service_accounts: bool = False,
+        is_org_admin: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -23655,9 +23750,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: team.updatedAtTimestamp,
                 members: team_members,
                 memberCount: size(team_members),
-                canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
-                canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
+                canEdit: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END,
+                canDelete: CASE WHEN ($is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER')) AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
+                canManageMembers: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END
             }} AS result
             """
 
@@ -23666,7 +23761,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 parameters={
                     "teamId": team_id,
                     "orgId": org_id,
-                    "user_key": user_key
+                    "user_key": user_key,
+                    "is_org_admin": bool(is_org_admin),
                 },
                 txn_id=transaction
             )
@@ -23695,9 +23791,12 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         include_service_accounts: bool = False,
+        org_id: str | None = None,
+        is_org_admin: bool = False,
     ) -> tuple[list[dict], int]:
         """
-        Get all teams that a user is a member of.
+        Get all teams that a user is a member of, or every team in the
+        organisation for its administrator.
         """
         try:
             offset = (page - 1) * limit
@@ -23723,10 +23822,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if created_before is not None:
                 extra_where += " AND team.createdAtTimestamp <= $created_before"
 
-            # Query to get all teams user is a member of with pagination
-            user_teams_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
+            list_all_org_teams = bool(is_org_admin and org_id)
+            if list_all_org_teams:
+                teams_match = f"""
+            MATCH (team:{team_label} {{orgId: $org_id}})
             WHERE 1=1 {search_where} {extra_where}
+            OPTIONAL MATCH (:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team)"""
+            else:
+                teams_match = f"""
+            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
+            WHERE 1=1 {search_where} {extra_where}"""
+
+            # Query to get the teams with pagination
+            user_teams_query = f"""
+            {teams_match}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
             WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team, properties(p) AS current_user_permission,
@@ -23753,21 +23862,21 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 updatedAtTimestamp: team.updatedAtTimestamp,
                 members: team_members,
                 memberCount: member_count,
-                canEdit: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END,
-                canDelete: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER' AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
-                canManageMembers: CASE WHEN current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER'] THEN true ELSE false END
+                canEdit: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END,
+                canDelete: CASE WHEN ($is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role = 'OWNER')) AND team.id <> ('all_' + team.orgId) THEN true ELSE false END,
+                canManageMembers: CASE WHEN $is_org_admin OR (current_user_permission IS NOT NULL AND current_user_permission.role IN ['OWNER']) THEN true ELSE false END
             }} AS result
             """
 
             # Count query for pagination
             count_query = f"""
-            MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
-            WHERE 1=1 {search_where} {extra_where}
+            {teams_match}
             RETURN count(DISTINCT team) AS total_count
             """
 
             # Shared filter params
-            filter_params: dict = {}
+            # The org comes in as an argument; this only passes it to the query.
+            filter_params: dict = {"org_id": org_id} if list_all_org_teams else {}
             if search:
                 filter_params["search"] = search
             if created_by:
@@ -23790,6 +23899,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Get teams with pagination
             teams_params = {
                 "user_key": user_key,
+                "is_org_admin": list_all_org_teams,
                 "offset": offset,
                 "limit": limit,
                 **filter_params,
@@ -23809,6 +23919,36 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
             return [], 0
+
+    async def find_team_by_name(
+        self,
+        org_id: str,
+        name: str,
+        exclude_team_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Find a team in an organisation by name, ignoring case and surrounding whitespace.
+        """
+        team_label = collection_to_label(CollectionNames.TEAMS.value)
+        query = f"""
+        MATCH (team:{team_label} {{orgId: $org_id}})
+        WHERE team.name IS NOT NULL
+          AND toLower(trim(toString(team.name))) = $name
+          AND team.id <> $exclude_team_id
+        RETURN {{id: team.id, name: team.name}} AS result
+        LIMIT 1
+        """
+        results = await self.client.execute_query(
+            query,
+            parameters={
+                "org_id": org_id,
+                "name": name.strip().lower(),
+                "exclude_team_id": exclude_team_id or "",
+            },
+            txn_id=transaction,
+        )
+        return results[0].get("result") if results else None
 
     async def get_team_users(
         self,

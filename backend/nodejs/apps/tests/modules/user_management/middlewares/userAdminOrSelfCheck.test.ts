@@ -76,8 +76,9 @@ describe('userAdminOrSelfCheck Middleware', () => {
     const error = next.firstCall.args[0];
     expect(error).to.be.an('error');
     expect(error.message).to.equal(
-      "You dont have admin access and can't change other users",
+      "You don't have admin access and can't change other users",
     );
+    expect(error.statusCode).to.equal(403);
   });
 
   it('should call next with NotFoundError when userId is missing', async () => {

@@ -3054,6 +3054,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        after = "FILTER doc._key > @after_key" if after_key is not None else ""
+        bind_vars: dict[str, Any] = {
+            "@collection": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, "limit": limit,
+        }
+        if after_key is not None:
+            bind_vars["after_key"] = after_key
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                {after}
+                SORT doc._key
+                LIMIT @limit
+                RETURN {{
+                    virtualRecordId: doc._key, orgId: doc.orgId, documentId: doc.documentId,
+                    switchSeq: doc.switchSeq, lastSwitchAt: doc.lastSwitchAt,
+                    retired: IS_ARRAY(doc.retired) ? doc.retired : []
+                }}
+            """,
+            bind_vars,
+        )
+        return [dict(row) for row in rows or []]
+
+    @override
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
@@ -6116,18 +6144,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars[f"v{i}"] = value
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
-        rows = await self.http_client.execute_aql(
-            f"""
+        query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
                 UPDATE doc WITH @updates IN @@collection
                 RETURN 1
-            """,
-            bind_vars=bind_vars,
-            txn_id=transaction,
+            """
+        # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
+        # instead of waiting on a lock. Run its statement again, with backoff: the expectation is
+        # checked against the winner's write, so it applies or is refused, as a lock would have made
+        # it. Inside a transaction the owner decides, so the conflict is raised.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
+            transaction,
         )
         return bool(rows)
+
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.create_node_if_absent`."""
+        # "ignore" leaves an existing document alone and returns no NEW for it. Two creators of one
+        # key: the loser gets a write-write conflict or a key-lock timeout (errorNum 1200) while the
+        # winner's insert is in flight, and the winner may still roll back. So the insert is run
+        # again, with backoff, until it sees the key (not created here) or lands (created here). A
+        # conflict that persists is raised: it does not say that the node exists.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(
+                """
+                INSERT @node INTO @@collection OPTIONS { overwriteMode: "ignore" }
+                RETURN NEW
+                """,
+                bind_vars={"@collection": collection, "node": {**node, "_key": key}},
+                txn_id=transaction,
+            ),
+            transaction,
+        )
+        return bool(rows and rows[0])
 
     async def update_nodes_fields_if_match(
         self,
@@ -25263,6 +25321,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         include_service_accounts: bool = False,
+        is_org_admin: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -25310,9 +25369,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "updatedAtTimestamp": team.updatedAtTimestamp,
                 "members": team_members,
                 "memberCount": user_count,
-                "canEdit": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"],
-                "canDelete": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER" AND team._key != CONCAT("all_", team.orgId),
-                "canManageMembers": LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]
+                "canEdit": @isOrgAdmin OR (LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"]),
+                "canDelete": (@isOrgAdmin OR (LENGTH(current_user_permission) > 0 AND current_user_permission[0].role == "OWNER")) AND team._key != CONCAT("all_", team.orgId),
+                "canManageMembers": @isOrgAdmin OR (LENGTH(current_user_permission) > 0 AND current_user_permission[0].role IN ["OWNER"])
             }}
             """
 
@@ -25321,7 +25380,8 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars={
                     "teamId": team_id,
                     "orgId": org_id,
-                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}"
+                    "currentUserId": f"{CollectionNames.USERS.value}/{user_key}",
+                    "isOrgAdmin": bool(is_org_admin),
                 },
                 transaction=transaction
             )
@@ -25346,9 +25406,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
         *,
         include_service_accounts: bool = False,
+        org_id: str | None = None,
+        is_org_admin: bool = False,
     ) -> tuple[list[dict], int]:
         """
-        Get all teams that a user is a member of.
+        Get all teams that a user is a member of, or every team in the
+        organisation for its administrator.
         """
         try:
             offset = (page - 1) * limit
@@ -25372,12 +25435,29 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if created_before is not None:
                 extra_filters += "\nFILTER team.createdAtTimestamp <= @createdBefore"
 
-            # Query to get all teams user is a member of with pagination
-            user_teams_query = f"""
+            list_all_org_teams = bool(is_org_admin and org_id)
+            if list_all_org_teams:
+                teams_source = """
+            FOR team IN @@teams_collection
+            FILTER team.orgId == @orgId"""
+                flags = """
+                "canEdit": true,
+                "canDelete": team._key != CONCAT("all_", team.orgId),
+                "canManageMembers": true"""
+            else:
+                teams_source = """
             FOR permission IN @@permission_collection
             FILTER permission._from == @userId
             LET team = DOCUMENT(permission._to)
-            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)"""
+                flags = """
+                "canEdit": permission.role IN ["OWNER"],
+                "canDelete": permission.role == "OWNER" AND team._key != CONCAT("all_", team.orgId),
+                "canManageMembers": permission.role IN ["OWNER"]"""
+
+            # Query to get the teams with pagination
+            user_teams_query = f"""
+            {teams_source}
             {search_filter}
             {extra_filters}
             SORT team.createdAtTimestamp DESC
@@ -25407,19 +25487,13 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "createdAtTimestamp": team.createdAtTimestamp,
                 "updatedAtTimestamp": team.updatedAtTimestamp,
                 "members": team_members,
-                "memberCount": member_count,
-                "canEdit": permission.role IN ["OWNER"],
-                "canDelete": permission.role == "OWNER" AND team._key != CONCAT("all_", team.orgId),
-                "canManageMembers": permission.role IN ["OWNER"]
+                "memberCount": member_count,{flags}
             }}
             """
 
             # Count query for pagination
             count_query = f"""
-            FOR permission IN @@permission_collection
-            FILTER permission._from == @userId
-            LET team = DOCUMENT(permission._to)
-            FILTER team != null AND STARTS_WITH(team._id, @teams_collection_prefix)
+            {teams_source}
             {search_filter}
             {extra_filters}
             COLLECT WITH COUNT INTO total_count
@@ -25437,11 +25511,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if created_before is not None:
                 filter_vars["createdBefore"] = created_before
 
+            # Arango rejects a bind variable the query does not use.
+            if list_all_org_teams:
+                source_vars = {
+                    "@teams_collection": CollectionNames.TEAMS.value,
+                    "orgId": org_id,
+                }
+            else:
+                source_vars = {
+                    "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                    "@permission_collection": CollectionNames.PERMISSION.value,
+                    "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                }
+
             # Get total count
             count_params = {
-                "userId": f"{CollectionNames.USERS.value}/{user_key}",
-                "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
+                **source_vars,
                 **filter_vars,
             }
 
@@ -25450,9 +25535,9 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Get teams with pagination
             teams_params = {
-                "userId": f"{CollectionNames.USERS.value}/{user_key}",
+                **source_vars,
+                # the member list reads the permission collection either way
                 "@permission_collection": CollectionNames.PERMISSION.value,
-                "teams_collection_prefix": f"{CollectionNames.TEAMS.value}/",
                 "offset": offset,
                 "limit": limit,
                 **filter_vars,
@@ -25466,6 +25551,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
             return [], 0
+
+    async def find_team_by_name(
+        self,
+        org_id: str,
+        name: str,
+        exclude_team_id: str | None = None,
+        transaction: str | None = None,
+    ) -> dict | None:
+        """
+        Find a team in an organisation by name, ignoring case and surrounding whitespace.
+        """
+        query = f"""
+        FOR team IN {CollectionNames.TEAMS.value}
+        FILTER team.orgId == @orgId
+            AND IS_STRING(team.name)
+            AND LOWER(TRIM(team.name)) == @name
+            AND team._key != @excludeTeamId
+        LIMIT 1
+        RETURN {{ "id": team._key, "name": team.name }}
+        """
+        result_list = await self.execute_query(
+            query,
+            bind_vars={
+                "orgId": org_id,
+                "name": name.strip().lower(),
+                "excludeTeamId": exclude_team_id or "",
+            },
+            transaction=transaction,
+        )
+        return result_list[0] if result_list else None
 
     async def get_team_users(
         self,

@@ -34,6 +34,7 @@ CREATE TABLE content.documents (
   upload_lease_expires_at timestamptz,
   awaiting_direct_upload boolean,
   artifact_set jsonb,                              -- {"virtualRecordId", "rev", "root"}: the row stands for one content revision of a virtual record; NULL for every other row
+  retired_at bigint,                               -- server clock in ms of the retire mark: a newer stored write replaced this row, so it takes no more in-place buffer writes; NULL while live
   version int NOT NULL DEFAULT 0,
   created_at timestamptz NOT NULL,
   updated_at timestamptz NOT NULL,

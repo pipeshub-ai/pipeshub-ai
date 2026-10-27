@@ -315,22 +315,51 @@ export class MongoDocumentRepository implements DocumentRepository {
   async listEnvelopes(
     orgId: string,
     virtualRecordId: string,
+    opts?: { olderThanSeconds?: number },
   ): Promise<
     {
       _id: string;
       documentName?: string;
       documentPath?: string;
       createdAt?: number;
+      retiredAt?: number | null;
     }[]
   > {
+    // createdAt is a Number of ms, not a Date: in BSON order every Number sorts before every
+    // Date, so a plain $$NOW comparison would match every document.
+    const olderThanSeconds = opts?.olderThanSeconds;
+    const ageFilter =
+      olderThanSeconds !== undefined &&
+      Number.isFinite(olderThanSeconds) &&
+      olderThanSeconds >= 0
+        ? {
+            $expr: {
+              $and: [
+                { $isNumber: '$createdAt' },
+                {
+                  $lt: [
+                    '$createdAt',
+                    {
+                      $subtract: [
+                        { $toLong: '$$NOW' },
+                        olderThanSeconds * 1000,
+                      ],
+                    },
+                  ],
+                },
+              ],
+            },
+          }
+        : {};
     const docs = await DocumentModel.find({
       orgId: orgId,
       documentName: {
         $in: ENVELOPE_PREFIXES.map((p) => `${p}${virtualRecordId}`),
       },
       isDeleted: { $ne: true },
+      ...ageFilter,
     })
-      .select('_id documentName documentPath createdAt')
+      .select('_id documentName documentPath createdAt retiredAt')
       .sort({ createdAt: -1, _id: -1 })
       .lean<
         {
@@ -338,9 +367,29 @@ export class MongoDocumentRepository implements DocumentRepository {
           documentName?: string;
           documentPath?: string;
           createdAt?: number;
+          retiredAt?: number | null;
         }[]
       >();
     return docs.map((d) => toPlain(d));
+  }
+
+  async retire(
+    orgId: string,
+    id: string,
+    now: number,
+  ): Promise<{ retiredAt: number | null } | null> {
+    const marked = await DocumentModel.findOneAndUpdate(
+      { _id: id, orgId: orgId, isDeleted: false, retiredAt: null },
+      { $set: { retiredAt: now } },
+      { new: true, timestamps: false },
+    ).lean();
+    if (marked) return { retiredAt: marked.retiredAt ?? null };
+    const existing = await DocumentModel.findOne({
+      _id: id,
+      orgId: orgId,
+      isDeleted: false,
+    }).lean();
+    return existing ? { retiredAt: existing.retiredAt ?? null } : null;
   }
 
   async pageFlatEnvelopes(

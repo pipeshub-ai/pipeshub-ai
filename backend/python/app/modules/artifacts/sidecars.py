@@ -30,6 +30,7 @@ ENTITIES = "entities"
 _JSON = "application/json"
 # The storage service's sidecar path pattern.
 _NAME = re.compile(r"^[a-z0-9_.-]+$")
+_PATH = re.compile(r"^enrich/[a-z0-9_.@-]+\.json$")
 
 
 def sidecar_path(name: str, version: int) -> str:
@@ -39,6 +40,16 @@ def sidecar_path(name: str, version: int) -> str:
 def classification_payload(metadata: SemanticMetadata) -> dict[str, Any]:
     # The named-entity section is the entities stage's, in its own sidecar.
     return metadata.model_dump(mode="json", exclude={"named_entities"})
+
+
+def classification_envelope(stored_run: str | None, stored_meta: str, classification: dict[str, Any]) -> dict[str, Any]:
+    """The body of a classification sidecar a copy-on-write metadata write files.
+
+    It names the stored write whose blocks the classification belongs to (``storedRun``) and the
+    path it was filed at (``storedMeta``). A reader serves it only when both are what the mapping
+    names, so a sidecar from another write, or one copied to another path, is never served.
+    """
+    return {"storedRun": stored_run, "storedMeta": stored_meta, "classification": classification}
 
 
 class ArtifactSidecars:
@@ -60,14 +71,19 @@ class ArtifactSidecars:
         Never raises: the stage's own outputs are written already, and a missing sidecar
         only means a reader of the revision falls back to them.
         """
+        return await self.write_at(org_id, virtual_record_id, rev, sidecar_path(name, version), payload)
+
+    async def write_at(
+        self, org_id: str, virtual_record_id: str, rev: str | None, path: str, payload: dict[str, Any],
+    ) -> bool:
+        """Store ``payload`` at *path* in revision ``rev``'s set (``enrich/<name>.json``). Never raises."""
         if not virtual_record_id or not rev or not await is_artifact_write_enabled(self.config_service):
             return False
         if not artifact_writes_available():
             record_artifact_write("sidecar_unavailable")
             return False
-        path = sidecar_path(name, version)
         try:
-            if not REV_PATTERN.match(rev) or not _NAME.match(name):
+            if not REV_PATTERN.match(rev) or not _PATH.match(path):
                 raise ValueError("revision or sidecar name the storage service would refuse")
             plan = await self.store.presign_revision(org_id, virtual_record_id, rev, [(path, _JSON)])
             await self.store.put(plan.files[path], canonical_json(payload), _JSON)

@@ -41,8 +41,10 @@ PROPERTY_NAME_PATTERN = r"^[a-z][a-zA-Z0-9_]{0,63}$"
 PIPELINE_FIELD_NAMES = frozenset({
     "orgId", "virtualRecordId", "recordId", "blockId", "blockIndex", "blockType",
     "isBlock", "isBlockGroup", "rev", "contentRev", "currentRev", "previousRev",
-    "manifestDocId", "schemaId", "connectorId", "connectorIds", "recordGroupIds",
-    "rootRecordGroupIds", "metadata", "page_content",
+    "manifestDocId", "storedRev", "storedRun", "storedMeta", "currentRun", "switchSeq",
+    "switchDoc", "switchUpdatedAt", "lastSwitchAt", "retired",
+    "schemaId", "connectorId", "connectorIds", "recordGroupIds", "rootRecordGroupIds",
+    "metadata", "page_content",
 })
 
 

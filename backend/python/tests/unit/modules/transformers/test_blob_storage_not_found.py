@@ -52,11 +52,13 @@ def _record_ctx() -> MagicMock:
 
 
 def _apply_ready(bs) -> None:
-    bs.get_document_id_by_virtual_record_id = AsyncMock(return_value={"record_doc_id": "doc-gone"})
+    bs._mapping_node = AsyncMock(return_value={
+        "id": "vr-1", "documentId": "doc-gone", "record_doc_id": "doc-gone", "storedRun": "none:p", "switchSeq": 2,
+    })
+    bs._switch_mapping = AsyncMock(return_value=True)
     bs._build_hierarchical_storage_path = AsyncMock(return_value="records/conn-1/KB/doc")
     bs._get_current_document_path = AsyncMock(return_value=None)
     bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 10))
-    bs.store_virtual_record_mapping = AsyncMock()
     bs._clean_empty_values = MagicMock(side_effect=lambda x: x)
 
 
@@ -125,21 +127,29 @@ class TestApplyReplacesMissingDocument:
         sleep.assert_not_awaited()
         bs.save_record_to_storage.assert_awaited_once()
         assert bs.save_record_to_storage.call_args.kwargs["document_path"] == "records/conn-1/KB/doc"
-        bs.store_virtual_record_mapping.assert_awaited_once()
-        assert bs.store_virtual_record_mapping.call_args.args[2] == "doc-new"
+        bs._switch_mapping.assert_awaited_once()
+        fields = bs._switch_mapping.call_args.args[3]
+        assert fields["documentId"] == "doc-new"
+        assert [e["doc"] for e in fields["retired"]] == ["doc-gone"]
 
     @pytest.mark.asyncio
-    async def test_other_failure_still_retries_before_replacing(self) -> None:
+    async def test_other_failure_is_retried_and_then_fails_the_write(self) -> None:
+        """A transient failure is retried twice; a third failure fails the attempt. The record is
+        retried as a whole: no replacement document, no delete, no mapping write."""
         bs = _make_bs()
         _apply_ready(bs)
         bs.update_record_buffer = AsyncMock(side_effect=aiohttp.ClientError("503"))
+        bs._delete_replaced_document = AsyncMock()
 
         with patch("app.modules.transformers.blob_storage.asyncio.sleep", new=AsyncMock()) as sleep:
-            await bs.apply(_record_ctx())
+            with pytest.raises(aiohttp.ClientError):
+                await bs.apply(_record_ctx())
 
-        assert bs.update_record_buffer.await_count == 2
-        sleep.assert_awaited_once()
-        bs.save_record_to_storage.assert_awaited_once()
+        assert bs.update_record_buffer.await_count == 3
+        assert sleep.await_count == 2
+        bs.save_record_to_storage.assert_not_awaited()
+        bs._delete_replaced_document.assert_not_awaited()
+        bs._switch_mapping.assert_not_awaited()
 
 
 class TestMetadataReplacesMissingDocument:
@@ -208,36 +218,8 @@ def _delete_session(status=None, exc=None) -> MagicMock:
 
 
 class TestSupersededDocumentCleanup:
-    """A replacement upload must not orphan the document it replaced."""
-
-    @pytest.mark.asyncio
-    async def test_record_replaced_after_retry_is_deleted_once_mapping_moves(self) -> None:
-        bs = _make_bs()
-        _apply_ready(bs)
-        bs.store_virtual_record_mapping = AsyncMock(return_value=True)
-        bs.update_record_buffer = AsyncMock(side_effect=aiohttp.ClientError("503"))
-        order: list[str] = []
-        bs.store_virtual_record_mapping.side_effect = lambda *a, **k: order.append("map") or True
-        bs._delete_replaced_document = AsyncMock(side_effect=lambda *a: order.append("delete"))
-
-        with patch("app.modules.transformers.blob_storage.asyncio.sleep", new=AsyncMock()):
-            await bs.apply(_record_ctx())
-
-        bs._delete_replaced_document.assert_awaited_once_with("org-1", "doc-gone", "vr-1")
-        assert order == ["map", "delete"]
-
-    @pytest.mark.asyncio
-    async def test_replaced_record_kept_when_mapping_not_stored(self) -> None:
-        bs = _make_bs()
-        _apply_ready(bs)
-        bs.store_virtual_record_mapping = AsyncMock(return_value=False)
-        bs.update_record_buffer = AsyncMock(side_effect=aiohttp.ClientError("503"))
-        bs._delete_replaced_document = AsyncMock()
-
-        with patch("app.modules.transformers.blob_storage.asyncio.sleep", new=AsyncMock()):
-            await bs.apply(_record_ctx())
-
-        bs._delete_replaced_document.assert_not_awaited()
+    """A stored write never deletes the document it replaces (the retirement sweep does, once it is
+    marked and old enough); a metadata replacement still removes its superseded document."""
 
     @pytest.mark.parametrize(
         "update_effect",
@@ -245,7 +227,7 @@ class TestSupersededDocumentCleanup:
         ids=["in-place-update", "document-already-gone"],
     )
     @pytest.mark.asyncio
-    async def test_nothing_deleted_without_a_superseded_document(self, update_effect) -> None:
+    async def test_a_stored_write_deletes_nothing(self, update_effect) -> None:
         bs = _make_bs()
         _apply_ready(bs)
         bs.update_record_buffer = AsyncMock(
