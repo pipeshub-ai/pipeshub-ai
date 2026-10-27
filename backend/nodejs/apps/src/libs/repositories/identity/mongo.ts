@@ -12,7 +12,7 @@ export class MongoIdentityPort
 {
   async oldestOrgId(): Promise<string | null> {
     const orgs = await Org.find({ isDeleted: { $ne: true } })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: 1, _id: 1 })
       .select('_id')
       .lean();
     const org = orgs[0];

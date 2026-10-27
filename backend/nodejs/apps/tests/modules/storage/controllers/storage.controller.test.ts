@@ -1972,7 +1972,7 @@ describe('StorageController.listVirtualRecordDocuments', () => {
     expect(String(filter.orgId)).to.equal(String(orgId))
     expect(filter.documentName).to.deep.equal({ $in: ['record_v1', 'metadata_v1'] })
     expect(filter.isDeleted).to.deep.equal({ $ne: true })
-    expect(sort.firstCall.args[0]).to.deep.equal({ createdAt: -1 })
+    expect(sort.firstCall.args[0]).to.deep.equal({ createdAt: -1, _id: -1 })
     expect(res.body).to.deep.equal({
       documents: [{ _id: String(rec._id), documentName: 'record_v1', documentPath: rec.documentPath, createdAt: 2 }],
     })

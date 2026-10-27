@@ -88,7 +88,7 @@ export class MongoOAuthAppRepository implements OAuthAppRepository {
     }
     const [apps, total] = await Promise.all([
       OAuthApp.find(filter)
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
         .skip(q.skip)
         .limit(q.limit)
         .exec(),

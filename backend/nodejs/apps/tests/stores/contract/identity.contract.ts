@@ -850,6 +850,16 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       expect(await users.listDirectory(await fx.newOrg(), base)).to.deep.equal({ rows: [], total: 0 });
     });
 
+    it('listDirectory: people with the same name keep one order (by id) and pages neither repeat nor skip one', async () => {
+      const org = await fx.newOrg();
+      const created = [] as string[];
+      for (let i = 0; i < 5; i++) created.push((await users.create(org, { email: email(), fullName: 'Same Name' }))._id);
+      const base = { limit: 2, includeServiceAccounts: false };
+      const paged: string[] = [];
+      for (let skip = 0; skip < 5; skip += 2) paged.push(...(await users.listDirectory(org, { ...base, skip })).rows.map((r) => r._id));
+      expect(paged).to.deep.equal([...created].sort());
+    });
+
     it('listDirectory: blocked true/false combine with credentials, search and hasLoggedIn', async () => {
       const org = await fx.newOrg();
       const mk = (name: string, extra: Record<string, unknown> = {}) =>

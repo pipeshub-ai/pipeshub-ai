@@ -331,7 +331,7 @@ export class MongoDocumentRepository implements DocumentRepository {
       isDeleted: { $ne: true },
     })
       .select('_id documentName documentPath createdAt')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean<
         {
           _id: unknown;
@@ -594,7 +594,7 @@ export class MongoDocumentRepository implements DocumentRepository {
       'artifactSet.virtualRecordId': { $eq: virtualRecordId },
       isDeleted: { $ne: true },
     })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: 1, _id: 1 })
       .select('_id artifactSet storageVendor createdAt updatedAt')
       .lean();
     return docs.map(row);
