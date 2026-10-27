@@ -1537,6 +1537,29 @@ class TestLifespan:
             mock_stop.assert_awaited_once()
             mock_container.config_service().close.assert_awaited()
 
+    async def test_shutdown_turns_the_parse_pool_off(self) -> None:
+        """Startup turns the parse pool on for the process; shutdown must turn it off, as
+        query_main does, or a later lifespan in the same process (a test worker) parses
+        through worker processes it never asked for."""
+        from app.indexing_main import lifespan
+        from app.modules.parsers import parse_pool
+
+        mock_container = _make_container()
+        mock_container._graph_provider = _make_graph_provider()
+        mock_app = MagicMock()
+        mock_app.state = MagicMock()
+
+        with (
+            patch("app.indexing_main.get_initialized_container", new_callable=AsyncMock, return_value=mock_container),
+            patch("app.indexing_main.recover_in_progress_records", new_callable=AsyncMock),
+            patch("app.indexing_main.start_kafka_consumers", new_callable=AsyncMock, return_value=[]),
+            patch("app.indexing_main.stop_kafka_consumers", new_callable=AsyncMock),
+        ):
+            async with lifespan(mock_app):
+                assert parse_pool._State.governor is not None
+
+        assert parse_pool._State.governor is None
+
     async def test_graph_provider_fallback(self):
         """When _graph_provider is not set, it falls back to graph_provider()."""
         from app.indexing_main import lifespan
