@@ -11,7 +11,7 @@ export interface WorkspaceHeaderIconButtonProps {
   style?: CSSProperties;
 }
 
-/** 32├ù32 bordered icon control ΓÇö matches workspace headers (e.g. Bots). */
+/** 32×32 bordered icon control — matches workspace headers (e.g. Bots). */
 export function WorkspaceHeaderIconButton({
   icon,
   onClick,

@@ -506,7 +506,7 @@
     "willBeReindexed": "将被重新索引",
     "reindexConfirm": "重新索引此{{type}}？",
     "reindexDescription": "这将更新此{{type}}及其内容的搜索索引。",
-    "deleteCollectionBody": "'{{name}}' 及其中的所有内容将被删除。它也会从所有使用它的智能体中移除。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有内容将被永久删除。它也会从所有使用它的智能体中移除。此操作无法撤销。",
     "deleteFolderBody": "'{{name}}' 及其中的所有内容将从此集合中删除。",
     "deleteFileBody": "'{{name}}' 将从此集合中删除。"
   },
@@ -1477,7 +1477,8 @@
       "download": "下载产物",
       "downloading": "正在下载产物"
     },
-    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。"
+    "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
+    "noResultsFor": "未找到“{{query}}”的结果"
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -5248,7 +5249,9 @@
       "orgEmailVerifyFailedDescription": "链接可能无效或已过期。请重新注册。",
       "loadFailedTitle": "无法加载登录",
       "loadFailedDescription": "PipesHub 无法连接服务器以加载登录选项。请检查网络连接或服务器地址，然后重试。",
-      "retry": "重试"
+      "retry": "重试",
+      "tabPassword": "密码",
+      "tabEmailOtp": "邮箱验证码"
     },
     "common": {
       "signIn": "登录",
@@ -5285,12 +5288,49 @@
       "integrationTitle": "授权已发送到 PipesHub",
       "description": "您可以关闭此标签页并返回 PipesHub 应用。",
       "openApp": "打开 PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "请查看收件箱",
+      "resetLinkSent": "如果存在使用此邮箱的账户，密码重置链接已发送。",
+      "resetRequestFailed": "无法请求重置密码",
+      "tryAgainLater": "请稍后重试。",
+      "contactAdmin": "请联系您的管理员。",
+      "noPasswordSetTitle": "此账户未设置密码。",
+      "noPasswordSetDescription": "请使用下方的“忘记密码”设置密码。",
+      "checkEmail": "请查看邮箱",
+      "otpSentDescription": "如果该邮箱可以使用验证码登录，验证码正在发送。如果几分钟内未收到，请检查垃圾邮件文件夹或稍后重试。",
+      "otpSendFailed": "无法发送验证码",
+      "additionalVerification": "需要额外验证",
+      "completeNextStep": "请完成下一步以继续。",
+      "signInFailedTitle": "登录失败",
+      "unexpectedResponse": "响应异常，请重试。",
+      "signInFailed": "登录失败，请重试。",
+      "verificationFailed": "验证失败，请重试。",
+      "googleSignInFailed": "Google 登录失败，请重试。",
+      "microsoftSignInFailed": "Microsoft 登录失败，请重试。",
+      "tryAgainAfter": "请在 {{time}} 之后重试。"
     }
   },
   "healthGate": {
     "title": "无法连接到服务器",
     "description": "服务器当前无法访问。它可能正在启动或正在进行维护。我们正在尝试重新连接。",
-    "contactAdmin": "如果此问题持续存在，请联系您的 PipesHub 管理员。"
+    "contactAdmin": "如果此问题持续存在，请联系您的 PipesHub 管理员。",
+    "toasts": {
+      "servicesUnavailableTitle": "部分服务不可用",
+      "affected": "受影响：{{services}}",
+      "featuresUnavailableReconnect": "部分功能暂时不可用。我们会自动重新连接；如果问题持续，请联系管理员。",
+      "featuresUnavailable": "部分功能暂时不可用",
+      "viewStatus": "查看状态",
+      "servicesDown_one": "{{services}} 当前不可用",
+      "servicesDown_other": "{{services}} 当前不可用"
+    },
+    "serviceGate": {
+      "title": "服务不可用",
+      "requires_one": "此页面需要 {{services}}，该服务当前不可用。服务恢复后，此页面将自动恢复可用。",
+      "requires_other": "此页面需要 {{services}}，这些服务当前不可用。服务恢复后，此页面将自动恢复可用。",
+      "memberBody": "此页面暂时不可用，稍后会自动恢复；如果问题持续，请联系管理员。",
+      "viewStatus": "查看服务状态"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "问题：",

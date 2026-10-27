@@ -14,7 +14,6 @@ import {
   selectInfraServices,
   selectInfraServiceNames,
   APP_SERVICE_LABELS,
-  formatServiceList,
   type AppServices,
   type InfraServices,
 } from '@/lib/store/services-health-store';
@@ -152,6 +151,7 @@ function BackendUnavailableScreen() {
  */
 export function HealthGate({ children }: { children: React.ReactNode }) {
   const router = useRouter();
+  const { t, i18n } = useTranslation();
   const isAdmin = useUserStore(selectIsAdmin);
   const shouldPoll = useShouldPollServiceHealth();
 
@@ -257,21 +257,21 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
       // member.
       const description =
         isAdmin === true
-          ? `Affected: ${critical.join(', ')}`
-          : "Some features are temporarily unavailable. We'll reconnect automatically; if it lasts, contact your admin.";
+          ? t('healthGate.toasts.affected', { services: critical.join(', ') })
+          : t('healthGate.toasts.featuresUnavailableReconnect');
       // The profile often resolves after the first failed health check, so the
       // action is set on every pass: an admin who was still "unknown" when the
       // toast appeared would otherwise never get the button.
       const adminAction =
         isAdmin === true
           ? {
-              label: 'View status',
+              label: t('healthGate.toasts.viewStatus'),
               onClick: () => router.push('/workspace/services'),
             }
           : undefined;
       if (criticalToastIdRef.current === null) {
         criticalToastIdRef.current = toast.error(
-          'Some services are unavailable',
+          t('healthGate.toasts.servicesUnavailableTitle'),
           {
             description,
             duration: null,
@@ -280,6 +280,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         );
       } else {
         toast.update(criticalToastIdRef.current, {
+          title: t('healthGate.toasts.servicesUnavailableTitle'),
           description,
           action: adminAction,
         });
@@ -296,12 +297,15 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         lastNonCriticalToastRef.current = now;
         toast.warning(
           isAdmin === true
-            ? `${formatServiceList(nonCritical)} ${nonCritical.length === 1 ? 'is' : 'are'} currently unavailable`
-            : 'Some features are temporarily unavailable',
+            ? t('healthGate.toasts.servicesDown', {
+                count: nonCritical.length,
+                services: new Intl.ListFormat(i18n.language, { type: 'conjunction' }).format(nonCritical),
+              })
+            : t('healthGate.toasts.featuresUnavailable'),
           {
             ...(isAdmin === true && {
               action: {
-                label: 'View status',
+                label: t('healthGate.toasts.viewStatus'),
                 onClick: () => router.push('/workspace/services'),
               },
             }),
@@ -309,7 +313,7 @@ export function HealthGate({ children }: { children: React.ReactNode }) {
         );
       }
     }
-  }, [apiServerReachable, backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router]);
+  }, [apiServerReachable, backgroundCheckFailed, appServices, infraServices, infraServiceNames, isAdmin, router, t, i18n.language]);
 
   if (!apiServerReachable) {
     return <BackendUnavailableScreen />;

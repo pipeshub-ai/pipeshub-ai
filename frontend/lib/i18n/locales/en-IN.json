@@ -422,7 +422,7 @@
     "willBeReindexed": "will be reindexed",
     "reindexConfirm": "Reindex this {{type}}?",
     "reindexDescription": "This will update the search index for this {{type}} and its contents.",
-    "deleteCollectionBody": "'{{name}}' and everything in it will be deleted. It will also be removed from any agents that use it.",
+    "deleteCollectionBody": "'{{name}}' and everything in it will be permanently deleted. It will also be removed from any agents that use it. This can't be undone.",
     "deleteFolderBody": "'{{name}}' and everything in it will be deleted from this collection.",
     "deleteFileBody": "'{{name}}' will be deleted from this collection."
   },
@@ -1392,7 +1392,8 @@
       "download": "Download artifact",
       "downloading": "Downloading artifact"
     },
-    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too."
+    "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
+    "noResultsFor": "No results found for “{{query}}”"
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1752,7 +1753,7 @@
         "clientSecretsHeading": "Client secrets",
         "clientSecretsHelper": "A client secret is required to authenticate this application with the API.",
         "generateSecret": "Generate new client secret",
-        "generatingSecret": "GeneratingΓÇª",
+        "generatingSecret": "Generating…",
         "newSecretLabel": "New client secret",
         "advancedSectionTitle": "Advanced",
         "statusLabel": "STATUS",
@@ -1760,7 +1761,7 @@
         "statusSuspended": "Suspended",
         "suspendApplicationButton": "Suspend application",
         "activateApplicationButton": "Activate",
-        "statusActionPending": "UpdatingΓÇª",
+        "statusActionPending": "Updating…",
         "typeKeywordToConfirm": "Type '{{keyword}}' to confirm",
         "typedConfirmFallbackName": "this application",
         "deleteTypedConfirmTitle": "Delete OAuth application",
@@ -1774,7 +1775,7 @@
         "suspendTypedConfirmBodyLine1": "Are you sure you want to suspend {{name}}? New tokens and usage may be blocked until you activate the application again.",
         "suspendTypedConfirmBodyLine2": "Existing tokens may continue to work until they expire or are revoked.",
         "suspendTypedConfirmAction": "Suspend application",
-        "suspendTypedConfirmSuspending": "SuspendingΓÇª",
+        "suspendTypedConfirmSuspending": "Suspending…",
         "suspendSuccessTitle": "Application suspended",
         "suspendErrorTitle": "Failed to suspend application",
         "activateSuccessTitle": "Application activated",
@@ -1784,7 +1785,7 @@
         "revokeTokensDescription": "Invalidates every access and refresh token for this application. This action cannot be undone. Users will need to authorize again to obtain new tokens.",
         "revokeTokensButton": "Revoke tokens",
         "revokeConfirmAction": "Revoke all",
-        "revoking": "RevokingΓÇª",
+        "revoking": "Revoking…",
         "revokeSuccessTitle": "Tokens revoked",
         "revokeSuccessDescription": "All tokens for this application have been invalidated.",
         "revokeErrorTitle": "Failed to revoke tokens",
@@ -1792,13 +1793,13 @@
         "deleteApplicationDescription": "Permanently delete this OAuth application. Clients using this app will no longer work. This action cannot be undone.",
         "deleteApplicationButton": "Delete application",
         "deleteConfirmAction": "Delete application",
-        "deletingApp": "DeletingΓÇª",
+        "deletingApp": "Deleting…",
         "deleteSuccessTitle": "Application deleted",
         "deleteSuccessDescription": "The OAuth application was removed.",
         "deleteErrorTitle": "Failed to delete application",
         "loadError": "Failed to load application.",
         "loadRetry": "Retry",
-        "loadingDetail": "Loading applicationΓÇª",
+        "loadingDetail": "Loading application…",
         "saveSuccessTitle": "Changes saved",
         "saveSuccessDescription": "Your OAuth application was updated.",
         "saveErrorTitle": "Failed to save changes",
@@ -1846,7 +1847,7 @@
         "permissionsSummary": "{{selected}} of {{total}} permissions selected",
         "selectAllScopes": "Select all",
         "clearAllScopes": "Clear all",
-        "scopesLoading": "Loading permissionsΓÇª",
+        "scopesLoading": "Loading permissions…",
         "scopesLoadError": "Failed to load permissions. Try again.",
         "scopesRetry": "Retry",
         "requiresConsent": "Requires user consent",
@@ -5183,7 +5184,9 @@
       "orgEmailVerifyFailedDescription": "The link may be invalid or expired. Please sign up again.",
       "loadFailedTitle": "Couldn't load sign-in",
       "loadFailedDescription": "PipesHub couldn't reach the server to load sign-in options. Check your connection or server address and try again.",
-      "retry": "Try again"
+      "retry": "Try again",
+      "tabPassword": "Password",
+      "tabEmailOtp": "Email OTP"
     },
     "common": {
       "signIn": "Sign in",
@@ -5220,12 +5223,49 @@
       "integrationTitle": "Authorization sent to PipesHub",
       "description": "You can close this tab and return to the PipesHub app.",
       "openApp": "Open PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "Check your inbox",
+      "resetLinkSent": "If an account exists for this email, a password reset link has been sent.",
+      "resetRequestFailed": "Could not request password reset",
+      "tryAgainLater": "Please try again later.",
+      "contactAdmin": "Please contact your administrator.",
+      "noPasswordSetTitle": "No password set for this account.",
+      "noPasswordSetDescription": "Use Forgot Password below to set up your password.",
+      "checkEmail": "Check your email",
+      "otpSentDescription": "If that email can sign in with a code, one is being sent. If nothing arrives in a few minutes, check your spam folder or try again later.",
+      "otpSendFailed": "Could not send verification code",
+      "additionalVerification": "Additional verification required",
+      "completeNextStep": "Complete the next step to continue.",
+      "signInFailedTitle": "Sign-in failed",
+      "unexpectedResponse": "Unexpected response. Please try again.",
+      "signInFailed": "Sign in failed. Please try again.",
+      "verificationFailed": "Verification failed. Please try again.",
+      "googleSignInFailed": "Google sign-in failed. Please try again.",
+      "microsoftSignInFailed": "Microsoft sign-in failed. Please try again.",
+      "tryAgainAfter": "Try again after {{time}}."
     }
   },
   "healthGate": {
     "title": "Unable to connect to server",
     "description": "The server is currently unreachable. It may be starting up or undergoing maintenance. We're trying to reconnect.",
-    "contactAdmin": "If this persists, please contact your PipesHub administrator."
+    "contactAdmin": "If this persists, please contact your PipesHub administrator.",
+    "toasts": {
+      "servicesUnavailableTitle": "Some services are unavailable",
+      "affected": "Affected: {{services}}",
+      "featuresUnavailableReconnect": "Some features are temporarily unavailable. We'll reconnect automatically; if it lasts, contact your admin.",
+      "featuresUnavailable": "Some features are temporarily unavailable",
+      "viewStatus": "View status",
+      "servicesDown_one": "{{services}} is currently unavailable",
+      "servicesDown_other": "{{services}} are currently unavailable"
+    },
+    "serviceGate": {
+      "title": "Service unavailable",
+      "requires_one": "This page requires {{services}}, which is currently unavailable. It will become available automatically once the service recovers.",
+      "requires_other": "This page requires {{services}}, which are currently unavailable. It will become available automatically once the services recover.",
+      "memberBody": "This page is temporarily unavailable. It will come back automatically; if it lasts, contact your admin.",
+      "viewStatus": "View service status"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Question :",

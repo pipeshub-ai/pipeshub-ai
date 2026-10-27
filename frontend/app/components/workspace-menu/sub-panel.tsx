@@ -38,7 +38,10 @@ export function SubPanel({ isOpen, title, onBack, children }: SubPanelProps) {
     if (!isOpen || isMobile || !el) return;
     const rect = el.getBoundingClientRect();
     const top = rect.top + shiftUp;
-    setShiftUp(Math.max(0, Math.min(top - VIEWPORT_GAP, top + rect.height - (window.innerHeight - VIEWPORT_GAP))));
+    const next = Math.max(0, Math.min(top - VIEWPORT_GAP, top + rect.height - (window.innerHeight - VIEWPORT_GAP)));
+    // The browser snaps layout to 1/64px, so the measured top drifts by a hair on every pass and a
+    // fractional shift never settles: React hits its update-depth limit and the sidebar crashes.
+    setShiftUp((prev) => (Math.abs(next - prev) < 1 ? prev : Math.round(next)));
   }, [isOpen, isMobile, children, shiftUp]);
 
   if (!isOpen) return null;

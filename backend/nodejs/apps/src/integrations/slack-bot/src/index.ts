@@ -319,7 +319,6 @@ async function processSlackMessage(
   const configService = ConfigService.getInstance();
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
-  console.log("currentAgentId", currentAgentId);
   const currentBotId = resolvedSlackBot?.botId;
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");
