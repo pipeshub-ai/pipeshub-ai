@@ -27,7 +27,12 @@ import {
 } from '../../../libs/utils/image.utils';
 import { Response, NextFunction } from 'express';
 import type { Readable } from 'stream';
-import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
+import mongoose, {
+  ClientSession,
+  QueryFilter,
+  Types,
+  UpdateQuery,
+} from 'mongoose';
 import {
   AuthenticatedUserRequest,
   AuthenticatedServiceRequest,
@@ -6071,19 +6076,22 @@ export const unshareSearch =
       );
 
       // Prepare update object
-      const updateObject: Partial<IEnterpriseSemanticSearch> = {
+      const updateObject: UpdateQuery<IEnterpriseSemanticSearch> = {
         sharedWith: updatedSharedWith,
       };
 
-      // If no more shares exist, update isShared and remove shareLink
+      // If no more shares exist, update isShared and remove shareLink. An
+      // undefined value is dropped from an update, so the field is unset.
       if (updatedSharedWith.length === 0) {
         updateObject.isShared = false;
-        updateObject.shareLink = undefined;
+        updateObject.$unset = { shareLink: 1 };
       }
 
+      // The response reports the stored state after the change.
       const updatedSearch = await EnterpriseSemanticSearch.findByIdAndUpdate(
         searchId,
         updateObject,
+        { returnDocument: 'after' },
       );
 
       if (!updatedSearch) {
