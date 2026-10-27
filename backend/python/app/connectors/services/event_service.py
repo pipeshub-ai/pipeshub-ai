@@ -52,6 +52,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.containers.connector import ConnectorAppContainer
+from app.core.org_context import spawn_detached
 from app.edition_services import (
     get_data_entities_processor_cls,
     sync_executor_enabled,
@@ -128,7 +129,7 @@ async def evict_cached_connector(
         await _dispose_when_idle(connector_id, existing_connector, logger)
         return
     logger.info(f"Disposing connector {connector_id} once its running sync/reindex ends")
-    task = asyncio.create_task(
+    task = spawn_detached(
         _dispose_when_idle(connector_id, existing_connector, logger),
         name=f"dispose_connector_{connector_id}",
     )
