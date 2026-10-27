@@ -79,6 +79,7 @@ import {
   addComputedFields,
   attachSharedBy,
   attachSharedByIfRecipient,
+  withoutOwnerOnlyFields,
   buildFiltersMetadata,
   buildConversationResponse,
   buildSessionQuery,
@@ -5063,7 +5064,13 @@ export const searchArchivedConversations =
       const totalCount = assistantCount + agentCount;
 
       const paginatedResults = aggregateResult.map((c: any) => ({
-        ...addComputedFields(c as IConversation, userId),
+        ...addComputedFields(
+          // Kept here as well as in addComputedFields: the owner-only fields never reach another viewer.
+          (String((c as { userId: unknown }).userId) === String(userId)
+            ? c
+            : withoutOwnerOnlyFields(c)) as IConversation,
+          userId,
+        ),
         archivedAt: c.updatedAt,
         archivedBy: c.archivedBy,
         source: c.source as 'assistant' | 'agent',
