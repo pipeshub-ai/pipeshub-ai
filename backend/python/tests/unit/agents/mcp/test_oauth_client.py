@@ -384,6 +384,9 @@ class TestErrorsInTheResponseBody:
         _json_response(401, {"error": "invalid_client"}),
         _form_response(200, "error=incorrect_client_credentials"),
         _json_response(400, {"error": "unauthorized_client"}),
+        _json_response(400, {"error": "interaction_required", "error_description": "AADSTS50076: use MFA"}),
+        _json_response(400, {"error": "invalid_scope"}),
+        _json_response(400, {"error": "invalid_request"}),
     ])
     async def test_a_rejection_a_retry_cannot_fix_is_permanent(self, resp: MagicMock) -> None:
         with pytest.raises(MCPRefreshTokenInvalidError):

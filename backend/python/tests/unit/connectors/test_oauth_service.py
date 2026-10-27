@@ -12,9 +12,15 @@ from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
     OAuthToken,
+    OAuthTokenRequestError,
     RefreshTokenInvalidError,
 )
-from app.utils.oauth_config import get_oauth_config
+from app.utils.oauth_config import extract_oauth_error_message, get_oauth_config
+from tests.support.refusing_token_endpoint import (
+    ENTRA_INTERACTION_REQUIRED,
+    ENTRA_INVALID_CLIENT,
+    RefusingTokenEndpoint,
+)
 from tests.support.slack_oauth import TOKEN_URL as SLACK_TOKEN_URL
 from tests.support.slack_oauth import FakeSlackOAuth
 
@@ -1009,7 +1015,7 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception("OAuth token request failed with status 403. Response: forbidden")
+            side_effect=OAuthTokenRequestError("OAuth token request failed with status 403. Response: forbidden", status=403)
         )
 
         with pytest.raises(Exception, match="Token refresh failed with 403 Forbidden"):
@@ -1022,9 +1028,11 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception(
+            side_effect=OAuthTokenRequestError(
                 'OAuth token request failed with status 403. '
-                'Response: {"error":"unauthorized_client","error_description":"refresh_token is invalid"}'
+                'Response: {"error":"unauthorized_client","error_description":"refresh_token is invalid"}',
+                status=403,
+                error_code="unauthorized_client",
             )
         )
 
@@ -1038,7 +1046,7 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception("OAuth token request failed with status 403. Response: forbidden")
+            side_effect=OAuthTokenRequestError("OAuth token request failed with status 403. Response: forbidden", status=403)
         )
 
         with pytest.raises(Exception, match="403 Forbidden") as exc_info:
@@ -1052,7 +1060,11 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception('OAuth token request failed with status 400. Response: {"error":"invalid_grant"}')
+            side_effect=OAuthTokenRequestError(
+                'OAuth token request failed with status 400. Response: {"error":"invalid_grant"}',
+                status=400,
+                error_code="invalid_grant",
+            )
         )
 
         with pytest.raises(RefreshTokenInvalidError, match="invalid_grant"):
@@ -1065,10 +1077,12 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception(
+            side_effect=OAuthTokenRequestError(
                 'OAuth token request failed with status 401. '
                 'Token URL: https://dev293310.service-now.com/oauth_token.do, '
-                'Response: {"error_description":"access_denied","error":"server_error"}'
+                'Response: {"error_description":"access_denied","error":"server_error"}',
+                status=401,
+                error_code="server_error",
             )
         )
 
@@ -1082,9 +1096,11 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception(
+            side_effect=OAuthTokenRequestError(
                 'OAuth token request failed with status 401. '
-                'Response: {"error_description":"access_denied","error":"server_error"}'
+                'Response: {"error_description":"access_denied","error":"server_error"}',
+                status=401,
+                error_code="server_error",
             )
         )
 
@@ -1099,7 +1115,7 @@ class TestRefreshAccessToken:
         provider = OAuthProvider(config, mock_config_service, "/path")
 
         provider._make_token_request = AsyncMock(
-            side_effect=Exception("OAuth token request failed with status 500. Response: server error")
+            side_effect=OAuthTokenRequestError("OAuth token request failed with status 500. Response: server error", status=500)
         )
 
         with pytest.raises(Exception, match="status 500"):
@@ -1569,3 +1585,103 @@ class TestSlackTokenEndpoint:
         mock_config_service.set_config.assert_awaited_once()
         saved = mock_config_service.set_config.await_args.args[1]["credentials"]
         assert (saved["access_token"], saved["refresh_token"], saved["expires_in"]) == (new_access, new_refresh, 43200)
+
+    @pytest.mark.asyncio
+    async def test_ok_false_carries_slacks_error_code(self, mock_config_service, monkeypatch) -> None:
+        slack = FakeSlackOAuth("xoxe-1-live")
+        monkeypatch.setattr(oauth_service, "ClientSession", slack.client_session)
+
+        with pytest.raises(OAuthTokenRequestError) as err:
+            await self._provider(mock_config_service)._make_token_request(
+                {"grant_type": "refresh_token", "refresh_token": "xoxe-1-revoked"},
+            )
+
+        assert (err.value.status, err.value.error_code) == (200, "invalid_refresh_token")
+        assert str(err.value) == f"OAuth token request was rejected by {SLACK_TOKEN_URL}: invalid_refresh_token"
+
+
+class TestTokenEndpointRefusals:
+    """The real OAuthProvider against a token endpoint that refuses every request."""
+
+    @staticmethod
+    def _provider(endpoint: RefusingTokenEndpoint, mock_config_service, monkeypatch) -> OAuthProvider:
+        monkeypatch.setattr(oauth_service, "ClientSession", endpoint.client_session)
+        config = _make_oauth_config(token_url="https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
+        return OAuthProvider(config, mock_config_service, "/services/connectors/c1/config")
+
+    @pytest.mark.asyncio
+    async def test_an_error_body_is_kept_in_the_message_and_its_code_parsed(
+        self, mock_config_service, monkeypatch,
+    ) -> None:
+        provider = self._provider(RefusingTokenEndpoint(400, ENTRA_INVALID_CLIENT), mock_config_service, monkeypatch)
+
+        with pytest.raises(OAuthTokenRequestError) as err:
+            await provider._make_token_request({"grant_type": "refresh_token"})
+
+        assert (err.value.status, err.value.error_code) == (400, "invalid_client")
+        assert str(err.value) == (
+            "OAuth token request failed with status 400. "
+            "Token URL: https://login.microsoftonline.com/consumers/oauth2/v2.0/token, "
+            "Redirect URI: http://localhost/callback, "
+            "Client ID (masked): test-cli..., "
+            f"Response: {ENTRA_INVALID_CLIENT}"
+        )
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", ["<html><body>Bad Request</body></html>", '{"error": 42}', '["invalid_client"]'])
+    async def test_a_body_without_an_error_string_has_no_code(self, body, mock_config_service, monkeypatch) -> None:
+        provider = self._provider(RefusingTokenEndpoint(400, body, "text/html"), mock_config_service, monkeypatch)
+
+        with pytest.raises(OAuthTokenRequestError) as err:
+            await provider._make_token_request({"grant_type": "refresh_token"})
+
+        assert (err.value.status, err.value.error_code) == (400, None)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [ENTRA_INVALID_CLIENT, ENTRA_INTERACTION_REQUIRED])
+    async def test_microsoft_refusing_the_client_or_demanding_sign_in_is_permanent(
+        self, body, mock_config_service, monkeypatch,
+    ) -> None:
+        provider = self._provider(RefusingTokenEndpoint(400, body), mock_config_service, monkeypatch)
+
+        with pytest.raises(RefreshTokenInvalidError, match=r"re-authentication is required \((invalid_client|interaction_required)\)"):
+            await provider.refresh_access_token("refresh-tok")
+
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("status", [429, 500, 503])
+    async def test_a_permanent_code_from_an_overloaded_endpoint_stays_transient(
+        self, status, mock_config_service, monkeypatch,
+    ) -> None:
+        provider = self._provider(RefusingTokenEndpoint(status, ENTRA_INVALID_CLIENT), mock_config_service, monkeypatch)
+
+        with pytest.raises(OAuthTokenRequestError) as err:
+            await provider.refresh_access_token("refresh-tok")
+
+        assert not isinstance(err.value, RefreshTokenInvalidError)
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("body", [
+        '{"error":"temporarily_unavailable","error_description":"AADSTS90033: retry later"}',
+        '{"error":"invalid_request","error_description":"AADSTS900144: missing parameter"}',
+        '{"error":"invalid_scope","error_description":"AADSTS70011: scope is not valid"}',
+    ])
+    async def test_an_outage_or_a_refused_request_shape_stays_transient(
+        self, body, mock_config_service, monkeypatch,
+    ) -> None:
+        provider = self._provider(RefusingTokenEndpoint(400, body), mock_config_service, monkeypatch)
+
+        with pytest.raises(OAuthTokenRequestError) as err:
+            await provider.refresh_access_token("refresh-tok")
+
+        assert not isinstance(err.value, RefreshTokenInvalidError)
+
+    def test_the_friendly_message_still_reads_the_response_body(self) -> None:
+        error = OAuthTokenRequestError(
+            f"OAuth token request failed with status 400. Response: {ENTRA_INVALID_CLIENT}",
+            status=400,
+            error_code="invalid_client",
+        )
+
+        assert "Invalid OAuth client credentials" in extract_oauth_error_message(error)

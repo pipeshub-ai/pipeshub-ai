@@ -1,7 +1,7 @@
 import base64
 import hashlib
+import json
 import os
-import re
 import secrets
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -14,6 +14,7 @@ from aiohttp import ClientSession
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.oauth_errors import is_permanent_grant_rejection, oauth_error_code
 from app.utils.url_fetcher import private_addresses_blocked
 
 
@@ -36,33 +37,40 @@ class RefreshTokenInvalidError(Exception):
     revoked). Retrying cannot succeed — the user must re-authenticate."""
 
 
-_PERMANENT_REFRESH_ERROR_MARKERS = (
-    "invalid_grant",
-    "refresh_token is invalid",
-    "refresh token is invalid",
-    "refresh token has expired",
-    "invalid_refresh_token",
-    "bad_refresh_token",
-)
+class OAuthTokenRequestError(Exception):
+    """The token endpoint refused a request. `error_code` is the RFC 6749 `error` it sent, if any."""
+
+    def __init__(self, message: str, *, status: int, error_code: Optional[str] = None) -> None:
+        super().__init__(message)
+        self.status = status
+        self.error_code = error_code
 
 
-def _is_permanent_refresh_rejection(error_str: str) -> bool:
-    lowered = error_str.lower()
-    return any(marker in lowered for marker in _PERMANENT_REFRESH_ERROR_MARKERS)
+def _json_error_code(text: str) -> Optional[str]:
+    try:
+        return oauth_error_code(json.loads(text))
+    except (ValueError, RecursionError):
+        return None
 
 
 _SERVICENOW_TOKEN_ENDPOINT = "oauth_token.do"
 
 # servicenow specific check for refresh token rejection
-def _is_servicenow_refresh_rejection(error_str: str, token_url: str) -> bool:
+def _is_servicenow_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
     """ServiceNow reports a dead refresh token as 401 server_error/access_denied"""
     if _SERVICENOW_TOKEN_ENDPOINT not in token_url.lower():
         return False
-    status_match = re.search(r"status (\d+)", error_str)
-    if not status_match or int(status_match.group(1)) != HttpStatusCode.UNAUTHORIZED.value:
+    if error.status != HttpStatusCode.UNAUTHORIZED.value:
         return False
-    lowered = error_str.lower()
+    lowered = str(error).lower()
     return "server_error" in lowered and "access_denied" in lowered
+
+
+def _is_permanent_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
+    # An overloaded or rate-limiting endpoint can answer with any code; only a 4xx refusal is final.
+    if error.status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or error.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
+        return False
+    return is_permanent_grant_rejection(str(error), error.error_code) or _is_servicenow_refresh_rejection(error, token_url)
 
 
 @dataclass
@@ -313,7 +321,9 @@ class OAuthProvider:
                     f"Client ID (masked): {masked_client_id}, "
                     f"Response: {error_text}"
                 )
-                raise Exception(error_msg)
+                raise OAuthTokenRequestError(
+                    error_msg, status=response.status, error_code=_json_error_code(error_text),
+                )
 
             response.raise_for_status()
             # Handle both JSON and form-encoded responses
@@ -323,9 +333,11 @@ class OAuthProvider:
                 # Slack answers a rejected grant with HTTP 200 and ok=false, so the
                 # status check above never sees it.
                 if isinstance(token_data, dict) and token_data.get("ok") is False:
-                    raise Exception(
+                    raise OAuthTokenRequestError(
                         f"OAuth token request was rejected by {self.config.token_url}: "
-                        f"{token_data.get('error') or 'unknown_error'}"
+                        f"{token_data.get('error') or 'unknown_error'}",
+                        status=response.status,
+                        error_code=oauth_error_code(token_data),
                     )
                 return token_data
             elif 'application/x-www-form-urlencoded' in content_type or 'text/plain' in content_type:
@@ -376,13 +388,13 @@ class OAuthProvider:
 
         try:
             token_data = await self._make_token_request(data)
-        except Exception as e:
+        except OAuthTokenRequestError as e:
             error_str = str(e)
-            if _is_permanent_refresh_rejection(error_str) or _is_servicenow_refresh_rejection(error_str, self.config.token_url):
-                raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required. {error_str}") from e
-            status_match = re.search(r"status (\d+)", error_str)
+            if _is_permanent_refresh_rejection(e, self.config.token_url):
+                code = f" ({e.error_code})" if e.error_code else ""
+                raise RefreshTokenInvalidError(f"Refresh token rejected by provider — expired or revoked; re-authentication is required{code}. {error_str}") from e
             # Bare 403 stays transient — may be a WAF block, not a dead token
-            if status_match and int(status_match.group(1)) == HttpStatusCode.FORBIDDEN.value:
+            if e.status == HttpStatusCode.FORBIDDEN.value:
                 raise Exception(f"Token refresh failed with 403 Forbidden. This usually means the refresh token has expired or is invalid. {error_str}") from e
             raise
 

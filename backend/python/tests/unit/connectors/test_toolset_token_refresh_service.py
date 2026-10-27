@@ -14,6 +14,10 @@ from app.connectors.core.base.token_service.toolset_token_refresh_service import
     MAX_REFRESH_TOKEN_INVALID_FAILURES,
     ToolsetTokenRefreshService,
 )
+from tests.support.refusing_token_endpoint import (
+    ENTRA_INVALID_CLIENT,
+    RefusingTokenEndpoint,
+)
 from tests.support.slack_oauth import TOKEN_URL as SLACK_TOKEN_URL
 from tests.support.slack_oauth import FakeSlackOAuth
 
@@ -71,6 +75,25 @@ class TestToolsetRefreshTokenInvalidThreshold:
         mock_config_service.set_config.assert_not_awaited()
 
 
+def _service_over(store: dict, oauth_config: dict, monkeypatch: pytest.MonkeyPatch) -> ToolsetTokenRefreshService:
+    """A service whose config store is `store` and whose toolset signs in with `oauth_config`."""
+    async def get_config(_path: str, *_: object, **__: object) -> dict:
+        return deepcopy(store)
+
+    async def set_config(_path: str, value: dict) -> bool:
+        store.clear()
+        store.update(deepcopy(value))
+        return True
+
+    config_service = MagicMock()
+    config_service.get_config = AsyncMock(side_effect=get_config)
+    config_service.set_config = AsyncMock(side_effect=set_config)
+    service = ToolsetTokenRefreshService(config_service)
+    monkeypatch.setattr(service, "_build_complete_oauth_config", AsyncMock(return_value=oauth_config))
+    monkeypatch.setattr(service, "schedule_token_refresh", AsyncMock())
+    return service
+
+
 class TestSlackToolsetRotation:
     """A Slack toolset signed in to an app with token rotation, refreshed through Slack's endpoint."""
 
@@ -89,19 +112,7 @@ class TestSlackToolsetRotation:
 
     @pytest.fixture
     def slack_service(self, store: dict, monkeypatch: pytest.MonkeyPatch) -> ToolsetTokenRefreshService:
-        async def get_config(_path: str, *_: object, **__: object) -> dict:
-            return deepcopy(store)
-
-        async def set_config(_path: str, value: dict) -> bool:
-            store.clear()
-            store.update(deepcopy(value))
-            return True
-
-        config_service = MagicMock()
-        config_service.get_config = AsyncMock(side_effect=get_config)
-        config_service.set_config = AsyncMock(side_effect=set_config)
-        service = ToolsetTokenRefreshService(config_service)
-        monkeypatch.setattr(service, "_build_complete_oauth_config", AsyncMock(return_value={
+        return _service_over(store, {
             "clientId": "client-1",
             "clientSecret": "secret-1",
             "authorizeUrl": "https://slack.com/oauth/v2/authorize",
@@ -110,9 +121,7 @@ class TestSlackToolsetRotation:
             "scopes": [],
             "scopeParameterName": "user_scope",
             "tokenResponsePath": "authed_user",
-        }))
-        monkeypatch.setattr(service, "schedule_token_refresh", AsyncMock())
-        return service
+        }, monkeypatch)
 
     @pytest.mark.asyncio
     async def test_an_expired_token_is_refreshed_and_both_new_tokens_saved(
@@ -139,3 +148,40 @@ class TestSlackToolsetRotation:
         assert len(slack.requests) == 1
         assert slack_service._invalid_refresh_failures[CONFIG_PATH] == 1
         assert store["credentials"]["refresh_token"] == "xoxe-1-old"
+
+
+class TestEntraRefusingTheClient:
+    """Microsoft answers every refresh with invalid_client once the app's client secret expires."""
+
+    @pytest.mark.asyncio
+    async def test_the_toolset_is_deauthenticated_after_the_threshold(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        store = {
+            "isAuthenticated": True,
+            "auth": {"type": "OAUTH"},
+            "credentials": {
+                "access_token": "old-access",
+                "refresh_token": "old-refresh",
+                "expires_in": 3600,
+                "created_at": (datetime.now() - timedelta(hours=2)).isoformat(),  # noqa: DTZ005 - OAuthToken is naive
+            },
+        }
+        service = _service_over(store, {
+            "clientId": "client-1",
+            "clientSecret": "expired-secret",
+            "authorizeUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
+            "tokenUrl": "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+            "redirectUri": "https://pipeshub.example/toolsets/oauth/callback/outlook",
+            "scopes": ["offline_access"],
+        }, monkeypatch)
+        entra = RefusingTokenEndpoint(400, ENTRA_INVALID_CLIENT)
+        monkeypatch.setattr(oauth_service, "ClientSession", entra.client_session)
+
+        for _ in range(MAX_REFRESH_TOKEN_INVALID_FAILURES - 1):
+            await service._refresh_toolset_token(CONFIG_PATH, "outlook")
+        assert store["isAuthenticated"] is True
+
+        await service._refresh_toolset_token(CONFIG_PATH, "outlook")
+
+        assert len(entra.requests) == MAX_REFRESH_TOKEN_INVALID_FAILURES
+        assert store["isAuthenticated"] is False
+        assert store["deauthReason"] == "refresh_token_invalid"
