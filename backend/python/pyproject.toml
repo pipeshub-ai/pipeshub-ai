@@ -400,7 +400,7 @@ parsing-service = "app.parsing_main:app"
 extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
-dev = ["ruff==0.17.2", "pyright", "sqlglot>=27,<28", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "graphql-core==3.3.0"]
+dev = ["ruff==0.17.2", "pyright", "sqlglot>=27,<31", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "graphql-core==3.3.0"]
 
 [tool.pyright]
 pythonVersion = "3.12"
