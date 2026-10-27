@@ -52,7 +52,7 @@ async def test_download_during_move_tree_finds_the_record(world: World) -> None:
         while not stop.is_set():
             try:
                 await world.blob.get_record_from_storage(vrid, world.org)
-            except Exception as exc:  # noqa: BLE001 - any failure to read is the finding
+            except Exception as exc:  # any failure to read is the finding
                 failures.append(type(exc).__name__)
             await asyncio.sleep(0)
 
