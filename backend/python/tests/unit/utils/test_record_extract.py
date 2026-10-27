@@ -98,6 +98,27 @@ class TestExtract:
 
         assert result["extract"]["unverifiedLines"] == 1
 
+    @pytest.mark.parametrize(("record_text", "reply", "unverified"), [
+        # A verbatim markdown link: the bracket splits the line, and both sides are found.
+        ("Read [the release notes](https://airflow.apache.org/notes) before upgrading.",
+         "Read [the release notes](https://airflow.apache.org/notes) before upgrading.", 0),
+        # Short quotes are checked too.
+        ("The ASF had 65 sponsors.", "65 sponsors", 0),
+        ("The ASF had 65 sponsors.", "85 sponsors", 1),
+        # A match must not continue a number or a word.
+        ("The contract value is $1,250,000.", "The contract value is $1,250", 1),
+        ("Ten sponsorships were renewed.", "Ten sponsor", 1),
+        # List numbers are part of the text.
+        ("1. Acme Corporation paid $10,000.", "9. Acme Corporation paid $10,000.", 1),
+        ("1. Acme Corporation paid $10,000.", "1. Acme Corporation paid $10,000.", 0),
+        # The reader's own note, in brackets, is not checked; the quote beside it is.
+        ("The vote passed on 29 September.", "[dev@ thread, 2026-09-29] The vote passed on 29 September.", 0),
+    ])
+    async def test_what_counts_as_a_line_from_the_record(self, record_text: str, reply: str, unverified: int) -> None:
+        result = await _extract(_record(record_text), _llm(reply))
+
+        assert result["extract"]["unverifiedLines"] == unverified
+
     async def test_a_reply_that_finds_nothing_says_so(self) -> None:
         result = await _extract(_record("Unrelated."), _llm(NOTHING_RELEVANT))
 

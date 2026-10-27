@@ -6455,7 +6455,8 @@ components:
             Budgeted record reads only. `relevance` when `query` chose which
             blocks to show; the blocks are then not contiguous. `extract` when
             `extract=true` was asked and the reader model answered: `content`
-            is the passages it copied out, not a page of the record. An extract
+            is the passages it copied out (told to copy word for word; see
+            `extract.unverifiedLines`), not a page of the record. An extract
             is one response, so `complete` is true and `nextStartBlock` null;
             whether the reader saw the whole record is `extract.sourceComplete`.
         extract:
@@ -6481,14 +6482,23 @@ components:
             unverifiedLines:
               type: integer
               description: >-
-                Lines of `content` with words not found in the record as written: a paraphrase,
-                or a misreading. Check them with a plain read.
+                Lines of `content` with words not found in the text the reader was given, as
+                written: a paraphrase, or a misreading. Check them with a plain read. Every
+                fragment with a letter or digit is checked, and a match may not continue a
+                word or a number (`$1,250` is not found in `$1,250,000`). Text in square
+                brackets is the reader's own note (where a passage sits) and is not checked,
+                so 0 means every quoted fragment was found, not that `content` is complete or
+                that it quotes the right passage.
             sourceChars:
               type: integer
               description: Characters of the record the reader was given.
             sourceComplete:
               type: boolean
-              description: True when the reader was given the whole record; false when only its blocks most relevant to `query`.
+              description: >-
+                True when the reader was given the whole record. False when the record was
+                longer than the reader's 120,000 characters and it was given part of it: the
+                blocks most relevant to `query`, or the start of the record when the relevance
+                search found nothing or failed.
             inputTokens:
               type: integer
             outputTokens:
@@ -52796,12 +52806,13 @@ paths:
           required: false
           description: >-
             With `query`, in record mode and without `startBlock`: return only
-            the passages that answer `query`, copied word for word by the model
-            assigned to the `reader` role (else the default model), instead of
-            the record's text. The response's `order` is `extract`, and its
-            `extract` object names the model and the tokens it used. When the
-            model cannot be reached, the usual read is returned with
-            `extract.error` set.
+            the passages that answer `query`, as the model assigned to the
+            `reader` role (else the default model) copies them out, instead of
+            the record's text. The model is told to copy word for word, and
+            `extract.unverifiedLines` counts the lines it did not. The
+            response's `order` is `extract`, and its `extract` object names the
+            model and the tokens it used. When the model cannot be reached, the
+            usual read is returned with `extract.error` set.
           schema:
             type: string
             enum: ['true', 'false']

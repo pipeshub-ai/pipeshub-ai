@@ -11,10 +11,11 @@ records whole.
 `read_record` would (the blocks most relevant to the question first, when
 the record is larger than the reader's budget), hands that text to the model
 assigned to the `reader` role (else the workspace's default model), and
-returns what it copied out, with what the call cost in tokens. Each line of
-the reply is looked up in the record's text, and the lines that cannot be
-found there word for word are counted, so a caller can tell a quote from a
-model's paraphrase. When the model cannot be reached, or replies with nothing,
+returns what it copied out, with what the call cost in tokens. The model is
+told to copy word for word; each line of the reply is looked up in the
+record's text, and the lines with words that cannot be found there as written
+are counted, so a caller can tell a quote from a paraphrase. Text in square
+brackets is the reader's own note and is not checked. When the model cannot be reached, or replies with nothing,
 the caller gets the plain read instead, with a note that says so, so asking
 for an extract never fails a read.
 """
@@ -40,8 +41,6 @@ EXTRACT_MAX_CHARS = 12_000
 # A slow model must not hold an agent's read for long; the plain read is the fallback.
 EXTRACT_TIMEOUT_S = 60.0
 NOTHING_RELEVANT = "NOTHING RELEVANT"
-# A quoted fragment shorter than this ("Yes", "2026") proves nothing when found.
-_MIN_FRAGMENT_CHARS = 12
 
 _SYSTEM = f"""You read one document for an agent that is answering a question. The agent will \
 not see the document, only what you copy out of it.
@@ -73,20 +72,33 @@ def _normal(text: str) -> str:
     return " ".join(text.split())
 
 
-def _unverified_lines(reply: str, source: str) -> int:
-    """Lines of the reply with a fragment that is not in `source` word for word.
+def _found(fragment: str, haystack: str) -> bool:
+    """Whether `fragment` is in `haystack` as written, not as part of a longer word or number.
 
-    The reply's own words sit in square brackets and its skips are marked "…"; both
-    are set aside, as are list and emphasis marks the model may add. Short fragments
-    are not checked.
+    `$1,250` is not found in `$1,250,000`, nor `sponsor` in `sponsors`: a match must not
+    continue a word or number at either end (a letter or digit, or `,`/`.` and a digit).
+    """
+    head = r"(?<![\w])(?<![\d][.,])" if fragment[0].isalnum() else ""
+    tail = r"(?![\w])(?![.,]\d)" if fragment[-1].isalnum() else ""
+    return re.search(head + re.escape(fragment) + tail, haystack) is not None
+
+
+def _unverified_lines(reply: str, source: str) -> int:
+    """Lines of the reply with a fragment that is not in `source` as written.
+
+    Text in square brackets is the reader's own words by the prompt's rule (where a
+    passage sits) and is not checked; the brackets and the reader's "…" skips split a
+    line into fragments, each checked on its own. Bullet and emphasis marks the model
+    may add are set aside. Every other fragment with a letter or digit is checked,
+    list numbers included.
     """
     haystack = _normal(source)
     unverified = 0
     for line in reply.splitlines():
-        quoted = re.sub(r"\[[^\]]*\]", " ", line)
-        quoted = re.sub(r"^\s*(?:[-*>]|\d+\.)\s+", "", quoted).replace("**", "").replace("__", "")
+        quoted = re.sub(r"\[[^\]]*\]", "…", line)
+        quoted = re.sub(r"^\s*[-*>]\s+", "", quoted).replace("**", "").replace("__", "")
         fragments = [_normal(f) for f in re.split(r"…|\.\.\.", quoted)]
-        if any(len(f) >= _MIN_FRAGMENT_CHARS and f not in haystack for f in fragments):
+        if any(re.search(r"\w", f) and not _found(f, haystack) for f in fragments):
             unverified += 1
     return unverified
 
