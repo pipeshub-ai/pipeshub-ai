@@ -207,7 +207,7 @@ class TestPauseOnMembership:
         graph, blob = FakeGraph(), FakeBlob()
         graph.add("v1", retired=[_retired("d-old", 5 * GR)])
         blob.rows = {"d-old": {"retiredAt": NOW - 5 * GR}}
-        blob.listing = [{"_id": "d-stray", "documentName": "record_v1"}]
+        blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
 
         key, report = await _sweep(graph, blob, verdict).run_page(None)
 
@@ -223,8 +223,10 @@ class TestStrayPass:
         graph.add("v1", retired=[_retired("d-retired", GR // 2)])
         blob.rows = {"d-retired": {"retiredAt": NOW}}
         blob.listing = [
-            {"_id": "d-mapped", "documentName": "record_v1"}, {"_id": "d-retired", "documentName": "record_v1"},
-            {"_id": "d-stray", "documentName": "record_v1"}, {"_id": "d-meta", "documentName": "metadata_v1"},
+            {"_id": "d-mapped", "documentName": "record_v1", "retiredAt": None},
+            {"_id": "d-retired", "documentName": "record_v1", "retiredAt": None},
+            {"_id": "d-stray", "documentName": "record_v1", "retiredAt": None},
+            {"_id": "d-meta", "documentName": "metadata_v1", "retiredAt": None},
         ]
 
         _, report = await _sweep(graph, blob).run_page(None)
@@ -233,10 +235,22 @@ class TestStrayPass:
         assert blob.listed_with == [STRAY_GRACE_SECONDS]
 
     @pytest.mark.asyncio
+    async def test_a_listing_from_a_storage_service_without_the_age_filter_purges_nothing(self) -> None:
+        """An older storage release ignores olderThanSeconds and omits retiredAt: its listing includes a
+        copy a writer has just made and not yet switched to."""
+        graph, blob = FakeGraph(), FakeBlob()
+        graph.add("v1")
+        blob.listing = [{"_id": "d-young", "documentName": "record_v1"}]
+
+        _, report = await _sweep(graph, blob).run_page(None)
+
+        assert blob.purged == [] and report.strays_purged == 0
+
+    @pytest.mark.asyncio
     async def test_a_mapping_switched_within_the_grace_is_left_alone(self) -> None:
         graph, blob = FakeGraph(), FakeBlob()
         graph.add("v1", lastSwitchAt=NOW - GR // 2)
-        blob.listing = [{"_id": "d-stray", "documentName": "record_v1"}]
+        blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
 
         await _sweep(graph, blob).run_page(None)
 
@@ -246,7 +260,7 @@ class TestStrayPass:
     async def test_a_vrid_with_no_document_is_left_to_the_vrid_purge(self) -> None:
         graph, blob = FakeGraph(), FakeBlob()
         graph.add("v1", documentId=None, switchDoc=None)
-        blob.listing = [{"_id": "d-stray", "documentName": "record_v1"}]
+        blob.listing = [{"_id": "d-stray", "documentName": "record_v1", "retiredAt": None}]
 
         await _sweep(graph, blob).run_page(None)
 
@@ -256,7 +270,7 @@ class TestStrayPass:
     async def test_a_switch_between_the_listing_and_the_purge_saves_the_document(self) -> None:
         graph, blob = FakeGraph(), FakeBlob()
         graph.add("v1")
-        blob.listing = [{"_id": "d-new", "documentName": "record_v1"}]
+        blob.listing = [{"_id": "d-new", "documentName": "record_v1", "retiredAt": None}]
         real = graph.get_document
         reads = {"n": 0}
 

@@ -186,6 +186,30 @@ describe('StorageController retire mark', () => {
       expect(op?.security).to.deep.equal([{ scopedToken: [] }])
       const put = spec.paths['/document/internal/{documentId}/buffer']?.put
       expect(put.responses['404'].description).to.include('DOCUMENT_RETIRED')
+      // The error body is declared, so a generated client can read error.code.
+      expect(put.responses['404'].content['application/json'].schema.$ref).to.equal(
+        '#/components/schemas/ErrorResponse',
+      )
+    })
+
+    it('declares retiredAt, epoch milliseconds, as a 64-bit integer wherever the spec returns it', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const yaml = require('js-yaml')
+      const spec = yaml.load(
+        fs.readFileSync(
+          path.join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+          'utf8',
+        ),
+      )
+      const marked =
+        spec.paths['/document/internal/{documentId}/retire'].post.responses['200'].content['application/json']
+          .schema.properties.retiredAt
+      expect(marked.format).to.equal('int64')
+      const listed = Object.values(spec.components.schemas).filter(
+        (s: any) => s?.properties?.retiredAt && s.properties.createdAt,
+      ) as any[]
+      expect(listed).to.have.length.greaterThan(0)
+      for (const schema of listed) expect(schema.properties.retiredAt.format).to.equal('int64')
     })
   })
 })

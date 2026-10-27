@@ -2,8 +2,8 @@
 
 The move-tree route renames a record's files one by one, so a reader that lands between two renames
 can see the document without its file. This holds on main without any indexing code, so the test is
-an expected failure (strict: it starts failing the day the route is made atomic and the marker must
-then be removed). Needs a running storage service; a graph store is used for the record's mapping.
+an expected failure (not strict: no checkpoint forces a download into the window, so a run may pass; remove the
+marker when the route is made atomic). Needs a running storage service; a graph store is used for the record's mapping.
 """
 
 from __future__ import annotations
@@ -31,8 +31,11 @@ world = stored_write_world.world
 
 @pytest.mark.asyncio
 @pytest.mark.xfail(
-    strict=True,
-    reason="the storage move-tree is not atomic for a concurrent download (pre-existing; fixed separately)",
+    strict=False,
+    reason=(
+        "the storage move-tree is not atomic for a concurrent download (pre-existing; fixed separately). "
+        "Not strict: nothing forces a download into the window between two renames, so a run that misses it passes."
+    ),
 )
 async def test_download_during_move_tree_finds_the_record(world: World) -> None:
     world.read_mode = "legacy"

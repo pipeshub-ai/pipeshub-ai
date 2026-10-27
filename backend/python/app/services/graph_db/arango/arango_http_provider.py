@@ -6152,18 +6152,14 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 RETURN 1
             """
         # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
-        # instead of waiting on a lock. Run its statement again: the expectation is checked against
-        # the winner's write, so it applies or is refused, as a lock would have made it. Inside a
-        # transaction the owner decides, so the conflict is raised.
-        for attempt in range(_WRITE_CONFLICT_ATTEMPTS):
-            try:
-                rows = await self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction)
-            except Exception as exc:
-                if transaction is not None or not _is_write_conflict(exc) or attempt + 1 >= _WRITE_CONFLICT_ATTEMPTS:
-                    raise
-                continue
-            return bool(rows)
-        raise AssertionError("unreachable")
+        # instead of waiting on a lock. Run its statement again, with backoff: the expectation is
+        # checked against the winner's write, so it applies or is refused, as a lock would have made
+        # it. Inside a transaction the owner decides, so the conflict is raised.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
+            transaction,
+        )
+        return bool(rows)
 
     async def create_node_if_absent(
         self,
@@ -6173,23 +6169,22 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         transaction: str | None = None,
     ) -> bool:
         """See :meth:`IGraphDBProvider.create_node_if_absent`."""
-        # "ignore" leaves an existing document alone and returns no NEW for it.
-        try:
-            rows = await self.http_client.execute_aql(
+        # "ignore" leaves an existing document alone and returns no NEW for it. Two creators of one
+        # key: the loser gets a write-write conflict or a key-lock timeout (errorNum 1200) while the
+        # winner's insert is in flight, and the winner may still roll back. So the insert is run
+        # again, with backoff, until it sees the key (not created here) or lands (created here). A
+        # conflict that persists is raised: it does not say that the node exists.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(
                 """
                 INSERT @node INTO @@collection OPTIONS { overwriteMode: "ignore" }
                 RETURN NEW
                 """,
                 bind_vars={"@collection": collection, "node": {**node, "_key": key}},
                 txn_id=transaction,
-            )
-        except Exception as exc:
-            # Two creators of one key: the loser gets a write-write conflict or a key-lock timeout
-            # (errorNum 1200) while the winner's insert is in flight. The node exists or is being
-            # created by the other: not created here.
-            if transaction is None and _is_write_conflict(exc):
-                return False
-            raise
+            ),
+            transaction,
+        )
         return bool(rows and rows[0])
 
     async def update_nodes_fields_if_match(

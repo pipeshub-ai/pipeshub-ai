@@ -211,6 +211,12 @@ class StoredRecordRetention:
         candidates = await self.blob.list_record_documents(
             org_id, vrid, older_than_seconds=self.stray_grace_seconds,
         )
+        # A storage service that applies olderThanSeconds reports retiredAt (null when live) on every
+        # entry. One that does not (an older release, mid-rollout) would list a copy a writer has just
+        # made and not yet switched to: nothing is purged from its answer.
+        if any("retiredAt" not in d for d in candidates):
+            record_retention("stored_record", "held_no_age_filter")
+            return
         for document in candidates:
             if document.get("documentName") != f"record_{vrid}":
                 continue

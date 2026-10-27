@@ -20,7 +20,6 @@ them without the Python encryption.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 import weakref
 from dataclasses import dataclass, field
@@ -206,8 +205,11 @@ class MembershipPublisher:
 
     async def run(self, period_seconds: float = CHECK_PERIOD_SECONDS) -> None:
         while True:
-            with contextlib.suppress(Exception):
+            try:
                 await self.publish_once()
+            except Exception as exc:
+                # The entry was not stored: it goes stale and readers hold, so say why.
+                self.logger.warning("Indexing membership publish failed: %s: %s", type(exc).__name__, exc)
             await asyncio.sleep(period_seconds)
 
 

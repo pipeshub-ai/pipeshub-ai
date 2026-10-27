@@ -169,6 +169,30 @@ class TestPublisher:
         assert len(stamps) >= 3 and stamps == sorted(stamps) and len(set(stamps)) >= 3
 
 
+class TestPublisherFailures:
+    @pytest.mark.asyncio
+    async def test_a_failed_store_is_logged_and_the_loop_goes_on(self, caplog: pytest.LogCaptureFixture) -> None:
+        """An entry that cannot be stored leaves readers holding: the log says why, the loop keeps trying."""
+        calls = 0
+
+        async def put(key: str, entry: dict, ttl: int) -> None:
+            nonlocal calls
+            calls += 1
+            raise RuntimeError("the membership entry was not stored")
+
+        publisher = m.MembershipPublisher(
+            logging.getLogger("t"), AsyncMock(return_value=[]), put, now_ms=lambda: NOW, groups=lambda: {"g": ["t"]},
+        )
+        with caplog.at_level(logging.WARNING, logger="t"):
+            task = asyncio.create_task(publisher.run(period_seconds=0.01))
+            await asyncio.sleep(0.1)
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+        assert calls >= 2
+        assert any("publish failed" in r.message and "was not stored" in r.message for r in caplog.records)
+
+
 class TestReader:
     @pytest.mark.asyncio
     async def test_it_caches_the_verdict_not_the_entries(self) -> None:

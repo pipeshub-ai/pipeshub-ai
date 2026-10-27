@@ -91,7 +91,7 @@ async def test_classification_is_served_from_the_sidecar_the_mapping_names(world
     semantic, reads = await _read_semantic(world, vrid)
     assert semantic["summary"] == "first"
     assert semantic == await _stored_semantic(world, vrid)
-    assert world.reads == [] or reads == ["served"]
+    assert reads == ["served"]
 
 
 @pytest.mark.asyncio
@@ -268,7 +268,7 @@ async def test_a_sidecar_of_another_write_is_never_served(
     semantic, reads = await _read_semantic(world, vrid)
     stored = await _stored_semantic(world, vrid)
     if stamp:
-        assert reads == [] or True
+        assert reads == ["stale_sidecar"]
         assert semantic == {}
     else:
         assert semantic.get("summary") == "old classification" != stored["summary"]

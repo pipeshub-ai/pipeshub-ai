@@ -887,6 +887,7 @@ components:
           description: When the document was created (epoch milliseconds).
         retiredAt:
           type: integer
+          format: int64
           nullable: true
           description: When a newer stored write replaced the document (epoch ms, the server's clock), or null.
       required: [_id, documentName, documentPath]
@@ -34888,6 +34889,7 @@ paths:
                 properties:
                   retiredAt:
                     type: integer
+                    format: int64
                 required:
                   - retiredAt
         '400':
@@ -36146,6 +36148,10 @@ paths:
           description: |
             No such document, or the document is retired (a newer stored write
             replaced it): then the error code is `DOCUMENT_RETIRED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':
