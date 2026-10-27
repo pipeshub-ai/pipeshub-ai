@@ -5700,12 +5700,8 @@ export const search =
       try {
         aiResponse =
           (await aiCommand.execute()) as AIServiceResponse<AiSearchResponse>;
-      } catch (error: any) {
-        if (error.cause && error.cause.code === 'ECONNREFUSED') {
-          throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, error);
-        }
-        logger.error(' Failed error ', error);
-        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, error);
+      } catch (error: unknown) {
+        throw handleBackendError(error, 'Search');
       }
       
       if (!aiResponse || !aiResponse.data) {
@@ -5847,9 +5843,7 @@ export const retrieve =
       try {
         aiResponse = await aiCommand.execute();
       } catch (error: unknown) {
-        throw new InternalServerError(SERVICE_UNAVAILABLE_MESSAGE, {
-          cause: error,
-        });
+        throw handleBackendError(error, 'Retrieve');
       }
       const data = aiResponse.data;
       if (data === undefined) {

@@ -32192,7 +32192,11 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The caller's account could not be read because the database was unreachable. Safe to retry after the `Retry-After` seconds.
+          description: |
+            The team service could not be reached (for example, it is still
+            starting), or the caller's account could not be read because the
+            database was unreachable. Safe to retry; when the service sent
+            `Retry-After`, wait that many seconds first.
           headers:
             Retry-After:
               description: Seconds to wait before retrying.
@@ -41644,10 +41648,33 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '500':
           description: |
-            The answer failed (AI service unreachable, timed out, returned
-            no answer, or could not be saved). The conversation is kept with
+            The answer failed (the AI service returned no answer, or it could
+            not be saved). The conversation is kept with
             status `Failed` and an `error` message.
 
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The AI service could not be reached (for example, it is still
+            starting). The conversation is kept with status `Failed`. Sending
+            the message again may repeat work the AI service had started.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The AI service did not answer in time. The conversation is kept
+            with status `Failed`.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -43990,10 +44017,33 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '500':
           description: |
-            The answer failed (AI service unreachable, timed out, returned
-            no answer, or could not be saved). The conversation is kept with
+            The answer failed (the AI service returned no answer, or it could
+            not be saved). The conversation is kept with
             status `Failed` and an `error` message.
 
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The AI service could not be reached (for example, it is still
+            starting). The conversation is kept with status `Failed`. Sending
+            the message again may repeat work the AI service had started.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The AI service did not answer in time. The conversation is kept
+            with status `Failed`.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -47444,7 +47494,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected server error, or the AI search service was unreachable.
+            Unexpected server error.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -47452,7 +47502,16 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '503':
-          description: The search index or the permission check is temporarily unavailable.
+          description: |
+            The AI search service could not be reached (for example, it is
+            still starting), or the search index or the permission check is
+            temporarily unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The AI search service did not answer in time.
           content:
             application/json:
               schema:
@@ -47587,8 +47646,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '500':
           description: |
-            Unexpected server error while executing the search, or the
-            upstream AI search service was unreachable.
+            Unexpected server error while executing the search.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
           content:
@@ -47600,7 +47658,8 @@ paths:
             The upstream AI search service returned an invalid response.
         '503':
           description: |
-            The upstream AI search service is temporarily unavailable.
+            The upstream AI search service is temporarily unavailable, or
+            could not be reached (for example, it is still starting).
           content:
             application/json:
               schema:
@@ -50187,11 +50246,34 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '500':
           description: |
-            The answer failed (AI service unreachable, timed out, returned
-            no answer, or could not be saved). The conversation is kept with
+            The answer failed (the AI service returned no answer, or it could
+            not be saved). The conversation is kept with
             status `Failed` and an `error` message.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: |
+            The AI service could not be reached (for example, it is still
+            starting). The conversation is kept with status `Failed`. Sending
+            the message again may repeat work the AI service had started.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The AI service did not answer in time. The conversation is kept
+            with status `Failed`.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -51350,8 +51432,8 @@ paths:
               $ref: '#/components/headers/X-Conversation-Id'
         '500':
           description: |
-            The answer failed (AI service unreachable, timed out, returned
-            no answer, or could not be saved). The conversation is kept with
+            The answer failed (the AI service returned no answer, or it could
+            not be saved). The conversation is kept with
             status `Failed` and an `error` message.
 
             A JSON body larger than 10 MB, or a form-encoded body larger than 100 KB or with more than 1000 fields, is answered `413` by the app-wide body parsers instead, also before authentication.
@@ -51366,6 +51448,29 @@ paths:
   # ==================== CONNECTOR MANAGER ENDPOINTS ====================
 
   # -------------------- Connector Registry --------------------
+        '503':
+          description: |
+            The AI service could not be reached (for example, it is still
+            starting). The conversation is kept with status `Failed`. Sending
+            the message again may repeat work the AI service had started.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: |
+            The AI service did not answer in time. The conversation is kept
+            with status `Failed`.
+          headers:
+            X-Conversation-Id:
+              $ref: '#/components/headers/X-Conversation-Id'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /connectors/registry:
     get:
       tags:

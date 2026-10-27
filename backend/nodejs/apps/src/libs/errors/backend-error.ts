@@ -113,7 +113,7 @@ const transientError = (
   statusCode: 429 | 503 | 504,
   upstreamDetail: unknown,
   error: { headers?: Record<string, unknown> } | undefined,
-): BaseError => {
+): HttpError => {
   const retry = retryAfterMetadata(error);
   const detail = upstreamDetail ? stringifyErrorDetail(upstreamDetail) : '';
   // A 429 is about the caller, so the service's own words are worth repeating.
@@ -141,10 +141,66 @@ const asRecord = (value: unknown): Indexed | undefined =>
 const asText = (value: unknown): string | undefined =>
   typeof value === 'string' && value ? value : undefined;
 
+// Failures to reach a service at all. A TLS or request error is not one of
+// them: it is a fault on one side that retrying will not fix.
+const NETWORK_CAUSE_CODES = new Set([
+  'ECONNREFUSED',
+  'ECONNRESET',
+  'ENOTFOUND',
+  'EAI_AGAIN',
+  'EHOSTUNREACH',
+  'ENETUNREACH',
+  'ETIMEDOUT',
+  'UND_ERR_CONNECT_TIMEOUT',
+  'UND_ERR_SOCKET',
+]);
+
 const isConnectionRefused = (error: Indexed): boolean => {
-  const cause = asRecord(error.cause);
-  if (asText(cause?.code) === 'ECONNREFUSED') return true;
+  const causeCode = asText(asRecord(error.cause)?.code);
+  if (causeCode) return NETWORK_CAUSE_CODES.has(causeCode);
   return (asText(error.message) ?? '').includes('fetch failed');
+};
+
+/**
+ * The error for a call to another PipesHub service that never got an answer:
+ * 504 when it timed out, 503 when the service could not be reached (fetch's
+ * "fetch failed", or axios's request with no response). Null for anything
+ * else, including a call the service did answer. The one definition of
+ * "unreachable", shared by `handleBackendError` and the error middleware.
+ */
+export const unansweredCallError = (
+  error: unknown,
+  operation: string,
+): HttpError | null => {
+  const source = asRecord(error);
+  if (!source) return null;
+  if (asText(source.name) === 'TimeoutError') {
+    logger.error(`Timed out waiting for the service during ${operation}`);
+    return transientError(504, undefined, undefined);
+  }
+  const response = asRecord(source.response);
+  // An answer with a status reached us; words like "fetch failed" in its body
+  // describe the service's own work, not our connection to it.
+  if (
+    typeof response?.status === 'number' ||
+    typeof source.statusCode === 'number'
+  ) {
+    return null;
+  }
+  const noResponse =
+    source.request !== undefined &&
+    source.request !== null &&
+    (source.detail === undefined || source.detail === null);
+  if (!isConnectionRefused(source) && !noResponse) return null;
+  logger.error(`Could not reach the service during ${operation}`, {
+    cause:
+      asText(asRecord(source.cause)?.code) ??
+      asText(source.code) ??
+      asText(source.message),
+  });
+  return markClientSafe(
+    new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
+  );
 };
 
 /**
@@ -174,24 +230,8 @@ export const handleBackendError = (
     );
   }
 
-  if (asText(source.name) === 'TimeoutError') {
-    logger.error(`Timed out waiting for the service during ${operation}`);
-    return transientError(504, undefined, undefined);
-  }
-
-  // An answer with a status reached us; words like "fetch failed" in its body
-  // describe the service's own work, not our connection to it.
-  const answered =
-    typeof asRecord(source.response)?.status === 'number' ||
-    typeof source.statusCode === 'number';
-  if (!answered && isConnectionRefused(source)) {
-    logger.error(`Could not reach the service during ${operation}`, {
-      cause: asText(asRecord(source.cause)?.code) ?? asText(source.message),
-    });
-    return markClientSafe(
-      new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
-    );
-  }
+  const unanswered = unansweredCallError(source, operation);
+  if (unanswered) return unanswered;
 
   // axios-style `{ response: { status, data } }`, or a service command's
   // `{ statusCode, data, message | msg }`.
@@ -224,12 +264,6 @@ export const handleBackendError = (
     // A validation failure sent as a bare `{ detail }`, with no status.
     if (source.detail !== undefined && source.detail !== null) {
       return new BadRequestError(stringifyErrorDetail(source.detail));
-    }
-    if (source.request !== undefined && source.request !== null) {
-      logger.error(`No response from the service during ${operation}`);
-      return markClientSafe(
-        new ServiceUnavailableError(SERVICE_UNAVAILABLE_MESSAGE),
-      );
     }
     logger.error(`${operation} failed`, { error: ownMessage });
     return markClientSafe(
