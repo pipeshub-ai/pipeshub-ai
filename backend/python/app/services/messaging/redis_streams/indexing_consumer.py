@@ -3152,11 +3152,11 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                                         self, budget, message_id
                                     ) as wait:
                                         size_bytes = event.data.size_bytes if event.data else None
-                                        if memory_admission is None:
-                                            memory_admission = await concurrency.reserve_record_memory(
-                                                self, parse_tier, size_bytes,
-                                                timeout=wait.remaining(), downloaded=True,
-                                            )
+                                        memory_admission = await concurrency.reserve_record_memory(
+                                            self, parse_tier, size_bytes,
+                                            timeout=wait.remaining(), downloaded=True,
+                                            current=memory_admission,
+                                        )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,

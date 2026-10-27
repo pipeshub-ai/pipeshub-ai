@@ -400,6 +400,57 @@ class TestMemoryReservation:
         assert reserved == [300 * MB * 4]
         assert budget.stats()["reserved_bytes"] == 0
 
+    async def test_a_memory_wait_is_not_counted_toward_the_delivery_backstop(self, monkeypatch) -> None:
+        """A full budget says nothing about the record: ten such waits must not fail it."""
+        consumer = _governor_consumer()
+        tracker = AsyncMock()
+        for name in ("get_count", "unfinished_attempts", "start_attempt"):
+            getattr(tracker, name).return_value = 0
+        tracker.record_delivery.return_value = 10
+        consumer.retry_manager = tracker
+        sink = MagicMock()
+        sink.on_message_abandoned = AsyncMock()
+        consumer.disposition_sink = sink
+        budget = consumer.governor.memory_budget
+        budget.limit = 500 * MB
+        assert await budget.reserve(400 * MB)
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.05)
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id="r1", size_bytes=300 * MB),
+            )
+
+        consumer.message_handler = handler
+
+        assert await consumer._process_message_wrapper("t", "1-0", _fields()) is False
+
+        tracker.record_delivery.assert_not_awaited()
+        sink.on_message_abandoned.assert_not_awaited()
+        consumer._requeue_message.assert_awaited_once()
+
+    async def test_a_reservation_taken_before_the_download_grows_to_the_size_downloaded(self) -> None:
+        """A document's sizeInBytes can be stale; the content downloaded is what is held."""
+        consumer = _governor_consumer()
+        budget = consumer.governor.memory_budget
+        reserved: list[int] = []
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id="r1", size_bytes=100 * MB),
+            )
+            async for event in _page(300 * MB)(_msg):
+                if event.event == IndexingEvent.INDEXING_COMPLETE:
+                    reserved.append(budget.stats()["reserved_bytes"])
+                yield event
+
+        consumer.message_handler = handler
+
+        assert await consumer._process_message_wrapper("t", "1-0", _fields()) is True
+
+        assert reserved == [300 * MB * 4]
+        assert budget.stats()["reserved_bytes"] == 0
+
     async def test_the_budget_is_the_free_memory_the_governor_measured(self) -> None:
         governor = make_test_governor(logger_name="test-image-memory-limit")
 

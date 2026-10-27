@@ -99,23 +99,67 @@ class TestMemoryBudget:
             "limit_bytes": 100 * MB, "reserved_bytes": 50 * MB, "waiting": 0, "waiting_held_bytes": 0,
         }
 
-    async def test_what_a_waiting_record_already_holds_counts_against_everyone_else(self) -> None:
-        """A record waits here after its download: its buffer is in memory already."""
+    async def test_what_another_waiter_already_holds_keeps_the_head_waiting(self) -> None:
+        """A record reserving after its download has its content in memory already."""
         budget = MemoryBudget()
         budget.limit = 1000 * MB
-        assert await budget.reserve(800 * MB, held=200 * MB)
-        waiting = asyncio.create_task(budget.reserve(800 * MB, held=200 * MB))
+        assert await budget.reserve(900 * MB)
+        head = asyncio.create_task(budget.reserve(150 * MB, held=50 * MB))
+        await asyncio.sleep(0.01)
+        behind = asyncio.create_task(budget.reserve(800 * MB, held=200 * MB))
+        await asyncio.sleep(0.01)
+        assert budget.stats()["waiting_held_bytes"] == 250 * MB
+
+        # 800 running + 150 would fit, but the 200 held behind it is in memory too.
+        budget.release(100 * MB)
+        await asyncio.sleep(0.05)
+        assert not head.done()
+
+        behind.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await behind
+        assert await asyncio.wait_for(head, 3)
+        assert budget.stats()["waiting_held_bytes"] == 0
+
+    async def test_a_waiter_holding_its_content_goes_ahead_of_one_holding_none(self) -> None:
+        """The mixed case: with nothing reserved, a record of known size must not be
+        admitted past a record that downloaded before it could reserve."""
+        budget = MemoryBudget()
+        budget.limit = 1000 * MB
+        assert await budget.reserve(400 * MB)
+        known_size = asyncio.create_task(budget.reserve(900 * MB))
+        await asyncio.sleep(0.01)
+        downloaded = asyncio.create_task(budget.reserve(900 * MB, held=225 * MB))
         await asyncio.sleep(0.01)
 
-        assert budget.stats()["waiting_held_bytes"] == 200 * MB
-        # 800 running + 200 held by the waiter + 150 > 1000.
-        assert not await budget.reserve(150 * MB, timeout=0.05, held=50 * MB)
+        budget.release(400 * MB)
+        assert await asyncio.wait_for(downloaded, 3)
+        await asyncio.sleep(0.05)
+        assert not known_size.done()
+        assert budget.stats()["reserved_bytes"] == 900 * MB
 
-        waiting.cancel()
+        budget.release(900 * MB)
+        assert await asyncio.wait_for(known_size, 3)
+
+    async def test_with_nothing_reserved_the_head_runs_even_past_what_others_hold(self) -> None:
+        """Nothing running will free memory, and what other waiters hold goes only
+        when they run or give up: waiting would stall the queue."""
+        budget = MemoryBudget()
+        budget.limit = 1000 * MB
+        assert await budget.reserve(400 * MB)
+        first = asyncio.create_task(budget.reserve(900 * MB, held=300 * MB))
+        await asyncio.sleep(0.01)
+        second = asyncio.create_task(budget.reserve(900 * MB, held=300 * MB))
+        await asyncio.sleep(0.01)
+
+        budget.release(400 * MB)
+
+        assert await asyncio.wait_for(first, 3)
+        await asyncio.sleep(0.05)
+        assert not second.done()
+        second.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await waiting
-        assert budget.stats()["waiting_held_bytes"] == 0
-        assert await budget.reserve(150 * MB, timeout=0.05, held=50 * MB)
+            await second
 
     async def test_a_waiter_s_own_held_bytes_are_part_of_its_reservation(self) -> None:
         budget = MemoryBudget()

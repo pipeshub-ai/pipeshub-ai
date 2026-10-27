@@ -231,9 +231,9 @@ class ImageParser:
     ) -> list[str | None]:
         """
         Convert a list of image URLs to base64 encoded strings asynchronously.
-        A base64 data URL is used as it is. Every image is shrunk to what
-        indexing keeps (``fit_image_for_index``), and once the images reach
-        ``INDEX_RECORD_IMAGE_BYTES`` the rest are not fetched.
+        A base64 data URL is not fetched. Every image is shrunk to what
+        indexing keeps (``fit_image_for_index``), and once this call's images
+        reach ``INDEX_RECORD_IMAGE_BYTES`` the rest are not fetched (None).
         SVG images are skipped and None is appended instead.
 
         Args:
@@ -268,7 +268,7 @@ class ImageParser:
         base64_images = list(await asyncio.gather(*(fetch(url) for url in urls)))
         if skipped:
             (logger or _logger).info(
-                "Image budget of %d MB reached; %d image(s) kept as text only",
+                "Image budget of %d MB reached; %d image(s) not fetched",
                 INDEX_RECORD_IMAGE_BYTES // (1024 * 1024), skipped,
             )
         return base64_images

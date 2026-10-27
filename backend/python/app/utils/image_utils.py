@@ -273,7 +273,7 @@ def downscale_to_limits(
 # held several copies of each at once.
 INDEX_IMAGE_LONG_EDGE_PX = 2000
 INDEX_IMAGE_MAX_BYTES = 5 * 1024 * 1024
-# Images one record keeps, as data-URI characters; past it the rest keep their text only.
+# Images one record keeps, as data-URI characters; the pixels of the rest are not kept.
 INDEX_RECORD_IMAGE_BYTES = 50 * 1024 * 1024
 
 
@@ -291,7 +291,9 @@ _INLINE_IMAGE_RE = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/]{
 def fit_inline_images(text: str) -> str:
     """*text* (an HTML page, a Markdown document) with every inline base64
     image shrunk to what indexing keeps, and those past
-    ``INDEX_RECORD_IMAGE_BYTES`` taken out.
+    ``INDEX_RECORD_IMAGE_BYTES`` taken out. The parsers then drop such an
+    image, its alt text included, as they drop one whose download failed; a
+    caption written in the page stays.
 
     Every parsing pass copies the whole document, so a page carrying its
     photos inline (a crawled page, an exported document) was copied with all

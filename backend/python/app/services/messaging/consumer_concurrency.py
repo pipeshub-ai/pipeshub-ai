@@ -1089,6 +1089,18 @@ class ParseAdmissionTimeout(RequeueWithoutAttempt):
         self.waited = waited
 
 
+class MemoryAdmissionTimeout(ParseAdmissionTimeout):
+    """No memory came free for a big record within the admission wait.
+
+    Not counted toward the delivery backstop: the wait ends when the
+    reservations ahead of it do, and one bigger than the whole budget runs
+    once nothing else is reserved, so counting it would fail a big record only
+    for being big.
+    """
+
+    counts_toward_backstop = False
+
+
 def parse_admission_wait_seconds() -> float:
     """How long a record may queue for a parse slot before it is handed back
     to the broker. Single source of truth, because
@@ -1180,6 +1192,7 @@ async def reserve_record_memory(
     timeout: float | None = None,
     *,
     downloaded: bool = False,
+    current: "Admission | None" = None,
 ) -> "Admission | None":
     """Reserve what a record too big for the governor's count limits is
     expected to hold, until it finishes; ``None`` when it needs no reservation
@@ -1188,18 +1201,23 @@ async def reserve_record_memory(
     Taken before the download when the record's size is known
     (``START_DOWNLOAD``), else at ``START_PARSING`` with its content
     *downloaded* and counted while it waits; either way before the parse
-    permit. With *timeout*, raises ``ParseAdmissionTimeout`` instead of
-    waiting on.
+    permit. *current* is a reservation taken before the download: it is kept
+    when it covers the size downloaded, else given back and the larger one
+    reserved (a document's ``sizeInBytes`` can be stale). With *timeout*,
+    raises ``MemoryAdmissionTimeout`` instead of waiting on.
     """
     governor = host.governor
     if governor is None:
-        return None
+        return current
     cost = record_memory_cost(tier if tier is not None else ParseTier.HEAVY, size_bytes)
+    if current is not None and not current.released and current.cost >= cost:
+        return current
+    release_admission(current)
     if not cost:
         return None
     budget = governor.memory_budget
     if not await budget.reserve(cost, timeout, held=(size_bytes or 0) if downloaded else 0):
-        raise ParseAdmissionTimeout("record_memory", timeout or 0.0)
+        raise MemoryAdmissionTimeout("record_memory", timeout or 0.0)
     return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 
 
