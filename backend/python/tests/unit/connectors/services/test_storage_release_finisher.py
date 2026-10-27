@@ -15,6 +15,7 @@ from app.connectors.services.storage_release import (
     record_pending_storage_release,
     retry_delay_ms,
 )
+from app.core.org_context import ambient_org, current_org_id
 
 NOW = 10 * 24 * 60 * 60 * 1000
 ORG, KB = "org1", "kb1"
@@ -98,6 +99,23 @@ async def test_a_held_lease_is_a_hint_to_wait() -> None:
 
     assert await r.tick() == "idle"
     finish.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_finish_runs_bound_to_the_intents_org(monkeypatch) -> None:
+    """The loop runs with no ambient org; the org-checked graph calls of the delete fail closed without one."""
+    monkeypatch.setenv("ORG_CONTEXT_MODE", "enforce")
+    seen: list[str | None] = []
+
+    async def finish(org_id: str, kb_id: str) -> dict:
+        seen.append(ambient_org(org_id, site="delete_connector_instance"))
+        seen.append(current_org_id())
+        return {"success": True}
+
+    r, _, _ = await reconciler(DELETING_KB, age_ms=GRACE_MS + 1, finish=finish)
+
+    assert await r.tick() == "deleted"
+    assert seen == [ORG, ORG]
 
 
 @pytest.mark.asyncio

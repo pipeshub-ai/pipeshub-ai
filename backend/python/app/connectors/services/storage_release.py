@@ -261,7 +261,9 @@ class StorageReleaseReconciler:
 
         heartbeat = spawn_in_request(keep_leadership(), name="storage-release-heartbeat")
         try:
-            result = await self.finish_kb_delete(org_id, kb_id)
+            # This loop runs detached, with no ambient org; the delete's org-checked graph calls need the intent's.
+            with for_org(org_id, job="storage_release"):
+                result = await self.finish_kb_delete(org_id, kb_id)
         except Exception:
             self.logger.exception("KB delete could not be resumed | org=%s kb=%s", org_id, kb_id)
             result = {"success": False}
