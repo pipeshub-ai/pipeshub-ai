@@ -335,7 +335,7 @@ dependencies = [
     "pysmb==1.2.15",
     "lingua-language-detector==2.2.0",
     "qdrant-client==1.20.0",
-    "redis==5.2.1",
+    "redis==8.1.0",
     "requests-toolbelt==1.0.0",
     "requests==2.34.2",
     "selectolax>=0.3.21",

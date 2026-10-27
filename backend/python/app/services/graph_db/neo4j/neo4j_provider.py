@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -1471,26 +1472,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         return constraints
 
+    async def _apply_schema(
+        self, statements: list[str], what: str, *, failure_level: int = logging.WARNING,
+    ) -> None:
+        """Run each schema statement on its own, so one refusal does not stop the
+        rest, and log how many of them are in place."""
+        applied = 0
+        for statement in statements:
+            try:
+                await self.client.execute_query(statement)
+                applied += 1
+            except Exception as e:
+                self.logger.log(failure_level, "%s: %s failed: %s", what, statement, e)
+        self.logger.info("✅ %d of %d %s in place", applied, len(statements), what)
+
+    async def _supports_existence_constraints(self) -> bool:
+        """False on Neo4j Community Edition. When the edition can't be read the
+        constraints are tried, as they always were."""
+        try:
+            rows = await self.client.execute_query("CALL dbms.components() YIELD edition RETURN edition")
+        except Exception as e:
+            self.logger.debug("Could not read the Neo4j edition: %s", e)
+            return True
+        return not any(str(row.get("edition", "")).lower() == "community" for row in rows or [])
+
     async def ensure_schema(self) -> bool:
         """Ensure Neo4j schema (constraints, indexes, and departments seed)."""
         try:
             self.logger.info("🔧 Ensuring Neo4j schema...")
 
-            # Create unique constraints on 'id' property for all collections
-            # Auto-generated from schema registry to ensure complete coverage
-            unique_constraints = self._generate_unique_id_constraints()
-
-            for constraint_query in unique_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # IF NOT EXISTS makes "already exists" impossible here, so
-                    # a failure is real: duplicates already present, or an
-                    # unsupported constraint. Writes that rely on it (MERGE
-                    # convergence, index seeks) degrade silently otherwise.
-                    self.logger.warning(f"Unique constraint creation failed: {constraint_query} -> {str(e)}")
-
-            self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
+            # Unique constraints on 'id' for every collection, from the schema registry.
+            # IF NOT EXISTS makes "already exists" impossible, so a failure is real:
+            # duplicates already present, or an unsupported constraint, and writes
+            # that rely on it (MERGE convergence, index seeks) degrade silently.
+            await self._apply_schema(self._generate_unique_id_constraints(), "unique id constraints")
 
             # Business-key uniqueness (e.g. Person.(orgId, email)). Creation fails on a
             # label that already holds duplicates, hence the same tolerant handling as above.
@@ -1511,49 +1526,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "syncPointKey; they are not deleted automatically")
                 business_key_constraints = [
                     q for q in business_key_constraints if "syncpoint_key_unique" not in q]
+            await self._apply_schema(business_key_constraints, "business key constraints")
 
-            for constraint_query in business_key_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    self.logger.warning(f"Business key constraint creation (may already exist): {str(e)}")
+            # Property existence constraints need Enterprise Edition. On Community each
+            # one is refused, and Neo4j logs every refusal as an error on every start.
+            if await self._supports_existence_constraints():
+                await self._apply_schema(
+                    self._generate_required_field_constraints(),
+                    "property existence constraints",
+                    failure_level=logging.DEBUG,
+                )
+            else:
+                self.logger.info(
+                    "Neo4j Community Edition: property existence constraints are not supported, skipped")
 
-            self.logger.info(
-                f"✅ Created {len(business_key_constraints)} business key constraints"
-            )
-
-            # Create property existence constraints for required fields from schemas
-            property_constraints = self._generate_required_field_constraints()
-
-            for constraint_query in property_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # Some Neo4j versions/editions may not support property existence constraints
-                    self.logger.debug(f"Property constraint creation (may already exist or not supported): {str(e)}")
-
-            self.logger.info(f"✅ Created {len(property_constraints)} property existence constraints")
-
-            # Create indexes for common queries
             # Indexes are strategically placed based on query pattern analysis
-            indexes = self._generate_performance_indexes()
-
-            for index_query in indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.warning(f"Index creation failed: {str(e)}")
-
-            self.logger.info(f"✅ Created {len(indexes)} performance indexes")
-
-            fulltext_indexes = self._generate_fulltext_indexes()
-            for index_query in fulltext_indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.debug(f"Full-text index creation (may already exist): {str(e)}")
-
-            self.logger.info(f"✅ Created {len(fulltext_indexes)} full-text indexes")
+            await self._apply_schema(self._generate_performance_indexes(), "performance indexes")
+            await self._apply_schema(
+                self._generate_fulltext_indexes(), "full-text indexes", failure_level=logging.DEBUG,
+            )
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             try:

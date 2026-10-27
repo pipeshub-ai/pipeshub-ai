@@ -64758,6 +64758,12 @@ paths:
         The body is checked before anything is stored: a missing, empty or wrongly typed field
         answers `400 VALIDATION_ERROR` and the previous configuration stays. A request with no
         body at all is treated as an empty object. Fields the schema does not list are dropped.
+
+        The settings are then tried against the mail server: PipesHub connects and, when a
+        `username` is set, signs in, as sending would (up to about 10 seconds per step). If the
+        server refuses, nothing is stored and the answer is `400 HTTP_BAD_REQUEST` saying what
+        to fix: the username or password was rejected, the host and port could not be reached,
+        or the server refused the connection for another reason.
       operationId: createSMTPConfig
       security:
         - bearerAuth: []
@@ -64816,7 +64822,7 @@ paths:
                     example: SMTP config created successfully
         '400':
           description: |
-            Invalid configuration.
+            Invalid configuration, or settings the mail server refused (see above).
 
             Every string is trimmed before validation, so text of only whitespace counts as
             empty.
