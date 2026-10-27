@@ -11,6 +11,7 @@ import asyncio
 import contextlib
 import hashlib
 import json
+import logging
 import os
 import random
 import re
@@ -49,7 +50,7 @@ from app.config.constants.arangodb import (
 from app.services.graph_db.common.utils import record_status_field
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
@@ -64,6 +65,7 @@ from app.config.constants.neo4j import (
     parse_node_id,
 )
 from app.config.constants.service import DefaultEndpoints, config_node_constants
+from app.config.constants.service_accounts import cypher_not_a_service_account
 from app.exceptions.graph_db_exceptions import (
     GraphLockUnavailableError,
     GraphQueryError,
@@ -202,6 +204,12 @@ from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_MAX_CONNECTION_POOL_SIZE,
     DEFAULT_TRANSACTION_TIMEOUT,
     Neo4jClient,
+)
+from app.services.graph_db.push_claim import (
+    KB_DELETING_STATUS,
+    PushClaim,
+    PushExpect,
+    PushSet,
 )
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
@@ -1464,26 +1472,40 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
         return constraints
 
+    async def _apply_schema(
+        self, statements: list[str], what: str, *, failure_level: int = logging.WARNING,
+    ) -> None:
+        """Run each schema statement on its own, so one refusal does not stop the
+        rest, and log how many of them are in place."""
+        applied = 0
+        for statement in statements:
+            try:
+                await self.client.execute_query(statement)
+                applied += 1
+            except Exception as e:
+                self.logger.log(failure_level, "%s: %s failed: %s", what, statement, e)
+        self.logger.info("✅ %d of %d %s in place", applied, len(statements), what)
+
+    async def _supports_existence_constraints(self) -> bool:
+        """False on Neo4j Community Edition. When the edition can't be read the
+        constraints are tried, as they always were."""
+        try:
+            rows = await self.client.execute_query("CALL dbms.components() YIELD edition RETURN edition")
+        except Exception as e:
+            self.logger.debug("Could not read the Neo4j edition: %s", e)
+            return True
+        return not any(str(row.get("edition", "")).lower() == "community" for row in rows or [])
+
     async def ensure_schema(self) -> bool:
         """Ensure Neo4j schema (constraints, indexes, and departments seed)."""
         try:
             self.logger.info("🔧 Ensuring Neo4j schema...")
 
-            # Create unique constraints on 'id' property for all collections
-            # Auto-generated from schema registry to ensure complete coverage
-            unique_constraints = self._generate_unique_id_constraints()
-
-            for constraint_query in unique_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # IF NOT EXISTS makes "already exists" impossible here, so
-                    # a failure is real: duplicates already present, or an
-                    # unsupported constraint. Writes that rely on it (MERGE
-                    # convergence, index seeks) degrade silently otherwise.
-                    self.logger.warning(f"Unique constraint creation failed: {constraint_query} -> {str(e)}")
-
-            self.logger.info(f"✅ Created {len(unique_constraints)} unique id constraints")
+            # Unique constraints on 'id' for every collection, from the schema registry.
+            # IF NOT EXISTS makes "already exists" impossible, so a failure is real:
+            # duplicates already present, or an unsupported constraint, and writes
+            # that rely on it (MERGE convergence, index seeks) degrade silently.
+            await self._apply_schema(self._generate_unique_id_constraints(), "unique id constraints")
 
             # Business-key uniqueness (e.g. Person.(orgId, email)). Creation fails on a
             # label that already holds duplicates, hence the same tolerant handling as above.
@@ -1504,49 +1526,25 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "syncPointKey; they are not deleted automatically")
                 business_key_constraints = [
                     q for q in business_key_constraints if "syncpoint_key_unique" not in q]
+            await self._apply_schema(business_key_constraints, "business key constraints")
 
-            for constraint_query in business_key_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    self.logger.warning(f"Business key constraint creation (may already exist): {str(e)}")
+            # Property existence constraints need Enterprise Edition. On Community each
+            # one is refused, and Neo4j logs every refusal as an error on every start.
+            if await self._supports_existence_constraints():
+                await self._apply_schema(
+                    self._generate_required_field_constraints(),
+                    "property existence constraints",
+                    failure_level=logging.DEBUG,
+                )
+            else:
+                self.logger.info(
+                    "Neo4j Community Edition: property existence constraints are not supported, skipped")
 
-            self.logger.info(
-                f"✅ Created {len(business_key_constraints)} business key constraints"
-            )
-
-            # Create property existence constraints for required fields from schemas
-            property_constraints = self._generate_required_field_constraints()
-
-            for constraint_query in property_constraints:
-                try:
-                    await self.client.execute_query(constraint_query)
-                except Exception as e:
-                    # Some Neo4j versions/editions may not support property existence constraints
-                    self.logger.debug(f"Property constraint creation (may already exist or not supported): {str(e)}")
-
-            self.logger.info(f"✅ Created {len(property_constraints)} property existence constraints")
-
-            # Create indexes for common queries
             # Indexes are strategically placed based on query pattern analysis
-            indexes = self._generate_performance_indexes()
-
-            for index_query in indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.warning(f"Index creation failed: {str(e)}")
-
-            self.logger.info(f"✅ Created {len(indexes)} performance indexes")
-
-            fulltext_indexes = self._generate_fulltext_indexes()
-            for index_query in fulltext_indexes:
-                try:
-                    await self.client.execute_query(index_query)
-                except Exception as e:
-                    self.logger.debug(f"Full-text index creation (may already exist): {str(e)}")
-
-            self.logger.info(f"✅ Created {len(fulltext_indexes)} full-text indexes")
+            await self._apply_schema(self._generate_performance_indexes(), "performance indexes")
+            await self._apply_schema(
+                self._generate_fulltext_indexes(), "full-text indexes", failure_level=logging.DEBUG,
+            )
             self.logger.info("✅ Neo4j schema initialized (constraints and indexes)")
 
             try:
@@ -2517,6 +2515,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return True
             # Process each group separately
             for (from_label, to_label, is_link), group_edges in grouped_edges.items():
+                # MERGE locks both end nodes row by row; one order for every
+                # writer keeps two batches onto shared hub nodes from deadlocking.
+                group_edges.sort(key=lambda edge: (edge["from_key"], edge["to_key"]))
                 merge = (
                     f"MERGE (from)-[r:{Neo4jRelationshipType.RECORD_LINK.value} "
                     "{relationshipType: edge.props.relationshipType}]->(to)"
@@ -2527,6 +2528,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                // Cypher keeps no row order unless asked; this is the lock order.
+                WITH edge, from, to ORDER BY edge.from_key, edge.to_key
                 {merge}
                 SET r = edge.props
                 {"WITH from, to, r" if refresh else ""}
@@ -5195,8 +5198,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE startRecord IS NOT NULL
                 {user_match}
 
-                // Single traversal for parent (depth 0) and all children (depth 1+)
-                OPTIONAL MATCH path = (startRecord)-[:NODE_RELATION*0..{max_depth}]->(record:Record)
+                // Single traversal for parent (depth 0) and all children (depth 1+).
+                // Not OPTIONAL: with nothing passing the filters that returns one
+                // row with a null record, which is not a record to reindex.
+                MATCH path = (startRecord)-[:NODE_RELATION*0..{max_depth}]->(record:Record)
                 WHERE (length(path) = 0 OR all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']))
                 AND record.connectorId = $connector_id
                 AND (record.orgId = $org_id OR record.orgId IS NULL)
@@ -7479,67 +7484,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
             for rel_type in relationship_types:
-                # Find all relationships from source document
-                query = f"""
-                MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
-                // An edge the target already has keeps its own spelling.
-                WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
-                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
-                       r.extractedName as extracted_name, r.extractedNames as extracted_names
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"source_key": source_key, "target_key": target_key},
-                    txn_id=transaction
+                # Each step re-reads what the target lacks, so it is safe to
+                # repeat after a deadlock with another copy onto the same hubs.
+                await self._retry_idempotent_write(
+                    lambda rel_type=rel_type: self._copy_relationships_of_type(
+                        source_key, target_key, rel_type,
+                        label_to_collection_by_rel_type.get(rel_type, {}), transaction,
+                    ),
+                    transaction,
                 )
-
-                relationships = list(results) if results else []
-
-                if relationships:
-                    label_to_collection = label_to_collection_by_rel_type.get(rel_type, {})
-                    # Create new relationships for target document
-                    new_edges = []
-                    for rel in relationships:
-                        target_id = rel.get("target_id")
-                        if target_id:
-                            target_labels = rel.get("target_labels") or []
-                            target_collection = next(
-                                (
-                                    label_to_collection[label]
-                                    for label in target_labels
-                                    if label in label_to_collection
-                                ),
-                                None,
-                            )
-                            if target_collection is None:
-                                # Unrecognised label — fall back to the group's
-                                # first collection rather than dropping the edge.
-                                target_collection = next(
-                                    iter(label_to_collection.values()),
-                                    CollectionNames.CATEGORIES.value,
-                                )
-
-                            new_edge = {
-                                "from_id": target_key,
-                                "from_collection": CollectionNames.RECORDS.value,
-                                "to_id": target_id,
-                                "to_collection": target_collection,
-                                "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
-                            }
-                            # A copy has the same content, so it carries the same spellings.
-                            if rel.get("extracted_name"):
-                                new_edge["extractedName"] = rel["extracted_name"]
-                            if rel.get("extracted_names"):
-                                new_edge["extractedNames"] = list(rel["extracted_names"])
-                            new_edges.append(new_edge)
-
-                    # Batch create the new edges
-                    if new_edges:
-                        await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
-                        self.logger.debug(
-                            f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
-                        )
 
             self.logger.debug(f"✅ Successfully copied all relationships to {target_key}")
             return True
@@ -7549,6 +7502,74 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
             )
             return False
+
+    async def _copy_relationships_of_type(
+        self,
+        source_key: str,
+        target_key: str,
+        rel_type: str,
+        label_to_collection: dict[str, str],
+        transaction: str | None,
+    ) -> None:
+        query = f"""
+        MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
+        // An edge the target already has keeps its own spelling.
+        WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
+        RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
+               r.extractedName as extracted_name, r.extractedNames as extracted_names
+        """
+
+        results = await self.client.execute_query(
+            query,
+            parameters={"source_key": source_key, "target_key": target_key},
+            txn_id=transaction
+        )
+
+        relationships = list(results) if results else []
+
+        if relationships:
+            # Create new relationships for target document
+            new_edges = []
+            for rel in relationships:
+                target_id = rel.get("target_id")
+                if target_id:
+                    target_labels = rel.get("target_labels") or []
+                    target_collection = next(
+                        (
+                            label_to_collection[label]
+                            for label in target_labels
+                            if label in label_to_collection
+                        ),
+                        None,
+                    )
+                    if target_collection is None:
+                        # Unrecognised label — fall back to the group's
+                        # first collection rather than dropping the edge.
+                        target_collection = next(
+                            iter(label_to_collection.values()),
+                            CollectionNames.CATEGORIES.value,
+                        )
+
+                    new_edge = {
+                        "from_id": target_key,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": target_id,
+                        "to_collection": target_collection,
+                        "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
+                    }
+                    # A copy has the same content, so it carries the same spellings.
+                    if rel.get("extracted_name"):
+                        new_edge["extractedName"] = rel["extracted_name"]
+                    if rel.get("extracted_names"):
+                        new_edge["extractedNames"] = list(rel["extracted_names"])
+                    new_edges.append(new_edge)
+
+            # Batch create the new edges
+            if new_edges:
+                await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
+                self.logger.debug(
+                    f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
+                )
 
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """The Apps this user (by graph key) passes the connector gate for, in
@@ -9786,7 +9807,13 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             self.logger.debug(f"📊 Found {len(users_sorted)} active users for org {org_id}")
 
             # 3. Get current team members to determine if team is empty
-            team_with_users = await self.get_team_with_users(team_id=team_id, org_id=org_id, user_key=None)
+            team_with_users = await self.get_team_with_users(
+                team_id=team_id, org_id=org_id, user_key=None,
+                # Everyone, deliberately. This count decides whether the team
+                # is empty and so whether the next account becomes its OWNER;
+                # a team whose only members are service accounts is not empty.
+                include_service_accounts=True,
+            )
             existing_member_count = len((team_with_users or {}).get("members", []))
             owner_assigned = existing_member_count > 0
 
@@ -11432,6 +11459,16 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
                 if not stages_success:
                     raise Exception("CRITICAL: Failed to delete pipeline stage states.")
+
+                # An agent names its sources by connectorId, not by a relationship, so
+                # nothing above reaches them; left behind they show as a raw id.
+                _, knowledge_success = await self._delete_nodes_by_connector_id(
+                    transaction,
+                    connector_id,
+                    CollectionNames.AGENT_KNOWLEDGE.value
+                )
+                if not knowledge_success:
+                    raise Exception("CRITICAL: Failed to remove the connector from agents.")
 
                 # User -> User link is not attached to any node deleted above
                 await self.remove_authenticated_as(connector_id, transaction=transaction)
@@ -15624,6 +15661,108 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 str(e),
             )
             raise
+
+    @override
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        apps = collection_to_label(CollectionNames.APPS.value)
+        records = collection_to_label(CollectionNames.RECORDS.value)
+        if expected is None:
+            # The record upsert is a MERGE by id and cannot refuse, so creates of one key are
+            # serialised on the KB node: the second sees the first's record once it gets the lock.
+            rows = await self.client.execute_query(
+                f"""
+                MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}})
+                SET kb.{_MATCH_LOCK} = true
+                REMOVE kb.{_MATCH_LOCK}
+                WITH kb
+                OPTIONAL MATCH (r:{records} {{id: $key}})
+                RETURN kb.status AS status, kb.orgId AS org, r IS NULL AS free
+                """,
+                parameters={"kb_id": kb_id, "key": key},
+                txn_id=transaction,
+            )
+            refusal = self._push_kb_refusal(rows, org_id)
+            if refusal:
+                return refusal
+            return PushClaim.CLAIMED if rows[0]["free"] else PushClaim.KEY_TAKEN
+        kb_rows = await self.client.execute_query(
+            f"MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}}) RETURN kb.status AS status, kb.orgId AS org",
+            parameters={"kb_id": kb_id},
+            txn_id=transaction,
+        )
+        refusal = self._push_kb_refusal(kb_rows, org_id)
+        if refusal:
+            return refusal
+        # The write on the record takes its lock, so the conditions after it read what a
+        # concurrent push or trash committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:{records} {{id: $key}})
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH r
+            WHERE r.orgId = $org_id AND r.connectorId = $kb_id
+              AND coalesce(r.isDeleted, false) <> true
+              AND r.externalRecordId = $expected_doc
+              AND r.externalRevisionId = $expected_rev
+              AND r.version = $expected_version
+            SET r.externalRecordId = $new_doc, r.version = $new_version
+            RETURN r.id AS id
+            """,
+            parameters={
+                "key": key, "org_id": org_id, "kb_id": kb_id,
+                "expected_doc": expected.document_id, "expected_rev": expected.revision,
+                "expected_version": expected.version,
+                "new_doc": new.document_id, "new_version": new.version,
+            },
+            txn_id=transaction,
+        )
+        return PushClaim.CLAIMED if len(rows) == 1 else PushClaim.LOST
+
+    @staticmethod
+    def _push_kb_refusal(rows: list[dict[str, Any]], org_id: str) -> PushClaim | None:
+        if not rows or rows[0].get("org") != org_id:
+            return PushClaim.KB_MISSING
+        if rows[0].get("status") == KB_DELETING_STATUS:
+            return PushClaim.KB_DELETING
+        return None
+
+    @override
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        records = collection_to_label(CollectionNames.RECORDS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:{records} {{id: $key}})
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH r
+            WHERE r.orgId = $org_id AND r.connectorId = $kb_id
+              AND coalesce(r.isDeleted, false) <> true AND r.externalRevisionId = $expected
+            SET r.externalRevisionId = $new
+            RETURN r.id AS id
+            """,
+            parameters={"key": key, "org_id": org_id, "kb_id": kb_id, "expected": expected_revision, "new": new_revision},
+            txn_id=transaction,
+        )
+        return len(rows) == 1
 
     async def compare_and_set_indexing_status(
         self,
@@ -22291,14 +22430,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
         """Run an auto-commit query that is safe to repeat, re-running it when
         it collides with a concurrent writer."""
+        return await self._retry_idempotent_write(
+            lambda: self.client.execute_query(query, parameters=parameters), transaction=None,
+        )
+
+    async def _retry_idempotent_write[T](
+        self, write: Callable[[], Awaitable[T]], transaction: str | None,
+    ) -> T:
+        """Run *write*, which is safe to repeat, re-running it when it collides
+        with a concurrent writer. Inside a caller's transaction the collision
+        rolled the whole transaction back, so it is raised at once."""
         for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
             try:
-                return await self.client.execute_query(query, parameters=parameters)
+                return await write()
             except TransientError as exc:
-                if not self.is_write_conflict(exc):
+                if transaction is not None or not self.is_write_conflict(exc):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
-        return await self.client.execute_query(query, parameters=parameters)
+        return await write()
 
     async def heal_taxonomy_alias_nodes(self) -> int:
         """Give every stored alias its TaxonomyAlias node, once per database.
@@ -23415,12 +23564,22 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
         """
         try:
+            # Every account joins the organisation's All team when it is
+            # created, service accounts included, and each member row carries
+            # the `userId` that binds an agent to one. In the member match
+            # rather than around the team, so `memberCount` counts what the
+            # caller was given.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -23429,7 +23588,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
@@ -23488,13 +23647,19 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
         """
         try:
             offset = (page - 1) * limit
+            # The same member list as get_team_with_users, embedded per team.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
             team_label = collection_to_label(CollectionNames.TEAMS.value)
             user_label = collection_to_label(CollectionNames.USERS.value)
             permission_rel = edge_collection_to_relationship(CollectionNames.PERMISSION.value)
@@ -23518,7 +23683,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             MATCH (u:{user_label} {{id: $user_key}})-[p:{permission_rel}]->(team:{team_label})
             WHERE 1=1 {search_where} {extra_where}
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where}
             WITH team, properties(p) AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
                      id: member_user.id,
@@ -23608,7 +23773,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -23623,11 +23790,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(member_user.fullName) CONTAINS toLower($search) OR toLower(member_user.email) CONTAINS toLower($search))"
 
+            # Before the page is cut and before the count is taken, so the two
+            # agree and neither says how many rows were withheld.
+            member_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('member_user')}"
+            )
+
             team_users_query = f"""
             MATCH (team:{team_label} {{id: $teamId, orgId: $orgId}})
             OPTIONAL MATCH (current_user:{user_label} {{id: $user_key}})-[current_permission:{permission_rel}]->(team)
             OPTIONAL MATCH (member_user:{user_label})-[member_permission:{permission_rel}]->(team)
-            WHERE member_user IS NOT NULL AND member_user.isActive = true {search_where}
+            WHERE member_user IS NOT NULL AND member_user.isActive = true {member_where} {search_where}
             WITH team,
                  collect(DISTINCT properties(current_permission))[0] AS current_user_permission,
                  collect(DISTINCT CASE WHEN member_user IS NULL THEN null ELSE {{
@@ -23940,7 +24113,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -23956,10 +24131,17 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             if search:
                 search_where = "AND (toLower(u.fullName) CONTAINS toLower($search) OR toLower(u.email) CONTAINS toLower($search))"
 
+            # The row carries `userId`, which is the id an agent stores when
+            # it is bound to a service account, so this listing decides who
+            # learns that a machine identity exists.
+            kind_where = "" if include_service_accounts else (
+                f"AND {cypher_not_a_service_account('u')}"
+            )
+
             # Query to get users with their team memberships
             users_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             ORDER BY u.fullName ASC
             SKIP $offset
             LIMIT $limit
@@ -23977,7 +24159,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             # Count total users for pagination
             count_query = f"""
             MATCH (u:{user_label})-[b:{belongs_to_rel}]->(org:{org_label} {{id: $orgId}})
-            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {search_where}
+            WHERE b.entityType = 'ORGANIZATION' AND u.isActive = true {kind_where} {search_where}
             RETURN count(DISTINCT u) AS total_count
             """
 

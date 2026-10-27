@@ -5,6 +5,8 @@ import mongoose from 'mongoose'
 import jwt from 'jsonwebtoken'
 import * as controller from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { HttpError } from '../../../../src/libs/errors/http.errors'
+import { Logger } from '../../../../src/libs/services/logger.service'
+import { logLevelFor } from '../../../../src/libs/utils/error.middleware.utils'
 import { SERVICE_UNAVAILABLE_MESSAGE } from '../../../../src/libs/errors/backend-error'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
 import { CONVERSATION_ID_HEADER } from '../../../../src/modules/enterprise_search/utils/non-streaming-chat'
@@ -229,6 +231,18 @@ describe('es_controller non-streaming chat routes', () => {
         expect(r.messages().at(-1)).to.include({ messageType: 'error', content: 'Set up a model first.' })
         expect(r.conversation().conversationErrors?.at(-1)?.errorType).to.equal('llm_not_configured')
         expect(r.res.headers[CONVERSATION_ID_HEADER.toLowerCase()]).to.equal(String(r.conversation()._id))
+      })
+
+      it('logs a 402 refusal as a warning, and marks it routine for the error middleware', async () => {
+        const error = sinon.stub(Logger.prototype, 'error')
+        const warn = sinon.stub(Logger.prototype, 'warn')
+        const r = await run(flow, (ai) => ai.reply(exactPath(flow.aiPath), 402, { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } }))
+
+        expect(r.error()?.statusCode).to.equal(402)
+        expect(r.error()?.message).to.equal('Payment required by the upstream service')
+        expect(logLevelFor(r.error())).to.equal('warn')
+        expect(error.called).to.equal(false)
+        expect(warn.calledWith('Non-streaming chat turn failed')).to.equal(true)
       })
 
       it('never shows upstream text for a 5xx', async () => {

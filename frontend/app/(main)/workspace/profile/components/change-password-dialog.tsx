@@ -149,6 +149,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type={showNewPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 placeholder={t('workspace.profile.changePassword.newPasswordPlaceholder')}
                 value={form.newPassword}
                 onChange={(e) => {
@@ -201,6 +202,7 @@ export function ChangePasswordDialog({
               </Text>
               <TextField.Root
                 type={showConfirmPassword ? 'text' : 'password'}
+                autoComplete="new-password"
                 placeholder={t('workspace.profile.changePassword.confirmPasswordPlaceholder')}
                 value={form.confirmPassword}
                 onChange={(e) => {

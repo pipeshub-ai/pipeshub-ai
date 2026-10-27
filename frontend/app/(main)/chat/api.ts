@@ -1,4 +1,5 @@
 import { apiClient, streamSSERequest } from '@/lib/api';
+import { blobToDataUrl } from '@/lib/utils/blob-to-data-url';
 import { CHAT_STREAM_ERROR_MESSAGES } from '@/lib/api/stream-errors';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import {
@@ -197,6 +198,26 @@ function buildAgentFiltersPayload(
 }
 
 // Chat API endpoints
+/**
+ * With no model resolved the store hands back empty strings. The API rejects
+ * an empty model field but picks the workspace default when it is missing, so
+ * only non-empty values are sent.
+ */
+function buildModelPayload(model: {
+  modelKey?: string;
+  modelName?: string;
+  modelFriendlyName?: string;
+}): Record<string, string> {
+  const modelKey = model.modelKey?.trim();
+  const modelName = model.modelName?.trim();
+  const modelFriendlyName = model.modelFriendlyName?.trim() || modelName;
+  return {
+    ...(modelKey ? { modelKey } : {}),
+    ...(modelName ? { modelName } : {}),
+    ...(modelFriendlyName ? { modelFriendlyName } : {}),
+  };
+}
+
 export const ChatApi = {
   // Fetch one page of conversations for a single source (owned or shared).
   // Call once per tab if you need both lists.
@@ -321,9 +342,7 @@ export const ChatApi = {
       const f = request.filters;
       payload = {
         query: request.query,
-        modelKey: request.modelKey,
-        modelName: request.modelName,
-        modelFriendlyName: request.modelFriendlyName || request.modelName,
+        ...buildModelPayload(request),
         chatMode: agentChatMode,
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
@@ -349,10 +368,18 @@ export const ChatApi = {
       // Rename `agentStreamTools` → `tools` (Node.js controller reads `req.body.tools`
       // uniformly for both agent and non-agent paths) and validate filters.
       // `rest` already carries `runId` — spread through as-is.
-      const { agentStreamTools, filters: reqFilters, attachments: reqAttachments, ...rest } = request;
+      const {
+        agentStreamTools,
+        filters: reqFilters,
+        attachments: reqAttachments,
+        modelKey: _modelKey,
+        modelName: _modelName,
+        modelFriendlyName: _modelFriendlyName,
+        ...rest
+      } = request;
       payload = {
         ...rest,
-        modelFriendlyName: request.modelFriendlyName || request.modelName,
+        ...buildModelPayload(request),
         timezone: getClientTimezone(),
         currentTime: getClientCurrentTime(),
         ...(agentStreamTools !== undefined ? { tools: agentStreamTools } : {}),
@@ -400,9 +427,7 @@ export const ChatApi = {
     const endpoint = `/api/v1/conversations/${conversationId}/message/${messageId}/regenerate`;
 
     const body: Record<string, unknown> = {
-      modelKey: request.modelKey,
-      modelName: request.modelName,
-      modelFriendlyName: request.modelFriendlyName || request.modelName,
+      ...buildModelPayload(request),
       chatMode: request.chatMode,
       ...buildFiltersPayload(request.filters),
       timezone: getClientTimezone(),
@@ -464,9 +489,7 @@ export const ChatApi = {
     const endpoint = `/api/v1/agents/${agentId}/conversations/${conversationId}/message/${messageId}/regenerate`;
 
     const agentRegenBody: Record<string, unknown> = {
-      modelKey: model.modelKey,
-      modelName: model.modelName,
-      modelFriendlyName: model.modelFriendlyName || model.modelName,
+      ...buildModelPayload(model),
       chatMode: model.chatMode,
       timezone: getClientTimezone(),
       currentTime: getClientCurrentTime(),
@@ -948,7 +971,7 @@ export async function fetchOrg(): Promise<OrgResponse> {
 }
 
 /**
- * Fetch the organisation logo and return a local blob URL.
+ * Fetch the organisation logo and return it as a data URL.
  * Returns null if no logo is set or the request fails.
  */
 export async function fetchOrgLogo(): Promise<string | null> {
@@ -956,7 +979,8 @@ export async function fetchOrgLogo(): Promise<string | null> {
     const response = await apiClient.get<Blob>('/api/v1/org/logo', {
       responseType: 'blob',
     });
-    return URL.createObjectURL(response.data);
+    if (response.status === 204) return null;
+    return await blobToDataUrl(response.data);
   } catch {
     return null;
   }

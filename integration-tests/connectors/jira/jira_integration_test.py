@@ -23,7 +23,7 @@ here. ``README.md`` in this directory is the contract for adding tests.
   order 7  TC-JIRA-IDX-001    — reference issue indexing COMPLETED; then manual indexing on
   order 8  TC-INCR-001        — dedicated connector: create + incremental (by id) + delete
   order 9  TC-UPDATE-001      — dedicated connector: create + edit + revision (by id) + delete
-  order 10 TC-JIRA-HIER-001   — Epic↔child and Task↔sub-task PARENT_CHILD
+  order 10 TC-JIRA-HIER-001   — a sub-task under its task (PARENT_CHILD); an epic's child off its project
   order 11 TC-JIRA-ENTITY-001 — CREATED_BY/REPORTED_BY/ASSIGNED_TO entityRelations
   order 12 TC-JIRA-LINKS-001  — outward issuelinks → RECORD_LINK
   order 13 TC-JIRA-ATTACH-001 — attachment FILE record
@@ -958,18 +958,25 @@ class TestJiraHierarchy:
         jira_connector: dict[str, Any],
         graph_provider: GraphProviderProtocol,
     ) -> None:
-        """TC-JIRA-HIER-001: Epic↔child and Task↔sub-task hierarchy built as PARENT_CHILD (read-only)."""
+        """TC-JIRA-HIER-001: a sub-task hangs under its task as PARENT_CHILD; an epic's child hangs off its project."""
         connector_id = jira_connector["connector_id"]
         checked = 0
 
-        # Epic ↔ child
+        # Epic ↔ child: the child hangs off its project, not its epic. Jira copies a parent's security
+        # level onto its sub-tasks but not onto an epic's children, so filing a story under its epic would
+        # hide it from people who may open it.
         epic_id = jira_connector.get("epic_id")
         child_id = jira_connector.get("epic_child_id")
         if epic_id and child_id:
             child = await graph_provider.get_record_by_external_id(connector_id, child_id)
-            assert child is not None and str(child.parent_external_record_id) == str(epic_id)
+            assert child is not None and not child.parent_external_record_id, (
+                f"{child_id} must not be filed under an issue (parent={child.parent_external_record_id!r})"
+            )
+            # The project's record group holds it through the same edge; it has no record id, so only a
+            # record parent shows up here.
             incoming = await graph_provider.get_record_incoming_relations(connector_id, child_id, "PARENT_CHILD")
-            assert str(epic_id) in incoming, f"PARENT_CHILD epic {epic_id} → child {child_id} missing ({incoming!r})"
+            record_parents = [parent for parent in incoming if parent]
+            assert not record_parents, f"{child_id} must have no record parent, got {record_parents!r} (epic {epic_id})"
             checked += 1
 
         # Task ↔ sub-task
@@ -1354,7 +1361,11 @@ def _jira_ph_env() -> tuple[str, str, str, str]:
 async def _jira_ph_out_of_window_ancestors(
     datasource: JiraDataSource, child_key: str, cut: int,
 ) -> tuple[str, list[str]]:
-    """Resolve child id + ancestor ids with ``created <= cut``. Requires depth >= 2."""
+    """Resolve the sub-task's id and the ids of the ancestors the connector files it under, with ``created <= cut``.
+
+    Only a sub-task is filed under its parent, so that parent is the one ancestor; the parent's own parent
+    (an epic) is not in the chain.
+    """
     child_resp = await jira_api_call_with_retry(
         datasource.get_issue, issueIdOrKey=child_key, fields="created",
         context=f"ph child {child_key}",
@@ -1376,11 +1387,9 @@ async def _jira_ph_out_of_window_ancestors(
             break
         ancestors.append(ancestor_id)
 
-    if len(ancestors) < 2:
-        pytest.fail(
-            f"TC-JIRA-PH-001: {child_key} has {len(ancestors)} ancestor(s) with "
-            f"created <= cut={cut}; >= 2 required (BFS proof)"
-        )
+    ancestors = ancestors[:1]
+    if not ancestors:
+        pytest.fail(f"TC-JIRA-PH-001: the parent of {child_key} must have created <= cut={cut}")
     return child_id, ancestors
 
 
@@ -1397,8 +1406,8 @@ class TestJiraPlaceholders:
         """TC-JIRA-PH-001: dedicated connector — stubs swept, then promoted on widen.
 
         Dedicated connector required: narrowing the shared fixture after a full sync
-        finds ancestors already as real records, so no stubs are minted. Depth >= 2
-        proves BFS (grandparent only appears after the parent stub is swept).
+        finds ancestors already as real records, so no stubs are minted. The sub-task's
+        parent is the only ancestor the connector files it under.
         """
         cut = JIRA_PH_CREATED_CUT_MS
         _base_url, _email, _api_token, primary_key = _jira_ph_env()

@@ -2,11 +2,11 @@
  * External Store Runtime bridge for assistant-ui.
  *
  * Provides:
- * 1. `buildExternalStoreConfig(activeSlotId)` â€” returns the config object
+ * 1. `buildExternalStoreConfig(activeSlotId)` — returns the config object
  *    consumed by `useExternalStoreRuntime`. Reads `messages` and `isRunning`
  *    from the active slot; wires `onNew` and `onCancel` to streaming.ts.
  *
- * 2. `loadHistoricalMessages()` â€” transforms backend ConversationMessage[]
+ * 2. `loadHistoricalMessages()` — transforms backend ConversationMessage[]
  *    into ThreadMessageLike[] (used when initializing a slot).
  */
 
@@ -162,7 +162,7 @@ function resolveAssistantFiltersFromSlot(
 }
 
 /**
- * Resolve KB/app filters for a chat POST â€” either from the outgoing composer message
+ * Resolve KB/app filters for a chat POST — either from the outgoing composer message
  * (normal send) or from the latest prior user turn that carried attachments (questionnaire submit).
  */
 export function resolveAssistantFiltersForChatSubmit(
@@ -1008,7 +1008,7 @@ export function reconcilePendingAfterPrepend(
  * It reads the active slot's messages + streaming state and provides
  * `onNew` / `onCancel` callbacks routed to slot-scoped streaming.
  *
- * @param activeSlotId â€” current active slot key (or null for new chat screen)
+ * @param activeSlotId — current active slot key (or null for new chat screen)
  */
 export function buildExternalStoreConfig(
   activeSlotId: string | null
@@ -1020,11 +1020,11 @@ export function buildExternalStoreConfig(
     messages: slot?.messages ?? [],
     isRunning: slot?.isStreaming ?? false,
 
-    // Required when T = ThreadMessageLike (identity â€” our messages are already ThreadMessageLike)
+    // Required when T = ThreadMessageLike (identity — our messages are already ThreadMessageLike)
     convertMessage: (msg: ThreadMessageLike) => msg,
 
     onNew: async (message) => {
-      // Read activeSlotId from store at invocation time â€” NOT from the
+      // Read activeSlotId from store at invocation time — NOT from the
       // closure. ChatInputWrapper.handleSend creates a slot and sets
       // activeSlotId synchronously in Zustand before calling
       // threadRuntime.append(), but React hasn't re-rendered yet, so
@@ -1072,7 +1072,7 @@ export function buildExternalStoreConfig(
         request.attachments = msgAttachments;
       }
 
-      // Fire-and-forget â€” streaming.ts handles all state updates.
+      // Fire-and-forget — streaming.ts handles all state updates.
       // Keep `displayQuery` for the slot user row + streamingQuestion so attachment-only turns still match an empty text bubble.
       streamMessageForSlot(targetSlotId, displayQuery, request);
     },

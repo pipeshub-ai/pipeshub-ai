@@ -14,7 +14,7 @@
  },
  "direct_org_reads": {
   "modules/artifacts/services/conversation-artifacts.service.ts": 1,
-  "modules/auth/controller/userAccount.controller.ts": 7,
+  "modules/auth/controller/userAccount.controller.ts": 8,
   "modules/auth/middlewares/userAuthentication.middleware.ts": 1,
   "modules/auth/routes/orgAuthConfig.routes.ts": 1,
   "modules/configuration_manager/controller/cm_controller.ts": 3,

@@ -37,7 +37,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["DEFAULT_NEIGHBOR_LIMIT", "IMPACT_RELATIONS", "MAX_NEIGHBOUR_DEPTH", "get_neighbour_impl", "impact_impl", "DEFAULT_IMPACT_DEPTH"]
+__all__ = ["DEFAULT_NEIGHBOR_LIMIT", "IMPACT_RELATIONS", "MAX_NEIGHBOUR_DEPTH", "MAX_IMPACT_DEPTH", "get_neighbour_impl", "impact_impl", "DEFAULT_IMPACT_DEPTH"]
 
 DEFAULT_NEIGHBOR_LIMIT = 100
 # A neighbour walk is for tracing a specific chain, not surveying the repo:
@@ -272,6 +272,7 @@ async def get_neighbour_impl(
     offset: int = 0,
     include_tests: bool = False,
     repo: str | None = None,
+    max_depth: int = MAX_NEIGHBOUR_DEPTH,
 ) -> dict[str, Any]:
     if offset < 0:
         return {"error": "offset must be 0 or greater"}
@@ -287,7 +288,8 @@ async def get_neighbour_impl(
             f"unknown edge_types {unknown}. Valid: {', '.join(CODE_RELATIONS)}"
         )}
     relations = list(edge_types) if edge_types else list(CODE_RELATIONS)
-    depth = max(1, min(int(depth or 1), MAX_NEIGHBOUR_DEPTH))
+    asked = int(depth or 1)
+    depth = max(1, min(asked, max_depth))
 
     if not file_path and not qualified_name:
         return {"error": (
@@ -473,6 +475,9 @@ async def get_neighbour_impl(
         "neighbors": neighbors,
         **({"offset": offset} if offset else {}),
         "total": total,
+        # A deeper walk cut short silently reads as "nothing further up".
+        **({"depth_capped": f"depth {asked} asked, {depth} walked (the most this tool follows)"}
+           if asked > depth else {}),
         **({"hidden_tests": len(hidden_tests),
             # A bare count reads as "no test callers worth listing"; say how to see them.
             "hint": (f"{len(hidden_tests)} neighbour(s) in test code are hidden; "
@@ -525,6 +530,8 @@ IMPACT_RELATIONS = [
     RecordRelations.OVERRIDES.value,
 ]
 DEFAULT_IMPACT_DEPTH = 2
+# An inbound call walk stays narrow enough for five levels; get_neighbour's any-edge walk does not.
+MAX_IMPACT_DEPTH = 5
 _IMPACT_ROWS = 500
 # Reached through these, a symbol builds on the target rather than calling it.
 _BUILT_ON = frozenset({RecordRelations.INHERITS.value, RecordRelations.IMPLEMENTS.value,
@@ -560,7 +567,7 @@ async def impact_impl(
             graph_provider=graph_provider, connector_id=connector_id, org_id=org_id,
             user_id=user_id, file_path=file_path, qualified_name=qualified_name,
             direction="inbound", edge_types=edge_types or IMPACT_RELATIONS, depth=depth,
-            limit=_IMPACT_ROWS, include_tests=tests, repo=repo,
+            limit=_IMPACT_ROWS, include_tests=tests, repo=repo, max_depth=MAX_IMPACT_DEPTH,
         )
 
     walk = await walk_with(tests=include_tests)

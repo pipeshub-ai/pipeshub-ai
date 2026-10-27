@@ -150,6 +150,8 @@ const rejectionFor = (statusCode: number, failReason: string): HttpError =>
         STATUS_CODE_NAMES[statusCode] ?? 'AI_REQUEST_REJECTED',
         failReason,
         statusCode,
+        // A 402 is a refusal the account calls for, not a fault: logged as a warning.
+        statusCode === 402 ? { logLevel: 'warn' } : undefined,
       )
     : new InternalServerError(failReason);
 

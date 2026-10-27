@@ -269,6 +269,10 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         self._active_futures: set[Future[bool]] = set()
         self._futures_lock = threading.Lock()
         self.gate_waiters = concurrency.GateWaiters()
+        # Held by a record whose last attempt never finished, so such records
+        # run one at a time: when the process dies again, the record that
+        # took it down is the only suspect in flight. Used on the worker loop.
+        self._suspects = asyncio.Lock()
         self._backpressure_logged = False
         self._partition_lock = threading.Lock()
         self._in_flight_partitions: set[TopicPartition] = set()
@@ -363,6 +367,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
 
     def _on_worker_loop_started(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set up this consumer's admission and lease renewal on its worker loop."""
+        # A lock belongs to the loop that first waits on it, and a consumer
+        # started again runs on a new loop.
+        self._suspects = asyncio.Lock()
         if self.governor is not None:
             # One gate per pool, process-wide (ResourceGovernor.gate
             # memoises by pool, and raises if a second loop uses one), and
@@ -2537,6 +2544,9 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         offset = message.offset
         message_id = f"{topic}-{partition}-{offset}"
 
+        suspect_held = False
+        attempt_started = False
+        abandoned = False
         parsing_held = False
         indexing_held = False
         shutting_down = False
@@ -2582,28 +2592,6 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             return False
 
         stable_message_id = self._get_stable_message_id(message, parsed_message)
-
-        # Delivery-count backstop, the Kafka counterpart of the Redis
-        # consumer's times_delivered check: the failure counter below is
-        # written only after a failure, so a message that crashes the
-        # consumer mid-handler is redelivered on every rebalance forever
-        # without ever reaching it.
-        deliveries, backstop_tripped = await concurrency.record_delivery(self, stable_message_id)
-        if backstop_tripped:
-            await self.__abandon_message(
-                message_id,
-                stable_message_id,
-                parsed_message,
-                reason=(
-                    f"delivered {deliveries} times "
-                    f"(backstop {messaging_env.redis_max_deliveries}); likely crashing "
-                    "the consumer before the failure counter is written"
-                ),
-                attempts=deliveries,
-            )
-            await self.__settle_done(message, in_flight)
-            return False
-
         record_lock_id = concurrency.work_key(parsed_message.payload, stable_message_id)
         record_pool = f"record:{record_lock_id}"
 
@@ -2628,7 +2616,26 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             index_tier.value,
         )
 
+        async def give_up(reason: str, attempts: int) -> None:
+            nonlocal abandoned
+            # Our own record lease reads as a live holder, which keeps the
+            # sink from failing a record left IN_PROGRESS.
+            if distributed_leases.discard(record_pool) is not None:
+                await self._release_distributed_slot(record_pool, lease_owner)
+            await self.__abandon_message(
+                message_id, stable_message_id, parsed_message, reason=reason, attempts=attempts,
+            )
+            await self.__settle_done(message, in_flight)
+            abandoned = True
+
         try:
+            # Taken before any permit, so suspects queue here without holding
+            # one; one that will be given up on below does not need it.
+            unfinished = await concurrency.unfinished_attempts(self, record_lock_id)
+            if 0 < unfinished < concurrency.MAX_UNFINISHED_ATTEMPTS:
+                await self._suspects.acquire()
+                suspect_held = True
+
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
@@ -2685,6 +2692,18 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     return False
 
             parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
+
+            # Counted only now that the record is ours: a crash while it waited
+            # for a permit or for its lease was not its doing.
+            unfinished = await concurrency.start_attempt(self, record_lock_id)
+            attempt_started = True
+            if unfinished >= concurrency.MAX_UNFINISHED_ATTEMPTS:
+                await give_up(
+                    f"{unfinished} earlier attempts never finished; it is likely "
+                    "taking the indexing service down",
+                    unfinished,
+                )
+                return False
 
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = await self._get_retry_count(stable_message_id)
@@ -2899,6 +2918,19 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                     # A clean run that found a dependency down, not a crash loop: its
                     # growing delay bounds how often it returns while the outage lasts.
                     await concurrency.clear_delivery_count(self, stable_message_id)
+                else:
+                    # A re-queue has a failure count of zero; only this counter
+                    # stops it coming back for ever.
+                    cycles, backstop_tripped = await concurrency.record_delivery(
+                        self, stable_message_id
+                    )
+                    if backstop_tripped:
+                        await give_up(
+                            f"handed back {cycles} times without being admitted "
+                            f"(backstop {messaging_env.redis_max_deliveries})",
+                            cycles,
+                        )
+                        return False
                 try:
                     await self._requeue_message(
                         topic, parsed_message, stable_message_id, retry_count=0, delay_s=e.delay_s
@@ -2945,6 +2977,8 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             )
             return False
         finally:
+            if suspect_held:
+                self._suspects.release()
             try:
                 # Ensure semaphores are released even on error
                 if renewal_task is not None:
@@ -2959,6 +2993,12 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 # the TTL is for.
                 if self.lease_renewer is not None:
                     self.lease_renewer.unregister(lease_owner)
+                # Any exit this process lives through finishes the attempt; only
+                # a crash leaves it counted.
+                if attempt_started:
+                    await concurrency.finish_attempt(
+                        self, record_lock_id, settled=success or abandoned
+                    )
                 # Leases lost to the renewal deadline are gone from Redis
                 # already; releasing them is doomed traffic against a Redis that
                 # is still failing, and it arrives from every record at once.

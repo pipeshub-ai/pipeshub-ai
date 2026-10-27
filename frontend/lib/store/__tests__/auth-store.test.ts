@@ -115,3 +115,60 @@ describe('chat drafts and signing out', () => {
     expect(loadDraft(DRAFT_KEY)).toBe('typed after signing in again');
   });
 });
+
+describe('signing out ends the session on the server', () => {
+  const fetchMock = vi.fn();
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    fetchMock.mockReset();
+    vi.stubGlobal('fetch', fetchMock);
+    isElectronMock.mockReturnValue(false);
+  });
+
+  it('sends the access token it is about to discard to the logout endpoint', async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 200 }));
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+
+    logoutFromWorkspaceMenu();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/api/v1/userAccount/logout/manual');
+    expect(init.method).toBe('POST');
+    expect((init.headers as Record<string, string>).Authorization).toBe('Bearer old-access');
+    // The page navigates away right after; keepalive lets the request finish.
+    expect(init.keepalive).toBe(true);
+    expect(useAuthStore.getState().accessToken).toBeNull();
+  });
+
+  it('still signs out on this device when the server cannot be reached', async () => {
+    fetchMock.mockRejectedValue(new TypeError('Failed to fetch'));
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+
+    expect(() => logoutFromWorkspaceMenu()).not.toThrow();
+
+    expect(useAuthStore.getState().isAuthenticated).toBe(false);
+    expect(window.localStorage.getItem('jwt_refresh_token')).toBeNull();
+  });
+
+  it('does not call the server when there is no session to end', async () => {
+    const { logoutFromWorkspaceMenu, useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().logout();
+
+    logoutFromWorkspaceMenu();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('does not call the server when the session merely expires', async () => {
+    const { useAuthStore } = await import('../auth-store');
+    useAuthStore.getState().setTokens('old-access', 'old-refresh');
+
+    useAuthStore.getState().logout();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+});

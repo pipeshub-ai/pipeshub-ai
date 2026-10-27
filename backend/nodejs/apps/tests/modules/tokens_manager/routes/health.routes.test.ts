@@ -635,6 +635,43 @@ describe('tokens_manager/routes/health.routes', () => {
       expect(jsonArg.services.graphDb).to.equal('unhealthy')
     })
 
+    describe('while the connector service is not accepting connections', () => {
+      const refused = () => Object.assign(new Error('connect ECONNREFUSED 127.0.0.1:8088'), { code: 'ECONNREFUSED' })
+
+      it('reports the graph and vector stores as unknown, not unhealthy, and the whole as unhealthy', async () => {
+        mockAppConfig.deployment.dataStoreType = 'neo4j'
+        router = createHealthRouter(container, cmContainer)
+        const handler = findHandler('/', 'get')
+        const res = mockRes()
+
+        const axiosModule = require('axios')
+        sinon.stub(axiosModule, 'get').rejects(refused())
+
+        await handler({}, res, sinon.stub())
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.graphDb).to.equal('unknown')
+        expect(jsonArg.services.vectorDb).to.equal('unknown')
+        expect(jsonArg.status).to.equal('unhealthy')
+      })
+
+      it('still reports a store that answered badly as unhealthy', async () => {
+        const handler = findHandler('/', 'get')
+        const res = mockRes()
+
+        const axiosModule = require('axios')
+        sinon.stub(axiosModule, 'get').callsFake((url: string) =>
+          url.includes('graph-db') ? Promise.resolve({ status: 503 }) : Promise.reject(refused()),
+        )
+
+        await handler({}, res, sinon.stub())
+
+        const jsonArg = res.json.firstCall.args[0]
+        expect(jsonArg.services.graphDb).to.equal('unhealthy')
+        expect(jsonArg.services.vectorDb).to.equal('unknown')
+      })
+    })
+
     it('should call connector /health/graph-db for neo4j and mark healthy on 200', async () => {
       mockAppConfig.deployment.dataStoreType = 'neo4j'
       mockAppConfig.connectorBackend = 'http://localhost:8088'

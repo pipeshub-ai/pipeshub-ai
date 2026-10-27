@@ -3268,3 +3268,34 @@ class TestFolderDepthLimit:
 
         assert result["code"] == 400
         assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
+
+
+class TestPushedRecordFileReplace:
+    """A pushed record's file cannot be replaced; a rename can."""
+
+    async def _service(self, revision: str) -> tuple[KnowledgeBaseService, AsyncMock]:
+        graph = AsyncMock()
+        graph.get_file_record_by_id = AsyncMock(return_value=MagicMock(external_revision_id=revision, source_timestamp_origin="UPLOAD"))
+        graph.get_document = AsyncMock(return_value={"recordName": "n"})
+        processor = AsyncMock()
+        svc = KnowledgeBaseService(MagicMock(), graph, MagicMock(), processor_for_kb=AsyncMock(return_value=processor))
+        svc._record_edit_context = AsyncMock(return_value=({"kb_id": "kb"}, None))
+        return svc, processor
+
+    async def test_pushed_record_file_replace_refused(self) -> None:
+        svc, processor = await self._service("pb1:" + "a" * 64 + ":" + "b" * 16)
+        result = await svc.update_record("u", "r", {}, file_metadata={"lastModified": 1})
+        assert result["success"] is False and result["code"] == 409 and "RECORD_IS_PUSHED" in result["reason"]
+        processor.on_record_content_update.assert_not_called()
+
+    async def test_rename_of_a_pushed_record_is_allowed(self) -> None:
+        svc, processor = await self._service("pb1:" + "a" * 64 + ":" + "b" * 16)
+        result = await svc.update_record("u", "r", {"recordName": "new"})
+        assert result["success"] is True
+        processor.on_record_metadata_update.assert_called_once()
+
+    async def test_ordinary_upload_file_replace_still_works(self) -> None:
+        svc, processor = await self._service("1700000000000")
+        result = await svc.update_record("u", "r", {}, file_metadata={"lastModified": 1})
+        assert result["success"] is True
+        processor.on_record_content_update.assert_called_once()

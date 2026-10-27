@@ -3,7 +3,7 @@ import { MONGO_DB_NAME } from '../../../../libs/enums/db.enum';
 
 import { config } from 'dotenv';
 
-config();
+config({ quiet: true });
 
 export interface ConversationDocument {
   threadId: string;

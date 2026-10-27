@@ -146,3 +146,17 @@ async def test_hidden_test_neighbours_say_how_to_list_them() -> None:
                                    file_path="src/b.py", qualified_name="function:target",
                                    direction="inbound", edge_types=["CALLS"])
     assert out["hidden_tests"] == 1 and "include_tests=true" in out["hint"]
+
+
+async def test_a_capped_depth_is_reported_and_impact_walks_five_levels() -> None:
+    """A walk cut short silently reads as "nothing further up"."""
+    from app.agents.actions.code_graph.neighbours import get_neighbour_impl
+
+    ctx = _ctx(QueryGraphProvider())
+    out = await get_neighbour_impl(**ctx, file_path="src/b.py", qualified_name="function:target",
+                                   direction="inbound", depth=5)
+    assert "depth 5 asked, 3 walked" in out["depth_capped"]
+    five = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=5)
+    assert "depth_capped" not in five
+    seven = await impact_impl(**ctx, file_path="src/b.py", qualified_name="function:target", depth=7)
+    assert "7 asked, 5 walked" in seven["depth_capped"]

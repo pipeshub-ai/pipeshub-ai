@@ -8638,27 +8638,37 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied app/connector filter nodes
         kb:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied knowledge-base filter nodes
         recordGroups:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record-group filter nodes
         records:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied folder and record filter nodes (each with everything under it)
         recordsExact:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record filter nodes selected alone
     ChatAttachmentRef:
       type: object
@@ -9894,6 +9904,7 @@ components:
             anyOf:
               - $ref: '#/components/schemas/CitationReference'
               - $ref: '#/components/schemas/PopulatedCitationReference'
+              - $ref: '#/components/schemas/RedactedSource'
           description: |
             References to source documents used in the response. Routes that
             return the saved conversation after a turn (create, add message)
@@ -9942,33 +9953,35 @@ components:
             Reference identifiers extracted from tool responses, used to scope
             follow-up queries (for example Jira project keys or record IDs).
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -9997,6 +10010,26 @@ components:
         updatedAt:
           type: string
           format: date-time
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access]
+        name:
+          type: string
+          description: A neutral label (`Restricted source`).
     CitationReference:
       type: object
       additionalProperties: false
@@ -11481,6 +11514,16 @@ components:
             is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
             `false` ignores the field and never runs a timeline.
           example: created
+        saveHistory:
+          type: boolean
+          default: true
+          description: |
+            Whether the search is saved to the caller's search history (`GET /search`)
+            with a citation for each match. Set it to `false` for searches that are not
+            the user's own, such as an agent searching on their behalf: nothing is
+            stored and the response has no `searchId`. A server older than this field
+            ignores it and saves the search.
+          example: false
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -12186,16 +12229,17 @@ components:
       additionalProperties: false
       description: |
         Immediate POST `/search` response: persisted search id plus the raw retrieval payload.
+        `searchId` is absent when the request set `saveHistory` to `false`.
         SDK-oriented modeling: named fields only at this level; dynamic-key maps inside `searchResponse` use
         `additionalProperties` with a `$ref` (e.g. `virtual_to_record_map`) rather than boolean `additionalProperties: true`,
         so generated clients retain typed values where possible.
       required:
-        - searchId
         - searchResponse
       properties:
         searchId:
           type: string
           format: objectId
+          description: The saved search, for `GET /search/{searchId}`. Absent when `saveHistory` is `false`.
         searchResponse:
           $ref: '#/components/schemas/SemanticSearchAiResponse'
     PersistedSemanticSearchBoundingBox:
@@ -12427,8 +12471,13 @@ components:
           format: objectId
         citationIds:
           type: array
+          description: |
+            For a search shared with the viewer, a hit the viewer cannot read is a
+            `RedactedSource`.
           items:
-            $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+            anyOf:
+              - $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         records:
           type: object
           description: |
@@ -12519,6 +12568,9 @@ components:
           items:
             type: string
             format: objectId
+          description: |
+            Hit ids. For a search shared with the viewer the ids are not returned
+            (they cannot be checked against the viewer's access), so the array is empty.
         records:
           type: object
           description: |
@@ -15263,7 +15315,9 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+            anyOf:
+              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
@@ -15287,33 +15341,35 @@ components:
             Reference identifiers surfaced from tool responses, used to scope
             follow-up queries.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -27632,6 +27688,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /userAccount/password/status:
+    get:
+      tags:
+        - User Account
+      summary: Get password status
+      description: Returns whether the authenticated user has a password set. Users who signed in only through SSO do not.
+      operationId: getPasswordStatus
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Password status
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - hasPassword
+                properties:
+                  hasPassword:
+                    type: boolean
+        '401':
+          description: Invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /userAccount/password/setup/email:
+    post:
+      tags:
+        - User Account
+      summary: Email a link to set a first password
+      description: |
+        Sends the authenticated user a single-use link, to the email on their account, for setting a first password.
+        For users who have no password yet, for example those who signed in with Google. Users who already have one change it with `POST /userAccount/password/reset`.
+      operationId: sendPasswordSetupEmail
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The link was sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: string
+                    example: mail sent
+        '400':
+          description: The user already has a password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /userAccount/password/reset:
     post:
       tags:
@@ -28652,6 +28783,11 @@ paths:
 
         The email field may be omitted from the response if the `HIDE_EMAIL` environment variable
         is set to `true`.
+
+        A service account answers `404` for a caller who does not administer the
+        organisation, the same answer an id that is not there gets. Its `userId`
+        is what binds an agent to it, and the screens that manage these accounts
+        are admin-only, so whether one exists is an administrator's to know.
       operationId: getUserById
       security:
         - bearerAuth: []
@@ -30002,7 +30138,15 @@ paths:
         (`/api/v1/entity/user/list`). The response from the connector is then enriched locally
         with profile pictures, `hasLoggedIn` flags, group memberships, and role.
 
-        Only `page`, `limit`, and `search` are forwarded to the connector.
+        Only `page`, `limit`, `search` and `includeServiceAccounts` are forwarded
+        to the connector.
+
+        Service accounts are left out unless the caller is an organisation
+        administrator and asks for them. The connector decides that, from the
+        live role of the caller's own credentials, because the query that
+        returns these rows lives there; the gateway only passes the flag along.
+        Each row carries the `userId` that binds an agent to a service account,
+        and the gateway then attaches the groups it belongs to.
 
         **Query validation** (Zod at route layer): `page` and `limit` must be positive integer
         strings when provided; `limit` is capped at 100. The `search` parameter is additionally
@@ -30048,6 +30192,16 @@ paths:
             type: string
             maxLength: 1000
             example: "john"
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also lists service accounts, which are otherwise left out.
+            Honoured only for an organisation administrator; for anyone else it
+            is ignored rather than refused, as on `GET /users`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Paginated list of enriched users from the connector backend
@@ -30284,12 +30438,31 @@ paths:
         `hasLoggedIn`, and `groups` (array of `{ name, type }` objects for non-deleted groups
         in the same org).
 
-        Accessible by any authenticated user with `user:read` scope — no admin check. Not
-        paginated, and it takes no query parameters: any that are sent are ignored.
+        Service accounts are left out unless the caller is an organisation
+        administrator and asks for them with `includeServiceAccounts=true`.
+        Each row carries the `userId` that binds an agent to a service account,
+        next to the groups it belongs to, so this listing would otherwise say
+        which machine identity an administrator put in which group.
+
+        Accessible by any authenticated user with `user:read` scope — no admin
+        check on the route itself, only on that flag. Not paginated, and
+        `includeServiceAccounts` is the only query parameter it reads; any
+        other is ignored.
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
         - oauth2: [user:read]
+      parameters:
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns service accounts, which are otherwise left out.
+            Honoured only for an organisation administrator; for anyone else it
+            is ignored rather than refused, as on `GET /users`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users with group data retrieved successfully
@@ -30377,6 +30550,12 @@ paths:
         requester's organization. IDs that match nobody are left out, so an array of only
         unknown IDs gives `[]`. Any authenticated member may call it (no admin check), and
         body fields other than `userIds` are ignored.
+
+        A service account among the ids is dropped unless the caller is an
+        organisation administrator, and is left out the same way an unknown id
+        is — nothing says it was there. Its `userId` is what binds an agent to
+        it, so resolving one here would be a way around the admin-only service
+        accounts screen.
       operationId: getUsersByIds
       security:
         - bearerAuth: []
@@ -31868,6 +32047,13 @@ paths:
       description: |
         Paginated list of teams the authenticated user belongs to, with optional filters.
 
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
+
         **Gateway contract:**
         Query validated by `getUserTeamsQuerySchema`: `page`, `limit`, `search` (same rules as org list), optional `created_by` (Mongo userId of creator), `created_after` / `created_before` (positive epoch ms).
 
@@ -32032,6 +32218,14 @@ paths:
         Membership is not required: any user of the organization can read any of its teams,
         members included. For a caller who is not an OWNER, `canEdit`, `canDelete` and
         `canManageMembers` are `false`.
+
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
+
       operationId: getTeamById
       security:
         - bearerAuth: []
@@ -32392,6 +32586,13 @@ paths:
         `canManageMembers` are `false`. Query parameters not listed here are dropped by the
         gateway. A fractional `page` or `limit` (`1.5`) passes the gateway and is refused by the
         service with `422`.
+
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
       operationId: getTeamUsers
       security:
         - bearerAuth: []
@@ -33756,6 +33957,12 @@ paths:
 
         A soft-deleted group is still returned, with `isDeleted: true` and `deletedBy`.
         Query parameters are dropped.
+
+        The `users` array leaves out any service account in the group unless the
+        caller is an organisation administrator. A service account's id is what
+        binds an agent to it, and every one is put in the built-in `everyone`
+        group when it is created, so the group every member can read would
+        otherwise hand out all of them.
       operationId: getUserGroupById
       security:
         - bearerAuth: []
@@ -34307,6 +34514,11 @@ paths:
         Returns user details (`fullName`, `email`) with profile picture data URIs.
         Supports pagination and search by name or email. Accessible by any authenticated user.
         Member ids that name no (or a deleted) user are left out of `users` and of `totalCount`.
+
+        Service accounts in the group are left out the same way for a caller who
+        does not administer the organisation, `totalCount` included. This page
+        carries each member's id, name and address, so a service account here
+        would be fully identifiable — and its id is what binds an agent to it.
 
         `page` and `limit` are not validated by the gateway: a value below 1, a `limit` above
         100 or a non-numeric value is answered `500 INTERNAL_ERROR`, and a fractional value is
@@ -47220,7 +47432,8 @@ paths:
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
         source document's metadata. Past searches can be retrieved via
-        `GET /search`.
+        `GET /search`. With `saveHistory: false` nothing is saved and
+        there is no `searchId`.
 
         **Scopes:** an OAuth token needs `semantic:write`. The gateway also lets a token holding
         only `semantic:read` through, but the search service then refuses it with the same `403`
@@ -64545,6 +64758,12 @@ paths:
         The body is checked before anything is stored: a missing, empty or wrongly typed field
         answers `400 VALIDATION_ERROR` and the previous configuration stays. A request with no
         body at all is treated as an empty object. Fields the schema does not list are dropped.
+
+        The settings are then tried against the mail server: PipesHub connects and, when a
+        `username` is set, signs in, as sending would (up to about 10 seconds per step). If the
+        server refuses, nothing is stored and the answer is `400 HTTP_BAD_REQUEST` saying what
+        to fix: the username or password was rejected, the host and port could not be reached,
+        or the server refused the connection for another reason.
       operationId: createSMTPConfig
       security:
         - bearerAuth: []
@@ -64603,7 +64822,7 @@ paths:
                     example: SMTP config created successfully
         '400':
           description: |
-            Invalid configuration.
+            Invalid configuration, or settings the mail server refused (see above).
 
             Every string is trimmed before validation, so text of only whitespace counts as
             empty.

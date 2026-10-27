@@ -5,9 +5,9 @@ import { Theme } from '@radix-ui/themes';
 
 import '@/lib/__tests__/test-i18n';
 
-// Bots and Prompts read admin-only settings. They loaded them on
-// mount, before knowing who the user was, so a member who opened one by URL got
-// a 403 from the server (and Prompts never sent members away at all).
+// Bots and Prompts read admin-only settings. Bots loaded them on mount, before
+// knowing who the user was, so a member who opened it by URL got a 403 from the
+// server. Prompts (fixed on main in #4808) is held to the same contract here.
 
 const user = { isAdmin: null as boolean | null, isProfileInitialized: false };
 const replace = vi.fn();
@@ -81,6 +81,16 @@ describe('admin-only workspace pages', () => {
         expect(replace).toHaveBeenCalledWith('/workspace/general');
         expect(page.fetched).not.toHaveBeenCalled();
         expect(container.textContent).toBe('');
+      });
+
+      it('sends the user away when their role could not be loaded', async () => {
+        Object.assign(user, { isAdmin: null, isProfileInitialized: true });
+
+        await renderPage(page.load);
+        await new Promise((resolve) => setTimeout(resolve, 0));
+
+        expect(replace).toHaveBeenCalledWith('/workspace/general');
+        expect(page.fetched).not.toHaveBeenCalled();
       });
 
       it('loads the settings for an admin', async () => {

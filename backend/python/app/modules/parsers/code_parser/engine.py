@@ -645,6 +645,22 @@ def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str], cfg: L
             owner = _ts_owner(node, src)
             if owner:
                 table.setdefault(f"{owner}.{name}", type_name)
+    for node in _nodes_of_types(root, cfg, ("type_alias_declaration",)):
+        # `type Expr = A | B | C`: a call on an `Expr` may run any member's method.
+        name_node, value = _field(node, "name"), _field(node, "value")
+        if name_node is None or value is None:
+            continue
+        stack, members, is_union = [value], [], False
+        while stack:
+            n = stack.pop()
+            if n.type in ("union_type", "parenthesized_type"):
+                is_union |= n.type == "union_type"
+                stack.extend(reversed(n.named_children))
+            elif (member := _ts_named_type(n, src)) and not member.endswith("[]"):
+                members.append(member)
+        # `type Public = Base` is kept too, so the builder can follow it to Base's members.
+        if len(members) >= 2 or (members and not is_union):
+            table.setdefault(f"{_text(name_node, src)}|", "|".join(members))
     _collect_narrowings_ts(root, src, table, cfg)
 
 

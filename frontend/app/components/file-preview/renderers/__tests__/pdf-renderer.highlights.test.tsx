@@ -40,6 +40,7 @@ const last = () => highlighterProps[highlighterProps.length - 1];
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
   highlighterProps.length = 0;
 });
 
@@ -74,5 +75,37 @@ describe('PDFRenderer highlights handed to react-pdf-highlighter', () => {
 
     expect(last().highlights).not.toBe(firstClick);
     expect((last().highlights as Array<{ id: string }>).map((h) => h.id)).toEqual(['c1']);
+  });
+});
+
+describe('PDFRenderer citation scroll requested before the viewer is ready', () => {
+  it('scrolls to the citation once the viewer is ready', () => {
+    vi.useFakeTimers();
+    render(renderer(0));
+    const scrollTo = vi.fn();
+
+    act(() => {
+      (last().scrollRef as (fn: () => void) => void)(scrollTo);
+    });
+    act(() => {
+      vi.advanceTimersByTime(500);
+    });
+
+    expect(scrollTo).toHaveBeenCalled();
+  });
+
+  it('drops the scroll when the preview closes first', () => {
+    // The timer used to outlive the component and fire after the test environment was gone.
+    vi.useFakeTimers();
+    const view = render(renderer(0));
+    const scrollTo = vi.fn();
+
+    act(() => {
+      (last().scrollRef as (fn: () => void) => void)(scrollTo);
+    });
+    view.unmount();
+    vi.advanceTimersByTime(500);
+
+    expect(scrollTo).not.toHaveBeenCalled();
   });
 });

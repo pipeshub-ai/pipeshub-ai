@@ -19,6 +19,13 @@ import { configuredLocalStorageReplicaProblem } from '../../storage/utils/replic
 
 const STORAGE_WARNING_TIMEOUT_MS = 2000;
 
+// The graph and vector stores are probed through the connector service. When
+// that service refuses the connection (it is still starting, or it is down) the
+// store was never asked, so its state is unknown rather than unhealthy; the
+// connector service itself is reported by GET /services.
+const connectorRefused = (error: unknown): boolean =>
+  (error as { code?: string } | null)?.code === 'ECONNREFUSED';
+
 const logger = Logger.getInstance({
   service: 'HealthStatus'
 });
@@ -198,16 +205,23 @@ export function createHealthRouter(
             );
           }
         } catch (error: unknown) {
-          services.graphDb = 'unhealthy';
           overallHealthy = false;
-          const axiosErr = error as { code?: string; message?: string };
-          const timedOut = axiosErr?.code === 'ECONNABORTED';
-          Logger.getInstance({ service: 'HealthStatus' }).error(
-            timedOut
-              ? 'graph-db health check timed out'
-              : 'graph-db health check failed',
-            axiosErr?.message ?? error,
-          );
+          if (connectorRefused(error)) {
+            services.graphDb = 'unknown';
+            logger.warn(
+              'graph-db not checked: the connector service is not accepting connections',
+            );
+          } else {
+            services.graphDb = 'unhealthy';
+            const axiosErr = error as { code?: string; message?: string };
+            const timedOut = axiosErr?.code === 'ECONNABORTED';
+            Logger.getInstance({ service: 'HealthStatus' }).error(
+              timedOut
+                ? 'graph-db health check timed out'
+                : 'graph-db health check failed',
+              axiosErr?.message ?? error,
+            );
+          }
         }
       }
 
@@ -225,7 +239,7 @@ export function createHealthRouter(
           services.vectorDb = vectorDbResp.status === 200 ? 'healthy' : 'unhealthy';
           if (vectorDbResp.status !== 200) overallHealthy = false;
         } catch (error) {
-          services.vectorDb = 'unhealthy';
+          services.vectorDb = connectorRefused(error) ? 'unknown' : 'unhealthy';
           overallHealthy = false;
         }
       }

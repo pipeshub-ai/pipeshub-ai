@@ -179,16 +179,10 @@ function PromptConfigCallout() {
 
 export default function PromptsPage() {
   const { t } = useTranslation();
-  const router = useRouter();
   const addToast = useToastStore((s) => s.addToast);
+  const router = useRouter();
   const isAdmin = useUserStore(selectIsAdmin);
   const isProfileInitialized = useUserStore(selectIsProfileInitialized);
-
-  useEffect(() => {
-    if (isProfileInitialized && isAdmin === false) {
-      router.replace('/workspace/general');
-    }
-  }, [isProfileInitialized, isAdmin, router]);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -208,8 +202,15 @@ export default function PromptsPage() {
     customPromptWebSearch !== savedPromptWebSearch ||
     customPromptAgent !== savedPromptAgent;
 
-  // ── Load once the user is known to be an admin ─────────────
-  // Only an admin may read these; a member would get a 403 before the redirect.
+  // The sidebar hides this page from members, but the URL still opens it. A profile that failed
+  // to load leaves isAdmin null; General is open to everyone, so that goes there too.
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin !== true) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
+  // ── Load on mount ──────────────────────────────────────────
   useEffect(() => {
     if (!isProfileInitialized || isAdmin !== true) return;
     const load = async () => {
@@ -284,7 +285,7 @@ export default function PromptsPage() {
     });
   }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast, t]);
 
-  if (!isProfileInitialized || isAdmin === false) {
+  if (!isProfileInitialized || isAdmin !== true) {
     return null;
   }
 

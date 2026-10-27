@@ -1628,10 +1628,7 @@ function KnowledgeBasePageContent() {
   // Handle upload save - add items to upload store and start uploading
   const handleUploadSave = useCallback(
     async (items: UploadFileItem[]) => {
-      if (!selectedKbId) {
-        console.error('Cannot upload: No knowledge base ID found');
-        return;
-      }
+      if (!selectedKbId) return;
 
       setIsUploading(true);
 
@@ -1967,6 +1964,22 @@ function KnowledgeBasePageContent() {
       }
     },
     [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+  );
+
+  // Returns false so the upload panel keeps the picked files when there is
+  // nowhere to put them, instead of clearing them with nothing uploaded.
+  const handleUploadSubmit = useCallback(
+    (items: UploadFileItem[]) => {
+      if (!selectedKbId) {
+        toast.error(t('sidebar.noCollectionSelected'), {
+          description: t('sidebar.selectCollectionOrCreate'),
+        });
+        return false;
+      }
+      void handleUploadSave(items);
+      return true;
+    },
+    [selectedKbId, handleUploadSave, t]
   );
 
   // Handle folder info click
@@ -3060,7 +3073,7 @@ function KnowledgeBasePageContent() {
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
-              onUpload={isAllRecordsMode ? undefined : handleUpload}
+              onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
               folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
@@ -3155,7 +3168,7 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
           onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
-          onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
+          onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
           hasCollectionContext={Boolean(selectedKbId)}
@@ -3291,7 +3304,7 @@ function KnowledgeBasePageContent() {
           <UploadDataSidebar
             open={isUploadSidebarOpen}
             onOpenChange={setIsUploadSidebarOpen}
-            onSave={handleUploadSave}
+            onSave={handleUploadSubmit}
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}

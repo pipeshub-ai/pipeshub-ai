@@ -1230,8 +1230,10 @@ async def derive_jira_scope_counts(
       - ``file``: one FILE record per attachment that is *not* a new inline image
         (``_fetch_issue_attachments`` skips image attachments referenced in the description
         or an unrestricted comment; the sync's issue search requests ``comment`` too).
-      - ``parent_child``: one PARENT_CHILD edge per issue with a ``fields.parent`` (sub-task /
-        epic child; attachments use ATTACHMENT, not PARENT_CHILD).
+      - ``parent_child``: one PARENT_CHILD edge per sub-task whose parent is in this project. The
+        connector files a story under its project, not its epic (Jira copies a parent's security
+        level onto its sub-tasks but not onto an epic's children), and an issue whose parent is in a
+        project that does not sync hangs off its project too. Attachments use ATTACHMENT.
 
     IT artifacts are skipped: this project is shared with any concurrently running leg,
     whose in-flight tickets would otherwise land in the baseline.
@@ -1239,7 +1241,7 @@ async def derive_jira_scope_counts(
     issues = await search_issues_jql(
         datasource,
         f'project = "{project_key}"',
-        ["parent", "attachment", "description", "comment", "summary"],
+        ["parent", "issuetype", "attachment", "description", "comment", "summary"],
     )
     ticket = 0
     files = 0
@@ -1249,7 +1251,10 @@ async def derive_jira_scope_counts(
             continue
         ticket += 1
         f = it.get("fields") or {}
-        if f.get("parent"):
+        issue_type = f.get("issuetype") or {}
+        is_subtask = bool(issue_type.get("subtask")) or issue_type.get("hierarchyLevel") == -1
+        parent_key = str((f.get("parent") or {}).get("key") or "")
+        if is_subtask and parent_key.rsplit("-", 1)[0] == project_key:
             parent_child += 1
         files += count_synced_file_attachments(f)
     return {"ticket": ticket, "file": files, "parent_child": parent_child}
