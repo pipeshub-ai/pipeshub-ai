@@ -506,7 +506,7 @@
     "willBeReindexed": "將被重新索引",
     "reindexConfirm": "要重新索引此{{type}}嗎？",
     "reindexDescription": "這將更新此{{type}}及其內容的搜尋索引。",
-    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被刪除。它也會從所有使用它的代理中移除。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被永久刪除。它也會從所有使用它的代理中移除。此操作無法復原。",
     "deleteFolderBody": "'{{name}}' 及其中的所有內容將從此集合中刪除。",
     "deleteFileBody": "'{{name}}' 將從此集合中刪除。"
   },
@@ -1477,7 +1477,8 @@
       "download": "下載產物",
       "downloading": "正在下載產物"
     },
-    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。"
+    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
+    "noResultsFor": "找不到「{{query}}」的結果"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -5248,7 +5249,9 @@
       "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
       "loadFailedTitle": "無法載入登入",
       "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
-      "retry": "重試"
+      "retry": "重試",
+      "tabPassword": "密碼",
+      "tabEmailOtp": "電子郵件驗證碼"
     },
     "common": {
       "signIn": "登入",
@@ -5285,12 +5288,49 @@
       "integrationTitle": "授權已傳送至 PipesHub",
       "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
       "openApp": "開啟 PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "請查看收件匣",
+      "resetLinkSent": "如果存在使用此電子郵件的帳戶，密碼重設連結已寄出。",
+      "resetRequestFailed": "無法要求重設密碼",
+      "tryAgainLater": "請稍後再試。",
+      "contactAdmin": "請聯絡您的管理員。",
+      "noPasswordSetTitle": "此帳戶未設定密碼。",
+      "noPasswordSetDescription": "請使用下方的「忘記密碼」設定密碼。",
+      "checkEmail": "請查看電子郵件",
+      "otpSentDescription": "如果該電子郵件可以使用驗證碼登入，驗證碼正在寄送。如果幾分鐘內未收到，請檢查垃圾郵件資料夾或稍後再試。",
+      "otpSendFailed": "無法寄送驗證碼",
+      "additionalVerification": "需要額外驗證",
+      "completeNextStep": "請完成下一步以繼續。",
+      "signInFailedTitle": "登入失敗",
+      "unexpectedResponse": "回應異常，請再試一次。",
+      "signInFailed": "登入失敗，請再試一次。",
+      "verificationFailed": "驗證失敗，請再試一次。",
+      "googleSignInFailed": "Google 登入失敗，請再試一次。",
+      "microsoftSignInFailed": "Microsoft 登入失敗，請再試一次。",
+      "tryAgainAfter": "請在 {{time}} 之後再試。"
     }
   },
   "healthGate": {
     "title": "無法連線至伺服器",
     "description": "目前無法連線至伺服器。伺服器可能正在啟動或進行維護。我們正在嘗試重新連線。",
-    "contactAdmin": "如果問題持續發生，請聯絡您的 PipesHub 管理員。"
+    "contactAdmin": "如果問題持續發生，請聯絡您的 PipesHub 管理員。",
+    "toasts": {
+      "servicesUnavailableTitle": "部分服務無法使用",
+      "affected": "受影響：{{services}}",
+      "featuresUnavailableReconnect": "部分功能暫時無法使用。我們會自動重新連線；如果問題持續，請聯絡管理員。",
+      "featuresUnavailable": "部分功能暫時無法使用",
+      "viewStatus": "查看狀態",
+      "servicesDown_one": "{{services}} 目前無法使用",
+      "servicesDown_other": "{{services}} 目前無法使用"
+    },
+    "serviceGate": {
+      "title": "服務無法使用",
+      "requires_one": "此頁面需要 {{services}}，該服務目前無法使用。服務恢復後，此頁面會自動恢復可用。",
+      "requires_other": "此頁面需要 {{services}}，這些服務目前無法使用。服務恢復後，此頁面會自動恢復可用。",
+      "memberBody": "此頁面暫時無法使用，稍後會自動恢復；如果問題持續，請聯絡管理員。",
+      "viewStatus": "查看服務狀態"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "問題：",
