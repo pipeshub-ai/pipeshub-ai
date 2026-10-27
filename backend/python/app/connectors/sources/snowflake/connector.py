@@ -79,6 +79,7 @@ from app.connectors.sources.snowflake.data_fetcher import (
     SnowflakeTable,
     SnowflakeView,
 )
+from app.connectors.sources.snowflake.oauth_urls import SNOWFLAKE_OAUTH_BASE_URL
 from app.models.entities import (
     FileRecord,
     ProgressStatus,
@@ -124,10 +125,6 @@ def get_mimetype_from_path(path: str, is_folder: bool = False) -> str:
             return MimeTypes.BIN.value
     return MimeTypes.BIN.value
 
-
-# Get Snowflake account identifier from environment variable for OAuth URLs
-SNOWFLAKE_ACCOUNT_IDENTIFIER = os.getenv("SNOWFLAKE_ACCOUNT_IDENTIFIER", "")
-SNOWFLAKE_OAUTH_BASE_URL = f"https://{SNOWFLAKE_ACCOUNT_IDENTIFIER}.snowflakecomputing.com" if SNOWFLAKE_ACCOUNT_IDENTIFIER else "https://{account}.snowflakecomputing.com"
 
 # Row limit for streaming table data (prevents memory issues with large tables)
 SNOWFLAKE_TABLE_ROW_LIMIT = int(os.getenv("SNOWFLAKE_TABLE_ROW_LIMIT", "50"))
