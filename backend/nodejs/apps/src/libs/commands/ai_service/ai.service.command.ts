@@ -141,8 +141,8 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         : null;
     const payloadRecord = payloadObject as Record<string, unknown> | null;
 
-    // Python sends `detail` as text, or as `{ code, message, ... }` (the seat and
-    // credit refusals); an object here would become the message "[object Object]".
+    // Python sends `detail` as text, or as `{ code, message, ... }` (a 402 refusal
+    // does); an object here would become the message "[object Object]".
     const textOf = (value: unknown): string | undefined => {
       const text =
         value !== null && typeof value === 'object'

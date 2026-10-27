@@ -4,7 +4,7 @@ import { Logger } from '../services/logger.service';
 
 /**
  * 'warn' for a 4xx its thrower marked as expected (a refusal doing its job,
- * such as no seat or no credits); 'error' for everything else, every 5xx included.
+ * such as a 402); 'error' for everything else, every 5xx included.
  */
 export const logLevelFor = (error: unknown): 'warn' | 'error' =>
   error instanceof BaseError &&

@@ -231,7 +231,7 @@ export const handleBackendError = (
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  // 402 is the seat and credit check refusing as it should, not a fault.
+  // A 402 is the service refusing what the account does not cover, as it should: not a fault.
   const refusal = statusCode === 402;
   logger[refusal ? 'warn' : 'error'](`Backend error during ${operation}`, {
     statusCode,

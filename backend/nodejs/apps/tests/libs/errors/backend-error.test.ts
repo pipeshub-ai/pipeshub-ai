@@ -57,7 +57,7 @@ describe('handleBackendError', () => {
           {
             response: {
               status: 402,
-              data: { detail: { code: 'AI_BUDGET_EXCEEDED', scope: 'no_seat', message: 'No seat.' } },
+              data: { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } },
             },
           },
           'Chat Stream',

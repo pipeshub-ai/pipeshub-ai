@@ -319,9 +319,8 @@ describe('AIServiceCommand', () => {
     })
 
     it('reads the message of a detail sent as an object, and leaves the log to the caller', async () => {
-      const message =
-        'No seat is assigned to you in this organization, so this request did not run. Ask an admin to assign you a seat.'
-      const detail = { code: 'AI_BUDGET_EXCEEDED', scope: 'no_seat', message }
+      const message = 'Payment required by the upstream service'
+      const detail = { code: 'PAYMENT_REQUIRED', message }
       fetchStub.resolves({
         ok: false,
         status: 402,
@@ -337,7 +336,7 @@ describe('AIServiceCommand', () => {
         uri: 'http://ai.local/stream',
         method: HttpMethod.POST,
         headers: { 'content-type': 'application/json' },
-        body: { prompt: 'no seat' },
+        body: { prompt: 'payment required' },
       })
 
       try {
