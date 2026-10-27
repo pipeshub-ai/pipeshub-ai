@@ -1856,6 +1856,18 @@ describe('Connector Routes - handler coverage', () => {
         expect(url).to.include('start_block=5')
       })
 
+      it('sends an extract request on to the query service', async () => {
+        const exec = sinon
+          .stub(connectorUtils, 'executeConnectorCommand')
+          .resolves({ statusCode: 200, data: { content: 'x' } })
+
+        await readContent({ query: 'how many sponsors', extract: 'true' })
+
+        const url: string = exec.firstCall.args[0]
+        expect(url).to.include('/api/v1/records/rec-1/read?')
+        expect(url).to.include('extract=true')
+      })
+
       it('keeps a startBlock of 0, which means "read in order from the top"', async () => {
         const exec = sinon
           .stub(connectorUtils, 'executeConnectorCommand')
@@ -1871,6 +1883,7 @@ describe('Connector Routes - handler coverage', () => {
         ['a budget above 140000 characters', { maxChars: '500000' }],
         ['a negative startBlock', { startBlock: '-1' }],
         ['an unknown mode', { mode: 'channel' }],
+        ['an extract that is not true or false', { query: 'x', extract: 'yes' }],
       ]
       for (const [name, query] of invalid) {
         it(`rejects ${name} without reaching a backend`, async () => {

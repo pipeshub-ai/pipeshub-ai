@@ -8,7 +8,11 @@ from typing import Any
 from urllib.parse import unquote, urlparse
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
-from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.image_utils import (
+    INDEX_RECORD_IMAGE_BYTES,
+    fit_image_for_index,
+    get_extension_from_mimetype,
+)
 from app.utils.public_http import (
     PublicFetchError,
     PublicFetchLimits,
@@ -34,6 +38,7 @@ VIEWBOX_NUM_COMPONENTS = 4
 _MAX_IMAGE_BYTES = 20 * 1024 * 1024
 _IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=_MAX_IMAGE_BYTES, timeout_s=10.0)
 _CSS_VAR_OPEN = re.compile(r'var\(\s*--[\w-]+\s*(,)?')
+_MAX_PARALLEL_IMAGE_FETCHES = 4
 _logger = logging.getLogger(__name__)
 
 
@@ -226,7 +231,9 @@ class ImageParser:
     ) -> list[str | None]:
         """
         Convert a list of image URLs to base64 encoded strings asynchronously.
-        If a URL is already a base64 data URL, it's returned as-is.
+        A base64 data URL is not fetched. Every image is shrunk to what
+        indexing keeps (``fit_image_for_index``), and once this call's images
+        reach ``INDEX_RECORD_IMAGE_BYTES`` the rest are not fetched (None).
         SVG images are skipped and None is appended instead.
 
         Args:
@@ -237,12 +244,34 @@ class ImageParser:
             List of base64 encoded image strings (None for SVG images or failed conversions)
         """
         fetcher = PublicUrlFetcher()
-        tasks = [
-            ImageParser._fetch_single_url(fetcher, url, logger=logger)
-            for url in urls
-        ]
-        base64_images = await asyncio.gather(*tasks)
-        return list(base64_images)
+        # Each image is held whole, and again as base64, until it is shrunk:
+        # fetched all at once, a page of photos was held at full size together.
+        slots = asyncio.Semaphore(_MAX_PARALLEL_IMAGE_FETCHES)
+        # Downloads overlap; decoding does not: each holds a photo's pixels.
+        fitting = asyncio.Lock()
+        kept = skipped = 0
+
+        async def fetch(url: str) -> str | None:
+            nonlocal kept, skipped
+            async with slots:
+                if kept >= INDEX_RECORD_IMAGE_BYTES:
+                    skipped += 1
+                    return None
+                uri = await ImageParser._fetch_single_url(fetcher, url, logger=logger)
+                if uri is None:
+                    return None
+                async with fitting:
+                    uri = await asyncio.to_thread(fit_image_for_index, uri)
+                kept += len(uri)
+                return uri
+
+        base64_images = list(await asyncio.gather(*(fetch(url) for url in urls)))
+        if skipped:
+            (logger or _logger).info(
+                "Image budget of %d MB reached; %d image(s) not fetched",
+                INDEX_RECORD_IMAGE_BYTES // (1024 * 1024), skipped,
+            )
+        return base64_images
 
     @staticmethod
     def _extract_svg_dimensions(svg_str: str) -> tuple[int | None, int | None]:

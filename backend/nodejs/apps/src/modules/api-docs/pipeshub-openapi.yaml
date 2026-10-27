@@ -6450,10 +6450,65 @@ components:
           description: Budgeted record reads only. The record read.
         order:
           type: string
-          enum: [in_order, relevance]
+          enum: [in_order, relevance, extract]
           description: >-
             Budgeted record reads only. `relevance` when `query` chose which
-            blocks to show; the blocks are then not contiguous.
+            blocks to show; the blocks are then not contiguous. `extract` when
+            `extract=true` was asked and the reader model answered: `content`
+            is the passages it copied out (told to copy word for word; see
+            `extract.unverifiedLines`), not a page of the record. An extract
+            is one response, so `complete` is true and `nextStartBlock` null;
+            whether the reader saw the whole record is `extract.sourceComplete`.
+        extract:
+          type: object
+          description: >-
+            Reads with `extract=true` only. With `order: extract`, the reader
+            model's call. On a plain read returned because the reader could not
+            answer, `error` alone.
+          properties:
+            model:
+              type: string
+              nullable: true
+              description: The model that read the record.
+            provider:
+              type: string
+              nullable: true
+            nothingRelevant:
+              type: boolean
+              description: True when the reader found nothing that answers `query`; `content` is then `NOTHING RELEVANT`.
+            truncated:
+              type: boolean
+              description: True when the reader's reply was cut to fit `maxChars` (or 12,000 characters, whichever is smaller).
+            unverifiedLines:
+              type: integer
+              description: >-
+                Lines of `content` with words not found in the text the reader was given, as
+                written: a paraphrase, or a misreading. Check them with a plain read. Every
+                fragment with a letter or digit is checked, and a match may not run into a
+                longer word or number (`$1,250` is not found in `$1,250,000`, nor `$1,250.` in
+                `$1,250.99`). A note the reader adds in square brackets beside a quote (where
+                a passage sits) is not checked; a markdown link's label, and a line that is
+                only a bracketed note, are. 0 means every quoted fragment was found, not that
+                `content` is complete or that it quotes the right passage.
+            sourceChars:
+              type: integer
+              description: Characters of the record the reader was given.
+            sourceComplete:
+              type: boolean
+              description: >-
+                True when the reader was given the whole record. False when the record was
+                longer than the reader's 120,000 characters, or had more than 5,000 blocks,
+                and it was given part of it: the blocks most relevant to `query`, or the start
+                of the record when the relevance search found nothing or failed.
+            inputTokens:
+              type: integer
+            outputTokens:
+              type: integer
+            error:
+              type: string
+              description: >-
+                Why there is no extract (the failure's type, or `EmptyReply`); `content` is then the
+                plain read at `maxChars`.
         startBlock:
           type: integer
           description: >-
@@ -52822,6 +52877,21 @@ paths:
             type: integer
             minimum: 2000
             maximum: 140000
+        - name: extract
+          in: query
+          required: false
+          description: >-
+            With `query`, in record mode and without `startBlock`: return only
+            the passages that answer `query`, as the model assigned to the
+            `reader` role (else the default model) copies them out, instead of
+            the record's text. The model is told to copy word for word, and
+            `extract.unverifiedLines` counts the lines it did not. The
+            response's `order` is `extract`, and its `extract` object names the
+            model and the tokens it used. When the model cannot be reached, the
+            usual read is returned with `extract.error` set.
+          schema:
+            type: string
+            enum: ['true', 'false']
         - name: startBlock
           in: query
           required: false
@@ -52907,7 +52977,9 @@ paths:
         '422':
           description: |
             `mode=thread` was asked of a record that is not from Slack. Every
-            Slack message record can be read in thread mode.
+            Slack message record can be read in thread mode. Also returned for
+            `extract=true` without a `query`, with `startBlock`, or with
+            `mode=thread`: an extract reads one record for a question.
           content:
             application/json:
               schema:

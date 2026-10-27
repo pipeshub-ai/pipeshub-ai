@@ -77,11 +77,11 @@ class TestCompressRecord:
         result = msgspec.msgpack.decode(decompressed_bytes)
         assert result == original
 
-    def test_returns_base64_string(self):
+    def test_returns_base64_as_bytes(self):
         bs = _make_blob_storage()
         result = bs._compress_record({"x": 1})
 
-        assert isinstance(result, str)
+        assert isinstance(result, bytes)
         # Should be valid base64
         decoded = base64.b64decode(result)
         assert len(decoded) > 0
@@ -99,7 +99,7 @@ class TestCompressRecord:
             "nested": {"a": {"b": "c"}},
         }
         result = bs._compress_record(record)
-        assert isinstance(result, str)
+        assert isinstance(result, bytes)
         # Verify roundtrip
         import msgspec
         import zstandard as zstd
@@ -111,7 +111,7 @@ class TestCompressRecord:
     def test_empty_dict(self):
         bs = _make_blob_storage()
         result = bs._compress_record({})
-        assert isinstance(result, str)
+        assert isinstance(result, bytes)
 
     def test_compression_logs_ratio(self):
         logger = MagicMock()
