@@ -210,6 +210,7 @@ class ChatState(TypedDict):
     keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
+    attachment_record_ids: list[str] | None  # The attachments' virtual record ids the user may read (set by chat modes; also in filters["kb"])
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
 
     # Reflection and retry fields (for intelligent error recovery)

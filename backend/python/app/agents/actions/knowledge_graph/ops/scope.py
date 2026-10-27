@@ -38,6 +38,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _NO_KB_SENTINEL = "NO_KB_SELECTED"
+#: The current turn's readable attachments as virtual record ids, which chat
+#: mode also adds to ``filters["kb"]`` so search covers them.
+ATTACHMENT_RECORD_IDS_KEY = "attachment_record_ids"
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +126,27 @@ class KnowledgeScope:
 # ---------------------------------------------------------------------------
 # Builder
 # ---------------------------------------------------------------------------
+
+
+def browsable_app_ids(state: "ChatState", scope: KnowledgeScope) -> list[str]:
+    """The scope's whole apps a listing may filter by connector id: connectors
+    and knowledge bases alike, since a knowledge base is an app whose id is its
+    records' ``connectorId``. A chat-mode turn adds its attachments' virtual
+    record ids to ``kb``; they are not apps, and as a connector filter they
+    would hide everything."""
+    attached = set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())
+    return [i for i in dict.fromkeys([*scope.app_ids, *scope.kb_ids]) if i not in attached]
+
+
+def turn_picked_sources(state: "ChatState") -> bool:
+    """Whether the turn is limited to sources the user picked (or a project's,
+    under ``strictScope``), not counting the attachments chat mode adds."""
+    filters = state.get("filters") or {}
+    picked = _picked_apps(filters)
+    if picked is None:
+        return False
+    attached = set(state.get(ATTACHMENT_RECORD_IDS_KEY) or ())
+    return bool(filters.get(STRICT_SCOPE_FILTER_KEY)) or bool(picked - attached)
 
 
 def _clean_kb(raw: list[str]) -> tuple[str, ...]:

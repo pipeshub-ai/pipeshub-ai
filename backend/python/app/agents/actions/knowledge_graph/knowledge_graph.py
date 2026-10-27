@@ -49,10 +49,12 @@ from .navigator import GraphNavigator
 from .ops.results import result_text, search_result_summary
 from .ops.scope import (
     _has_selection,
+    browsable_app_ids,
     ids_within_scope,
     navigation_nameable_ids,
     resolve_scope,
     selection_browse_refusal,
+    turn_picked_sources,
 )
 from .ops.time_range import time_range_to_kh_filters
 from .resolver import RecordResolver
@@ -465,21 +467,19 @@ class KnowledgeGraph:
 
         # Resolve connector/kb scope from agent config / filters
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
-        kb_ids = list(scope.kb_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
-        if not connector_ids and not kb_ids and not _has_selection(state.get("filters") or {}):
-            # Chat-mode fallback: use all user-visible connectors. A selection
-            # below app level is already the scope; substituting the connector
-            # catalog would hide a collection folder's children, because a
-            # collection is not one of those connectors.
+        # A selection below app level is already the scope; a connector
+        # filter would hide a collection folder's children.
+        if not connector_ids and not _has_selection(state.get("filters") or {}):
             if not state.get("has_knowledge"):
                 return False, "No knowledge sources configured for this agent."
-            logger.debug(
-                "navigate: empty agent scope — using catalog-wide scope (%d connectors)",
-                len(catalog),
-            )
-            connector_ids = catalog.connector_ids()
+            # Nothing picked: no connector filter, so the listing gates by the
+            # user's own access. The catalog would leave out knowledge bases.
+            # A picked turn with nothing browsable (only attachments) keeps the
+            # catalog; its rows are re-checked against the turn's limit below.
+            if turn_picked_sources(state):
+                connector_ids = catalog.connector_ids()
 
         # If node_id looks like a URL or issue key, try to resolve it first
         if node_id:
@@ -535,7 +535,6 @@ class KnowledgeGraph:
                 page=page,
                 limit=limit,
                 connector_ids=connector_ids or None,
-                record_group_ids=list(kb_ids) if kb_ids else None,
                 depth=depth,
                 created_at=created_at,
                 updated_at=updated_at,
@@ -678,7 +677,7 @@ class KnowledgeGraph:
 
         # Agent-scoped connector ids (for ordering priority in resolver)
         scope = await resolve_scope(state)
-        connector_ids = list(scope.app_ids)
+        connector_ids = browsable_app_ids(state, scope)
 
         resolver = RecordResolver(
             graph_provider=graph_provider,

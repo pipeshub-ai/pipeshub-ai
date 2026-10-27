@@ -272,6 +272,16 @@ class TestStaysInsideAFolderLimit:
         assert _ids(first) | _ids(second) == {"shared-folder", "shared-file"}
         assert "page=3" not in second
 
+    async def test_records_asked_by_type_are_read_from_inside_the_limit(self) -> None:
+        graph = self._graph()
+
+        _, text = await execute_list_files(
+            self._state(graph), query="budget", source_ids=["kb-big"], node_types=["record"], limit=5,
+        )
+
+        assert _ids(text) == {"shared-file"}
+        assert len(connector_pages(graph)) >= 2
+
     async def test_a_root_listing_names_what_the_limit_shares(self) -> None:
         _, text = await execute_list_files(self._state(self._graph()))
 
@@ -304,3 +314,51 @@ class TestStaysInsideAFolderLimit:
 
         assert "id=shared-folder" in text
         assert "kb-big" not in text and "kb-other" not in text
+
+
+class TestListsInsideAKnowledgeBase:
+    """A knowledge base is an app: its files are listed by naming it."""
+
+    async def test_naming_a_kb_lists_its_files(self, graph: MagicMock) -> None:
+        state = _state(graph, apps=["app-jira"], kb=["kb-hr"])
+
+        _, text = await execute_list_files(state, source_ids=["kb-hr"], node_types=["record"])
+
+        assert _ids(text) == {"hr-1", "hr-2"}
+
+    async def test_a_source_outside_the_conversation_lends_its_name_to_nothing(self, graph: MagicMock) -> None:
+        """A member names a KB he cannot read: the answer is the sources he can
+        list, said so, never another source's files under that KB's name."""
+        state = _state(graph, apps=["app-jira"], kb=["kb-hr"])
+
+        _, text = await execute_list_files(state, source_ids=["kb-finance"], node_types=["record"])
+
+        assert text.startswith("None of the named sources is available")
+        assert _ids(text) == {"app-jira", "kb-hr"}
+
+    async def test_a_large_kb_says_which_page_comes_next(self) -> None:
+        graph = create_autospec(ArangoHTTPProvider, instance=True)
+        stub_listing(graph, USER_KEY, _BIG)
+        state = _state(graph, apps=[], kb=["kb-big"])
+
+        _, text = await execute_list_files(state, source_ids=["kb-big"], node_types=["record"], limit=20)
+
+        assert len(_ids(text)) == 20
+        assert "(More items follow: call again with page=2.)" in text
+
+    async def test_nothing_picked_lists_every_source_the_user_reads(self, graph: MagicMock) -> None:
+        """The connector catalog leaves knowledge bases out, so a default chat
+        with no sources picked lists by the user's own access instead."""
+        state = {**_state(graph, apps=[], kb=[]), "has_knowledge": True}
+
+        _, text = await execute_list_files(state)
+
+        assert _ids(text) == set(_USER_VISIBLE)
+
+    async def test_records_across_several_sources_name_the_sources(self, graph: MagicMock) -> None:
+        state = _state(graph, apps=["app-jira"], kb=["kb-hr"])
+
+        _, text = await execute_list_files(state, node_types=["record"])
+
+        assert text.startswith("To list records or folders, name one source")
+        assert _ids(text) == {"app-jira", "kb-hr"}
