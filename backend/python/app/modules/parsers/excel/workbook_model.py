@@ -25,6 +25,8 @@ from __future__ import annotations
 import contextlib
 import gc
 import io
+import pickle
+import threading
 import zipfile
 import zlib
 from array import array
@@ -46,6 +48,7 @@ except ImportError:  # pragma: no cover
 
 __all__ = [
     "ModelCell",
+    "LoaderFailure",
     "ModelMergedCell",
     "SheetModel",
     "WorkbookModel",
@@ -370,10 +373,12 @@ class SheetModel:
 class WorkbookModel:
     """The sheets of a workbook, in order, with what the load cost the worker."""
 
-    def __init__(self, sheets: list[SheetModel], worker_peak_kb: int = 0) -> None:
+    def __init__(self, sheets: list[SheetModel], worker_peak_kb: int = 0, text_chars: int = 0) -> None:
         self._sheets = {s.title: s for s in sheets}
         self.sheetnames = [s.title for s in sheets]
         self.worker_peak_kb = worker_peak_kb
+        # characters the blocks would hold: every use of a shared string counts
+        self.text_chars = text_chars
 
     def __getitem__(self, name: str) -> SheetModel:
         return self._sheets[name]
@@ -436,10 +441,38 @@ def _enforce_growth_limit(limit_bytes: int) -> tuple[Callable[[], None] | None, 
     return restore, target
 
 
-def _reset_peak_rss() -> None:
-    """Start the process's peak-RSS watermark (VmHWM) from its current size, where Linux allows."""
-    with contextlib.suppress(OSError), open("/proc/self/clear_refs", "w", encoding="ascii") as handle:
-        handle.write("5")
+class _GrowthWatcher:
+    """Records how far this process's data segment grows while a load runs.
+
+    The peak is what tells a load that died of the cap from one that failed for its own
+    reasons, when openpyxl turned the MemoryError into another error. It is sampled here
+    because the kernel's own peak marks (VmHWM) cover the whole life of a long-lived worker
+    and cannot be reset by a non-dumpable process.
+    """
+
+    _INTERVAL_SECONDS = 0.02
+
+    def __init__(self) -> None:
+        self._start_kb = _status_kb("VmData")
+        self.peak_kb = 0
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._run, name="excel-growth-watch", daemon=True)
+
+    def __enter__(self) -> _GrowthWatcher:
+        self._thread.start()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1)
+
+    def _run(self) -> None:
+        while not self._stop.wait(self._INTERVAL_SECONDS):
+            self.sample()
+
+    def sample(self) -> int:
+        self.peak_kb = max(self.peak_kb, _status_kb("VmData") - self._start_kb)
+        return self.peak_kb
 
 
 def _precheck(file_binary: bytes, max_xml_bytes: int) -> None:
@@ -528,42 +561,65 @@ def _extract(file_binary: bytes) -> WorkbookModel:
         for ws in list(workbook.worksheets):
             sheets.append(_extract_sheet(ws, table, index))
             ws._cells = {}  # hand the sheet's objects back as we go
-        return WorkbookModel(sheets, _status_kb("VmHWM"))
+        text_chars = sum(len(v) for sh in sheets for v in sh.values if isinstance(v, str))
+        return WorkbookModel(sheets, _status_kb("VmHWM"), text_chars)
     finally:
         workbook.close()
 
 
-def load_workbook_model(file_binary: bytes, limit_bytes: int, max_xml_bytes: int) -> WorkbookModel:
+class LoaderFailure(Exception):
+    """The loader's own error, when the original cannot be pickled (lxml's syntax errors)."""
+
+    def __init__(self, module: str, name: str, message: str) -> None:
+        super().__init__(module, name, message)
+        self.module = module
+        self.name = name
+        self.message = message
+
+
+def _portable_failure(exc: Exception) -> Exception:
+    try:
+        pickle.loads(pickle.dumps(exc))
+    except Exception:
+        return LoaderFailure(type(exc).__module__, type(exc).__name__, str(exc))
+    return exc
+
+
+def load_workbook_model(
+    file_binary: bytes, limit_bytes: int, max_xml_bytes: int, max_text_chars: int | None = None
+) -> WorkbookModel:
     """Load a workbook and return its compact model, growing by at most *limit_bytes*.
 
     Runs in a worker process (``parse_pool``). Raises ``WorkbookRefused``
-    (``too_large`` when the load needed more than the allowance, or the
-    decompressed bytes passed *max_xml_bytes*; ``unreadable`` for a DOCTYPE or
+    (``too_large`` when the load needed more than the allowance, the decompressed
+    bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
+    shared string counted) passed *max_text_chars*; ``unreadable`` for a DOCTYPE or
     entity declaration). Anything else is the loader's own error for a file it
     cannot read, as the caller would have seen it before.
     """
     restore, cap = _enforce_growth_limit(limit_bytes)
-    _reset_peak_rss()
-    start_rss_kb = _status_kb("VmRSS")
     over = False
-    try:
-        _precheck(file_binary, max_xml_bytes)
-        return _extract(file_binary)
-    except MemoryError:
-        over = True
-    except WorkbookRefused:
-        raise
-    except Exception:
-        # openpyxl catches MemoryError in places and re-raises it as another error (a TypeError
-        # from a half-built range); a load whose peak came near the allowance died of the cap.
-        grew = (_status_kb("VmHWM") - start_rss_kb) * 1024
-        if cap is not None and grew >= limit_bytes * _NEAR_LIMIT:
+    with _GrowthWatcher() as growth:
+        try:
+            _precheck(file_binary, max_xml_bytes)
+            model = _extract(file_binary)
+            if max_text_chars is not None and model.text_chars > max_text_chars:
+                raise WorkbookRefused("too_large", f"{model.text_chars} characters of cell text")
+            return model
+        except MemoryError:
             over = True
-        else:
+        except WorkbookRefused:
             raise
-    finally:
-        if restore is not None:
-            restore()
+        except Exception as exc:
+            # openpyxl catches MemoryError in places and re-raises it as another error (a
+            # TypeError from a half-built range); a load that came near the allowance died of it.
+            if cap is not None and growth.sample() * 1024 >= limit_bytes * _NEAR_LIMIT:
+                over = True
+            else:
+                raise _portable_failure(exc) from exc
+        finally:
+            if restore is not None:
+                restore()
     if over:
         gc.collect()
         raise WorkbookRefused("too_large", f"the load needed more than {limit_bytes} bytes; worker peak {_status_kb('VmHWM')} kB")

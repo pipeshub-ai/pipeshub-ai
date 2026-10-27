@@ -17,6 +17,7 @@ import logging
 import os
 import sys
 import threading
+import zipfile
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -286,7 +287,7 @@ def _alive(pid: int) -> bool:
         return False
 
 
-def test_a_worker_killed_while_loading_is_reported_as_too_large_and_leaves_no_process(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_worker_killed_while_loading_is_a_retryable_crash_and_leaves_no_process(monkeypatch: pytest.MonkeyPatch) -> None:
     real = parse_pool.run_blocking
     child: list[int] = []
 
@@ -296,9 +297,12 @@ def test_a_worker_killed_while_loading_is_reported_as_too_large_and_leaves_no_pr
         return real(os._exit, 137, **kwargs)  # the kernel's OOM kill looks the same
 
     monkeypatch.setattr(parse_pool, "run_blocking", die_after_forking)
-    with pytest.raises(ParseError) as raised:
+    # Nothing says the kill was for memory (an operator, a deploy), so it is the pool's
+    # worker-crash reason, not "too large".
+    with pytest.raises(parse_pool.ParseWorkerError) as raised:
         load(workbook_zip("<sheetData/>"))
-    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    assert raised.value.cause == "crashed"
+    assert str(raised.value) == user_errors.PARSE_WORKER_OUT_OF_MEMORY
     deadline = time.monotonic() + 10
     while _alive(child[0]) and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -439,3 +443,40 @@ async def test_loading_does_not_block_the_event_loop() -> None:
 
 def _heavy_workbook_small_limit() -> bytes:
     return workbook_zip(f"<sheetData>{empty_cells(500, 100)}</sheetData>")
+
+
+# -- what the blocks would hold, not only what the load needs -----------------------------------------
+
+
+def _repeated_strings(width: int, n: int = 20, uses: int = 20) -> bytes:
+    from tests.support.excel_workbooks import MAIN_NS, column_letters
+
+    strings = "".join(f"<si><t>{i:03d}{'x' * width}</t></si>" for i in range(n))
+    sst = f'<?xml version="1.0"?><sst xmlns="{MAIN_NS}">{strings}</sst>'
+    rows = "".join(
+        f'<row r="{i + 1}">' + "".join(f'<c r="{column_letters(c + 1)}{i + 1}" t="s"><v>{(i + c) % n}</v></c>' for c in range(uses)) + "</row>"
+        for i in range(n)
+    )
+    return workbook_zip(f"<sheetData>{rows}</sheetData>", extra={"xl/sharedStrings.xml": sst})
+
+
+def test_text_repeated_by_shared_strings_is_counted_per_use(monkeypatch: pytest.MonkeyPatch) -> None:
+    data = _repeated_strings(10_000)  # 20 strings x 20 uses x 10 000 characters = 4 M characters of block text
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 3_000_000)
+    with pytest.raises(ParseError) as raised:
+        load(data)
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 5_000_000)
+    assert load(data).workbook.text_chars >= 4_000_000  # the same workbook loads under a larger allowance
+
+
+def test_a_corrupt_workbook_keeps_the_loaders_own_error() -> None:
+    from lxml import etree
+
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w") as archive:
+        archive.writestr("[Content_Types].xml", "<broken")
+    with pytest.raises(etree.XMLSyntaxError):  # as before the worker: not a stand-in RuntimeError
+        load(out.getvalue())
+    with pytest.raises(zipfile.BadZipFile):
+        load(b"not a zip")

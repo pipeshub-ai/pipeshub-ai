@@ -7,6 +7,7 @@ from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
+from lxml import etree
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -36,6 +37,7 @@ from app.modules.parsers.excel.prompt_template import (
     table_summary_prompt,
 )
 from app.modules.parsers.excel.workbook_model import (
+    LoaderFailure,
     ModelMergedCell,
     SheetModel,
     WorkbookRefused,
@@ -79,6 +81,9 @@ EXCEL_LOAD_MAX_MB = env_positive_int("EXCEL_LOAD_MAX_MB", 1536)
 EXCEL_LOAD_MAX_BYTES = EXCEL_LOAD_MAX_MB * 1024 * 1024
 # Backstop on the XML decompressed, all parts together (checked in the worker).
 EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
+# Blocks hold a copy of a cell's text per use (a shared string used by N cells is N copies),
+# so the text they would hold is counted per use in the worker, and a workbook over this is refused.
+EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 768) * 1024 * 1024
 
 
 def _too_large(detail: str = "") -> ParseError:
@@ -87,6 +92,13 @@ def _too_large(detail: str = "") -> ParseError:
         EXCEL_TOO_LARGE,
         details={"max_load_mb": EXCEL_LOAD_MAX_MB, "reason": detail},
     )
+
+
+def _loader_error(failure: LoaderFailure) -> Exception:
+    """The error the loader raised in the worker, rebuilt where it cannot be pickled."""
+    if (failure.module, failure.name) == ("lxml.etree", "XMLSyntaxError"):
+        return etree.XMLSyntaxError(failure.message, 0, 0, 0)
+    return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
 
 
 def _refusal(refused: WorkbookRefused) -> ParseError:
@@ -452,15 +464,14 @@ class ExcelParser:
                 file_binary,
                 EXCEL_LOAD_MAX_BYTES,
                 EXCEL_MAX_SHEET_XML_BYTES,
+                EXCEL_MAX_TEXT_CHARS,
                 label="xlsx workbook",
                 size=len(file_binary),
             )
         except WorkbookRefused as refused:
             raise _refusal(refused) from None
-        except parse_pool.ParseWorkerError as failed:
-            if failed.cause == "crashed":  # killed while loading: it needed more than it was allowed
-                raise _too_large() from None
-            raise
+        except LoaderFailure as failure:
+            raise _loader_error(failure) from None
         self.workbook = model
         self.logger.info(
             "Workbook loaded with %d sheets: %s (worker peak %d MB)",
