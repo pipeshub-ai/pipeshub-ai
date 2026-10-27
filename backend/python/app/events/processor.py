@@ -19,6 +19,7 @@ from app.exceptions.indexing_exceptions import (
     DocumentProcessingError,
     IndexingError,
     MultimodalModelNotConfiguredError,
+    RecordDeletedError,
     RecordStatusUpdateError,
 )
 from app.models.blocks import (
@@ -204,14 +205,10 @@ class Processor:
                 raise Exception("No image data provided")
 
             record = await self.graph_provider.get_document(
-                record_id, CollectionNames.RECORDS.value
+                record_id, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {record_id} not found in database")
-                # Must yield both events to release semaphores properly
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=record_id))
-                return
+                raise RecordDeletedError(record_id)
 
             _ , config = await self._get_llm_for_role("indexing", reasoning_effort="low")
             is_multimodal_llm = config.get("isMultimodal")
@@ -342,13 +339,11 @@ class Processor:
             block_containers = await processor.create_blocks(parsed_data)
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
@@ -394,13 +389,11 @@ class Processor:
             block_containers = await self.docling_processor.create_blocks(doc)
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers
@@ -577,11 +570,9 @@ class Processor:
                 )
 
                 # Get record and run indexing pipeline
-                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value)
+                record = await self.graph_provider.get_document(recordId, CollectionNames.RECORDS.value, raise_on_error=True)
                 if record is None:
-                    self.logger.error(f"❌ Record {recordId} not found in database")
-                    yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                    return
+                    raise RecordDeletedError(recordId)
 
                 record = self._convert_record(record)
                 record.block_containers = combined_block_containers
@@ -652,12 +643,10 @@ class Processor:
                 else:
                     block_group.children = None
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = BlocksContainer(blocks=blocks, block_groups=block_groups)
             record.virtual_record_id = virtual_record_id
@@ -735,14 +724,11 @@ class Processor:
 
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -816,14 +802,11 @@ class Processor:
 
             # Get record from database
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
 
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
 
             # Convert to Record entity and attach blocks
             record = self._convert_record(record)
@@ -840,6 +823,8 @@ class Processor:
 
             self.logger.info("✅ Blocks Container processing completed successfully")
 
+        except IndexingError:
+            raise
         except Exception as e:
             self.logger.error(f"❌ Error processing Blocks Container: {str(e)}")
             raise
@@ -1371,13 +1356,10 @@ class Processor:
             blocks_containers = await document_parser.create_blocks(llm)
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = blocks_containers
             record.virtual_record_id = virtual_record_id
@@ -1492,13 +1474,10 @@ class Processor:
             self.logger.info(f"🔍 Detected {len(tables)} table(s) in delimited file")
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.virtual_record_id = virtual_record_id
 
@@ -1643,12 +1622,10 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
 
             record.block_containers = block_containers
@@ -1799,13 +1776,10 @@ class Processor:
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                # Must yield indexing_complete to release indexing semaphore properly
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
 
             record.block_containers = block_containers
@@ -1977,13 +1951,10 @@ class Processor:
                 code_binary = code_binary.encode("utf-8")
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             repository_file = record.get("recordType") == RecordTypes.CODE_FILE.value
             record = convert_record_dict_to_record(record)
 
@@ -2188,12 +2159,10 @@ class Processor:
             block_containers = await processor.create_blocks(conv_res)
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id=recordId))
-                return
+                raise RecordDeletedError(recordId)
             record = self._convert_record(record)
             record.block_containers = block_containers
             record.virtual_record_id = virtual_record_id
@@ -2303,13 +2272,10 @@ class Processor:
             
             # Get record from database
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise DocumentProcessingError(
-                    "Record not found in database", doc_id=recordId
-                )
+                raise RecordDeletedError(recordId)
             
             record = self._convert_record(record)
             record.block_containers = block_containers
@@ -2377,13 +2343,10 @@ class Processor:
             )
 
             record = await self.graph_provider.get_document(
-                recordId, CollectionNames.RECORDS.value
+                recordId, CollectionNames.RECORDS.value, raise_on_error=True
             )
             if record is None:
-                self.logger.error(f"❌ Record {recordId} not found in database")
-                raise DocumentProcessingError(
-                    "Record not found in database", doc_id=recordId
-                )
+                raise RecordDeletedError(recordId)
 
             record = self._convert_record(record)
             record.block_containers = block_containers

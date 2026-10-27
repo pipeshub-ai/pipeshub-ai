@@ -59,6 +59,21 @@ class AISettingsUnavailableError(IndexingError):
     """
 
 
+class RecordDeletedError(IndexingError):
+    """The record was deleted (or moved to the trash) while it was being indexed.
+
+    An expected outcome, not a fault: there is no record left to write a status
+    to. Terminal, since a retry finds the record gone too. Deliberately
+    not a ``DocumentProcessingError``: that writes FAILED onto the record and
+    sends its queued MD5 duplicates to FAILED with it. Raise it only from a
+    read that propagates graph errors (``raise_on_error=True``), so an outage
+    is never mistaken for a deletion.
+    """
+
+    def __init__(self, record_id: str) -> None:
+        super().__init__(f"record {record_id} was deleted while it was being indexed", record_id)
+
+
 class RecordStatusUpdateError(IndexingError):
     """Raised when persisting a record's status fields to the graph DB fails.
 

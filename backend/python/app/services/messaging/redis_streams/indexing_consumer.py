@@ -44,7 +44,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
     format_exception_chain,
-    is_source_refusal,
+    is_expected_outcome,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.interface.producer import IMessagingProducer
@@ -3359,9 +3359,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 await self._clear_retry_tracking(stable_message_id)
                 return True
 
-            if is_source_refusal(e):
-                # Expected: the handler logged the refusal and stored its reason.
-                self.logger.info("Source refused the item for %s: %s", message_id, e)
+            if is_expected_outcome(e):
+                # Expected: the handler already logged it once.
+                self.logger.info("Item for %s ended as expected: %s: %s", message_id, type(e).__name__, e)
             else:
                 # Log the full exception chain for debugging
                 exception_chain = format_exception_chain(e)

@@ -827,6 +827,21 @@ class TestOnEventEdgeCases:
             await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
 
     @pytest.mark.asyncio
+    async def test_a_record_deleted_mid_indexing_is_not_logged_as_an_error(self) -> None:
+        from app.exceptions.indexing_exceptions import RecordDeletedError
+
+        ep, logger, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_docx_document = MagicMock(side_effect=RecordDeletedError("rec-1"))
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(RecordDeletedError):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+        logger.error.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
         """If virtualRecordId not in payload, it's taken from the DB record."""
         ep, _, processor, gp = _make_event_processor()
