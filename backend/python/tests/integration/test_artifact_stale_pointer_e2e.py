@@ -347,27 +347,16 @@ async def test_shared_vrid_upload_and_mapping_interleaved(world: World) -> None:
             return True
         return False
 
-    if hasattr(world.blob, "_switch_mapping"):
-        # The compare-and-set that names the new document on the mapping.
-        real_switch = world.blob._switch_mapping
+    # The compare-and-set that names the new document on the mapping.
+    real_switch = world.blob._switch_mapping
 
-        async def switch_mapping(org_id: str, virtual_record_id: str, node: Any, fields: dict[str, Any], **kw: Any) -> bool:  # noqa: ANN401
-            if x_is_mapping(fields.get("storedRev")):
-                x_uploaded.set()
-                await y_done.wait()
-            return await real_switch(org_id, virtual_record_id, node, fields, **kw)
+    async def switch_mapping(org_id: str, virtual_record_id: str, node: Any, fields: dict[str, Any], **kw: Any) -> bool:  # noqa: ANN401
+        if x_is_mapping(fields.get("storedRev")):
+            x_uploaded.set()
+            await y_done.wait()
+        return await real_switch(org_id, virtual_record_id, node, fields, **kw)
 
-        world.blob._switch_mapping = switch_mapping  # type: ignore[method-assign]
-    else:
-        real_map = world.blob.store_virtual_record_mapping
-
-        async def store_mapping(org_id: str, virtual_record_id: str, document_id: str, *a: Any, **kw: Any) -> bool:  # noqa: ANN401
-            if x_is_mapping(kw.get("stored_rev")):
-                x_uploaded.set()
-                await y_done.wait()
-            return await real_map(org_id, virtual_record_id, document_id, *a, **kw)
-
-        world.blob.store_virtual_record_mapping = store_mapping  # type: ignore[method-assign]
+    world.blob._switch_mapping = switch_mapping  # type: ignore[method-assign]
 
     async def run_y() -> None:
         await x_uploaded.wait()
