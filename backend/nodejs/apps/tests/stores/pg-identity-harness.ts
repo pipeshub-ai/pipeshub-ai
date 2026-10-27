@@ -72,9 +72,8 @@ export class IdentityWorld {
 
   /** A repository whose methods run as the organisation their arguments name, as the user `spec` says. */
   scoped<T extends object>(repo: T, spec: Spec = {}): T {
-    const world = this;
     return new Proxy(repo, {
-      get(target, prop, receiver) {
+      get: (target, prop, receiver) => {
         const v = Reflect.get(target, prop, receiver) as unknown;
         if (typeof v !== 'function' || typeof prop !== 'string') return v;
         const call = (v as (...a: unknown[]) => unknown).bind(target);
@@ -83,24 +82,24 @@ export class IdentityWorld {
           const s = spec[prop] ?? {};
           if (s.pre) {
             const out = await call(...args);
-            world.ledger.learn(out);
+            this.ledger.learn(out);
             return out;
           }
           let org: string;
           try {
-            org = world.ledger.orgFor(args, s.org);
+            org = this.ledger.orgFor(args, s.org);
           } catch (e) {
             if (!s.maybePre) throw e;
             return call(...args);
           }
-          world.ledger.learn(args);
+          this.ledger.learn(args);
           let user: string | undefined;
-          if (s.as === 'admin') user = await world.adminOf(org);
-          else if (s.as === 'anyone') user = await world.memberOf(org);
+          if (s.as === 'admin') user = await this.adminOf(org);
+          else if (s.as === 'anyone') user = await this.memberOf(org);
           else if (typeof s.as === 'function') user = s.as(args);
           else if (s.as) user = args[s.as.arg] as string;
           const out = await inOrg(org, () => call(...args) as Promise<unknown>, user);
-          world.ledger.learn(out);
+          this.ledger.learn(out);
           return out;
         };
       },

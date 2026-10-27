@@ -59,7 +59,7 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     const looksRead = /^(find|get|list|count|exists?|search|lookup|has|resolve|read|fetch|load|query|check|select|stats|page)/;
     const missing: string[] = [];
     for (const dir of readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory())) {
-      let text = '';
+      let text: string;
       try { text = readFileSync(join(root, dir.name, 'types.ts'), 'utf8'); } catch { continue; }
       for (const m of text.matchAll(/^ {2}(?:readonly )?([a-zA-Z0-9_]+)(?:<[^(]*>)?\(/gm)) if (looksRead.test(m[1]) && !READ_METHODS.has(m[1])) missing.push(`${dir.name}.${m[1]}`);
     }
@@ -139,7 +139,7 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
   it('a read inside an open Mongo transaction is not compared; a Tx argument is replaced by the PostgreSQL one', async () => {
     let pgCalls = 0;
     const seen: unknown[] = [];
-    const repo = shadowWrap('thing', { findOwned: async (_t: unknown) => 1 }, () => ({ findOwned: async (t: unknown) => (pgCalls++, seen.push(t), 1) }), runPg);
+    const repo = shadowWrap('thing', { findOwned: async (...a: unknown[]) => a.length }, () => ({ findOwned: async (t: unknown) => (pgCalls++, seen.push(t), 1) }), runPg);
     await repo.findOwned({ store: 'mongo', session: { inTransaction: () => true } });
     await wait(30);
     expect(pgCalls).to.equal(0);
@@ -148,7 +148,7 @@ describe('shadow reads (DOC_STORE=shadow)', () => {
     expect(seen).to.deep.equal(['pg-tx']);
     // a call without a transaction goes straight to the repository, which opens its own read-only unit
     const direct: unknown[][] = [];
-    const repo2 = shadowWrap('thing', { findOwned: async (_o: string) => 1 }, () => ({ findOwned: async (...a: unknown[]) => (direct.push(a), 1) }), (() => { throw new Error('no unit expected'); }) as never);
+    const repo2 = shadowWrap('thing', { findOwned: async (...a: unknown[]) => a.length }, () => ({ findOwned: async (...a: unknown[]) => (direct.push(a), 1) }), (() => { throw new Error('no unit expected'); }) as never);
     await repo2.findOwned('org1');
     await wait(30);
     expect(direct).to.deep.equal([['org1']]);

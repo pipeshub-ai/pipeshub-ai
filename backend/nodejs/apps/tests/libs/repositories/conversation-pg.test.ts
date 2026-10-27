@@ -89,7 +89,7 @@ describe('PostgreSQL repository helpers', () => {
 
   it('an id outside the stored form matches nothing; upper case is the stored lower case', () => {
     expect(oidOf('nope')).to.equal(undefined)
-    expect(oidOf(`${'A'.repeat(24)}`)).to.equal('a'.repeat(24))
+    expect(oidOf('A'.repeat(24))).to.equal('a'.repeat(24))
     expect(oidsOf([O, 'x', U])).to.deep.equal([O, U])
   })
 
