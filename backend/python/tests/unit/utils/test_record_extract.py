@@ -10,6 +10,9 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import pytest
+from fastapi import HTTPException
+
 from app.models.blocks import BlockType
 from app.utils import record_extract as extract_module
 from app.utils.record_extract import (
@@ -42,11 +45,11 @@ def _llm(reply: str = "65 sponsors", *, error: Exception | None = None) -> Magic
     return llm
 
 
-async def _extract(record: dict, llm: MagicMock, **kwargs: object) -> dict:
+async def _extract(record: dict, llm: MagicMock, fallback_chars: int = 40_000, **kwargs: object) -> dict:
     config = {"provider": "azureOpenAI", "configuration": {"model": "small-model"}}
     with patch.object(extract_module, "get_llm_for_role", AsyncMock(return_value=(llm, config))) as role:
         result = await extract_record(
-            record, query="How many sponsors?", config_service=MagicMock(), fallback_chars=40_000, **kwargs,
+            record, query="How many sponsors?", config_service=MagicMock(), fallback_chars=fallback_chars, **kwargs,
         )
     assert role.await_args.args[1] == READER_ROLE
     return result
@@ -54,19 +57,21 @@ async def _extract(record: dict, llm: MagicMock, **kwargs: object) -> dict:
 
 class TestExtract:
     async def test_the_reader_sees_the_question_and_the_record_and_its_reply_is_returned(self) -> None:
-        llm = _llm()
+        llm = _llm("The ASF had 65 sponsors.")
         result = await _extract(_record("The ASF had 65 sponsors.", "Other text."), llm)
 
         prompt = llm.ainvoke.await_args.args[0][1].content
         assert "How many sponsors?" in prompt
         assert "The ASF had 65 sponsors." in prompt
-        assert result["content"] == "65 sponsors"
+        assert result["content"] == "The ASF had 65 sponsors."
         assert result["order"] == "extract"
-        assert result["chars"] == len("65 sponsors")
+        assert result["chars"] == len("The ASF had 65 sponsors.")
         assert result["extract"] == {
             "model": "small-model",
             "provider": "azureOpenAI",
             "nothingRelevant": False,
+            "truncated": False,
+            "unverifiedLines": 0,
             "sourceChars": result["extract"]["sourceChars"],
             "sourceComplete": True,
             "inputTokens": 1200,
@@ -74,15 +79,44 @@ class TestExtract:
         }
         assert result["extract"]["sourceChars"] > 0
 
+    async def test_an_extract_is_one_response_with_nothing_to_read_on(self) -> None:
+        result = await _extract(_record("The ASF had 65 sponsors."), _llm("The ASF had 65 sponsors."))
+
+        assert result["complete"] is True
+        assert result["nextStartBlock"] is None
+        assert result["maxChars"] == 40_000
+
+    async def test_lines_not_in_the_record_word_for_word_are_counted(self) -> None:
+        reply = (
+            "[cover page] FY2025 Annual Report\n\n"
+            "- **The ASF had 65 sponsors** … across 295 projects.\n"
+            "The foundation was backed by 85 sponsors in total."
+        )
+        record = _record("FY2025 Annual Report", "The ASF had   65 sponsors in FY25, across 295 projects.")
+
+        result = await _extract(record, _llm(reply))
+
+        assert result["extract"]["unverifiedLines"] == 1
+
     async def test_a_reply_that_finds_nothing_says_so(self) -> None:
         result = await _extract(_record("Unrelated."), _llm(NOTHING_RELEVANT))
 
         assert result["extract"]["nothingRelevant"] is True
 
-    async def test_a_reply_that_runs_on_is_bounded(self) -> None:
+    async def test_a_reply_that_runs_on_is_bounded_and_says_so(self) -> None:
         result = await _extract(_record("text"), _llm("y" * (EXTRACT_MAX_CHARS * 2)))
 
         assert result["chars"] == EXTRACT_MAX_CHARS
+        assert result["extract"]["truncated"] is True
+
+    async def test_a_reply_keeps_within_the_callers_budget_at_a_line_break(self) -> None:
+        reply = "\n".join(f"line {i} " + "z" * 90 for i in range(60))
+
+        result = await _extract(_record("text"), _llm(reply), fallback_chars=2_000)
+
+        assert result["chars"] <= 2_000
+        assert reply.startswith(result["content"]) and result["content"].endswith("z")
+        assert result["extract"]["truncated"] is True
 
     async def test_a_reply_in_parts_is_joined(self) -> None:
         llm = _llm()
@@ -94,6 +128,26 @@ class TestExtract:
 
 
 class TestFallback:
+    async def test_an_empty_reply_leaves_the_plain_read(self) -> None:
+        result = await _extract(_record("The ASF had 65 sponsors."), _llm("  "))
+
+        assert "65 sponsors" in result["content"]
+        assert result["extract"] == {"error": "EmptyReply"}
+
+    async def test_a_refusal_from_the_identity_layer_is_raised_not_read_around(self) -> None:
+        refusal = HTTPException(status_code=403, detail="no identity")
+        with pytest.raises(HTTPException) as err:
+            await _extract(_record("text"), _llm(error=refusal))
+        assert err.value is refusal
+
+    async def test_a_budget_above_the_readers_is_read_again_at_the_callers_budget(self) -> None:
+        record = _record(*[f"block {i} " + "x" * 400 for i in range(400)])
+        with patch.object(extract_module, "get_llm_for_role", AsyncMock(side_effect=ValueError("No LLM found"))):
+            result = await extract_record(record, query="sponsors", config_service=MagicMock(), fallback_chars=140_000)
+
+        assert result["maxChars"] == 140_000
+        assert result["chars"] > 120_000
+
     async def test_a_model_that_fails_leaves_the_plain_read_and_says_why(self) -> None:
         result = await _extract(_record("The ASF had 65 sponsors."), _llm(error=TimeoutError()))
 

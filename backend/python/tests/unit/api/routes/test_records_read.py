@@ -68,6 +68,17 @@ async def _read(request: SimpleNamespace, record_id: str = "r-1", **params: obje
     return await route.read_record_content(record_id, request, **{**defaults, **params})
 
 
+class _no_scope:
+    def __init__(self, *_args: object, **_kw: object) -> None:
+        pass
+
+    async def __aenter__(self) -> None:
+        return None
+
+    async def __aexit__(self, *_exc: object) -> None:
+        return None
+
+
 @pytest.fixture(autouse=True)
 def _demo_data_visible() -> Iterator[None]:
     with patch.object(route, "is_hidden_demo_record", AsyncMock(return_value=False)):
@@ -143,7 +154,8 @@ class TestRecordMode:
 
         with patch.object(route, "_fetch_multiple_records_impl",
                           AsyncMock(return_value={"ok": True, "records": [record]})), \
-                patch.object(route, "extract_record", extract):
+                patch.object(route, "extract_record", extract), \
+                patch.object(route, "call_scope", _no_scope):
             body = await _read(request, query=" sponsors ", extract=True, max_chars=5_000)
 
         assert body == {"content": "65 sponsors", "order": "extract"}
@@ -151,6 +163,42 @@ class TestRecordMode:
         assert extract.await_args.kwargs["query"] == "sponsors"
         assert extract.await_args.kwargs["fallback_chars"] == 5_000
         assert extract.await_args.kwargs["user_id"] == "u-1"
+
+    async def test_the_reader_runs_on_the_users_identity(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "The ASF had 65 sponsors.")
+        scopes: list[tuple] = []
+
+        class _Scope:
+            def __init__(self, principal: object, workload: object, **_kw: object) -> None:
+                scopes.append((principal, workload))
+
+            async def __aenter__(self) -> None:
+                return None
+
+            async def __aexit__(self, *_exc: object) -> None:
+                return None
+
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record", AsyncMock(return_value={"order": "extract"})), \
+                patch.object(route, "principal_from_request_user", lambda user: ("principal", user["userId"])), \
+                patch.object(route, "call_scope", _Scope):
+            await _read(request, query="sponsors", extract=True)
+
+        assert scopes == [(("principal", "u-1"), route.Workload.SEARCH)]
+
+    async def test_a_refusal_inside_the_extract_keeps_its_status(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "text")
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record",
+                             AsyncMock(side_effect=HTTPException(status_code=403, detail="no identity"))), \
+                patch.object(route, "call_scope", _no_scope), \
+                pytest.raises(HTTPException) as err:
+            await _read(request, query="sponsors", extract=True)
+        assert err.value.status_code == 403
 
     @pytest.mark.parametrize("params", [
         {"query": None},

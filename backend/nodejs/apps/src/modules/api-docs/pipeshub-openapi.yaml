@@ -6450,10 +6450,54 @@ components:
           description: Budgeted record reads only. The record read.
         order:
           type: string
-          enum: [in_order, relevance]
+          enum: [in_order, relevance, extract]
           description: >-
             Budgeted record reads only. `relevance` when `query` chose which
-            blocks to show; the blocks are then not contiguous.
+            blocks to show; the blocks are then not contiguous. `extract` when
+            `extract=true` was asked and the reader model answered: `content`
+            is the passages it copied out, not a page of the record. An extract
+            is one response, so `complete` is true and `nextStartBlock` null;
+            whether the reader saw the whole record is `extract.sourceComplete`.
+        extract:
+          type: object
+          description: >-
+            Reads with `extract=true` only. With `order: extract`, the reader
+            model's call. On a plain read returned because the reader could not
+            answer, `error` alone.
+          properties:
+            model:
+              type: string
+              nullable: true
+              description: The model that read the record.
+            provider:
+              type: string
+              nullable: true
+            nothingRelevant:
+              type: boolean
+              description: True when the reader found nothing that answers `query`; `content` is then `NOTHING RELEVANT`.
+            truncated:
+              type: boolean
+              description: True when the reader's reply was cut to fit `maxChars` (or 12,000 characters, whichever is smaller).
+            unverifiedLines:
+              type: integer
+              description: >-
+                Lines of `content` with words not found in the record as written: a paraphrase,
+                or a misreading. Check them with a plain read.
+            sourceChars:
+              type: integer
+              description: Characters of the record the reader was given.
+            sourceComplete:
+              type: boolean
+              description: True when the reader was given the whole record; false when only its blocks most relevant to `query`.
+            inputTokens:
+              type: integer
+            outputTokens:
+              type: integer
+            error:
+              type: string
+              description: >-
+                Why there is no extract (the failure's type, or `EmptyReply`); `content` is then the
+                plain read at `maxChars`.
         startBlock:
           type: integer
           description: >-
@@ -52846,7 +52890,9 @@ paths:
         '422':
           description: |
             `mode=thread` was asked of a record that is not from Slack. Every
-            Slack message record can be read in thread mode.
+            Slack message record can be read in thread mode. Also returned for
+            `extract=true` without a `query`, with `startBlock`, or with
+            `mode=thread`: an extract reads one record for a question.
           content:
             application/json:
               schema:

@@ -23,6 +23,9 @@ from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import OAuthScopes
 from app.modules.demo_data.access import is_hidden_demo_record
 from app.modules.retrieval.selection_scope import within_connection
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.utils.chat_helpers import accessible_node_ids
 from app.utils.fetch_full_record import _fetch_multiple_records_impl
 from app.utils.fetch_slack_thread import (
@@ -266,16 +269,25 @@ async def read_record_content(
         retrieval_service = await container.retrieval_service()
     if extract and query:
         try:
-            return await extract_record(
-                result["records"][0],
-                query=query.strip(),
+            # The reader model runs for this user, on their identity and budget, as a search does.
+            async with call_scope(
+                principal_from_request_user(request.state.user),
+                Workload.SEARCH,
                 config_service=container.config_service(),
-                retrieval_service=retrieval_service,
-                user_id=user_id,
-                org_id=org_id,
-                logger=logger,
-                fallback_chars=max_chars,
-            )
+                container=container,
+            ):
+                return await extract_record(
+                    result["records"][0],
+                    query=query.strip(),
+                    config_service=container.config_service(),
+                    retrieval_service=retrieval_service,
+                    user_id=user_id,
+                    org_id=org_id,
+                    logger=logger,
+                    fallback_chars=max_chars,
+                )
+        except HTTPException:
+            raise
         except Exception as exc:
             logger.error("Error extracting from record %s: %s", record_id, exc, exc_info=True)
             raise HTTPException(
