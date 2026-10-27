@@ -37,7 +37,10 @@ MAX_TASKS_PER_WORKER = 32
 ADDRESS_SPACE_HEADROOM = 1 << 30
 
 _SCHEMA_ID_HINT = re.compile(rb'"schemaId"\s*:\s*"([^"\\]{1,300})"')
-_DEATH_SIGNALS = frozenset({signal.SIGABRT, signal.SIGSEGV, signal.SIGBUS})
+# Windows has no SIGBUS, so the set holds only the signals this platform defines.
+_DEATH_SIGNALS = frozenset(
+    getattr(signal, name) for name in ("SIGABRT", "SIGSEGV", "SIGBUS") if hasattr(signal, name)
+)
 
 logger = logging.getLogger(__name__)
 
@@ -262,7 +265,7 @@ class PushWorker:
                 code = proc.exitcode
                 await self._stop()
                 self.deaths += 1
-                if code is not None and code < 0 and signal.Signals(-code) in _DEATH_SIGNALS:
+                if code is not None and code < 0 and -code in _DEATH_SIGNALS:
                     raise PushRefusal(413, "PAYLOAD_TOO_LARGE", "The body is too complex to parse.", extra={"limit": "complexity"}) from None
                 raise PushRefusal(503, "PUSH_TIMEOUT", "The validation worker stopped.", extra={"retryAfter": 5}) from None
             received = True

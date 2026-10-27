@@ -609,7 +609,7 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(g1.conversations).to.have.length(1);
     });
 
-    it('listAgentSharedWithMe and listVisibleTitles', async () => {
+    it('listAgentSharedWithMe and listVisibleSummaries', async () => {
       const org = fx.newId(), owner = fx.newId(), viewer = fx.newId(), project = fx.newId();
       const a = await open(org, owner, { sessionType: 'agent', agentKey: 'ag', conversationSource: 'agent_chat' });
       await repo.setSharing(agent('ag'), a._id, { isShared: true, sharedWith: [{ userId: viewer, accessLevel: 'read' }] });
@@ -618,8 +618,41 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(shared[0]).to.not.have.property('sharedWith');
       const c = await open(org, owner, { title: 'T', projectId: project, projectVisibility: 'project' });
       const hidden = await open(org, owner, { title: 'H' });
-      const titles = await repo.listVisibleTitles(org, viewer, [c._id, hidden._id], [project]);
-      expect(titles).to.deep.equal([{ _id: c._id, title: 'T' }]);
+      const titles = await repo.listVisibleSummaries(org, viewer, [c._id, hidden._id], [project]);
+      expect(titles.map((t) => t._id)).to.deep.equal([c._id]);
+      expect(titles[0]).to.include({ title: 'T', projectId: project });
+    });
+
+    it('listVisibleSummaries says which agent and project a chat belongs to', async () => {
+      const org = fx.newId(), owner = fx.newId(), project = fx.newId();
+      const agentChat = await open(org, owner, { title: 'A', sessionType: 'agent', agentKey: 'ag', conversationSource: 'agent_chat' });
+      const plain = await open(org, owner, { title: 'P' });
+      const rows = await repo.listVisibleSummaries(org, owner, [agentChat._id, plain._id], [project]);
+      const byId = new Map(rows.map((r) => [r._id, r]));
+      expect(byId.get(agentChat._id)).to.include({ title: 'A', sessionType: 'agent', agentKey: 'ag' });
+      expect(byId.get(plain._id)).to.include({ title: 'P' });
+      expect(byId.get(plain._id)).to.not.have.property('agentKey');
+    });
+
+    it('listVisibleSummaries lists an archived chat only where the archive can open it', async () => {
+      const org = fx.newId(), owner = fx.newId(), viewer = fx.newId(), member = fx.newId(), project = fx.newId();
+      const share = { isShared: true, sharedWith: [{ userId: viewer, accessLevel: 'read' as const }] };
+      const assistant = await open(org, owner, { title: 'assistant' });
+      await repo.setSharing(CHAT, assistant._id, share);
+      await repo.setArchived(CHAT, assistant._id, { by: owner });
+      const agentChat = await open(org, owner, { title: 'agent', sessionType: 'agent', agentKey: 'ag', conversationSource: 'agent_chat' });
+      await repo.setSharing(agent('ag'), agentChat._id, share);
+      await repo.setArchived(agent('ag'), agentChat._id, { by: owner });
+      const inProject = await open(org, owner, { title: 'project', projectId: project, projectVisibility: 'project' });
+      await repo.setArchived(CHAT, inProject._id, { by: owner });
+      const ids = [assistant._id, agentChat._id, inProject._id];
+      const seenBy = async (who: string) => (await repo.listVisibleSummaries(org, who, ids, [project])).map((r) => r.title).sort();
+
+      expect(await seenBy(owner)).to.deep.equal(['agent', 'assistant', 'project']);
+      expect(await seenBy(viewer)).to.deep.equal(['assistant']); // not the archived agent chat
+      expect(await seenBy(member)).to.deep.equal([]); // project members cannot open an archived chat
+      const archived = (await repo.listVisibleSummaries(org, owner, [assistant._id], [project]))[0];
+      expect(archived.isArchived).to.equal(true);
     });
 
     it('getCitations filters by org and drops __v', async () => {

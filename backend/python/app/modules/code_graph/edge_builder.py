@@ -326,6 +326,34 @@ class _Builder:
             return
         self.edges[dedup] = (confidence, resolution, line)
         self.result.edges_by_type[relation] = self.result.edges_by_type.get(relation, 0) + 1
+        if relation == RecordRelations.CALLS.value:
+            owner = self._closure_owner(from_key.partition("/")[2])
+            # A sibling closure is the owner's own local, not something it calls.
+            if owner and not self._nested_in(to_key.partition("/")[2], owner):
+                self._add_edge(self._block_key(owner), to_key, relation, confidence=confidence,
+                               line=line, resolution=resolution)
+
+    def _nested_in(self, block_id: str, ancestor: str) -> bool:
+        row = self.index.rows.get(block_id)
+        for _ in range(16):  # parent chains are shallow; the bound only guards a cycle
+            if row is None or not row.parent_block_id:
+                return False
+            if row.parent_block_id == ancestor:
+                return True
+            row = self.index.rows.get(row.parent_block_id)
+        return False
+
+    def _closure_owner(self, block_id: str) -> str | None:
+        """`const map = (r) => this.toRuntime(r)` inside a method: that method.
+
+        The method runs the call whenever it runs the closure, so a caller walking
+        callers of `toRuntime` should reach the method in one hop, not through `map`.
+        """
+        row = self.index.rows.get(block_id)
+        if row is None or row.kind != "function" or self.index.family_by_block.get(block_id) != "js":
+            return None
+        parent = self.index.rows.get(row.parent_block_id) if row.parent_block_id else None
+        return row.parent_block_id if parent is not None and parent.kind in ("function", "method") else None
 
     def edge_document(self, key: tuple[str, str, str],
                       meta: tuple[str, str | None, int | None], now: int) -> dict:
@@ -868,7 +896,7 @@ class _Builder:
         if not receiver_type and fact.get("qualifiedPrefix") and self._family_of(block_id) == "js":
             # `this._editor.getModel().getValue()`, `c.run()` with `const c = Ctl.get(e)`.
             owner = self._expr_type(fact["qualifiedPrefix"], record_id, self._enclosing_type(block_id),
-                                    head_type=fact.get("headType"))
+                                    head_type=fact.get("headType"), head_type_arg=fact.get("headTypeArg"))
             if owner:
                 target = self._methods_on(owner, name)
                 if target:
@@ -880,6 +908,13 @@ class _Builder:
         family = self._family_of(block_id)
         if family == "go":
             return self._resolve_go_method(receiver_type, name, record_id)
+        if "|" in receiver_type:  # `e: A | B`
+            found: dict[str, None] = {}
+            for member in receiver_type.split("|"):
+                candidates = self._type_candidates(member, record_id, family)
+                target = self._methods_on(candidates[0], name) if len(candidates) == 1 else None
+                found.update(dict.fromkeys(target if isinstance(target, list) else [target] if target else []))
+            return list(found) or None, CONFIDENCE_INFERRED, RESOLUTION_TYPE
         type_candidates = self._type_candidates(receiver_type, record_id, family)
         if len(type_candidates) != 1:  # god-node guard
             if type_candidates:
@@ -906,7 +941,8 @@ class _Builder:
         return type_candidates
 
     def _expr_type(self, expr: str, record_id: str, this_type: str | None, depth: int = 0, *,
-                   head_type: str | None = None, array: bool = False) -> str | None:
+                   head_type: str | None = None, array: bool = False,
+                   head_type_arg: str | None = None) -> str | None:
         """The type block a JS/TS receiver expression evaluates to, or None.
 
         Walks `a.b().c` left to right through the parser's type tables: a
@@ -920,17 +956,17 @@ class _Builder:
         element = expr.endswith("[*]")
         if element:
             expr = expr[:-3]
-        key = (record_id, this_type, expr, head_type, element)
+        key = (record_id, this_type, expr, head_type, head_type_arg, element)
         if key not in self._expr_memo:
             self._expr_memo[key] = None  # a cycle (`a = a.next`) resolves to nothing
-            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type)
+            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type, head_type_arg)
         owner = self._expr_memo[key]
         if element:
             return owner[2:] if owner and owner.startswith("[]") else None
         return owner if array or not owner or not owner.startswith("[]") else None
 
     def _eval_expr(self, expr: str, record_id: str, this_type: str | None, depth: int,
-                   head_type: str | None) -> str | None:
+                   head_type: str | None, head_type_arg: str | None = None) -> str | None:
         segments = _receiver_segments(expr) if depth < _EXPR_DEPTH else None
         owner = None
         if segments:
@@ -945,17 +981,27 @@ class _Builder:
                 owner = self._declared_type(head_type, record_id, this_type, depth)
             else:
                 owner = self._value_type(head, record_id, this_type, depth)
+            # `IObservable<Foo>`'s argument, for a `read(): T` called on it next. A scoped
+            # head keeps its own scope's argument: another function's `v` may differ.
+            declared_arg = None if called or head == "this" else head_type_arg if head_type else \
+                self.index.type_table_by_record.get(record_id, {}).get(f"{head}<>")
+            type_arg = self._declared_type(declared_arg, record_id, this_type, depth) if declared_arg else None
             for name, called, first_arg in rest:
                 if called and name in _CLASS_ARG_CALLS and _SEGMENT.fullmatch(first_arg) and first_arg[:1].isupper():
                     # `accessor.get(IFoo)`, `createInstance(Foo)`: the service or class named,
                     # whatever the receiver's type.
-                    owner = self._value_type(first_arg, record_id, this_type, depth)
+                    owner, type_arg = self._value_type(first_arg, record_id, this_type, depth), None
                     continue
                 if owner is None or owner.startswith("[]"):
                     owner = None
                     break
-                owner = (self._return_type(self._resolve_self_method(owner, name), depth) if called
-                         else self._member_type(owner, name, depth))
+                if called:
+                    method = self._resolve_self_method(owner, name)
+                    owner = type_arg if self._returns_type_param(method) else self._return_type(method, depth)
+                    type_arg = None
+                else:
+                    owner, type_arg = (self._member_type(owner, name, depth),
+                                       self._member_type(owner, name, depth, suffix="<>"))
         return owner
 
     def _value_type(self, name: str, record_id: str, this_type: str | None, depth: int) -> str | None:
@@ -977,8 +1023,11 @@ class _Builder:
             return None
         return "[]" + candidates[0] if is_array else candidates[0]
 
-    def _member_type(self, owner: str, field_name: str, depth: int) -> str | None:
-        """`owner.field`: its declared type on the owner or the nearest base declaring it."""
+    def _member_type(self, owner: str, field_name: str, depth: int, suffix: str = "") -> str | None:
+        """`owner.field`: its declared type on the owner or the nearest base declaring it.
+
+        *suffix* `<>` asks for the type argument instead (`Foo` of `IObservable<Foo>`).
+        """
         seen, queue = set(), [owner]
         while queue:
             current = queue.pop(0)
@@ -987,21 +1036,32 @@ class _Builder:
             seen.add(current)
             row = self.index.rows.get(current)
             if row is not None and row.name:
-                declared = self.index.type_table_by_record.get(row.record_id, {}).get(f"{row.name}.{field_name}")
+                declared = self.index.type_table_by_record.get(row.record_id, {}).get(f"{row.name}.{field_name}{suffix}")
                 if declared:
                     return self._declared_type(declared, row.record_id, current, depth)
             queue.extend(self._base_types_of(current))
         return None
 
-    def _return_type(self, target: str | None, depth: int) -> str | None:
+    def _declared_return(self, target: str | None) -> tuple[str | None, str | None]:
+        """(declared return type, owner) of a function or method block."""
         row = self.index.rows.get(target) if target else None
         if row is None or not row.name:
-            return None
+            return None, None
         owner = self._enclosing_type(target)
         owner_row = self.index.rows.get(owner) if owner else None
         key = f"{owner_row.name}.{row.name}()" if owner_row is not None else f"{row.name}()"
-        declared = self.index.type_table_by_record.get(row.record_id, {}).get(key)
-        return self._declared_type(declared, row.record_id, owner, depth) if declared else None
+        return self.index.type_table_by_record.get(row.record_id, {}).get(key), owner
+
+    def _return_type(self, target: str | None, depth: int) -> str | None:
+        declared, owner = self._declared_return(target)
+        if not declared or declared.startswith("<"):
+            return None
+        return self._declared_type(declared, self.index.rows[target].record_id, owner, depth)
+
+    def _returns_type_param(self, target: str | None) -> bool:
+        """`read(): T` on `IObservable<T>`: what it returns is the receiver's type argument."""
+        declared, _ = self._declared_return(target)
+        return bool(declared and declared.startswith("<"))
 
     def _resolve_function(self, name: str, record_id: str) -> str | None:
         """A bare call's function, by import or same-file definition only: no counters, no guessing."""

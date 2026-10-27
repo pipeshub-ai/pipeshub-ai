@@ -44,6 +44,7 @@ from app.services.messaging.error_classifier import (
     MessageErrorClassifier,
     MessageErrorType,
     format_exception_chain,
+    is_source_refusal,
 )
 from app.services.messaging.interface.consumer import IMessagingConsumer
 from app.services.messaging.kafka.config.kafka_config import (
@@ -2969,11 +2970,15 @@ class IndexingKafkaConsumer(IMessagingConsumer):
             await self.__settle_done(message, in_flight)
             return False
         except Exception as e:
-            # Log the full exception chain for debugging
-            exception_chain = format_exception_chain(e)
-            self.logger.error(
-                f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
-            )
+            if is_source_refusal(e):
+                # Expected: the handler logged the refusal and stored its reason.
+                self.logger.info(f"Source refused the item for {message_id}: {e}")
+            else:
+                # Log the full exception chain for debugging
+                exception_chain = format_exception_chain(e)
+                self.logger.error(
+                    f"Error in process_message_wrapper for {message_id}:\n{exception_chain}"
+                )
             concurrency.report_memory_incident_if_applicable(self, message_id, e)
 
             # Classify the exception to determine if we should retry

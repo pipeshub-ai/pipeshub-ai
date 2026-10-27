@@ -2719,6 +2719,11 @@ export function ChatInput({
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
+                      aria-label={
+                        settings.queryMode === 'agent'
+                          ? t('chat.agentResourcesTooltip', { defaultValue: 'Connectors, collections & actions' })
+                          : t('chat.connectorsTooltip')
+                      }
                       onClick={() => {
                         setIsCollectionsPanelOpen((prev) => {
                           if (prev) setExpansionViewMode('inline');
@@ -2772,6 +2777,11 @@ export function ChatInput({
                       color="gray"
                       size="2"
                       disabled={isRegenerateMode}
+                      aria-label={
+                        isAgentChat || settings.queryMode === 'agent'
+                          ? t('chat.agentResourcesTooltip')
+                          : t('chat.connectorsTooltip')
+                      }
                       onClick={() => {
                         setIsAgentResourcesPanelOpen((prev) => {
                           if (prev) setExpansionViewMode('inline');

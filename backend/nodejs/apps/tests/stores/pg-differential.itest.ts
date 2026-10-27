@@ -109,7 +109,7 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   await step('summary member', conv.findVisibleSummary(q({ id: s1._id, userId: CAROL, owned: false, shared: true })));
   await step('summary stranger', conv.findVisibleSummary(q({ id: s1._id, userId: DAVE })));
   await step('listAgentSharedWithMe', conv.listAgentSharedWithMe({ orgId: ORG, userId: BOB, agentKey: 'ag1', sort: { _id: -1 }, skip: 0, limit: 10 }));
-  await step('listVisibleTitles', conv.listVisibleTitles(ORG, CAROL, [s1._id, s2._id, s3._id], [PROJECT]));
+  await step('listVisibleSummaries', conv.listVisibleSummaries(ORG, CAROL, [s1._id, s2._id, s3._id], [PROJECT]));
   await step('listByProject', conv.listByProject({ orgId: ORG, projectId: PROJECT, userId: BOB, skip: 0, limit: 10 }));
   await step('countByProject', conv.countByProject(ORG, BOB, [PROJECT, PROJECT2]));
   await step('countByProject owner', conv.countByProject(ORG, ALICE, [PROJECT, PROJECT2]));
@@ -346,7 +346,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       const ledger = new OrgLedger();
       const pg: Repos = {
         conv: scoped(new PgConversationRepository(), ledger, {
-          findIdsByContent: 0, listArtifactMarkerContents: 1, updateUserQueryContent: 1, listVisibleTitles: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1, appendFeedback: 1, findMessage: 1, countMessages: 1, getCitations: 1,
+          findIdsByContent: 0, listArtifactMarkerContents: 1, updateUserQueryContent: 1, listVisibleSummaries: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1, appendFeedback: 1, findMessage: 1, countMessages: 1, getCitations: 1,
         }),
         search: scoped(new PgSemanticSearchRepository(), ledger, { findVisible: 0, listVisible: 0, unarchive: 0, delete: 0, deleteVisible: 0, findCitations: 0 }),
       };

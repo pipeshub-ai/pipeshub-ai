@@ -112,6 +112,8 @@ export function SearchResultsView() {
   const isSearching = useChatStore((s) => s.isSearching);
   const searchError = useChatStore((s) => s.searchError);
   const searchResponseMeta = useChatStore((s) => s.searchResponseMeta);
+  const serverEmptyMessage =
+    typeof searchResponseMeta?.message === 'string' ? searchResponseMeta.message : '';
   const setMode = useChatStore((s) => s.setMode);
   const { onPreview } = useCitationActions();
 
@@ -285,7 +287,7 @@ export function SearchResultsView() {
             style={{ padding: 'var(--space-6)' }}
           >
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              {t('chat.noResultsFor', { query: searchQuery })}
+              {serverEmptyMessage || t('chat.noResultsFor', { query: searchQuery })}
             </Text>
           </Flex>
         )}

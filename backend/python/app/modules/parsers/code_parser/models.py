@@ -104,6 +104,8 @@ class PendingEdgeFact:
     qualified_prefix: str | None = None
     # TS: the function-scoped type (or `=initializer`) of the receiver chain's first name.
     head_type: str | None = None
+    # TS: that name's type argument in the same scope (`Foo` of `v: IObservable<Foo>`).
+    head_type_arg: str | None = None
     # The name an import binds in the importing file, when it differs from the
     # imported one: `b` in `from m import a as b` and `import { a as b }`, `ns`
     # in `import * as ns`. Calls are written against this name.
@@ -135,6 +137,8 @@ class PendingEdgeFact:
             out["qualifiedPrefix"] = self.qualified_prefix
         if self.head_type:
             out["headType"] = self.head_type
+        if self.head_type_arg:
+            out["headTypeArg"] = self.head_type_arg
         if self.local_name:
             out["localName"] = self.local_name
         if self.context:

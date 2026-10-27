@@ -33,6 +33,7 @@ from app.exceptions.indexing_exceptions import (
 from app.exceptions.storage_exceptions import StorageRequestRejectedError
 from app.services.base_client import ServiceCallError
 from app.services.parsing.interface import ParseErrorCode
+from app.utils.api_call import ApiCallError
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping
@@ -683,6 +684,9 @@ def _reason(exc: BaseException | None) -> str:
     chain = list(_chain(exc))
 
     for e in chain:
+        # The source refused the item, and the connector said why in its own words.
+        if isinstance(e, ApiCallError) and e.source_reason:
+            return e.source_reason
         if isinstance(e, PasswordProtectedError):
             return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the

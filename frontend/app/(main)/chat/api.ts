@@ -791,7 +791,11 @@ export const ChatApi = {
    * The chat UI paginates with `page` / `limit` and merges `serverPagination` when present.
    * Chevron rules live in `collections-tab` (`showExpandChevron`).
    */
-  async listCollectionsForChat(params?: { cursor?: string | null; limit?: number }): Promise<ListCollectionsForChatResult> {
+  async listCollectionsForChat(params?: {
+    cursor?: string | null;
+    limit?: number;
+    origins?: 'COLLECTION' | 'CONNECTOR';
+  }): Promise<ListCollectionsForChatResult> {
     const limit = params?.limit ?? 100;
     const { data } = await apiClient.get<KnowledgeHubNodesResponse>(
       '/api/v1/knowledgeBase/knowledge-hub/nodes',
@@ -800,6 +804,8 @@ export const ChatApi = {
           // Only a cursor the server issued is ever sent back; one it did not
           // issue is a 400.
           ...(params?.cursor ? { cursor: params.cursor } : {}),
+          // Root apps of one origin only; flattened=false keeps it a root listing, not a tree search.
+          ...(params?.origins ? { nodeTypes: 'app', origins: params.origins, flattened: false } : {}),
           limit,
           sortBy: 'updatedAt',
           sortOrder: 'desc',

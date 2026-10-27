@@ -964,6 +964,15 @@ components:
         conversationTitle:
           type: string
           description: Display-only chat title when the caller can see that conversation
+        agentKey:
+          type: string
+          description: The agent whose chat produced the artifact, when that conversation is an agent chat the caller can see
+        projectId:
+          type: string
+          description: The project the artifact's chat belongs to, when the caller can see that conversation and view that project
+        conversationArchived:
+          type: boolean
+          description: Present and true when the artifact's chat is archived (and the caller can see it)
         createdAt:
           type: integer
           nullable: true
@@ -1023,6 +1032,15 @@ components:
         conversationTitle:
           type: string
           description: Display-only chat title when the caller can see that conversation
+        agentKey:
+          type: string
+          description: The agent whose chat produced the artifact, when that conversation is an agent chat the caller can see
+        projectId:
+          type: string
+          description: The project the artifact's chat belongs to, when the caller can see that conversation and view that project
+        conversationArchived:
+          type: boolean
+          description: Present and true when the artifact's chat is archived (and the caller can see it)
         createdAt:
           type: integer
           nullable: true
@@ -36278,12 +36296,12 @@ paths:
           in: query
           description: |
             Comma-separated gallery artifact types, upper case: `CODE_OUTPUT`, `CHART`,
-            `DOCUMENT`, `IMAGE`, `SPREADSHEET`, `PRESENTATION`, `DATA_FILE`, `CODE`
-            (not `TOOL_RESULT` or `OTHER`). Whitespace around an item and empty items are ignored.
+            `DOCUMENT`, `IMAGE`, `SPREADSHEET`, `PRESENTATION`, `DATA_FILE`, `CODE`, `OTHER`
+            (not `TOOL_RESULT`). Whitespace around an item and empty items are ignored.
           schema:
             type: string
             maxLength: 200
-            pattern: ^\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE)?\s*(?:,\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE)?\s*)*$
+            pattern: ^\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE|OTHER)?\s*(?:,\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE|OTHER)?\s*)*$
         - name: conversationId
           in: query
           schema:
@@ -41673,6 +41691,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A PDF that could not be read within the upload's 50-second budget, or
+            whose parse ran out of memory, is not attached (`<name> is too large or complex to read
+            right now, so it wasn't attached. ...`). Only that upload fails.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
         '401':
           description: Unauthorized
           content:
@@ -49143,6 +49174,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A PDF that could not be read within the upload's 50-second budget, or
+            whose parse ran out of memory, is not attached (`<name> is too large or complex to read
+            right now, so it wasn't attached. ...`). Only that upload fails.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
         '401':
           description: Unauthorized
           content:

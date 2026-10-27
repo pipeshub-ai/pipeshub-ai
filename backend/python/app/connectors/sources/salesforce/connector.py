@@ -9,7 +9,7 @@ from logging import Logger
 from typing import Any, AsyncGenerator, Callable, DefaultDict, Dict, List, Optional, Set, Tuple, Type, TypeAlias, TypeVar
 from urllib.parse import quote
 from uuid import uuid4
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
+from app.utils.html_markdown import html_to_markdown, html_to_markdown_async
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
@@ -1503,13 +1503,13 @@ class SalesforceConnector(BaseConnector):
             if segments and is_rich:
                 # Build HTML from segments (images become base64 data URIs)
                 html = await self._message_segments_to_html(segments)
-                return html_to_markdown(html) if html else ""
+                return await html_to_markdown_async(html) if html else ""
             else:
                 # Plain text fallback
                 plain = (body.text or "").strip()
                 if plain:
                     converted = await self._process_html_images(plain)
-                    return html_to_markdown(converted) if converted else ""
+                    return await html_to_markdown_async(converted) if converted else ""
                 return ""
 
         def _prepend_ts(data: str, ts: Optional[str]) -> str:
@@ -2215,7 +2215,7 @@ class SalesforceConnector(BaseConnector):
             if html_body:
                 # Convert images to base64 and then to Markdown
                 processed_html = await self._process_html_images(html_body)
-                body_md = html_to_markdown(processed_html)
+                body_md = await html_to_markdown_async(processed_html)
             else:
                 # Fallback to TextBody if HtmlBody is missing
                 body_md = email_data.get("TextBody") or "No body content available."

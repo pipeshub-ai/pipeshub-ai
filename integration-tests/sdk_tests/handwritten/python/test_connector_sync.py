@@ -73,9 +73,10 @@ def test_handwritten_connector_sync(admin: Pipeshub):
         stats = admin.connector_instances.get_connector_stats(connector_id=connector_id)
         assert stats.data.connector_id == connector_id
 
+        # The listing declares a Retry-After header, so the SDK wraps its body in `result`.
         app = admin.knowledge_hub.get_knowledge_hub_child_nodes(
             parent_type="app", parent_id=connector_id
-        )
+        ).result
         feed = next(
             (item for item in app.items if item.node_type == "recordGroup"), None
         )
@@ -87,7 +88,7 @@ def test_handwritten_connector_sync(admin: Pipeshub):
 
         group = admin.knowledge_hub.get_knowledge_hub_child_nodes(
             parent_type="recordGroup", parent_id=feed.id
-        )
+        ).result
         article = next(
             (
                 item

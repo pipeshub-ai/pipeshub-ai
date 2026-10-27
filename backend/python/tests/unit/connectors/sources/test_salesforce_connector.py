@@ -9182,3 +9182,44 @@ class TestCoverageFinalPush:
                 tx, "records", "externalRecordId", ["a", "b"], batch_size=2,
             )
         assert len(result) == 1
+
+
+class TestConverterReachesTheBlock:
+    """Nothing here patches the HTML-to-Markdown helper: the real converter runs."""
+
+    @pytest.mark.asyncio
+    async def test_email_body_keeps_header_form_and_hidden_text(self) -> None:
+        import json
+
+        connector = _make_connector()
+        connector.data_source = MagicMock()
+        connector._get_api_version = AsyncMock(return_value="59.0")
+        connector._soql_query_paginated = _sequenced_pages(
+            [[{"Id": "00T000000000001AAA", "Subject": "Email Task", "Description": None}]],
+            [[{
+                "Id": "email-1",
+                "Subject": "Re: Proposal",
+                "HtmlBody": (
+                    "<header>Acme Quotes</header><p>Hello <b>Kim</b></p>"
+                    "<form><label>Quote</label> <span>Q-9</span></form>"
+                    '<div style="display:none">Do not forward</div>'
+                ),
+                "TextBody": "Hello",
+                "FromAddress": "a@example.com",
+                "ToAddress": "b@example.com",
+                "HasAttachment": False,
+            }]],
+        )
+        connector._get_record_linked_file_child_records = AsyncMock(return_value=[])
+        record = MagicMock()
+        record.id = "arango-1"
+        record.external_record_id = "00T000000000001AAA"
+        record.record_name = "Email Task"
+
+        payload = json.loads(await connector._process_task_record(record))
+
+        email = next(g["data"] for g in payload["block_groups"] if "Re: Proposal" in (g["data"] or ""))
+        assert email == (
+            "# Re: Proposal\n\n**From:** a@example.com\n\n**To:** b@example.com\n\n---\n\n"
+            "Acme Quotes\n\nHello **Kim**\n\nQuote Q-9\n\nDo not forward\n"
+        )

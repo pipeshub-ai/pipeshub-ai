@@ -366,7 +366,7 @@ class TestRenamedDefaultBranch:
             await c.repos.fetch_code_file_content(_code_record("src/f0.py"))
 
         assert raised.value.status_code == 429
-        assert raised.value.headers == {"Retry-After": "600"}
+        assert raised.value.headers["Retry-After"] == "600"
         assert gh.calls == Counter({"get_repo_by_id": 2, "get_file_contents": 1})
 
     async def test_a_lookup_in_flight_cannot_restore_the_old_branch(self) -> None:

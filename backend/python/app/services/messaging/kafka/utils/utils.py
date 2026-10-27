@@ -32,6 +32,7 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaConsumerConfig,
     KafkaProducerConfig,
 )
+from app.services.messaging.error_classifier import is_source_refusal
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
 from app.services.vector_db.rebuild_state import redis_from_config_service
 
@@ -266,7 +267,11 @@ class KafkaUtils:
                             yield event
 
             except Exception as e:
-                logger.error(f"Error processing record message: {str(e)}", exc_info=True)
+                if is_source_refusal(e):
+                    # Expected and already logged by the handler, once.
+                    logger.debug(f"Source refused record message: {e}")
+                else:
+                    logger.error(f"Error processing record message: {str(e)}", exc_info=True)
                 raise
 
         return handle_record_message
