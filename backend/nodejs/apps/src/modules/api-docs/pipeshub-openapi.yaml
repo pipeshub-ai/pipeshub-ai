@@ -5248,6 +5248,11 @@ components:
               userRole:
                 type: string
                 enum: [OWNER, WRITER, READER]
+              status:
+                type: string
+                nullable: true
+                enum: [DELETING]
+                description: '`DELETING` while the knowledge base is being deleted (writes are refused with 409); null otherwise.'
               folders:
                 type: array
                 items:
