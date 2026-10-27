@@ -231,7 +231,9 @@ export const handleBackendError = (
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  logger.error(`Backend error during ${operation}`, {
+  // 402 is the seat and credit check refusing as it should, not a fault.
+  const refusal = statusCode === 402;
+  logger[refusal ? 'warn' : 'error'](`Backend error during ${operation}`, {
     statusCode,
     errorDetail,
     fullResponse: data,
@@ -245,6 +247,7 @@ export const handleBackendError = (
     case 402:
       return new PaymentRequiredError(
         asText(asRecord(bodyDetail)?.message) ?? errorDetail,
+        { logLevel: 'warn' },
       );
     case 403:
       return new ForbiddenError(errorDetail);

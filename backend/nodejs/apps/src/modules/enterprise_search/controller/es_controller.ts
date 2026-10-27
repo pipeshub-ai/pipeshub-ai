@@ -38,6 +38,7 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
 import {
   handleBackendError,
   SERVICE_UNAVAILABLE_MESSAGE,
@@ -340,12 +341,8 @@ export const startAIStream = async (
       logger.info('AI service stream open abandoned', logContext);
       return undefined;
     }
-    const mappedError = handleBackendError(error, operation);
-    logger.error('AI service stream start failed', {
-      ...logContext,
-      message: error instanceof Error ? error.message : String(error),
-    });
-    throw mappedError;
+    // handleBackendError logs the cause; the request id is on every log line.
+    throw handleBackendError(error, operation);
   }
 };
 
@@ -1204,8 +1201,6 @@ export const streamChat =
         res.end();
       });
     } catch (error: any) {
-      logger.error('Error in streamChat', { requestId, error: error.message });
-
       try {
         // Mark conversation as failed if it was created
         if (savedConversation) {
@@ -1229,10 +1224,11 @@ export const streamChat =
           'Content-Type': 'text/event-stream; charset=utf-8',
         });
       }
-      logger.error('Error in streamChat', {
+      const level = logLevelFor(error);
+      logger[level]('Error in streamChat', {
         requestId,
         error: error.message,
-        stack: error.stack,
+        ...(level === 'error' ? { stack: error.stack } : {}),
       });
       const errorEvent = isAGUI(protocol)
         ? frameAGUI(AGUIEventType.RUN_ERROR, {
@@ -2021,7 +2017,7 @@ export const addMessageStream =
         res.end();
       });
     } catch (error: any) {
-      logger.error('Error in addMessageStream', {
+      logger[logLevelFor(error)]('Error in addMessageStream', {
         requestId,
         conversationId,
         error: error.message,
@@ -4279,12 +4275,13 @@ async function regenerateAnswersInternal(
       res.end();
     });
   } catch (error: any) {
-    logger.error('Error in regenerateAnswers', {
+    const level = logLevelFor(error);
+    logger[level]('Error in regenerateAnswers', {
       requestId,
       conversationId,
       messageId,
       error: error.message,
-      stack: error.stack,
+      ...(level === 'error' ? { stack: error.stack } : {}),
     });
 
     if (!res.headersSent) {
@@ -7284,7 +7281,10 @@ export const deleteAgent =
         res.end();
       });
     } catch (error: any) {
-      logger.error('Error in streamChat', { requestId, error: error.message });
+      logger[logLevelFor(error)]('Error in streamChat', {
+        requestId,
+        error: error.message,
+      });
 
       try {
         // Mark conversation as failed if it was created
@@ -8104,7 +8104,7 @@ export const addMessageStreamToAgentConversation =
         res.end();
       });
     } catch (error: any) {
-      logger.error('Error in addMessageStream', {
+      logger[logLevelFor(error)]('Error in addMessageStream', {
         requestId,
         conversationId,
         agentKey,
