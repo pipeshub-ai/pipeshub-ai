@@ -112,10 +112,14 @@ def test_worker_count_chars_from_bytes_with_reportlab_pdf() -> None:
     assert shapes_page == 0
 
 
-def test_effective_resolution_leaves_standard_pages_untouched():
-    for width, height in ((595.0, 842.0), (612.0, 792.0), (1191.0, 1684.0)):
-        page = SimpleNamespace(width=width, height=height)
-        assert rasterizer._effective_resolution(page, 150) == 150
+@pytest.mark.parametrize(
+    ("width", "height"),
+    [(595.0, 842.0), (612.0, 792.0), (1191.0, 1684.0)],
+    ids=["a4", "letter", "a2"],
+)
+def test_effective_resolution_leaves_standard_pages_untouched(width, height):
+    page = SimpleNamespace(width=width, height=height)
+    assert rasterizer._effective_resolution(page, 150) == 150
 
 
 def test_effective_resolution_clamps_large_format_sheet():
@@ -195,7 +199,18 @@ def test_broken_process_pool_clears_cache_and_reraises():
         mock_get_pool.cache_clear.assert_called_once()
 
 
-def test_broken_process_pool_reports_memory_incident_when_governor_wired():
+@pytest.fixture
+def wired_governor():
+    """Wire a mock governor and unwire it after the test, even on failure."""
+    governor = MagicMock()
+    rasterizer.set_resource_governor(governor)
+    yield governor
+    rasterizer.set_resource_governor(None)
+
+
+def test_broken_process_pool_reports_memory_incident_when_governor_wired(
+    wired_governor,
+):
     """A worker OOM-kill must feed the governor's fast incident path rather
     than only being logged — see resource_governor.controller.
     ResourceGovernor.report_memory_incident."""
@@ -203,17 +218,12 @@ def test_broken_process_pool_reports_memory_incident_when_governor_wired():
     mock_future = MagicMock()
     mock_future.result.side_effect = BrokenProcessPool("worker killed")
     mock_pool.submit.return_value = mock_future
-    mock_governor = MagicMock()
 
-    rasterizer.set_resource_governor(mock_governor)
-    try:
-        with patch.object(rasterizer, "_get_pdf_raster_pool", return_value=mock_pool):
-            with pytest.raises(BrokenProcessPool):
-                rasterizer._run_in_pool(lambda: None)
+    with patch.object(rasterizer, "_get_pdf_raster_pool", return_value=mock_pool):
+        with pytest.raises(BrokenProcessPool):
+            rasterizer._run_in_pool(lambda: None)
 
-        mock_governor.report_memory_incident.assert_called_once()
-    finally:
-        rasterizer.set_resource_governor(None)
+    wired_governor.report_memory_incident.assert_called_once()
 
 
 def test_broken_process_pool_without_governor_does_not_raise():

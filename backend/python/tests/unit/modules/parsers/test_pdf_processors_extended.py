@@ -42,38 +42,37 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
         from app.modules.parsers.pdf.opencv_layout_analyzer import OpenCVLayoutAnalyzer
         return OpenCVLayoutAnalyzer(logger=_mock_logger(), render_dpi=150)
 
-    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
-    def test_analyze_page_text_region_classified_as_text(self, mock_cv2):
-        """analyze_page classifies text region as TEXT when not heading or list."""
-        analyzer = self._make_analyzer()
-
-        # Mock page
+    @staticmethod
+    def _make_blank_page():
+        """Letter-size page that renders to a blank 80x100 image and has no images."""
         mock_page = MagicMock()
         mock_page.rect.width = 612.0
         mock_page.rect.height = 792.0
-
-        # Render returns an image
         mock_pix = MagicMock()
         mock_pix.height = 100
         mock_pix.width = 80
         mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
         mock_page.get_pixmap.return_value = mock_pix
+        mock_page.get_images.return_value = []
+        return mock_page
 
-        # OpenCV mocks
+    @staticmethod
+    def _stub_cv2_without_contours(mock_cv2):
+        """OpenCV finds no table or text contours, so every text block stays unclaimed."""
         mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.morphologyEx.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.getStructuringElement.return_value = np.ones((1, 10), dtype=np.uint8)
         mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
         mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
-
-        # No table contours, no text contours from CV2
         mock_cv2.findContours.return_value = ([], None)
 
-        # get_images returns empty
-        mock_page.get_images.return_value = []
-
-        # PyMuPDF text dict: one text block
+    @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
+    def test_analyze_page_text_region_classified_as_text(self, mock_cv2):
+        """analyze_page classifies text region as TEXT when not heading or list."""
+        analyzer = self._make_analyzer()
+        self._stub_cv2_without_contours(mock_cv2)
+        mock_page = self._make_blank_page()
         mock_page.get_text.return_value = {
             "blocks": [{
                 "type": 0,
@@ -94,24 +93,8 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
     def test_analyze_page_unclaimed_block_as_heading(self, mock_cv2):
         """analyze_page classifies unclaimed block as HEADING when font size is large."""
         analyzer = self._make_analyzer()
-
-        mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
-
-        mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.morphologyEx.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.getStructuringElement.return_value = np.ones((1, 10), dtype=np.uint8)
-        mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.findContours.return_value = ([], None)
-        mock_page.get_images.return_value = []
+        self._stub_cv2_without_contours(mock_cv2)
+        mock_page = self._make_blank_page()
 
         # Text dict with one block that has a large font size (heading)
         # median font size will be 24 (only one block), so threshold = 24*1.3 = 31.2
@@ -325,8 +308,8 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
 
         table_rects = []
         result = analyzer._detect_text_regions(binary, table_rects, page_w, page_h)
-        # Only the large one should pass
         assert isinstance(result, list)
+        assert len(result) == 1
 
     @patch("app.modules.parsers.pdf.opencv_layout_analyzer.cv2")
     def test_detect_text_regions_in_table_excluded(self, mock_cv2):

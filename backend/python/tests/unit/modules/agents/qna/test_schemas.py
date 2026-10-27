@@ -89,60 +89,82 @@ class TestAgentAnswerWithMetadataJSON:
         )
         assert obj.referenceData == ref
 
-    def test_all_confidence_values(self):
-        for level in ("Very High", "High", "Medium", "Low"):
-            obj = AgentAnswerWithMetadataJSON(
-                answer="x",
-                confidence=level,
-                answerMatchType="Exact Match",
-            )
-            assert obj.confidence == level
+    @pytest.mark.parametrize("level", ["Very High", "High", "Medium", "Low"])
+    def test_all_confidence_values(self, level):
+        obj = AgentAnswerWithMetadataJSON(
+            answer="x",
+            confidence=level,
+            answerMatchType="Exact Match",
+        )
+        assert obj.confidence == level
 
-    def test_all_answer_match_types(self):
-        valid_types = [
+    @pytest.mark.parametrize(
+        "match_type",
+        [
             "Exact Match",
             "Derived From Blocks",
             "Derived From User Info",
             "Enhanced With Full Record",
             "Derived From Tool Execution",
-        ]
-        for match_type in valid_types:
-            obj = AgentAnswerWithMetadataJSON(
-                answer="x",
-                confidence="High",
-                answerMatchType=match_type,
-            )
-            assert obj.answerMatchType == match_type
+        ],
+    )
+    def test_all_answer_match_types(self, match_type):
+        obj = AgentAnswerWithMetadataJSON(
+            answer="x",
+            confidence="High",
+            answerMatchType=match_type,
+        )
+        assert obj.answerMatchType == match_type
 
     def test_invalid_confidence_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
                 confidence="Ultra",  # not a valid Literal
                 answerMatchType="Exact Match",
             )
 
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("confidence",)
+        assert errors[0]["type"] == "literal_error"
+
     def test_invalid_answer_match_type_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
                 confidence="High",
                 answerMatchType="Unknown Type",
             )
 
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("answerMatchType",)
+        assert errors[0]["type"] == "literal_error"
+
     def test_missing_required_answer_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 confidence="High",
                 answerMatchType="Exact Match",
             )
 
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("answer",)
+        assert errors[0]["type"] == "missing"
+
     def test_missing_required_confidence_raises(self):
-        with pytest.raises(ValidationError):
+        with pytest.raises(ValidationError) as exc_info:
             AgentAnswerWithMetadataJSON(
                 answer="x",
                 answerMatchType="Exact Match",
             )
+
+        errors = exc_info.value.errors()
+        assert len(errors) == 1
+        assert errors[0]["loc"] == ("confidence",)
+        assert errors[0]["type"] == "missing"
 
     def test_serialization_to_dict(self):
         obj = AgentAnswerWithMetadataJSON(
@@ -183,23 +205,25 @@ class TestAgentAnswerWithMetadataDict:
         }
         assert d["referenceData"][0]["id"] == "PROJ-1"
 
-    def test_all_answer_match_types_are_defined(self):
-        # Verify all five match types are accepted by the TypedDict annotation
-        valid_types = [
+    # Verify all five match types are accepted by the TypedDict annotation
+    @pytest.mark.parametrize(
+        "match_type",
+        [
             "Exact Match",
             "Derived From Blocks",
             "Derived From User Info",
             "Enhanced With Full Record",
             "Derived From Tool Execution",
-        ]
-        for match_type in valid_types:
-            d: AgentAnswerWithMetadataDict = {
-                "answer": "x",
-                "reason": "",
-                "confidence": "Low",
-                "answerMatchType": match_type,
-            }
-            assert d["answerMatchType"] == match_type
+        ],
+    )
+    def test_all_answer_match_types_are_defined(self, match_type):
+        d: AgentAnswerWithMetadataDict = {
+            "answer": "x",
+            "reason": "",
+            "confidence": "Low",
+            "answerMatchType": match_type,
+        }
+        assert d["answerMatchType"] == match_type
 
     def test_total_false_allows_partial(self):
         # total=False means no keys are required at runtime

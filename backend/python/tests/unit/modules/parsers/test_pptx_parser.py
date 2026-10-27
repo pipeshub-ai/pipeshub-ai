@@ -80,18 +80,25 @@ class TestParseBinary:
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
-                with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
+                with pytest.raises(DocumentProcessingError) as exc_info:
                     parser.parse_binary(b"bad data")
 
+        assert exc_info.value.message == "Failed to parse PPTX: failure"
+        assert exc_info.value.details == {"status": "failure"}
+
     def test_converter_exception_propagates(self):
+        converter_error = RuntimeError("Corrupt file")
         mock_converter = MagicMock()
-        mock_converter.convert.side_effect = RuntimeError("Corrupt file")
+        mock_converter.convert.side_effect = converter_error
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             with patch("app.modules.parsers.pptx.pptx_parser.DocumentStream", return_value=MagicMock()):
                 parser = PPTXParser()
-                with pytest.raises(RuntimeError, match="Corrupt file"):
+                with pytest.raises(RuntimeError) as exc_info:
                     parser.parse_binary(b"data")
+
+        assert exc_info.value is converter_error
+        mock_converter.convert.assert_called_once()
 
     def test_empty_bytes(self):
         mock_converter = MagicMock()
@@ -137,17 +144,24 @@ class TestParseFile:
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
-            with pytest.raises(DocumentProcessingError, match="Failed to parse PPTX"):
+            with pytest.raises(DocumentProcessingError) as exc_info:
                 parser.parse_file("/path/to/bad.pptx")
 
+        assert exc_info.value.message == "Failed to parse PPTX: error"
+        assert exc_info.value.details == {"status": "error"}
+
     def test_file_not_found_propagates(self):
+        converter_error = FileNotFoundError("No such file")
         mock_converter = MagicMock()
-        mock_converter.convert.side_effect = FileNotFoundError("No such file")
+        mock_converter.convert.side_effect = converter_error
 
         with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
             parser = PPTXParser()
-            with pytest.raises(FileNotFoundError, match="No such file"):
+            with pytest.raises(FileNotFoundError) as exc_info:
                 parser.parse_file("/nonexistent/file.pptx")
+
+        assert exc_info.value is converter_error
+        mock_converter.convert.assert_called_once_with("/nonexistent/file.pptx")
 
     def test_passes_file_path_directly(self):
         mock_converter = MagicMock()
@@ -175,15 +189,18 @@ class TestParseFile:
             parser.parse_file("/path/b.pptx")
             assert mock_converter.convert.call_count == 2
 
-    def test_different_status_values_fail(self):
+    @pytest.mark.parametrize("status_val", ["partial", "error", "timeout", "unknown"])
+    def test_different_status_values_fail(self, status_val):
         """Any status besides 'success' should raise ValueError."""
-        for status_val in ["partial", "error", "timeout", "unknown"]:
-            mock_converter = MagicMock()
-            mock_result = MagicMock()
-            mock_result.status.value = status_val
-            mock_converter.convert.return_value = mock_result
+        mock_converter = MagicMock()
+        mock_result = MagicMock()
+        mock_result.status.value = status_val
+        mock_converter.convert.return_value = mock_result
 
-            with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
-                parser = PPTXParser()
-                with pytest.raises(DocumentProcessingError):
-                    parser.parse_file("/path/to/file.pptx")
+        with patch("app.modules.parsers.pptx.pptx_parser.DocumentConverter", return_value=mock_converter):
+            parser = PPTXParser()
+            with pytest.raises(DocumentProcessingError) as exc_info:
+                parser.parse_file("/path/to/file.pptx")
+
+        assert exc_info.value.message.startswith("Failed to parse PPTX")
+        assert exc_info.value.details == {"status": str(mock_result.status)}
