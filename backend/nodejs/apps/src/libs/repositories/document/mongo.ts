@@ -340,7 +340,10 @@ export class MongoDocumentRepository implements DocumentRepository {
                   $lt: [
                     '$createdAt',
                     {
-                      $subtract: [{ $toLong: '$$NOW' }, olderThanSeconds * 1000],
+                      $subtract: [
+                        { $toLong: '$$NOW' },
+                        olderThanSeconds * 1000,
+                      ],
                     },
                   ],
                 },
