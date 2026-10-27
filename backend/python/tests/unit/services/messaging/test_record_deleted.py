@@ -58,6 +58,15 @@ class TestClassification:
             assert not is_record_deleted(during)
             assert not is_expected_outcome(during)
 
+    def test_a_cleanup_fault_during_a_deletion_is_classified_as_itself(self) -> None:
+        try:
+            try:
+                raise RecordDeletedError("r1")
+            finally:
+                raise ConnectionError("cleanup failed")
+        except ConnectionError as during:
+            assert MessageErrorClassifier.classify_by_exception(during) == MessageErrorType.TRANSIENT
+
     def test_other_failures_are_not(self) -> None:
         assert not is_expected_outcome(DocumentProcessingError("boom"))
         assert not is_expected_outcome(RuntimeError("boom"))

@@ -370,6 +370,11 @@ class MessageErrorClassifier:
         except ImportError:
             pass
 
+        # 0c'. A deletion counts only through explicit causes: a cleanup fault raised
+        # while it propagates carries it as __context__ and must stay retryable.
+        if is_record_deleted(exc):
+            return MessageErrorType.TERMINAL
+
         # 0d. Scan full chain for terminal exception types before HTTP status rules.
         # Processing failures must win over incidental infrastructure errors deeper in the chain.
         # A wrapped DocumentProcessingError must be caught before an ApiCallError 500.
@@ -391,7 +396,6 @@ class MessageErrorClassifier:
                     ExtractionError,
                     ProcessingError,
                     BlockContainerValidationError,
-                    RecordDeletedError,
                     NonRetryableError,
                     ImportError,
                     ModuleNotFoundError,
