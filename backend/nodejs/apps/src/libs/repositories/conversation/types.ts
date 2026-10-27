@@ -301,7 +301,7 @@ export interface ConversationRepository {
   ): Promise<ChatSessionDto>;
   /** Creates an empty session; its messages are appended after. */
   createSession(fields: NewSession, tx?: Tx): Promise<ChatSessionDto>;
-  /** The owner (on an agent chat also a write-shared member); the row a new turn is added to. */
+  /** The owner only; the row a new turn is added to. A member a chat is shared with, write level included, can read it but not continue it. */
   findForTurn(
     scope: SessionScope,
     id: string,
