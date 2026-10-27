@@ -1333,7 +1333,7 @@ class _TimeoutPronePoints:
     def __init__(self, keys: list[bytes]) -> None:
         self.keys = list(keys)
 
-    async def execute_command(self, *args) -> list:  # noqa: ANN002
+    async def execute_command(self, *args) -> list:
         assert args[0] == "FT.SEARCH"
         offset, num = int(args[args.index("LIMIT") + 1]), int(args[args.index("LIMIT") + 2])
         matches = self.keys
@@ -1344,7 +1344,7 @@ class _TimeoutPronePoints:
             len(matches), *[x for k in page for x in (k, [b"page_content", b"c"])]
         ]
 
-    async def delete(self, *keys) -> None:  # noqa: ANN002
+    async def delete(self, *keys) -> None:
         self.keys = [k for k in self.keys if k not in keys]
 
 
@@ -1373,7 +1373,7 @@ class TestRedisFilterOpsSeeEveryMatch:
         real = svc.client.execute_command
         pages = iter([3])  # first reply carries 3 rows although 40 match
 
-        async def short_first(*args) -> list:  # noqa: ANN002
+        async def short_first(*args) -> list:
             raw = await real(*args)
             n = next(pages, None)
             return [raw[0], *raw[1:1 + n]] if n else raw
