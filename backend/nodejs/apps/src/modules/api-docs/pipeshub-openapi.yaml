@@ -41668,8 +41668,9 @@ paths:
         '503':
           description: |
             The AI service could not be reached (for example, it is still
-            starting). The conversation is kept with status `Failed`. Sending
-            the message again may repeat work the AI service had started.
+            starting). The conversation is marked `Failed`; that save is best
+            effort, so if it fails the conversation keeps its previous status.
+            Sending the message again may repeat work the AI service had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -41679,9 +41680,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: |
-            The AI service did not answer in time. The conversation is kept
-            with status `Failed`. The AI service may have started the turn, so
-            sending the message again may repeat work it had started.
+            The AI service did not answer in time. The conversation is marked
+            `Failed`; that save is best effort, so if it fails the conversation
+            keeps its previous status. The AI service may have started the turn,
+            so sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -44038,8 +44040,9 @@ paths:
         '503':
           description: |
             The AI service could not be reached (for example, it is still
-            starting). The conversation is kept with status `Failed`. Sending
-            the message again may repeat work the AI service had started.
+            starting). The conversation is marked `Failed`; that save is best
+            effort, so if it fails the conversation keeps its previous status.
+            Sending the message again may repeat work the AI service had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -44049,9 +44052,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: |
-            The AI service did not answer in time. The conversation is kept
-            with status `Failed`. The AI service may have started the turn, so
-            sending the message again may repeat work it had started.
+            The AI service did not answer in time. The conversation is marked
+            `Failed`; that save is best effort, so if it fails the conversation
+            keeps its previous status. The AI service may have started the turn,
+            so sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -50269,8 +50273,9 @@ paths:
         '503':
           description: |
             The AI service could not be reached (for example, it is still
-            starting). The conversation is kept with status `Failed`. Sending
-            the message again may repeat work the AI service had started.
+            starting). The conversation is marked `Failed`; that save is best
+            effort, so if it fails the conversation keeps its previous status.
+            Sending the message again may repeat work the AI service had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -50280,9 +50285,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: |
-            The AI service did not answer in time. The conversation is kept
-            with status `Failed`. The AI service may have started the turn, so
-            sending the message again may repeat work it had started.
+            The AI service did not answer in time. The conversation is marked
+            `Failed`; that save is best effort, so if it fails the conversation
+            keeps its previous status. The AI service may have started the turn,
+            so sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -51460,8 +51466,9 @@ paths:
         '503':
           description: |
             The AI service could not be reached (for example, it is still
-            starting). The conversation is kept with status `Failed`. Sending
-            the message again may repeat work the AI service had started.
+            starting). The conversation is marked `Failed`; that save is best
+            effort, so if it fails the conversation keeps its previous status.
+            Sending the message again may repeat work the AI service had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -51471,9 +51478,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '504':
           description: |
-            The AI service did not answer in time. The conversation is kept
-            with status `Failed`. The AI service may have started the turn, so
-            sending the message again may repeat work it had started.
+            The AI service did not answer in time. The conversation is marked
+            `Failed`; that save is best effort, so if it fails the conversation
+            keeps its previous status. The AI service may have started the turn,
+            so sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'

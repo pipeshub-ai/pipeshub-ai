@@ -150,6 +150,7 @@ const NETWORK_CAUSE_CODES = new Set([
   'EAI_AGAIN',
   'EHOSTUNREACH',
   'ENETUNREACH',
+  'EPIPE',
   'ETIMEDOUT',
   'UND_ERR_CONNECT_TIMEOUT',
   'UND_ERR_SOCKET',
@@ -158,6 +159,10 @@ const NETWORK_CAUSE_CODES = new Set([
 // What axios reports for a request that never got an answer, besides the
 // network codes above: its own timeout and its generic network failure.
 const AXIOS_UNANSWERED_CODES = new Set(['ECONNABORTED', 'ERR_NETWORK']);
+
+// axios's own request timeout: ECONNABORTED, or ETIMEDOUT when it is told to
+// tell the two apart.
+const AXIOS_TIMEOUT_CODES = new Set(['ECONNABORTED', 'ETIMEDOUT']);
 
 const isUnansweredAxiosCode = (code: string | undefined): boolean =>
   code === undefined ||
@@ -183,10 +188,11 @@ export const unansweredCallError = (
 ): HttpError | null => {
   const source = asRecord(error);
   if (!source) return null;
-  if (asText(source.name) === 'TimeoutError') {
+  const timedOut = (): HttpError => {
     logger.error(`Timed out waiting for the service during ${operation}`);
     return transientError(504, undefined, undefined);
-  }
+  };
+  if (asText(source.name) === 'TimeoutError') return timedOut();
   const response = asRecord(source.response);
   // An answer with a status reached us; words like "fetch failed" in its body
   // describe the service's own work, not our connection to it.
@@ -201,6 +207,9 @@ export const unansweredCallError = (
     source.request !== null &&
     (source.detail === undefined || source.detail === null) &&
     isUnansweredAxiosCode(asText(source.code));
+  if (noResponse && AXIOS_TIMEOUT_CODES.has(asText(source.code) ?? '')) {
+    return timedOut();
+  }
   if (!isConnectionRefused(source) && !noResponse) return null;
   logger.error(`Could not reach the service during ${operation}`, {
     cause:

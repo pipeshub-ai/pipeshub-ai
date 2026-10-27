@@ -371,7 +371,7 @@ describe('unansweredCallError', () => {
     sinon.restore()
   })
 
-  for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET']) {
+  for (const code of ['ECONNREFUSED', 'ENOTFOUND', 'ECONNRESET', 'EPIPE']) {
     it(`is a 503 with the shared message when fetch failed with ${code}`, () => {
       const result = unansweredCallError(withCode(code), 'Search')
       expect(result).to.be.instanceOf(ServiceUnavailableError)
@@ -384,9 +384,23 @@ describe('unansweredCallError', () => {
     expect(result).to.be.instanceOf(ServiceUnavailableError)
   })
 
-  it("is a 503 for axios's own timeout and network failure codes", () => {
-    expect(unansweredCallError({ code: 'ECONNABORTED', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+  it("is a 503 for axios's network failure and a broken pipe", () => {
     expect(unansweredCallError({ code: 'ERR_NETWORK', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+    expect(unansweredCallError({ code: 'EPIPE', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+  })
+
+  for (const code of ['ECONNABORTED', 'ETIMEDOUT']) {
+    it(`is a 504 for axios's own timeout (${code})`, () => {
+      expect(unansweredCallError({ code, request: {} }, 'Get user')).to.be.instanceOf(GatewayTimeoutError)
+    })
+  }
+
+  it('is null for an axios timeout code on a call the service answered', () => {
+    expect(unansweredCallError({ code: 'ECONNABORTED', request: {}, response: { status: 502 } }, 'Get user')).to.equal(null)
+  })
+
+  it('stays a 503 when fetch timed out connecting (ETIMEDOUT as the cause)', () => {
+    expect(unansweredCallError(withCode('ETIMEDOUT'), 'Search')).to.be.instanceOf(ServiceUnavailableError)
   })
 
   it('is null for an axios request that failed on a certificate', () => {
