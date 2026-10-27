@@ -53,11 +53,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           newId,
           setCreatedAt: (id, at) =>
             stack.admin(
-              async (c) =>
-                void (await c.query(
+              async (c) => { await c.query(
                   'UPDATE platform.notifications SET created_at = $2 WHERE id = $1',
                   [id, at],
-                )),
+                ) },
             ),
         });
       });
@@ -127,15 +126,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             ),
           clear: () =>
             stack.admin(
-              async (c) => void (await c.query('DELETE FROM platform.outbox')),
+              async (c) => { await c.query('DELETE FROM platform.outbox') },
             ),
           setCreatedAt: (id, at) =>
             stack.admin(
-              async (c) =>
-                void (await c.query(
+              async (c) => { await c.query(
                   'UPDATE platform.outbox SET created_at = $2 WHERE id = $1',
                   [id, at],
-                )),
+                ) },
             ),
           setRow: (id, set) =>
             stack.admin(async (c) => {

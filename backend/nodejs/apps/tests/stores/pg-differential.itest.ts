@@ -18,7 +18,6 @@ import { MongoConversationRepository } from '../../src/libs/repositories/convers
 import { PgConversationRepository } from '../../src/libs/repositories/conversation/pg';
 import { MongoSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/mongo';
 import { PgSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/pg';
-import { copySessionUpToMessage } from '../../src/modules/enterprise_search/utils/fork-conversation';
 import type { ConversationRepository, NewMessage, SessionListQuery } from '../../src/libs/repositories/conversation';
 import type { SemanticSearchRepository } from '../../src/libs/repositories/semantic-search';
 import { HEX24, OrgLedger, PG_BINS, PgStack, haveStack, newId, scoped, startPgStack } from './pg-store-harness';
@@ -151,7 +150,7 @@ async function script(r: Repos, step: <T>(label: string, p: Promise<T>) => Promi
   ]));
   await step('append status stopped', conv.appendMessages(s1._id, ORG, [botMsg('partial', { status: 'stopped', contentFormat: 'JSON' })]));
   // fields the schemas do not name are dropped on both stores; defaults are filled on both
-  const [rich] = await step('append a message with unknown nested fields', conv.appendMessages(s1._id, ORG, [
+  await step('append a message with unknown nested fields', conv.appendMessages(s1._id, ORG, [
     botMsg('rich', {
       citations: [{ citationId: cit1!._id, junk: 1 } as never], followUpQuestions: [{ question: 'q', confidence: 'Low', junk: 1 } as never],
       metadata: { processingTimeMs: 1, reason: 'dropped' } as never, modelInfo: { modelKey: 'k', junk: 1 } as never,
