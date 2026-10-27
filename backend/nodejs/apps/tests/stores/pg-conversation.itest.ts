@@ -49,7 +49,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         countHits: (ids) =>
           stack.admin(async (c) => Number((await c.query('SELECT count(*)::int AS n FROM conversation.citations WHERE id = ANY($1::text[])', [ids])).rows[0].n)),
         setCreatedAt: (id, at) =>
-          stack.admin(async (c) => void (await c.query('UPDATE conversation.semantic_searches SET created_at = $2 WHERE id = $1', [id, at]))),
+          stack.admin(async (c) => { await c.query('UPDATE conversation.semantic_searches SET created_at = $2 WHERE id = $1', [id, at]) }),
       });
     });
   });

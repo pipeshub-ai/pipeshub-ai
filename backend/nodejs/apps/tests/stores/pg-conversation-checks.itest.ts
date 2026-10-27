@@ -9,8 +9,6 @@ import { orgContextStorage } from '../../src/libs/context/orgContext';
 import { attachUpstreamAbort } from '../../src/modules/enterprise_search/utils/stream-lifecycle';
 import { PermissionDenied } from '../../src/libs/db';
 import { InternalServerError } from '../../src/libs/errors/http.errors';
-import { kernelTx } from '../../src/libs/repositories/pg';
-import type { Tx } from '../../src/libs/repositories/uow';
 import { PgConversationRepository } from '../../src/libs/repositories/conversation/pg';
 import type { NewMessage } from '../../src/libs/repositories/conversation';
 import { PgSemanticSearchRepository } from '../../src/libs/repositories/semantic-search/pg';
@@ -22,7 +20,6 @@ import {
   inOrg,
   newId,
   scoped,
-  scopedUow,
   startPgStack,
 } from './pg-store-harness';
 
@@ -64,7 +61,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     let stack: PgStack;
     const ledger = new OrgLedger();
     const repo = scoped(new PgConversationRepository(), ledger, ORG_ARGS);
-    const uow = scopedUow();
 
     before(async () => {
       stack = await startPgStack(bin, 'conversation_checks', {
@@ -443,8 +439,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       it('the content search answers only from the caller’s org, and finds a term in any message of the chat', async () => {
         const a = newId(),
           b = newId(),
-          v = newId(),
-          w = newId();
+          v = newId();
         const sb = await open(b, v, {}, user('needle text'));
         await repo.appendMessages(sb._id, b, [bot('another Needle here')]);
         expect((await repo.findIdsByContent(b, 'needle')).ids).to.deep.equal([
@@ -453,13 +448,12 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect((await repo.findIdsByContent(a, 'needle')).ids).to.deep.equal(
           [],
         );
-        void w;
       });
 
       it('treats LIKE metacharacters in the search as text, and reports a cut-short answer', async () => {
         const org = newId(),
           me = newId();
-        const plain = await open(org, me, {}, user('100 percent'));
+        await open(org, me, {}, user('100 percent'));
         const wild = await open(org, me, {}, user('100% sure_thing'));
         expect((await repo.findIdsByContent(org, '100%')).ids).to.deep.equal([
           wild._id,
@@ -473,7 +467,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
         expect((await repo.findIdsByContent(org, '100', 5)).truncated).to.equal(
           false,
         );
-        void plain;
       });
     });
 

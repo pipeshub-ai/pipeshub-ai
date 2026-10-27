@@ -6,7 +6,6 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import {
-  MissingOrgContext,
   orgContextStorage,
 } from '../../src/libs/context/orgContext';
 import { InternalServerError } from '../../src/libs/errors/http.errors';
@@ -77,8 +76,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     describe('row-level security', () => {
       it('each table shows an organisation only its own rows, and refuses a row written for another', async () => {
         const a = newId(),
-          b = newId(),
-          u = newId();
+          b = newId();
         await inOrg(a, async () => {
           await docs.create(doc(a));
           await mail.record({
@@ -102,11 +100,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             let denied: unknown;
             try {
               await new PgUnitOfWork().run(
-                async (tx) =>
-                  void (await kernelTx(tx).query(
+                async (tx) => { await kernelTx(tx).query(
                     `/* pipeshub:test.cross */ INSERT INTO ${t} ${cols[t]}`,
                     [a],
-                  )),
+                  ) },
               );
             } catch (e) {
               denied = e;
@@ -147,13 +144,14 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     describe('documents', () => {
       it('names, paths and tags are trimmed, storage info keeps its own fields, and an initiator that was never given stays absent', async () => {
         const org = newId();
-        const { initiatorUserId: _omit, ...bare } = doc(org, {
+        const bare = doc(org, {
           documentName: '  padded  ',
           alternateDocumentName: ' alt ',
           documentPath: ' p/q ',
           tags: [' a ', 'b'],
           local: { url: 'u', localPath: 'l', stray: 1 } as never,
         });
+        delete bare.initiatorUserId; // an initiator that was never given
         const made = await inOrg(org, () => docs.create(bare));
         expect(made).to.include({
           documentName: 'padded',
