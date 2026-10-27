@@ -80,7 +80,8 @@ The GitHub Actions **Integration Tests** workflow offers `zendesk` as a manual
 dispatch choice. Set `ZENDESK_TEST_SUBDOMAIN`, `ZENDESK_TEST_CLIENT_ID` (the
 client's unique identifier, not its numeric ID), and
 `ZENDESK_TEST_CLIENT_SECRET` in the protected `integration-test-dev`
-environment. Each run mints its own token and fails before testing if Zendesk
-refuses it. Zendesk runs in the `connectors-2` shard on the nightly and on pull
+environment. Each run mints its own token. If Zendesk refuses it, the rest of
+the shard still runs and the Zendesk tests find no token: they fail on the
+nightly and on a run dispatched with `zendesk`, and skip on pull requests. Zendesk runs in the `connectors-2` shard on the nightly and on pull
 requests from this repository, and alone when dispatched with `zendesk`. Ordinary
 local runs skip when credentials are absent.

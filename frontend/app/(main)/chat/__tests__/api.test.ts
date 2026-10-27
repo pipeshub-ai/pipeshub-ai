@@ -133,6 +133,53 @@ describe('ChatApi.streamMessage — answering a tool approval card', () => {
   });
 });
 
+describe('ChatApi stream bodies — no model resolved', () => {
+  const noModel = { modelKey: '', modelName: '', modelFriendlyName: '' };
+  const base: StreamChatRequest = {
+    query: 'hello',
+    ...noModel,
+    chatMode: 'quick',
+    filters: { apps: [], kb: [] },
+  };
+  const sentBody = () => vi.mocked(streamSSERequest).mock.calls.at(-1)?.[1] as Record<string, unknown>;
+  const expectNoModelFields = () => {
+    const body = sentBody();
+    expect(body).not.toHaveProperty('modelKey');
+    expect(body).not.toHaveProperty('modelName');
+    expect(body).not.toHaveProperty('modelFriendlyName');
+  };
+
+  beforeEach(() => {
+    vi.mocked(streamSSERequest).mockReset();
+    vi.mocked(streamSSERequest).mockResolvedValue(undefined as never);
+  });
+
+  it('leaves the model out of an assistant message so the server uses its default', async () => {
+    await ChatApi.streamMessage(base, {});
+    expectNoModelFields();
+  });
+
+  it('leaves the model out of an agent message', async () => {
+    await ChatApi.streamMessage({ ...base, agentId: 'agent-1' }, {});
+    expectNoModelFields();
+  });
+
+  it('leaves the model out of a regenerate', async () => {
+    await ChatApi.streamRegenerate('conv-1', 'msg-1', {}, { ...noModel, chatMode: 'quick', filters: { apps: [], kb: [] } });
+    expectNoModelFields();
+  });
+
+  it('leaves the model out of an agent regenerate', async () => {
+    await ChatApi.streamAgentRegenerate('agent-1', 'conv-1', 'msg-1', {}, { ...noModel, chatMode: 'auto' } as never);
+    expectNoModelFields();
+  });
+
+  it('still sends a chosen model, falling back to its name for the friendly name', async () => {
+    await ChatApi.streamMessage({ ...base, modelKey: 'k1', modelName: 'gpt-5', modelFriendlyName: '' }, {});
+    expect(sentBody()).toMatchObject({ modelKey: 'k1', modelName: 'gpt-5', modelFriendlyName: 'gpt-5' });
+  });
+});
+
 describe('ChatApi.uploadAttachments', () => {
   beforeEach(() => {
     mockedPost.mockReset();

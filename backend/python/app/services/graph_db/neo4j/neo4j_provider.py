@@ -5202,8 +5202,10 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 WHERE startRecord IS NOT NULL
                 {user_match}
 
-                // Single traversal for parent (depth 0) and all children (depth 1+)
-                OPTIONAL MATCH path = (startRecord)-[:NODE_RELATION*0..{max_depth}]->(record:Record)
+                // Single traversal for parent (depth 0) and all children (depth 1+).
+                // Not OPTIONAL: with nothing passing the filters that returns one
+                // row with a null record, which is not a record to reindex.
+                MATCH path = (startRecord)-[:NODE_RELATION*0..{max_depth}]->(record:Record)
                 WHERE (length(path) = 0 OR all(rel IN relationships(path) WHERE rel.relationshipType IN ['PARENT_CHILD', 'ATTACHMENT']))
                 AND record.connectorId = $connector_id
                 AND (record.orgId = $org_id OR record.orgId IS NULL)

@@ -39,6 +39,7 @@ import {
   getModelDefaultReasoningEffort,
 } from '@/chat/store';
 import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget, TOUCH_TARGET_PX } from '@/app/components/ui/responsive';
 import { useCommandStore } from '@/lib/store/command-store';
 import { toast } from '@/lib/store/toast-store';
 import { attachmentErrorMessage } from '@/chat/utils/attachment-error';
@@ -1763,7 +1764,14 @@ export function ChatInput({
         }}
       >
         {/* Single row: plus button + input + send */}
-        <Flex align="center" justify="between" gap="1" style={{ height: 26 }}>
+        {/* On phones the row is 44px but the field is 20px; a tap above or below it should still open the composer. */}
+        <Flex
+          align="center"
+          justify="between"
+          gap="1"
+          onClick={isMobile ? (event) => { if (event.target === event.currentTarget) handleExpand(); } : undefined}
+          style={{ height: isMobile ? TOUCH_TARGET_PX : 26 }}
+        >
           {!isAgentChat && (
             <IconButton
               variant="ghost"
@@ -1771,7 +1779,7 @@ export function ChatInput({
               size="2"
               onClick={handleExpand}
               aria-label={t('chat.expandComposer', { defaultValue: 'Expand composer' })}
-              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0 }}
+              style={{ margin: 0, cursor: 'pointer', flexShrink: 0, width: 26, height: 26, minWidth: 26, minHeight: 26, padding: 0, ...touchTarget(isMobile) }}
             >
               <MaterialIcon name="add" size={16} color="var(--neutral-11)" />
             </IconButton>
@@ -1817,6 +1825,7 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
+                ...touchTarget(isMobile),
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: 'var(--emerald-9)',
                 color: 'white',
@@ -1845,6 +1854,7 @@ export function ChatInput({
                 height: 26,
                 minWidth: 26,
                 padding: 0,
+                ...touchTarget(isMobile),
                 borderRadius: 'var(--radius-2)',
                 backgroundColor: canSubmit ? 'var(--emerald-9)' : 'transparent',
                 color: canSubmit ? 'white' : 'var(--neutral-11)',
@@ -2425,7 +2435,7 @@ export function ChatInput({
                         setMode('search');
                       }
                 }
-                style={{ ...composerIconButtonStyle, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ ...composerIconButtonStyle, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
                 <MaterialIcon
                   name={isSearchMode ? 'chat' : 'search'}
@@ -2454,7 +2464,7 @@ export function ChatInput({
                       })
                     : t('chat.plusMenu.ariaLabel', { defaultValue: 'Attach files and capabilities' })
                 }
-                style={{ margin: 0, cursor: isRegenerateMode ? 'default' : 'pointer' }}
+                style={{ margin: 0, ...touchTarget(isMobile), cursor: isRegenerateMode ? 'default' : 'pointer' }}
               >
                 <PlusMenuTriggerIcon
                   color={isRegenerateMode ? 'var(--slate-5)' : activeIconColor}
@@ -2494,7 +2504,7 @@ export function ChatInput({
                 size="2"
                 aria-label={t('common.moreOptions')}
                 onClick={() => setIsMobileOptionsOpen(true)}
-                style={{ margin: 0, cursor: 'pointer' }}
+                style={{ margin: 0, ...touchTarget(isMobile), cursor: 'pointer' }}
               >
                 <MaterialIcon name="more_horiz" size={ICON_SIZES.PRIMARY} color={activeIconColor} />
               </IconButton>
@@ -2507,6 +2517,7 @@ export function ChatInput({
                 isRegenerateMode={isRegenerateMode}
                 activeIconColor={activeIconColor}
                 onToggle={toggleSpeech}
+                style={touchTarget(isMobile)}
               />
             </Flex>
           ) : isCompactToolbar ? (
@@ -2703,6 +2714,7 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
+                        ...touchTarget(isMobile),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         backgroundColor: isCollectionsPanelOpen ? 'var(--olive-3)' : undefined,
                       }}
@@ -2755,6 +2767,7 @@ export function ChatInput({
                       }}
                       style={{
                         ...composerIconButtonStyle,
+                        ...touchTarget(isMobile),
                         cursor: isRegenerateMode ? 'default' : 'pointer',
                         backgroundColor: isAgentResourcesPanelOpen ? 'var(--olive-3)' : undefined,
                       }}
@@ -2878,6 +2891,7 @@ export function ChatInput({
               data-testid="chat-stop-button"
               style={{
                 ...composerIconButtonStyle,
+                ...touchTarget(isMobile),
                 backgroundColor: 'var(--emerald-9)',
                 color: 'white',
                 opacity: isStopping ? 0.6 : 1,
@@ -2901,6 +2915,7 @@ export function ChatInput({
               aria-label={t('chat.sendMessage')}
               style={{
                 ...composerIconButtonStyle,
+                ...touchTarget(isMobile),
                 backgroundColor: canSubmit ? 'var(--emerald-9)' : 'var(--neutral-a3)',
                 color: canSubmit ? 'white' : 'var(--neutral-11)',
                 opacity: 1,

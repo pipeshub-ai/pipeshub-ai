@@ -394,14 +394,12 @@ async def increment_retry_and_check(
 
 
 async def record_delivery(host: ConcurrencyHost, message_id: str) -> tuple[int, bool]:
-    """``(deliveries, backstop_tripped)`` for this message, counted before
-    the handler runs.
+    """``(deliveries, backstop_tripped)`` for this message, counted each time
+    it is handed back without an attempt (``RequeueWithoutAttempt``).
 
     Zero (and never tripped) when there is no tracker or the count cannot be
     written: the backstop this feeds must never block processing because
-    Redis is briefly unavailable -- that is the failure counter's job, and
-    this counter exists precisely for the cases where that one is never
-    written (a consumer that crashes mid-handler).
+    Redis is briefly unavailable.
     """
     if not host.retry_manager:
         return 0, False
@@ -421,6 +419,48 @@ async def clear_delivery_count(host: ConcurrencyHost, message_id: str) -> None:
         await host.retry_manager.clear_deliveries(message_id)
     except Exception as exc:
         log_distributed_error(host, "clear_deliveries", exc)
+
+
+# Attempts that ended with the process (an OOM kill, a segfault) run no except
+# clause, so the failure counter never sees them. A record with this many is
+# given up on rather than handed to the next process to crash.
+MAX_UNFINISHED_ATTEMPTS = 2
+
+
+async def unfinished_attempts(host: ConcurrencyHost, work_key: str) -> int:
+    """Attempts at ``work_key`` that started and never finished; 0 when unknown."""
+    if not host.retry_manager:
+        return 0
+    try:
+        return int(await host.retry_manager.unfinished_attempts(work_key))
+    except Exception as exc:
+        log_distributed_error(host, "unfinished_attempts", exc)
+        return 0
+
+
+async def start_attempt(host: ConcurrencyHost, work_key: str) -> int:
+    """Count an attempt at ``work_key`` as started; returns the unfinished ones before it.
+
+    Called only once the record's lease (or in-process claim) is held, so a
+    delivery waiting for a permit or a lock is never charged with a crash.
+    """
+    if not host.retry_manager:
+        return 0
+    try:
+        return int(await host.retry_manager.start_attempt(work_key))
+    except Exception as exc:
+        log_distributed_error(host, "start_attempt", exc)
+        return 0
+
+
+async def finish_attempt(host: ConcurrencyHost, work_key: str, *, settled: bool) -> None:
+    """Count the attempt ``start_attempt`` began as finished; see ``IRetryTracker.finish_attempt``."""
+    if not host.retry_manager:
+        return
+    try:
+        await host.retry_manager.finish_attempt(work_key, settled=settled)
+    except Exception as exc:
+        log_distributed_error(host, "finish_attempt", exc)
 
 
 # ---------------------------------------------------------------------------

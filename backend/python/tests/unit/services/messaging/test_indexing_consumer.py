@@ -311,66 +311,6 @@ class TestParseMessageAdditional:
 class TestProcessMessageWrapperExtended:
 
     @pytest.mark.asyncio
-    async def test_delivery_backstop_abandons_a_message_that_keeps_coming_back(
-        self, logger, plain_config
-    ) -> None:
-        """A consumer that crashes mid-handler never writes the failure
-        counter, so without a delivery count the message is redelivered on
-        every rebalance forever. The Redis consumer has times_delivered for
-        this; Kafka counts deliveries itself."""
-        retry_manager = AsyncMock()
-        retry_manager.record_delivery = AsyncMock(return_value=10)
-        consumer = IndexingKafkaConsumer(logger, plain_config, retry_manager=retry_manager, producer=None)
-        consumer.parsing_semaphore = asyncio.Semaphore(1)
-        consumer.indexing_semaphore = asyncio.Semaphore(1)
-        consumer._commit_offset = AsyncMock()
-        sink = MagicMock()
-        sink.on_message_abandoned = AsyncMock()
-        consumer.disposition_sink = sink
-        handled: list = []
-
-        async def handler(msg) -> AsyncGenerator[PipelineEvent, None]:
-            handled.append(msg)
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"recordId": "r1"}}).encode("utf-8"))
-
-        with patch("app.services.messaging.consumer_concurrency.messaging_env") as env:
-            env.redis_max_deliveries = 10
-            env.max_delivery_attempts = 3
-            result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-
-        assert result is False
-        assert handled == []
-        sink.on_message_abandoned.assert_awaited_once()
-        # FIFO mode has no offset tracker: the abandoned offset must still be
-        # committed, or a rebalance redelivers it and it is abandoned again.
-        assert consumer._offset_tracker is None
-        consumer._commit_offset.assert_awaited_once()
-        assert "delivered 10 times" in sink.on_message_abandoned.await_args.kwargs.get("reason", "") or \
-            "delivered 10 times" in str(sink.on_message_abandoned.await_args)
-
-    @pytest.mark.asyncio
-    async def test_a_delivery_count_that_cannot_be_written_does_not_block_processing(
-        self, logger, plain_config
-    ) -> None:
-        retry_manager = AsyncMock()
-        retry_manager.record_delivery = AsyncMock(side_effect=ConnectionError("redis down"))
-        consumer = IndexingKafkaConsumer(logger, plain_config, retry_manager=retry_manager, producer=None)
-        consumer.parsing_semaphore = asyncio.Semaphore(1)
-        consumer.indexing_semaphore = asyncio.Semaphore(1)
-
-        async def handler(msg) -> AsyncGenerator[PipelineEvent, None]:
-            yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="r1"))
-
-        consumer.message_handler = handler
-        msg = _make_message(value=json.dumps({"eventType": "test", "payload": {"recordId": "r1"}}).encode("utf-8"))
-
-        result = await consumer._IndexingKafkaConsumer__process_message_wrapper(msg)
-        assert result is True
-
-    @pytest.mark.asyncio
     async def test_only_indexing_complete_released(self, logger, plain_config):
         """When only indexing_complete is yielded, parsing released in finally."""
         consumer = IndexingKafkaConsumer(logger, plain_config)
