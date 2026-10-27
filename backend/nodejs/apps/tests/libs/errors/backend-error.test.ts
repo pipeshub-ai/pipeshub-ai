@@ -70,6 +70,15 @@ describe('handleBackendError', () => {
       }
     })
 
+    it('keeps the status of an answer whose message says "fetch failed"', () => {
+      const answered = Object.assign(new Error('Payment check: fetch failed'), {
+        response: { status: 402, data: { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment check: fetch failed' } } },
+      })
+      const result = handleBackendError(answered, 'Chat Stream')
+      expect(result).to.be.instanceOf(PaymentRequiredError)
+      expect(result.message).to.equal('Payment check: fetch failed')
+    })
+
     it('still logs any other 4xx as an error', () => {
       const error = sinon.stub(Logger.prototype, 'error')
       try {

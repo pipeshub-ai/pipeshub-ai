@@ -174,7 +174,12 @@ export const handleBackendError = (
     return transientError(504, undefined, undefined);
   }
 
-  if (isConnectionRefused(source)) {
+  // An answer with a status reached us; words like "fetch failed" in its body
+  // describe the service's own work, not our connection to it.
+  const answered =
+    typeof asRecord(source.response)?.status === 'number' ||
+    typeof source.statusCode === 'number';
+  if (!answered && isConnectionRefused(source)) {
     logger.error(`Could not reach the service during ${operation}`, {
       cause: asText(asRecord(source.cause)?.code) ?? asText(source.message),
     });

@@ -65,6 +65,7 @@ import { ChatSessionMessage } from '../../../../src/modules/enterprise_search/sc
 import EnterpriseSemanticSearch from '../../../../src/modules/enterprise_search/schema/search.schema'
 import Citation from '../../../../src/modules/enterprise_search/schema/citation.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
+import { Logger } from '../../../../src/libs/services/logger.service'
 import * as conversationArtifacts from '../../../../src/modules/artifacts/services/conversation-artifacts.service'
 import { BadRequestError, ConflictError, NotFoundError, ServiceUnavailableError, UnauthorizedError } from '../../../../src/libs/errors/http.errors'
 import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
@@ -2892,6 +2893,27 @@ describe('Enterprise Search Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response).to.have.property('searchId')
       expect(response).to.have.property('searchResponse')
+    })
+
+    it('logs a 402 refusal as a warning, not an error', async () => {
+      const handler = search(createMockAppConfig())
+      sinon.stub(AIServiceCommand.prototype, 'execute').resolves({
+        statusCode: 402,
+        data: { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } },
+      } as any)
+      const error = sinon.stub(Logger.prototype, 'error')
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const req = createMockRequest({
+        body: { query: 'test search', limit: 10 },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const next = createMockNext()
+
+      await handler(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0].statusCode).to.equal(402)
+      expect(error.called).to.equal(false)
+      expect(warn.calledWith('Error searching query')).to.equal(true)
     })
 
     it('saves nothing and returns no searchId when saveHistory is false', async () => {

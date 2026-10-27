@@ -5666,7 +5666,7 @@ export const search =
         searchResponse: buildSearchResponseForClient(aiResponse.data as AiSearchResponse & Record<string, unknown>),
       });
     } catch (error: any) {
-      logger.error('Error searching query', {
+      logger[logLevelFor(error)]('Error searching query', {
         requestId,
         message: 'Error searching query',
         error: error.message,
@@ -5737,7 +5737,7 @@ export const retrieve =
       }
       res.status(HTTP_STATUS.OK).json({ requestId, ...data });
     } catch (error: unknown) {
-      logger.error('Error retrieving chunks', {
+      logger[logLevelFor(error)]('Error retrieving chunks', {
         requestId,
         error: error instanceof Error ? error.message : String(error),
       });
