@@ -38,7 +38,7 @@
     "@types/mocha": "^10.0.10",
     "@types/mongodb": "^4.0.7",
     "@types/morgan": "^1.9.10",
-    "@types/multer": "^1.4.12",
+    "@types/multer": "^2.3.0",
     "@types/node": "^26.6.5",
     "@types/pg": "^8.23.1",
     "@types/sinon": "^22.0.1",
