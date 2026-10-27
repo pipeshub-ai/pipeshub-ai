@@ -141,6 +141,7 @@ export const CODE_GRAPH_TOOL_NAMES = [
   'pipeshub_code_read',
   'pipeshub_code_path',
   'pipeshub_code_search',
+  'pipeshub_code_semantic_search',
   'pipeshub_code_outline',
   'pipeshub_code_impact',
   'pipeshub_code_entry_points',
