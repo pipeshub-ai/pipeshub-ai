@@ -145,18 +145,33 @@ export interface DocumentRepository {
     virtualRecordId: string,
     flatPath: string,
   ): Promise<DocumentTreeRow[]>;
-  /** Live `record_`/`metadata_` rows of a virtual record, newest first, with the columns a writer needs to reuse them. */
+  /**
+   * Live `record_`/`metadata_` rows of a virtual record, newest first, with the columns a writer
+   * needs to reuse them. With `olderThanSeconds` (finite, >= 0), only rows created that long ago
+   * by the database's own clock; rows without a numeric `createdAt` are then left out.
+   */
   listEnvelopes(
     orgId: string,
     virtualRecordId: string,
+    opts?: { olderThanSeconds?: number },
   ): Promise<
     {
       _id: string;
       documentName?: string;
       documentPath?: string;
       createdAt?: number;
+      retiredAt?: number | null;
     }[]
   >;
+  /**
+   * Marks a live row retired (later in-place buffer writes are refused; reads are unaffected).
+   * Idempotent: the first mark's time is kept. Null when there is no such live row.
+   */
+  retire(
+    orgId: string,
+    id: string,
+    now: number,
+  ): Promise<{ retiredAt: number | null } | null>;
   /**
    * One page (`_id` ascending, after `after`) of live envelope rows still filed at the flat
    * `<flatPrefix><virtualRecordId>` path older records used.

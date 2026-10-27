@@ -8,7 +8,7 @@ The query service does not wire ``FeatureFlagService`` with an ``EtcdProvider``
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Literal, Optional
+from typing import TYPE_CHECKING, Any, Literal, NamedTuple, Optional
 
 from app.services.featureflag.config.config import CONFIG
 from app.utils.env_utils import high_accuracy_mode
@@ -166,6 +166,86 @@ async def is_kb_push_enabled(config_service: ConfigurationService | None = None)
 
 
 ArtifactReadMode = Literal["legacy", "shadow", "artifact"]
+ArtifactLayout = Literal["cow", "in_place"]
+
+#: Longest a cached copy of the settings blob may be used by an artifact read or
+#: write. A save invalidates the cached key at once; the bound covers the case
+#: where the subscription that delivers invalidations died.
+ARTIFACT_SETTINGS_MAX_AGE_SECONDS = 30.0
+#: Key in the settings blob: the id of the current shadow/read activation. A run
+#: is served only under the generation it was minted in.
+ARTIFACT_GENERATION_KEY = "artifactReadGeneration"
+
+
+class ArtifactSettings(NamedTuple):
+    """What one stored write needs from the settings blob, read once.
+
+    ``layout`` is ``cow`` while shadow or read is on (a stored write goes to a new
+    document and the mapping switches by compare-and-set), else ``in_place``.
+    ``generation`` is the blob's activation id while a flag is on, else None.
+    """
+
+    layout: ArtifactLayout
+    generation: str | None
+
+
+class ArtifactReadState(NamedTuple):
+    """What one artifact read needs from the settings blob, read once."""
+
+    mode: ArtifactReadMode
+    generation: str | None
+
+
+def _flag_on(flags: object, name: str) -> bool:
+    if not isinstance(flags, dict):
+        return False
+    return any(str(k).upper() == name.upper() and bool(v) for k, v in flags.items())
+
+
+async def _artifact_blob(config_service: ConfigurationService | None) -> dict:
+    """The settings blob, from the config cache at most 30 s old; {} when unreadable."""
+    if config_service is None:
+        return {}
+    try:
+        blob = await config_service.get_config(
+            PLATFORM_SETTINGS_KEY, default={}, use_cache=True,
+            max_age_seconds=ARTIFACT_SETTINGS_MAX_AGE_SECONDS,
+        )
+    except Exception as exc:
+        logger.error("Could not read %s for the artifact settings: %s", PLATFORM_SETTINGS_KEY, type(exc).__name__)
+        return {}
+    return blob if isinstance(blob, dict) else {}
+
+
+def _generation(blob: dict) -> str | None:
+    value = blob.get(ARTIFACT_GENERATION_KEY)
+    return value if isinstance(value, str) and value else None
+
+
+async def artifact_settings(config_service: ConfigurationService | None = None) -> ArtifactSettings:
+    """The stored-write layout and generation, from one read of the settings blob.
+
+    The caller mints its run from this result and passes ``(layout, generation,
+    run)`` down; nothing below reads the settings again. With both read flags off
+    the layout is ``in_place`` and the generation None, so the run is a ``none``
+    run, which is never served. A blob that cannot be read answers the same.
+    """
+    blob = await _artifact_blob(config_service)
+    flags = blob.get("featureFlags")
+    if _flag_on(flags, CONFIG.ENABLE_ARTIFACT_READ) or _flag_on(flags, CONFIG.ENABLE_ARTIFACT_READ_SHADOW):
+        return ArtifactSettings("cow", _generation(blob))
+    return ArtifactSettings("in_place", None)
+
+
+async def artifact_read_state(config_service: ConfigurationService | None = None) -> ArtifactReadState:
+    """The read mode and generation of one artifact read, from one read of the blob."""
+    blob = await _artifact_blob(config_service)
+    flags = blob.get("featureFlags")
+    if _flag_on(flags, CONFIG.ENABLE_ARTIFACT_READ):
+        return ArtifactReadState("artifact", _generation(blob))
+    if _flag_on(flags, CONFIG.ENABLE_ARTIFACT_READ_SHADOW):
+        return ArtifactReadState("shadow", _generation(blob))
+    return ArtifactReadState("legacy", None)
 
 
 async def artifact_read_mode(config_service: ConfigurationService | None = None) -> ArtifactReadMode:
@@ -173,18 +253,8 @@ async def artifact_read_mode(config_service: ConfigurationService | None = None)
     serve them, the stored record when one cannot be read), ``shadow``
     (``ENABLE_ARTIFACT_READ_SHADOW``: serve the stored record, compare the artifact
     set with it) or ``legacy``. ``ENABLE_ARTIFACT_READ`` wins when both are on.
-    Read on every record read, through the config cache. Defaults to ``legacy``."""
-    if config_service is None:
-        return "legacy"
-    if await read_platform_feature_flag(
-        CONFIG.ENABLE_ARTIFACT_READ, config_service, default=False, use_cache=True,
-    ):
-        return "artifact"
-    if await read_platform_feature_flag(
-        CONFIG.ENABLE_ARTIFACT_READ_SHADOW, config_service, default=False, use_cache=True,
-    ):
-        return "shadow"
-    return "legacy"
+    Defaults to ``legacy``."""
+    return (await artifact_read_state(config_service)).mode
 
 
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:

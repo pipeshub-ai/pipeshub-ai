@@ -184,6 +184,9 @@ JSON_ENCODED_FIELDS: dict[str, frozenset[str]] = {
         **{c: _json_object_fields(s) for c, s in NODE_SCHEMA_REGISTRY.items()},
         CollectionNames.BLOCKS.value: _json_object_fields(block_schema),
         CollectionNames.SQL_TABLES.value: _json_object_fields(sql_table_record_schema),
+        # Has no schema. ``retired`` is a list of maps, so Neo4j stores it as a JSON
+        # string; no compare-and-set ever compares it (``switchSeq`` is the guard).
+        CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value: frozenset({"retired"}),
     }.items()
     if fields
 }

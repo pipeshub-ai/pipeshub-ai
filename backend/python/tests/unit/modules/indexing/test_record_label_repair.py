@@ -80,10 +80,37 @@ class RepairGraph(FakeGraph):
 
 
 class FakeBlobStore:
-    def __init__(self) -> None:
+    def __init__(self, flags: dict[str, bool] | None = None) -> None:
         self.stored: dict[str, dict[str, Any]] = {}
         self.reads: list[str] = []
         self.writes: list[tuple[str, str, str]] = []
+        self.rewrites: list[dict[str, Any]] = []
+        self.config_service = MagicMock()
+        self.config_service.get_config = AsyncMock(
+            return_value={"featureFlags": flags or {}, "artifactReadGeneration": "gen-1"}
+        )
+
+    async def rewrite_semantic_metadata(
+        self, org_id, record_id, virtual_record_id, transform, *, stored_write, sidecar=None,
+    ) -> dict | None:
+        """One read of the stored record, the repair's own plan from it, and one write."""
+        from app.modules.transformers.blob_storage import StoredRecordNotFound
+        from app.modules.transformers.stored_write import (
+            classification_sidecar_token_path,
+        )
+
+        stored = await self.get_record_from_storage(virtual_record_id, org_id)
+        if stored is None:
+            raise StoredRecordNotFound(virtual_record_id)
+        new = await transform(stored)
+        self.rewrites.append({"vrid": virtual_record_id, "layout": stored_write.layout, "sidecar": sidecar})
+        if new is None:
+            return None
+        written = {**stored, "semantic_metadata": new}
+        if sidecar is not None and stored_write.layout == "cow":
+            _ = await sidecar.write(classification_sidecar_token_path(sidecar.stage_version), "gen-1:run", new)
+        await self.update_record_buffer(org_id, f"doc-{virtual_record_id}", written, virtual_record_id)
+        return written
 
     async def get_document_id_by_virtual_record_id(self, virtual_record_id) -> dict | None:
         if virtual_record_id not in self.stored:
@@ -594,8 +621,8 @@ class _Sidecars:
         self.calls: list[tuple[Any, ...]] = []
         self._leases = leases
 
-    async def write(self, org_id, virtual_record_id, rev, name, version, payload) -> bool:
-        self.calls.append((org_id, virtual_record_id, rev, name, version, payload, "record:b-open" in self._leases.held))
+    async def write_at(self, org_id, virtual_record_id, rev, path, payload) -> bool:
+        self.calls.append((org_id, virtual_record_id, rev, path, payload, "record:b-open" in self._leases.held))
         return True
 
 
@@ -681,25 +708,58 @@ class TestUnderTheRecordLease:
         assert blob.writes == []
 
 
+def _copy_on_write(blob: FakeBlobStore) -> None:
+    """Shadow on: stored writes are copy-on-write and file their classification as a sidecar."""
+    blob.config_service.get_config = AsyncMock(
+        return_value={"featureFlags": {"ENABLE_ARTIFACT_READ_SHADOW": True}, "artifactReadGeneration": "gen-1"}
+    )
+
+
 class TestTheClassificationSidecar:
-    async def test_it_is_rewritten_with_the_repaired_labels_under_the_lease(self, world) -> None:
+    async def test_it_is_filed_with_the_repaired_labels_under_the_lease_before_the_switch(self, world) -> None:
+        graph, blob = world
+        _copy_on_write(blob)
+        graph.records["b-open"]["contentRev"] = REV
+        leases = _RecordLeases()
+        sidecars = _Sidecars(leases)
+        writes_when_filed: list[int] = []
+        original = sidecars.write_at
+
+        async def watching(*args, **kwargs) -> bool:
+            writes_when_filed.append(len(blob.writes))
+            return await original(*args, **kwargs)
+
+        sidecars.write_at = watching  # type: ignore[method-assign]
+        await _sweep(graph, blob, leases, sidecars)
+
+        [(org, vrid, rev, path, envelope, held)] = sidecars.calls
+        assert (org, vrid, rev, held) == (ORG, "vr-b-open", REV, True)
+        assert path.startswith("enrich/classification.") and path.endswith(f"@{ClassifyStage.version}.json")
+        assert envelope["storedRun"] == "gen-1:run" and envelope["storedMeta"] == path
+        stored = blob.stored["vr-b-open"]["semantic_metadata"]
+        payload = envelope["classification"]
+        assert payload["topics"] == stored["topics"] == ["Shipping dates", "Product launch window"]
+        assert payload["categories"] == ["Product programme"] and payload["own_labels"] is True
+        assert "named_entities" not in payload
+        # Before the stored record that has the same labels is switched in.
+        assert writes_when_filed == [0]
+
+    async def test_in_place_files_no_sidecar(self, world) -> None:
         graph, blob = world
         graph.records["b-open"]["contentRev"] = REV
         leases = _RecordLeases()
         sidecars = _Sidecars(leases)
+
         await _sweep(graph, blob, leases, sidecars)
 
-        [(org, vrid, rev, name, version, payload, held)] = sidecars.calls
-        assert (org, vrid, rev, name, version, held) == (ORG, "vr-b-open", REV, "classification", ClassifyStage.version, True)
-        stored = blob.stored["vr-b-open"]["semantic_metadata"]
-        assert payload["topics"] == stored["topics"] == ["Shipping dates", "Product launch window"]
-        assert payload["categories"] == ["Product programme"] and payload["own_labels"] is True
-        assert "named_entities" not in payload
+        assert sidecars.calls == [] and [w[2] for w in blob.writes] == ["vr-b-open"]
+        assert [r["layout"] for r in blob.rewrites] == ["in_place"]
 
     async def test_a_pass_cut_short_after_the_sidecar_is_finished_by_the_next(self, world) -> None:
-        """The sidecar goes first: the stored write marks the labels repaired, so if it never
-        lands the record is still unrepaired and the retry writes both."""
+        """The sidecar goes first: the switch names it, so if the switch never lands the record is
+        still unrepaired and the retry writes both."""
         graph, blob = world
+        _copy_on_write(blob)
         graph.records["b-open"]["contentRev"] = REV
         leases = _RecordLeases()
         sidecars = _Sidecars(leases)
@@ -707,7 +767,7 @@ class TestTheClassificationSidecar:
         cut = []
 
         async def cut_short_once(*args: object, **kwargs: object) -> tuple[str, int]:
-            assert sidecars.calls, "the stored copy was marked repaired before the sidecar was written"
+            assert sidecars.calls, "the stored copy was switched in before the sidecar was written"
             if not cut:
                 cut.append(True)
                 raise TimeoutError
@@ -718,10 +778,12 @@ class TestTheClassificationSidecar:
 
         assert [w[2] for w in blob.writes] == ["vr-b-open"]
         assert len(sidecars.calls) == 2
-        assert sidecars.calls[-1][5]["topics"] == blob.stored["vr-b-open"]["semantic_metadata"]["topics"]
+        last = sidecars.calls[-1][4]["classification"]
+        assert last["topics"] == blob.stored["vr-b-open"]["semantic_metadata"]["topics"]
 
     async def test_a_record_without_a_revision_gets_none(self, world) -> None:
         graph, blob = world
+        _copy_on_write(blob)
         leases = _RecordLeases()
         sidecars = _Sidecars(leases)
         await _sweep(graph, blob, leases, sidecars)
@@ -729,6 +791,7 @@ class TestTheClassificationSidecar:
 
     async def test_with_artifact_writes_off_none_is_written(self, world) -> None:
         graph, blob = world
+        _copy_on_write(blob)
         graph.records["b-open"]["contentRev"] = REV
         store = MagicMock()
         store.presign_revision = AsyncMock()

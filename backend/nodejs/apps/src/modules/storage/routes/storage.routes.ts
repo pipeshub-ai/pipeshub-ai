@@ -270,6 +270,23 @@ export function createStorageRouter(container: Container): Router {
     },
   );
 
+  router.post(
+    '/internal/:documentId/retire',
+    authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),
+    ValidationMiddleware.validate(PurgeDocumentParams),
+    async (
+      req: AuthenticatedServiceRequest,
+      res: Response,
+      next: NextFunction,
+    ): Promise<void> => {
+      try {
+        await storageController.retireDocumentById(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.delete(
     '/internal/:documentId/purge',
     authMiddleware.scopedTokenValidator(TokenScopes.STORAGE_TOKEN),

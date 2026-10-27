@@ -33,7 +33,9 @@ def record_artifact_write(outcome: str) -> None:
 # revision on the mapping), stale (the stored record holds another revision, or
 # the mapping does not say which), missing (a file or the set is gone), too_large,
 # integrity (a file's size or sha256 is not the manifest's), invalid (a manifest
-# or file this reader cannot use), failed (storage or another error).
+# or file this reader cannot use), stale_sidecar (the classification the mapping names is
+# not stored, or is not of this stored write; kept apart from stale), failed (storage or
+# another error).
 ARTIFACT_READS = METRICS_BACKEND.counter(
     "pipeshub_record_artifact_reads_total",
     "Record reads from artifact sets, by outcome",
@@ -101,3 +103,35 @@ RECORD_READER_RELOOKUP = METRICS_BACKEND.counter(
 
 def record_reader_relookup(outcome: str, trigger: str) -> None:
     RECORD_READER_RELOOKUP.inc(outcome, trigger)
+
+
+# outcome: switched (the mapping now names the writer's document), conflict (the
+# compare-and-set found the mapping moved: the write re-reads once, then is
+# superseded), superseded (the write gave up: its document is a stray),
+# record_gone (the record was deleted before the switch), deadline (the writer took
+# longer than its deadline), retired_overflow (an entry was dropped from a full
+# ``retired`` list), invalidated (an in-place write marked the stored run unservable
+# before its upload), invalidation_skipped (it was already unservable).
+STORE_SWITCH = METRICS_BACKEND.counter(
+    "pipeshub_record_store_switch_total",
+    "Stored-record writes switching the virtual record's mapping, by layout and outcome",
+    ["layout", "outcome"],
+)
+
+
+def record_store_switch(layout: str, outcome: str, count: int = 1) -> None:
+    if count:
+        STORE_SWITCH.inc(layout, outcome, value=float(count))
+
+
+# outcome: marked, gone (no such document, nothing to fence), failed (the mark could not be
+# set; the switch goes on), unavailable (the storage service has no retire route: no write fence).
+RETIRE_MARK = METRICS_BACKEND.counter(
+    "pipeshub_record_retire_mark_total",
+    "Retire marks set on replaced stored documents, by outcome",
+    ["outcome"],
+)
+
+
+def record_retire_mark(outcome: str) -> None:
+    RETIRE_MARK.inc(outcome)

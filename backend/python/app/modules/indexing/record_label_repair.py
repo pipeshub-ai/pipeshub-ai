@@ -43,12 +43,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
-from app.models.blocks import SemanticMetadata
-from app.modules.artifacts.sidecars import (
-    CLASSIFICATION,
-    ArtifactSidecars,
-    classification_payload,
-)
+from app.modules.artifacts.sidecars import ArtifactSidecars, classification_envelope
 from app.modules.entity_resolution.normalizer import normalize_name, spelling_key
 from app.modules.indexing.connector_sweep import (
     ConnectorSweep,
@@ -63,7 +58,18 @@ from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
 from app.modules.pipeline.stages.classify import ClassifyStage
-from app.modules.transformers.blob_storage import StorageDocumentNotFoundError
+from app.modules.pipeline.stages.record_io import NAMED_ENTITIES_SECTION
+from app.modules.transformers.blob_storage import (
+    StorageDocumentNotFoundError,
+    StoredRecordNotFound,
+)
+from app.modules.transformers.stored_write import (
+    RunSuperseded,
+    SidecarWrite,
+    StoredWriteBusy,
+    mint_stored_write,
+)
+from app.services.featureflag.platform_settings import artifact_settings
 from app.services.graph_db.taxonomy import TaxonomyLink, taxonomy_links
 from app.services.messaging.utils import MessagingUtils
 from app.utils.loop_share import LoopShare
@@ -344,42 +350,30 @@ class RecordLabelRepair(ConnectorSweep):
         vrid = virtual_record_id or record.get("virtualRecordId")
         if not org_id or not isinstance(vrid, str) or not vrid:
             return False
+        # Planned without the lease, from the mapping as it is now, so a record with nothing to
+        # repair never takes the lease. The write plans again under it, from the mapping as it is then.
         lookup = await self.blob_store.get_document_id_by_virtual_record_id(vrid)
         if not lookup or not lookup.get("record_doc_id"):
             return False
-        # Planned without the lease, so a record with nothing to repair never takes it.
-        if await self._patch(key, vrid, org_id, lookup, links) is None:
+        if await self._plan(key, vrid, org_id, lookup, links) is None:
             return False
         outcome = await _under_record_lease(
             self.lease_manager(), key,
-            lambda: self._write_under_lease(key, record, vrid, org_id, lookup, links),
+            lambda: self._write_under_lease(key, record, vrid, org_id, links),
         )
         if outcome is _BUSY:
             raise _RecordBusy(key)
         return bool(outcome)
 
-    async def _patch(
+    async def _plan(
         self, key: str, vrid: str, org_id: str, lookup: dict[str, Any], links: list[TaxonomyLink],
-    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        """The stored copy and its repaired ``semantic_metadata``; None when there is nothing to write."""
+    ) -> dict[str, Any] | None:
+        """The repaired ``semantic_metadata``; None when there is nothing to write."""
         try:
             stored = await self.blob_store.get_record_from_storage(vrid, org_id, lookup_result=lookup)
         except StorageDocumentNotFoundError as exc:
             raise _MissingStoredCopy from exc
-        # A virtual record id can be shared; its copy is repaired with the
-        # record that wrote it.
-        if not isinstance(stored, dict) or str(stored.get("id") or "") != key:
-            return None
-        semantic = stored.get("semantic_metadata")
-        if not isinstance(semantic, dict) or semantic.get(OWN_LABELS) is True:
-            return None
-        fields = own_label_fields(semantic, links)
-        if fields is None:
-            return None
-        patched = _patched(semantic, fields)
-        if {**patched, OWN_LABELS: None} == {**semantic, OWN_LABELS: None}:
-            return None
-        return stored, patched
+        return _repaired(stored, key, links)
 
     async def _write_under_lease(
         self,
@@ -387,7 +381,6 @@ class RecordLabelRepair(ConnectorSweep):
         planned: dict[str, Any],
         vrid: str,
         org_id: str,
-        lookup: dict[str, Any],
         links: list[TaxonomyLink],
     ) -> bool:
         latest = await self.graph.get_document(key, _RECORDS, raise_on_error=True)
@@ -398,35 +391,55 @@ class RecordLabelRepair(ConnectorSweep):
             or latest.get("contentRev") != planned.get("contentRev")
         ):
             return False
-        # Read again under the lease: a stage may have rewritten it since the plan.
-        patch = await self._patch(key, vrid, org_id, lookup, links)
-        if patch is None:
-            return False
-        stored, patched = patch
-        # Sidecar first: the stored write marks the labels repaired, so a pass cut short
-        # between the two must leave it unmarked for the next pass to finish both.
-        rev = latest.get("contentRev")
-        if isinstance(rev, str) and rev:
-            await self._write_sidecar(key, org_id, vrid, rev, patched)
-        try:
-            await self.blob_store.update_record_buffer(
-                org_id, lookup["record_doc_id"], {**stored, "semantic_metadata": patched}, vrid,
-            )
-        except StorageDocumentNotFoundError as exc:
-            raise _MissingStoredCopy from exc
-        return True
+        # The lookup is taken here, under the lease: a mapping read before it can name a document a
+        # sink has since replaced. The write reads the mapped document once, plans the repair
+        # from that read, and switches the mapping only if it is still the one that was read.
+        async def repaired(stored: dict[str, Any]) -> dict[str, Any] | None:
+            return _repaired(stored, key, links)
 
-    async def _write_sidecar(self, key: str, org_id: str, vrid: str, rev: str, patched: dict[str, Any]) -> None:
-        if self.sidecars is None:
-            return
+        rev = latest.get("contentRev")
+        stored_write = mint_stored_write(await artifact_settings(self.blob_store.config_service))
         try:
-            payload = classification_payload(SemanticMetadata.model_validate(patched))
-        except ValueError:
-            self.logger.warning(
-                "record_label_repair: record %s has a stored classification its sidecar cannot hold", key,
+            written = await self.blob_store.rewrite_semantic_metadata(
+                org_id, key, vrid, repaired, stored_write=stored_write,
+                sidecar=self._sidecar(org_id, vrid, rev) if isinstance(rev, str) and rev else None,
             )
-            return
-        _ = await self.sidecars.write(org_id, vrid, rev, CLASSIFICATION, ClassifyStage.version, payload)
+        except (StorageDocumentNotFoundError, StoredRecordNotFound) as exc:
+            raise _MissingStoredCopy from exc
+        except (RunSuperseded, StoredWriteBusy) as exc:
+            raise _RecordBusy(key) from exc
+        return written is not None
+
+    def _sidecar(self, org_id: str, vrid: str, rev: str) -> SidecarWrite | None:
+        """How a copy-on-write repair files its classification: before the switch that names it."""
+        sidecars = self.sidecars
+        if sidecars is None:
+            return None
+
+        async def write(path: str, stored_run: str | None, semantic_metadata: dict[str, Any]) -> bool:
+            payload = {k: v for k, v in semantic_metadata.items() if k != NAMED_ENTITIES_SECTION}
+            return await sidecars.write_at(
+                org_id, vrid, rev, path, classification_envelope(stored_run, path, payload),
+            )
+
+        return SidecarWrite(ClassifyStage.version, write)
+
+
+def _repaired(stored: object, key: str, links: list[TaxonomyLink]) -> dict[str, Any] | None:
+    """The record's ``semantic_metadata`` with its labels repaired; None when there is nothing to write."""
+    # A virtual record id can be shared; its copy is repaired with the record that wrote it.
+    if not isinstance(stored, dict) or str(stored.get("id") or "") != key:
+        return None
+    semantic = stored.get("semantic_metadata")
+    if not isinstance(semantic, dict) or semantic.get(OWN_LABELS) is True:
+        return None
+    fields = own_label_fields(semantic, links)
+    if fields is None:
+        return None
+    patched = _patched(semantic, fields)
+    if {**patched, OWN_LABELS: None} == {**semantic, OWN_LABELS: None}:
+        return None
+    return patched
 
 
 async def run_record_label_repair_loop(

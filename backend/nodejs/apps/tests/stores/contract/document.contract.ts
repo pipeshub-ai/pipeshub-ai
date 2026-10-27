@@ -516,6 +516,29 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       expect(rows[0]).to.include({ documentName: 'metadata_v1', documentPath: `${org}/PipesHub/b` });
     });
 
+    it('listEnvelopes carries retiredAt and can hold back rows younger than olderThanSeconds', async () => {
+      const org = fx.newId();
+      const old = await repo.create(mk(org, { documentName: 'record_age', createdAt: 1000 }));
+      const young = await repo.create(mk(org, { documentName: 'metadata_age', createdAt: Date.now() }));
+      await repo.retire(org, old._id, 7);
+      const all = await repo.listEnvelopes(org, 'age');
+      expect(all.map((r) => [r._id, r.retiredAt ?? null])).to.deep.equal([[young._id, null], [old._id, 7]]);
+      const aged = await repo.listEnvelopes(org, 'age', { olderThanSeconds: 3600 });
+      expect(aged.map((r) => r._id)).to.deep.equal([old._id]);
+      expect((await repo.listEnvelopes(org, 'age', { olderThanSeconds: Number.NaN })).length).to.equal(2);
+    });
+
+    it('retire marks a live row once, keeps the first time, and refuses other orgs and deleted rows', async () => {
+      const org = fx.newId();
+      const doc = await repo.create(mk(org, { documentName: 'record_r' }));
+      expect(await repo.retire(org, doc._id, 100)).to.deep.equal({ retiredAt: 100 });
+      expect(await repo.retire(org, doc._id, 200)).to.deep.equal({ retiredAt: 100 });
+      expect(await repo.retire(fx.newId(), doc._id, 300)).to.equal(null);
+      const dead = await repo.create(mk(org, { documentName: 'record_d' }));
+      await repo.update(org, dead._id, { isDeleted: true });
+      expect(await repo.retire(org, dead._id, 400)).to.equal(null);
+    });
+
     it('pageFlatEnvelopes pages by id the live envelopes still filed at the flat path', async () => {
       const org = fx.newId();
       const prefix = `${org}/PipesHub/records/`;

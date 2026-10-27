@@ -32,6 +32,14 @@ from app.modules.transformers.image_description import (
     ImageDescriber,
     harvest_descriptions,
 )
+from app.modules.transformers.stored_write import (
+    COW,
+    RUN_SUPERSEDED,
+    STORED_WRITE,
+    StoredWrite,
+    is_none_run,
+    mint_stored_write,
+)
 from app.modules.transformers.transformer import (
     ENRICHMENT_FOLLOWS,
     IMAGE_DESCRIPTION_BUDGET_S,
@@ -40,7 +48,10 @@ from app.modules.transformers.transformer import (
 )
 from app.modules.transformers.vectorstore import VectorStore
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.featureflag.platform_settings import is_artifact_write_enabled
+from app.services.featureflag.platform_settings import (
+    artifact_settings,
+    is_artifact_write_enabled,
+)
 from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
@@ -230,6 +241,8 @@ class SinkOrchestrator(Transformer):
 
         if not skip_blob:
             ctx.settings[STORED_REV] = record_doc.get("contentRev") or None
+            # One read of the settings picks the layout and mints the run; nothing below reads it again.
+            ctx.settings[STORED_WRITE] = mint_stored_write(await artifact_settings(self.config_service))
             with stage("images.describe"):
                 await self._describe_images(ctx)
             with stage("blob.write"):
@@ -239,6 +252,9 @@ class SinkOrchestrator(Transformer):
         if not skip_blob and not skip_vector_store:
             with stage("artifacts.write"):
                 written = await self._write_artifacts(ctx, record_doc)
+            if written is not None:
+                # Right after the set, before vectors and COMPLETED: the pointer must not wait on them.
+                await self._flip_revision_pointer(ctx.record, written, ctx.settings[STORED_WRITE].run)
 
         if skip_vector_store:
             success = await self.graph_provider.batch_update_nodes(
@@ -281,9 +297,7 @@ class SinkOrchestrator(Transformer):
             record_service_activity("indexing_service", "document_indexed", connector=connector, status="ok", org=org, kb=kb, mimetype=record.mime_type or "none")
             self.logger.debug(f"Saving reconciliation metadata for record {record_id}")
             with stage("graph.status"):
-                completed = await self._update_indexing_status(ctx)
-            if completed and written is not None:
-                await self._flip_revision_pointer(ctx.record, written)
+                await self._update_indexing_status(ctx)
             # await self.graphdb.apply(ctx)
             with stage("blob.metadata"):
                 await self._save_reconciliation_metadata(ctx)
@@ -547,6 +561,15 @@ class SinkOrchestrator(Transformer):
         writes nothing, since there is no revision to file it under.
         """
         record = ctx.record
+        stored_write: StoredWrite = ctx.settings[STORED_WRITE]
+        # An in-place write has a ``none`` run, which is never served: its set would be wasted
+        # storage. A write that lost its compare-and-set stored nothing this run's set could match.
+        if (
+            stored_write.layout != COW
+            or is_none_run(stored_write.run)
+            or ctx.settings.get(RUN_SUPERSEDED)
+        ):
+            return None
         if not await is_artifact_write_enabled(self.config_service):
             return None
         rev = record_doc.get("contentRev")
@@ -567,6 +590,7 @@ class SinkOrchestrator(Transformer):
                 reconciliation_metadata=reconciliation or None,
                 stored_record_fields=ctx.settings.get(STORED_RECORD_FIELDS),
                 properties=properties,
+                stored_run=stored_write.run,
             )
         except Exception as exc:
             # Only the type and our own messages: an aiohttp error can carry a signed URL.
@@ -607,34 +631,28 @@ class SinkOrchestrator(Transformer):
             )
             return None
 
-    async def _flip_revision_pointer(self, record: Record, written: WrittenRevision) -> None:
+    async def _flip_revision_pointer(self, record: Record, written: WrittenRevision, run: str) -> None:
         """Point the virtual record's mapping at the revision just written.
 
-        A compare-and-set on ``currentRev``: a writer that read an older value
-        than the one stored now lost a race, and the pointer is left to the
-        winner. Best-effort, like the artifact write itself.
+        A compare-and-set on ``{storedRun: run, currentRev: <read>}``: the pointer moves only
+        while the stored record is still the write this set was built from, and a writer that
+        read an older pointer than the one stored now lost a race. Sets ``currentRun`` with it,
+        so a reader serves the set only for the run the stored record came from. It never
+        writes ``updatedAt``. Best-effort, like the artifact write itself.
         """
         vrid = record.virtual_record_id
         rev = written.manifest.rev
         collection = CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value
         try:
-            # The CAS only orders writers that read the same pointer. A run the record
-            # has since left (re-indexed to a newer revision without a record lease)
-            # must not point search back at its older revision.
-            current_doc = await self.graph_provider.get_document(
-                record.id, CollectionNames.RECORDS.value
-            )
-            if current_doc is None or current_doc.get("contentRev") != rev:
-                self.logger.info(
-                    "Record %s moved off revision %s; revision pointer of %s left as it is",
-                    record.id, rev, vrid,
-                )
-                return
             mapping = await self.graph_provider.get_document(vrid, collection)
             if mapping is None:
                 return
             current = mapping.get("currentRev")
-            if current == rev and mapping.get("manifestDocId") == written.manifest_ref.document_id:
+            if (
+                current == rev
+                and mapping.get("manifestDocId") == written.manifest_ref.document_id
+                and mapping.get("currentRun") == run
+            ):
                 return
             flipped = await self.graph_provider.update_node_fields_if_match(
                 vrid,
@@ -643,8 +661,9 @@ class SinkOrchestrator(Transformer):
                     "currentRev": rev,
                     "previousRev": current if current != rev else mapping.get("previousRev"),
                     "manifestDocId": written.manifest_ref.document_id,
+                    "currentRun": run,
                 },
-                {"currentRev": current},
+                {"storedRun": run, "currentRev": current},
             )
             if not flipped:
                 self.logger.info(
