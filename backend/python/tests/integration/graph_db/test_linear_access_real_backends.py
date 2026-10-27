@@ -887,7 +887,7 @@ async def test_failing_to_read_teams_or_people_keeps_access(env: _Env, operation
     (after the retries). Access stays as it was; the next sync catches up."""
     p = await _people(env, "alice", "bob")
     ws = env.ws
-    crowd = [ws.user(f"Member{n:03d}") for n in range(120)]  # past the 100 members a team lists inline
+    crowd = [ws.user(f"Member{n:03d}") for n in range(120)]  # past the 10 members a team lists inline
     eng = ws.team("ENG", members=[p["sync"], p["alice"], p["bob"]])
     sec = ws.team("SEC", visibility="private", members=[p["sync"], p["alice"], *crowd])
     ws.issue(eng, "Roadmap", attachments=[Attachment("Deck", "https://deck.example/r")])

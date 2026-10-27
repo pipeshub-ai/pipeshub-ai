@@ -3426,7 +3426,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_paginated(
                 "teams",
                 [
@@ -3447,14 +3447,14 @@ class TestGetTeamOptions:
             )
 
         # Linear does the matching, on name or key, so paging stays correct.
-        mock_ds.teams.assert_awaited_once_with(
-            first=2,
-            after="cursor-1",
-            filter={"or": [
+        mock_ds.execute_operation.assert_awaited_once_with("teamList", {
+            "first": 2,
+            "after": "cursor-1",
+            "filter": {"or": [
                 {"name": {"containsIgnoreCase": "eng"}},
                 {"key": {"containsIgnoreCase": "eng"}},
             ]},
-        )
+        })
         # What Linear returned is shown as is: a key match is not filtered away.
         assert [o.label for o in result.options] == ["Engineering (ENG)", "Platform (PENG)"]
         assert result.has_more is True
@@ -3466,7 +3466,7 @@ class TestGetTeamOptions:
         connector.data_source = MagicMock()
 
         mock_ds = MagicMock()
-        mock_ds.teams = AsyncMock(
+        mock_ds.execute_operation = AsyncMock(
             return_value=_mock_response(success=False, message="Error")
         )
 
