@@ -183,6 +183,25 @@ describe('error.middleware.utils', () => {
       expect(call.args[1].context).to.deep.equal({ extra: 'context' })
     })
 
+    // A warning is an answer that went as intended: no stack, whatever shape
+    // the error has.
+    for (const [name, make] of [
+      ['a generic Error', () => new Error('plain')],
+      ['an axios-style error', () => Object.assign(new Error('Request failed'), {
+        response: { status: 404, statusText: 'Not Found', data: { detail: 'gone' } },
+      })],
+    ] as const) {
+      it(`logs ${name} at warn without its stack, and at error with it`, () => {
+        const logger = { warn: sinon.stub(), error: sinon.stub() } as unknown as Logger
+
+        logError(logger, 'Answered', make(), undefined, 'warn')
+        logError(logger, 'Failed', make())
+
+        expect((logger.warn as sinon.SinonStub).firstCall.args[1].error).to.not.have.property('stack')
+        expect((logger.error as sinon.SinonStub).firstCall.args[1].error).to.have.property('stack')
+      })
+    }
+
     it('should fall back to console.error when logger.error throws', () => {
       const consoleStub = sinon.stub(console, 'error')
       const logger = {

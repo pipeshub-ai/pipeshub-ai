@@ -255,6 +255,23 @@ describe('handleBackendError', () => {
       })
     }
 
+    // Answered to the caller as a 500, so it is ours to look into.
+    it('logs a 4xx it does not pass on (405) at error, with the service detail', () => {
+      const result = handleBackendError({ statusCode: 405, data: { detail: 'Method Not Allowed' } }, 'create connector')
+
+      expect(result).to.be.instanceOf(InternalServerError)
+      expect(error.calledOnce).to.be.true
+      expect(error.firstCall.args[1]).to.include({ statusCode: 405, errorDetail: 'Method Not Allowed' })
+      expect(warn.called).to.be.false
+    })
+
+    it('logs a 429 it passes on as a 429 at warn', () => {
+      handleBackendError({ statusCode: 429, data: { detail: 'slow down' } }, 'create connector')
+
+      expect(warn.calledOnce).to.be.true
+      expect(error.called).to.be.false
+    })
+
     for (const statusCode of [500, 502]) {
       it(`logs a ${String(statusCode)} from the service at error`, () => {
         handleBackendError({ statusCode, data: { detail: 'broke' } }, 'create connector')

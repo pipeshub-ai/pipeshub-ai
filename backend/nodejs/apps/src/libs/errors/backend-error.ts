@@ -108,7 +108,7 @@ const transientError = (
   statusCode: 429 | 503 | 504,
   upstreamDetail: unknown,
   error: { headers?: Record<string, unknown> } | undefined,
-): Error => {
+): BaseError => {
   const retry = retryAfterMetadata(error);
   const detail = upstreamDetail ? stringifyErrorDetail(upstreamDetail) : '';
   // A 429 is about the caller, so the service's own words are worth repeating.
@@ -231,13 +231,29 @@ export const handleBackendError = (
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  // The service refusing the request (a 4xx) is answered to the caller as
-  // the same 4xx; only its own failures are errors here.
-  logger[statusCode >= 500 ? 'error' : 'warn'](
+  const mapped = errorForStatus(
+    statusCode,
+    errorDetail,
+    bodyDetail,
+    response ?? source,
+    operation,
+  );
+  // Logged by what the caller is answered: a refusal passed on as the same
+  // 4xx is routine, anything that becomes a 5xx (a 405 included) is ours.
+  logger[mapped.statusCode >= 500 ? 'error' : 'warn'](
     `Backend error during ${operation}`,
     { statusCode, errorDetail, fullResponse: data },
   );
+  return mapped;
+};
 
+const errorForStatus = (
+  statusCode: number,
+  errorDetail: string,
+  bodyDetail: unknown,
+  source: { headers?: Record<string, unknown> },
+  operation: string,
+): BaseError => {
   switch (statusCode) {
     case 400:
       return new BadRequestError(errorDetail);
@@ -259,7 +275,7 @@ export const handleBackendError = (
     case 429:
     case 503:
     case 504:
-      return transientError(statusCode, bodyDetail, response ?? source);
+      return transientError(statusCode, bodyDetail, source);
     default:
       // Every 5xx (502 included, as the upload pre-check documents), and
       // anything unrecognised: the service's own words describe its internals,

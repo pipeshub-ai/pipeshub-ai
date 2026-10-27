@@ -23,7 +23,7 @@ export const extractErrorData = (error: any, includeStack = true): any => {
           status: error.response.status,
           statusText: error.response.statusText,
           // Stack traces included for server-side logging only
-          stack: error.stack,
+          ...(includeStack && { stack: error.stack }),
       };
       }
 
@@ -33,7 +33,7 @@ export const extractErrorData = (error: any, includeStack = true): any => {
       code: error.code,
       name: error.name,
       // Stack traces included for server-side logging only
-      stack: error.stack,
+      ...(includeStack && { stack: error.stack }),
       };
   } catch (extractionError) {
       return {
