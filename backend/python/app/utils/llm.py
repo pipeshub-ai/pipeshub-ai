@@ -80,10 +80,14 @@ def is_provider_unavailable(exc: BaseException) -> bool:
     return False
 
 
-async def load_ai_models(config_service: ConfigurationService) -> dict[str, Any]:
-    """Load the AI models config blob (OSS: org-scoped get_config); ``{}`` until AI settings are saved."""
+async def load_ai_models(config_service: ConfigurationService, *, raise_on_error: bool = False) -> dict[str, Any]:
+    """Load the AI models config blob (OSS: org-scoped get_config); ``{}`` until AI settings are saved.
+
+    ``raise_on_error=True`` raises when the store cannot be read, so ``{}`` then means
+    only that no AI settings are saved.
+    """
     config = cast(object, await config_service.get_config(
-        config_node_constants.AI_MODELS.value, use_cache=False
+        config_node_constants.AI_MODELS.value, use_cache=False, raise_on_error=raise_on_error
     ))
     return cast(dict[str, Any], config) if isinstance(config, dict) else {}
 

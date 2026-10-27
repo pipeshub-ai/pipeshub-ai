@@ -76,6 +76,7 @@ from app.services.cache.invalidation_hooks import (
 )
 from app.connectors.services.vector_cleanup_events import build_soft_delete_events
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
+from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.interface.graph_db_provider import (
     FOLDER_CHANGED_DURING_DELETE_MESSAGE,
@@ -228,6 +229,25 @@ class ParentPlacement(NamedTuple):
     parent_outside_group: bool
 
 
+class PushClaimRefused(Exception):
+    """A push's conditional claim did not apply; ``claim`` says why. Raised inside the transaction, so it rolls back."""
+
+    def __init__(self, claim: PushClaim) -> None:
+        super().__init__(claim.value)
+        self.claim = claim
+
+
+class PushRecordSkipped(Exception):
+    """The record upsert skipped a pushed record (it is in the trash); the push rolls back and re-decides."""
+
+
+@dataclass(frozen=True)
+class PushOutcome:
+    #: ``newRecord`` or ``updateRecord`` for a content change, else None.
+    event: str | None
+    #: Whether the event reached the broker. A False leaves the record for the stranded-record sweep.
+    published: bool
+
 
 def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None = None) -> bool:
     """Whether a stored record (document or ``Record``) belongs to another org, or to
@@ -244,6 +264,7 @@ def _owned_elsewhere(doc: object, org_id: str | None, connector_id: str | None =
         return True
     doc_connector = doc.get("connectorId")
     return bool(connector_id and doc_connector and doc_connector != connector_id)
+
 
 class DataSourceEntitiesProcessor:
     ATTACHMENT_CONTAINER_TYPES = [
@@ -3170,6 +3191,74 @@ class DataSourceEntitiesProcessor:
                 key=record.id
             )
             await self._mark_queued_after_publish([record.id])
+
+    # No @retry_on_deadlock: the push owns its retry loop (bounded in attempts and time), so a
+    # lost transaction is not retried inside each of the service's attempts.
+    async def on_pushed_record(
+        self,
+        record: Record,
+        *,
+        expected: PushExpect | None,
+        new: PushSet,
+        content_changed: bool,
+    ) -> PushOutcome:
+        """Write a record a caller pushed, claimed against a concurrent push or trash.
+
+        The first statement of the (explicit) transaction is the conditional claim; the record
+        is then upserted in the same transaction. A claim that does not apply, or a record the
+        upsert skips (one in the trash), raises and rolls everything back, so nothing is half
+        written and the caller re-decides from what is stored. After the commit a content change
+        publishes ``newRecord`` (a create) or ``updateRecord``; a failed publish leaves the
+        record NOT_STARTED with a fresh ``queuedAt`` for the stranded-record sweep.
+        """
+        moved_virtual_record_ids: list[tuple[str, str | None]] = []
+        narrowed_connectors: set[str] = set()
+        async with self._drop_access_after(narrowed_connectors), self._sync_transaction(explicit=True) as tx_store:
+            if getattr(tx_store, "explicit", False) is not True:
+                # Without one transaction the claim commits alone, and two creates of a key can both win it.
+                raise RuntimeError(
+                    "A pushed record needs a real graph transaction; enable explicit transactions "
+                    "(NEO4J_EXPLICIT_TRANSACTIONS or NEO4J_CREATE_TRANSACTIONS)."
+                )
+            claim = await tx_store.claim_push_record(
+                kb_id=record.connector_id, org_id=record.org_id, key=record.id, expected=expected, new=new,
+            )
+            if claim is not PushClaim.CLAIMED:
+                raise PushClaimRefused(claim)
+            existing = None if expected is None else await tx_store.get_record_by_key(record.id)
+            processed, pending_moves = await self._process_record(
+                record, [], tx_store, moved_virtual_record_ids,
+                publishes_event=content_changed, narrowed_connectors=narrowed_connectors,
+            )
+            if processed is None:
+                raise PushRecordSkipped(record.id)
+            if content_changed and processed.indexing_status != ProgressStatus.NOT_STARTED.value:
+                # An identical re-push that stores a new document keeps the stored revision, so the
+                # upload branch of _process_record carried the stored status (FAILED) over and stamped nothing.
+                processed.indexing_status = ProgressStatus.NOT_STARTED.value
+                self._stamp_queued_at(processed)
+                await tx_store.batch_upsert_records([processed])
+            elif expected is not None and not content_changed and existing is not None:
+                # A rename or version bump: indexing owns its state, which the upsert must not reset.
+                self._preserve_indexing_state(processed, Record.from_arango_base_record(existing))
+                await tx_store.batch_upsert_records([processed])
+        await self._publish_membership_sync(moved_virtual_record_ids)
+        await self._flush_pending_blob_moves(pending_moves)
+        if not content_changed:
+            return PushOutcome(event=None, published=False)
+        event = "newRecord" if expected is None else "updateRecord"
+        try:
+            if await self.messaging_producer.send_message(
+                "record-events",
+                {"eventType": event, "timestamp": get_epoch_timestamp_in_ms(), "payload": self._record_event_payload(processed)},
+                key=record.id,
+            ) is False:
+                raise RuntimeError("the message broker did not accept the event")
+        except Exception as e:
+            self.logger.error("Push of record %s committed but %s was not published: %s", record.id, event, e)
+            return PushOutcome(event=event, published=False)
+        await self._mark_queued_after_publish([record.id])
+        return PushOutcome(event=event, published=True)
 
     @staticmethod
     def _code_path_changed(new_record: Record, old_record: Record) -> bool:

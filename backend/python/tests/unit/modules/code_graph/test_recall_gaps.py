@@ -176,6 +176,27 @@ async def test_a_method_call_result_is_not_typed_by_a_same_named_function(graph,
     assert "src/app.ts::method:Foo.getValue" not in calls
 
 
+async def test_a_call_on_a_union_alias_reaches_every_member(graph, index_file) -> None:
+    # vscode: `expr.serialize()` with `type ContextKeyExpression = ContextKeyAndExpr | ...`.
+    await index_file("expr", "src/expr.ts",
+                     b"export class AndExpr {\n  serialize(): string { return ''; }\n}\n"
+                     b"export class OrExpr {\n  serialize(): string { return ''; }\n}\n"
+                     b"export class NotExpr {\n  serialize(): string { return ''; }\n"
+                     b"  constructor(private readonly _actual: Expr) {}\n"
+                     b"  run() { return this._actual.serialize(); }\n}\n"
+                     b"export type Leaf = AndExpr | (OrExpr);\n"
+                     b"export type Expr = (Leaf | NotExpr);\n"
+                     b"export type Public = Expr;\n", "typescript")
+    await index_file("app", "src/app.ts",
+                     b"import { Public } from './expr';\nexport function show(e: Public) { return e.serialize(); }\n",
+                     "typescript")
+    await _build(graph)
+    members = {"src/expr.ts::method:AndExpr.serialize", "src/expr.ts::method:OrExpr.serialize",
+               "src/expr.ts::method:NotExpr.serialize"}
+    assert members <= _targets(graph, CALLS, "src/app.ts")
+    assert members <= _targets(graph, CALLS, "src/expr.ts")
+
+
 async def test_a_typescript_namespace_function_is_called_through_the_namespace(graph, index_file) -> None:
     # vscode: `Event.map(...)`, where `namespace Event` shares its name with an interface.
     await index_file("event", "src/event.ts",

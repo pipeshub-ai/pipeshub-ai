@@ -624,6 +624,12 @@ export class OrgController {
       if (orgLogo.mimeType) {
         res.setHeader('Content-Type', orgLogo.mimeType);
       }
+      // An SVG logo opened as a page must not run script on this origin.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      );
 
       res.status(200).send(logoBuffer);
       return;

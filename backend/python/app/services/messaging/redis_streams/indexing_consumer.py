@@ -236,6 +236,10 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         # the message-id set above cannot see that they are the same work.
         self._in_flight_record_ids: set[str] = set()
         self._in_flight_lock = threading.Lock()
+        # Held by a record whose last attempt never finished, so such records
+        # run one at a time: when the process dies again, the record that
+        # took it down is the only suspect in flight. Used on the worker loop.
+        self._suspects = asyncio.Lock()
 
         # Absent config disables fair scheduling and keeps this consumer on
         # the exact pre-existing FIFO code path -- only MessagingFactory
@@ -270,9 +274,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         ] = deque()
         # Entries this consumer already holds: buffered in the scheduler or
         # parked for want of room. They stay un-ACKed in the pending list by
-        # design, so the recovery path would otherwise re-claim them -- and
-        # every claim bumps Redis's times_delivered, which the dead-letter
-        # backstop reads as a failed attempt.
+        # design, so the recovery path would otherwise claim them again while
+        # they wait.
         # (stream, entry id), for the same reason as the in-flight set.
         self._held_entries: set[tuple[str, str]] = set()
         # Lanes that returned entries on the most recent read. Skipping a
@@ -434,6 +437,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
 
     def _on_worker_loop_started(self, loop: asyncio.AbstractEventLoop) -> None:
         """Set up this consumer's admission and lease renewal on its worker loop."""
+        # A lock belongs to the loop that first waits on it, and a consumer
+        # started again runs on a new loop.
+        self._suspects = asyncio.Lock()
         if self.governor is not None:
             # One gate per pool, process-wide (ResourceGovernor.gate
             # memoises by pool, and raises if a second loop uses one), and
@@ -938,13 +944,15 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
     ) -> bool:
         """Check if message should be dead-lettered based on failure retry count.
 
-        Prefers RetryManager's app-tracked failure count (actual transient
-        failures, not Redis times_delivered which also counts every idle-drain
-        re-read), but always falls back to checking the Redis-native
-        times_delivered too: the app-tracked counter only increments inside
-        _process_message_wrapper's except handler, which a process crash or
-        kill mid-handler skips entirely, so it can never catch up to the real
-        delivery count on its own (#2992).
+        With a retry tracker, only its failure count decides here. Redis's own
+        times_delivered goes up on every claim (each restart claims every
+        entry the dead consumer held, buffered or not; so does a claim of an
+        entry left waiting for its record's lock), so as a dead-letter rule it
+        dropped healthy work. The poison loop it guarded against (#2992), a
+        record that kills the process before any failure is counted, is now
+        bounded by the tracker's unfinished attempts, counted in
+        ``_process_message_wrapper``. Without a tracker, times_delivered is
+        still the backstop.
 
         ``stable_message_id`` is the ``_retry_tracking_id`` a re-queued entry
         carries in its payload — RetryManager state is keyed by that stable
@@ -953,15 +961,6 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         to ``message_id`` when no stable id is available (first delivery).
         """
         max_attempts = messaging_env.max_delivery_attempts
-        # The two counters measure different things and must not share a
-        # threshold. The app-tracked count is *processing failures*; Redis's
-        # times_delivered counts every delivery -- the first read, a claim
-        # after a restart, an idle-drain recovery pass. A record that has
-        # simply been redelivered a few times has failed zero times, and
-        # dead-lettering it would discard healthy work. The backstop exists
-        # only to bound a true poison loop that crashes the process before
-        # the app counter can be written (#2992), so it is deliberately
-        # slack relative to the real retry budget.
         delivery_backstop = messaging_env.redis_max_deliveries
         tracking_id = stable_message_id or message_id
 
@@ -969,30 +968,23 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             try:
                 failure_count = await self._get_retry_count(tracking_id)
             except Exception as e:
-                # Isolated from the times_delivered backstop below: a failed
-                # lookup here (e.g. a Redis error inside RetryManager) must
-                # not skip the backstop, which doesn't depend on this count.
                 self.logger.error("Error checking app-tracked retry count: %s", e)
-            else:
-                if failure_count >= max_attempts:
-                    return await self._abandon_or_leave_pending(
-                        message_id,
-                        tracking_id,
-                        parsed_message,
-                        reason=(
-                            f"exhausted {failure_count} of {max_attempts} "
-                            "allowed failures"
-                        ),
-                        attempts=failure_count,
-                        ack=lambda: self.redis.xack(  # type: ignore[union-attr]
-                            topic, self.config.group_id, message_id
-                        ),
-                    )
-                # Fall through to the times_delivered backstop below: the
-                # app-tracked count only increments inside
-                # _process_message_wrapper's except handler, which never runs
-                # if the process crashes/is killed mid-handler, so it can lag
-                # the real delivery count indefinitely (see #2992).
+                return False
+            if failure_count >= max_attempts:
+                return await self._abandon_or_leave_pending(
+                    message_id,
+                    tracking_id,
+                    parsed_message,
+                    reason=(
+                        f"exhausted {failure_count} of {max_attempts} "
+                        "allowed failures"
+                    ),
+                    attempts=failure_count,
+                    ack=lambda: self.redis.xack(  # type: ignore[union-attr]
+                        topic, self.config.group_id, message_id
+                    ),
+                )
+            return False
 
         try:
             details = await self.redis.xpending_range(  # type: ignore
@@ -2888,6 +2880,9 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
         - TRANSIENT: Don't ACK, let PEL retry
         """
         record_claim_held = False
+        suspect_held = False
+        attempt_started = False
+        abandoned = False
         parsing_held = False
         indexing_held = False
         indexing_complete = False
@@ -3003,7 +2998,35 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             index_tier.value,
         )
 
+        async def give_up(reason: str, attempts: int) -> None:
+            nonlocal acked, abandoned
+            # Our own record lease reads as a live holder, which keeps the
+            # sink from failing a record left IN_PROGRESS.
+            if distributed_leases.discard(record_pool) is not None:
+                await self._release_distributed_slot(record_pool, lease_owner)
+            try:
+                await self._abandon_message(
+                    message_id,
+                    stable_message_id,
+                    parsed_message,
+                    reason=reason,
+                    attempts=attempts,
+                    ack=lambda: self._ack_message(stream_name, message_id),
+                )
+            except RedisAcknowledgementError as exc:
+                # Left pending, its count intact: the next delivery decides again.
+                self.logger.warning("%s", exc)
+                return
+            acked = abandoned = True
+
         try:
+            # Taken before any permit, so suspects queue here without holding
+            # one; one that will be given up on below does not need it.
+            unfinished = await concurrency.unfinished_attempts(self, record_lock_id)
+            if 0 < unfinished < concurrency.MAX_UNFINISHED_ATTEMPTS:
+                await self._suspects.acquire()
+                suspect_held = True
+
             # The active-pipeline bound. Without this outer permit, parsed
             # records can accumulate while waiting for an indexing permit and
             # every one can remain IN_PROGRESS in the DB.
@@ -3054,6 +3077,18 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     return False
 
                 parsed_message.payload["_processing_started_at"] = int(time.time() * 1000)
+
+            # Counted only now that the record is ours: a crash while it waited
+            # for a permit or for its lease was not its doing.
+            unfinished = await concurrency.start_attempt(self, record_lock_id)
+            attempt_started = True
+            if unfinished >= concurrency.MAX_UNFINISHED_ATTEMPTS:
+                await give_up(
+                    f"{unfinished} earlier attempts never finished; it is likely "
+                    "taking the indexing service down",
+                    unfinished,
+                )
+                return False
 
             # Check current retry count to predict if this will be the final attempt on failure
             current_retry_count = await self._get_retry_count(stable_message_id)
@@ -3259,18 +3294,16 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                     # growing delay bounds how often it returns while the outage lasts.
                     await concurrency.clear_delivery_count(self, stable_message_id)
                 else:
-                    # Each re-queue is a fresh stream entry, so times_delivered
-                    # starts over and cannot bound this on its own; the delivery
-                    # counter can. Past the backstop the entry stays in the PEL,
-                    # where the idle drain's times_delivered check takes over.
+                    # Each re-queue is a fresh stream entry with a failure count of
+                    # zero; only this counter stops it coming back for ever.
                     cycles, backstop_tripped = await concurrency.record_delivery(
                         self, stable_message_id
                     )
                     if backstop_tripped:
-                        self.logger.error(
-                            "%s has been handed back %d times without being admitted; "
-                            "leaving it in the PEL rather than re-queuing again",
-                            message_id, cycles,
+                        await give_up(
+                            f"handed back {cycles} times without being admitted "
+                            f"(backstop {messaging_env.redis_max_deliveries})",
+                            cycles,
                         )
                         return False
                 try:
@@ -3392,6 +3425,8 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
             # process.
             if record_claim_held:
                 self._release_record(record_lock_id)
+            if suspect_held:
+                self._suspects.release()
             try:
                 if renewal_task is not None:
                     renewal_task.cancel()
@@ -3404,6 +3439,12 @@ class IndexingRedisStreamsConsumer(IMessagingConsumer):
                 # the TTL is for.
                 if self.lease_renewer is not None:
                     self.lease_renewer.unregister(lease_owner)
+                # Any exit this process lives through finishes the attempt; only
+                # a crash leaves it counted.
+                if attempt_started:
+                    await concurrency.finish_attempt(
+                        self, record_lock_id, settled=indexing_complete or abandoned
+                    )
                 # Leases lost to the renewal deadline are gone from Redis
                 # already; releasing them is doomed traffic against a Redis that
                 # is still failing, and it arrives from every record at once.

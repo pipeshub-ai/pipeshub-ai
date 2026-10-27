@@ -1,5 +1,7 @@
 import { config } from "dotenv";
-config(); // Load environment variables first
+import { applyStoreUmbrella } from "../../../libs/config/storeUmbrella";
+config({ quiet: true }); // Load environment variables first
+applyStoreUmbrella(); // PIPESHUB_STORE=postgres fills in the per-store settings
 
 import { json, urlencoded, Request, Response } from "express";
 import { connect, dropLegacyThreadBotIndex } from "./utils/db";
@@ -317,7 +319,6 @@ async function processSlackMessage(
   const configService = ConfigService.getInstance();
 
   const currentAgentId = resolvedSlackBot?.agentId || null;
-  console.log("currentAgentId", currentAgentId);
   const currentBotId = resolvedSlackBot?.botId;
   if (!currentBotId) {
     throw new Error("Unable to resolve Slack bot id for conversation persistence.");

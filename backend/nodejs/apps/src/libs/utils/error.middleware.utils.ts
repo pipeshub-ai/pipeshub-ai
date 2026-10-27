@@ -1,5 +1,14 @@
 import { Response } from 'express';
+import { BaseError } from '../errors/base.error';
 import { Logger } from '../services/logger.service';
+
+/**
+ * 'warn' for a 4xx of ours: the caller's request answered as intended (a taken
+ * name, a wrong password, a refused permission, a 402). 'error' for every 5xx
+ * and for any error that is not ours.
+ */
+export const logLevelFor = (error: unknown): 'warn' | 'error' =>
+  error instanceof BaseError && error.statusCode < 500 ? 'warn' : 'error';
 
 /**
  * Extract error data without circular references

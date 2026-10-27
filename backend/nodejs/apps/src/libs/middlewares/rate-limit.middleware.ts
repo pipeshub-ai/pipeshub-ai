@@ -268,6 +268,23 @@ export function createAuthRateLimiter(
 }
 
 /**
+ * /initAuth only. The sign-in page calls it on every load, before anyone types
+ * a password, and it checks no credential, so it gets its own bucket: page
+ * loads must not use up the attempts createAuthRateLimiter allows. Still
+ * limited, at six times that rate, because every call stores a sign-in session.
+ */
+export function createInitAuthRateLimiter(
+  logger: Logger,
+  maxAuthRequestsPerMinute = 10,
+): RequestHandler {
+  return createKeyedRateLimiter(logger, {
+    prefix: 'auth-init',
+    maxRequestsPerMinute: maxAuthRequestsPerMinute * 6,
+    message: 'Too many sign-in requests. Please try again later.',
+  });
+}
+
+/**
  * Public /slack/events entry. Slack deliveries are anonymous, so this keys on
  * the client IP. Mount it on the Express gateway only: the bot process behind
  * it sees every org's traffic from the gateway's address, so a limiter there

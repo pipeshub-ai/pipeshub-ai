@@ -8,11 +8,13 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, field_validator
 
 from app.api.middlewares.auth import require_scopes, require_service_token
+from app.api.middlewares.caller_role import fetch_caller_role
 from app.config.constants.arangodb import CollectionNames
 from app.config.constants.service import OAuthScopes, TokenScopes
 from app.connectors.core.base.data_store.graph_data_store import GraphDataStore
 from app.services.cache.invalidation_hooks import notify_connector_sync_completed
 from app.services.graph_db.user_email_identity import GraphUserEmailConflictError
+from app.utils.logger import create_logger
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 from app.utils.user_lookup import get_user_or_503
 from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
@@ -20,6 +22,7 @@ from app.utils.user_messages import PEOPLE_GONE, action_failed, not_found
 if TYPE_CHECKING:
     from app.connectors.core.base.data_store.data_store import TransactionStore
 
+_log = create_logger(__name__)
 router = APIRouter(prefix="/api/v1/entity", tags=["Entity"])
 
 MONGO_USER_GRAPH_KEY_LOOKUP_CHUNK_SIZE = 500
@@ -269,7 +272,9 @@ async def create_team(request: Request) -> JSONResponse:
     # any error response makes the dashboard say "try again", which would create
     # the team a second time; so a failed read-back answers with the team as written.
     try:
-        team_with_users = await graph_provider.get_team_with_users(team_id=team_key, org_id=user_info.get("orgId"), user_key=user['_key'])
+        team_with_users = await graph_provider.get_team_with_users(
+            team_id=team_key, org_id=user_info.get("orgId"), user_key=user['_key'],
+        )
     except Exception as e:
         logger.error(f"Team {team_key} was created but could not be read back: {str(e)}", exc_info=True)
         team_with_users = None
@@ -320,7 +325,10 @@ async def get_team(request: Request, team_id: str) -> JSONResponse:
         raise HTTPException(status_code=404, detail="User not found")
     try:
         # Use interface method to get team with users
-        result = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
+        result = await graph_provider.get_team_with_users(
+            team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
+            include_service_accounts=await _team_members_include_service_accounts(request),
+        )
         if not result:
             raise HTTPException(status_code=404, detail="Team not found")
 
@@ -488,7 +496,9 @@ async def update_team(request: Request, team_id: str) -> JSONResponse:
                     logger.info(f"Added {len(user_team_edges)} users to team {team_id}")
 
         # Return updated team with users
-        updated_team = await graph_provider.get_team_with_users(team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'])
+        updated_team = await graph_provider.get_team_with_users(
+            team_id=team_id, org_id=user_info.get("orgId"), user_key=user['_key'],
+        )
 
         return JSONResponse(
             status_code=200,
@@ -617,7 +627,8 @@ async def get_user_teams(
             limit=limit,
             created_by=graph_created_by,
             created_after=created_after,
-            created_before=created_before
+            created_before=created_before,
+            include_service_accounts=await _team_members_include_service_accounts(request),
         )
 
         if not result_list:
@@ -661,12 +672,73 @@ async def get_user_teams(
         logger.error(f"Error in get_user_teams: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail="Failed to fetch user teams")
 
+async def _caller_is_an_administrator(request: Request) -> bool:
+    """The live role Node reports for the request's own credentials.
+
+    An unconfirmed role reads as "not an administrator". Everywhere this is
+    used it only narrows what comes back, so that is the safe answer and the
+    request still works — including when the configuration service cannot be
+    reached at all, which must not turn a listing into an error.
+    """
+    try:
+        config_service = request.app.container.config_service()
+        return (await fetch_caller_role(request, config_service)).is_admin
+    except Exception:
+        _log.warning("Could not read the caller's role; answering as a member")
+        return False
+
+
+async def _team_members_include_service_accounts(request: Request) -> bool:
+    """Whether a team's member list should name machine identities.
+
+    Every account is added to the organisation's All team when it is created,
+    service accounts included (`_get_or_create_all_team_and_add_user` on
+    `userAdded`), and each member row carries the `userId` that binds an agent
+    to one, next to the address that identifies it as a machine. Team
+    membership is how a service account is granted what it can read, and the
+    screens that manage it are administrators'; so is seeing it here.
+
+    No opt-in flag, unlike the people directory: the team screen an
+    administrator opens has to show them, and there is nobody else to ask.
+
+    The three routes that read a team's members: one team, that team's member
+    page, and the teams a user is in.
+
+    Not the read-back after creating or changing a team. That is the caller
+    being shown what they just wrote, and it is filtered the plain way, so an
+    administrator's `memberCount` there can be short by the service accounts in
+    the team. The screens read members from `/team/{id}/users`, which is
+    administrator-aware, so what they display is right either way; making the
+    read-back agree would put an admin check on two write routes, and the live
+    suite has no way to exercise one on a route that writes.
+    """
+    return await _caller_is_an_administrator(request)
+
+
+async def _may_list_service_accounts(request: Request, *, asked: bool) -> bool:
+    """Whether this listing should include machine identities.
+
+    Each row carries the `userId` an agent stores when it is bound to a service
+    account, so this is the same question the people list answers
+    (`users.controller.ts` `getAllUsers`): only an administrator, and only when
+    the caller asks. The role is the live one Node reports for the caller's own
+    credentials; an unconfirmed role counts as "not an administrator", which is
+    the safe answer here because it only narrows what comes back.
+    """
+    if not asked:
+        return False
+    return await _caller_is_an_administrator(request)
+
+
 @router.get("/user/list", dependencies=[Depends(require_scopes(OAuthScopes.TEAM_READ))])
 async def get_users(
     request: Request,
     search: Optional[str] = Query(None, description="Search users by name or email"),
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(100, ge=1, le=100, description="Number of items per page")
+    limit: int = Query(100, ge=1, le=100, description="Number of items per page"),
+    includeServiceAccounts: Optional[str] = Query(
+        None, description="Administrators only: 'true' also lists service accounts",
+    ),
 ) -> JSONResponse:
     """Get all users in the current user's organization with pagination and search"""
     services = await get_services(request)
@@ -679,12 +751,18 @@ async def get_users(
     }
 
     try:
+        # Compared to the exact string, as the gateway's own flag is: a query
+        # value can arrive as a list, and only "true" opts in.
+        include_service_accounts = await _may_list_service_accounts(
+            request, asked=includeServiceAccounts == "true",
+        )
         # Use interface method to get organization users
         result_list, total_count = await graph_provider.get_organization_users(
             org_id=user_info.get("orgId"),
             search=search,
             page=page,
-            limit=limit
+            limit=limit,
+            include_service_accounts=include_service_accounts,
         )
         if not result_list:
             return JSONResponse(
@@ -755,7 +833,8 @@ async def get_team_users(
             user_key=user['_key'],
             search=search,
             page=page,
-            limit=limit
+            limit=limit,
+            include_service_accounts=await _team_members_include_service_accounts(request),
         )
 
         if not result:

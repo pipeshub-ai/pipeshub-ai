@@ -7,6 +7,7 @@ import { Users } from '../../../../src/modules/user_management/schema/users.sche
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { BadRequestError } from '../../../../src/libs/errors/http.errors';
+import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 
 describe('UserGroupController', () => {
   let controller: UserGroupController;
@@ -329,6 +330,83 @@ describe('UserGroupController', () => {
       await controller.getUserGroupById(req, res);
 
       expect(res.json.calledWith(mockGroup)).to.be.true;
+    });
+
+    // Every service account is put in the built-in everyone group when it is
+    // created, and that group is one every member may read. The ids in `users`
+    // are the values an agent stores when it is bound to an account.
+    it('hides a service account in the group from a member', async () => {
+      const colleague = new mongoose.Types.ObjectId();
+      const account = new mongoose.Types.ObjectId();
+      req.params.groupId = 'everyone';
+
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            _id: 'everyone', name: 'everyone', type: 'everyone', orgId,
+            users: [colleague, account],
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({ exec: sinon.stub().resolves([{ _id: account }]) }),
+        }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUserGroupById(req, res);
+
+      const sent = res.json.firstCall.args[0];
+      expect(sent.users.map((u: any) => u.toString())).to.deep.equal([colleague.toString()]);
+    });
+
+    it('keeps it for an administrator', async () => {
+      const colleague = new mongoose.Types.ObjectId();
+      const account = new mongoose.Types.ObjectId();
+      req.params.groupId = 'everyone';
+
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            _id: 'everyone', name: 'everyone', type: 'everyone', orgId,
+            users: [colleague, account],
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({ exec: sinon.stub().resolves([{ _id: account }]) }),
+        }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+
+      await controller.getUserGroupById(req, res);
+
+      expect(res.json.firstCall.args[0].users).to.have.length(2);
+    });
+
+    it('asks nobody about a group with no service account in it', async () => {
+      req.params.groupId = 'g1';
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            _id: 'g1', name: 'admin', type: 'admin', orgId,
+            users: [new mongoose.Types.ObjectId()],
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+        }),
+      } as any);
+      const isAdmin = sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUserGroupById(req, res);
+
+      expect(isAdmin.called).to.be.false;
+      expect(res.json.firstCall.args[0].users).to.have.length(1);
     });
 
     it('should throw NotFoundError when group not found', async () => {
@@ -929,6 +1007,7 @@ describe('UserGroupController', () => {
       } as any);
 
       sinon.stub(Users, 'countDocuments').resolves(1);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
 
       sinon.stub(UserDisplayPicture, 'find').returns({
         lean: sinon.stub().returns({
@@ -951,6 +1030,67 @@ describe('UserGroupController', () => {
       });
       expect(responseArg).to.have.property('pagination');
       expect(responseArg.pagination).to.deep.include({ page: 1, totalCount: 1 });
+    });
+
+    // This page carries each member's id, name and address, so a service
+    // account here is fully identifiable — and its id binds an agent to it.
+    it('leaves service accounts out for a member, count included', async () => {
+      req.params.groupId = 'everyone';
+      req.query = { page: '1', limit: '25' };
+
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({ _id: 'everyone', users: [new mongoose.Types.ObjectId()] }),
+        }),
+      } as any);
+      const find = sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+            }),
+          }),
+        }),
+      } as any);
+      const count = sinon.stub(Users, 'countDocuments').resolves(0);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUsersInGroup(req, res);
+
+      expect((find.firstCall.args[0] as any).kind).to.deep.equal({ $ne: 'service' });
+      expect((count.firstCall.args[0] as any).kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('keeps them for an administrator', async () => {
+      req.params.groupId = 'everyone';
+      req.query = { page: '1', limit: '25' };
+
+      sinon.stub(UserGroups, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({ _id: 'everyone', users: [new mongoose.Types.ObjectId()] }),
+        }),
+      } as any);
+      const find = sinon.stub(Users, 'find').returns({
+        select: sinon.stub().returns({
+          skip: sinon.stub().returns({
+            limit: sinon.stub().returns({
+              lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+            }),
+          }),
+        }),
+      } as any);
+      sinon.stub(Users, 'countDocuments').resolves(0);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+
+      await controller.getUsersInGroup(req, res);
+
+      expect((find.firstCall.args[0] as any).kind).to.equal(undefined);
     });
 
     it('should throw NotFoundError when group not found', async () => {

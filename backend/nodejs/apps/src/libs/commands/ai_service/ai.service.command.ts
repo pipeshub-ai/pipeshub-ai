@@ -141,12 +141,21 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
         : null;
     const payloadRecord = payloadObject as Record<string, unknown> | null;
 
+    // Python sends `detail` as text, or as `{ code, message, ... }` (a 402 refusal
+    // does); an object here would become the message "[object Object]".
+    const textOf = (value: unknown): string | undefined => {
+      const text =
+        value !== null && typeof value === 'object'
+          ? (value as Record<string, unknown>).message
+          : value;
+      return typeof text === 'string' && text !== '' ? text : undefined;
+    };
     const errorDetail =
-      (payloadRecord?.detail as string | undefined) ||
-      (payloadRecord?.message as string | undefined) ||
-      (payloadRecord?.error as string | undefined) ||
-      (typeof responsePayload === 'string' ? responsePayload : undefined) ||
-      response.statusText ||
+      textOf(payloadRecord?.detail) ??
+      textOf(payloadRecord?.message) ??
+      textOf(payloadRecord?.error) ??
+      textOf(responsePayload) ??
+      textOf(response.statusText) ??
       `HTTP error! status: ${response.status}`;
 
     const error = new Error(errorDetail) as FetchCommandError;
@@ -235,11 +244,15 @@ export class AIServiceCommand<T> extends BaseCommand<AIServiceResponse<T>> {
 
       return readable;
     } catch (error: any) {
-      logger.error('AI service streaming command failed', {
-        error: error.message,
-        url: url,
-        method: this.method,
-      });
+      // An answer with an error status is logged once, with its body, by the
+      // caller's handleBackendError; only a request that got no answer is logged here.
+      if (!(error as FetchCommandError).response) {
+        logger.error('AI service streaming command failed', {
+          error: error.message,
+          url: url,
+          method: this.method,
+        });
+      }
       throw error;
     }
   }

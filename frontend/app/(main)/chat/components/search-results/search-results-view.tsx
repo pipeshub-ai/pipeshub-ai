@@ -285,7 +285,7 @@ export function SearchResultsView() {
             style={{ padding: 'var(--space-6)' }}
           >
             <Text size="2" style={{ color: 'var(--slate-11)' }}>
-              No results found for &ldquo;{searchQuery}&rdquo;
+              {t('chat.noResultsFor', { query: searchQuery })}
             </Text>
           </Flex>
         )}

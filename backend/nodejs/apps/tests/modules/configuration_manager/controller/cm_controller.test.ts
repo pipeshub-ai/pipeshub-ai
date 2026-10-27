@@ -6970,6 +6970,47 @@ describe('ConfigurationManager Controller', () => {
       expect(kvs.set.called).to.be.false
     })
 
+    // The settings refusals the AI service answers with 400 (an empty or rejected
+    // key) used to come back from this route as a generic 500.
+    for (const [modelType, route] of [['llm', 'llm-health-check'], ['embedding', 'embedding-health-check']] as const) {
+      it(`passes the AI service's 400 reason through for ${modelType}, saving nothing`, async () => {
+        const reason = 'The API Key for Azure OpenAI is empty. Enter it in Workspace > AI Models, then try again.'
+        stubAiService((uri) =>
+          uri.endsWith(`/${route}`)
+            ? { statusCode: 400, data: { status: 'error', message: reason } }
+            : { statusCode: 200, data: { status: 'healthy' } },
+        )
+        const kvs = createMockKeyValueStore()
+        const handler = createAIModelsConfig(kvs, createMockEventService(), appConfig)
+        const next = createMockNext()
+        const config = { provider: 'azureOpenAI', configuration: { model: 'gpt-4o', apiKey: '' } }
+
+        await handler(createMockRequest({ body: { [modelType]: [config] } }), createMockResponse(), next)
+
+        const error = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(400)
+        expect(error.message).to.equal(reason)
+        expect(kvs.set.called).to.be.false
+        expect(kvs.compareAndSet.called).to.be.false
+      })
+
+      it(`keeps a ${modelType} health check that failed on our side a 500`, async () => {
+        stubAiService((uri) =>
+          uri.endsWith(`/${route}`)
+            ? { statusCode: 500, data: { status: 'error', message: 'internal detail' } }
+            : { statusCode: 200, data: { status: 'healthy' } },
+        )
+        const handler = createAIModelsConfig(createMockKeyValueStore(), createMockEventService(), appConfig)
+        const next = createMockNext()
+        const config = { provider: 'openai', configuration: { model: 'm', apiKey: 'k' } }
+
+        await handler(createMockRequest({ body: { [modelType]: [config] } }), createMockResponse(), next)
+
+        expect(next.firstCall.args[0].statusCode).to.equal(500)
+        expect(next.firstCall.args[0].message).to.not.include('internal detail')
+      })
+    }
+
     it('does not call the endpoint check when only llm and embedding are saved', async () => {
       stubAiService(() => ({ statusCode: 200, data: { status: 'healthy' } }))
       const handler = createAIModelsConfig(createMockKeyValueStore(), createMockEventService(), appConfig)

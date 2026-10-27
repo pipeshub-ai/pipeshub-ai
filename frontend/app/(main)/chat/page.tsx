@@ -100,6 +100,7 @@ function ChatFooterLinks() {
         href={githubUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
@@ -140,6 +141,7 @@ function ChatFooterLinks() {
         href={docsUrl}
         target="_blank"
         rel="noopener noreferrer"
+        className="touch-hit"
         style={footerLinkStyle}
         onMouseEnter={(e) => { e.currentTarget.style.opacity = '1'; }}
         onMouseLeave={(e) => { e.currentTarget.style.opacity = '0.7'; }}
