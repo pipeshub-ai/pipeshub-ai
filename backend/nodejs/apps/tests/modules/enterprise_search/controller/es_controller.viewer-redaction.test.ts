@@ -267,9 +267,10 @@ describe('shared chats: per-viewer citations', () => {
   })
 
   it('a malformed access reply (accessible is a string) admits nothing', async () => {
-    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { accessible: 'rec-no' } } as any)
-    const readable = await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ['rec-no'])
-    expect(readable.ids.has('rec-no')).to.equal(false)
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { accessible: 'r', accessibleUrls: ['https://x/r'] } } as any)
+    const readable = await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ['r'], ['https://x/r'])
+    expect(readable.ids.size).to.equal(0)
+    expect(readable.urls.size).to.equal(0)
   })
 
   it('access checks are batched at 500 ids per call and ids are checked once', async () => {

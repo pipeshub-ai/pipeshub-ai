@@ -86,8 +86,14 @@ export const readableRecordIds = async (
           `record access returned ${String(response.statusCode)}`,
         );
       }
-      for (const id of response.data?.accessible ?? []) readable.ids.add(id);
-      for (const u of response.data?.accessibleUrls ?? []) readable.urls.add(u);
+      const accessible: unknown = response.data?.accessible ?? [];
+      const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      // A string here would be read one character at a time; refuse anything but lists.
+      if (!Array.isArray(accessible) || !Array.isArray(accessibleUrls)) {
+        throw new Error('record access returned a malformed body');
+      }
+      for (const id of accessible) readable.ids.add(String(id));
+      for (const u of accessibleUrls) readable.urls.add(String(u));
     }
     return readable;
   } catch (error: unknown) {
