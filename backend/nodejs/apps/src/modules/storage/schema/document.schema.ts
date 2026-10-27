@@ -180,6 +180,13 @@ const DocumentSchema = new Schema(
     artifactSet: {
       type: ArtifactSetSchema,
     },
+    // Server clock (ms) of the retire mark: the document was replaced by a
+    // newer stored write and must take no more in-place buffer writes.
+    // Downloads and reads are unaffected.
+    retiredAt: {
+      type: Number,
+      default: null,
+    },
   },
   {
     timestamps: {

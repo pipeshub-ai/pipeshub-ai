@@ -1165,6 +1165,7 @@ export const ChatResponse = React.memo(function ChatResponse({
           appliedFilters={appliedFilters}
           feedbackInfo={feedbackInfo}
           canRegenerate={!ranApprovedCall}
+          parts={effectiveParts}
         />
       )}
 

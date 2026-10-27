@@ -602,6 +602,22 @@ def _ts_owner(node: Node, src: bytes) -> str | None:
     return _text(name, src) if name is not None else None
 
 
+# `(fn)`, `fn as T`, `fn satisfies T`, `fn!`, `<T>fn`: the same value under a wrapper.
+_VALUE_WRAPPERS = ("parenthesized_expression", "as_expression", "satisfies_expression",
+                   "non_null_expression", "type_assertion")
+
+
+def _mark_function_field(node: Node, name: str, src: bytes, table: dict[str, str]) -> None:
+    """`static make = () => ...` defines a function, so a call to it is not a call
+    through a callback slot; the builder reads `Owner.name=>` to tell them apart."""
+    value = _field(node, "value")
+    while value is not None and value.type in _VALUE_WRAPPERS and value.named_children:
+        value = value.named_children[-1 if value.type == "type_assertion" else 0]
+    if value is not None and value.type in ("arrow_function", "function_expression", "function") \
+            and (owner := _ts_owner(node, src)):
+        table.setdefault(f"{owner}.{name}=>", "function")
+
+
 def _ts_type_arg(node: Node | None, src: bytes) -> str | None:
     """`IObservable<Foo | undefined>` -> `Foo`: a generic's one named type argument,
     which a `read(): T` on it returns."""
@@ -669,6 +685,8 @@ def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str], cfg: L
             else:
                 table.setdefault(f"{owner}.{name}()" if owner else f"{name}()", type_name)
             continue
+        if node.type == "public_field_definition":
+            _mark_function_field(node, name, src, table)
         ann = next((c for c in node.named_children if c.type == "type_annotation"), None)
         type_name = _ts_named_type(ann, src) if ann is not None else _ts_value_type(_field(node, "value"), src)
         if type_name is None and ann is not None and ann.named_children:
@@ -745,8 +763,11 @@ def _collect_narrowings_ts(root: Node, src: bytes, table: dict[str, str], cfg: L
 
 def _collect_type_table_js(root: Node, src: bytes, table: dict[str, str], cfg: LanguageConfig) -> None:
     """JS has no annotations; `const x = new Foo()` is the only reliable binding."""
-    for node in _nodes_of_types(root, cfg, ("variable_declarator",)):
-        if node.type == "variable_declarator":
+    for node in _nodes_of_types(root, cfg, ("variable_declarator", "field_definition")):
+        if node.type == "field_definition":
+            if (name_node := _field(node, "property")) is not None:
+                _mark_function_field(node, _text(name_node, src), src, table)
+        elif node.type == "variable_declarator":
             name_node = _field(node, "name")
             value = _field(node, "value")
             if name_node is not None and value is not None and value.type == "new_expression":

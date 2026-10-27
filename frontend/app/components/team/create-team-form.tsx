@@ -11,6 +11,7 @@ import React, {
 import { Box, Flex, Text, Badge, Button } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { useToastStore } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   FormField,
   SearchableCheckboxDropdown,
@@ -202,10 +203,14 @@ export const CreateTeamForm = forwardRef<CreateTeamFormHandle, CreateTeamFormPro
         });
 
         onCreated(newTeam);
-      } catch {
+      } catch (error) {
         addToast({
           variant: 'error',
           title: t('workspace.teams.create.errorGeneric', 'Failed to create team'),
+          description: getUserFacingErrorMessage(
+            error,
+            t('workspace.teams.create.errorDescription', 'Could not create the team. Please try again.')
+          ),
           duration: 5000,
         });
       } finally {

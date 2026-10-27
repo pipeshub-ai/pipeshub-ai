@@ -740,7 +740,9 @@
       "needsMultimodalModel": "需要多模態模型",
       "passwordProtected": "受密碼保護",
       "skipped": "已略過",
-      "pending": "待處理"
+      "pending": "待處理",
+      "emptyFileZeroBytes": "空白檔案 — 沒有可建立索引的內容（0 位元組）",
+      "emptyNoContent": "空白 — 找不到可建立索引的文字"
     },
     "allRecordsBusy_other": "此檢視目前忙碌中，將在 {{count}} 秒後重試。",
     "allRecordsLoadFailed": "載入記錄失敗",
@@ -779,6 +781,10 @@
     "createDialog": {
       "titlePlaceholder": "例如：工程",
       "descriptionPlaceholder": "例如：開發團隊文件"
+    },
+    "nameRules": {
+      "folderSeparator": "資料夾名稱不能包含「/」或「\\」。",
+      "collectionExists": "你已有名為「{{name}}」的集合。請換一個名稱。"
     }
   },
   "connectorTypes": {
@@ -1550,7 +1556,17 @@
     },
     "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。",
     "noResultsFor": "找不到「{{query}}」的結果",
-    "removeSelectedSource": "移除 {{name}}"
+    "removeSelectedSource": "移除 {{name}}",
+    "diagramSourceCopied": "已複製圖表原始碼",
+    "diagramImageCopied": "已複製圖表圖片",
+    "diagramImageDownloaded": "剪貼簿無法使用，已將圖表儲存為 PNG",
+    "diagramCopyFailed": "無法複製圖表",
+    "fitDiagram": "符合螢幕",
+    "answerMode": {
+      "internalSearch": "內部搜尋",
+      "webSearch": "網路搜尋",
+      "internalAndWebSearch": "內部 + 網路搜尋"
+    }
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -1690,7 +1706,15 @@
         "editError": "更新邀請失敗",
         "editTitle": "編輯邀請",
         "update": "更新邀請",
-        "smtpNotConfiguredTooltip": "尚未設定 SMTP。傳送邀請前請先完成電子郵件設定。"
+        "smtpNotConfiguredTooltip": "尚未設定 SMTP。傳送邀請前請先完成電子郵件設定。",
+        "userCount_other": "{{count}} 位使用者",
+        "successDescriptionCount_other": "已邀請 {{count}} 位使用者",
+        "alreadyMembersSkipped_other": "{{count}} 個地址已屬於成員，因此未向其傳送邀請。",
+        "alreadyMembersTitle": "已是成員 — 未傳送邀請",
+        "alreadyMembersDescription_other": "所有地址都已屬於使用中的成員。",
+        "importUnsupportedType": "只能匯入 .csv、.xlsx 和 .xls 檔案。",
+        "importTooLongSkipped_other": "已略過 {{count}} 個超過 254 個字元的項目。",
+        "invalidBlocksSend_other": "{{count}} 個無效地址已標紅。請修正或刪除後再傳送邀請。"
       },
       "bulk": {
         "resendInvite": "重新傳送邀請",
@@ -1816,7 +1840,11 @@
         "viewTeam": "檢視團隊",
         "delete": "刪除",
         "deleteSuccess": "團隊已刪除",
-        "deleteError": "無法刪除團隊"
+        "deleteError": "無法刪除團隊",
+        "deleteConfirmTitle": "刪除團隊？",
+        "deleteConfirmMessage": "「{{name}}」將被刪除，其成員將失去透過該團隊共用的存取權。此動作無法復原。",
+        "deleteConfirmButton": "刪除團隊",
+        "deleting": "正在刪除…"
       },
       "create": {
         "title": "建立團隊",
@@ -1835,7 +1863,8 @@
         "successDescription": "「{{name}}」已成功建立",
         "errorGeneric": "無法建立團隊",
         "applyToAll": "套用至全部",
-        "memberRoles": "成員角色"
+        "memberRoles": "成員角色",
+        "errorDescription": "無法建立團隊，請再試一次。"
       },
       "detail": {
         "nameLabel": "團隊名稱",

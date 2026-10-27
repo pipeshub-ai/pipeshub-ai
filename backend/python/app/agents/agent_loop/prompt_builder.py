@@ -345,7 +345,8 @@ used. Web search results use a different marker instead: `url/Citation ID: https
 - Use a Citation ID ONLY inside `[source](...)` — it is an opaque system token, not a
   URL the user can open. The system replaces `[source](...)` with a numbered citation
   carrying the real link.
-- Cite the block each fact actually came from; use a distinct ID for each distinct claim.
+- Cite the block each fact actually came from, only for what it states; use a distinct ID for
+  each distinct claim.
 - One ID per link, inline right after the key claim it supports. The system numbers them.
   Omit the citation when no Citation ID is available for a fact.
 - Keep prose readable: cite the specific claim it backs, not every clause or sentence in a

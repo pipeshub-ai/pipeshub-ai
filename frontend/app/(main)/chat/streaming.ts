@@ -54,10 +54,12 @@ import {
   type MessagePart,
   type ChatKnowledgeFilters,
   type AttachmentRef,
+  type ConversationMessage,
 } from './types';
 import {
   buildCitationMapsFromStreaming,
 } from './components/message-area/response-tabs/citations';
+import type { CitationMaps } from './components/message-area/response-tabs/citations/types';
 import { pickModelInfoFromConversationBundle } from './utils/apply-conversation-model-info';
 import { CONVERSATION_MESSAGES_PAGE_SIZE } from './constants';
 import { ChatStreamError, streamErrorInfo, type ChatStreamErrorInfo } from './stream-error';
@@ -285,6 +287,81 @@ function buildStoppedMessages(
   return messages;
 }
 
+/**
+ * `_id` of the stopped reply that ends the latest turn of a raw history page,
+ * which `loadHistoricalMessages` drops when it was saved empty.
+ */
+export function trailingStoppedReplyId(raw: ConversationMessage[] | null | undefined): string | null {
+  for (let i = (raw?.length ?? 0) - 1; i >= 0; i--) {
+    const msg = raw![i];
+    if (msg.messageType === 'user_query') return null;
+    if (msg.messageType === 'bot_response') return msg.status === 'stopped' ? String(msg._id) : null;
+  }
+  return null;
+}
+
+/**
+ * A stopped run can come back from the server with an empty answer even
+ * though text was on screen (older query services saved "" on cancel). Fills
+ * the stopped row from what streamed so Stop never blanks the answer.
+ * `appendMessageId` is the persisted reply's `_id`; feedback, fork and
+ * regenerate need it on an appended row.
+ */
+export function keepStreamedTextOnStoppedAnswer(
+  messages: ThreadMessageLike[],
+  targetId: string | null | undefined,
+  rawStreamedText: string,
+  citationMaps: CitationMaps | null | undefined,
+  appendId?: string | null,
+  appendMessageId?: string | null,
+): ThreadMessageLike[] {
+  const text = stripAnswerMarkers(rawStreamedText ?? '').trim();
+  if (!text) return messages;
+  const last = messages[messages.length - 1];
+  // History drops an empty stopped reply with no activity, so the turn ends on
+  // the question; the partial then needs a row of its own.
+  if (!targetId && appendId && last?.role === 'user') {
+    return [
+      ...messages,
+      {
+        id: appendId,
+        role: 'assistant' as const,
+        content: [{ type: 'text' as const, text }],
+        metadata: {
+          custom: {
+            status: 'stopped' as const,
+            ...(appendMessageId ? { messageId: appendMessageId } : {}),
+            ...(citationMaps ? { citationMaps } : {}),
+          },
+        },
+      },
+    ];
+  }
+  const target = targetId
+    ? messages.find((m) => m.role === 'assistant' && m.id === targetId)
+    : (last?.role === 'assistant' ? last : undefined);
+  if (!target) return messages;
+  const custom = (target.metadata?.custom ?? {}) as Record<string, unknown>;
+  if (custom.status !== 'stopped' || getThreadMessagePlainText(target).trim()) return messages;
+  const savedMaps = custom.citationMaps as CitationMaps | undefined;
+  const hasSavedCitations = Boolean(savedMaps && Object.keys(savedMaps.citations ?? {}).length);
+  return messages.map((m) =>
+    m === target
+      ? {
+          ...m,
+          content: [{ type: 'text' as const, text }],
+          metadata: {
+            ...m.metadata,
+            custom: {
+              ...custom,
+              ...(!hasSavedCitations && citationMaps ? { citationMaps } : {}),
+            },
+          },
+        }
+      : m,
+  );
+}
+
 /** `repliedInChat`: the message being sent answers this open card, so it shows as closed. */
 function stampPendingCardOnMessages(
   messages: ThreadMessageLike[],
@@ -315,17 +392,25 @@ function stampPendingCardOnMessages(
   return next;
 }
 
-function assistantRowIdForBackendMessage(
+function exactAssistantRowIdForBackendMessage(
   messages: ThreadMessageLike[],
   backendMessageId: string,
-): string {
+): string | null {
   const row = messages.find((m) => {
     if (m.role !== 'assistant') return false;
     if (m.id === backendMessageId) return true;
     const custom = m.metadata?.custom as { messageId?: string } | undefined;
     return custom?.messageId === backendMessageId;
   });
-  if (row && typeof row.id === 'string') return row.id;
+  return row && typeof row.id === 'string' ? row.id : null;
+}
+
+function assistantRowIdForBackendMessage(
+  messages: ThreadMessageLike[],
+  backendMessageId: string,
+): string {
+  const exact = exactAssistantRowIdForBackendMessage(messages, backendMessageId);
+  if (exact) return exact;
   const last = [...messages].reverse().find((m) => m.role === 'assistant');
   return last && typeof last.id === 'string' ? last.id : backendMessageId;
 }
@@ -1113,6 +1198,9 @@ export async function streamMessageForSlot(
       onChunk: (data) => {
         if (!slotIsOnRun(slotId, streamRunId)) return;
         if (ignoreChunks) return;
+        // A stopped run's final frame can carry an empty `accumulated`; taking
+        // it would wipe the partial answer the user chose to keep.
+        if (!data.accumulated && useChatStore.getState().slots[slotId]?.stopping) return;
         debugLog.chunk();
         accumulatedContent = data.accumulated;
         // Any answer text flowing right now supersedes a stale "Using X…"
@@ -1275,12 +1363,23 @@ export async function streamMessageForSlot(
         const newConvId = conv._id || conv.id || '';
 
         // Build finalized messages from API response
-        const { messages: finalMessages, unansweredAskUserQuestion } = loadHistoricalMessages(data.conversation.messages);
+        const historical = loadHistoricalMessages(data.conversation.messages);
+        const { unansweredAskUserQuestion } = historical;
 
         // SSE placeholder assistant id → persisted Mongo message id after complete.
         const slotBeforeComplete = useChatStore.getState().slots[slotId];
         // Settling clears `stopping`, so a user-stopped run is only knowable here.
         const wasStopped = Boolean(slotBeforeComplete?.stopping);
+        const finalMessages = wasStopped && !resumeAskUserQuestion
+          ? keepStreamedTextOnStoppedAnswer(
+              historical.messages,
+              null,
+              accumulatedContent,
+              pendingCitationMaps ?? slotBeforeComplete?.streamingCitationMaps,
+              pendingAssistantId,
+              trailingStoppedReplyId(data.conversation.messages),
+            )
+          : historical.messages;
         const liveParts = slotBeforeComplete?.streamingParts ?? [];
         const liveFollowUp = resumeAskUserQuestion
           ? [
@@ -1805,6 +1904,7 @@ export async function streamRegenerateForSlot(
     onChunk: (data) => {
       if (!slotIsOnRun(slotId, streamRunId)) return;
       if (ignoreChunks) return;
+      if (!data.accumulated && useChatStore.getState().slots[slotId]?.stopping) return;
       debugLog.chunk();
       accumulatedContent = data.accumulated;
       // See streamMessageForSlot's onChunk — clear on every chunk, not just
@@ -1866,8 +1966,33 @@ export async function streamRegenerateForSlot(
           : await ChatApi.fetchConversation(slot.convId!);
         if (!slotIsOnRun(slotId, streamRunId)) return;
         const pendingBefore = useChatStore.getState().slots[slotId]?.pendingAskUserQuestion;
-        const { messages: loadedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(detail.messages);
-        const regenRowId = assistantRowIdForBackendMessage(loadedMessages, messageId);
+        const historical = loadHistoricalMessages(detail.messages);
+        const { unansweredAskUserQuestion } = historical;
+        const exactRegenRowId = exactAssistantRowIdForBackendMessage(historical.messages, messageId);
+        const stoppedMaps = pendingCitationMaps ?? useChatStore.getState().slots[slotId]?.streamingCitationMaps;
+        // History drops a regenerated reply that was stopped before any text was saved. The
+        // nearest-row fallback would then point at an earlier answer, so the partial gets a row
+        // of its own under the regenerated message's id instead.
+        const stoppedRegenRowMissing = wasStopped && !exactRegenRowId;
+        const regenRowId = exactRegenRowId
+          ?? (stoppedRegenRowMissing
+            ? messageId
+            : assistantRowIdForBackendMessage(historical.messages, messageId));
+        let loadedMessages = historical.messages;
+        if (wasStopped && exactRegenRowId) {
+          loadedMessages = keepStreamedTextOnStoppedAnswer(
+            historical.messages, exactRegenRowId, accumulatedContent, stoppedMaps,
+          );
+        } else if (stoppedRegenRowMissing && historical.messages[historical.messages.length - 1]?.role === 'user') {
+          loadedMessages = keepStreamedTextOnStoppedAnswer(
+            historical.messages,
+            null,
+            accumulatedContent,
+            stoppedMaps,
+            messageId,
+            trailingStoppedReplyId(detail.messages) ?? messageId,
+          );
+        }
         const finalMessages = pendingBefore?.payload
           ? stampPendingCardOnMessages(loadedMessages, {
               ...pendingBefore,

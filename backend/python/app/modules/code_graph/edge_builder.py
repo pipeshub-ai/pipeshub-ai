@@ -22,7 +22,7 @@ from app.modules.code_graph.guards import (
 )
 from app.modules.code_graph.import_resolution import ImportResolution
 from app.modules.code_graph.module_refs import module_refs_of_path
-from app.modules.code_graph.symbol_index import SymbolIndex
+from app.modules.code_graph.symbol_index import BlockRow, SymbolIndex
 from app.utils.env_config import env_int
 
 if TYPE_CHECKING:
@@ -79,6 +79,10 @@ RESOLUTION_QUALIFIER = "qualifier"
 RESOLUTION_MODULE = "module-import"
 RESOLUTION_TYPE = "receiver-type"
 RESOLUTION_NAME = "name-heuristic"
+# `opts.onClick()`: a call through a function-typed property runs whatever was
+# assigned to it, so the property is not the code that runs. Kept for "who
+# triggers onClick", tagged so a caller can tell it from a call to a definition.
+RESOLUTION_CALLBACK = "callback-property"
 
 # A local name an import binds to something outside the repo (`from requests
 # import get`). It shadows every repo definition of that name in the file.
@@ -1405,6 +1409,32 @@ class _Builder:
             and self._endpoint_live(key[1], live_blocks, live_records)
         ]
 
+    def _called_field(self, key: tuple[str, str, str]) -> BlockRow | None:
+        row = self.index.rows.get(key[1].partition("/")[2])
+        return row if key[2] == RecordRelations.CALLS.value and row is not None and row.kind == "field" else None
+
+    def called_field_records(self, edges: list[tuple]) -> set[str]:
+        """Files holding a field some CALLS edge targets: their type tables say which hold functions."""
+        return {row.record_id for key, _ in edges if (row := self._called_field(key)) is not None}
+
+    def tag_callback_calls(self, edges: list[tuple], known: set[str]) -> list[tuple]:
+        """Tag calls into a field that does not hold a function as `callback-property`.
+
+        Only a field whose file's type table is in *known* is tagged: without it a
+        function-valued field cannot be told from a callback slot.
+        """
+        out = []
+        for key, (confidence, resolution, line) in edges:
+            row = self._called_field(key)
+            slot = row is not None and row.record_id in known and not self._function_valued(row)
+            out.append((key, (confidence, RESOLUTION_CALLBACK if slot else resolution, line)))
+        return out
+
+    def _function_valued(self, row: BlockRow) -> bool:
+        owner = self.index.rows.get(row.parent_block_id) if row.parent_block_id else None
+        return owner is not None and \
+            f"{owner.name}.{row.name}=>" in self.index.type_table_by_record.get(row.record_id, {})
+
     @staticmethod
     def _endpoint_live(key: str, live_blocks: set[str], live_records: set[str]) -> bool:
         collection, _, ident = key.partition("/")
@@ -1498,6 +1528,13 @@ async def build_code_graph_edges(
         builder.result.files_reresolved = len(reresolve)
 
     edges = await asyncio.to_thread(_resolve, builder, index, reresolve)
+    called_fields = builder.called_field_records(edges)
+    if facts_source is None:
+        known = {r for r in called_fields if r in index.type_table_by_record}
+    else:
+        known = (called_fields & reresolve) | \
+            await _load_type_tables(facts_source, index, org_id, called_fields - reresolve)
+    edges = builder.tag_callback_calls(edges, known)
 
     if not dry_run:
         # Write, then delete what this build did not write: deleting first
@@ -1570,6 +1607,18 @@ async def _load_facts(
         if facts.type_table:
             index.type_table_by_record[record_id] = facts.type_table
     return unknown
+
+
+async def _load_type_tables(source: CodeFactsSource, index: SymbolIndex, org_id: str,
+                            record_ids: set[str]) -> set[str]:
+    """Type tables of files this build did not re-resolve; the ones that could be read."""
+    known: set[str] = set()
+    for record_id, facts in (await source.load(org_id, record_ids)).items() if record_ids else ():
+        if facts is not None and facts.recognised:
+            known.add(record_id)
+            if facts.type_table:
+                index.type_table_by_record[record_id] = facts.type_table
+    return known
 
 
 async def _names_changed_by(graph_provider: IGraphDBProvider, index: SymbolIndex,

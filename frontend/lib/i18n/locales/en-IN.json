@@ -651,7 +651,9 @@
       "needsMultimodalModel": "Needs multimodal model",
       "passwordProtected": "Password protected",
       "skipped": "Skipped",
-      "pending": "Pending"
+      "pending": "Pending",
+      "emptyFileZeroBytes": "Empty file — nothing to index (0 bytes)",
+      "emptyNoContent": "Empty — no text was found to index"
     },
     "allRecordsBusy_one": "This view is busy right now. Retrying in {{count}} second.",
     "allRecordsBusy_other": "This view is busy right now. Retrying in {{count}} seconds.",
@@ -691,6 +693,10 @@
     "createDialog": {
       "titlePlaceholder": "e.g. Engineering",
       "descriptionPlaceholder": "e.g. Docs for the dev team"
+    },
+    "nameRules": {
+      "folderSeparator": "Folder names cannot contain \"/\" or \"\\\".",
+      "collectionExists": "You already have a collection named \"{{name}}\". Choose a different name."
     }
   },
   "connectorTypes": {
@@ -1465,7 +1471,17 @@
     },
     "deleteChatArtifactsNote": "Files the assistant created in this chat will be deleted too.",
     "noResultsFor": "No results found for “{{query}}”",
-    "removeSelectedSource": "Remove {{name}}"
+    "removeSelectedSource": "Remove {{name}}",
+    "diagramSourceCopied": "Diagram source copied",
+    "diagramImageCopied": "Diagram image copied",
+    "diagramImageDownloaded": "Clipboard unavailable, diagram saved as PNG",
+    "diagramCopyFailed": "Couldn't copy the diagram",
+    "fitDiagram": "Fit to screen",
+    "answerMode": {
+      "internalSearch": "Internal search",
+      "webSearch": "Web search",
+      "internalAndWebSearch": "Internal + web search"
+    }
   },
   "workspaceMenu": {
     "appearance": "Appearance",
@@ -1605,7 +1621,21 @@
         "editError": "Failed to update invite",
         "editTitle": "Edit invite",
         "update": "Update invite",
-        "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites."
+        "smtpNotConfiguredTooltip": "SMTP is not configured. Set up email settings before sending invites.",
+        "userCount_one": "{{count}} user",
+        "userCount_other": "{{count}} users",
+        "successDescriptionCount_one": "{{count}} user has been invited",
+        "successDescriptionCount_other": "{{count}} users have been invited",
+        "alreadyMembersSkipped_one": "{{count}} address already belongs to a member, so no invite was sent to it.",
+        "alreadyMembersSkipped_other": "{{count}} addresses already belong to members, so no invites were sent to them.",
+        "alreadyMembersTitle": "Already members — no invites sent",
+        "alreadyMembersDescription_one": "This address already belongs to an active member.",
+        "alreadyMembersDescription_other": "Every address already belongs to an active member.",
+        "importUnsupportedType": "Only .csv, .xlsx and .xls files can be imported.",
+        "importTooLongSkipped_one": "{{count}} entry longer than 254 characters was left out.",
+        "importTooLongSkipped_other": "{{count}} entries longer than 254 characters were left out.",
+        "invalidBlocksSend_one": "{{count}} invalid address is marked in red. Fix or remove it to send invites.",
+        "invalidBlocksSend_other": "{{count}} invalid addresses are marked in red. Fix or remove them to send invites."
       },
       "bulk": {
         "resendInvite": "Resend invite",
@@ -1737,7 +1767,11 @@
         "viewTeam": "View team",
         "delete": "Delete",
         "deleteError": "Failed to delete team",
-        "deleteSuccess": "Team deleted"
+        "deleteSuccess": "Team deleted",
+        "deleteConfirmTitle": "Delete team?",
+        "deleteConfirmMessage": "\"{{name}}\" will be deleted and its members will lose access shared through it. This can't be undone.",
+        "deleteConfirmButton": "Delete team",
+        "deleting": "Deleting…"
       },
       "create": {
         "accessComingSoon": "Access permissions coming soon",
@@ -1756,7 +1790,8 @@
         "submit": "Create team",
         "successDescription": "\"{{name}}\" has been created successfully",
         "successTitle": "Team created!",
-        "title": "Create team"
+        "title": "Create team",
+        "errorDescription": "Could not create the team. Please try again."
       },
       "detail": {
         "accessComingSoon": "Access permissions coming soon",

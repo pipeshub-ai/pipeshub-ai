@@ -776,7 +776,9 @@
       "needsMultimodalModel": "Vyžaduje multimodální model",
       "passwordProtected": "Chráněno heslem",
       "skipped": "Přeskočeno",
-      "pending": "Čeká"
+      "pending": "Čeká",
+      "emptyFileZeroBytes": "Prázdný soubor – není co indexovat (0 bajtů)",
+      "emptyNoContent": "Prázdné – nebyl nalezen žádný text k indexování"
     },
     "allRecordsBusy_one": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundu.",
     "allRecordsBusy_few": "Tento pohled je teď vytížený. Nový pokus za {{count}} sekundy.",
@@ -824,6 +826,10 @@
     "createDialog": {
       "titlePlaceholder": "např. Vývoj",
       "descriptionPlaceholder": "např. Dokumenty týmu"
+    },
+    "nameRules": {
+      "folderSeparator": "Názvy složek nesmí obsahovat \"/\" ani \"\\\".",
+      "collectionExists": "Kolekci s názvem \"{{name}}\" už máte. Zvolte jiný název."
     }
   },
   "connectorTypes": {
@@ -1620,7 +1626,17 @@
     },
     "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
     "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky",
-    "removeSelectedSource": "Odebrat {{name}}"
+    "removeSelectedSource": "Odebrat {{name}}",
+    "diagramSourceCopied": "Zdroj diagramu zkopírován",
+    "diagramImageCopied": "Obrázek diagramu zkopírován",
+    "diagramImageDownloaded": "Schránka není k dispozici, diagram byl uložen jako PNG",
+    "diagramCopyFailed": "Diagram se nepodařilo zkopírovat",
+    "fitDiagram": "Přizpůsobit obrazovce",
+    "answerMode": {
+      "internalSearch": "Interní vyhledávání",
+      "webSearch": "Vyhledávání na webu",
+      "internalAndWebSearch": "Interní + webové vyhledávání"
+    }
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -1760,7 +1776,33 @@
         "editError": "Pozvánku se nepodařilo aktualizovat",
         "editTitle": "Upravit pozvánku",
         "update": "Aktualizovat pozvánku",
-        "smtpNotConfiguredTooltip": "SMTP není nakonfigurováno. Před odesíláním pozvánek nastavte e-mail."
+        "smtpNotConfiguredTooltip": "SMTP není nakonfigurováno. Před odesíláním pozvánek nastavte e-mail.",
+        "userCount_one": "{{count}} uživatel",
+        "userCount_few": "{{count}} uživatelé",
+        "userCount_many": "{{count}} uživatele",
+        "userCount_other": "{{count}} uživatelů",
+        "successDescriptionCount_one": "{{count}} uživatel byl pozván",
+        "successDescriptionCount_few": "{{count}} uživatelé byli pozváni",
+        "successDescriptionCount_many": "{{count}} uživatele bylo pozváno",
+        "successDescriptionCount_other": "{{count}} uživatelů bylo pozváno",
+        "alreadyMembersSkipped_one": "{{count}} adresa už patří členovi, proto na ni nebyla odeslána pozvánka.",
+        "alreadyMembersSkipped_few": "{{count}} adresy už patří členům, proto na ně nebyly odeslány pozvánky.",
+        "alreadyMembersSkipped_many": "{{count}} adresy už patří členům, proto na ně nebyly odeslány pozvánky.",
+        "alreadyMembersSkipped_other": "{{count}} adres už patří členům, proto na ně nebyly odeslány pozvánky.",
+        "alreadyMembersTitle": "Už jsou členy – pozvánky nebyly odeslány",
+        "alreadyMembersDescription_one": "Tato adresa už patří aktivnímu členovi.",
+        "alreadyMembersDescription_few": "Všechny adresy už patří aktivním členům.",
+        "alreadyMembersDescription_many": "Všechny adresy už patří aktivním členům.",
+        "alreadyMembersDescription_other": "Všechny adresy už patří aktivním členům.",
+        "importUnsupportedType": "Importovat lze jen soubory .csv, .xlsx a .xls.",
+        "importTooLongSkipped_one": "{{count}} položka delší než 254 znaků byla vynechána.",
+        "importTooLongSkipped_few": "{{count}} položky delší než 254 znaků byly vynechány.",
+        "importTooLongSkipped_many": "{{count}} položky delší než 254 znaků byly vynechány.",
+        "importTooLongSkipped_other": "{{count}} položek delších než 254 znaků bylo vynecháno.",
+        "invalidBlocksSend_one": "{{count}} neplatná adresa je označená červeně. Opravte ji nebo odeberte, abyste mohli odeslat pozvánky.",
+        "invalidBlocksSend_few": "{{count}} neplatné adresy jsou označené červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
+        "invalidBlocksSend_many": "{{count}} neplatné adresy jsou označené červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky.",
+        "invalidBlocksSend_other": "{{count}} neplatných adres je označeno červeně. Opravte je nebo odeberte, abyste mohli odeslat pozvánky."
       },
       "bulk": {
         "resendInvite": "Znovu odeslat pozvánku",
@@ -1904,7 +1946,11 @@
         "viewTeam": "Zobrazit tým",
         "delete": "Smazat",
         "deleteSuccess": "Tým byl smazán",
-        "deleteError": "Tým se nepodařilo smazat"
+        "deleteError": "Tým se nepodařilo smazat",
+        "deleteConfirmTitle": "Smazat tým?",
+        "deleteConfirmMessage": "Tým \"{{name}}\" bude smazán a jeho členové ztratí přístup sdílený jeho prostřednictvím. Tuto akci nelze vrátit.",
+        "deleteConfirmButton": "Smazat tým",
+        "deleting": "Mazání…"
       },
       "create": {
         "title": "Vytvořit tým",
@@ -1923,7 +1969,8 @@
         "successDescription": "Tým \"{{name}}\" byl úspěšně vytvořen",
         "errorGeneric": "Tým se nepodařilo vytvořit",
         "applyToAll": "Použít pro všechny",
-        "memberRoles": "Role členů"
+        "memberRoles": "Role členů",
+        "errorDescription": "Tým se nepodařilo vytvořit. Zkuste to prosím znovu."
       },
       "detail": {
         "nameLabel": "Název týmu",

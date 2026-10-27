@@ -146,6 +146,7 @@ class Routes(Enum):
     STORAGE_BUFFER = "/api/v1/document/internal/{documentId}/buffer"
     STORAGE_DOCUMENT = "/api/v1/document/internal/{documentId}"
     STORAGE_PURGE_DOCUMENT = "/api/v1/document/internal/{documentId}/purge"
+    STORAGE_RETIRE_DOCUMENT = "/api/v1/document/internal/{documentId}/retire"
     STORAGE_PURGE_VIRTUAL_RECORD = "/api/v1/document/internal/records/{virtualRecordId}/purge"
     STORAGE_VIRTUAL_RECORD_DOCUMENTS = "/api/v1/document/internal/records/{virtualRecordId}/documents"
     STORAGE_FLAT_RECORD_DOCUMENTS = "/api/v1/document/internal/records/flat-documents"

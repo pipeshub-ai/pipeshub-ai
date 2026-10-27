@@ -303,6 +303,25 @@ def _code_session(account: UserAccountClient, email: str) -> str:
     return started.headers.get("x-session-token", "")
 
 
+def _assert_code_signs_in(account: UserAccountClient, user: SecondUser, code: str) -> None:
+    session_token = _code_session(account, user.email)
+    response = account.authenticate_with_otp(session_token, user.email, code)
+    assert response.status_code == 200, (
+        f"The emailed sign-in code was refused: HTTP {response.status_code} "
+        f"{response.text[:200]}"
+    )
+    access_token = response.json().get("accessToken")
+    assert access_token, "Signing in with the code returned no access token."
+    status = requests.get(
+        f"{user.base_url}{ANY_USER_ROUTE}",
+        headers={"Authorization": f"Bearer {access_token}"},
+        timeout=user.timeout,
+    ).status_code
+    assert status == 200, (
+        f"The session opened with a sign-in code does not work (HTTP {status})."
+    )
+
+
 @pytest.mark.usefixtures("otp_allowed")
 class TestSignInCode:
     """Test list: OTP login — the right code signs in, a wrong one is refused."""
@@ -325,24 +344,7 @@ class TestSignInCode:
         self, mail_user: SecondUser, user_account_client: UserAccountClient
     ) -> None:
         code = _request_code(user_account_client, mail_user.email)
-        session_token = _code_session(user_account_client, mail_user.email)
-        response = user_account_client.authenticate_with_otp(
-            session_token, mail_user.email, code
-        )
-        assert response.status_code == 200, (
-            f"The emailed sign-in code was refused: HTTP {response.status_code} "
-            f"{response.text[:200]}"
-        )
-        access_token = response.json().get("accessToken")
-        assert access_token, "Signing in with the code returned no access token."
-        status = requests.get(
-            f"{mail_user.base_url}{ANY_USER_ROUTE}",
-            headers={"Authorization": f"Bearer {access_token}"},
-            timeout=mail_user.timeout,
-        ).status_code
-        assert status == 200, (
-            f"The session opened with a sign-in code does not work (HTTP {status})."
-        )
+        _assert_code_signs_in(user_account_client, mail_user, code)
 
 
 def _wrong_password(account: UserAccountClient, email: str, attempt: int) -> None:
@@ -409,3 +411,47 @@ class TestLockoutCountersShared:
             f"passwords did not lock the account (the right password got HTTP "
             f"{status}), so the two are counted separately."
         )
+
+
+@pytest.mark.usefixtures("otp_allowed")
+class TestLockoutBySignInCodesAlone:
+    """Test list: wrong sign-in codes alone lock the account; the threshold is five."""
+
+    def test_five_wrong_codes_lock_the_account_until_an_admin_unblocks_it(
+        self,
+        mail_user: SecondUser,
+        user_account_client: UserAccountClient,
+        pipeshub_client: PipeshubClient,
+    ) -> None:
+        email = mail_user.email
+        first_code = _request_code(user_account_client, email)
+        for attempt in range(1, LOCKOUT_THRESHOLD):
+            _wrong_code(user_account_client, email, first_code, attempt)
+        # A locked account is sent no code. A code arriving now shows the fourth
+        # wrong one did not lock it, without the counter reset a sign-in causes.
+        code = _request_code(user_account_client, email)
+
+        seen = mailpit.message_ids(email)
+        _wrong_code(user_account_client, email, code, LOCKOUT_THRESHOLD)
+
+        session_token = _code_session(user_account_client, email)
+        response = user_account_client.authenticate_with_otp(session_token, email, code)
+        assert response.status_code == 401 and "accessToken" not in response.text, (
+            f"After {LOCKOUT_THRESHOLD} wrong sign-in codes, the right code still "
+            f"got HTTP {response.status_code} (session returned: "
+            f"{'accessToken' in response.text}), so wrong codes alone never lock "
+            "the account and a code can be guessed at without limit."
+        )
+        status, token_returned = _sign_in_status(user_account_client, email, TEST_USER_PASSWORD)
+        assert status == WRONG_PASSWORD_STATUS and not token_returned, (
+            f"After {LOCKOUT_THRESHOLD} wrong sign-in codes, the right password got "
+            f"HTTP {status}, so the lock covers codes but not the account."
+        )
+        mailpit.wait_for_new_message(email, LOCK_WARNING_SUBJECT, seen)
+
+        unblocked = pipeshub_client.request("PUT", f"/api/v1/users/{mail_user.user_id}/unblock")
+        assert unblocked.status_code == 200, (
+            f"The admin could not unblock the account: HTTP {unblocked.status_code} "
+            f"{unblocked.text[:200]}"
+        )
+        _assert_code_signs_in(user_account_client, mail_user, _request_code(user_account_client, email))

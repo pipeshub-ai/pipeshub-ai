@@ -7,13 +7,16 @@ import { useTranslation } from 'react-i18next';
 import { useAuthStore } from '@/config';
 import { useUserStore } from '@/lib/store/user-store';
 import { useToastStore } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   WorkspaceRightPanel,
   FormField,
   SearchableCheckboxDropdown,
   AvatarCell,
   PaginatedMembersList,
+  ConfirmationDialog,
 } from '../../components';
+import { useWorkspaceDrawerNestedModalHost } from '../../components/workspace-right-panel';
 import type { CheckboxOption, PaginatedMembersListHandle } from '../../components';
 import { useTeamsStore } from '../store';
 import { TeamsApi } from '../api';
@@ -60,6 +63,14 @@ export function TeamDetailSidebar({
   } = useTeamsStore();
 
   const [isDeleting, setIsDeleting] = useState(false);
+  const [isDeleteConfirmOpen, setIsDeleteConfirmOpen] = useState(false);
+  const nestedModalHost = useWorkspaceDrawerNestedModalHost(isDetailPanelOpen);
+
+  // The store closes the panel (browser Back, another team) without touching
+  // this local flag, which would otherwise reopen the dialog on the next open.
+  useEffect(() => {
+    if (!isDetailPanelOpen) setIsDeleteConfirmOpen(false);
+  }, [isDetailPanelOpen]);
   const [addMemberRole, setAddMemberRole] = useState<TeamMemberRole>('READER');
   // Pending per-member role updates (Mongo userId; applied on Save as updateUserRoles)
   const [pendingUpdateRoles, setPendingUpdateRoles] = useState<Map<string, TeamMemberRole>>(
@@ -367,6 +378,7 @@ export function TeamDetailSidebar({
         duration: 3000,
       });
 
+      setIsDeleteConfirmOpen(false);
       closeDetailPanel();
       onUpdateSuccess?.();
     } catch {
@@ -433,9 +445,10 @@ export function TeamDetailSidebar({
       });
       onUpdateSuccess?.();
     } catch (error) {
-      const message =
-        (error as { response?: { data?: { message?: string } }; message?: string })?.response?.data?.message
-        ?? t('workspace.teams.edit.saveErrorDescription', 'Could not update team. Please try again.');
+      const message = getUserFacingErrorMessage(
+        error,
+        t('workspace.teams.edit.saveErrorDescription', 'Could not update team. Please try again.')
+      );
       addToast({
         variant: 'error',
         title: t('workspace.teams.edit.saveError', 'Failed to update team'),
@@ -899,7 +912,7 @@ export function TeamDetailSidebar({
               variant="outline"
               color="red"
               size="1"
-              onClick={handleDeleteTeam}
+              onClick={() => setIsDeleteConfirmOpen(true)}
               loading={isDeleting}
               loadingLabel={t('workspace.teams.edit.deleting', 'Deleting...')}
               style={{ flexShrink: 0 }}
@@ -909,6 +922,26 @@ export function TeamDetailSidebar({
           </Flex>
         </Box>
       )}
+
+      <ConfirmationDialog
+        open={isDeleteConfirmOpen}
+        onOpenChange={(open) => {
+          if (!open && !isDeleting) setIsDeleteConfirmOpen(false);
+        }}
+        title={t('workspace.teams.actions.deleteConfirmTitle', 'Delete team?')}
+        message={t('workspace.teams.actions.deleteConfirmMessage', {
+          name: detailTeam?.name ?? '',
+          defaultValue:
+            '"{{name}}" will be deleted and its members will lose access shared through it. This can\'t be undone.',
+        })}
+        confirmLabel={t('workspace.teams.actions.deleteConfirmButton', 'Delete team')}
+        cancelLabel={t('common.cancel', 'Cancel')}
+        confirmVariant="danger"
+        isLoading={isDeleting}
+        confirmLoadingLabel={t('workspace.teams.actions.deleting', 'Deleting…')}
+        onConfirm={() => void handleDeleteTeam()}
+        container={nestedModalHost}
+      />
     </WorkspaceRightPanel>
   );
 }

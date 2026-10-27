@@ -658,7 +658,9 @@
       "needsMultimodalModel": "Requiere un modelo multimodal",
       "passwordProtected": "Protegido con contraseña",
       "skipped": "Omitido",
-      "pending": "Pendiente"
+      "pending": "Pendiente",
+      "emptyFileZeroBytes": "Archivo vacío: no hay nada que indexar (0 bytes)",
+      "emptyNoContent": "Vacío: no se encontró texto que indexar"
     },
     "allRecordsBusy_one": "Esta vista está ocupada en este momento. Reintentando en {{count}} segundo.",
     "allRecordsBusy_many": "Esta vista está ocupada en este momento. Reintentando en {{count}} de segundos.",
@@ -702,6 +704,10 @@
     "createDialog": {
       "titlePlaceholder": "p. ej., Ingeniería",
       "descriptionPlaceholder": "p. ej., Docs del equipo"
+    },
+    "nameRules": {
+      "folderSeparator": "Los nombres de carpeta no pueden contener \"/\" ni \"\\\".",
+      "collectionExists": "Ya tienes una colección llamada \"{{name}}\". Elige otro nombre."
     }
   },
   "connectorTypes": {
@@ -1487,7 +1493,17 @@
     },
     "deleteChatArtifactsNote": "Los archivos que el asistente creó en este chat también se eliminarán.",
     "noResultsFor": "No se encontraron resultados para «{{query}}»",
-    "removeSelectedSource": "Quitar {{name}}"
+    "removeSelectedSource": "Quitar {{name}}",
+    "diagramSourceCopied": "Código del diagrama copiado",
+    "diagramImageCopied": "Imagen del diagrama copiada",
+    "diagramImageDownloaded": "Portapapeles no disponible; el diagrama se guardó como PNG",
+    "diagramCopyFailed": "No se pudo copiar el diagrama",
+    "fitDiagram": "Ajustar a la pantalla",
+    "answerMode": {
+      "internalSearch": "Búsqueda interna",
+      "webSearch": "Búsqueda web",
+      "internalAndWebSearch": "Búsqueda interna + web"
+    }
   },
   "workspaceMenu": {
     "appearance": "Apariencia",
@@ -1627,7 +1643,27 @@
         "editError": "No se ha podido actualizar la invitación",
         "editTitle": "Editar invitación",
         "update": "Actualizar invitación",
-        "smtpNotConfiguredTooltip": "SMTP no está configurado. Configure el correo electrónico antes de enviar invitaciones."
+        "smtpNotConfiguredTooltip": "SMTP no está configurado. Configure el correo electrónico antes de enviar invitaciones.",
+        "userCount_one": "{{count}} usuario",
+        "userCount_many": "{{count}} de usuarios",
+        "userCount_other": "{{count}} usuarios",
+        "successDescriptionCount_one": "Se ha invitado a {{count}} usuario",
+        "successDescriptionCount_many": "Se ha invitado a {{count}} de usuarios",
+        "successDescriptionCount_other": "Se ha invitado a {{count}} usuarios",
+        "alreadyMembersSkipped_one": "{{count}} dirección ya pertenece a un miembro, así que no se le envió invitación.",
+        "alreadyMembersSkipped_many": "{{count}} de direcciones ya pertenecen a miembros, así que no se les enviaron invitaciones.",
+        "alreadyMembersSkipped_other": "{{count}} direcciones ya pertenecen a miembros, así que no se les enviaron invitaciones.",
+        "alreadyMembersTitle": "Ya son miembros: no se enviaron invitaciones",
+        "alreadyMembersDescription_one": "Esta dirección ya pertenece a un miembro activo.",
+        "alreadyMembersDescription_many": "Todas las direcciones ya pertenecen a miembros activos.",
+        "alreadyMembersDescription_other": "Todas las direcciones ya pertenecen a miembros activos.",
+        "importUnsupportedType": "Solo se pueden importar archivos .csv, .xlsx y .xls.",
+        "importTooLongSkipped_one": "Se omitió {{count}} entrada de más de 254 caracteres.",
+        "importTooLongSkipped_many": "Se omitieron {{count}} de entradas de más de 254 caracteres.",
+        "importTooLongSkipped_other": "Se omitieron {{count}} entradas de más de 254 caracteres.",
+        "invalidBlocksSend_one": "Hay {{count}} dirección no válida marcada en rojo. Corrígela o elimínala para enviar invitaciones.",
+        "invalidBlocksSend_many": "Hay {{count}} de direcciones no válidas marcadas en rojo. Corrígelas o elimínalas para enviar invitaciones.",
+        "invalidBlocksSend_other": "Hay {{count}} direcciones no válidas marcadas en rojo. Corrígelas o elimínalas para enviar invitaciones."
       },
       "bulk": {
         "resendInvite": "Reenviar invitación",
@@ -1765,7 +1801,11 @@
         "viewTeam": "Ver equipo",
         "delete": "Eliminar",
         "deleteError": "Error al eliminar el equipo",
-        "deleteSuccess": "Equipo eliminado"
+        "deleteSuccess": "Equipo eliminado",
+        "deleteConfirmTitle": "¿Eliminar el equipo?",
+        "deleteConfirmMessage": "Se eliminará \"{{name}}\" y sus miembros perderán el acceso compartido a través de él. Esta acción no se puede deshacer.",
+        "deleteConfirmButton": "Eliminar equipo",
+        "deleting": "Eliminando…"
       },
       "create": {
         "accessComingSoon": "Permisos de acceso próximamente",
@@ -1784,7 +1824,8 @@
         "submit": "Crear equipo",
         "successDescription": "\"{{name}}\" se ha creado exitosamente",
         "successTitle": "¡Equipo creado!",
-        "title": "Crear equipo"
+        "title": "Crear equipo",
+        "errorDescription": "No se pudo crear el equipo. Inténtalo de nuevo."
       },
       "detail": {
         "accessComingSoon": "Permisos de acceso próximamente",

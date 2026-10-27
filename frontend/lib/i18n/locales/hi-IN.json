@@ -651,7 +651,9 @@
       "needsMultimodalModel": "मल्टीमॉडल मॉडल आवश्यक",
       "passwordProtected": "पासवर्ड से सुरक्षित",
       "skipped": "छोड़ा गया",
-      "pending": "लंबित"
+      "pending": "लंबित",
+      "emptyFileZeroBytes": "खाली फ़ाइल — इंडेक्स करने के लिए कुछ नहीं (0 बाइट)",
+      "emptyNoContent": "खाली — इंडेक्स करने के लिए कोई टेक्स्ट नहीं मिला"
     },
     "allRecordsBusy_one": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
     "allRecordsBusy_other": "यह दृश्य अभी व्यस्त है। {{count}} सेकंड में फिर से कोशिश की जाएगी।",
@@ -691,6 +693,10 @@
     "createDialog": {
       "titlePlaceholder": "जैसे इंजीनियरिंग",
       "descriptionPlaceholder": "जैसे डेव टीम के दस्तावेज़"
+    },
+    "nameRules": {
+      "folderSeparator": "फ़ोल्डर के नाम में \"/\" या \"\\\" नहीं हो सकता।",
+      "collectionExists": "आपके पास पहले से \"{{name}}\" नाम का संग्रह है। कोई दूसरा नाम चुनें।"
     }
   },
   "connectorTypes": {
@@ -1465,7 +1471,17 @@
     },
     "deleteChatArtifactsNote": "इस चैट में सहायक द्वारा बनाई गई फ़ाइलें भी हटा दी जाएँगी।",
     "noResultsFor": "“{{query}}” के लिए कोई परिणाम नहीं मिला",
-    "removeSelectedSource": "{{name}} हटाएँ"
+    "removeSelectedSource": "{{name}} हटाएँ",
+    "diagramSourceCopied": "आरेख का स्रोत कॉपी किया गया",
+    "diagramImageCopied": "आरेख की छवि कॉपी की गई",
+    "diagramImageDownloaded": "क्लिपबोर्ड उपलब्ध नहीं है, आरेख PNG के रूप में सहेजा गया",
+    "diagramCopyFailed": "आरेख कॉपी नहीं हो सका",
+    "fitDiagram": "स्क्रीन पर फ़िट करें",
+    "answerMode": {
+      "internalSearch": "आंतरिक खोज",
+      "webSearch": "वेब खोज",
+      "internalAndWebSearch": "आंतरिक + वेब खोज"
+    }
   },
   "workspaceMenu": {
     "appearance": "अपियरेंस",
@@ -1605,7 +1621,21 @@
         "editError": "आमंत्रण अपडेट नहीं हो सका",
         "editTitle": "आमंत्रण संपादित करें",
         "update": "आमंत्रण अपडेट करें",
-        "smtpNotConfiguredTooltip": "SMTP कॉन्फ़िगर नहीं है। आमंत्रण भेजने से पहले ईमेल सेटिंग्स सेट करें।"
+        "smtpNotConfiguredTooltip": "SMTP कॉन्फ़िगर नहीं है। आमंत्रण भेजने से पहले ईमेल सेटिंग्स सेट करें।",
+        "userCount_one": "{{count}} उपयोगकर्ता",
+        "userCount_other": "{{count}} उपयोगकर्ता",
+        "successDescriptionCount_one": "{{count}} उपयोगकर्ता को आमंत्रित किया गया",
+        "successDescriptionCount_other": "{{count}} उपयोगकर्ताओं को आमंत्रित किया गया",
+        "alreadyMembersSkipped_one": "{{count}} पता पहले से किसी सदस्य का है, इसलिए उसे आमंत्रण नहीं भेजा गया।",
+        "alreadyMembersSkipped_other": "{{count}} पते पहले से सदस्यों के हैं, इसलिए उन्हें आमंत्रण नहीं भेजे गए।",
+        "alreadyMembersTitle": "पहले से सदस्य — कोई आमंत्रण नहीं भेजा गया",
+        "alreadyMembersDescription_one": "यह पता पहले से एक सक्रिय सदस्य का है।",
+        "alreadyMembersDescription_other": "हर पता पहले से किसी सक्रिय सदस्य का है।",
+        "importUnsupportedType": "केवल .csv, .xlsx और .xls फ़ाइलें आयात की जा सकती हैं।",
+        "importTooLongSkipped_one": "254 वर्णों से लंबी {{count}} प्रविष्टि छोड़ दी गई।",
+        "importTooLongSkipped_other": "254 वर्णों से लंबी {{count}} प्रविष्टियाँ छोड़ दी गईं।",
+        "invalidBlocksSend_one": "{{count}} अमान्य पता लाल रंग में चिह्नित है। आमंत्रण भेजने के लिए उसे ठीक करें या हटाएँ।",
+        "invalidBlocksSend_other": "{{count}} अमान्य पते लाल रंग में चिह्नित हैं। आमंत्रण भेजने के लिए उन्हें ठीक करें या हटाएँ।"
       },
       "bulk": {
         "resendInvite": "आमंत्रण पुनः भेजें",
@@ -1737,7 +1767,11 @@
         "viewTeam": "टीम देखें",
         "delete": "हटाएँ",
         "deleteError": "टीम हटाने में विफल",
-        "deleteSuccess": "टीम हटाई गई"
+        "deleteSuccess": "टीम हटाई गई",
+        "deleteConfirmTitle": "टीम हटाएँ?",
+        "deleteConfirmMessage": "\"{{name}}\" हटा दी जाएगी और इसके सदस्य इसके ज़रिए साझा की गई पहुँच खो देंगे। इसे पूर्ववत नहीं किया जा सकता।",
+        "deleteConfirmButton": "टीम हटाएँ",
+        "deleting": "हटाया जा रहा है…"
       },
       "create": {
         "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",
@@ -1756,7 +1790,8 @@
         "submit": "टीम बनाएं",
         "successDescription": "\"{{name}}\" सफलतापूर्वक बनाई गई है",
         "successTitle": "टीम बनाई गई!",
-        "title": "टीम बनाएं"
+        "title": "टीम बनाएं",
+        "errorDescription": "टीम नहीं बन सकी। कृपया फिर से प्रयास करें।"
       },
       "detail": {
         "accessComingSoon": "पहुंच अनुमतियां जल्द आ रही हैं",

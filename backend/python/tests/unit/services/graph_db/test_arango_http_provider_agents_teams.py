@@ -6,6 +6,7 @@ knowledge hub, knowledge base CRUD, duplicate detection, move record,
 teams, users, agents, agent templates, and AQL builder helpers.
 """
 import logging
+import re
 import unicodedata
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1643,6 +1644,87 @@ class TestGetUserTeams:
         teams, count = await connected_provider.get_user_teams("u1")
         assert teams == []
         assert count == 0
+
+
+def _assert_bind_vars_match(query: str, bind_vars: dict) -> None:
+    """Arango refuses a bind variable the query does not use, and one it lacks."""
+    code = re.sub(r"'[^']*'|\"[^\"]*\"", "", query)  # an address literal holds an "@"
+    # "@@coll" is bound as "@coll", "@name" as "name"
+    used = {u[1:] for u in re.findall(r"@@?[A-Za-z_][A-Za-z0-9_]*", code)}
+    assert used == set(bind_vars), (used, set(bind_vars))
+
+
+class TestTeamsForAnOrgAdministrator:
+    @pytest.mark.asyncio
+    async def test_one_team_grants_every_flag_to_an_admin(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.get_team_with_users("t1", "org1", "u1", is_org_admin=True)
+        query = connected_provider.execute_query.call_args.args[0]
+        bind_vars = connected_provider.execute_query.call_args.kwargs["bind_vars"]
+        assert bind_vars["isOrgAdmin"] is True
+        assert '"canEdit": @isOrgAdmin OR' in query
+        assert 'team._key != CONCAT("all_", team.orgId)' in query
+        _assert_bind_vars_match(query, bind_vars)
+
+    @pytest.mark.asyncio
+    async def test_one_team_for_a_member_does_not(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        await connected_provider.get_team_with_users("t1", "org1", "u1")
+        assert connected_provider.execute_query.call_args.kwargs["bind_vars"]["isOrgAdmin"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_admin_lists_every_team_in_the_org(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(side_effect=[[1], [{"id": "t1"}]])
+        connected_provider._enrich_created_by_user = AsyncMock()
+
+        teams, count = await connected_provider.get_user_teams(
+            "u1", search="dev", created_by="k", created_after=1, created_before=2,
+            org_id="org1", is_org_admin=True,
+        )
+
+        assert (teams, count) == ([{"id": "t1"}], 1)
+        (count_call, list_call) = connected_provider.execute_query.call_args_list
+        for call in (count_call, list_call):
+            query, bind_vars = call.args[0], call.kwargs["bind_vars"]
+            assert "FILTER team.orgId == @orgId" in query
+            assert "permission._from == @userId" not in query
+            assert bind_vars["orgId"] == "org1"
+            _assert_bind_vars_match(query, bind_vars)
+        assert '"canEdit": true' in list_call.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_member_lists_their_own_teams(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(side_effect=[[0], []])
+        connected_provider._enrich_created_by_user = AsyncMock()
+
+        await connected_provider.get_user_teams("u1", org_id="org1")
+
+        for call in connected_provider.execute_query.call_args_list:
+            query, bind_vars = call.args[0], call.kwargs["bind_vars"]
+            assert "permission._from == @userId" in query
+            assert "orgId" not in bind_vars
+            _assert_bind_vars_match(query, bind_vars)
+
+
+class TestFindTeamByName:
+    @pytest.mark.asyncio
+    async def test_matches_trimmed_and_ignoring_case(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[{"id": "t2", "name": "QA Dup Team"}])
+
+        found = await connected_provider.find_team_by_name("org1", "  qa DUP team ", exclude_team_id="t1")
+
+        assert found == {"id": "t2", "name": "QA Dup Team"}
+        query = connected_provider.execute_query.call_args.args[0]
+        bind_vars = connected_provider.execute_query.call_args.kwargs["bind_vars"]
+        assert bind_vars == {"orgId": "org1", "name": "qa dup team", "excludeTeamId": "t1"}
+        assert "LOWER(TRIM(team.name)) == @name" in query
+        _assert_bind_vars_match(query, bind_vars)
+
+    @pytest.mark.asyncio
+    async def test_no_match(self, connected_provider) -> None:
+        connected_provider.execute_query = AsyncMock(return_value=[])
+        assert await connected_provider.find_team_by_name("org1", "x") is None
+        assert connected_provider.execute_query.call_args.kwargs["bind_vars"]["excludeTeamId"] == ""
 
 
 class TestGetTeamUsers:

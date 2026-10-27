@@ -94,6 +94,57 @@ class TestGetConfig:
         store.get_key.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_max_age_rereads_a_cached_value_older_than_the_bound(self) -> None:
+        """The invalidation subscription can die silently: a key that is acted on bounds its staleness."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=["first", "second"])
+        svc = _build_service(store)
+        clock = [1000.0]
+
+        with patch("app.config.configuration_service.time.monotonic", side_effect=lambda: clock[0]):
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "first"
+            clock[0] += 29
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "first"
+            assert store.get_key.await_count == 1
+            clock[0] += 2
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "second"
+            assert store.get_key.await_count == 2
+            # The re-read restarts the clock; a caller without a bound still takes the cached value.
+            clock[0] += 29
+            assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "second"
+            clock[0] += 1000
+            assert await svc.get_config("/k", use_cache=True) == "second"
+
+    @pytest.mark.asyncio
+    async def test_max_age_with_a_dropped_invalidation_is_seen_within_the_bound(self) -> None:
+        """Control for the bound: with no bound a stale value stays for ever."""
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=["flag-off", "flag-on"])
+        svc = _build_service(store)
+        clock = [0.0]
+
+        with patch("app.config.configuration_service.time.monotonic", side_effect=lambda: clock[0]):
+            await svc.get_config("/settings", use_cache=True, max_age_seconds=30)
+            clock[0] = 31.0
+            assert await svc.get_config("/settings", use_cache=True, max_age_seconds=30) == "flag-on"
+
+        store.get_key = AsyncMock(side_effect=["flag-off", "flag-on"])
+        unbounded = _build_service(store)
+        await unbounded.get_config("/settings", use_cache=True)
+        assert await unbounded.get_config("/settings", use_cache=True) == "flag-off"
+
+    @pytest.mark.asyncio
+    async def test_an_invalidation_drops_the_entry_at_once(self) -> None:
+        store = AsyncMock()
+        store.get_key = AsyncMock(side_effect=["old", "new"])
+        svc = _build_service(store)
+        await svc.get_config("/k", use_cache=True, max_age_seconds=30)
+
+        svc.cache.pop("/k")
+
+        assert await svc.get_config("/k", use_cache=True, max_age_seconds=30) == "new"
+
+    @pytest.mark.asyncio
     async def test_a_value_read_without_keeping_it_stays_out_of_the_cache(self) -> None:
         store = AsyncMock()
         store.get_key = AsyncMock(return_value={"tools": []})

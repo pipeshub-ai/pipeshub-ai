@@ -30,6 +30,7 @@ function scopedDocuments(
     get: 0,
     getLive: 0,
     update: 0,
+    retire: 0,
     remove: 1,
     claimArtifactSetForDelete: 0,
     renewArtifactSetClaim: 0,

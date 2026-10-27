@@ -111,7 +111,12 @@ class World:
     async def map(self, vrid: str, doc: str, size: int | None) -> None:
         if vrid not in self.vrids:
             self.vrids.append(vrid)
-        await self.blob.store_virtual_record_mapping(ORG_ID, vrid, doc, size)
+        # As a stored write switches the mapping to a document: one compare-and-set on what was read.
+        node = await self.graph.get_document(vrid, MAPPING)
+        fields = self.blob._switch_fields(
+            node, document_id=doc, file_size_bytes=size, stored_rev=None, run="none:it", replaced=None, now=1,
+        )
+        assert await self.blob._switch_mapping(ORG_ID, vrid, node, fields)
 
 
 @pytest.fixture(params=["neo4j", "arango"])

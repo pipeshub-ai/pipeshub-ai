@@ -651,7 +651,9 @@
       "needsMultimodalModel": "Multimodales Modell erforderlich",
       "passwordProtected": "Passwortgeschützt",
       "skipped": "Übersprungen",
-      "pending": "Ausstehend"
+      "pending": "Ausstehend",
+      "emptyFileZeroBytes": "Leere Datei – nichts zu indizieren (0 Byte)",
+      "emptyNoContent": "Leer – kein Text zum Indizieren gefunden"
     },
     "allRecordsBusy_one": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunde.",
     "allRecordsBusy_other": "Diese Ansicht ist gerade ausgelastet. Neuer Versuch in {{count}} Sekunden.",
@@ -691,6 +693,10 @@
     "createDialog": {
       "titlePlaceholder": "z. B. Engineering",
       "descriptionPlaceholder": "z. B. Dokumente fürs Dev-Team"
+    },
+    "nameRules": {
+      "folderSeparator": "Ordnernamen dürfen kein \"/\" oder \"\\\" enthalten.",
+      "collectionExists": "Sie haben bereits eine Sammlung namens \"{{name}}\". Wählen Sie einen anderen Namen."
     }
   },
   "connectorTypes": {
@@ -1465,7 +1471,17 @@
     },
     "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
     "noResultsFor": "Keine Ergebnisse für „{{query}}“",
-    "removeSelectedSource": "{{name}} entfernen"
+    "removeSelectedSource": "{{name}} entfernen",
+    "diagramSourceCopied": "Diagrammquelle kopiert",
+    "diagramImageCopied": "Diagrammbild kopiert",
+    "diagramImageDownloaded": "Zwischenablage nicht verfügbar, Diagramm als PNG gespeichert",
+    "diagramCopyFailed": "Diagramm konnte nicht kopiert werden",
+    "fitDiagram": "An Bildschirm anpassen",
+    "answerMode": {
+      "internalSearch": "Interne Suche",
+      "webSearch": "Websuche",
+      "internalAndWebSearch": "Interne + Websuche"
+    }
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -1605,7 +1621,21 @@
         "editError": "Einladung konnte nicht aktualisiert werden",
         "editTitle": "Einladung bearbeiten",
         "update": "Einladung aktualisieren",
-        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden."
+        "smtpNotConfiguredTooltip": "SMTP ist nicht konfiguriert. Richten Sie die E-Mail-Einstellungen ein, bevor Sie Einladungen versenden.",
+        "userCount_one": "{{count}} Benutzer",
+        "userCount_other": "{{count}} Benutzer",
+        "successDescriptionCount_one": "{{count}} Benutzer wurde eingeladen",
+        "successDescriptionCount_other": "{{count}} Benutzer wurden eingeladen",
+        "alreadyMembersSkipped_one": "{{count}} Adresse gehört bereits einem Mitglied, daher wurde keine Einladung gesendet.",
+        "alreadyMembersSkipped_other": "{{count}} Adressen gehören bereits Mitgliedern, daher wurden keine Einladungen gesendet.",
+        "alreadyMembersTitle": "Bereits Mitglieder – keine Einladungen gesendet",
+        "alreadyMembersDescription_one": "Diese Adresse gehört bereits einem aktiven Mitglied.",
+        "alreadyMembersDescription_other": "Jede Adresse gehört bereits einem aktiven Mitglied.",
+        "importUnsupportedType": "Nur .csv-, .xlsx- und .xls-Dateien können importiert werden.",
+        "importTooLongSkipped_one": "{{count}} Eintrag mit mehr als 254 Zeichen wurde ausgelassen.",
+        "importTooLongSkipped_other": "{{count}} Einträge mit mehr als 254 Zeichen wurden ausgelassen.",
+        "invalidBlocksSend_one": "{{count}} ungültige Adresse ist rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden.",
+        "invalidBlocksSend_other": "{{count}} ungültige Adressen sind rot markiert. Korrigieren oder entfernen Sie sie, um Einladungen zu senden."
       },
       "bulk": {
         "resendInvite": "Einladung erneut senden",
@@ -1737,7 +1767,11 @@
         "viewTeam": "Team anzeigen",
         "delete": "Löschen",
         "deleteSuccess": "Team gelöscht",
-        "deleteError": "Team konnte nicht gelöscht werden"
+        "deleteError": "Team konnte nicht gelöscht werden",
+        "deleteConfirmTitle": "Team löschen?",
+        "deleteConfirmMessage": "\"{{name}}\" wird gelöscht, und seine Mitglieder verlieren den darüber geteilten Zugriff. Dies kann nicht rückgängig gemacht werden.",
+        "deleteConfirmButton": "Team löschen",
+        "deleting": "Wird gelöscht…"
       },
       "create": {
         "title": "Team erstellen",
@@ -1756,7 +1790,8 @@
         "successDescription": "\"{{name}}\" wurde erfolgreich erstellt",
         "errorGeneric": "Team konnte nicht erstellt werden",
         "applyToAll": "Auf alle anwenden",
-        "memberRoles": "Mitgliederrollen"
+        "memberRoles": "Mitgliederrollen",
+        "errorDescription": "Das Team konnte nicht erstellt werden. Bitte versuchen Sie es erneut."
       },
       "detail": {
         "nameLabel": "Teamname",
