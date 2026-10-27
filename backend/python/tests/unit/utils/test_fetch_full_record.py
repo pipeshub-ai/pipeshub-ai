@@ -409,6 +409,71 @@ class TestApplyLiveTicketContextMetadata:
         check.assert_awaited_once_with(graph_provider, {"k1", "k2"}, "u1", "org")
 
 
+class TestReadableIssueIdsFailClosed:
+    async def _fn(self, lookup, *, user_id: str = "u1", org_id: str = "org") -> tuple:
+        from app.utils.fetch_full_record import _apply_live_ticket_context_metadata
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(return_value={})
+        graph_provider.get_record_key_by_external_id = AsyncMock(side_effect=lookup)
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk"})
+        graph_provider.check_access = AsyncMock(
+            side_effect=lambda user_key, org, node_ids: MagicMock(node_ids=set(node_ids))
+        )
+        ticket = MagicMock(spec=TicketRecord)
+        ticket.to_llm_context_with_live_fields = AsyncMock(return_value="x")
+        with patch("app.utils.fetch_full_record.create_record_instance_from_dict", return_value=ticket):
+            await _apply_live_ticket_context_metadata(
+                {"id": "ticket-1", "record_type": "TICKET"}, config_service=MagicMock(),
+                graph_provider=graph_provider, frontend_url=None, org_id=org_id, user_id=user_id,
+            )
+        return ticket.to_llm_context_with_live_fields.await_args.kwargs["readable_issue_ids"], graph_provider
+
+    @pytest.mark.asyncio
+    async def test_graph_lookups_for_referenced_issues_run_at_most_16_at_a_time(self) -> None:
+        import asyncio
+
+        running = peak = 0
+
+        async def lookup(ext: str, _conn: str) -> str:
+            nonlocal running, peak
+            running += 1
+            peak = max(peak, running)
+            await asyncio.sleep(0.005)
+            running -= 1
+            return f"k{ext}"
+
+        fn, graph_provider = await self._fn(lookup)
+        assert await fn("conn", {str(i) for i in range(100)}) == {str(i) for i in range(100)}
+        assert 1 < peak <= 16
+        graph_provider.check_access.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_graph_lookup_admits_no_issue(self) -> None:
+        async def lookup(ext: str, _conn: str) -> str:
+            if ext == "2":
+                raise RuntimeError("graph down")
+            return f"k{ext}"
+
+        fn, graph_provider = await self._fn(lookup)
+        with pytest.raises(RuntimeError):  # the live-context caller catches this and names nothing
+            await fn("conn", {"1", "2"})
+        graph_provider.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("user_id, org_id", [("", "org"), ("u1", ""), ("", "")])
+    async def test_missing_user_or_org_admits_no_issue(self, user_id: str, org_id: str) -> None:
+        fn, graph_provider = await self._fn(lambda ext, _conn: f"k{ext}", user_id=user_id, org_id=org_id)
+        assert await fn("conn", {"1", "2"}) == set()
+        graph_provider.check_access.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_an_issue_that_was_never_synced_is_not_admitted(self) -> None:
+        fn, graph_provider = await self._fn(lambda ext, _conn: None if ext == "9" else f"k{ext}")
+        assert await fn("conn", {"1", "9"}) == {"1"}
+        assert graph_provider.check_access.await_args.kwargs["node_ids"] == {"k1"}
+
+
 class TestResolverPassesViewerToLiveTicketCheck:
     @pytest.mark.asyncio
     async def test_resolver_enrich_passes_org_and_user(self) -> None:
