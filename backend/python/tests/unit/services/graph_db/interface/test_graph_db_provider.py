@@ -477,6 +477,7 @@ class TestAbstractMethodInventory:
         # Team operations
         "get_team_with_users",
         "get_user_teams",
+        "find_team_by_name",
         "get_team_users",
         "delete_team_member_edges",
         "batch_update_team_member_roles",

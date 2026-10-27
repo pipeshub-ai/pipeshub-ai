@@ -135,7 +135,7 @@
   "app/api/routes/api_toolsets.py": 1,
   "app/api/routes/chatbot.py": 7,
   "app/api/routes/code_graph.py": 1,
-  "app/api/routes/entity.py": 20,
+  "app/api/routes/entity.py": 21,
   "app/api/routes/mcp_servers.py": 31,
   "app/api/routes/records.py": 2,
   "app/api/routes/search.py": 6,

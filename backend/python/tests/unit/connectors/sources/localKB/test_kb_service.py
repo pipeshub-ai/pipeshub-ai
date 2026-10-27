@@ -3212,6 +3212,55 @@ class TestUploadRecordsPipeline:
         assert entities[0][0].uploaded_by is None
 
     @pytest.mark.asyncio
+    async def test_concurrent_uploads_of_one_name_create_one_record(self, service, mock_config_service) -> None:
+        """Two uploads of report.pdf to the same place at the same moment: the second is a duplicate."""
+        import asyncio
+
+        mock_config_service.get_config = AsyncMock(return_value={"storage": {"endpoint": "http://storage:3001"}})
+        service.graph_provider._validate_upload_context = AsyncMock(return_value={"valid": True})
+        service.graph_provider._analyze_upload_structure = MagicMock(side_effect=lambda files, v: {
+            "parent_folder_id": None,
+            "sorted_folder_paths": [],
+            "folder_hierarchy": {},
+            "file_destinations": {0: {"type": "root"}},
+        })
+        service.graph_provider._populate_file_destinations = MagicMock()
+        service.graph_provider._normalize_name = lambda n: n or ""
+        service.graph_provider._normalized_name_variants_lower = lambda n: [n.lower()] if n else []
+        service.graph_provider._generate_upload_message = MagicMock(return_value="done")
+
+        stored: set = set()
+
+        async def existing_names(kb_id: str, parent_folder_id: str | None) -> set[tuple[str, str]]:
+            await asyncio.sleep(0)
+            return set(stored)
+
+        async def write(entities: list) -> None:
+            # The commit lands after the other upload has had a chance to read.
+            await asyncio.sleep(0.01)
+            for record, _ in entities:
+                stored.add((record.record_name.lower(), record.mime_type))
+
+        service.graph_provider._fetch_existing_file_names_in_parent = AsyncMock(side_effect=existing_names)
+        service.processor_for_kb.return_value.on_new_records = AsyncMock(side_effect=write)
+
+        async def upload(ext_id: str) -> dict:
+            return await service._upload_records("kb-race", "user1", "org1", [{
+                "filePath": "report.pdf",
+                "record": _minimal_upload_record_dict(
+                    recordName="report.pdf", externalRecordId=ext_id, mimeType="application/pdf",
+                ),
+                "fileRecord": {"name": "report.pdf", "mimeType": "application/pdf", "isFile": True},
+            }], parent_folder_id=None)
+
+        first, second = await asyncio.gather(upload("ext-1"), upload("ext-2"))
+
+        assert sorted([first["totalCreated"], second["totalCreated"]]) == [0, 1]
+        skipped = first["skippedFiles"] + second["skippedFiles"]
+        assert [s["reason"] for s in skipped] == ["DUPLICATE_NAME"]
+        assert service.processor_for_kb.return_value.on_new_records.await_count == 1
+
+    @pytest.mark.asyncio
     async def test_upload_records_invalid_context(self, service):
         service.graph_provider._validate_upload_context = AsyncMock(
             return_value={"valid": False, "success": False, "code": 404, "reason": "KB not found"}

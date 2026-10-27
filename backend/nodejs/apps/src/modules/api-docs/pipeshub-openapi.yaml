@@ -28813,7 +28813,8 @@ paths:
         GET can be sent unchanged.
 
         **Updatable fields:** `fullName`, `firstName`, `lastName`, `middleName`, `email`,
-        `designation`, `mobile`, `address`, `hasLoggedIn`, `role`. `dataCollectionConsent` is
+        `designation`, `mobile`, `address`, `hasLoggedIn` (admins only, except a user setting their own to `true`), `role` (admins only).
+        `dataCollectionConsent` is
         accepted but not stored: the user record has no such field, so it never appears in the
         response.
 
@@ -28837,8 +28838,13 @@ paths:
         with `400` when the change would exceed 5 non-deleted admins (including pending
         admin invites). Demoting the last remaining admin is also rejected.
 
+        **Signed-in state:** Only org admins can set `hasLoggedIn`, with one exception: a user may
+        set their own to `true`, which first sign-in does with the user's own token. A member who
+        sends `false`, or any value for another user, gets `403` (`Only admins can change whether
+        a user has signed in`).
+
         **Authorization:** Admin can update any user's other fields; non-admin can only update
-        themselves (`userAdminOrSelfCheck` middleware, throws `400` not `403`). The email rule
+        themselves (`userAdminOrSelfCheck` middleware, `403` otherwise). The email rule
         above applies to admins too.
       operationId: updateUser
       security:
@@ -29011,7 +29017,7 @@ paths:
                   description: Accepted but not stored; the user record has no such field.
                 hasLoggedIn:
                   type: boolean
-                  description: Whether user has completed first login
+                  description: Whether user has completed first login. Org admins only; anyone else gets `403`.
       responses:
         '200':
           description: User updated successfully
@@ -29041,12 +29047,16 @@ paths:
         '403':
           description: |
             A caller who is not an org admin sent `role`, even the role the user already has
-            (`Only admins can change user roles`).
+            (`Only admins can change user roles`), or sent `hasLoggedIn` other than `true` on
+            their own record (`Only admins can change whether a user has signed in`).
 
             Only the account owner can change its email address: the request's `email`
             differs from the stored address and the caller isn't that user. Checked after
-            the user is loaded, so a missing id is `404`; a caller who is neither an admin
-            nor that user is refused earlier with `400` by the admin-or-self check.
+            the user is loaded, so a missing id is `404`.
+
+            A caller who is neither an org admin nor that user is refused earlier, before the
+            lookup (so a member gets it for an unknown id too), by the admin-or-self check
+            (`You don't have admin access and can't change other users`).
 
             An OAuth access token without the `user:write` scope is also refused with `403`
             (`Insufficient scope. Required: user:write`), before the request is validated.
@@ -29355,9 +29365,6 @@ paths:
 
             - Invalid user ID format, or `email` missing or not an address (`VALIDATION_ERROR`)
             - Email already in use by another user in the organization (`Email already exists for another user`)
-            - The caller is neither an admin nor that user (`You dont have admin access and can't change
-              other users`, from `userAdminOrSelfCheck`); this runs before the lookup, so a member gets it
-              for an unknown id too
             - HTML or script-like content in a string (`HTTP_BAD_REQUEST`, global XSS check)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
@@ -29369,8 +29376,11 @@ paths:
           description: |
             Only the account owner can change its email address: the request's `email`
             differs from the stored address and the caller isn't that user. Checked after
-            the user is loaded, so a missing id is `404`; a caller who is neither an admin
-            nor that user is refused earlier with `400` by the admin-or-self check.
+            the user is loaded, so a missing id is `404`.
+
+            A caller who is neither an org admin nor that user is refused earlier, before the
+            lookup (so a member gets it for an unknown id too), by the admin-or-self check
+            (`You don't have admin access and can't change other users`).
 
             An OAuth access token without the `user:write` scope is also refused with `403`
             (`Insufficient scope. Required: user:write`), before the request is validated.
@@ -29463,7 +29473,7 @@ paths:
             - A multipart form with no file part (`File upload required but no files were received`)
             - Declared file type not allowed (`Invalid file type. Allowed types: ...`)
             - File bytes are not a PNG, JPEG, WebP or GIF image (`Profile photo must be a PNG, JPEG, WebP or GIF image`)
-            - File exceeds the 1 MB limit (`One of the files is larger than the 1 MB limit...`)
+            - File exceeds the 1 MB limit (`This file is larger than the 1 MB limit...`)
             - The file is sent under a field name other than `file`, or more than one file is sent
               (`The files weren't sent the way this page expects...` or `You can upload up to 1 files at a time...`)
 
@@ -29680,13 +29690,13 @@ paths:
            re-invite email.
         3. **Active accounts with `hasLoggedIn: false`** (pending, not blocked) — resends the
            invitation email.
-        4. **Active accounts already logged in** — silently skipped; no error.
+        4. **Active accounts already logged in** — skipped and counted in `alreadyActive`.
 
         Optional `groupIds` adds new/restored users to the specified groups via `$addToSet`.
 
         Addresses are trimmed and lower-cased before they are matched, so an existing account is
         found whatever the letter case. Every address must pass the handler's own check
-        (`local@domain.tld`, no whitespace); one failing address refuses the whole batch with `400`
+        (`local@domain.tld`, see below); one failing address refuses the whole batch with `400`
         `Invalid emails are found` before anything is created. Body fields other than `emails`,
         `groupIds` and `role` are dropped by the validator, not refused.
 
@@ -29699,8 +29709,13 @@ paths:
           assigning groups needs an org admin, and a member asking for either gets `403`.
         - `accountTypeCheck` — rejects `individual` account type; throws `400`.
 
-        If all provided emails already have active accounts, returns `200` with
-        `{ "errorMessage": "All provided emails already have active accounts" }`.
+        If no address leads to an invite (every one already has an active account), the request
+        is refused with `409` (`All provided emails already have active accounts`).
+
+        Addresses are checked by the handler as `local@domain.tld`: no whitespace, quotes,
+        brackets, parentheses, commas, semicolons, colons, backslashes or angle brackets in the
+        local part, letters, digits and hyphens in each domain label, a top-level label of at
+        least two characters, and at most 254 characters overall.
 
         Invitation emails are always queued on the message broker and delivered in the
         background, so a `200` means "accepted for delivery", not "sent". Emails that
@@ -29731,13 +29746,16 @@ paths:
                   type: array
                   items:
                     type: string
-                    format: email
-                    pattern: '^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$'
                   minItems: 1
                   description: |
-                    Array of email addresses to invite. The validator only checks for strings; the
-                    pattern is the handler's check, which answers `400` `Invalid emails are found`.
-                    Surrounding whitespace is trimmed before either check.
+                    Array of email addresses to invite. The validator only checks for strings, so
+                    the schema sets no `format` or length on the raw value. Surrounding whitespace
+                    is trimmed first; the handler then refuses the whole request with `400`
+                    `Invalid emails are found` if any trimmed address is longer than 254
+                    characters, has whitespace, `@`, `"`, `(`, `)`, `,`, `:`, `;`, `<`, `>`, `[`,
+                    `]`, `\` or a backtick in its local part, or has a domain that is not
+                    dot-separated labels of Unicode letters, digits and `-` ending in a label of
+                    two or more characters.
                   example: ["user1@company.com", "user2@company.com"]
                 groupIds:
                   type: array
@@ -29755,30 +29773,45 @@ paths:
                   example: member
       responses:
         '200':
-          description: Invitations processed (including all-skipped case)
+          description: At least one invitation was queued
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: object
-                    additionalProperties: false
-                    required: [message, queued]
-                    properties:
-                      message:
-                        type: string
-                        enum: ["Invites queued. Emails are being sent in the background and may take a few minutes."]
-                      queued:
-                        type: boolean
-                        enum: [true]
-                        description: Invitation emails were accepted for background delivery
-                  - type: object
-                    additionalProperties: false
-                    required: [errorMessage]
-                    description: Every address already belongs to an active account that has logged in
-                    properties:
-                      errorMessage:
-                        type: string
-                        enum: [All provided emails already have active accounts]
+                type: object
+                additionalProperties: false
+                required: [message, queued, invited, reinvited, restored, alreadyActive]
+                properties:
+                  message:
+                    type: string
+                    enum: ["Invites queued. Emails are being sent in the background and may take a few minutes."]
+                  queued:
+                    type: boolean
+                    enum: [true]
+                    description: Invitation emails were accepted for background delivery
+                  invited:
+                    type: integer
+                    minimum: 0
+                    description: New accounts created and invited
+                  reinvited:
+                    type: integer
+                    minimum: 0
+                    description: Pending accounts whose invitation was sent again
+                  restored:
+                    type: integer
+                    minimum: 0
+                    description: Deleted accounts restored and invited to re-join
+                  alreadyActive:
+                    type: integer
+                    minimum: 0
+                    description: Addresses skipped because they already belong to an active account
+        '409':
+          description: |
+            No invitation was sent: every address already belongs to an active account
+            (`All provided emails already have active accounts`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '400':
           description: |
             Invalid request. Possible reasons:
@@ -29863,7 +29896,7 @@ paths:
 
         Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
         users to the specified groups. A value that is not JSON, or JSON that is not an array, is
-        ignored as if it were absent. Same middleware chain as `POST /users/bulk/invite`
+        refused with `400`. Same middleware chain as `POST /users/bulk/invite`
         (`smtpConfigCheck`, `accountTypeCheck`), and the same rule on who may invite: any member,
         but only an org admin may invite as `admin` or assign `groupIds` (`403` otherwise).
       operationId: bulkInviteUsersFromFile
@@ -29910,10 +29943,11 @@ paths:
             - The file under another field name, or more than one file (`The files weren't sent the way
               this page expects...`, `You can upload up to 1 files at a time...`)
             - A declared type that is not allowed (`Invalid file type. Allowed types: ...`)
-            - A file over 5 MB (`One of the files is larger than the 5 MB limit...`)
+            - A file over 5 MB (`This file is larger than the 5 MB limit...`)
             - A spreadsheet that cannot be parsed (`Could not read the file. Upload a valid CSV or Excel file.`)
             - No cell containing `@`, including an empty file (`No email addresses found in the file`)
             - More than 1000 addresses (`File exceeds the 1000-user limit`)
+            - `groupIds` is not JSON, or not a JSON array (`groupIds must be a JSON array of group ids, such as ["<id>"]`)
             - `groupIds` is a JSON array with an entry that is not an ObjectId (`groupIds must contain valid MongoDB ObjectIds`)
             - Individual account (`accountTypeCheck`)
 
@@ -30586,8 +30620,8 @@ paths:
 
         A `UpdateUserEvent` is published to the event bus on success.
 
-        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
-        not `403`).
+        **Authorization:** Admin or the user themselves anyone else gets `403` (`You don't have admin
+        access and can't change other users`, from `userAdminOrSelfCheck`).
       operationId: updateFullName
       security:
         - bearerAuth: []
@@ -30650,7 +30684,6 @@ paths:
             - Missing, empty or whitespace-only `fullName`, or not a string (Zod, `VALIDATION_ERROR`)
             - `fullName` holds HTML tags or script-like content (`HTTP_BAD_REQUEST`)
             - Invalid user ID format (Zod)
-            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -30675,6 +30708,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
+            The caller is neither an org admin nor that user (`You don't have admin access and can't
+            change other users`, from `userAdminOrSelfCheck`). This runs before the lookup, so a member
+            gets it for an unknown id too.
+
             An OAuth access token without the `user:write` scope (`Insufficient scope. Required: user:write`).
             Checked right after authentication, before the request is validated. Session tokens are
             never scope-restricted.
@@ -30705,8 +30742,8 @@ paths:
 
         A `UpdateUserEvent` is published to the event bus on success.
 
-        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
-        not `403`).
+        **Authorization:** Admin or the user themselves anyone else gets `403` (`You don't have admin
+        access and can't change other users`, from `userAdminOrSelfCheck`).
       operationId: updateFirstName
       security:
         - bearerAuth: []
@@ -30769,7 +30806,6 @@ paths:
             - Missing, empty or whitespace-only `firstName`, or not a string (Zod, `VALIDATION_ERROR`)
             - `firstName` holds HTML tags or script-like content (`HTTP_BAD_REQUEST`)
             - Invalid user ID format (Zod)
-            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -30794,6 +30830,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
+            The caller is neither an org admin nor that user (`You don't have admin access and can't
+            change other users`, from `userAdminOrSelfCheck`). This runs before the lookup, so a member
+            gets it for an unknown id too.
+
             An OAuth access token without the `user:write` scope (`Insufficient scope. Required: user:write`).
             Checked right after authentication, before the request is validated. Session tokens are
             never scope-restricted.
@@ -30822,8 +30862,8 @@ paths:
 
         A `UpdateUserEvent` is published to the event bus on success.
 
-        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
-        not `403`).
+        **Authorization:** Admin or the user themselves anyone else gets `403` (`You don't have admin
+        access and can't change other users`, from `userAdminOrSelfCheck`).
       operationId: updateLastName
       security:
         - bearerAuth: []
@@ -30886,7 +30926,6 @@ paths:
             - Missing, empty or whitespace-only `lastName`, or not a string (Zod, `VALIDATION_ERROR`)
             - `lastName` holds HTML tags or script-like content (`HTTP_BAD_REQUEST`)
             - Invalid user ID format (Zod)
-            - Requester is not admin and is not the target user (`userAdminOrSelfCheck`)
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -30911,6 +30950,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
+            The caller is neither an org admin nor that user (`You don't have admin access and can't
+            change other users`, from `userAdminOrSelfCheck`). This runs before the lookup, so a member
+            gets it for an unknown id too.
+
             An OAuth access token without the `user:write` scope (`Insufficient scope. Required: user:write`).
             Checked right after authentication, before the request is validated. Session tokens are
             never scope-restricted.
@@ -30938,8 +30981,8 @@ paths:
 
         A `UpdateUserEvent` is published to the event bus on success.
 
-        **Authorization:** Admin or the user themselves (`userAdminOrSelfCheck` — throws `400`
-        not `403`).
+        **Authorization:** Admin or the user themselves anyone else gets `403` (`You don't have admin
+        access and can't change other users`, from `userAdminOrSelfCheck`).
       operationId: updateDesignation
       security:
         - bearerAuth: []
@@ -31000,9 +31043,6 @@ paths:
             - Missing, empty, whitespace-only or non-string `designation` (Zod)
             - Invalid user ID format (Zod)
             - HTML or script-like content (`HTTP_BAD_REQUEST`, global XSS check)
-            - Requester is not admin and is not the target user (`You dont have admin access and can't
-              change other users`, from `userAdminOrSelfCheck`); this runs before the lookup, so a member
-              gets it for an unknown id too
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead). A JSON body that does not parse is refused the same way, also before authentication (`HTTP_BAD_REQUEST`, "The request body is not valid JSON.").
           content:
@@ -31027,6 +31067,10 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
+            The caller is neither an org admin nor that user (`You don't have admin access and can't
+            change other users`, from `userAdminOrSelfCheck`). This runs before the lookup, so a member
+            gets it for an unknown id too.
+
             An OAuth access token without the `user:write` scope (`Insufficient scope. Required: user:write`).
             Checked right after authentication, before the request is validated. Session tokens are
             never scope-restricted.
@@ -31988,6 +32032,13 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            Another team in the organization already has this name. The comparison trims surrounding spaces and ignores case ("A team with this name already exists. Choose a different name."). The check runs before the write, so two creates sent at the same instant can still both succeed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /teams/user/teams:
     get:
       tags:
@@ -31995,6 +32046,9 @@ paths:
       summary: List teams for current user
       description: |
         Paginated list of teams the authenticated user belongs to, with optional filters.
+        For an org admin the list holds every team in the organization, including teams the
+        admin is not in, with `canEdit`, `canManageMembers` and `canDelete` true (`canDelete`
+        stays false for the All team).
 
         Service accounts among the members are left out for a caller who does
         not administer the organisation, and `memberCount` leaves them out too.
@@ -32164,9 +32218,9 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team }`. Node enriches member and `createdByUser` `profilePicture` when present.
 
-        Membership is not required: any user of the organization can read any of its teams,
-        members included. For a caller who is not an OWNER, `canEdit`, `canDelete` and
-        `canManageMembers` are `false`.
+        Only members of the team and org admins can read it; anyone else gets `404`, the same
+        answer as for a team that does not exist. For a caller who is neither an OWNER nor an org
+        admin, `canEdit`, `canDelete` and `canManageMembers` are `false`.
 
         Service accounts among the members are left out for a caller who does
         not administer the organisation, and `memberCount` leaves them out too.
@@ -32252,7 +32306,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: Team not found
+          description: |
+            No team has this id, or the caller is not a member of it and is not an org admin
+            (both answer alike, so team ids cannot be probed).
           content:
             application/json:
               schema:
@@ -32289,7 +32345,7 @@ paths:
         - Teams
       summary: Update team
       description: |
-        Update team metadata and members in a single request (OWNER only).
+        Update team metadata and members in a single request (team OWNER or org admin).
 
         **Gateway contract:**
         Body validated by `updateTeamSchema`. Path `teamId` is `TeamGraphKey`.
@@ -32297,9 +32353,11 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team }`. Node enriches `createdByUser` and member `profilePicture` when present.
 
-        The caller's OWNER role is checked before the team is looked up, so a team that does
-        not exist is answered `403`, like one the caller does not own. Every accepted call,
-        an empty one included, sets `updatedAtTimestamp`.
+        An org admin may update any team in their organization, including teams they are not in.
+        A team that does not exist and a team the caller has no role on (and is not an org admin)
+        are answered alike with `404`, matching delete. A new name is trimmed and must not match
+        another team's name in the organization (case-insensitive). Every accepted call, an empty
+        one included, sets `updatedAtTimestamp`.
       operationId: updateTeam
       security:
         - bearerAuth: []
@@ -32384,7 +32442,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            The caller is not an OWNER of the team, including when no team has this id; or an
+            The caller has a role on the team but is not its OWNER and not an org admin; or an
             OAuth token without the `team:write` scope.
           content:
             application/json:
@@ -32392,8 +32450,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
           description: |
-            The caller's user record is not in the graph, or the team disappeared between the
-            owner check and the update. A team id that names nothing is `403`, not `404`.
+            No team has this id, or the caller has no role on it and is not an org admin, or the
+            caller's user record is not in the graph.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: |
+            The new name matches another team in the organization, ignoring case and surrounding
+            spaces ("A team with this name already exists. Choose a different name."). Renaming a
+            team to its own name is not a clash.
           content:
             application/json:
               schema:
@@ -32424,16 +32491,18 @@ paths:
         - Teams
       summary: Delete team
       description: |
-        Permanently delete a team and its permission edges (OWNER only).
+        Permanently delete a team and its permission edges (team OWNER or org admin).
 
         **Gateway contract:**
         Path validated by `deleteTeamSchema` (`TeamGraphKey` `teamId`).
 
         **Observed behavior:**
-        Returns `{ status, message }` on success. A team that does not exist and a team the
-        caller has no role on (including the All team of another organization) both answer
-        `404`, so the status does not reveal which team ids exist; deleting twice is a `404`.
-        A member who is not an OWNER gets `403`. A request body is ignored.
+        Returns `{ status, message }` on success. An org admin may delete any team in their
+        organization except its default All team. A team that does not exist and a team the
+        caller has no role on (and is not an org admin of; including the All team of another
+        organization) both answer `404`, so the status does not reveal which team ids exist;
+        deleting twice is a `404`. A member who is not an OWNER gets `403`. A request body is
+        ignored.
       operationId: deleteTeam
       security:
         - bearerAuth: []
@@ -32530,9 +32599,9 @@ paths:
         **Observed behavior:**
         Returns `{ status, message, team, pagination }` where `pagination` includes `totalCount`, `hasNextPage`, and `hasPrevPage`. Node enriches member `profilePicture` on the nested `team` object.
 
-        Membership is not required: any user of the organization can list the members of any of
-        its teams. For a caller who is not an OWNER, `canEdit`, `canDelete` and
-        `canManageMembers` are `false`. Query parameters not listed here are dropped by the
+        Only members of the team and org admins can list its members; anyone else gets `404`, the
+        same answer as for a team that does not exist. For a caller who is neither an OWNER nor an
+        org admin, `canEdit`, `canDelete` and `canManageMembers` are `false`. Query parameters not listed here are dropped by the
         gateway. A fractional `page` or `limit` (`1.5`) passes the gateway and is refused by the
         service with `422`.
 
@@ -32619,7 +32688,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         '404':
-          description: No team of this organization has this id ("Team not found").
+          description: |
+            No team of this organization has this id, or the caller is not a member of it and is
+            not an org admin (both answer alike, so team ids cannot be probed).
           content:
             application/json:
               schema:
@@ -38332,6 +38403,7 @@ paths:
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
+                    It cannot contain `/` or `\`, which folder paths use as separators.
                   example: "Project Documents"
               required:
                 - folderName
@@ -38347,6 +38419,7 @@ paths:
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
+                    It cannot contain `/` or `\`, which folder paths use as separators.
                   example: "Project Documents"
               required:
                 - folderName
@@ -38369,6 +38442,7 @@ paths:
             - `folderName` contains an HTML tag, a `javascript:` URL or an inline event handler
               (`HTTP_BAD_REQUEST`). This check runs before authentication.
             - `folderName` contains a format specifier (`HTTP_BAD_REQUEST`)
+            - `folderName` contains `/` or `\` (`VALIDATION_ERROR`, `Folder names cannot contain "/" or "\".`)
             - The parent is already 20 levels deep
               (`Folders can be nested at most 20 levels deep. ...`)
             - `kbId` holds a character that cannot stand in a URL path segment (`/`, `\`, `?`,
@@ -38519,6 +38593,7 @@ paths:
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
+                    It cannot contain `/` or `\`, which folder paths use as separators.
                   example: "Project Documents"
               required:
                 - folderName
@@ -38534,6 +38609,7 @@ paths:
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
+                    It cannot contain `/` or `\`, which folder paths use as separators.
                   example: Project Documents
               required: [folderName]
       responses:
@@ -38558,6 +38634,7 @@ paths:
             - `folderName` contains an HTML tag, a `javascript:` URL or an inline event handler
               (`HTTP_BAD_REQUEST`). This check runs before authentication.
             - `folderName` contains a format specifier (`HTTP_BAD_REQUEST`)
+            - `folderName` contains `/` or `\` (`VALIDATION_ERROR`, `Folder names cannot contain "/" or "\".`)
             - The parent is already 20 levels deep
               (`Folders can be nested at most 20 levels deep. ...`)
             - `kbId` or `folderId` holds a character that cannot stand in a URL path segment (`/`, `\`, `?`,
@@ -38674,6 +38751,7 @@ paths:
                   description: |
                     New name of the folder. Whitespace around it is removed first, so a name
                     made only of whitespace is refused as empty.
+                    It cannot contain `/` or `\`, which folder paths use as separators.
               required:
                 - folderName
           application/x-www-form-urlencoded:
@@ -38688,6 +38766,7 @@ paths:
                   description: |
                     New name of the folder. Whitespace around it is removed first, so a name
                     made only of whitespace is refused as empty.
+                    It cannot contain `/` or `\`, which folder paths use as separators.
               required:
                 - folderName
       responses:
@@ -38706,6 +38785,7 @@ paths:
             - `folderName` contains an HTML tag, a `javascript:` URL or an inline event handler
               (`HTTP_BAD_REQUEST`). This check runs before authentication.
             - `folderName` contains a format specifier (`HTTP_BAD_REQUEST`)
+            - `folderName` contains `/` or `\` (`VALIDATION_ERROR`, `Folder names cannot contain "/" or "\".`)
             - `kbId` or `folderId` holds a character that cannot stand in a URL path segment (`/`, `\`, `?`,
               `#`, `%`, a control character) or is `.` or `..` (`HTTP_BAD_REQUEST`)
 
