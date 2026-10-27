@@ -237,7 +237,7 @@ export class UploadDocumentService {
       patch,
     );
     if (!saved) {
-      throw new InternalServerError('Document does not exist');
+      throw new NotFoundError('Document does not exist');
     }
 
     res.setHeader('Location', storageURL);
