@@ -87,12 +87,12 @@ def test_large_single_paragraph_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     assert max(seen, default=0) <= html_markdown.MAX_ELEMENTS_PER_BLOCK * 2  # open + close tag per element
 
 
-def test_oversized_block_is_reported_once(caplog: pytest.LogCaptureFixture) -> None:
-    html = f"<p>{_links(html_markdown.MAX_ELEMENTS_PER_BLOCK + 1)}</p>"
+def test_oversized_blocks_are_reported_once_per_document(caplog: pytest.LogCaptureFixture) -> None:
+    big = f"<p>{_links(html_markdown.MAX_ELEMENTS_PER_BLOCK + 1)}</p>"
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
-        html_to_markdown(html)
-    assert [r.getMessage() for r in caplog.records if "plain text" in r.getMessage()] == [
-        f"html_to_markdown: 1 block(s) over {html_markdown.MAX_ELEMENTS_PER_BLOCK} elements were reduced to plain text"
+        html_to_markdown(big + "<p>between</p>" + big)
+    assert [r.getMessage() for r in caplog.records] == [
+        f"html_to_markdown: 2 block(s) over {html_markdown.MAX_ELEMENTS_PER_BLOCK} elements were reduced to plain text"
     ]
 
 
@@ -134,10 +134,103 @@ def test_only_the_helper_imports_the_library() -> None:
             continue
         for node in ast.walk(ast.parse(source)):
             names = []
-            if isinstance(node, ast.Import):
+            if (
+                isinstance(node, ast.Call)
+                and getattr(node.func, "attr", getattr(node.func, "id", "")) in {"import_module", "__import__"}
+                and node.args
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                names = [node.args[0].value]
+            elif isinstance(node, ast.Import):
                 names = [a.name for a in node.names]
             elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
                 names = [node.module]
             if any(n.split(".")[0] == "html_to_markdown" for n in names):
                 offenders.append(f"{path.relative_to(root.parent)}:{node.lineno}")
     assert offenders == []
+
+
+# --- input the splitter cannot take as it is ---------------------------------
+# Each of these returned "" or raised before, for a document the single call
+# (or the plain text) could have handled.
+
+_MANY = html_markdown.MAX_ELEMENTS_PER_BLOCK + 1_000
+
+
+def test_xml_declaration_does_not_break_the_split_path(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown('<?xml version="1.0" encoding="utf-8"?>' + "<p><b>a</b></p>" * _MANY)
+    assert out.count("**a**") == _MANY  # converted with markup, not reduced to text
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("filler", ["<!--x-->", " ", "<!-- c --> \n"])
+def test_document_with_only_comments_and_whitespace_is_empty(filler: str) -> None:
+    assert html_to_markdown(" " + filler * _MANY) == ""
+
+
+def test_deep_nesting_keeps_every_word(caplog: pytest.LogCaptureFixture) -> None:
+    depth = 3_000  # past what libxml2 accepts even with huge_tree
+    html = "<div>" * depth + "deep text" + "</div>" * depth + "<p>x</p>" * _MANY
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown(html)
+    assert "deep text" in out
+    assert out.split().count("x") == _MANY
+    assert [r.getMessage() for r in caplog.records] == [
+        "html_to_markdown: document lost text while parsing, converted as plain text"
+    ]
+
+
+def test_unclosed_nesting_keeps_every_word() -> None:
+    out = html_to_markdown("<div>x" * 30_000)
+    assert out.count("x") == 30_000
+
+
+def test_nested_containers_are_counted_once() -> None:
+    """Counting a subtree per level made the cost grow with depth x elements."""
+    html = "<div>" * 600 + "<p>w</p>" * 120_000 + "</div>" * 600
+
+    start = time.perf_counter()
+    out = html_to_markdown(html)
+    elapsed = time.perf_counter() - start
+
+    assert out.count("w") == 120_000
+    assert elapsed < 6.0  # about 3 s; per-level counting takes about 10 s
+
+
+def test_input_over_the_size_cap_is_text_only_and_not_empty(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    called: list[str] = []
+    monkeypatch.setattr(html_markdown, "_convert", lambda markup: called.append(markup) or "")
+    monkeypatch.setattr(html_markdown, "MAX_INPUT_CHARS", 1_000)
+    html = "<h1>Title</h1><script>BAD()</script><p>one <b>two</b></p>" * 30
+
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown(html)
+
+    assert called == []
+    assert out.count("Title") == 30
+    assert out.count("one two") == 30
+    assert "BAD" not in out
+    assert [r.getMessage() for r in caplog.records] == [
+        "html_to_markdown: document is over 1000 characters, converted as plain text"
+    ]
+
+
+def test_a_text_node_over_the_parser_limit_is_kept() -> None:
+    words = html_markdown.MAX_INPUT_CHARS // 4  # 5 chars a word: beyond the cap and libxml2's 10 MB node limit
+    out = html_to_markdown("<p>" + "word " * words + "</p>" + "<p>x</p>" * _MANY)
+    assert out.count("word") == words
+    assert out.count("x") == _MANY
+
+
+def test_reduced_block_leaves_out_script_and_style(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(html_markdown, "MAX_ELEMENTS_PER_BLOCK", 5)
+    html = "<p><script>BAD()</script>" + "<span>w</span>" * 10 + "<style>.bad{}</style></p><p>tail</p>"
+    out = html_to_markdown(html)
+    assert out.count("w") == 10
+    assert "BAD" not in out
+    assert "bad" not in out
+    assert out.endswith("tail")
