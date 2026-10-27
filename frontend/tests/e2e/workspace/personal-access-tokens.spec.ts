@@ -126,7 +126,7 @@ test.describe('Personal access tokens', () => {
       // The panel turns into the one-time success screen.
       const success = page.getByRole('dialog', { name: 'Token created' });
       await expect(success).toBeVisible();
-      await expect(success.getByText('This token is shown only once. Store it somewhere safe.')).toBeVisible();
+      await expect(success.getByText('This token is shown only once. Store it somewhere safe.', { exact: true })).toBeVisible();
       const tokenField = success.locator('input[readonly]');
       await expect(tokenField, 'the token should start hidden').toHaveAttribute('type', 'password');
       await success.getByRole('button', { name: 'Show token' }).click();
