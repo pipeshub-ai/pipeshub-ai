@@ -512,11 +512,12 @@ export const ConnectorsApi = {
   /** What a connector (or collection) is doing now; `full` adds recent runs and stats by reason. */
   async getConnectorProgress(
     connectorId: string,
-    detail: 'summary' | 'full' = 'summary'
+    detail: 'summary' | 'full' = 'summary',
+    options?: { suppressErrorToast?: boolean }
   ): Promise<ConnectorProgress> {
     const { data } = await apiClient.get<{ data: ConnectorProgress }>(
       `${BASE_URL}/${connectorId}/progress`,
-      { params: { detail } }
+      { params: { detail }, ...options }
     );
     return data.data;
   },
