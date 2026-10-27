@@ -50,7 +50,9 @@ async def test_publish_reaches_a_subscriber_on_the_pubsub_client(
     receivers, message = await _publish_and_receive(
         redis_cluster_available, channel, "hello-cluster"
     )
-    assert receivers >= 1
+    # PUBLISH counts subscribers on the node that ran it only; the subscriber
+    # may sit on another node, so 0 is a valid count. Arrival is what matters.
+    assert receivers >= 0
     assert message is not None, "the published message never arrived"
     assert message["channel"] in (channel, channel.encode())
     assert message["data"] in ("hello-cluster", b"hello-cluster")
@@ -74,6 +76,6 @@ async def test_publish_does_not_depend_on_the_clients_native_publish(
     receivers, message = await _publish_and_receive(
         redis_cluster_available, channel, "hello-without-native"
     )
-    assert receivers >= 1
+    assert receivers >= 0
     assert message is not None, "the published message never arrived"
     assert message["data"] in ("hello-without-native", b"hello-without-native")

@@ -32,6 +32,9 @@ from app.utils.logger import create_logger
 logger = create_logger("redis_cluster_provider")
 
 
+# Matches what a non-blocking standalone client gets: no per-node cap in practice.
+_UNBOUNDED_NODE_CONNECTIONS = 2**31
+
 class ClusterRedisProvider(IRedisConnectionProvider):
     def __init__(self, config: RedisConnectionConfig) -> None:
         self._config = config
@@ -69,10 +72,11 @@ class ClusterRedisProvider(IRedisConnectionProvider):
         # RedisCluster's per-node pool has no wait at all -- the first command
         # over the cap raises MaxConnectionsError instantly, which under the
         # indexing worker's fan-out turned every config read into a failure.
-        # redis-py's default (effectively unbounded) matches what standalone
-        # gives a non-blocking client today.
+        # The cap is set explicitly because redis-py 6+ lowered the default
+        # from 2**31 to 100 per node, below that fan-out.
         kwargs: dict[str, Any] = {
             "startup_nodes": self._startup_nodes(),
+            "max_connections": _UNBOUNDED_NODE_CONNECTIONS,
             "decode_responses": options.decode_responses,
             "protocol": RESP_PROTOCOL,
             "socket_timeout": options.socket_timeout_seconds,

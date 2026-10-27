@@ -64,7 +64,16 @@ class TestCreateClient:
         # indexing worker's concurrent config reads into hard failures.
         provider = ClusterRedisProvider(_config())
         provider.create_client(ClientOptions(blocking=blocking, max_connections=10))
-        assert "max_connections" not in mock_cluster_cls.call_args.kwargs
+        assert mock_cluster_cls.call_args.kwargs["max_connections"] >= 2**31
+
+    def test_the_real_cluster_client_has_no_practical_per_node_cap(self) -> None:
+        # redis-py 6+ defaults RedisCluster to 100 connections per node, below
+        # the indexing worker's fan-out; the provider must not inherit that.
+        from redis.asyncio.cluster import RedisCluster
+
+        kwargs = ClusterRedisProvider(_config())._client_kwargs(ClientOptions(max_connections=10))
+        client = RedisCluster(**kwargs)
+        assert client.connection_kwargs["max_connections"] >= 2**31
 
     def test_the_requested_retry_attempts_reach_the_client(self, mock_cluster_cls) -> None:
         provider = ClusterRedisProvider(_config())
