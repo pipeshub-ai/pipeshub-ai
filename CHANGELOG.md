@@ -6,6 +6,7 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 | Version | Date | Channel | Theme |
 |---|---|---|---|
+| [1.0.0](#100--2026-10-27) | Oct 27, 2026 | Stable | Code graph, focused retrieval, custom API actions |
 | [0.10.0](#0100--2026-10-12) | Oct 12, 2026 | Stable | Trash, knowledge-graph entity tools, security sweep |
 | [0.9.1](#091--2026-09-28) | Sep 28, 2026 | Stable | OAuth and PKCE hardening, Kafka fix, SDK 1.7.0 |
 | [0.9.0](#090--2026-09-28) | Sep 28, 2026 | Stable | Projects, service accounts, SMB and Drupal Wiki connectors |
@@ -31,7 +32,7 @@ This file is the release registry: each entry is a condensed summary linking to 
 
 ## Unreleased
 
-Changes merged to `main` since the last release: [`v0.10.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v0.10.0...HEAD).
+Changes merged to `main` since the last release: [`v1.0.0...HEAD`](https://github.com/pipeshub-ai/pipeshub-ai/compare/v1.0.0...HEAD).
 
 ### Breaking changes & upgrade notes
 - **A saved agent whose knowledge source lists `filters.recordGroups` or `filters.records` now searches only those nodes.** The lists were stored but not applied before, so an agent saved with non-empty lists becomes narrower on upgrade. To keep searching the whole source, tick the whole source again on that node in the agent builder, or clear the lists. A source whose stored `filters` cannot be read (text that is not JSON, or lists that are not lists of ids) is no longer searched at all, and the query service logs a warning naming it; re-save the agent to repair it. An id that is itself one of the agent's sources is not read as a limit (agents saved before each collection became its own source listed the collection there).
@@ -80,6 +81,43 @@ Changes merged to `main` since the last release: [`v0.10.0...HEAD`](https://gith
 ### Deprecations & removals
 - **`DEFER_EXTRACTION` is removed** (it never deferred anything); drop it from custom compose files. See the upgrade note above.
 - **Five unused connector-service record routes are removed**, among them `GET /api/v1/records` and `GET /api/v1/kb/records`. See the upgrade note above.
+
+---
+
+## 1.0.0 — 2026-10-27
+
+**Code graphs, deeper retrieval and agent tools, and stricter permission enforcement** · Stable · [`v1.0.0`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/v1.0.0) · [Full changelog](changelog/1.0.0.md)
+
+Repositories get a code graph, retrieval gains focused reading and timeline search, and agents can call an organization's REST APIs as custom actions. Permission enforcement is stricter across connectors, chat and OAuth, and a Zendesk connector and staged indexing are added.
+
+### Breaking changes & upgrade notes
+- **SAML and generic OAuth sign-in are removed.** Review deployments that use them before upgrading ([#4217](https://github.com/pipeshub-ai/pipeshub-ai/pull/4217)).
+- **`client_credentials` applications must name the service account they act as;** administrators can bind existing applications ([#4517](https://github.com/pipeshub-ai/pipeshub-ai/pull/4517), [#4538](https://github.com/pipeshub-ai/pipeshub-ai/pull/4538)).
+- **The Helm chart requires a Qdrant API key** and no longer supplies a default ([#3893](https://github.com/pipeshub-ai/pipeshub-ai/pull/3893)).
+- **Focused reading (`TARGETED_RETRIEVAL`), timeline summaries (`TIMELINE_SUMMARIES`) and MCP servers are on by default** ([#4343](https://github.com/pipeshub-ai/pipeshub-ai/pull/4343), [#4349](https://github.com/pipeshub-ai/pipeshub-ai/pull/4349), [#4430](https://github.com/pipeshub-ai/pipeshub-ai/pull/4430)).
+
+### New features
+- **Code graph:** index repositories into a navigable graph with agent exploration and impact-analysis tools ([#3841](https://github.com/pipeshub-ai/pipeshub-ai/pull/3841), [#4809](https://github.com/pipeshub-ai/pipeshub-ai/pull/4809)).
+- **Custom API actions:** connect REST APIs from an OpenAPI specification, including personal actions and actions from chat ([#4435](https://github.com/pipeshub-ai/pipeshub-ai/pull/4435), [#4324](https://github.com/pipeshub-ai/pipeshub-ai/pull/4324)).
+- **Zendesk connector:** sync tickets, Help Center content, users, groups and organizations ([#2836](https://github.com/pipeshub-ai/pipeshub-ai/pull/2836)).
+- **Retrieval:** focused reading of a record, period-by-period timeline search, and `POST /api/v1/retrieve` ([#4291](https://github.com/pipeshub-ai/pipeshub-ai/pull/4291), [#4373](https://github.com/pipeshub-ai/pipeshub-ai/pull/4373), [#4732](https://github.com/pipeshub-ai/pipeshub-ai/pull/4732)).
+- **Indexing:** classification and entity extraction run as separate stages ([#3270](https://github.com/pipeshub-ai/pipeshub-ai/pull/3270), [#4467](https://github.com/pipeshub-ai/pipeshub-ai/pull/4467)).
+
+### Improvements
+- **Agents:** a more resilient loop with model-sized context budgets, compaction and better prompt caching ([#4083](https://github.com/pipeshub-ai/pipeshub-ai/pull/4083), [#4442](https://github.com/pipeshub-ai/pipeshub-ai/pull/4442), [#4533](https://github.com/pipeshub-ai/pipeshub-ai/pull/4533)).
+
+### Bug fixes
+- **Connectors:** Jira issue-security levels, SharePoint/OneDrive sharing and stored access rules are enforced correctly ([#4738](https://github.com/pipeshub-ai/pipeshub-ai/pull/4738), [#4350](https://github.com/pipeshub-ai/pipeshub-ai/pull/4350), [#4767](https://github.com/pipeshub-ai/pipeshub-ai/pull/4767)).
+
+### Security fixes
+- **OAuth hardening:** granular consent, atomic refresh-token rotation, single-use authorization codes and logout session termination ([#4451](https://github.com/pipeshub-ai/pipeshub-ai/pull/4451), [#4777](https://github.com/pipeshub-ai/pipeshub-ai/pull/4777), [#4776](https://github.com/pipeshub-ai/pipeshub-ai/pull/4776), [#4790](https://github.com/pipeshub-ai/pipeshub-ai/pull/4790)).
+- **Isolation:** organization and connected-app isolation across search, chat, storage, jobs and tools ([#4492](https://github.com/pipeshub-ai/pipeshub-ai/pull/4492), [#4703](https://github.com/pipeshub-ai/pipeshub-ai/pull/4703), [#4475](https://github.com/pipeshub-ai/pipeshub-ai/pull/4475)).
+
+### Performance & reliability
+- **Indexing:** token-based embedding batches, crash-record termination and parser-worker memory fixes ([#4197](https://github.com/pipeshub-ai/pipeshub-ai/pull/4197), [#4666](https://github.com/pipeshub-ai/pipeshub-ai/pull/4666), [#4832](https://github.com/pipeshub-ai/pipeshub-ai/pull/4832)).
+
+### Deprecations & removals
+- **`POST /connectors/:connectorId/filters` is deprecated** ([#4263](https://github.com/pipeshub-ai/pipeshub-ai/pull/4263)).
 
 ---
 
