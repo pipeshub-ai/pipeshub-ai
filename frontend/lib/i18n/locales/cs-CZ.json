@@ -542,7 +542,7 @@
     "willBeReindexed": "bude přeindexováno",
     "reindexConfirm": "Přeindexovat {{type}}?",
     "reindexDescription": "Tím se aktualizuje vyhledávací index pro {{type}} a jeho obsah.",
-    "deleteCollectionBody": "'{{name}}' a vše v ní bude smazáno. Bude také odebrána ze všech agentů, kteří ji používají.",
+    "deleteCollectionBody": "'{{name}}' a vše v ní bude trvale smazáno. Bude také odebrána ze všech agentů, kteří ji používají. Tuto akci nelze vrátit zpět.",
     "deleteFolderBody": "'{{name}}' a vše v ní bude z této kolekce smazáno.",
     "deleteFileBody": "'{{name}}' bude z této kolekce smazán."
   },
@@ -1547,7 +1547,8 @@
       "download": "Stáhnout artefakt",
       "downloading": "Stahování artefaktu"
     },
-    "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také."
+    "deleteChatArtifactsNote": "Soubory, které asistent v tomto chatu vytvořil, budou smazány také.",
+    "noResultsFor": "Pro „{{query}}“ nebyly nalezeny žádné výsledky"
   },
   "workspaceMenu": {
     "appearance": "Vzhled",
@@ -5436,7 +5437,9 @@
       "orgEmailVerifyFailedDescription": "Odkaz může být neplatný nebo jeho platnost vypršela. Zaregistrujte se prosím znovu.",
       "loadFailedTitle": "Přihlášení se nepodařilo načíst",
       "loadFailedDescription": "PipesHub se nepodařilo spojit se serverem a načíst možnosti přihlášení. Zkontrolujte své připojení nebo adresu serveru a zkuste to znovu.",
-      "retry": "Zkusit znovu"
+      "retry": "Zkusit znovu",
+      "tabPassword": "Heslo",
+      "tabEmailOtp": "Kód e-mailem"
     },
     "common": {
       "signIn": "Přihlásit se",
@@ -5473,12 +5476,53 @@
       "integrationTitle": "Autorizace odeslána do PipesHub",
       "description": "Tuto kartu můžete zavřít a vrátit se do aplikace PipesHub.",
       "openApp": "Otevřít PipesHub"
+    },
+    "toasts": {
+      "checkInbox": "Zkontrolujte svou doručenou poštu",
+      "resetLinkSent": "Pokud k tomuto e-mailu existuje účet, byl odeslán odkaz pro obnovení hesla.",
+      "resetRequestFailed": "Obnovení hesla se nepodařilo vyžádat",
+      "tryAgainLater": "Zkuste to prosím později.",
+      "contactAdmin": "Obraťte se prosím na svého správce.",
+      "noPasswordSetTitle": "Tento účet nemá nastavené heslo.",
+      "noPasswordSetDescription": "Heslo si nastavte pomocí odkazu Zapomenuté heslo níže.",
+      "checkEmail": "Zkontrolujte svůj e-mail",
+      "otpSentDescription": "Pokud se tento e-mail může přihlásit kódem, kód se odesílá. Pokud do několika minut nic nepřijde, zkontrolujte složku se spamem nebo to zkuste později.",
+      "otpSendFailed": "Ověřovací kód se nepodařilo odeslat",
+      "additionalVerification": "Je vyžadováno další ověření",
+      "completeNextStep": "Pokračujte dokončením dalšího kroku.",
+      "signInFailedTitle": "Přihlášení se nezdařilo",
+      "unexpectedResponse": "Neočekávaná odpověď. Zkuste to prosím znovu.",
+      "signInFailed": "Přihlášení se nezdařilo. Zkuste to prosím znovu.",
+      "verificationFailed": "Ověření se nezdařilo. Zkuste to prosím znovu.",
+      "googleSignInFailed": "Přihlášení přes Google se nezdařilo. Zkuste to prosím znovu.",
+      "microsoftSignInFailed": "Přihlášení přes Microsoft se nezdařilo. Zkuste to prosím znovu.",
+      "tryAgainAfter": "Zkuste to znovu po {{time}}."
     }
   },
   "healthGate": {
     "title": "Nelze se připojit k serveru",
     "description": "Server je momentálně nedostupný. Může se právě spouštět nebo na něm probíhá údržba. Pokoušíme se znovu připojit.",
-    "contactAdmin": "Pokud problém přetrvává, kontaktujte prosím svého správce PipesHub."
+    "contactAdmin": "Pokud problém přetrvává, kontaktujte prosím svého správce PipesHub.",
+    "toasts": {
+      "servicesUnavailableTitle": "Některé služby nejsou k dispozici",
+      "affected": "Dotčené: {{services}}",
+      "featuresUnavailableReconnect": "Některé funkce jsou dočasně nedostupné. Připojíme se automaticky znovu; pokud to přetrvá, obraťte se na správce.",
+      "featuresUnavailable": "Některé funkce jsou dočasně nedostupné",
+      "viewStatus": "Zobrazit stav",
+      "servicesDown_one": "{{services}} momentálně není k dispozici",
+      "servicesDown_other": "{{services}} momentálně nejsou k dispozici",
+      "servicesDown_few": "{{services}} momentálně nejsou k dispozici",
+      "servicesDown_many": "{{services}} momentálně nejsou k dispozici"
+    },
+    "serviceGate": {
+      "title": "Služba není k dispozici",
+      "requires_one": "Tato stránka vyžaduje {{services}}, která momentálně není k dispozici. Znovu bude dostupná automaticky, jakmile se služba obnoví.",
+      "requires_few": "Tato stránka vyžaduje {{services}}, které momentálně nejsou k dispozici. Znovu bude dostupná automaticky, jakmile se služby obnoví.",
+      "requires_many": "Tato stránka vyžaduje {{services}}, které momentálně nejsou k dispozici. Znovu bude dostupná automaticky, jakmile se služby obnoví.",
+      "requires_other": "Tato stránka vyžaduje {{services}}, které momentálně nejsou k dispozici. Znovu bude dostupná automaticky, jakmile se služby obnoví.",
+      "memberBody": "Tato stránka je dočasně nedostupná. Vrátí se automaticky; pokud to přetrvá, obraťte se na správce.",
+      "viewStatus": "Zobrazit stav služeb"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Otázka :",

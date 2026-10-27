@@ -433,6 +433,7 @@ describe('LocalStorageAdapter', () => {
 
     it('should create directory before writing file', async () => {
       const adapter = createAdapter()
+      // The mount folder is made first, then the destination folder.
       const mkdirStub = sinon.stub(fs, 'mkdir').resolves(undefined)
       sinon.stub(fs, 'writeFile').resolves(undefined)
       sinon.stub(fs, 'rename').resolves(undefined)
@@ -444,8 +445,8 @@ describe('LocalStorageAdapter', () => {
         isVersioned: false,
       })
 
-      expect(mkdirStub.calledOnce).to.be.true
-      expect(mkdirStub.firstCall.args[1]).to.deep.include({ recursive: true })
+      expect(mkdirStub.calledTwice).to.be.true
+      expect(mkdirStub.lastCall.args[1]).to.deep.include({ recursive: true })
     })
 
     it('should throw StorageUploadError on fs write failure', async () => {
@@ -718,8 +719,8 @@ describe('LocalStorageAdapter', () => {
 
       await adapter.copyObject('records/src/file.txt', 'records/dst/dir/file.txt')
 
-      expect(mkdirStub.calledOnce).to.be.true
-      const opts = mkdirStub.firstCall.args[1] as any
+      expect(mkdirStub.calledTwice).to.be.true
+      const opts = mkdirStub.lastCall.args[1] as any
       expect(opts.recursive).to.be.true
     })
 
@@ -748,7 +749,7 @@ describe('LocalStorageAdapter', () => {
 
       const result = await adapter.copyTree('org1/src/dir', 'org1/dst/dir')
       expect(result.statusCode).to.equal(200)
-      expect(mkdirStub.calledOnce).to.be.true
+      expect(mkdirStub.calledTwice).to.be.true
       expect(cpStub.calledOnce).to.be.true
 
       const cpArgs = cpStub.firstCall.args
@@ -910,6 +911,80 @@ describe('LocalStorageAdapter - branch coverage', () => {
       process.env.NODE_ENV = 'development'
 
       await (adapter as any).ensureMountExists()
+    })
+  })
+
+  // =========================================================================
+  // the mount folder is made before the first operation, and a failure is handled
+  // =========================================================================
+  describe('mount folder', () => {
+    let home: string
+
+    beforeEach(async () => {
+      home = await fs.mkdtemp(path.join(os.tmpdir(), 'local-mount-'))
+      sinon.stub(os, 'homedir').returns(home)
+    })
+
+    afterEach(async () => {
+      sinon.restore()
+      await fs.rm(home, { recursive: true, force: true })
+    })
+
+    const payload = (): FilePayload => ({
+      buffer: Buffer.from('x'),
+      mimeType: 'text/plain',
+      documentPath: 'org/doc/current/a.txt',
+      isVersioned: false,
+    })
+
+    it('makes the mount (mode 0700) before the first write creates it with the default mode', async () => {
+      const realMkdir = fs.mkdir.bind(fs)
+      // The mount's own mkdir is slow; a write that does not wait for it would create the folder first.
+      sinon.stub(fs, 'mkdir').callsFake(async (p: any, o?: any) => {
+        if (o?.mode === 0o700) await new Promise((r) => setTimeout(r, 50))
+        return realMkdir(p, o)
+      })
+      const adapter = createAdapter()
+
+      await adapter.uploadDocumentToStorageService(payload())
+
+      const mount = (adapter as any).mountPath as string // the folder differs by platform
+      expect((await fs.stat(mount)).isDirectory()).to.equal(true)
+      // Windows has no Unix permission bits.
+      if (process.platform !== 'win32') expect((await fs.stat(mount)).mode & 0o777).to.equal(0o700)
+    })
+
+    it('does not touch the disk in the constructor', async () => {
+      const mkdir = sinon.spy(fs, 'mkdir')
+      createAdapter()
+      expect(mkdir.called).to.equal(false)
+    })
+
+    it('reports a mkdir failure as a handled error, not an unhandled rejection, and retries later', async () => {
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => unhandled.push(reason)
+      process.on('unhandledRejection', onUnhandled)
+      try {
+        const mkdir = sinon.stub(fs, 'mkdir').rejects(new Error('EACCES'))
+        const adapter = createAdapter()
+        await new Promise((r) => setImmediate(r))
+        await new Promise((r) => setImmediate(r))
+        expect(unhandled).to.deep.equal([])
+
+        try {
+          await adapter.uploadDocumentToStorageService(payload())
+          expect.fail('Should have thrown')
+        } catch (error) {
+          expect(error).to.be.instanceOf(StorageConfigurationError)
+        }
+        expect(unhandled).to.deep.equal([])
+
+        mkdir.restore()
+        const result = await adapter.uploadDocumentToStorageService(payload())
+        expect(result.statusCode).to.equal(200)
+      } finally {
+        process.removeListener('unhandledRejection', onUnhandled)
+      }
     })
   })
 

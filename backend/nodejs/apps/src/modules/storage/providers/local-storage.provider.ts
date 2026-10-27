@@ -64,6 +64,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private readonly mountPath: string;
   private readonly baseUrl: string;
   private readonly mountName: string;
+  private mountReady?: Promise<void>;
   private readonly logger = Logger.getInstance({
     service: 'LocalStorageAdapter',
   });
@@ -92,8 +93,6 @@ class LocalStorageAdapter implements StorageServiceInterface {
       // This mirrors how sync services like Dropbox typically work
       this.mountPath = this.createMountPath();
 
-      // Ensure mount directory exists
-      this.ensureMountExists();
       if (process.env.NODE_ENV == 'development') {
         this.logger.info('Local storage adapter initialized', {
           mountPath: this.mountPath,
@@ -130,6 +129,20 @@ class LocalStorageAdapter implements StorageServiceInterface {
       default: // Linux and others
         return path.join(homeDir, '.local', this.mountName);
     }
+  }
+
+  /**
+   * Resolves once the mount folder exists (made once, mode 0700, before any
+   * operation touches it) and rejects with the reason when it cannot be made;
+   * a later call tries again. Not started by the constructor: a background
+   * mkdir there raced the first write and, on failure, was an unhandled rejection.
+   */
+  ensureReady(): Promise<void> {
+    this.mountReady ??= this.ensureMountExists().catch((error: unknown) => {
+      this.mountReady = undefined;
+      throw error;
+    });
+    return this.mountReady;
   }
 
   /**
@@ -224,6 +237,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   private async locateInsideRealMount(
     fullPath: string,
   ): Promise<{ target: string; mountRoot: string } | null> {
+    await this.ensureReady();
     let folder: string;
     try {
       folder = await fs.realpath(path.dirname(fullPath));
@@ -279,6 +293,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       }
 
       // Ensure directory exists
+      await this.ensureReady();
       await fs.mkdir(dirPath, { recursive: true });
 
       await this.writeFileAtomically(fullPath, documentInPayload.buffer);
@@ -322,6 +337,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
         path.join(this.mountPath, localPath),
       );
 
+      await this.ensureReady();
       await this.writeFileAtomically(fullPath, bufferDataInPayLoad);
 
       const fileUrl = this.getFileUrl(localPath);
@@ -503,6 +519,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
   async writeObject(storageKey: string, data: Buffer): Promise<void> {
     try {
       const fullPath = this.objectPathInMount(storageKey);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(fullPath), { recursive: true });
       // A symlinked folder on the way must not carry the write out of the mount.
       const located = await this.locateInsideRealMount(fullPath);
@@ -604,6 +621,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPath);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.copyFile(srcFull, dstFull);
       const destUrl = this.getFileUrl(dstRelative);
@@ -626,6 +644,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPath);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       try {
         await fs.rename(srcFull, dstFull);
@@ -662,6 +681,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPrefix);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       await fs.cp(srcFull, dstFull, { recursive: true });
       this.logger.info('Local storage tree copy successful', { src: srcRelative, dst: dstRelative });
@@ -690,6 +710,7 @@ class LocalStorageAdapter implements StorageServiceInterface {
       const dstRelative = this.sanitizePath(destinationPrefix);
       const srcFull = path.join(this.mountPath, srcRelative);
       const dstFull = path.join(this.mountPath, dstRelative);
+      await this.ensureReady();
       await fs.mkdir(path.dirname(dstFull), { recursive: true });
       try {
         await fs.rename(srcFull, dstFull);
