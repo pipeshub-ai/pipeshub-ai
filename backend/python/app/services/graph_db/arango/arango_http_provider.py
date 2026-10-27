@@ -3054,6 +3054,34 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         return deleted
 
     @override
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        if self.http_client is None:
+            raise RuntimeError("ArangoDB client is not connected")
+        after = "FILTER doc._key > @after_key" if after_key is not None else ""
+        bind_vars: dict[str, Any] = {
+            "@collection": CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value, "limit": limit,
+        }
+        if after_key is not None:
+            bind_vars["after_key"] = after_key
+        rows = await self.http_client.execute_aql(
+            f"""
+            FOR doc IN @@collection
+                {after}
+                SORT doc._key
+                LIMIT @limit
+                RETURN {{
+                    virtualRecordId: doc._key, orgId: doc.orgId, documentId: doc.documentId,
+                    switchSeq: doc.switchSeq, lastSwitchAt: doc.lastSwitchAt,
+                    retired: IS_ARRAY(doc.retired) ? doc.retired : []
+                }}
+            """,
+            bind_vars,
+        )
+        return [dict(row) for row in rows or []]
+
+    @override
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
         if limit <= 0:
             return []
@@ -6116,18 +6144,48 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 bind_vars[f"v{i}"] = value
                 filters.append(f"FILTER doc[@f{i}] == @v{i}")
         newline = "\n                "
-        rows = await self.http_client.execute_aql(
-            f"""
+        query = f"""
             FOR doc IN @@collection
                 FILTER doc._key == @key
                 {newline.join(filters)}
                 UPDATE doc WITH @updates IN @@collection
                 RETURN 1
-            """,
-            bind_vars=bind_vars,
-            txn_id=transaction,
+            """
+        # Two writers racing on one document: ArangoDB fails the loser with a write-write conflict
+        # instead of waiting on a lock. Run its statement again, with backoff: the expectation is
+        # checked against the winner's write, so it applies or is refused, as a lock would have made
+        # it. Inside a transaction the owner decides, so the conflict is raised.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(query, bind_vars=bind_vars, txn_id=transaction),
+            transaction,
         )
         return bool(rows)
+
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.create_node_if_absent`."""
+        # "ignore" leaves an existing document alone and returns no NEW for it. Two creators of one
+        # key: the loser gets a write-write conflict or a key-lock timeout (errorNum 1200) while the
+        # winner's insert is in flight, and the winner may still roll back. So the insert is run
+        # again, with backoff, until it sees the key (not created here) or lands (created here). A
+        # conflict that persists is raised: it does not say that the node exists.
+        rows = await self._retry_write_conflicts(
+            lambda: self.http_client.execute_aql(
+                """
+                INSERT @node INTO @@collection OPTIONS { overwriteMode: "ignore" }
+                RETURN NEW
+                """,
+                bind_vars={"@collection": collection, "node": {**node, "_key": key}},
+                txn_id=transaction,
+            ),
+            transaction,
+        )
+        return bool(rows and rows[0])
 
     async def update_nodes_fields_if_match(
         self,

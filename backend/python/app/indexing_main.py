@@ -733,6 +733,12 @@ async def recover_in_progress_records(
             lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
             concurrency_manager=concurrency_manager,
         )
+        total_records += await _sweep_stored_records(
+            app_container=app_container,
+            graph_provider=graph_provider,
+            logger=logger,
+            lease_held=lambda: recovery_renewal_task is None or not recovery_renewal_task.done(),
+        )
 
         if total_records == 0:
             logger.debug("No stale in-progress records to recover")
@@ -963,6 +969,72 @@ async def _sweep_retired_revisions(
             total.skipped_trashed, total.skipped_busy, total.failed, total.scanned,
         )
     return total.removed
+
+
+_stored_retention_cursor: str | None = None
+
+
+async def _sweep_stored_records(
+    *,
+    app_container: IndexingAppContainer,
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    lease_held: Callable[[], bool],
+) -> int:
+    """Purge the documents stored writes replaced and the strays nothing names (see ``stored_retention``).
+
+    Runs whether the flags are on or off, and regardless of revision retention. Pauses while the
+    membership result is stale or lists a member that does not follow the stored-write protocol.
+    """
+    global _stored_retention_cursor  # noqa: PLW0603 - the cursor is per process by design
+
+    from app.modules.artifacts.stored_retention import (
+        StoredRecordRetention,
+        StoredRetentionReport,
+    )
+    from app.services.messaging.membership import MembershipVerdict, reader_for
+
+    try:
+        blob_storage = app_container.blob_storage()
+        if inspect.isawaitable(blob_storage):
+            blob_storage = await blob_storage
+    except Exception as exc:
+        logger.warning("Blob storage unavailable for stored-record retention: %s", exc)
+        return 0
+    reader = reader_for(app_container.config_service())
+
+    async def membership() -> MembershipVerdict:
+        return await reader.verdict() if reader is not None else MembershipVerdict(False, (), "stale")
+
+    sweep = StoredRecordRetention(graph_provider, blob_storage, logger, membership=membership)
+    total = StoredRetentionReport()
+    for _ in range(RETENTION_MAX_PAGES_PER_TICK):
+        if not lease_held():
+            break
+        try:
+            next_key, report = await sweep.run_page(_stored_retention_cursor, still_leader=lease_held)
+        except Exception as exc:
+            logger.warning("Stored-record retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
+            break
+        total.add(report)
+        if report.interrupted or report.paused:
+            break
+        _stored_retention_cursor = next_key
+        if next_key is None:
+            break
+    if total.paused:
+        logger.warning(
+            "Stored-record retention paused: an indexing member does not follow the stored-write protocol, "
+            "or the membership check is not available",
+        )
+    if total.purged or total.strays_purged or total.failed:
+        logger.info(
+            "Stored-record retention: %d replaced document(s) and %d stray(s) purged, %d marked, %d held for "
+            "want of a retire route, %d mapping(s) left for a recent older-writer write, %d failure(s), of %d scanned",
+            total.purged, total.strays_purged, total.marked, total.held_no_fence, total.fingerprints,
+            total.failed, total.scanned,
+        )
+    return total.purged + total.strays_purged
 
 
 async def _sweep_orphaned_virtual_record_mappings(
@@ -1728,11 +1800,95 @@ async def run_stale_recovery_loop(
         )
         await asyncio.sleep(startup_grace)
 
-    while True:
-        await recover_in_progress_records(app_container, graph_provider)
-        await asyncio.sleep(
-            max(1.0, messaging_env.stale_recovery_interval_seconds)
+    # On its own timer, so a slow lap or a paused sweep never makes the published result stale.
+    membership_task = spawn_detached(run_membership_publisher(app_container))
+    try:
+        while True:
+            await recover_in_progress_records(app_container, graph_provider)
+            await asyncio.sleep(
+                max(1.0, messaging_env.stale_recovery_interval_seconds)
+            )
+    finally:
+        membership_task.cancel()
+        await asyncio.gather(membership_task, return_exceptions=True)
+
+
+async def run_membership_publisher(app_container: IndexingAppContainer) -> None:
+    """Publish which members of this service's consumer groups follow the stored-write protocol.
+
+    The check runs on its own 30 s timer, apart from the recovery lap and every sweep, under the
+    cluster-wide ``artifact-membership`` lease (one checker at a time); each writer has its own
+    key, so a briefly doubled leader or an ex-leader cannot hide a finding.
+    """
+    from app.services.messaging import membership as membership_module
+    from app.services.messaging.config import MessageBrokerType
+    from app.services.redis.config import RedisConnectionConfig
+    from app.services.redis.connection_provider_factory import get_redis_provider
+
+    logger = app_container.logger()
+    config_service = app_container.config_service()
+    broker_type = get_message_broker_type()
+    if broker_type == MessageBrokerType.POSTGRES:
+        # Its consumers register no group, so there is nothing to check. Nothing is published, which
+        # is the "stale" result: artifact readers stay on the stored record and retention stays paused.
+        logger.info(
+            "Indexing membership is not published for the %s broker: artifact reads stay on the stored record",
+            broker_type.value,
         )
+        return
+    owner = f"membership:{uuid4().hex[:12]}"
+    lease_seconds = max(90.0, 3 * membership_module.CHECK_PERIOD_SECONDS)
+
+    def manager() -> Any:  # noqa: ANN401
+        consumers = getattr(app_container, "kafka_consumers", [])
+        return getattr(consumers[0][1], "concurrency_manager", None) if consumers else None
+
+    async def is_leader() -> bool:
+        leases = manager()
+        if leases is None:
+            return True
+        if await leases.renew("artifact-membership", owner, lease_seconds):
+            return True
+        return bool(await leases.try_acquire("artifact-membership", owner, 1, lease_seconds))
+
+    async def check(groups: dict[str, list[str]]) -> list[str]:
+        if broker_type == MessageBrokerType.KAFKA:
+            from aiokafka.admin import AIOKafkaAdminClient
+
+            from app.services.messaging.kafka.config.kafka_config import (
+                kafka_security_kwargs,
+            )
+
+            cfg = await MessagingUtils.create_producer_config_from_service(config_service, client_id="membership_check")
+
+            def factory() -> Any:  # noqa: ANN401
+                return AIOKafkaAdminClient(
+                    bootstrap_servers=",".join(cfg.bootstrap_servers),
+                    client_id=f"{cfg.client_id}-admin",
+                    **kafka_security_kwargs(ssl_enabled=cfg.ssl, sasl=cfg.sasl),
+                )
+
+            return await membership_module.kafka_untagged(factory, list(groups))
+        redis_config = await MessagingUtils._get_redis_config(app_container)
+        provider = get_redis_provider(RedisConnectionConfig.from_redis_config(redis_config))
+        redis = provider.get_client()
+        streams: dict[str, list[str]] = {}
+        for group, topics in groups.items():
+            found = set(topics)
+            for topic in topics:
+                async for key in redis.scan_iter(match=f"{topic}.*"):
+                    found.add(key.decode() if isinstance(key, bytes) else str(key))
+            streams[group] = sorted(found)
+        return await membership_module.redis_untagged(redis, streams)
+
+    publisher = membership_module.MembershipPublisher(
+        logger,
+        check,
+        lambda key, entry, ttl: membership_module.publish_entry(config_service, key, entry, ttl),
+        holder=owner,
+        is_leader=is_leader,
+    )
+    await publisher.run()
 
 
 class _Closable(Protocol):

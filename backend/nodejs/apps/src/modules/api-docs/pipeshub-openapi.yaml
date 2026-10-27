@@ -885,6 +885,11 @@ components:
           type: integer
           format: int64
           description: When the document was created (epoch milliseconds).
+        retiredAt:
+          type: integer
+          format: int64
+          nullable: true
+          description: When a newer stored write replaced the document (epoch ms, the server's clock), or null.
       required: [_id, documentName, documentPath]
     StoragePurgeResult:
       type: object
@@ -34923,6 +34928,56 @@ paths:
           description: No such document.
         '500':
           $ref: '#/components/responses/BodyParserFailure'
+  /document/internal/{documentId}/retire:
+    post:
+      tags:
+        - Internal Storage
+      summary: Mark a document retired (service-to-service)
+      description: |
+        Marks a document that a newer stored write has replaced. Afterwards
+        `PUT /document/internal/{documentId}/buffer` answers 404 with the error
+        code `DOCUMENT_RETIRED`, so a writer holding an old lookup stores its
+        content in a document of its own. Reads and downloads are unaffected.
+        The first mark's time is kept, so the call is safe to repeat.
+      operationId: internalRetireDocumentById
+      security:
+        - scopedToken: []
+      parameters:
+        - name: documentId
+          in: path
+          required: true
+          description: The document's id, a 24-character hex MongoDB ObjectId.
+          schema:
+            type: string
+            pattern: '^[0-9a-fA-F]{24}$'
+      responses:
+        '200':
+          description: The document is marked. `retiredAt` is the server time (ms) of the first mark.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  retiredAt:
+                    type: integer
+                    format: int64
+                required:
+                  - retiredAt
+        '400':
+          description: |
+            The document id is not a 24-character hex id.
+
+            Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: The storage scoped token was missing or invalid.
+        '404':
+          description: No such document.
+        '500':
+          $ref: '#/components/responses/BodyParserFailure'
   /document/internal/{documentId}/purge:
     delete:
       tags:
@@ -35157,6 +35212,15 @@ paths:
           schema:
             type: string
             pattern: '^[A-Za-z0-9_-]{1,128}$'
+        - name: olderThanSeconds
+          in: query
+          required: false
+          description: |
+            Only documents created more than this many seconds ago, by the database's clock.
+            Documents without a numeric creation time are left out when it is given.
+          schema:
+            type: number
+            minimum: 0
       responses:
         '200':
           description: The virtual record's live documents (none when nothing is stored).
@@ -36152,7 +36216,13 @@ paths:
         '401':
           description: The storage scoped token was missing or invalid.
         '404':
-          description: No such document.
+          description: |
+            No such document, or the document is retired (a newer stored write
+            replaced it): then the error code is `DOCUMENT_RETIRED`.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         '500':
           $ref: '#/components/responses/BodyParserFailure'
         '503':

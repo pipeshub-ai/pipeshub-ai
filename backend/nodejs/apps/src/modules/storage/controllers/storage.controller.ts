@@ -28,6 +28,7 @@ import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
 import {
   BadRequestError,
   ConflictError,
+  DocumentRetiredError,
   ForbiddenError,
   InternalServerError,
   NotFoundError,
@@ -667,6 +668,7 @@ export class StorageController {
       const documents = await getDocumentRepository().listEnvelopes(
         extractOrgId(req),
         String(req.params.virtualRecordId),
+        { olderThanSeconds: Number(req.query.olderThanSeconds) },
       );
       res.status(HTTP_STATUS.OK).json({
         documents: documents.map((d) => ({
@@ -674,6 +676,7 @@ export class StorageController {
           documentName: d.documentName,
           documentPath: d.documentPath,
           createdAt: d.createdAt,
+          retiredAt: d.retiredAt ?? null,
         })),
       });
     } catch (error) {
@@ -2152,6 +2155,11 @@ export class StorageController {
       }
 
       const document = docResult.document;
+      // A retired document may still be mapped by a lookup an older writer holds;
+      // refusing here sends that writer to a replacement document of its own.
+      if (document.retiredAt) {
+        throw new DocumentRetiredError();
+      }
 
       const adapter = await this.initializeStorageAdapter(req);
       let uploadResult: StorageServiceResponse<string>;
@@ -2179,6 +2187,31 @@ export class StorageController {
         });
         throw new ServiceUnavailableError(STORAGE_WRITE_FAILED_MESSAGE);
       }
+    } catch (error) {
+      next(error);
+    }
+  }
+
+  /**
+   * Marks a document retired: later in-place buffer writes get 404
+   * DOCUMENT_RETIRED. Idempotent; the first mark's time is kept. Reads are
+   * unaffected.
+   */
+  async retireDocumentById(
+    req: AuthenticatedServiceRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const retired = await getDocumentRepository().retire(
+        extractOrgId(req),
+        String(req.params.documentId),
+        Date.now(),
+      );
+      if (!retired) {
+        throw new NotFoundError('Document not found', { logLevel: 'warn' });
+      }
+      res.status(HTTP_STATUS.OK).json({ retiredAt: retired.retiredAt });
     } catch (error) {
       next(error);
     }

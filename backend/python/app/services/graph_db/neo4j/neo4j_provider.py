@@ -489,6 +489,8 @@ _PURGE_LOCK = "purgeLock"
 _MOVE_LOCK = "moveLock"
 # Written and removed before a conditional write reads its expectation, to take the node's write lock.
 _MATCH_LOCK = "matchLock"
+# Set by a create-if-absent statement on the node it created, and removed again in the same statement.
+_CREATED_MARK = "createdMark"
 # A record with any of these children waits for them to be purged first.
 _CONTAINMENT_RELATIONS = ("PARENT_CHILD", "ATTACHMENT")
 # The roots of a connector's delete batches: records in the trash whose parent is
@@ -688,6 +690,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self._kh_scope_untrusted: set[str] = set()
         # The hinted indexes being read without, so each is logged once.
         self._hint_indexes_missing: set[str] = set()
+        self._unique_id_verified: set[str] = set()
 
 
     # ==================== Connection Management ====================
@@ -4558,6 +4561,69 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             txn_id=transaction,
         )
         return bool(rows)
+
+    async def create_node_if_absent(
+        self,
+        key: str,
+        collection: str,
+        node: dict[str, Any],
+        transaction: str | None = None,
+    ) -> bool:
+        """See :meth:`IGraphDBProvider.create_node_if_absent`."""
+        label = collection_to_label(collection)
+        self.validator.validate_node_update(collection, node)
+        await self._require_unique_id(label)
+        props = self._arango_to_neo4j_node({**node, "id": key}, collection)
+        props.pop("_key", None)
+        # The conversion copies a `_key` in `node` into `id`; the requested key is the one created.
+        props["id"] = key
+        try:
+            rows = await self.client.execute_query(
+                f"""
+                MERGE (n:{label} {{id: $key}})
+                ON CREATE SET n += $props, n.{_CREATED_MARK} = true
+                WITH n, coalesce(n.{_CREATED_MARK}, false) AS created
+                REMOVE n.{_CREATED_MARK}
+                RETURN created
+                """,
+                parameters={"key": key, "props": props},
+                txn_id=transaction,
+            )
+        except Exception as exc:
+            # The id constraint refuses the second of two racing creates. Another unique constraint
+            # (an email, say) refuses with the same words, and that is a failure of this create, not
+            # a node that exists: "not created" is answered only once the requested key is seen.
+            if "already exists" in str(exc) or "ConstraintValidation" in str(exc):
+                try:
+                    found = await self.client.execute_query(
+                        f"MATCH (n:{label} {{id: $key}}) RETURN 1 AS found LIMIT 1",
+                        parameters={"key": key},
+                        txn_id=transaction,
+                    )
+                except Exception:
+                    found = None
+                if found:
+                    return False
+            raise
+        return bool(rows and rows[0].get("created"))
+
+    async def _require_unique_id(self, label: str) -> None:
+        """Refuse to create-if-absent on a label without its unique id constraint.
+
+        MERGE alone does not stop two concurrent creates of one key; the constraint does. ensure_schema
+        only logs a constraint it could not create, so it is checked here, once per label and process.
+        """
+        if label in self._unique_id_verified:
+            return
+        rows = await self.client.execute_query(
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, properties, type "
+            "WHERE $label IN labelsOrTypes AND properties = ['id'] AND type CONTAINS 'UNIQUENESS' "
+            "RETURN count(*) AS found",
+            {"label": label},
+        )
+        if not rows or not rows[0]["found"]:
+            raise RuntimeError(f"the unique constraint on {label}.id is missing")
+        self._unique_id_verified.add(label)
 
     async def update_nodes_fields_if_match(
         self,
@@ -16051,6 +16117,34 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
             )
             deleted += int(rows[0]["deleted"]) if rows else 0
         return deleted
+
+    @override
+    async def get_switch_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        if limit <= 0:
+            return []
+        label = collection_to_label(CollectionNames.VIRTUAL_RECORD_TO_DOC_ID_MAPPING.value)
+        after = "m.id > $after_key" if after_key is not None else "m.id IS NOT NULL"
+        rows = await self._stage_cypher(
+            f"""
+            MATCH (m:{label}) WHERE {after}
+            WITH m ORDER BY m.id LIMIT $limit
+            RETURN m.id AS virtualRecordId, m.orgId AS orgId, m.documentId AS documentId,
+                   m.switchSeq AS switchSeq, m.lastSwitchAt AS lastSwitchAt, m.retired AS retired
+            """,
+            {"after_key": after_key, "limit": limit},
+        )
+        out = []
+        for row in rows:
+            item = dict(row)
+            retired = item.get("retired")
+            if isinstance(retired, str):
+                try:
+                    retired = json.loads(retired)
+                except ValueError:
+                    retired = []
+            item["retired"] = retired if isinstance(retired, list) else []
+            out.append(item)
+        return out
 
     @override
     async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:

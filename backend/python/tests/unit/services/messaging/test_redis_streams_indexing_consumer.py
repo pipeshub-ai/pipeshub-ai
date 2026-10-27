@@ -132,7 +132,7 @@ class TestInit:
         assert consumer.message_handler is None
         assert len(consumer._active_futures) == 0
         assert consumer._backpressure_active is False
-        assert consumer.consumer_name.startswith(f"{config.client_id}-")
+        assert consumer.consumer_name.startswith(f"{config.client_id}/sp3-")
 
     def test_consumer_name_is_unique_per_instance(self, logger, config):
         first = IndexingRedisStreamsConsumer(logger, config)

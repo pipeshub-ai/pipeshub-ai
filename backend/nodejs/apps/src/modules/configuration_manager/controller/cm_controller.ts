@@ -36,6 +36,13 @@ import { setMetricCollectionEnabled } from '../../../libs/services/telemetry/mod
 import { normalizeOrgId } from '../../../libs/services/telemetry/identity';
 import { TelemetryService } from '../../../libs/services/telemetry/telemetry.service';
 import { loadConfigurationManagerConfig } from '../config/config';
+import {
+  GENERATION_KEY,
+  nextGeneration,
+  readMembership,
+  readStoredPlatformBlob,
+  savePutsArtifactReadsAtRisk,
+} from '../utils/artifactRollout';
 import { findActiveOrgById } from '../../user_management/utils/org.utils';
 
 import {
@@ -949,6 +956,29 @@ export const setPlatformSettings =
     try {
       const { fileUploadMaxSizeBytes, featureFlags } = req.body;
       const configManagerConfig = loadConfigurationManagerConfig();
+      const stored = await readStoredPlatformBlob(keyValueStoreService);
+      type Flags = Record<string, unknown> | undefined;
+      const storedFlags = stored.featureFlags as Flags;
+      const requestedFlags = featureFlags as Flags;
+      // Turning artifact reads on while an indexing member that does not follow the stored-write
+      // protocol may run, or while the membership check cannot be seen, could serve a mismatch.
+      if (savePutsArtifactReadsAtRisk(storedFlags, requestedFlags)) {
+        const verdict = await readMembership(keyValueStoreService);
+        if (!verdict.ok) {
+          throw new ConflictError(
+            verdict.reason === 'untagged'
+              ? `Artifact reads cannot be turned on while older indexing members run: ${verdict.untagged.join(', ')}`
+              : 'Artifact reads cannot be turned on: the indexing membership check is not available. Try again in a minute.',
+            { untagged: verdict.untagged, reason: verdict.reason },
+          );
+        }
+      }
+      // Server-side only: never taken from the request body.
+      const generation = nextGeneration(
+        stored[GENERATION_KEY],
+        storedFlags,
+        requestedFlags,
+      );
       const encryptedPlatformSettings = EncryptionService.getInstance(
         configManagerConfig.algorithm,
         configManagerConfig.secretKey,
@@ -956,6 +986,7 @@ export const setPlatformSettings =
         JSON.stringify({
           fileUploadMaxSizeBytes,
           featureFlags,
+          [GENERATION_KEY]: generation,
           updatedAt: new Date().toISOString(),
         }),
       );

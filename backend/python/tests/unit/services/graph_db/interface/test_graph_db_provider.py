@@ -262,6 +262,8 @@ class TestAbstractMethodInventory:
         "move_taxonomy_edges",
         "find_legacy_taxonomy_nodes",
         "update_node_fields_if_match",
+        "create_node_if_absent",
+        "get_switch_pointers",
         "get_entity_index_candidate",
         "page_entity_index_source",
         "page_records_for_vector_membership_backfill",

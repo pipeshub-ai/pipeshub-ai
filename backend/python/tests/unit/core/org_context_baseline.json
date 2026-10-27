@@ -176,6 +176,7 @@
   "app/modules/agents/knowledge_scope.py": 1,
   "app/modules/agents/qna/chat_state.py": 1,
   "app/modules/artifacts/retention.py": 3,
+  "app/modules/artifacts/stored_retention.py": 1,
   "app/modules/code_graph/build_state.py": 1,
   "app/modules/code_graph/edge_build_trigger.py": 1,
   "app/modules/demo_data/chat.py": 1,
