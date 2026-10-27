@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { expect, test } from "vitest";
 import type { Pipeshub } from "../../index.js";
-import { createClient } from "./client.js";
+import { createAdminClient } from "./client.js";
 import { expectStatus } from "./errors.js";
 
 // The integration stack's web-fixtures feed, so the sync does not depend on the internet.
@@ -24,7 +24,7 @@ async function waitForIdle(pipeshub: Pipeshub, connectorId: string): Promise<voi
 }
 
 test("Handwritten Connector Sync", async () => {
-  const pipeshub = createClient();
+  const pipeshub = createAdminClient();
 
   const created = await pipeshub.connectorInstances.createConnectorInstance({
     connectorType: "RSS",

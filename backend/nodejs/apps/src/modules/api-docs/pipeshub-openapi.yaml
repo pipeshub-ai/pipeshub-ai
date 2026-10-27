@@ -1299,31 +1299,8 @@ components:
         and are answered `400`. Azure AD accounts sign in with `microsoft`.
 
         Any top-level field not listed here is refused with `400`.
-      oneOf:
-        - properties:
-            method:
-              enum: [password]
-            credentials:
-              $ref: '#/components/schemas/PasswordCredentials'
-        - properties:
-            method:
-              enum: [otp]
-            credentials:
-              $ref: '#/components/schemas/OtpCredentials'
-        - properties:
-            method:
-              enum: [google]
-            credentials:
-              oneOf:
-                - type: string
-                  minLength: 1
-                  description: Google ID token
-                - $ref: '#/components/schemas/GoogleCredentials'
-        - properties:
-            method:
-              enum: [microsoft]
-            credentials:
-              $ref: '#/components/schemas/MicrosoftCredentials'
+      # The method-to-credentials pairing is only in the description: a top-level oneOf makes
+      # Speakeasy generate a union, and the SDK's authenticate() loses its method argument.
       properties:
         method:
           type: string
@@ -3183,30 +3160,11 @@ components:
           example: 2592000
         knowledgeLimit:
           $ref: '#/components/schemas/KnowledgeLimit'
+      # The redirect and service-account rules are only in the description: Speakeasy leaves
+      # an operation whose body has a `not` out of the SDK, and makes a top-level anyOf a union.
       required:
         - name
         - allowedScopes
-      anyOf:
-        - required: [redirectUris]
-          properties:
-            redirectUris:
-              minItems: 1
-        - required: [allowedGrantTypes]
-          properties:
-            allowedGrantTypes:
-              items:
-                enum: [client_credentials, refresh_token]
-      # A client_credentials app must name tokenIdentityUserId (oauth.app.service.ts createApp).
-      not:
-        required: [allowedGrantTypes]
-        properties:
-          allowedGrantTypes:
-            not:
-              items:
-                not:
-                  enum: [client_credentials]
-        not:
-          required: [tokenIdentityUserId]
     UpdateOAuthAppRequest:
       type: object
       description: |
@@ -3289,14 +3247,7 @@ components:
           nullable: true
           allOf:
             - $ref: '#/components/schemas/KnowledgeLimit'
-      anyOf:
-        - properties:
-            redirectUris:
-              minItems: 1
-        - properties:
-            allowedGrantTypes:
-              items:
-                enum: [client_credentials, refresh_token]
+      # The redirect rule is only in the description: Speakeasy makes a top-level anyOf a union.
     OAuthAppResponse:
       type: object
       description: |
@@ -14107,8 +14058,6 @@ components:
             required").
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
-          not:
-            $ref: '#/components/schemas/AgentModelListWithoutReasoning'
         tags:
           type: array
           maxItems: 50
@@ -14187,14 +14136,6 @@ components:
             When true (default), include the current user's name, email, and
             organization in this agent's system prompt. When false, omit that
             profile data.
-      # serviceAccountUserId needs isServiceAccount: true (the refine on createAgentSchema).
-      not:
-        required: [serviceAccountUserId]
-        not:
-          required: [isServiceAccount]
-          properties:
-            isServiceAccount:
-              enum: [true]
     AgentCreateWarning:
       type: object
       additionalProperties: false
@@ -14490,8 +14431,6 @@ components:
             (`VALIDATION_ERROR` on `models`).
           items:
             $ref: '#/components/schemas/AgentCreateModelEntry'
-          not:
-            $ref: '#/components/schemas/AgentModelListWithoutReasoning'
         tags:
           type: array
           maxItems: 50
@@ -23520,21 +23459,6 @@ components:
             message:
               type: string
             data: {}
-    AgentModelListWithoutReasoning:
-      description: |
-        A non-empty agent `models` list in which no entry is an object with
-        `isReasoning: true`. The agent create and update routes refuse such a list.
-      type: array
-      minItems: 1
-      items:
-        not:
-          type: object
-          required:
-            - isReasoning
-          properties:
-            isReasoning:
-              type: boolean
-              enum: [true]
     AgentMcpServerRef:
       type: object
       additionalProperties: false
@@ -37005,8 +36929,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            not:
-              pattern: '%(?:\d{1,10}[!$]|[#0\-+ ]{0,10}\d{0,10}\.?\d{0,10}[diouxXeEfFgGaAcspn%]|\d{1,10}[a-zA-Z])'
+            pattern: '^(?![\s\S]*?(?:%(?:\d{1,10}[!$]|[#0\-+ ]{0,10}\d{0,10}\.?\d{0,10}[diouxXeEfFgGaAcspn%]|\d{1,10}[a-zA-Z])))'
         - name: permissions
           in: query
           required: false
@@ -37249,9 +37172,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: '\S'
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     New name for the knowledge base. Whitespace around it is removed first, so
                     a name made only of whitespace is refused as empty.
@@ -37266,9 +37187,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: '\S'
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     New name for the knowledge base. Whitespace around it is removed first, so
                     a name made only of whitespace is refused as empty.
@@ -38171,25 +38090,13 @@ paths:
       responses:
         '200':
           description: |
-            The file's content, with the file's own MIME type. The types listed are the ones
-            uploads produce for text files; any other stored type is passed through as well.
+            The file's content, with the file's own MIME type (`text/plain`, `text/markdown`,
+            `text/csv`, `text/html` and `application/json` for the text files uploads produce;
+            any other stored type is passed through as well). A JSON file is sent exactly as it
+            was uploaded.
+          # One binary type: Speakeasy returns a text type's body as a string, and the SDKs'
+          # download method must stream every file.
           content:
-            text/plain:
-              schema:
-                type: string
-            text/markdown:
-              schema:
-                type: string
-            text/csv:
-              schema:
-                type: string
-            text/html:
-              schema:
-                type: string
-            application/json:
-              schema:
-                description: The JSON file exactly as it was uploaded; its shape is the file's own.
-                additionalProperties: true
             '*/*':
               schema:
                 type: string
@@ -38335,9 +38242,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: '\S'
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
@@ -38352,9 +38257,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: '\S'
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
@@ -38525,9 +38428,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: \S
-                  not:
-                    pattern: (?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
@@ -38542,9 +38443,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: \S
-                  not:
-                    pattern: (?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     Name of the folder. Whitespace around it is removed first, so a name made
                     only of whitespace is refused as empty.
@@ -38683,9 +38582,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: '\S'
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     New name of the folder. Whitespace around it is removed first, so a name
                     made only of whitespace is refused as empty.
@@ -38699,9 +38596,7 @@ paths:
                   type: string
                   minLength: 1
                   maxLength: 255
-                  pattern: '\S'
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))[\s\S]*?\S'
                   description: |
                     New name of the folder. Whitespace around it is removed first, so a name
                     made only of whitespace is refused as empty.
@@ -39008,8 +38903,7 @@ paths:
                 recordName:
                   type: string
                   minLength: 1
-                  not:
-                    pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+                  pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]))'
                   description: Validated, then ignored (records are named after their files).
                 origin:
                   type: string
@@ -41405,21 +41299,14 @@ paths:
         - oauth2: [conversation:chat]
       requestBody:
         required: true
-        description: The first question, with optional scope, model and mode.
+        description: |
+          The first question, with optional scope, model and mode. A `query` of only whitespace
+          is refused with `400` `HTTP_BAD_REQUEST` ("Query is required"), after the validator
+          and before any model runs.
         content:
           application/json:
             schema:
-              allOf:
-                - $ref: '#/components/schemas/CreateConversationRequest'
-                - type: object
-                  properties:
-                    query:
-                      type: string
-                      pattern: '\S'
-                      description: |
-                        The handler refuses a request whose `query` is only whitespace with
-                        `400` `HTTP_BAD_REQUEST` ("Query is required"), after the validator
-                        and before any model runs.
+              $ref: '#/components/schemas/CreateConversationRequest'
       responses:
         '201':
           description: Conversation created with its first answer.
@@ -43741,21 +43628,14 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: The follow-up question, with optional scope and model overrides.
+        description: |
+          The follow-up question, with optional scope and model overrides. A `query` of only
+          whitespace is refused with `400` `HTTP_BAD_REQUEST` ("Query is required"), after the
+          validator and before any model runs.
         content:
           application/json:
             schema:
-              allOf:
-                - $ref: '#/components/schemas/AddMessageRequest'
-                - type: object
-                  properties:
-                    query:
-                      type: string
-                      pattern: '\S'
-                      description: |
-                        The handler refuses a request whose `query` is only whitespace with
-                        `400` `HTTP_BAD_REQUEST` ("Query is required"), after the validator
-                        and before any model runs.
+              $ref: '#/components/schemas/AddMessageRequest'
       responses:
         '200':
           description: The conversation with the new question and answer.
@@ -48483,11 +48363,7 @@ paths:
             type: string
             minLength: 1
             maxLength: 1000
-            pattern: '\S'
-            not:
-              anyOf:
-                - pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
-                - pattern: '<[^>]{0,10000}>'
+            pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]|<[^>]{0,10000}>))[\s\S]*?\S'
           description: |
             Case-insensitive search across agent name, description, and tags.
             Leading/trailing whitespace is trimmed; a blank value is refused with
@@ -49088,10 +48964,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            not:
-              anyOf:
-                - pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
-                - pattern: '<[^>]{0,10000}>'
+            pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]|<[^>]{0,10000}>))'
         - name: startDate
           in: query
           description: |
@@ -49980,24 +49853,14 @@ paths:
             format: objectId
       requestBody:
         required: true
-        description: The follow-up question, with optional scope, model and tool overrides.
+        description: |
+          The follow-up question, with optional scope, model and tool overrides. A `query` that
+          holds markup or a printf-style format specifier is refused with `400`
+          `HTTP_BAD_REQUEST`, and so is one of only whitespace ("Query is required").
         content:
           application/json:
             schema:
-              allOf:
-                - $ref: '#/components/schemas/AgentAddMessageRequest'
-                - type: object
-                  properties:
-                    query:
-                      description: |
-                        Refused with `HTTP_BAD_REQUEST` when it holds markup or a
-                        printf-style format specifier, and with `HTTP_BAD_REQUEST`
-                        ("Query is required") when it holds only whitespace.
-                      pattern: '\S'
-                      not:
-                        anyOf:
-                          - pattern: '<[^>]{0,10000}>'
-                          - pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+              $ref: '#/components/schemas/AgentAddMessageRequest'
       responses:
         '200':
           description: The conversation with the new question and answer.
@@ -51013,10 +50876,7 @@ paths:
           schema:
             type: string
             maxLength: 1000
-            not:
-              anyOf:
-                - pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
-                - pattern: '<[^>]{0,10000}>'
+            pattern: '^(?![\s\S]*?(?:(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]|<[^>]{0,10000}>))'
         - name: startDate
           in: query
           description: |
@@ -51150,24 +51010,14 @@ paths:
             type: string
       requestBody:
         required: true
-        description: The first question, with optional scope, model, project and tool overrides.
+        description: |
+          The first question, with optional scope, model, project and tool overrides. A `query`
+          that holds markup or a printf-style format specifier is refused with `400`
+          `HTTP_BAD_REQUEST`, and so is one of only whitespace ("Query is required").
         content:
           application/json:
             schema:
-              allOf:
-                - $ref: '#/components/schemas/AgentCreateConversationRequest'
-                - type: object
-                  properties:
-                    query:
-                      description: |
-                        Refused with `HTTP_BAD_REQUEST` when it holds markup or a
-                        printf-style format specifier, and with `HTTP_BAD_REQUEST`
-                        ("Query is required") when it holds only whitespace.
-                      pattern: '\S'
-                      not:
-                        anyOf:
-                          - pattern: '<[^>]{0,10000}>'
-                          - pattern: '(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]'
+              $ref: '#/components/schemas/AgentCreateConversationRequest'
       responses:
         '201':
           description: Conversation created with the agent's first answer.

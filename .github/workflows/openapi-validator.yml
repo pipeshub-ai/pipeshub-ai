@@ -88,3 +88,9 @@ jobs:
               sys.exit(1)
           print("No operation left the SDK.")
           EOF
+
+      # The flag can stay while Speakeasy still leaves the operation out: #4170 added `not`
+      # schemas and fourteen operations vanished from the SDKs with only a warning.
+      - name: Check Speakeasy can generate every SDK operation
+        if: ${{ !cancelled() }}
+        run: python3 integration-tests/sdk_tests/check_sdk_spec.py "$SPEC"
