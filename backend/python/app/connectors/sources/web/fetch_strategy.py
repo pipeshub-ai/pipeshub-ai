@@ -1052,9 +1052,13 @@ async def fetch_url_with_fallback(
                 # Its status is made up here (508 for a loop): not the site's answer.
                 skip_reason = result.headers.get(_SKIP_REASON_HEADER) if result.strategy in _GUARD_STRATEGIES else None
                 if skip_reason:
+                    # The refusal is about where the walk ended (a redirect may lead
+                    # a public page to a private address), not where it started.
+                    target = result.final_url or url
                     logger.warning(
-                        "⚠️ [%s] Skipping %s: %s",
-                        strategy_name, url, _SKIP_REASONS.get(skip_reason, skip_reason),
+                        "⚠️ [%s] Skipping %s%s: %s",
+                        strategy_name, target, f" (reached from {url})" if target != url else "",
+                        _SKIP_REASONS.get(skip_reason, skip_reason),
                     )
                     return result
 

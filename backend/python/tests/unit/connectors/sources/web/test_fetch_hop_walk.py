@@ -221,3 +221,18 @@ async def test_a_skip_header_sent_by_the_site_is_not_trusted(
 
     assert any("Server error 500" in r.getMessage() for r in caplog.records if r.levelno >= logging.ERROR)
     assert not any("Skipping" in r.getMessage() for r in caplog.records)
+
+
+async def test_a_redirect_to_a_private_address_names_the_refused_target(
+    offline: MagicMock, caplog: pytest.LogCaptureFixture,
+) -> None:
+    _FakeCurl.answers = {"https://site.example/start": (302, {"Location": "http://10.0.0.5/admin"}, b"")}
+
+    with caplog.at_level(logging.DEBUG, logger=log.name):
+        await _fetch(offline, "https://site.example/start")
+
+    warnings = [r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]
+    assert any(
+        "Skipping http://10.0.0.5/admin (reached from https://site.example/start): it is on a private" in m
+        for m in warnings
+    ), warnings
