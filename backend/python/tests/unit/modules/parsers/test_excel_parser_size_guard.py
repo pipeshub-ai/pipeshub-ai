@@ -111,3 +111,79 @@ def test_a_file_that_is_not_a_zip_is_left_for_the_loader_to_report(parser: Excel
     with pytest.raises(Exception) as raised:
         parser.load_workbook_from_binary(b"not a workbook")
     assert not isinstance(raised.value, ParseError)
+
+
+_SHEET_HEAD = '<?xml version="1.0"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+
+
+def _zip(parts: dict[str, str]) -> bytes:
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+        for name, body in parts.items():
+            z.writestr(name, body)
+    return out.getvalue()
+
+
+def _sheet(cells: int, tag: str = "c") -> str:
+    row = "".join(f'<{tag} r="A{i}"/>' for i in range(1, cells + 1))
+    return f"{_SHEET_HEAD}<sheetData><row r=\"1\">{row}</row></sheetData></worksheet>"
+
+
+def test_cells_are_counted_across_read_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "_CHUNK_BYTES", 64, raising=False)
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(100)}))  # exactly at the limit
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(101)}))
+
+
+def test_cells_written_with_a_namespace_prefix_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
+    sheet = _sheet(60, tag="x:c").replace("<sheetData>", "<x:sheetData>")
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))
+
+
+def test_a_sparse_sheet_with_an_inflated_dimension_is_not_refused(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
+    sheet = _sheet(3).replace("<sheetData>", '<dimension ref="A1:T1048576"/><sheetData>')
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))
+
+
+def test_style_entries_are_capped_by_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_STYLE_ELEMENTS", 100)
+    styles = "<styleSheet><cellXfs>" + '<xf numFmtId="0"/>' * 150 + "</cellXfs></styleSheet>"
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/styles.xml": styles}))
+
+
+def test_chart_points_are_capped_by_count(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_OTHER_ELEMENTS", 100)
+    chart = "<c:chartSpace>" + "<c:pt><c:v>1</c:v></c:pt>" * 80 + "</c:chartSpace>"
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/charts/chart1.xml": chart}))
+
+
+def test_bytes_are_counted_as_decompressed_not_as_declared(monkeypatch: pytest.MonkeyPatch) -> None:
+    # One long text node: no tags to count, only bytes. A 1 MB limit stands in for the real one.
+    monkeypatch.setattr(module, "EXCEL_MAX_SHEET_XML_BYTES", 1024 * 1024)
+    strings = "<sst><si><t>" + "a" * (3 * 1024 * 1024) + "</t></si></sst>"
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/sharedStrings.xml": strings}))
+
+
+def test_calc_chain_is_not_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
+    monkeypatch.setattr(module, "EXCEL_MAX_OTHER_ELEMENTS", 50)
+    chain = _sheet(500)  # a calcChain lists a cell per formula, and openpyxl does not load it
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/calcChain.xml": chain}))
+
+
+@pytest.mark.parametrize("value", ["", "abc", "1.5", "0", "-5"])
+def test_a_bad_limit_falls_back_to_the_default(value: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.utils.env_config import env_positive_int
+
+    monkeypatch.setenv("SOME_EXCEL_LIMIT", value)
+    assert env_positive_int("SOME_EXCEL_LIMIT", 42) == 42
+    monkeypatch.setenv("SOME_EXCEL_LIMIT", " 7 ")
+    assert env_positive_int("SOME_EXCEL_LIMIT", 42) == 7

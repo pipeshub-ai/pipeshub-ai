@@ -2,9 +2,9 @@ import asyncio
 import io
 import json
 import logging
-import os
 import re
 import zipfile
+import zlib
 from datetime import datetime, time
 from typing import Any
 
@@ -13,7 +13,6 @@ from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
-from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.config.configuration_service import ConfigurationService
@@ -43,6 +42,7 @@ from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
+from app.utils.env_config import env_int, env_positive_int
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
 from app.utils.llm import get_llm_for_role
 from app.utils.opik import get_llm_invoke_config
@@ -103,63 +103,110 @@ MAX_HEADER_GENERATION_ROWS = 10  # Maximum number of rows to use for header gene
 MAX_HEADER_DETECTION_ROWS = 4  # Check first 4 rows for multi-row headers
 MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header analysis
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
-EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, int(os.getenv("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", "500")))
-EXCEL_MAX_TABLE_ROWS_TO_INDEX = max(1, int(os.getenv("EXCEL_MAX_TABLE_ROWS_TO_INDEX", "20000")))
+EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, env_int("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", 500))
+EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX", 20000)
 
 # openpyxl builds one object per cell, about 550-770 bytes each at peak (a 24.5 MB
-# workbook of 2.0 M cells peaked at 1.1 GB; a 16 MB one of 2.0 M cells at 1.6 GB), so a workbook's size in memory is
-# set by its cell count, not its file size. Workbooks over either limit are
-# refused before they are loaded. The defaults keep the peak near 2 GB.
-EXCEL_MAX_CELLS = max(1, int(os.getenv("EXCEL_MAX_CELLS", "3000000")))
-# The same bound read from the sheets' uncompressed XML (about 50 bytes per
-# cell, so 150 MB is about 3 M cells), which does not rely on the sheet's own <dimension> being present or right.
-EXCEL_MAX_SHEET_XML_BYTES = max(1, int(os.getenv("EXCEL_MAX_SHEET_XML_MB", "150"))) * 1024 * 1024
-_DIMENSION_RE = re.compile(rb'<dimension\s+ref="([^"]+)"')
-_DIMENSION_SEARCH_BYTES = 16 * 1024
+# workbook of 2.0 M cells peaked at 1.1 GB; a 16 MB one of 2.0 M cells at 1.6 GB), so a
+# workbook's size in memory is set by its cell count, not its file size. It also
+# loads styles, shared strings and chart data whole (about 1.7 KB per style entry,
+# 1 KB per chart point). Workbooks over any limit are refused before they are loaded;
+# the defaults keep the peak near 2 GB. All are counted from the XML itself.
+EXCEL_MAX_CELLS = env_positive_int("EXCEL_MAX_CELLS", 3_000_000)
+# All the workbook's XML parts together, as actually decompressed (not as declared).
+EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 300) * 1024 * 1024
+# Elements in xl/styles.xml (Excel itself stops at 64 k cell formats).
+EXCEL_MAX_STYLE_ELEMENTS = env_positive_int("EXCEL_MAX_STYLE_ELEMENTS", 300_000)
+# Elements in every other part that is not a sheet, styles or shared strings
+# (charts, drawings, comments).
+EXCEL_MAX_OTHER_ELEMENTS = env_positive_int("EXCEL_MAX_OTHER_ELEMENTS", 300_000)
+
+_CHUNK_BYTES = 1024 * 1024
+_SHEET_DATA_RE = re.compile(rb"<(?:([A-Za-z_][\w.\-]*):)?sheetData[\s/>]")
+
+
+def _count_elements(text: bytes) -> int:
+    """Start tags in *text* (C-speed ``count`` calls; a regex over 100 MB is 20x slower)."""
+    return text.count(b"<") - text.count(b"</") - text.count(b"<?") - text.count(b"<!")
+
+
+def _count_cells(text: bytes, prefix: bytes) -> int:
+    """``<c>`` elements, written with the sheet's own namespace *prefix* (``b""`` for none)."""
+    tag = b"<" + prefix + b"c"
+    return text.count(tag + b" ") + text.count(tag + b">") + text.count(tag + b"/") + text.count(tag + b"\n")
+# Parts openpyxl does not read, though they can be as big as the sheets.
+_UNREAD_PARTS = frozenset({"xl/calcChain.xml"})
+
+
+def _too_large(**details: int) -> ParseError:
+    return ParseError(
+        ParseErrorCode.INVALID_INPUT,
+        EXCEL_TOO_LARGE,
+        details={**details, "max_cells": EXCEL_MAX_CELLS, "max_xml_bytes": EXCEL_MAX_SHEET_XML_BYTES},
+    )
 
 
 def check_workbook_size(file_binary: bytes) -> None:
     """Refuse a workbook that is too large to load, without loading it.
 
-    Reads only the zip directory and the head of each sheet's XML. The
-    declared cell count (``<dimension>``) and the sheets' uncompressed size
-    are checked separately, so a missing or understated dimension cannot let
-    a huge sheet through. Not a workbook zip: left for the loader to report.
+    Streams every XML part of the zip in bounded chunks (no tree, constant
+    memory) and counts what openpyxl would build objects for: ``<c>`` cells in
+    anything holding ``<sheetData>`` (wherever it sits in the zip), elements in
+    styles and in other non-sheet parts, and the decompressed bytes. Counts
+    come from the data actually read, never from the zip's declared sizes or a
+    sheet's ``<dimension>``, and reading stops at the first limit passed.
+    Not a workbook zip, or a part that cannot be read: left for the loader to report.
     """
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
-        sheets = [
+        parts = [
             info for info in archive.infolist()
-            if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml")
+            if info.filename.lower().endswith((".xml", ".rels", ".vml")) and info.filename not in _UNREAD_PARTS
         ]
     except (zipfile.BadZipFile, OSError, ValueError):
         return
-    with archive:
-        xml_bytes = sum(info.file_size for info in sheets)
-        declared_cells = 0
-        for info in sheets:
-            with archive.open(info) as head:
-                match = _DIMENSION_RE.search(head.read(_DIMENSION_SEARCH_BYTES))
-            if match is None:
-                continue
-            try:
-                min_col, min_row, max_col, max_row = range_boundaries(match.group(1).decode("ascii"))
-            except (ValueError, TypeError, UnicodeDecodeError):
-                continue
-            if None in (min_col, min_row, max_col, max_row):
-                continue
-            declared_cells += (max_col - min_col + 1) * (max_row - min_row + 1)
-    if declared_cells > EXCEL_MAX_CELLS or xml_bytes > EXCEL_MAX_SHEET_XML_BYTES:
-        raise ParseError(
-            ParseErrorCode.INVALID_INPUT,
-            EXCEL_TOO_LARGE,
-            details={
-                "declared_cells": declared_cells,
-                "max_cells": EXCEL_MAX_CELLS,
-                "sheet_xml_bytes": xml_bytes,
-                "max_sheet_xml_bytes": EXCEL_MAX_SHEET_XML_BYTES,
-            },
-        )
+    cells = style_elements = other_elements = total_bytes = 0
+    try:
+        with archive:
+            for info in parts:
+                is_sheet = False
+                prefix = b""
+                is_styles = info.filename == "xl/styles.xml"
+                is_strings = info.filename == "xl/sharedStrings.xml"
+                carry = b""
+                with archive.open(info) as stream:
+                    while True:
+                        chunk = stream.read(_CHUNK_BYTES)
+                        total_bytes += len(chunk)
+                        if total_bytes > EXCEL_MAX_SHEET_XML_BYTES:
+                            raise _too_large(xml_bytes=total_bytes)
+                        buffer = carry + chunk
+                        # Keep a trailing partial tag for the next chunk.
+                        cut = buffer.rfind(b"<") if chunk else len(buffer)
+                        if cut < 0 or (cut == 0 and len(buffer) > 2 * _CHUNK_BYTES):
+                            cut = len(buffer)  # long text or one huge tag: nothing to match across the cut
+                        text, carry = buffer[:cut], buffer[cut:]
+                        if not is_sheet and (found := _SHEET_DATA_RE.search(text)):
+                            is_sheet = True
+                            prefix = found.group(1) + b":" if found.group(1) else b""
+                        if is_sheet:
+                            cells += _count_cells(text, prefix)
+                            if cells > EXCEL_MAX_CELLS:
+                                raise _too_large(cells=cells)
+                        elif is_styles:
+                            style_elements += _count_elements(text)
+                            if style_elements > EXCEL_MAX_STYLE_ELEMENTS:
+                                raise _too_large(style_elements=style_elements)
+                        elif not is_strings:
+                            other_elements += _count_elements(text)
+                            if other_elements > EXCEL_MAX_OTHER_ELEMENTS:
+                                raise _too_large(other_elements=other_elements)
+                        if not chunk:
+                            break
+    except ParseError:
+        raise
+    except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
+        return
 
 
 # Built-in Excel date format codes mapping

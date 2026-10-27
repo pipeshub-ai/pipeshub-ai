@@ -126,7 +126,7 @@ EPUB_NO_READABLE_CHAPTERS = (
     "save a fresh copy from there, and upload it again."
 )
 EXCEL_TOO_LARGE = (
-    "This spreadsheet is too large to index: it has more cells than PipesHub reads from one workbook. "
+    "This spreadsheet is too large to index: it holds more data than PipesHub reads from one workbook. "
     "Split it into several smaller workbooks, or remove unused rows and columns, and upload it again."
 )
 GENERATED_FILE_SKIPPED = (
