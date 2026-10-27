@@ -168,6 +168,14 @@ services:
       # One minute rather than twenty, so the expired-link test waits a minute, not
       # twenty. Only forgot-password links use it; invites have their own lifetime.
       - PASSWORD_RESET_LINK_EXPIRY=${PASSWORD_RESET_LINK_EXPIRY:-60s}
+      # The trash purge, shortened from every 14 days on records 14 days old, so
+      # resilience/test_soft_delete_trash.py can watch it run. The minimum age
+      # stays above the few minutes the other trash tests keep a record in the
+      # trash, or the purge would take it out from under them.
+      - SOFT_DELETE_PURGE_INTERVAL_SECONDS=${SOFT_DELETE_PURGE_INTERVAL_SECONDS:-0}
+      - SOFT_DELETE_PURGE_MIN_AGE_SECONDS=${SOFT_DELETE_PURGE_MIN_AGE_SECONDS:-240}
+      - SOFT_DELETE_PURGE_TICK_SECONDS=${SOFT_DELETE_PURGE_TICK_SECONDS:-15}
+      - SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS=${SOFT_DELETE_PURGE_STARTUP_GRACE_SECONDS:-30}
       
       # ML thread limit — caps PyTorch / OpenBLAS / MKL threads per operation.
       - OMP_NUM_THREADS=${OMP_NUM_THREADS:-2}
