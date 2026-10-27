@@ -49,7 +49,7 @@ from app.config.constants.arangodb import (
 from app.services.graph_db.common.utils import record_status_field
 
 if TYPE_CHECKING:
-    from collections.abc import Awaitable, Collection, Mapping, Sequence
+    from collections.abc import Awaitable, Callable, Collection, Mapping, Sequence
 
     from app.services.cache.interface import IAccessibleRecordsCache
 from app.config.constants.neo4j import (
@@ -2524,6 +2524,9 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 return True
             # Process each group separately
             for (from_label, to_label, is_link), group_edges in grouped_edges.items():
+                # MERGE locks both end nodes row by row; one order for every
+                # writer keeps two batches onto shared hub nodes from deadlocking.
+                group_edges.sort(key=lambda edge: (edge["from_key"], edge["to_key"]))
                 merge = (
                     f"MERGE (from)-[r:{Neo4jRelationshipType.RECORD_LINK.value} "
                     "{relationshipType: edge.props.relationshipType}]->(to)"
@@ -2534,6 +2537,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                // Cypher keeps no row order unless asked; this is the lock order.
+                WITH edge, from, to ORDER BY edge.from_key, edge.to_key
                 {merge}
                 SET r = edge.props
                 {"WITH from, to, r" if refresh else ""}
@@ -7488,67 +7493,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 }
 
             for rel_type in relationship_types:
-                # Find all relationships from source document
-                query = f"""
-                MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
-                // An edge the target already has keeps its own spelling.
-                WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
-                RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
-                       r.extractedName as extracted_name, r.extractedNames as extracted_names
-                """
-
-                results = await self.client.execute_query(
-                    query,
-                    parameters={"source_key": source_key, "target_key": target_key},
-                    txn_id=transaction
+                # Each step re-reads what the target lacks, so it is safe to
+                # repeat after a deadlock with another copy onto the same hubs.
+                await self._retry_idempotent_write(
+                    lambda rel_type=rel_type: self._copy_relationships_of_type(
+                        source_key, target_key, rel_type,
+                        label_to_collection_by_rel_type.get(rel_type, {}), transaction,
+                    ),
+                    transaction,
                 )
-
-                relationships = list(results) if results else []
-
-                if relationships:
-                    label_to_collection = label_to_collection_by_rel_type.get(rel_type, {})
-                    # Create new relationships for target document
-                    new_edges = []
-                    for rel in relationships:
-                        target_id = rel.get("target_id")
-                        if target_id:
-                            target_labels = rel.get("target_labels") or []
-                            target_collection = next(
-                                (
-                                    label_to_collection[label]
-                                    for label in target_labels
-                                    if label in label_to_collection
-                                ),
-                                None,
-                            )
-                            if target_collection is None:
-                                # Unrecognised label — fall back to the group's
-                                # first collection rather than dropping the edge.
-                                target_collection = next(
-                                    iter(label_to_collection.values()),
-                                    CollectionNames.CATEGORIES.value,
-                                )
-
-                            new_edge = {
-                                "from_id": target_key,
-                                "from_collection": CollectionNames.RECORDS.value,
-                                "to_id": target_id,
-                                "to_collection": target_collection,
-                                "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
-                            }
-                            # A copy has the same content, so it carries the same spellings.
-                            if rel.get("extracted_name"):
-                                new_edge["extractedName"] = rel["extracted_name"]
-                            if rel.get("extracted_names"):
-                                new_edge["extractedNames"] = list(rel["extracted_names"])
-                            new_edges.append(new_edge)
-
-                    # Batch create the new edges
-                    if new_edges:
-                        await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
-                        self.logger.debug(
-                            f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
-                        )
 
             self.logger.debug(f"✅ Successfully copied all relationships to {target_key}")
             return True
@@ -7558,6 +7511,74 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 f"❌ Error copying relationships from {source_key} to {target_key}: {str(e)}"
             )
             return False
+
+    async def _copy_relationships_of_type(
+        self,
+        source_key: str,
+        target_key: str,
+        rel_type: str,
+        label_to_collection: dict[str, str],
+        transaction: str | None,
+    ) -> None:
+        query = f"""
+        MATCH (source:Record {{id: $source_key}})-[r:{rel_type}]->(target)
+        // An edge the target already has keeps its own spelling.
+        WHERE NOT EXISTS {{ MATCH (:Record {{id: $target_key}})-[:{rel_type}]->(target) }}
+        RETURN target.id as target_id, labels(target) as target_labels, r.createdAtTimestamp as timestamp,
+               r.extractedName as extracted_name, r.extractedNames as extracted_names
+        """
+
+        results = await self.client.execute_query(
+            query,
+            parameters={"source_key": source_key, "target_key": target_key},
+            txn_id=transaction
+        )
+
+        relationships = list(results) if results else []
+
+        if relationships:
+            # Create new relationships for target document
+            new_edges = []
+            for rel in relationships:
+                target_id = rel.get("target_id")
+                if target_id:
+                    target_labels = rel.get("target_labels") or []
+                    target_collection = next(
+                        (
+                            label_to_collection[label]
+                            for label in target_labels
+                            if label in label_to_collection
+                        ),
+                        None,
+                    )
+                    if target_collection is None:
+                        # Unrecognised label — fall back to the group's
+                        # first collection rather than dropping the edge.
+                        target_collection = next(
+                            iter(label_to_collection.values()),
+                            CollectionNames.CATEGORIES.value,
+                        )
+
+                    new_edge = {
+                        "from_id": target_key,
+                        "from_collection": CollectionNames.RECORDS.value,
+                        "to_id": target_id,
+                        "to_collection": target_collection,
+                        "createdAtTimestamp": rel.get("timestamp") or get_epoch_timestamp_in_ms()
+                    }
+                    # A copy has the same content, so it carries the same spellings.
+                    if rel.get("extracted_name"):
+                        new_edge["extractedName"] = rel["extracted_name"]
+                    if rel.get("extracted_names"):
+                        new_edge["extractedNames"] = list(rel["extracted_names"])
+                    new_edges.append(new_edge)
+
+            # Batch create the new edges
+            if new_edges:
+                await self.batch_create_edges(new_edges, rel_type, transaction=transaction)
+                self.logger.debug(
+                    f"✅ Copied {len(new_edges)} relationships of type {rel_type}"
+                )
 
     async def get_user_apps(self, user_id: str, transaction: str | None = None) -> list:
         """The Apps this user (by graph key) passes the connector gate for, in
@@ -22418,14 +22439,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
     async def _run_idempotent_write(self, query: str, parameters: dict[str, Any]) -> list[dict[str, Any]]:
         """Run an auto-commit query that is safe to repeat, re-running it when
         it collides with a concurrent writer."""
+        return await self._retry_idempotent_write(
+            lambda: self.client.execute_query(query, parameters=parameters), transaction=None,
+        )
+
+    async def _retry_idempotent_write[T](
+        self, write: Callable[[], Awaitable[T]], transaction: str | None,
+    ) -> T:
+        """Run *write*, which is safe to repeat, re-running it when it collides
+        with a concurrent writer. Inside a caller's transaction the collision
+        rolled the whole transaction back, so it is raised at once."""
         for attempt in range(_TRANSIENT_WRITE_ATTEMPTS - 1):
             try:
-                return await self.client.execute_query(query, parameters=parameters)
+                return await write()
             except TransientError as exc:
-                if not self.is_write_conflict(exc):
+                if transaction is not None or not self.is_write_conflict(exc):
                     raise
                 await asyncio.sleep(random.uniform(0.02, 0.1) * (attempt + 1))
-        return await self.client.execute_query(query, parameters=parameters)
+        return await write()
 
     async def heal_taxonomy_alias_nodes(self) -> int:
         """Give every stored alias its TaxonomyAlias node, once per database.
