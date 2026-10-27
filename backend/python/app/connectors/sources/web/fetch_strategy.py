@@ -571,6 +571,13 @@ _SKIP_REASONS = {
 }
 
 
+def refusal_reason(result: FetchResponse) -> str | None:
+    """Why the fetcher refused this URL itself (a loop, a private address, too large), or None
+    when the response is the site's own answer."""
+    reason = result.headers.get(_SKIP_REASON_HEADER) if result.strategy in _GUARD_STRATEGIES else None
+    return _SKIP_REASONS.get(reason, reason) if reason else None
+
+
 def unsafe_address_response(url: str) -> FetchResponse:
     """A finished failure for a URL on a private or internal address: never requested, not retried."""
     return FetchResponse(
@@ -1050,7 +1057,7 @@ async def fetch_url_with_fallback(
 
                 # ---- Our own refusal (a redirect loop, a private address, too large) ----
                 # Its status is made up here (508 for a loop): not the site's answer.
-                skip_reason = result.headers.get(_SKIP_REASON_HEADER) if result.strategy in _GUARD_STRATEGIES else None
+                skip_reason = refusal_reason(result)
                 if skip_reason:
                     # The refusal is about where the walk ended (a redirect may lead
                     # a public page to a private address), not where it started.
@@ -1058,7 +1065,7 @@ async def fetch_url_with_fallback(
                     logger.warning(
                         "⚠️ [%s] Skipping %s%s: %s",
                         strategy_name, target, f" (reached from {url})" if target != url else "",
-                        _SKIP_REASONS.get(skip_reason, skip_reason),
+                        skip_reason,
                     )
                     return result
 

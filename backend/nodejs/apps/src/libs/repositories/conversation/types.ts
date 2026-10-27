@@ -274,6 +274,15 @@ export interface ArchivedSearchResult {
  * Sessions with a message whose text matches. `truncated`: the search was cut short (more matches than `limit`), so older
  * matches may be missing.
  */
+export interface VisibleSummaryRow {
+  _id: string;
+  title?: string;
+  sessionType?: 'chat' | 'agent';
+  agentKey?: string;
+  projectId?: string;
+  isArchived?: boolean;
+}
+
 export interface ContentMatches {
   ids: string[];
   truncated: boolean;
@@ -397,13 +406,17 @@ export interface ConversationRepository {
     escapedSearch: string,
     limit?: number,
   ): Promise<ContentMatches>;
-  /** Titles of the sessions the user may see, for display only. */
-  listVisibleTitles(
+  /**
+   * Title, agent and project of the sessions the user may see, for display only.
+   * An archived chat is returned only where the archive can open it: to its
+   * owner, and to people it is shared with when it is an assistant chat.
+   */
+  listVisibleSummaries(
     orgId: string,
     userId: string,
     ids: string[],
     accessibleProjectIds: string[],
-  ): Promise<Array<{ _id: string; title?: string }>>;
+  ): Promise<VisibleSummaryRow[]>;
   /** Project conversation list (owner's rows, or project-visible ones). */
   listByProject(q: {
     orgId: string;

@@ -210,10 +210,10 @@ class DoclingHtmlParser:
                 if base64_urls[i]:
                     caption_map[image["new_alt_text"]] = base64_urls[i]
 
-        from html_to_markdown import convert  # noqa: PLC0415
+        from app.utils.html_markdown import html_to_markdown_async  # noqa: PLC0415
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor  # noqa: PLC0415
 
-        markdown = convert(modified_html)
+        markdown = await html_to_markdown_async(modified_html)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)
@@ -245,10 +245,10 @@ class DoclingHtmlParser:
         Returns:
             Populated ``BlocksContainer``.
         """
-        from html_to_markdown import convert
+        from app.utils.html_markdown import html_to_markdown_async
         from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 
-        markdown = convert(html_content)
+        markdown = await html_to_markdown_async(html_content)
         md_bytes = markdown.encode("utf-8")
 
         processor = DoclingProcessor(logger=self._logger, config=self._config_service)

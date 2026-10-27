@@ -3,11 +3,10 @@
 from __future__ import annotations
 
 import logging
-import re
+import os
 from typing import Any
 
-from helper.config import MONGO_DB_NAME, MONGO_URI  # type: ignore[import-not-found]
-from pymongo import MongoClient  # type: ignore[import-not-found]
+from helper.clients.config_client import ConfigClient  # type: ignore[import-not-found]
 
 logger = logging.getLogger("pipeshub-users")
 
@@ -48,58 +47,40 @@ def find_pipeshub_user_by_email(users_client: Any, email: str) -> dict[str, Any]
     return None
 
 
-def _restore_soft_deleted_pipeshub_user(email: str) -> dict[str, Any] | None:
-    """Undelete a soft-deleted users doc (and re-add to the everyone group).
+def _configure_smtp_from_env(users_client: Any) -> bool:
+    host, port = os.getenv("SMTP_HOST"), os.getenv("SMTP_PORT")
+    if not host or not port:
+        return False
+    username = os.getenv("SMTP_USERNAME", "")
+    resp = ConfigClient(users_client._client).create_smtp_config(
+        host=host,
+        port=int(port),
+        username=username,
+        password=os.getenv("SMTP_PASSWORD", ""),
+        fromEmail=os.getenv("SMTP_FROM_EMAIL") or username or "no-reply@example.com",
+    )
+    return resp.status_code in (200, 201)
 
-    Soft-delete leaves the unique email index in place, so create_user fails with
-    E11000 while getAllUsers (isDeleted != true) cannot see the row. Mirror the
-    bulk-invite restore path via direct Mongo, same as other IT helpers.
+
+def _restore_soft_deleted_pipeshub_user(users_client: Any, email: str) -> None:
+    """Restore a soft-deleted user the way an admin does: invite the address again.
+
+    Soft-delete keeps the unique email index, so create_user conflicts while
+    getAllUsers cannot see the row. Only a restore sends ``userAdded``, the event
+    that sets the graph user active again; ``userUpdated`` leaves ``isActive``
+    alone since #4634, so undeleting the Mongo row directly left it inactive.
     """
-    target = email.strip().lower()
-    # Backend may use MONGO_DB_NAME=es or enterprise-search depending on deploy.
-    db_candidates: list[str] = []
-    for name in (MONGO_DB_NAME, "es", "enterprise-search"):
-        if name and name not in db_candidates:
-            db_candidates.append(name)
-
-    client = MongoClient(MONGO_URI)
-    try:
-        for db_name in db_candidates:
-            db = client[db_name]
-            users = db["users"]
-            doc = users.find_one(
-                {"email": {"$regex": f"^{re.escape(target)}$", "$options": "i"}}
-            )
-            if not doc:
-                continue
-            if not doc.get("isDeleted"):
-                return doc
-
-            users.update_one(
-                {"_id": doc["_id"]},
-                {
-                    "$set": {"isDeleted": False, "hasLoggedIn": True},
-                    "$unset": {"deletedBy": ""},
-                },
-            )
-            org_id = doc.get("orgId")
-            if org_id is not None:
-                db["userGroups"].update_one(
-                    {"orgId": org_id, "type": "everyone", "isDeleted": {"$ne": True}},
-                    {"$addToSet": {"users": doc["_id"]}},
-                )
-            doc["isDeleted"] = False
-            doc["hasLoggedIn"] = True
-            logger.info(
-                "Restored soft-deleted Pipeshub user %s (id=%s) in db=%s",
-                email,
-                doc["_id"],
-                db_name,
-            )
-            return doc
-        return None
-    finally:
-        client.close()
+    resp = users_client.invite_bulk([email])
+    # The invite route refuses with 404 until SMTP settings are saved.
+    if resp.status_code == 404 and _configure_smtp_from_env(users_client):
+        resp = users_client.invite_bulk([email])
+    # The account is restored and its event sent before the invite mail goes out,
+    # so only a user still missing afterwards is a failed restore.
+    if find_pipeshub_user_by_email(users_client, email) is None:
+        raise RuntimeError(
+            f"Failed to restore Pipeshub user {email}: HTTP {resp.status_code}: {resp.text}"
+        )
+    logger.info("Restored soft-deleted Pipeshub user %s through the invite route", email)
 
 
 def ensure_pipeshub_user_exists(users_client: Any, email: str) -> tuple[str, bool]:
@@ -126,15 +107,8 @@ def ensure_pipeshub_user_exists(users_client: Any, email: str) -> tuple[str, boo
             logger.info("Created Pipeshub user %s", email)
         else:
             # Soft-deleted leftover (unique email index) or race — restore then re-lookup.
-            restored = _restore_soft_deleted_pipeshub_user(email)
+            _restore_soft_deleted_pipeshub_user(users_client, email)
             existing = find_pipeshub_user_by_email(users_client, email)
-            if existing is None and restored is not None:
-                existing = {
-                    "_id": str(restored["_id"]),
-                    "id": str(restored["_id"]),
-                    "email": restored.get("email") or email,
-                    "hasLoggedIn": bool(restored.get("hasLoggedIn")),
-                }
             if existing is None:
                 raise RuntimeError(
                     f"Failed to create Pipeshub user {email}: "
@@ -147,8 +121,7 @@ def ensure_pipeshub_user_exists(users_client: Any, email: str) -> tuple[str, boo
     if not user_id:
         raise RuntimeError(f"Could not resolve Pipeshub user id for {email}: {existing}")
 
-    # Always fire update when restoring so entity-events set graph isActive=true again
-    # (userDeleted previously set isActive=false). Otherwise only when not yet logged in.
+    # A restored account comes back with hasLoggedIn=false; mark it logged in.
     if need_graph_reactivation or not existing.get("hasLoggedIn"):
         upd = users_client.update_user(user_id, hasLoggedIn=True)
         if upd.status_code >= 400:

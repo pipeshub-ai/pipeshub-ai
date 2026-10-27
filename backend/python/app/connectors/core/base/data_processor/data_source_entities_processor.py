@@ -3041,9 +3041,13 @@ class DataSourceEntitiesProcessor:
             # Already indexed and unchanged — the COMPLETED status was carried
             # forward from the stored record precisely so this publish can be
             # skipped; there is nothing for the indexing consumer to redo.
+            # FAILED is a verdict the connector reached itself (a page that
+            # answered an error), stored with its reason: indexing would only
+            # fetch it again, fail the same way, and replace that reason.
             if record.indexing_status in (
                 ProgressStatus.COMPLETED.value,
                 ProgressStatus.PASSWORD_PROTECTED.value,
+                ProgressStatus.FAILED.value,
             ):
                 self.logger.debug(
                     f"Skipping indexing event for already-settled record {record.id} "

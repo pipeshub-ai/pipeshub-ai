@@ -9,16 +9,30 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import Connectors
+from app.models.entities import ArtifactType
 from app.sandbox.artifact_upload import (
     MAX_ARTIFACT_BYTES,
     _read_file_bytes,
     create_artifact_record,
+    infer_artifact_type,
     save_query_result_csv,
     schedule_artifact_upload_task,
     upload_artifacts_to_blob,
     upload_bytes_artifact,
 )
 from app.sandbox.models import ArtifactOutput, ExecutionResult
+
+
+class TestInferArtifactType:
+    def test_source_file_is_code_whatever_its_mime(self) -> None:
+        # mimetypes guesses ".ts" as video/mp2t or text/vnd.trolltech.linguist.
+        assert infer_artifact_type("video/mp2t", "app.ts") is ArtifactType.CODE
+        assert infer_artifact_type("text/x-python", "main.PY") is ArtifactType.CODE
+
+    def test_non_code_file_still_goes_by_mime(self) -> None:
+        assert infer_artifact_type("text/csv", "data.csv") is ArtifactType.SPREADSHEET
+        assert infer_artifact_type("text/html", "report.html") is ArtifactType.DOCUMENT
+        assert infer_artifact_type("application/octet-stream", "blob.bin") is ArtifactType.OTHER
 
 
 class TestReadFileBytes:

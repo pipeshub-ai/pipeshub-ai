@@ -1292,6 +1292,8 @@ workflows:
               - client_credentials
             allowedScopes:
               - kb:read
+            # A client_credentials app must name the service account its tokens act as.
+            tokenIdentityUserId: "x-env: IT_SERVICE_ACCOUNT_ID"
         successCriteria:
           - condition: $statusCode == 201
           - condition: $response.header.Content-Type == application/json

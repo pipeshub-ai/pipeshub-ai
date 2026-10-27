@@ -94,7 +94,7 @@ from app.agents.actions.util.attachments import resolve_attachments
 from app.agents.agent_loop.protocol.formatter import ArtifactSSEPayload
 from app.config.constants.arangodb import Connectors
 from app.models.entities import ArtifactType, ArtifactVisibility
-from app.sandbox.artifact_upload import MIME_TO_ARTIFACT_TYPE
+from app.sandbox.artifact_upload import infer_artifact_type
 from app.sandbox.models import SandboxLanguage
 from app.sandbox.package_policy import (
     PackageNotAllowedError,
@@ -1160,7 +1160,7 @@ async def _register_and_deliver(
             metadata, _version = await registry.register_output(
                 actor=actor,
                 name=file_name,
-                artifact_type=MIME_TO_ARTIFACT_TYPE.get(mime_type, ArtifactType.OTHER),
+                artifact_type=infer_artifact_type(mime_type, file_name),
                 mime_type=mime_type,
                 content=content,
                 conversation_id=context.conversation_id,

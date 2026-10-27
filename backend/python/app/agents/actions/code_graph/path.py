@@ -32,10 +32,12 @@ logger = logging.getLogger(__name__)
 
 __all__ = ["DEFAULT_MAX_DEPTH", "MAX_PATH_DEPTH", "find_symbol_path_impl"]
 
-DEFAULT_MAX_DEPTH = 6
 # One graph query per hop, so the model cannot buy an unbounded scan by
 # asking for a deep path.
 MAX_PATH_DEPTH = 8
+# The search stops at the first path, so only a missing one pays for every hop; a
+# shallower default made a 7-hop call chain read as "no path".
+DEFAULT_MAX_DEPTH = MAX_PATH_DEPTH
 # Ceiling on nodes expanded per side, so one hub symbol cannot walk the repo.
 _MAX_VISITED = 4000
 _FRONTIER_LIMIT = 2000
@@ -121,7 +123,8 @@ async def find_symbol_path_impl(
         capped = capped or back_capped
         reversed_path = edges is not None
     if edges is None:
-        missed: dict[str, Any] = touched({"found": False, "hops": []}, [start, end])
+        missed: dict[str, Any] = touched({"found": False, "hops": [], "searched_hops": max_depth},
+                                         [start, end])
         if gap := coverage_for([start, end]):
             missed["coverage"] = gap
         if capped:
