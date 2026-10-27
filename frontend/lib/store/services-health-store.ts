@@ -177,6 +177,8 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
               apiClient.get('/api/v1/health', { suppressErrorToast: true }),
               apiClient.get('/api/v1/health/services', { suppressErrorToast: true }),
             ]);
+            // Polling restarted while this check was out; a newer one owns the state.
+            if (run !== bgPollRun) return false;
 
             const infraData =
               infraResp.status === 'fulfilled' ? infraResp.value.data : null;
@@ -209,6 +211,7 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
             }
             return overallHealthy;
           } catch {
+            if (run !== bgPollRun) return false;
             set((state) => {
               state.loading = false;
               state.apiServerReachable = false;

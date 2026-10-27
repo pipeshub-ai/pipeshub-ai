@@ -110,6 +110,30 @@ describe('services-health-store background polling', () => {
     expect(checks()).toBe(3);
   });
 
+  it('drops a check that finishes after polling restarted, so it cannot undo a newer one', async () => {
+    const pending: Array<(connector: 'healthy' | 'unhealthy') => void> = [];
+    get.mockImplementation((url: string) => new Promise((resolve) => {
+      pending.push((connector) => resolve(url === '/api/v1/health'
+        ? { data: { status: 'healthy', services: {}, serviceNames: {} } }
+        : { data: { status: connector, services: { query: 'healthy', connector } } }));
+    }));
+    const store = useServicesHealthStore.getState();
+    store.startBackgroundPolling(); // old run: its check is slow
+    store.stopBackgroundPolling();
+    store.startBackgroundPolling(); // new run
+    const [oldInfra, oldServices, newInfra, newServices] = pending;
+
+    newInfra('healthy');
+    newServices('healthy');
+    await vi.advanceTimersByTimeAsync(0);
+    oldInfra('unhealthy');
+    oldServices('unhealthy');
+    await vi.advanceTimersByTimeAsync(0);
+
+    expect(useServicesHealthStore.getState().appServices?.connector).toBe('healthy');
+    expect(useServicesHealthStore.getState().backgroundCheckFailed).toBe(false);
+  });
+
   it('ignores a second start while polling', async () => {
     answer('healthy');
     useServicesHealthStore.getState().startBackgroundPolling();
