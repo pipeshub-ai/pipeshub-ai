@@ -11,9 +11,11 @@ task's status, and startup-resumed syncs become visible.
 
 import asyncio
 import contextlib
+import functools
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -712,6 +714,8 @@ async def _unlink_what_full_sync_missed(
 # about this pace while a sync runs; writes are skipped when nothing changed.
 _PROGRESS_WRITE_INTERVAL_S = 5.0
 _PROGRESS_WRITER_STOP_TIMEOUT_S = 5.0
+# Bounded: the IDLE write waits on it.
+_HISTORY_REREAD_TIMEOUT_S = 10.0
 
 
 # get_document answers None for a failed read as well as a missing doc.
@@ -798,12 +802,33 @@ def _run_record(
     }
 
 
+async def _finalize_with_history(
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    connector_id: str,
+    stored_runs: object,
+    record_for: Callable[[object], dict[str, object]],
+    finalize: Callable[..., Awaitable[None]],
+) -> None:
+    """Build the run's closing fields, then finalize; inside the shielded cleanup task.
+
+    The history re-read happens here, not in the sync task, so a second cancel
+    aimed at the sync task cannot skip the IDLE write or the lease release.
+    """
+    if stored_runs is HISTORY_UNREAD:
+        stored_runs = await _read_history_again(graph_provider, logger, connector_id)
+    await finalize(run_record=record_for(stored_runs))
+
+
 async def _read_history_again(
     graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
 ) -> object:
     """One more try at the stored runs, for a run whose start-of-run read failed."""
     try:
-        doc = await graph_provider.get_document(document_key=connector_id, collection=CollectionNames.APPS.value)
+        doc = await asyncio.wait_for(
+            graph_provider.get_document(document_key=connector_id, collection=CollectionNames.APPS.value),
+            _HISTORY_REREAD_TIMEOUT_S,
+        )
     except Exception as e:
         logger.warning(f"Could not read sync history for {connector_id}: {e}")
         return HISTORY_UNREAD
@@ -978,9 +1003,9 @@ async def run_sync_task(
         if lease is not None and lease.stop_requested.is_set():
             stopped = True
         outcome = _run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished)
-        if stored_runs is HISTORY_UNREAD:
-            stored_runs = await _read_history_again(graph_provider, logger, connector_id)
-        run_record = _run_record(progress, outcome, stored_runs, error=error, skip_code=skipped_code, started_by=started_by)
+        record_for = functools.partial(
+            _run_record, progress, outcome, error=error, skip_code=skipped_code, started_by=started_by
+        )
         elapsed = time.monotonic() - start
         mins, secs = divmod(elapsed, 60)
         elapsed_str = f"{int(mins)}m {secs:.1f}s" if mins else f"{secs:.1f}s"
@@ -999,54 +1024,61 @@ async def run_sync_task(
         # kill the IDLE write and leave the connector stuck SYNCING, nor skip
         # the lease release and leave it un-startable for a full TTL.
         cleanup = asyncio.get_running_loop().create_task(
-            _finalize(
+            _finalize_with_history(
                 graph_provider,
                 logger,
                 connector_id,
-                lease,
-                coordinator,
-                connector if close_connector else None,
-                # Re-issued even after a stop: /sync/stop clears the flags before
-                # it stops anything, so a request still flagged now arrived after
-                # the stop -- a re-enable, say -- and dropping it left the
-                # connector enabled and never synced.
-                resync_spec,
-                # Derived here, not in _finalize: that only receives the
-                # connector when it is also responsible for closing it.
-                getattr(
-                    getattr(connector, "data_entities_processor", None), "org_id", None
+                stored_runs,
+                record_for,
+                finalize=functools.partial(
+                    _finalize,
+                    graph_provider,
+                    logger,
+                    connector_id,
+                    lease,
+                    coordinator,
+                    connector if close_connector else None,
+                    # Re-issued even after a stop: /sync/stop clears the flags before
+                    # it stops anything, so a request still flagged now arrived after
+                    # the stop -- a re-enable, say -- and dropping it left the
+                    # connector enabled and never synced.
+                    resync_spec,
+                    # Derived here, not in _finalize: that only receives the
+                    # connector when it is also responsible for closing it.
+                    getattr(
+                        getattr(connector, "data_entities_processor", None), "org_id", None
+                    ),
+                    outcome=outcome,
+                    summary=getattr(connector, "last_sync_summary", None),
+                    action_items=getattr(connector, "last_action_items", None),
+                    # A stop or a lost lease returns from _run_until_aborted without
+                    # raising, so `finished` alone would call that run complete.
+                    # A failed unlink owes one too: what the sync did not see is
+                    # still linked, revoked access included.
+                    full_sync_cut_short=(
+                        full_sync
+                        and (
+                            not finished
+                            or stopped
+                            or unlink_failed
+                            or (lease is not None and lease.lost.is_set())
+                        )
+                    ),
+                    # Cut short by the shutdown itself. A stop someone asked for
+                    # (stop_requested, which also covers one still winding down when
+                    # the shutdown arrived) and a run that raised are not: neither
+                    # should start again on its own at the next boot.
+                    full_sync_still_requested=(
+                        stopped
+                        and not failed
+                        and getattr(coordinator, "shutting_down", False) is True
+                        and not (lease is not None and lease.stop_requested.is_set())
+                    ),
+                    scope_generation=scope_generation,
+                    # A stopped sync is being replaced, or its connector disabled: it ends
+                    # only its own mark, and the replacement or the scope keeper stamps.
+                    stamp_scopes=not stopped,
                 ),
-                outcome=outcome,
-                summary=getattr(connector, "last_sync_summary", None),
-                action_items=getattr(connector, "last_action_items", None),
-                run_record=run_record,
-                # A stop or a lost lease returns from _run_until_aborted without
-                # raising, so `finished` alone would call that run complete.
-                # A failed unlink owes one too: what the sync did not see is
-                # still linked, revoked access included.
-                full_sync_cut_short=(
-                    full_sync
-                    and (
-                        not finished
-                        or stopped
-                        or unlink_failed
-                        or (lease is not None and lease.lost.is_set())
-                    )
-                ),
-                # Cut short by the shutdown itself. A stop someone asked for
-                # (stop_requested, which also covers one still winding down when
-                # the shutdown arrived) and a run that raised are not: neither
-                # should start again on its own at the next boot.
-                full_sync_still_requested=(
-                    stopped
-                    and not failed
-                    and getattr(coordinator, "shutting_down", False) is True
-                    and not (lease is not None and lease.stop_requested.is_set())
-                ),
-                scope_generation=scope_generation,
-                # A stopped sync is being replaced, or its connector disabled: it ends
-                # only its own mark, and the replacement or the scope keeper stamps.
-                stamp_scopes=not stopped,
             ),
             name=f"sync_cleanup_{connector_id}",
         )

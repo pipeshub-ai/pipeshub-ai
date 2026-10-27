@@ -357,6 +357,33 @@ async def test_history_that_cannot_be_read_is_left_alone_with_the_last_failure()
     assert idle[Keys.SYNC_PROGRESS] is None
 
 
+async def test_a_history_re_read_that_hangs_still_ends_in_the_idle_write(monkeypatch) -> None:
+    from app.connectors.core.sync import sync_runner
+
+    monkeypatch.setattr(sync_runner, "_HISTORY_REREAD_TIMEOUT_S", 0.05)
+    gp = _graph_provider()
+    stored = {"id": "c1", "status": "SYNCING"}
+    calls = 0
+
+    async def get_document(**_: object) -> dict | None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        if calls == 2:
+            await asyncio.Event().wait()
+        return stored
+
+    gp.get_document = AsyncMock(side_effect=get_document)
+
+    async def run_sync() -> None:
+        return None
+
+    await run_sync_task(_connector(run_sync), "c1", gp, _LOG)
+    idle = _idle_write(gp)
+    assert Keys.SYNC_RUNS not in idle and Keys.LAST_SYNC_ERROR not in idle
+
+
 async def test_live_progress_is_written_only_while_the_doc_is_this_runs() -> None:
     gp = _graph_provider({"id": "c1", "status": "SYNCING", Keys.LAST_SYNC_STARTED_AT: 1234})
 
