@@ -167,6 +167,7 @@ from app.services.graph_db.common.utils import (
     soft_delete_result,
     trash_purge_row,
     uploaded_document_id,
+    within_param,
 )
 from app.services.graph_db.dated_scope import (
     DatedRow,
@@ -22002,6 +22003,15 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 AND {cypher_searchable_record("rec", "completed")}
                 AND rec.connectorId IN ref.connectorIds
                 AND ($record_types IS NULL OR rec.recordType IN $record_types)"""
+    # The turn's limit, as ``check_access`` rows are admitted by a selection:
+    # app selected whole, record selected (or under a selected folder), or a
+    # direct BELONGS_TO to a selected group. Narrowing before the scan cap
+    # means a much-mentioned entity walks all its edges under a tiny selection.
+    # shortcut: `rec.id IN s.records` is a list scan per candidate; fine for
+    # selections of thousands of records, revisit if selections grow to 50k.
+    _ENTITY_WITHIN_FILTER = """($within IS NULL OR all(s IN $within WHERE
+                    rec.connectorId IN s.apps OR rec.id IN s.records
+                    OR EXISTS { MATCH (rec)-[:BELONGS_TO]->(g:RecordGroup) WHERE g.id IN s.groups }))"""
 
     @property
     def _entity_candidate_order(self) -> str:
@@ -22088,6 +22098,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               WITH ref, u
               OPTIONAL MATCH (rec:Record {{id: ref.id}})
               WHERE $offset = 0 AND {self._ENTITY_CANDIDATE_RECORD_FILTER}
+                AND {self._ENTITY_WITHIN_FILTER}
               WITH collect(rec) AS win, u
               {walk}
               RETURN hits, size(win) AS window_size, false AS capped
@@ -22108,6 +22119,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
               {entity_match}
               MATCH (rec:Record)-[:{relationship}]->(e)
               WHERE {self._ENTITY_CANDIDATE_RECORD_FILTER}
+                AND {self._ENTITY_WITHIN_FILTER}
               WITH DISTINCT rec, u
               LIMIT $scan_cap
               WITH collect(rec) AS scanned, u
@@ -22158,6 +22170,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
         """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
         if not refs or not org_id or not user_key:
@@ -22181,6 +22194,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     "limit": limit,
                     "scan_cap": ENTITY_CANDIDATE_SCAN_CAP,
                     "completed": ProgressStatus.COMPLETED.value,
+                    "within": within_param(within),
                 },
                 **({"timeout": timeout_seconds} if timeout_seconds is not None else {}),
             )

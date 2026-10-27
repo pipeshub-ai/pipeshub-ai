@@ -218,28 +218,6 @@ def derive_scope(state: "ChatState") -> KnowledgeScope:
     return KnowledgeScope(app_ids=tuple(app_ids), kb_ids=tuple(kb_ids))
 
 
-def apps_usable_whole(state: "ChatState", app_ids: Sequence[str]) -> list[str]:
-    """Of ``app_ids``, the apps a tool may work on as a whole.
-
-    The entity tools work per app and name records anywhere in it. So an app
-    is left out when the turn only reaches part of it: an app a selection
-    below app level merely touches, or one a bound (a saved agent's sources, a
-    project's) limits to some of its nodes. Without a selection or a bound
-    every app is kept.
-    """
-    from app.modules.retrieval.selection_scope import allowed_filters
-
-    filters = state.get("filters") or {}
-    kept = list(app_ids)
-    if _has_selection(filters):
-        selected_whole = {*(filters.get("apps") or []), *(filters.get("kb") or [])}
-        kept = [app_id for app_id in kept if app_id in selected_whole]
-    for bound in allowed_filters(filters):
-        whole = set(bound["apps"])
-        kept = [app_id for app_id in kept if app_id in whole]
-    return kept
-
-
 async def ids_within_scope(
     state: "ChatState",
     graph_provider: "IGraphDBProvider",

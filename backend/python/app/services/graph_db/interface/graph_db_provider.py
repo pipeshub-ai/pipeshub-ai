@@ -8017,13 +8017,15 @@ class IGraphDBProvider(ABC):
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> "dict[tuple[str, str], PermittedEntityRows]":
         """One window of each entity's candidate records, filtered inside the
         query by connector or permission role. Not the access decision: the
         role test reads neither ``accessRule`` nor the connector gate.
 
         Candidates are exactly those of :meth:`get_entity_candidate_records`
-        (same refs, scoping, scan cap and newest-first order). Of these, the
+        (same refs, scoping, scan cap and newest-first order), narrowed by
+        ``within`` before the scan cap when it is given. Of these, the
         window ``[offset, offset + window)`` is walked in order and a row is
         returned when:
           - its ``connectorId`` is in ``app_level_connector_ids``, or
@@ -8049,6 +8051,12 @@ class IGraphDBProvider(ABC):
             offset: Candidates to skip per entity.
             window: Candidates to walk per entity.
             timeout_seconds: Optional server-side query limit.
+            within: Scopes every candidate must lie in, each
+                ``{"apps", "groups", "records"}``: a record lies in one when its
+                ``connectorId`` is in ``apps``, its id is in ``records``, or it
+                belongs directly to a record group in ``groups``. Narrowing
+                before the cap keeps a small selection inside a large app from
+                being crowded out by records outside it. None narrows nothing.
 
         Returns:
             ``{(entity_type, entity_id): PermittedEntityRows}`` for every ref

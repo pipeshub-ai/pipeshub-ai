@@ -19,11 +19,18 @@ import base64
 import json
 import logging
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from app.config.constants.arangodb import Connectors, PermissionModel
+from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.modules.entity_resolution.normalizer import normalize_name
+from app.modules.retrieval.selection_scope import (
+    SelectionScope,
+    limits_rows,
+    resolve_request_scopes,
+    row_limit_key,
+)
 from app.modules.transformers.entity_vectorstore import EntitySearchPass
 from app.services.graph_db.common.utils import PermittedEntityRows
 from app.services.graph_db.taxonomy import taxonomy_links
@@ -106,6 +113,10 @@ class EntityAccessContext:
     record_level_app_ids: frozenset[str]
     record_group_ids: frozenset[str]
     app_names: Mapping[str, str]
+    # The turn's limit (a selection below app level, a saved agent's or a
+    # project's sources): a record is used only when every scope admits it.
+    # Empty when the turn reaches whole apps.
+    row_scopes: tuple[SelectionScope, ...] = ()
     # The user's grants as the access check resolves them, read once for the
     # request this context lives in and reused by every check of it.
     _resolved_access: dict[str, Any] = field(default_factory=dict, compare=False, repr=False)
@@ -113,6 +124,11 @@ class EntityAccessContext:
     @property
     def app_ids(self) -> frozenset[str]:
         return self.app_level_app_ids | self.record_level_app_ids
+
+    @property
+    def limited_group_ids(self) -> frozenset[str]:
+        """Record groups the turn's limit names (selection or bound), nested ones included."""
+        return frozenset(g for scope in self.row_scopes for g in scope.groups)
 
     def connector_scope(self, entity_type: str, entity_id: str) -> list[str]:
         """Connectors whose records may be listed for this entity. A record
@@ -177,6 +193,7 @@ async def get_entity_access_context(
     source_ids: Iterable[str] | None = None,
     strict: bool = False,
     exclude_app_ids: Iterable[str] | None = None,
+    filters: Mapping[str, Any] | None = None,
 ) -> EntityAccessContext:
     """Resolve (or reuse for this request) the apps and record groups the
     user can reach, narrowed to the agent's configured sources.
@@ -184,13 +201,25 @@ async def get_entity_access_context(
     ``strict`` with no sources reaches nothing, as in retrieval: without it an
     empty scope means every app the user can access, which would widen a
     project or agent whose sources were all removed.
+
+    ``source_ids`` are every app the turn touches, including one a selection
+    or a bound covers only in part; ``filters`` then carry that limit, and
+    the context holds it as ``row_scopes`` so no record outside it is used.
+
+    Raises:
+        EntityAccessError: the user's access or the turn's limit could not be read.
+        SelectionTooLargeError, SelectionNotReadyError: the limit cannot be searched.
     """
     if not org_id or not user_id or graph_provider is None:
         raise EntityAccessError("Entity access needs an org, a user and a graph provider")
 
     scope = tuple(sorted({s for s in (source_ids or ()) if s}))
     excluded = frozenset(a for a in (exclude_app_ids or ()) if a)
-    cache_key = (scope, bool(strict) and not scope, tuple(sorted(excluded)))
+    limited = limits_rows(filters)
+    cache_key = (
+        scope, bool(strict) and not scope, tuple(sorted(excluded)),
+        row_limit_key(filters) if limited else (),
+    )
     cache = state.get(_ACCESS_CONTEXT_CACHE_KEY) if state is not None else None
     if isinstance(cache, dict) and cache_key in cache:
         return cache[cache_key]
@@ -203,9 +232,14 @@ async def get_entity_access_context(
             record_level_app_ids=frozenset(),
             record_group_ids=frozenset(),
             app_names={},
+            # A selection the user can read none of leaves no source; it is
+            # still a limit, so an empty answer says it searched only that.
+            row_scopes=(SelectionScope(),) if limited else (),
         )
     else:
         context = await _load_access_context(graph_provider, org_id, user_id, scope, excluded)
+        if limited:
+            context = replace(context, row_scopes=await _row_scopes(graph_provider, context, filters))
 
     if state is not None:
         if not isinstance(cache, dict):
@@ -260,6 +294,24 @@ async def _load_access_context(
     )
 
 
+async def _row_scopes(
+    graph_provider: "IGraphDBProvider", context: EntityAccessContext, filters: Mapping[str, Any] | None,
+) -> tuple[SelectionScope, ...]:
+    try:
+        _, scopes = await resolve_request_scopes(graph_provider, context.user_key, context.org_id, filters)
+    except PermissionVerificationUnavailableError as exc:
+        raise EntityAccessError("Could not resolve the conversation's selected sources") from exc
+    if not scopes:
+        # A limit that resolves to no scope admits nothing; never read it as "no limit".
+        return (SelectionScope(),)
+    # A whole-app bound (a saved agent's whole sources) repeats what the
+    # sources already limit; only scopes that cut into an app narrow anything.
+    return tuple(
+        scope for scope in scopes
+        if scope.groups or scope.records or not context.app_ids <= scope.app_ids
+    )
+
+
 async def _fetch_permitted(
     graph_provider: "IGraphDBProvider",
     context: EntityAccessContext,
@@ -283,6 +335,7 @@ async def _fetch_permitted(
             context.user_key,
             app_level_connector_ids=sorted({c for ref in refs for c in ref.get("connectorIds") or ()}),
             record_types=record_types,
+            within=[scope.candidate_filter() for scope in context.row_scopes] or None,
             limit_per_entity=window,
             offset=offset,
             window=window,
@@ -297,7 +350,7 @@ async def _fetch_permitted(
                 f"Entity record lookup returned {len(rows)} of {rows.window_size} candidates "
                 f"for {entity_type}/{entity_id}"
             )
-    admitted = await _admitted_ids(
+    admitted = await admitted_node_ids(
         graph_provider, context, (str(row.get("_key") or "") for rows in found.values() for row in rows),
     )
     return {
@@ -311,10 +364,11 @@ async def _fetch_permitted(
     }
 
 
-async def _admitted_ids(
+async def admitted_node_ids(
     graph_provider: "IGraphDBProvider", context: EntityAccessContext, node_ids: Iterable[str],
 ) -> frozenset[str]:
-    """The ids among ``node_ids`` the batch access check admits."""
+    """The ids among ``node_ids`` the batch access check admits, inside the
+    turn's limit when it has one. Every record the entity tools use passes here."""
     ids = sorted({node_id for node_id in node_ids if node_id})
     if not ids:
         return frozenset()
@@ -326,8 +380,9 @@ async def _admitted_ids(
             )
         check = await graph_provider.check_access(
             context.user_key, context.org_id, node_ids=ids, access=resolved["access"],
+            scopes=context.row_scopes,
         )
-        return frozenset(check.node_ids)
+        return frozenset(check.node_ids_in_scope if context.row_scopes else check.node_ids)
     except Exception as exc:
         raise EntityAccessError("Entity access check failed") from exc
 
@@ -354,7 +409,7 @@ async def _run_probes(
     if reachable:
         try:
             admitted = await _within(
-                deadline, _admitted_ids(graph_provider, context, (p.entity_id for p in reachable)),
+                deadline, admitted_node_ids(graph_provider, context, (p.entity_id for p in reachable)),
             )
         except TimeoutError:
             return 0, True
@@ -479,6 +534,11 @@ async def probe_permitted_entities(
 
 def _search_passes(context: EntityAccessContext) -> list[tuple[str, frozenset[str], frozenset[str], bool]]:
     passes: list[tuple[str, frozenset[str], frozenset[str], bool]] = []
+    selected = context.limited_group_ids
+    if selected and len(selected) <= MAX_RG_FILTER_IDS:
+        # Points of the groups the limit names first: the rest of their apps
+        # would otherwise fill the overfetch with hits the limit then refuses.
+        passes.append(("selection", selected, frozenset(), False))
     rg_ids = (
         context.record_group_ids
         if len(context.record_group_ids) <= MAX_RG_FILTER_IDS
@@ -865,6 +925,7 @@ __all__ = [
     "SEARCH_SCOPE_MAX_RECORDS",
     "SEARCH_SCOPE_MAX_SCAN",
     "TAXONOMY_ENTITY_TYPES",
+    "admitted_node_ids",
     "get_entity_access_context",
     "list_accessible_entity_records",
     "search_entities_for_user",

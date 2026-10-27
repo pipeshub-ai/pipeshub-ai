@@ -211,6 +211,7 @@ from app.services.graph_db.common.utils import (
     soft_delete_result,
     trash_purge_row,
     uploaded_document_id,
+    within_param,
 )
 from app.services.graph_db.dated_scope import (
     DatedRow,
@@ -21015,18 +21016,36 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         fields = ", ".join(f'"{f}": {var}.{f}' for f in cls._ENTITY_CANDIDATE_RECORD_FIELDS)
         return f"{{{fields}}}"
 
+    @staticmethod
+    def _entity_within_aql(var: str) -> str:
+        """Whether record ``var`` lies in every scope of ``@within``, as
+        ``check_access`` rows are admitted by a selection: app selected whole,
+        record selected (or under a selected folder), or a direct belongsTo
+        to a selected group."""
+        return f"""(@within == null OR LENGTH(
+                    FOR s IN NOT_NULL(@within, [])
+                        FILTER NOT ({var}.connectorId IN s.apps OR {var}._key IN s.records
+                            OR LENGTH(FOR g IN 1..1 OUTBOUND {var} {CollectionNames.BELONGS_TO.value}
+                                FILTER IS_SAME_COLLECTION("{CollectionNames.RECORD_GROUPS.value}", g)
+                                    AND g._key IN s.groups
+                                LIMIT 1 RETURN 1) > 0)
+                        LIMIT 1
+                        RETURN 1) == 0)"""
+
     def _entity_candidate_scan_aql(
-        self, entity_type: str, *, filter_record_types: bool
+        self, entity_type: str, *, filter_record_types: bool, filter_within: bool = False,
     ) -> tuple[str, str]:
         """``(scope, scan_expr)`` for a non-record entity type: ``scope``
         binds per-ref variables, ``scan_expr`` evaluates to at most
-        ``@scan_cap`` candidate record documents of ``ref``."""
+        ``@scan_cap`` candidate record documents of ``ref``. ``filter_within``
+        narrows by ``@within`` before the cap."""
         records = CollectionNames.RECORDS.value
         edge_collection, target_collections = self._ENTITY_CANDIDATE_EDGE_TARGETS[entity_type]
         targets = ", ".join(f'CONCAT("{c}/", ref.id)' for c in target_collections)
         record_type_filter = (
             "FILTER rec.recordType IN @record_types" if filter_record_types else ""
         )
+        within_filter = f"FILTER {self._entity_within_aql('rec')}" if filter_within else ""
         scan_subquery = f"""(
                     FOR edge IN {edge_collection}
                         FILTER edge._to IN targets
@@ -21036,6 +21055,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                         FILTER {aql_searchable_record("rec", "completed")}
                         FILTER rec.connectorId IN ref.connectorIds
                         {record_type_filter}
+                        {within_filter}
                         LIMIT @scan_cap
                         RETURN rec
                 )"""
@@ -21111,11 +21131,12 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 LET one = DOCUMENT(CONCAT("{records}/", ref.id))
                 LET win = (one != null AND @offset == 0 AND one.orgId == @org_id
                     AND one.isDeleted != true AND {aql_searchable_record("one", "completed")}
-                    AND one.connectorId IN ref.connectorIds {record_type_check}) ? [one] : []
+                    AND one.connectorId IN ref.connectorIds {record_type_check}
+                    AND {self._entity_within_aql("one")}) ? [one] : []
                 LET capped = false"""
         else:
             scope, scan_expr = self._entity_candidate_scan_aql(
-                entity_type, filter_record_types=filter_record_types
+                entity_type, filter_record_types=filter_record_types, filter_within=True,
             )
             window = f"""
                 {scope}
@@ -21167,6 +21188,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         offset: int = 0,
         window: int = 200,
         timeout_seconds: float | None = None,
+        within: list[dict[str, list[str]]] | None = None,
     ) -> dict[tuple[str, str], PermittedEntityRows]:
         """See :meth:`IGraphDBProvider.get_permitted_entity_records`."""
         if not refs or not org_id or not user_key:
@@ -21191,6 +21213,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 "users_col": CollectionNames.USERS.value,
                 "user_key": user_key,
                 "app_level_connector_ids": list(app_level_connector_ids),
+                "within": within_param(within),
             }
             if record_types:
                 bind_vars["record_types"] = list(record_types)

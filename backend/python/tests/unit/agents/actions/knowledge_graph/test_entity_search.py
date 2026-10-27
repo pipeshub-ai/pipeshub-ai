@@ -94,7 +94,7 @@ def wired(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     stage return, and what execute_search receives."""
     calls: dict[str, Any] = {"linking": None, "scope": None, "search": []}
     monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
-    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org")))
+    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org", row_scopes=())))
 
     class _Linker:
         def __init__(self, *args: object) -> None:
@@ -194,7 +194,7 @@ async def test_all_with_a_name_that_did_not_link_searches_nothing(
     monkeypatch.setattr(records_module, "list_accessible_entity_records", _list)
     searches: list[Any] = []
     monkeypatch.setattr(entity_search, "_named_entities_enabled", AsyncMock(return_value=True))
-    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org")))
+    monkeypatch.setattr(entity_search, "load_entity_access_context", AsyncMock(return_value=SimpleNamespace(org_id="org", row_scopes=())))
     monkeypatch.setattr(entity_search, "execute_search", AsyncMock(side_effect=lambda *a, **k: searches.append(k)))
     linking = _linking(
         _result("Acme", LinkStatus.MATCHED, accepted=[_candidate("e1", "Acme")]),

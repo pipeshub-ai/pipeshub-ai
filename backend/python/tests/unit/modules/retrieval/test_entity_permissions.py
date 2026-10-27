@@ -216,7 +216,9 @@ class TestListAccessibleEntityRecords:
         asked = graph.get_permitted_entity_records.call_args.kwargs
         assert asked["app_level_connector_ids"] == ["conf-1", "kb-1"]
         assert asked["limit_per_entity"] == asked["window"] == ep.LISTING_WINDOW_MIN
-        graph.check_access.assert_awaited_once_with("ukey", ORG, node_ids=["r1", "r2", "r3"], access=RESOLVED_ACCESS)
+        graph.check_access.assert_awaited_once_with(
+            "ukey", ORG, node_ids=["r1", "r2", "r3"], access=RESOLVED_ACCESS, scopes=(),
+        )
 
     @pytest.mark.asyncio
     async def test_a_row_no_role_path_offers_is_returned_when_the_access_check_admits_it(self) -> None:
@@ -579,7 +581,9 @@ class TestSearchEntitiesForUser:
             store, graph, _context(record_groups=("space-a", "space-b", "space-c")), "q", top_k=5,
         )
 
-        graph.check_access.assert_awaited_once_with("ukey", ORG, node_ids=["space-a"], access=RESOLVED_ACCESS)
+        graph.check_access.assert_awaited_once_with(
+            "ukey", ORG, node_ids=["space-a"], access=RESOLVED_ACCESS, scopes=(),
+        )
 
     @pytest.mark.asyncio
     async def test_no_access_check_without_rows_or_reachable_record_group_hits(self) -> None:
