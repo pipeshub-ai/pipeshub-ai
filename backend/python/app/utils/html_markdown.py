@@ -108,7 +108,9 @@ def _plain_text(markup: str) -> str:
 
 
 def _text_chars(text: str) -> int:
-    return sum(len(word) for word in text.split())
+    # lxml drops a byte-order mark that str.split() keeps as a word, so a document
+    # decoded with its BOM would otherwise always look like it lost text.
+    return sum(len(word) for word in text.replace("\ufeff", " ").split())
 
 
 def _convert(html: str) -> str:

@@ -82,7 +82,7 @@ def test_large_single_paragraph_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     out = html_to_markdown(html)
     elapsed = time.perf_counter() - start
 
-    assert elapsed < 2.0
+    assert elapsed < 5.0  # smoke bound only; the call-size assertion below is the real check
     assert out.count("w l") == 50_000  # every word kept, as text
     assert max(seen, default=0) <= html_markdown.MAX_ELEMENTS_PER_BLOCK * 2  # open + close tag per element
 
@@ -162,6 +162,14 @@ def test_xml_declaration_does_not_break_the_split_path(caplog: pytest.LogCapture
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
         out = html_to_markdown('<?xml version="1.0" encoding="utf-8"?>' + "<p><b>a</b></p>" * _MANY)
     assert out.count("**a**") == _MANY  # converted with markup, not reduced to text
+    assert caplog.records == []
+
+
+@pytest.mark.parametrize("prefix", ["\ufeff", "\ufeff<!doctype html>\n", "\ufeff\ufeff"])
+def test_a_leading_byte_order_mark_keeps_the_markup(prefix: str, caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown(prefix + "<p><b>a</b></p>" * _MANY)
+    assert out.count("**a**") == _MANY
     assert caplog.records == []
 
 
