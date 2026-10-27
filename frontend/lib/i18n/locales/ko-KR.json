@@ -3286,6 +3286,7 @@
         "off": "꺼짐. 아무것도 동기화되지 않습니다.",
         "queued": "동기화 슬롯이 비기를 기다리는 중",
         "notSyncedYet": "아직 동기화되지 않음",
+        "noSyncRecorded": "콘텐츠 검색 가능 · 아직 기록된 동기화 없음",
         "upToDate": "최신 상태",
         "upToDateAgo": "최신 상태 · {{time}} 동기화됨",
         "withFailures": "{{base}} · 인덱싱 실패 {{n, number}}개",

@@ -3140,6 +3140,7 @@
         "off": "Off. Nothing syncs.",
         "queued": "Waiting for a free sync slot",
         "notSyncedYet": "Not synced yet",
+        "noSyncRecorded": "Content is searchable · no sync recorded yet",
         "upToDate": "Up to date",
         "upToDateAgo": "Up to date · synced {{time}}",
         "withFailures": "{{base}} · {{n, number}} couldn't be indexed",

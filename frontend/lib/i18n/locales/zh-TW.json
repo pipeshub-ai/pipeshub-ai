@@ -3286,6 +3286,7 @@
         "off": "已關閉。不會同步任何內容。",
         "queued": "正在等待空出的同步名額",
         "notSyncedYet": "尚未同步",
+        "noSyncRecorded": "內容可搜尋 · 尚無同步紀錄",
         "upToDate": "已是最新",
         "upToDateAgo": "已是最新 · 同步於 {{time}}",
         "withFailures": "{{base}} · {{n, number}} 個項目無法建立索引",

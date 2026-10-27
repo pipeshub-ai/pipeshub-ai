@@ -21,6 +21,7 @@ from app.connectors.core.sync.progress_view import (
     STALL_AFTER_MS,
     _indexing_summary,
     _live_run,
+    build_progress_view,
 )
 from app.connectors.core.sync.sync_errors import classify_sync_error
 from app.connectors.core.sync.sync_progress import (
@@ -34,7 +35,7 @@ from app.connectors.core.sync.sync_progress import (
     reset_current_sync_progress,
     set_current_sync_progress,
 )
-from app.connectors.core.sync.sync_runner import run_sync_task
+from app.connectors.core.sync.sync_runner import record_failed_start, run_sync_task
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 _LOG = logging.getLogger("test")
@@ -395,6 +396,72 @@ async def test_live_progress_is_written_only_while_the_doc_is_this_runs() -> Non
     writes = [c for c in gp.update_node_fields_if_match.await_args_list if Keys.SYNC_PROGRESS in c.args[2]]
     expected = {"status": AppStatus.SYNCING.value, Keys.LAST_SYNC_STARTED_AT: 1234}
     assert writes and all(c.args[3] == expected for c in writes)
+
+
+@pytest.mark.parametrize(("runs", "has_content", "expected"), [
+    (None, True, True),
+    (None, False, False),
+    (json.dumps([{"runId": "r1", "outcome": "succeeded"}]), False, True),
+])
+async def test_content_synced_before_history_was_kept_is_reported(
+    runs: str | None, has_content: bool, expected: bool
+) -> None:
+    """An upgraded install has content but no runs; it must not read as never synced."""
+    connector_id = f"c-content-{runs is None}-{has_content}"
+    gp = _graph_provider({"id": connector_id, "status": "IDLE", Keys.SYNC_RUNS: runs})
+    gp.has_records_indexed_since = AsyncMock(return_value=has_content)
+    gp.count_connector_records_by_status = AsyncMock(return_value={})
+    gp.count_records_indexed_since = AsyncMock(return_value=0)
+
+    view = await build_progress_view(gp, "o1", connector_id)
+    assert view["hasSearchableContent"] is expected
+    if runs:
+        gp.has_records_indexed_since.assert_not_awaited()
+
+
+def _failed_start_write(gp: AsyncMock) -> tuple[dict, dict]:
+    (call,) = gp.update_node_fields_if_match.await_args_list
+    return call.args[2], call.args[3]
+
+
+async def test_a_sync_that_could_not_start_is_a_failed_run_with_its_reason() -> None:
+    """An expired sign-in fails init, so no run ever starts; the card must still say why."""
+    good = json.dumps([{"runId": "r0", "outcome": "succeeded", "counts": {"found": 9}}])
+    gp = _graph_provider({"id": "c1", "status": "IDLE", Keys.SYNC_RUNS: good})
+    await record_failed_start(gp, _LOG, "c1", _http_error(401), trigger="schedule")
+
+    written, expected = _failed_start_write(gp)
+    runs = json.loads(written[Keys.SYNC_RUNS])
+    assert [r["outcome"] for r in runs] == ["failed", "succeeded"]
+    assert runs[0]["trigger"] == "schedule" and runs[0]["error"]["code"] == "auth"
+    assert json.loads(written[Keys.LAST_SYNC_ERROR])["code"] == "auth"
+    assert expected == {"status": "IDLE", Keys.SYNC_RUNS: good}
+
+
+async def test_the_same_failed_start_again_replaces_its_entry() -> None:
+    """Retries of a failing init must not push the real runs out of the history."""
+    earlier = json.dumps([
+        {"runId": "f1", "outcome": "failed", "error": {"code": "auth"}, "counts": {"found": 0}},
+        {"runId": "r0", "outcome": "succeeded", "counts": {"found": 9}},
+    ])
+    gp = _graph_provider({"id": "c1", "status": "IDLE", Keys.SYNC_RUNS: earlier})
+    await record_failed_start(gp, _LOG, "c1", _http_error(401), trigger="startup")
+
+    runs = json.loads(_failed_start_write(gp)[0][Keys.SYNC_RUNS])
+    assert [(r["runId"], r["outcome"]) for r in runs] == [("f1", "failed"), ("r0", "succeeded")]
+
+
+@pytest.mark.parametrize("status", ["SYNCING", "DELETING"])
+async def test_a_failed_start_leaves_a_running_or_departing_connector_alone(status: str) -> None:
+    gp = _graph_provider({"id": "c1", "status": status})
+    await record_failed_start(gp, _LOG, "c1", RuntimeError("x"), trigger="schedule")
+    gp.update_node_fields_if_match.assert_not_awaited()
+
+
+async def test_recording_a_failed_start_never_raises() -> None:
+    gp = _graph_provider()
+    gp.get_document = AsyncMock(side_effect=RuntimeError("db down"))
+    await record_failed_start(gp, _LOG, "c1", None, trigger="startup")
 
 
 # ---- first sync ready -----------------------------------------------------

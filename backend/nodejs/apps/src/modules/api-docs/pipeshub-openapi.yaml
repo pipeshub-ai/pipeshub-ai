@@ -7639,6 +7639,9 @@ components:
               nullable: true
             awaitingFirstSync: { type: boolean }
             readyAt: { type: integer, nullable: true }
+            hasSearchableContent:
+              type: boolean
+              description: Some of its records are searchable; true whenever there is a run history
             indexing:
               type: object
               properties:

@@ -3176,6 +3176,7 @@
         "off": "Desactivado. No se sincroniza nada.",
         "queued": "Esperando un hueco libre para sincronizar",
         "notSyncedYet": "Aún no sincronizado",
+        "noSyncRecorded": "El contenido se puede buscar · aún no hay ninguna sincronización registrada",
         "upToDate": "Actualizado",
         "upToDateAgo": "Actualizado · sincronizado {{time}}",
         "withFailures": "{{base}} · no se han podido indexar: {{n, number}}",

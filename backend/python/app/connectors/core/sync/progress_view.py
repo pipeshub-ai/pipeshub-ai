@@ -147,6 +147,11 @@ async def build_progress_view(
         "awaitingFirstSync": bool(doc.get(ConnectorStateKeys.AWAITING_FIRST_SYNC)),
         "readyAt": doc.get(ConnectorStateKeys.READY_AT),
         "indexing": indexing,
+        # Only asked when there is no history: on an upgraded install, content synced
+        # before history was kept must not read as "not synced yet".
+        "hasSearchableContent": True if runs else await _cached(
+            ("content", connector_id), lambda: graph_provider.has_records_indexed_since(connector_id, 0)
+        ),
     }
     if detail == "full":
 

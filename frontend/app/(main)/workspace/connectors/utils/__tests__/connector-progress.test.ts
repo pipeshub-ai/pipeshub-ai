@@ -120,6 +120,12 @@ describe('describeConnectorProgress', () => {
     expect(describeIt(view({ status: 'QUEUED' })).text).toBe('queued');
     expect(describeIt(view()).text).toBe('notSyncedYet');
   });
+
+  it('does not call content synced before history was kept "not synced yet"', () => {
+    const line = describeIt(view({ hasSearchableContent: true }));
+    expect(line.text).toBe('noSyncRecorded');
+    expect(line.tone).toBe('ok');
+  });
 });
 
 describe('etaLabel', () => {

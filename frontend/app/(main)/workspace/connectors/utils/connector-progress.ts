@@ -78,6 +78,8 @@ export interface ConnectorProgress {
   lastError: SyncRunError | null;
   awaitingFirstSync: boolean;
   readyAt?: number | null;
+  /** Some records are searchable; false only for a connector with no history and no content. */
+  hasSearchableContent?: boolean;
   indexing: IndexingProgress;
   stats?: {
     stats: { total: number; indexingStatus: Record<string, number> };
@@ -246,7 +248,10 @@ export function describeConnectorProgress(
     return { tone: 'warn', text: t(`${K}.stopped`), percent: null, moving: false };
   }
   if (!lastRun) {
-    return { tone: 'off', text: t(`${K}.notSyncedYet`), percent: null, moving: false };
+    // Content synced before run history was kept is not "not synced yet".
+    return view.hasSearchableContent
+      ? { tone: 'ok', text: t(`${K}.noSyncRecorded`), percent: null, moving: false }
+      : { tone: 'off', text: t(`${K}.notSyncedYet`), percent: null, moving: false };
   }
   const base = lastRun.finishedAt
     ? t(`${K}.upToDateAgo`, { time: formatRelativeTime(lastRun.finishedAt) })
