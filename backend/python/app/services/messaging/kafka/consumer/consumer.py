@@ -45,6 +45,10 @@ class _SettledOffsets:
         if offset in self._seen:
             return
         if len(self._order) == self._order.maxlen:
+            # An offset older than the window would be evicted next anyway; adding it
+            # would evict one a replay is about to redeliver, and so on down the span.
+            if offset < self._order[0]:
+                return
             self._seen.discard(self._order[0])  # the append below evicts it
         self._order.append(offset)
         self._seen.add(offset)

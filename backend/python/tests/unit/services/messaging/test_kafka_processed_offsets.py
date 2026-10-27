@@ -18,6 +18,7 @@ from app.services.messaging.kafka.config.kafka_config import KafkaConsumerConfig
 from app.services.messaging.kafka.consumer.consumer import (
     SETTLED_OFFSET_WINDOW,
     KafkaMessagingConsumer,
+    _SettledOffsets,
 )
 
 TP = "topic-a-0"
@@ -113,3 +114,21 @@ async def test_lookup_cost_does_not_grow_with_messages_seen() -> None:
     grown = min(lookup_cost(busy) for _ in range(3))
     # A linear scan of 60k entries is ~1000x slower than one entry.
     assert grown < max(base * 5, 0.01)
+
+
+def test_a_replay_from_beyond_the_window_reprocesses_only_what_the_window_lost() -> None:
+    """Re-adding offsets older than the window must not evict the ones about to be replayed."""
+    window = _SettledOffsets(SETTLED_OFFSET_WINDOW)
+    total = 10_000
+    for offset in range(total):
+        window.add(offset)
+    start = total - SETTLED_OFFSET_WINDOW - 1000
+
+    handled = 0
+    for offset in range(start, total):
+        if offset not in window:
+            handled += 1
+            window.add(offset)
+
+    assert handled == 1000
+    assert len(window) == SETTLED_OFFSET_WINDOW
