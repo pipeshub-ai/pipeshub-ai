@@ -67,7 +67,7 @@ def test_importing_the_tracing_modules_creates_no_client_and_sends_nothing() -> 
     # The session environment already carries the blank Opik settings from tests/conftest.py.
     env = {**os.environ, "PYTHONPATH": str(backend)}
 
-    result = subprocess.run(  # noqa: S603
+    result = subprocess.run(
         [sys.executable, "-W", "ignore", "-c", _IMPORT_PROBE], env=env, cwd=backend,
         capture_output=True, text=True, timeout=300, check=False,
     )

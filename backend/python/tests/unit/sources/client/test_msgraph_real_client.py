@@ -7,7 +7,9 @@ request builder or changes how the authentication provider is built fails here. 
 import time
 
 from azure.core.credentials import AccessToken
-from kiota_authentication_azure.azure_identity_authentication_provider import AzureIdentityAuthenticationProvider
+from kiota_authentication_azure.azure_identity_authentication_provider import (
+    AzureIdentityAuthenticationProvider,
+)
 from kiota_http.httpx_request_adapter import HttpxRequestAdapter
 from msgraph import GraphServiceClient
 

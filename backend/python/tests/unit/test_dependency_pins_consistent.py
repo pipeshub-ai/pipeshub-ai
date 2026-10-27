@@ -56,11 +56,11 @@ def _installed_requirements_on_pins(pins: dict[str, Version]) -> list[tuple[str,
     return found
 
 
-def test_exact_pins_are_found():
+def test_exact_pins_are_found() -> None:
     assert len(_exact_pins()) > 50
 
 
-def test_every_installed_requirement_on_a_pinned_package_admits_the_pin():
+def test_every_installed_requirement_on_a_pinned_package_admits_the_pin() -> None:
     pins = _exact_pins()
     # Not-installed packages are skipped by construction: only installed distributions are read.
     refused = [
@@ -71,7 +71,7 @@ def test_every_installed_requirement_on_a_pinned_package_admits_the_pin():
     assert not refused, "\n".join(refused)
 
 
-def test_langchain_aws_requirement_covers_the_langchain_core_pin():
+def test_langchain_aws_requirement_covers_the_langchain_core_pin() -> None:
     try:
         requires = importlib.metadata.requires("langchain-aws") or []
     except importlib.metadata.PackageNotFoundError:
@@ -88,20 +88,21 @@ def _python_ignores() -> list[tuple[str, SpecifierSet]]:
         if update["package-ecosystem"] == "pip" and update["directory"] == "/backend/python"
     ]
     assert len(entries) == 1
-    ignores = []
-    for ignore in entries[0].get("ignore", []):
-        for versions in ignore.get("versions", []):
-            # Dependabot writes ranges as ">= 1.1.1, < 2"; a bare ">=1.13" is the same grammar.
-            ignores.append((ignore["dependency-name"], SpecifierSet(re.sub(r"\s+", "", versions))))
+    # Dependabot writes ranges as ">= 1.1.1, < 2"; a bare ">=1.13" is the same grammar.
+    ignores = [
+        (ignore["dependency-name"], SpecifierSet(re.sub(r"\s+", "", versions)))
+        for ignore in entries[0].get("ignore", [])
+        for versions in ignore.get("versions", [])
+    ]
     return ignores
 
 
-def test_python_ignores_are_found():
+def test_python_ignores_are_found() -> None:
     names = {name for name, _ in _python_ignores()}
     assert {"langchain-aws", "fastapi", "PyGithub"} <= names
 
 
-def test_every_dependabot_ignore_starts_above_what_the_manifest_allows():
+def test_every_dependabot_ignore_starts_above_what_the_manifest_allows() -> None:
     """An ignore holds Dependabot back from a range; the manifest must not already admit that range."""
     requirements = _manifest_requirements()
     problems = []
