@@ -365,11 +365,10 @@ class TestParentChildLinkage:
         )
         with pytest.raises(BlockContainerValidationError) as exc_info:
             _validator().validate(container)
-        range_errors = [
-            e for e in exc_info.value.errors
-            if e.code == "CHILDREN_GROUP_INDEX_OUT_OF_RANGE"
-        ]
-        assert len(range_errors) == 1
+        errors = exc_info.value.errors
+        assert len(errors) == 1
+        assert errors[0].code == "CHILDREN_GROUP_INDEX_OUT_OF_RANGE"
+        assert "[0, 1000000000]" in errors[0].message
 
     def test_children_group_range_out_of_range(self):
         children = BlockGroupChildren(block_group_ranges=[IndexRange(start=2, end=2)])
