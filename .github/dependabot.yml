@@ -1,10 +1,11 @@
-# Weekly version updates, one grouped PR per ecosystem for minor and patch bumps.
+# Monthly version updates, one grouped PR per ecosystem for minor and patch bumps. Every
+# change to this file also starts a run, so batch edits to it.
 # Security updates are separate: Dependabot raises those as soon as an alert opens.
 version: 2
 updates:
   - package-ecosystem: npm
     directory: /backend/nodejs/apps
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 5
     groups:
       node-api-minor-and-patch:
@@ -17,7 +18,7 @@ updates:
 
   - package-ecosystem: npm
     directory: /frontend
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 5
     groups:
       frontend-minor-and-patch:
@@ -38,7 +39,7 @@ updates:
 
   - package-ecosystem: pip
     directory: /backend/python
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 5
     groups:
       python-minor-and-patch:
@@ -81,7 +82,7 @@ updates:
   # moves the suites' own packages and the lock; backend/python above moves the rest.
   - package-ecosystem: uv
     directory: /integration-tests
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:
       integration-tests-minor-and-patch:
@@ -89,7 +90,7 @@ updates:
 
   - package-ecosystem: github-actions
     directory: /
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:
       actions:
@@ -97,7 +98,7 @@ updates:
 
   - package-ecosystem: docker
     directories: [/, /backend/nodejs/apps, /backend/python, /deployment/sandbox]
-    schedule: { interval: weekly, day: monday }
+    schedule: { interval: monthly }
     open-pull-requests-limit: 3
     groups:
       base-images:
