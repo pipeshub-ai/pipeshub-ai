@@ -5166,9 +5166,18 @@ class TestSystemFilesAreNotStored:
 
         await proc.on_record_content_update(_make_record(record_name="~$Report.docx"))
 
-        tx_store.get_record_by_external_id.assert_not_awaited()
         tx_store.batch_upsert_records.assert_not_awaited()
         proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stored_record_renamed_onto_a_lock_name_is_still_updated(self) -> None:
+        """Skipping it would leave its old parent and access edges in place."""
+        proc, tx_store = self._proc_and_store()
+        tx_store.get_record_by_external_id = AsyncMock(return_value=_make_record(record_name="Report.docx"))
+
+        await proc.on_record_metadata_update(_make_record(record_name="~$Report.docx"))
+
+        assert "~$Report.docx" in self._stored_names(tx_store)
 
     @pytest.mark.asyncio
     async def test_a_folder_with_a_lock_name_is_kept(self) -> None:

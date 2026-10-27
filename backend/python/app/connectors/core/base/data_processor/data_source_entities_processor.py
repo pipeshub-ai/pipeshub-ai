@@ -2573,14 +2573,10 @@ class DataSourceEntitiesProcessor:
         return; they publish the collected ids *after* their transaction
         commits (see :meth:`_publish_membership_sync`).
 
-        Returns ``(None, [])`` when nothing is written: a file no one searches
-        for (an Office lock file, Thumbs.db, ...) is not stored at all, and a
+        Returns ``(None, [])`` when nothing is written: a new file no one
+        searches for (an Office lock file, Thumbs.db, ...) is not stored, and a
         record in the trash or owned elsewhere is left as it is.
         """
-        skip_reason = _system_file_reason(record)
-        if skip_reason:
-            self.logger.debug("Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason)
-            return None, []
         self.logger.debug(f"Processing record: {record.record_name} ({record.id})")
         existing_record = await tx_store.get_record_by_external_id(connector_id=record.connector_id,
                                                                    external_id=record.external_record_id)
@@ -2608,6 +2604,14 @@ class DataSourceEntitiesProcessor:
             if same_id is not None and not is_live_record(same_id):
                 self.logger.info(
                     "Skipping %s (%s): its id belongs to a record in the trash", record.record_name, record.id
+                )
+                return None, []
+            # Only a record not yet stored: one renamed onto such a name is still
+            # updated, or it would keep its old parent and access edges.
+            skip_reason = None if stored_under_its_id else _system_file_reason(record)
+            if skip_reason:
+                self.logger.debug(
+                    "Not storing %s (%s): %s", record.record_name, record.external_record_id, skip_reason
                 )
                 return None, []
         restored_from_trash = reindex_restored = False
