@@ -13,7 +13,6 @@ import {
   likeEscape,
   newObjectId,
   oidOf,
-  oidsOf,
 } from '../pg-util';
 import type { Tx as PgKernelTx } from '../../db';
 import type { Tx } from '../uow';
@@ -46,6 +45,7 @@ interface Row {
   visibility: 'private' | 'org';
   chat_sharing: 'private' | 'members';
   is_pinned: boolean;
+  pinned_json: string[];
   is_archived: boolean;
   archived_by: string | null;
   is_deleted: boolean;
@@ -64,7 +64,7 @@ interface Row {
   }>;
 }
 
-const COLUMNS = `p.*, COALESCE((SELECT jsonb_agg(jsonb_build_object('principalType', m.principal_type, 'principalId', m.principal_id::text,
+const COLUMNS = `p.*, to_jsonb(p.pinned_by) AS pinned_json, COALESCE((SELECT jsonb_agg(jsonb_build_object('principalType', m.principal_type, 'principalId', m.principal_id::text,
     'role', m.role, 'addedBy', m.added_by::text, 'addedAt', m.added_at) ORDER BY m.pos)
     FROM content.project_members m WHERE m.org_id = $1 AND m.project_id = p.id), '[]'::jsonb) AS members FROM content.projects p`;
 
@@ -104,6 +104,7 @@ function dto(r: Row): ProjectDto {
     chatSharing: r.chat_sharing,
     members: r.members.map((m) => ({ ...m, addedAt: new Date(m.addedAt) })),
     isPinned: r.is_pinned,
+    pinnedBy: r.pinned_json,
     isArchived: r.is_archived,
     isDeleted: r.is_deleted,
     lastActivityAt: r.last_activity_at.getTime(),
@@ -228,7 +229,7 @@ export class PgProjectRepository implements ProjectRepository {
       const mine = `p.user_id = ${user}::text`;
       const asUser = `${member} AND m.principal_type = 'user' AND m.principal_id = ${user}::text)`;
       const asTeam = (): string =>
-        `${member} AND m.principal_type = 'team' AND m.principal_id = ANY(${p.add(oidsOf(q.teamIds))}::text[]))`;
+        `${member} AND m.principal_type = 'team' AND m.principal_id = ANY(${p.add(q.teamIds)}::text[]))`;
       const scope =
         q.scope === 'mine'
           ? [mine]
@@ -255,7 +256,7 @@ export class PgProjectRepository implements ProjectRepository {
       );
       const { rows } = await k.query<Row>(
         fill(
-          `/* pipeshub:content.project_list */ SELECT @{COLUMNS} WHERE @{B} ORDER BY p.is_pinned DESC, p.last_activity_at DESC, p.id DESC
+          `/* pipeshub:content.project_list */ SELECT @{COLUMNS} WHERE @{B} ORDER BY (${user}::text = ANY(p.pinned_by) OR (p.is_pinned AND p.user_id = ${user}::text)) DESC, p.last_activity_at DESC, p.id DESC
           LIMIT @{C} OFFSET @{D}`,
           { COLUMNS, B: filter, C: p.add(q.limit), D: p.add(q.skip) },
         ),
@@ -309,9 +310,6 @@ export class PgProjectRepository implements ProjectRepository {
             break;
           case 'chatSharing':
             sets.push(`chat_sharing = ${p.add(v ?? 'private')}`);
-            break;
-          case 'isPinned':
-            sets.push(`is_pinned = ${p.add(v ?? false)}`);
             break;
           case 'isArchived':
             sets.push(`is_archived = ${p.add(v ?? false)}`);
@@ -370,7 +368,11 @@ export class PgProjectRepository implements ProjectRepository {
       const by = oidOf(addedBy);
       let added = 0;
       for (const m of members) {
-        const who = oidOf(m.principalId);
+        // a user is a 24-hex id; a team is a graph id kept as given
+        const who =
+          m.principalType === 'team'
+            ? stripNul(m.principalId, 'project', 'member')
+            : oidOf(m.principalId);
         // the owner is implicit and never a member row
         if (
           !who ||
@@ -404,7 +406,10 @@ export class PgProjectRepository implements ProjectRepository {
     if (!oid) return null;
     return inUnit(undefined, { write: true }, async (k) => {
       if (!(await lockLive(k, oid))) return null;
-      const who = oidOf(principalId);
+      const who =
+        principalType === 'team'
+          ? stripNul(principalId, 'project', 'member')
+          : oidOf(principalId);
       const gone = who
         ? await k.query(
             '/* pipeshub:content.project_member_remove */ DELETE FROM content.project_members WHERE org_id = $1 AND project_id = $2 AND principal_type = $3 AND principal_id = $4',
@@ -452,7 +457,11 @@ export class PgProjectRepository implements ProjectRepository {
     });
   }
 
-  async listAccessibleIds(orgId: string, userId: string): Promise<string[]> {
+  async listAccessibleIds(
+    orgId: string,
+    userId: string,
+    teamIds: string[],
+  ): Promise<string[]> {
     const me = oidOf(userId);
     if (!me) return [];
     return inUnit(undefined, { write: false }, async (k) => {
@@ -460,10 +469,61 @@ export class PgProjectRepository implements ProjectRepository {
       const { rows } = await k.query<{ id: string }>(
         `/* pipeshub:content.project_accessible_ids */ SELECT p.id FROM content.projects p WHERE p.org_id = $1 AND NOT p.is_deleted
            AND (p.user_id = $2::text OR p.visibility = 'org'
-                OR EXISTS (SELECT 1 FROM content.project_members m WHERE m.org_id = $1 AND m.project_id = p.id AND m.principal_type = 'user' AND m.principal_id = $2::text))`,
-        [k.orgId, me],
+                OR EXISTS (SELECT 1 FROM content.project_members m WHERE m.org_id = $1 AND m.project_id = p.id
+                             AND ((m.principal_type = 'user' AND m.principal_id = $2::text)
+                               OR (m.principal_type = 'team' AND m.principal_id = ANY($3::text[])))))`,
+        [k.orgId, me, teamIds],
       );
       return rows.map((r) => r.id);
+    });
+  }
+
+  async setPinned(
+    id: string,
+    userId: string,
+    pinned: boolean,
+    clearLegacyPin: boolean,
+  ): Promise<ProjectDto | null> {
+    const oid = oidOf(id);
+    const me = oidOf(userId);
+    if (!oid || !me) return null;
+    return inUnit(undefined, { write: true }, async (k) => {
+      if (!(await lockLive(k, oid))) return null;
+      await k.query(
+        `/* pipeshub:content.project_set_pinned */ UPDATE content.projects SET
+            pinned_by = CASE WHEN $4::boolean THEN (CASE WHEN $3::text = ANY(pinned_by) THEN pinned_by ELSE array_append(pinned_by, $3::text::content.oid24) END)
+                             ELSE array_remove(pinned_by, $3::text::content.oid24) END,
+            is_pinned = CASE WHEN NOT $4::boolean AND $5::boolean THEN false ELSE is_pinned END,
+            updated_at = $6
+          WHERE org_id = $1 AND id = $2`,
+        [k.orgId, oid, me, pinned, clearLegacyPin, touchedAt()],
+      );
+      return load(k, oid);
+    });
+  }
+
+  async orgHasTeamMembers(orgId: string): Promise<boolean> {
+    return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
+      const { rows } = await k.query<{ found: boolean }>(
+        `/* pipeshub:content.project_org_has_teams */ SELECT EXISTS (SELECT 1 FROM content.projects p WHERE p.org_id = $1 AND NOT p.is_deleted
+           AND EXISTS (SELECT 1 FROM content.project_members m WHERE m.org_id = $1 AND m.project_id = p.id AND m.principal_type = 'team')) AS found`,
+        [k.orgId],
+      );
+      return rows[0]?.found === true;
+    });
+  }
+
+  async isLiveWithoutTeamMembers(id: string): Promise<boolean> {
+    const oid = oidOf(id);
+    if (!oid) return false;
+    return inUnit(undefined, { write: false }, async (k) => {
+      const { rows } = await k.query<{ found: boolean }>(
+        `/* pipeshub:content.project_without_teams */ SELECT EXISTS (SELECT 1 FROM content.projects p WHERE p.org_id = $1 AND p.id = $2 AND NOT p.is_deleted
+           AND NOT EXISTS (SELECT 1 FROM content.project_members m WHERE m.org_id = $1 AND m.project_id = p.id AND m.principal_type = 'team')) AS found`,
+        [k.orgId, oid],
+      );
+      return rows[0]?.found === true;
     });
   }
 

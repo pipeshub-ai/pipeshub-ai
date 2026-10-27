@@ -538,7 +538,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
             made.push(await projects.create(org, me, { name, tools: [] }));
             await new Promise((r) => setTimeout(r, 3));
           }
-          await projects.update(made[0]!._id, { isPinned: true });
+          await projects.setPinned(made[0]!._id, me, true, false);
           const q = {
             scope: 'mine' as const,
             includeArchived: false,
@@ -566,6 +566,44 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           });
           expect(page.rows.map((r) => r.name)).to.deep.equal(['axb']);
           expect(page.total).to.equal(4);
+        });
+      });
+
+      it('a legacy project-wide pin counts as the owner\'s pin only', async () => {
+        const org = newId(),
+          owner = newId(),
+          member = newId();
+        await inOrg(org, async () => {
+          const old = await projects.create(org, owner, { name: 'Old', tools: [] });
+          await new Promise((r) => setTimeout(r, 3));
+          await projects.create(org, owner, { name: 'New', tools: [] });
+          await projects.upsertMembers(
+            old._id,
+            [{ principalId: member, principalType: 'user', role: 'viewer' }],
+            owner,
+          );
+          await stack.admin((c) =>
+            c.query(
+              'UPDATE content.projects SET is_pinned = true, last_activity_at = now() - interval \'1 day\' WHERE id = $1',
+              [old._id],
+            ),
+          );
+          const q = {
+            scope: 'all' as const,
+            includeArchived: false,
+            teamIds: [],
+            skip: 0,
+            limit: 10,
+          };
+          const names = async (who: string) =>
+            (await projects.list(org, who, q)).rows.map((r) => r.name);
+          expect(await names(owner)).to.deep.equal(['Old', 'New']);
+          expect(await names(member)).to.deep.equal(['Old']);
+          // The owner unpinning clears it; a viewer's unpin leaves it.
+          await projects.setPinned(old._id, member, false, false);
+          expect((await projects.getLive(old._id))?.isPinned).to.equal(true);
+          await projects.setPinned(old._id, owner, false, true);
+          expect(await names(owner)).to.deep.equal(['New', 'Old']);
         });
       });
 

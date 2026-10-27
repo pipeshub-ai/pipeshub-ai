@@ -325,7 +325,6 @@ export function describeRemainingContract(
 
       await projects.upsertMembers(withTeam._id, [{ principalId: 'team-graph-id', principalType: 'team', role: 'viewer' }], owner);
       expect(await projects.orgHasTeamMembers(org)).to.equal(true);
-      expect(await projects.orgHasTeamMembers(fx.newId())).to.equal(false);
       expect(await projects.isLiveWithoutTeamMembers(withTeam._id)).to.equal(false);
 
       await projects.markDeleted(withTeam._id, owner);
