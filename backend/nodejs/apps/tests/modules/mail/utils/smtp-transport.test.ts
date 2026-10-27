@@ -63,6 +63,13 @@ describe('mail/utils/smtp-transport', () => {
       expect(options).to.include({ disableFileAccess: true, disableUrlAccess: true })
     })
 
+    it('speaks TLS from the start on 465 only', () => {
+      expect(smtpTransportOptions({ host: 'h', port: 465, fromEmail: 'a@b.c' })).to.include({ port: 465, secure: true })
+      for (const port of [25, 587, 2525, 0]) {
+        expect(smtpTransportOptions({ host: 'h', port, fromEmail: 'a@b.c' }).secure).to.equal(false)
+      }
+    })
+
     it('defaults the port to 587 and signs in only with a username', () => {
       expect(smtpTransportOptions({ host: 'h', port: 0, fromEmail: 'a@b.c' })).to.include({ port: 587 })
       expect(smtpTransportOptions({ host: 'h', port: 25, fromEmail: 'a@b.c' })).not.to.have.property('auth')

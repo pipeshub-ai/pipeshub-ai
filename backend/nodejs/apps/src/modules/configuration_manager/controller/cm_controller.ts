@@ -519,9 +519,8 @@ export const createSmtpConfig =
       const problem = await smtpSettingsProblem(
         smtpConfig as unknown as SmtpConfig,
         (error) =>
+          // The host is one of the SMTP fields kept secret (maskSmtpConfig).
           logger.warn('SMTP settings refused by the mail server', {
-            host: smtpConfig.host,
-            port: smtpConfig.port,
             error: error instanceof Error ? error.message : String(error),
           }),
       );

@@ -14,10 +14,12 @@ const SMTP_CHECK_TIMEOUT_MS = 10_000;
 export function smtpTransportOptions(
   smtpConfig: SmtpConfig,
 ): SMTPTransport.Options {
+  const port = smtpConfig.port || 587;
   return {
     host: smtpConfig.host,
-    port: smtpConfig.port || 587,
-    secure: false,
+    port,
+    // 465 is TLS from the first byte; the others upgrade with STARTTLS when offered.
+    secure: port === 465,
     dnsTimeout: SMTP_DNS_TIMEOUT_MS,
     connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
     greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
