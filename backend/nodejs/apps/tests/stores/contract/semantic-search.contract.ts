@@ -282,6 +282,43 @@ export function describeSemanticSearchContract(fx: SemanticSearchFixture): void 
     });
   });
 
+  describe('unshare', () => {
+    it('with no recipient left switches sharing off, removes the link and returns the row after the change', async () => {
+      const s = await make(org, alice);
+      const link = 'https://x/api/v1/search/' + s._id;
+      await repo.setSharing(s._id, { isShared: true, shareLink: link, sharedWith: [{ userId: bob, accessLevel: 'read' }] });
+
+      const after = await repo.unshare(s._id, []);
+
+      expect(after!.isShared).to.equal(false);
+      expect(after!.sharedWith).to.deep.equal([]);
+      expect(after).to.not.have.property('shareLink');
+      const stored = await repo.findVisible(org, alice, s._id);
+      expect(stored!.isShared).to.equal(false);
+      expect(stored).to.not.have.property('shareLink');
+    });
+
+    it('with a recipient left keeps the sharing flag and the link', async () => {
+      const s = await make(org, alice);
+      const link = 'https://x/api/v1/search/' + s._id;
+      await repo.setSharing(s._id, {
+        isShared: true,
+        shareLink: link,
+        sharedWith: [{ userId: bob, accessLevel: 'read' }, { userId: carol, accessLevel: 'write' }],
+      });
+
+      const after = await repo.unshare(s._id, [{ userId: carol, accessLevel: 'write' }]);
+
+      expect(after!.isShared).to.equal(true);
+      expect(after!.shareLink).to.equal(link);
+      expect(after!.sharedWith.map((m) => [m.userId, m.accessLevel])).to.deep.equal([[carol, 'write']]);
+    });
+
+    it('returns null for an unknown id', async () => {
+      expect(await repo.unshare(fx.newId(), [])).to.equal(null);
+    });
+  });
+
   describe('archive and unarchive', () => {
     it('archives, then unarchives only archived rows the viewer can see', async () => {
       const s = await make(org, alice);
