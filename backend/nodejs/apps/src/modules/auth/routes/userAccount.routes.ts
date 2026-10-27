@@ -14,6 +14,7 @@ import { AuthMiddleware } from '../../../libs/middlewares/auth.middleware';
 import { TokenScopes } from '../../../libs/enums/token-scopes.enum';
 import { AuthenticatedServiceRequest } from '../../../libs/middlewares/types';
 import {
+  createAuthIpRateLimiter,
   createAuthRateLimiter,
   createInitAuthRateLimiter,
 } from '../../../libs/middlewares/rate-limit.middleware';
@@ -60,8 +61,13 @@ export function createUserAccountRouter(container: Container) {
   const authMiddleware = container.get<AuthMiddleware>('AuthMiddleware');
   const logger = container.get<Logger>('Logger');
   const { maxAuthRequestsPerMinute } = container.get<AppConfig>('AppConfig');
-  // One per-IP bucket shared by all credential/OTP/email routes below.
+  // Shared by all credential/OTP/email routes below: one bucket per account
+  // (or signed-in user), plus a looser per-IP backstop on anonymous routes.
   const authRateLimiter = createAuthRateLimiter(
+    logger,
+    maxAuthRequestsPerMinute,
+  );
+  const authIpRateLimiter = createAuthIpRateLimiter(
     logger,
     maxAuthRequestsPerMinute,
   );
@@ -112,8 +118,9 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/authenticate',
-    authRateLimiter,
+    authIpRateLimiter,
     authSessionMiddleware,
+    authRateLimiter,
     ValidationMiddleware.validate(authenticateValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -129,6 +136,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/login/otp/generate',
+    authIpRateLimiter,
     authRateLimiter,
     ValidationMiddleware.validate(otpGenerationValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
@@ -168,8 +176,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/setup/email',
-    authRateLimiter,
     userValidator,
+    authRateLimiter,
     ValidationMiddleware.validate(z.object({ body: z.object({}).optional() })),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -185,8 +193,8 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/reset',
-    authRateLimiter,
     userValidator,
+    authRateLimiter,
     ValidationMiddleware.validate(resetPasswordValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {
@@ -254,6 +262,7 @@ export function createUserAccountRouter(container: Container) {
 
   router.post(
     '/password/forgot',
+    authIpRateLimiter,
     authRateLimiter,
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {

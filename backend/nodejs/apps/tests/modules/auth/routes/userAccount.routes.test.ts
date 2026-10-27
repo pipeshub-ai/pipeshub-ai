@@ -9,6 +9,10 @@ import { AppConfig } from '../../../../src/modules/tokens_manager/config/config'
 import { Logger } from '../../../../src/libs/services/logger.service';
 import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
 import { AUTH_APP_CONFIG_RELOADER } from '../../../../src/modules/auth/container/authService.container';
+import {
+  authSessionMiddleware,
+  userValidator,
+} from '../../../../src/modules/auth/middlewares/userAuthentication.middleware';
 
 describe('createUserAccountRouter', () => {
   let container: Container;
@@ -59,20 +63,31 @@ describe('createUserAccountRouter', () => {
     container.bind(AUTH_APP_CONFIG_RELOADER).toConstantValue(reloadAppConfig);
   });
 
-  it('should mount one shared auth rate limiter first on credential, OTP and password routes', () => {
+  it('should mount the shared auth rate limiters on credential, OTP and password routes', () => {
     const router = createUserAccountRouter(container);
-    const firstHandler = (path: string) =>
-      (router.stack as any[]).find((layer) => layer.route?.path === path).route.stack[0].handle;
+    const handlers = (path: string): any[] =>
+      (router.stack as any[])
+        .find((layer) => layer.route?.path === path)
+        .route.stack.map((layer: any) => layer.handle);
 
-    const limited = ['/authenticate', '/login/otp/generate', '/password/reset', '/password/forgot'];
-    const limiter = firstHandler(limited[0]);
-    for (const path of limited) {
-      expect(firstHandler(path), path).to.equal(limiter);
+    // Anonymous routes: per-IP backstop first, then the per-account bucket.
+    // /authenticate counts after the session lookup, which names the account.
+    const ipLimiter = handlers('/authenticate')[0];
+    const accountLimiter = handlers('/authenticate')[2];
+    expect(handlers('/authenticate')[1]).to.equal(authSessionMiddleware);
+    expect(accountLimiter).to.not.equal(ipLimiter);
+    for (const path of ['/login/otp/generate', '/password/forgot']) {
+      expect(handlers(path).slice(0, 2), path).to.deep.equal([ipLimiter, accountLimiter]);
     }
-    expect(firstHandler('/refresh/token')).to.not.equal(limiter);
+    // Signed-in routes count per user, so the limiter runs after userValidator.
+    for (const path of ['/password/reset', '/password/setup/email']) {
+      expect(handlers(path).slice(0, 2), path).to.deep.equal([userValidator, accountLimiter]);
+    }
+    expect(handlers('/refresh/token')).to.not.include(accountLimiter);
     // Loading the sign-in page calls /initAuth; it has its own bucket.
-    expect(firstHandler('/initAuth')).to.be.a('function');
-    expect(firstHandler('/initAuth')).to.not.equal(limiter);
+    expect(handlers('/initAuth')[0]).to.be.a('function');
+    expect(handlers('/initAuth')).to.not.include(accountLimiter);
+    expect(handlers('/initAuth')).to.not.include(ipLimiter);
   });
 
   afterEach(() => {
