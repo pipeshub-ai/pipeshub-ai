@@ -260,12 +260,14 @@ class TestSignedUrlErrors:
         assert raised.value.may_be_retired is retirable
         assert str(raised.value) == f"Failed to retrieve record: status {status}"
 
-    async def test_a_failed_ranged_download_is_a_retirable_error(self) -> None:
+    @pytest.mark.parametrize("status", [403, 404])
+    async def test_a_failed_ranged_download_is_a_retirable_error(self, status: int) -> None:
         bs = _bs()
-        bs._download_with_range_requests = AsyncMock(side_effect=Exception("range 403"))
+        bs._download_with_range_requests = AsyncMock(side_effect=Exception(f"range {status}"))
         with pytest.raises(SignedUrlReadError) as raised:
-            await bs._record_from_signed_url(self._session(404), "https://b/x", None, VRID)
+            await bs._record_from_signed_url(self._session(status), "https://b/x", None, VRID)
         assert raised.value.ranged and raised.value.may_be_retired
+        assert raised.value.http_status == status
         assert "Both parallel and fallback downloads failed" in str(raised.value)
 
 

@@ -267,11 +267,11 @@ async def test_attack_real_403_same_document_is_not_gone_and_not_terminal(world:
     _forbid_signed_urls(world)
     world.lookups = 0
 
-    with pytest.raises(Exception) as raised:
+    with pytest.raises(SignedUrlReadError) as raised:
         await world.blob.get_record_from_storage(vrid, ORG_ID)
     exc = raised.value
     kind = MessageErrorClassifier.classify_by_exception(exc)
-    assert not isinstance(exc, StorageDocumentNotFoundError)
+    assert exc.http_status == 403, f"{STORAGE_TYPE} answered {exc.http_status}"
     assert world.lookups == 2, "the read's own lookup and exactly one re-lookup"
     assert kind == MessageErrorType.TRANSIENT, f"{STORAGE_TYPE} 403 classified {kind}"
 
