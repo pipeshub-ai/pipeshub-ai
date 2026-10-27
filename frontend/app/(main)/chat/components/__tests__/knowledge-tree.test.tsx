@@ -452,4 +452,21 @@ describe('Picker tree — collections and connectors tabs', () => {
     expect(await screen.findByText('GS-Alpha')).toBeTruthy();
     expect(api.listCollectionsForChat).toHaveBeenCalledWith(expect.objectContaining({ origins: 'COLLECTION' }));
   });
+
+  it('ignores a slower answer for the tab it just left', async () => {
+    let answerConnectors: (value: unknown) => void = () => {};
+    api.listCollectionsForChat.mockImplementation(({ origins }: { origins?: string }) =>
+      origins === 'CONNECTOR'
+        ? new Promise((resolve) => { answerConnectors = resolve; })
+        : Promise.resolve({ knowledgeBases: [root('alpha', 'GS-Alpha', true)], nextCursor: null }),
+    );
+
+    const { rerender } = render(<Host filterMode="connectors" />);
+    rerender(<Host filterMode="collections" />);
+    expect(await screen.findByText('GS-Alpha')).toBeTruthy();
+
+    answerConnectors({ knowledgeBases: [root('jira', 'Jira', true, 'CONNECTOR')], nextCursor: null });
+    await waitFor(() => expect(screen.queryByText('Jira')).toBeNull());
+    expect(screen.getByText('GS-Alpha')).toBeTruthy();
+  });
 });

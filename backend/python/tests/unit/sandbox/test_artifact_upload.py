@@ -31,6 +31,7 @@ class TestInferArtifactType:
 
     def test_non_code_file_still_goes_by_mime(self) -> None:
         assert infer_artifact_type("text/csv", "data.csv") is ArtifactType.SPREADSHEET
+        assert infer_artifact_type("text/html", "report.html") is ArtifactType.DOCUMENT
         assert infer_artifact_type("application/octet-stream", "blob.bin") is ArtifactType.OTHER
 
 
