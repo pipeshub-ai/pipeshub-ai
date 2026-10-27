@@ -66,11 +66,12 @@ export class NotificationConsumer {
 
             // The org comes from the event, bound before any repository is touched.
             await forOrg(event.orgId, 'notification-consumer', async () => {
-              const recipientUserIds = await resolveNotificationRecipientUserIds(
-                event.orgId,
-                event.recipientUserIds,
-                event.recipientRoles,
-              );
+              const recipientUserIds =
+                await resolveNotificationRecipientUserIds(
+                  event.orgId,
+                  event.recipientUserIds,
+                  event.recipientRoles,
+                );
 
               if (recipientUserIds.length === 0) {
                 this.logger.warn('Notification event skipped: no recipients', {
@@ -83,7 +84,8 @@ export class NotificationConsumer {
               const docs = recipientUserIds.map((userOid) =>
                 buildNotificationDocForUser(event, String(userOid)),
               );
-              const savedDocs = await getNotificationRepository().insertMany(docs);
+              const savedDocs =
+                await getNotificationRepository().insertMany(docs);
 
               const savedIds: string[] = [];
               const dispatchedUserIds: string[] = [];
