@@ -3983,7 +3983,12 @@
         "title": "密碼與安全性",
         "accountPassword": "帳戶密碼",
         "followEmailDescription": "請依照電子郵件中的指示完成密碼設定",
-        "changePassword": "變更密碼"
+        "changePassword": "變更密碼",
+        "setPassword": "設定密碼",
+        "setPasswordDescription": "您尚未設定密碼。我們會以電子郵件寄送設定密碼的連結；若工作區允許，設定後也可以使用電子郵件和密碼登入。",
+        "setPasswordDialogTitle": "設定密碼",
+        "setPasswordDialogMessage": "我們會將設定密碼的連結寄到您的註冊電子郵件地址，並登出此工作階段。",
+        "setPasswordDialogConfirm": "寄送設定密碼連結"
       },
       "rolesPermissions": {
         "title": "角色與權限",
@@ -4030,6 +4035,10 @@
         "saveErrorDescription": "無法更新您的個人資料",
         "passwordUpdated": "密碼已更新",
         "passwordUpdatedDescription": "我們將為您登出。請重新登入...",
+        "passwordSetupEmailSent": "已寄出設定密碼連結",
+        "passwordSetupEmailSentDescription": "請查看電子郵件以設定密碼。正在登出此工作階段…",
+        "passwordSetupEmailError": "無法寄送電子郵件",
+        "passwordSetupEmailErrorDescription": "請再試一次。",
         "emailVerificationSent": "電子郵件驗證連結已傳送",
         "emailVerificationSentDescription": "驗證電子郵件後，您將被登出",
         "discardSuccess": "已捨棄編輯",

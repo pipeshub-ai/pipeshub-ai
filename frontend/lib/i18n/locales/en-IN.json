@@ -3687,7 +3687,12 @@
         "title": "Password & security",
         "accountPassword": "Account password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
-        "changePassword": "Change password"
+        "changePassword": "Change password",
+        "setPassword": "Set password",
+        "setPasswordDescription": "You haven't set a password yet. We'll email you a link to set one, so you can also sign in with your email and password, if your workspace allows it.",
+        "setPasswordDialogTitle": "Set password",
+        "setPasswordDialogMessage": "We'll send a link to set your password to your registered email address, and log you out of this session.",
+        "setPasswordDialogConfirm": "Send set password link"
       },
       "rolesPermissions": {
         "title": "Roles & permissions",
@@ -3734,6 +3739,10 @@
         "saveErrorDescription": "Could not update your profile",
         "passwordUpdated": "Password has been updated",
         "passwordUpdatedDescription": "We'll log you out. Please login again...",
+        "passwordSetupEmailSent": "Set password link sent",
+        "passwordSetupEmailSentDescription": "Check your email to set your password. Logging you out of this session…",
+        "passwordSetupEmailError": "Couldn't send the email",
+        "passwordSetupEmailErrorDescription": "Please try again.",
         "emailVerificationSent": "Email verification link sent",
         "emailVerificationSentDescription": "You will be logged out when you verify the email",
         "discardSuccess": "Discarded edits",

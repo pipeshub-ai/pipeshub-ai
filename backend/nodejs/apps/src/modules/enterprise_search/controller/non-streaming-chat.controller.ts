@@ -11,6 +11,7 @@ import {
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
+import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
@@ -190,7 +191,7 @@ const nonStreamingTurn =
         });
       }
     } catch (error: unknown) {
-      logger.error('Non-streaming chat turn failed', {
+      logger[logLevelFor(error)]('Non-streaming chat turn failed', {
         requestId,
         mode,
         conversationId: req.params.conversationId,

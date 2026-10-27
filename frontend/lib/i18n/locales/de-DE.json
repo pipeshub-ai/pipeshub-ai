@@ -3696,7 +3696,12 @@
         "title": "Passwort & Sicherheit",
         "accountPassword": "Konto-Passwort",
         "followEmailDescription": "Bitte folgen Sie den Anweisungen in der E-Mail, um Ihr Passwort festzulegen",
-        "changePassword": "Passwort ändern"
+        "changePassword": "Passwort ändern",
+        "setPassword": "Passwort festlegen",
+        "setPasswordDescription": "Sie haben noch kein Passwort festgelegt. Wir senden Ihnen einen Link per E-Mail, um eines festzulegen. Wenn Ihr Arbeitsbereich es erlaubt, können Sie sich dann auch mit E-Mail und Passwort anmelden.",
+        "setPasswordDialogTitle": "Passwort festlegen",
+        "setPasswordDialogMessage": "Wir senden einen Link zum Festlegen Ihres Passworts an Ihre registrierte E-Mail-Adresse und melden Sie von dieser Sitzung ab.",
+        "setPasswordDialogConfirm": "Link zum Festlegen senden"
       },
       "rolesPermissions": {
         "title": "Rollen & Berechtigungen",
@@ -3743,6 +3748,10 @@
         "saveErrorDescription": "Ihr Profil konnte nicht aktualisiert werden",
         "passwordUpdated": "Passwort wurde aktualisiert",
         "passwordUpdatedDescription": "Sie werden abgemeldet. Bitte melden Sie sich erneut an...",
+        "passwordSetupEmailSent": "Link zum Festlegen gesendet",
+        "passwordSetupEmailSentDescription": "Prüfen Sie Ihr Postfach, um Ihr Passwort festzulegen. Sie werden von dieser Sitzung abgemeldet…",
+        "passwordSetupEmailError": "E-Mail konnte nicht gesendet werden",
+        "passwordSetupEmailErrorDescription": "Bitte versuchen Sie es erneut.",
         "emailVerificationSent": "E-Mail-Bestätigungslink gesendet",
         "emailVerificationSentDescription": "Sie werden abgemeldet, wenn Sie die E-Mail bestätigen",
         "discardSuccess": "Änderungen verworfen",

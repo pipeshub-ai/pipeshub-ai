@@ -1,5 +1,17 @@
 import { Response } from 'express';
+import { BaseError } from '../errors/base.error';
 import { Logger } from '../services/logger.service';
+
+/**
+ * 'warn' for a 4xx its thrower marked as expected (a refusal doing its job,
+ * such as a 402); 'error' for everything else, every 5xx included.
+ */
+export const logLevelFor = (error: unknown): 'warn' | 'error' =>
+  error instanceof BaseError &&
+  error.statusCode < 500 &&
+  error.metadata?.logLevel === 'warn'
+    ? 'warn'
+    : 'error';
 
 /**
  * Extract error data without circular references

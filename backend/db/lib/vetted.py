@@ -297,7 +297,7 @@ def _check_identity(fn: Fn, where: str) -> None:
                     raise ManifestError(f"{where}: the body names {t}, which reads/writes/fanout/audit does not list")
 
 
-_TOKENS = re.compile(r"('(?:[^']|'')*')|--[^\n]*|/\*(?:[^*]|\*+[^*/])*\*+/")
+_TOKENS = re.compile(r"('(?:[^']|'')*')|--[^\n\r]*|/\*(?:[^*]|\*+[^*/])*\*+/")
 _DOLLAR = re.compile(r"\$(?:[^\x01-\x7f]|[A-Za-z_$])")      # a dollar quote starts with $ and a tag (letters, any non-ASCII, or none); $1 and a regex's $' do not
 _UNCLASSIFIABLE = re.compile(r"\b(merge|only|fetch|offset|call|execute)\b|\bformat\s*\(|\"|\bu&", re.I)
 _ESTRING = re.compile(r"(^|[^A-Za-z0-9_'.$])e'", re.I)       # an E'..' string: a backslash escape the checks do not read

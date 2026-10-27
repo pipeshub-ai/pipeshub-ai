@@ -6,6 +6,7 @@ import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import nock from 'nock';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
@@ -20,7 +21,9 @@ import {
   ACCOUNT_NO_LONGER_ACTIVE,
   RESET_LINK_ALREADY_USED,
   RESET_LINK_NOT_CHECKED,
+  SESSION_NO_LONGER_VALID,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
 import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
@@ -1158,6 +1161,62 @@ describe('UserAccountController', () => {
       expect(next.firstCall.args[0].message).to.equal(
         'Previous password not found',
       );
+    });
+  });
+
+  describe('password setup for users without a password', () => {
+    // userValidator sets req.user and nothing else, so the handlers must not need a bound context.
+    const authedReq: any = {
+      user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
+    };
+
+    it('getPasswordStatus reports hasPassword false when no credentials are stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: false })).to.be.true;
+    });
+
+    it('getPasswordStatus reports hasPassword true when a hashed password is stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: true })).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail mails a reset link to a user with no password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'T' },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall?.args[0]?.usersMails).to.deep.equal(['test@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail refuses a request with no authenticated user', async () => {
+      await controller.sendPasswordSetupEmail({} as any, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('sendPasswordSetupEmail refuses a user who already has a password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(mockMailService.sendMail.called).to.be.false;
     });
   });
 
@@ -2659,6 +2718,37 @@ describe('UserAccountController', () => {
       expect(rebuild.calledOnce).to.be.true;
       expect(next.called).to.be.false;
       expect(used.size).to.equal(1);
+    });
+
+    // Through the real IAM client: a deleted account comes back from IAM as an
+    // HTTP 404, which used to reach the error middleware as a raw axios error
+    // and be answered with a 500.
+    describe('when the account was deleted after the link was sent', () => {
+      beforeEach(() => {
+        const realIam = new IamService(mockConfig, mockLogger);
+        mockIamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        nock(mockConfig.iamBackend)
+          .get('/api/v1/users/internal/u1')
+          .reply(404, { error: { message: 'User not found' } });
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers that the link is no longer valid (404), changing nothing', async () => {
+        const used = fakeUsedResetLinks();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(NotFoundError);
+        expect(error.message).to.equal(SESSION_NO_LONGER_VALID);
+        expect((UserCredentials.prototype.save as sinon.SinonStub).called).to.be.false;
+        expect(used.size).to.equal(0, 'the link is handed back, as for any reset that changed nothing');
+      });
     });
 
     it('refuses a link that was already used', async () => {

@@ -1317,3 +1317,79 @@ class TestRedisScrollOffsetAfterDelete:
 
         svc = MagicMock(spec=IVectorDBService)
         assert IVectorDBService.scroll_offset_after_delete(svc, "point-id-42", 3) == "point-id-42"
+
+
+class _TimeoutPronePoints:
+    """FT.SEARCH fake for a RediSearch past its timeout.
+
+    With the default ON_TIMEOUT RETURN a query that runs out of time answers with
+    the rows it had, and a RESP2 reply says nothing about it. A command that does
+    not send ``TIMEOUT 0`` gets that short, silent answer; one that does gets the
+    full page.
+    """
+
+    TRUNCATED_AT = 7
+
+    def __init__(self, keys: list[bytes]) -> None:
+        self.keys = list(keys)
+
+    async def execute_command(self, *args) -> list:
+        assert args[0] == "FT.SEARCH"
+        offset, num = int(args[args.index("LIMIT") + 1]), int(args[args.index("LIMIT") + 2])
+        matches = self.keys
+        if "TIMEOUT" not in args or args[args.index("TIMEOUT") + 1] != "0":
+            matches = matches[: self.TRUNCATED_AT]
+        page = matches[offset:offset + num]
+        return [len(matches), *page] if "NOCONTENT" in args else [
+            len(matches), *[x for k in page for x in (k, [b"page_content", b"c"])]
+        ]
+
+    async def delete(self, *keys) -> None:
+        self.keys = [k for k in self.keys if k not in keys]
+
+
+class TestRedisFilterOpsSeeEveryMatch:
+    """A query timeout must not make a delete or payload write skip points."""
+
+    FILT = FilterExpression(
+        must=[FieldCondition(key="metadata.virtualRecordId", value="vr-1")]
+    )
+
+    def _svc(self, n: int = 40):  # noqa: ANN202
+        svc = _make_redis_service()
+        svc.client = _TimeoutPronePoints([f"records:p{i}".encode() for i in range(n)])
+        return svc
+
+    @pytest.mark.asyncio
+    async def test_delete_removes_every_match(self) -> None:
+        svc = self._svc()
+        await svc.delete_points("records", self.FILT)
+        assert svc.client.keys == []
+
+    @pytest.mark.asyncio
+    async def test_delete_keeps_going_after_a_short_page(self) -> None:
+        """A page below the page size is not proof that nothing is left."""
+        svc = self._svc()
+        real = svc.client.execute_command
+        pages = iter([3])  # first reply carries 3 rows although 40 match
+
+        async def short_first(*args) -> list:
+            raw = await real(*args)
+            n = next(pages, None)
+            return [raw[0], *raw[1:1 + n]] if n else raw
+
+        svc.client.execute_command = short_first
+        await svc.delete_points("records", self.FILT)
+        assert svc.client.keys == []
+
+    @pytest.mark.asyncio
+    async def test_key_lookup_sees_every_match(self) -> None:
+        svc = self._svc()
+        keys = await svc._keys_matching_filter("records", self.FILT)
+        assert len(keys) == 40
+
+    @pytest.mark.asyncio
+    async def test_scroll_asks_for_the_full_page(self) -> None:
+        svc = self._svc()
+        page = await svc.scroll("records", self.FILT, limit=40)
+        assert len(page.points) == 40
