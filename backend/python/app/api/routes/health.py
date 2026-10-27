@@ -483,6 +483,38 @@ async def _endpoint_refusal(config: dict) -> JSONResponse | None:
     return None
 
 
+async def _settings_refusal(model_type: str, config: dict) -> JSONResponse | None:
+    """A 400 for settings that need no provider call to reject, else None."""
+    return await _endpoint_refusal(config) or _missing_credential_refusal(model_type, config)
+
+
+def _missing_credential_refusal(model_type: str, config: dict) -> JSONResponse | None:
+    """A 400 for a config whose required credential is empty, else None.
+
+    The provider SDKs fail on a blank key before any request ("Missing
+    credentials"), with an error that reads as PipesHub's fault. A field
+    cleared while editing a model reaches here as "".
+    """
+    from app.config.ai_models.providers import ai_model_registry
+    from app.config.ai_models.types import MODEL_TYPE_TO_CAPABILITY
+
+    configuration = config.get("configuration")
+    meta = ai_model_registry.get_provider(config.get("provider") or "")
+    if not isinstance(configuration, dict) or meta is None:
+        return None
+    for field in meta.get("fields", {}).get(MODEL_TYPE_TO_CAPABILITY.get(model_type, ""), []):
+        if not (field.get("required") and field.get("isSecret")):
+            continue
+        value = configuration.get(field["name"])
+        if value is None or (isinstance(value, str) and not value.strip()):
+            return _config_error(
+                f"The {field.get('displayName') or field['name']} for {meta.get('name') or config.get('provider')} "
+                "is empty. Enter it in Workspace > AI Models, then try again.",
+                config, configuration.get("model", ""), error_code="missing_credentials",
+            )
+    return None
+
+
 def _config_error(
     message: str, config: dict, model_name: str, **extra: object
 ) -> JSONResponse:
@@ -670,7 +702,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
         )
 
     for llm_config in llm_configs:
-        response = await _endpoint_refusal(llm_config) or await perform_llm_health_check(llm_config, logger)
+        response = await _settings_refusal("llm", llm_config) or await perform_llm_health_check(llm_config, logger)
         if response.status_code != 200:
             return response
 
@@ -1005,7 +1037,7 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
     logger = request.app.container.logger()
     try:
         for embedding_config in embedding_configs:
-            refusal = await _endpoint_refusal(embedding_config)
+            refusal = await _settings_refusal("embedding", embedding_config)
             if refusal is not None:
                 return refusal
 
@@ -2220,7 +2252,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger.info(f"Health check endpoint called for {model_type}")
 
-        refusal = await _endpoint_refusal(model_config)
+        refusal = await _settings_refusal(model_type, model_config)
         if refusal is not None:
             return refusal
 
