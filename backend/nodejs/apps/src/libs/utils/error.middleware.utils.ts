@@ -9,41 +9,44 @@ export const extractErrorData = (error: any, includeStack = true): any => {
   if (!error) return null;
 
   try {
-      // For errors with a toJSON method (like BaseError)
-      // Include stack trace for logging purposes only (not for client responses)
-      if (typeof error.toJSON === 'function') {
-          const json = error.toJSON(includeStack);
-          // An AxiosError's toJSON ignores the argument and always adds the stack.
-          if (includeStack || !json || typeof json !== 'object') return json;
-          const { stack: _stack, ...withoutStack } = json;
-          return withoutStack;
-      }
+    // For errors with a toJSON method (like BaseError)
+    // Include stack trace for logging purposes only (not for client responses)
+    if (typeof error.toJSON === 'function') {
+      const json: unknown = error.toJSON(includeStack);
+      // An AxiosError's toJSON ignores the argument and always adds the stack.
+      if (includeStack || !json || typeof json !== 'object') return json;
+      const { stack: _stack, ...withoutStack } = json as Record<
+        string,
+        unknown
+      >;
+      return withoutStack;
+    }
 
-      // Handle Axios error response data
-      if (error.response?.data) {
+    // Handle Axios error response data
+    if (error.response?.data) {
       const data = error.response.data;
       return {
-          detail: data.detail || data.reason || data.message || 'Unknown error',
-          status: error.response.status,
-          statusText: error.response.statusText,
-          // Stack traces included for server-side logging only
-          ...(includeStack && { stack: error.stack }),
+        detail: data.detail || data.reason || data.message || 'Unknown error',
+        status: error.response.status,
+        statusText: error.response.statusText,
+        // Stack traces included for server-side logging only
+        ...(includeStack && { stack: error.stack }),
       };
-      }
+    }
 
-      // Handle other error types
-      return {
+    // Handle other error types
+    return {
       message: error.message || 'Unknown error',
       code: error.code,
       name: error.name,
       // Stack traces included for server-side logging only
       ...(includeStack && { stack: error.stack }),
-      };
+    };
   } catch (extractionError) {
-      return {
+    return {
       message: 'Error processing error data',
       originalError: String(error),
-      };
+    };
   }
 };
 
