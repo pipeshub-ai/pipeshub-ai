@@ -14,7 +14,30 @@ permissions:
   contents: read
 
 jobs:
+  # Which of the jobs below this pull request's changes can affect
+  # (scripts/pr_changes.py). Every other event runs them all.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      node_build: ${{ steps.changes.outputs.node_build }}
+      frontend: ${{ steps.changes.outputs.frontend }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   validate-backend:
+    needs: changes
+    if: needs.changes.outputs.node_build == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -59,6 +82,8 @@ jobs:
       #     npm test
 
   validate-frontend:
+    needs: changes
+    if: needs.changes.outputs.frontend == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code

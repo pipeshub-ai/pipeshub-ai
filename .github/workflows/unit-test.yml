@@ -18,6 +18,10 @@ on:
       - 'backend/python/pytest.ini'
       - 'backend/python/.coveragerc'
       - 'scripts/unit_shards.py'
+      - 'scripts/unit_shard_durations.json'
+      - 'deployment/docker-compose/docker-compose.integration.redis-cluster.yml'
+      - 'scripts/pr_changes.py'
+      - '.github/actions/pr-changes/**'
       - '.github/workflows/unit-test.yml'
       # The integration-suite guards run in integration-suite-guards.yml.
 
@@ -46,7 +50,31 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Which of the jobs below this pull request's changes can affect
+  # (scripts/pr_changes.py). Every other event runs them all.
+  changes:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      node_unit: ${{ steps.changes.outputs.node_unit }}
+      python_unit: ${{ steps.changes.outputs.python_unit }}
+      redis_cluster: ${{ steps.changes.outputs.redis_cluster }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            scripts
+            .github/actions
+      - id: changes
+        uses: ./.github/actions/pr-changes
+
   nodejs-unit-tests:
+    needs: changes
+    if: needs.changes.outputs.node_unit == 'true'
     runs-on: ${{ matrix.os }}
 
     strategy:
@@ -115,6 +143,8 @@ jobs:
   # one shard's percentage on its own means nothing.
   python-unit:
     name: python-unit (${{ matrix.shard }})
+    needs: changes
+    if: needs.changes.outputs.python_unit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -240,10 +270,10 @@ jobs:
           if-no-files-found: warn
 
   python-coverage:
-    needs: python-unit
+    needs: [changes, python-unit]
     # Still runs when a shard failed: the coverage result is a separate question,
     # and python-unit-tests fails on the shard either way.
-    if: ${{ !cancelled() }}
+    if: ${{ !cancelled() && needs.changes.outputs.python_unit == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
@@ -307,6 +337,8 @@ jobs:
   # so a failure reads as a behaviour regression rather than a coverage
   # change. Structural only — no model call, no network, no API key.
   python-agent-evals:
+    needs: changes
+    if: needs.changes.outputs.python_unit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
 
@@ -355,6 +387,8 @@ jobs:
   # every Python pull request depend on the public npm registry and on the
   # pinned packages staying published.
   python-integration-offline:
+    needs: changes
+    if: needs.changes.outputs.python_unit == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -396,8 +430,8 @@ jobs:
   # One check for everything the single python-unit-tests job used to run, so a
   # required status check keeps one name however the shards change.
   python-unit-tests:
-    needs: [python-unit, python-coverage, python-agent-evals, python-integration-offline]
-    if: ${{ always() }}
+    needs: [changes, python-unit, python-coverage, python-agent-evals, python-integration-offline]
+    if: ${{ always() && needs.changes.outputs.python_unit == 'true' }}
     runs-on: ubuntu-latest
 
     steps:
@@ -413,7 +447,9 @@ jobs:
     # exercise CROSSSLOT/MOVED/failover behaviour for real -- the FakeClusterRedis
     # contract suites in tests/unit/services/redis/ only approximate it. This job
     # proves the MemoryDB-readiness refactor (R1/R17) against a live cluster on
-    # every PR, not just nightly/manual integration runs.
+    # every PR that touches Redis code, not just nightly/manual integration runs.
+    needs: changes
+    if: needs.changes.outputs.redis_cluster == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
