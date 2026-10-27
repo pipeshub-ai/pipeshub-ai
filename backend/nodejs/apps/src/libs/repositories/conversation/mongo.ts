@@ -676,9 +676,13 @@ export class MongoConversationRepository implements ConversationRepository {
         },
       },
       { $group: { _id: '$sessionId' } },
-      { $limit: limit },
+      // One more than asked for tells whether the search was cut short.
+      { $limit: limit + 1 },
     ]);
-    return { ids: rows.map((r) => String(r._id)), truncated: false };
+    return {
+      ids: rows.slice(0, limit).map((r) => String(r._id)),
+      truncated: rows.length > limit,
+    };
   }
 
   async listVisibleTitles(
@@ -827,7 +831,8 @@ export class MongoConversationRepository implements ConversationRepository {
     const updateObject: Record<string, unknown> = {};
     if (patch.isShared !== undefined) updateObject.isShared = patch.isShared;
     updateObject.sharedWith = patch.sharedWith;
-    if (patch.clearShareLink) updateObject.shareLink = undefined;
+    // An undefined value is dropped from an update, so the link is unset explicitly.
+    if (patch.clearShareLink) updateObject.$unset = { shareLink: 1 };
     const updated = await ChatSession.findOneAndUpdate(
       { _id: id, ...kindFilter(scope) },
       updateObject,

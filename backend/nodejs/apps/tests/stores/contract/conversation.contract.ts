@@ -536,6 +536,19 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect(await hit('gamma')).to.deep.equal([]);
     });
 
+    it('findIdsByContent reports when the search was cut short by its limit', async () => {
+      const org = fx.newId(), owner = fx.newId();
+      for (let i = 0; i < 3; i++) await open(org, owner, {}, userMsg(`needle ${i}`));
+      const cut = await repo.findIdsByContent(org, 'needle', 2);
+      expect(cut.ids).to.have.length(2);
+      expect(cut.truncated).to.equal(true);
+      for (const limit of [3, 10]) {
+        const whole = await repo.findIdsByContent(org, 'needle', limit);
+        expect(whole.ids).to.have.length(3);
+        expect(whole.truncated).to.equal(false);
+      }
+    });
+
     it('listArtifactMarkerContents returns the text of messages up to a seq that carry an artifact marker', async () => {
       const org = fx.newId(), user = fx.newId();
       const s = await open(org, user, {}, userMsg('plain'));
