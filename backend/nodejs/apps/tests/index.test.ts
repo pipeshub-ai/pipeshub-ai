@@ -70,7 +70,8 @@ describe('index.ts - Application Bootstrap', () => {
       ];
       for (const rel of files) {
         const text: string = fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
-        const calls = text.match(/^config\([^)]*\)/gm) ?? [];
+        // Any call, indented or not, but not a method such as app.config().
+        const calls = text.match(/(?<![.\w])config\(\s*[^)]*\)/g) ?? [];
         expect(calls.length, `${rel} should call config()`).to.be.greaterThan(0);
         for (const call of calls) {
           expect(call, `${rel}: ${call}`).to.include('quiet: true');
@@ -78,13 +79,51 @@ describe('index.ts - Application Bootstrap', () => {
       }
     });
 
-    it('dotenv config({ quiet: true }) writes nothing to the console', () => {
-      const { config } = require('dotenv');
-      const log = sandbox.stub(console, 'log');
-      const info = sandbox.stub(console, 'info');
-      const warn = sandbox.stub(console, 'warn');
-      config({ quiet: true, path: '/nonexistent/.env' });
-      expect(log.called || info.called || warn.called).to.equal(false);
+    // dotenv 18 writes its banner to stderr, so the check runs dotenv in a child
+    // process and reads both streams rather than stubbing console methods.
+    describe('dotenv output in a child process', () => {
+      const { spawnSync } = require('child_process');
+      const fs = require('fs');
+      const os = require('os');
+      const path = require('path');
+      const BANNER = /injected env|dotenv@|\[dotenv/;
+
+      const loadEnv = (options: string, envFile: string | null) => {
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dotenv-'));
+        try {
+          if (envFile !== null) fs.writeFileSync(path.join(dir, '.env'), envFile);
+          const script =
+            `require(${JSON.stringify(require.resolve('dotenv'))}).config(${options});` +
+            "process.stdout.write('loaded=' + (process.env.DOTENV_PROBE || ''));";
+          const child = spawnSync(process.execPath, ['-e', script], {
+            cwd: dir,
+            encoding: 'utf8',
+            env: { PATH: process.env.PATH },
+            timeout: 5000,
+          });
+          return { stdout: child.stdout as string, stderr: child.stderr as string };
+        } finally {
+          fs.rmSync(dir, { recursive: true, force: true });
+        }
+      };
+
+      it('prints a banner without quiet, so the checks below can see one', () => {
+        const { stdout, stderr } = loadEnv('', 'DOTENV_PROBE=x\n');
+        expect(stdout + stderr).to.match(BANNER);
+      });
+
+      it('loads .env with quiet: true and dotenv writes nothing to stdout or stderr', () => {
+        const secret = `dummy-${Date.now()}`;
+        const { stdout, stderr } = loadEnv('{ quiet: true }', `DOTENV_PROBE=${secret}\n`);
+        expect(stdout).to.equal(`loaded=${secret}`);
+        expect(stderr).to.equal('');
+      });
+
+      it('writes nothing with quiet: true when there is no .env', () => {
+        const { stdout, stderr } = loadEnv('{ quiet: true }', null);
+        expect(stdout).to.equal('loaded=');
+        expect(stderr).to.equal('');
+      });
     });
   });
 
