@@ -313,11 +313,13 @@ def test_a_long_run_of_digits_or_dots_scans_in_linear_time(text):
     import time
 
     unit = TextUnit(block_index=0, block_id="b", text=text)
-    start = time.perf_counter()
+    start = time.process_time()
     ValueCandidateRecognizer(frozenset(EntityKind)).recognize([unit])
     PatternRecognizer(frozenset(EntityKind)).recognize([unit])
-    # The quadratic versions took minutes on these inputs.
-    assert time.perf_counter() - start < 1.0
+    # The quadratic versions took minutes on these inputs; the linear ones take
+    # about 30ms. CPU time and a wide margin keep xdist workers sharing a CI
+    # runner from failing it on wall-clock stalls.
+    assert time.process_time() - start < 5.0
 
 
 @pytest.mark.parametrize(

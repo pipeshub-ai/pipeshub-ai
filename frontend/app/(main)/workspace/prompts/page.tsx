@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import {
   Box,
   Button,
@@ -14,6 +15,7 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -178,6 +180,9 @@ function PromptConfigCallout() {
 export default function PromptsPage() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -197,8 +202,17 @@ export default function PromptsPage() {
     customPromptWebSearch !== savedPromptWebSearch ||
     customPromptAgent !== savedPromptAgent;
 
+  // The sidebar hides this page from members, but the URL still opens it. A profile that failed
+  // to load leaves isAdmin null; General is open to everyone, so that goes there too.
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin !== true) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   // ── Load on mount ──────────────────────────────────────────
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     const load = async () => {
       try {
         const prompts = await PromptsApi.getSystemPrompts();
@@ -213,7 +227,7 @@ export default function PromptsPage() {
       }
     };
     load();
-  }, []);
+  }, [isProfileInitialized, isAdmin]);
 
   // ── Handlers ───────────────────────────────────────────────
   // "Reset to Default" means removing the org override entirely — an empty
@@ -270,6 +284,10 @@ export default function PromptsPage() {
       description: t('workspace.prompts.toasts.discardedDescription'),
     });
   }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast, t]);
+
+  if (!isProfileInitialized || isAdmin !== true) {
+    return null;
+  }
 
   // ── Loading state ──────────────────────────────────────────
   if (isLoading) {

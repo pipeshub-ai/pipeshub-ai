@@ -90,6 +90,8 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
   onAfterConnectorOAuthHydrateRef.current = options?.onAfterConnectorOAuthHydrate;
 
   const oauthPopupRef = useRef<Window | null>(null);
+  /** The blank window opened on the click, until it is sent to the provider. */
+  const blankPopupRef = useRef<Window | null>(null);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
   /** Prevents duplicate `completeOAuthFlow` from postMessage + popup-close (toolset pattern). */
   const oauthCompletionHandledRef = useRef(false);
@@ -111,6 +113,9 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
         pollRef.current = null;
       }
       desktopWaitCleanupRef.current?.();
+      const blank = blankPopupRef.current;
+      blankPopupRef.current = null;
+      if (blank && !blank.closed) blank.close();
     };
   }, []);
 
@@ -288,6 +293,21 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
     oauthVerifyAbortRef.current = false;
     oauthPopupRef.current = null;
 
+    const resetAuthStateFromConfig = () => {
+      const cfg = useConnectorsStore.getState().connectorConfig;
+      setAuthState(isConnectorConfigAuthenticated(cfg) ? 'success' : 'empty');
+    };
+
+    // Opened before anything is awaited: iOS Safari and other strict browsers block a window
+    // opened after an async gap, so it starts blank and navigates once the address arrives.
+    const popup = isElectron() ? null : openCenteredOAuthWindow('about:blank', `connector-oauth-${id}`);
+    if (!isElectron() && (!popup || popup.closed)) {
+      resetAuthStateFromConfig();
+      addToast({ variant: 'error', title: t('agentBuilder.oauthPopupBlocked') });
+      return;
+    }
+    blankPopupRef.current = popup;
+
     setAuthState('authenticating');
     setIsAuthenticating(true);
 
@@ -323,16 +343,18 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
         return;
       }
 
-      const popup = openCenteredOAuthWindow(authorizationUrl, `connector-oauth-${id}`);
-      if (!popup || popup.closed) {
+      blankPopupRef.current = null;
+      // The panel closed while the address was on its way; the unmount already closed the window.
+      if (!aliveRef.current) return;
+      if (popup.closed) {
+        // Closed while the address was on its way: the person changed their mind.
         setIsAuthenticating(false);
-        const cfg = useConnectorsStore.getState().connectorConfig;
-        setAuthState(isConnectorConfigAuthenticated(cfg) ? 'success' : 'empty');
-        addToast({ variant: 'error', title: t('agentBuilder.oauthPopupBlocked') });
+        resetAuthStateFromConfig();
         return;
       }
 
       oauthPopupRef.current = popup;
+      popup.location.href = authorizationUrl;
       popup.focus();
 
       // Poll for popup closure — same guard as toolset (`statusChecked` / `oauthCompletionHandledRef`)
@@ -354,6 +376,8 @@ export function useConnectorOAuthPopup(options?: ConnectorOAuthPopupOptions) {
     } catch {
       clearOAuthPoll();
       oauthPopupRef.current = null;
+      blankPopupRef.current = null;
+      if (popup && !popup.closed) popup.close();
       setIsAuthenticating(false);
       setAuthState('failed');
     }

@@ -769,7 +769,8 @@ function formatBytes(bytes: number): string {
 export interface UploadDataSidebarProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
-  onSave: (items: UploadFileItem[]) => void;
+  /** Return false to keep the picked files in the panel (nothing was uploaded). */
+  onSave: (items: UploadFileItem[]) => boolean | void;
   isSaving?: boolean;
   /** Folder levels that can still be added under the upload target. */
   remainingFolderLevels?: number;
@@ -832,7 +833,7 @@ export function UploadDataSidebar({
   const handleSave = useCallback(() => {
     const allItems = [...fileItems, ...folderItems];
     if (allItems.length > 0) {
-      onSave(allItems);
+      if (onSave(allItems) === false) return;
       setFileItems([]);
       setFolderItems([]);
     }
