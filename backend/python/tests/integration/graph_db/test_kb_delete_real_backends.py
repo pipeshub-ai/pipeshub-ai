@@ -370,17 +370,31 @@ async def _update_push_during_cascade(env, deleting, seed: int, run: int, *, hol
         undo = wrap(env.graph, "claim_push_record", after=lambda result, **kw: hold())
     else:
         undo = wrap(env.processor, "_refuse_if_kb_not_live", before=hold)
+    at_records = asyncio.Event()
+
+    async def cascade_at_records(_tx: object, _keys: object, collection: str, *_a: object, **_kw: object) -> None:
+        if collection == RECORDS:
+            at_records.set()
+
+    undo_records = wrap(env.graph, "_delete_nodes_by_keys", before=cascade_at_records) if arango(env) else (lambda: None)
     push_task = asyncio.ensure_future(push_outcome(env, ext="upd-1", version=2, text="new"))
     try:
         await asyncio.wait_for(gate_in.wait(), 30)
         delete_task = asyncio.ensure_future(deleting.delete())
         # the marker is committed and the cascade is at its first batch; a long hold outlasts the store's lock wait
-        await asyncio.sleep(hold_seconds if hold_seconds is not None else 0.3 + rng.random() * 0.4)
+        if hold_seconds is not None:
+            # Hold the push's write until the cascade is writing the records and has waited on it for
+            # hold_seconds; a fixed sleep from the start of the delete can end before the cascade got there.
+            await asyncio.wait_for(at_records.wait(), 30)
+            await asyncio.sleep(hold_seconds)
+        else:
+            await asyncio.sleep(0.3 + rng.random() * 0.4)
         gate_out.set()
         result = await delete_task
         outcome = await push_task
     finally:
         undo()
+        undo_records()
         gate_out.set()
     return {"delete": result, "push": outcome, "claims": claims["n"]}
 
@@ -404,7 +418,7 @@ async def test_update_push_during_cascade(env, deleting, seed, run, hold_at) -> 
     # push's; a deadlock between a batch and the push has either side as the victim, and both run again.
 
 
-@pytest.mark.parametrize("hold", [0.6, 0.9])
+@pytest.mark.parametrize("hold", [0.5, 0.7])
 async def test_update_push_held_past_the_lock_wait_makes_the_cascade_retry(env, deleting, hold) -> None:
     """Arango: the push holds its write on the record past the store's lock wait; the cascade loses, runs again, wins."""
     if not arango(env):
@@ -421,7 +435,7 @@ async def test_update_push_during_cascade_without_the_cascade_retry_leaves_the_k
         pytest.skip("the conflict is certain only on Arango (a write-write conflict); on Neo4j the batch waits for the lock")
     with monkeypatch.context() as m:
         m.setattr("app.services.graph_db.arango.arango_http_provider.CASCADE_ATTEMPTS", 1)
-        out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", hold_seconds=0.9)
+        out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", hold_seconds=0.7)
     kb = await kb_doc(env)
     assert out["delete"]["success"] is False, out
     assert kb is not None and kb.get("status") == "DELETING" and len(await survivors(env)) == 1, (out, kb)
@@ -710,6 +724,23 @@ async def test_kb_rename_during_push(env, seed, run) -> None:
     assert all(not isinstance(r, Exception) for r in pushes), pushes
     assert all(r.http_status in (200, 201) for r in pushes), pushes
     assert all(not isinstance(r, Exception) and r.get("success") for r in rename_results), rename_results
+
+
+@pytest.mark.parametrize("hold", [0.3])
+async def test_a_rename_waits_out_a_writer_holding_the_kb_document(env, hold) -> None:
+    """A transaction holds the KB document's write past the store's lock wait (Arango: the rename gets a
+    write-write conflict, 1200); the rename writes again and succeeds the first time, without a retry from the caller."""
+    tx = await env.graph.begin_transaction(read=[APPS], write=[APPS])
+    try:
+        assert await env.graph.update_knowledge_base(kb_id=env.kb_id, updates={"description": "held"}, transaction=tx)
+        rename = asyncio.ensure_future(env.kb_service.update_knowledge_base(env.kb_id, env.user_id, {"name": "renamed under a held write"}))
+        await asyncio.sleep(hold)
+    finally:
+        await env.graph.commit_transaction(tx)
+    result = await asyncio.wait_for(rename, 30)
+
+    assert result.get("success") is True, result
+    assert (await kb_doc(env))["name"] == "renamed under a held write"
 
 
 # ---- the marker itself, on a real store ---------------------------------------------------------------------------

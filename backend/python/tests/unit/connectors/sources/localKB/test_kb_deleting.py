@@ -300,3 +300,42 @@ async def test_a_kb_that_is_gone_is_not_marked(service) -> None:
     service.graph_provider.get_document = AsyncMock(return_value=None)
     assert await service._mark_deleting("kb1") is None
     service.graph_provider.update_knowledge_base.assert_not_awaited()
+
+
+# ---- a rename that loses a write-write conflict to a push or a delete (T42r) ---------------------------------------
+
+@pytest.mark.asyncio
+async def test_a_rename_that_loses_a_write_conflict_writes_again(service) -> None:
+    arrange(service, status=None)
+    g = service.graph_provider
+    g.is_write_conflict = MagicMock(side_effect=lambda e: e is CONFLICT)
+    g.update_knowledge_base = AsyncMock(side_effect=[CONFLICT, CONFLICT, True])
+
+    result = await service.update_knowledge_base(**ARGS["update_knowledge_base"])
+
+    assert result["success"] is True and result["code"] == 200
+    assert g.update_knowledge_base.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_a_rename_that_keeps_losing_fails_after_five_attempts(service) -> None:
+    arrange(service, status=None)
+    g = service.graph_provider
+    g.is_write_conflict = MagicMock(side_effect=lambda e: e is CONFLICT)
+    g.update_knowledge_base = AsyncMock(side_effect=[CONFLICT] * 10)
+
+    result = await service.update_knowledge_base(**ARGS["update_knowledge_base"])
+
+    assert result["code"] == 500
+    assert g.update_knowledge_base.await_count == 5
+
+
+@pytest.mark.asyncio
+async def test_a_rename_error_that_is_not_a_conflict_is_not_retried(service) -> None:
+    arrange(service, status=None)
+    g = service.graph_provider
+    g.is_write_conflict = MagicMock(return_value=False)
+    g.update_knowledge_base = AsyncMock(side_effect=ValueError("bad"))
+
+    assert (await service.update_knowledge_base(**ARGS["update_knowledge_base"]))["code"] == 500
+    assert g.update_knowledge_base.await_count == 1

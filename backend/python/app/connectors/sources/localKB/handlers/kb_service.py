@@ -809,11 +809,20 @@ class KnowledgeBaseService:
                     return {"success": False, "code": 400, "reason": "Knowledge base name cannot be empty"}
                 updates["name"] = str(updates["name"]).strip()
             updates["updatedAtTimestamp"] = timestamp
-            # Update in database
-            result = await self.graph_provider.update_knowledge_base(
-                kb_id=kb_id,
-                updates=updates
-            )
+            # Update in database. A push or a delete writes the same KB document, and the store aborts
+            # one of two concurrent writers: write again instead of failing the rename.
+            result = None
+            for attempt in range(CASCADE_ATTEMPTS):
+                try:
+                    result = await self.graph_provider.update_knowledge_base(
+                        kb_id=kb_id,
+                        updates=updates
+                    )
+                    break
+                except Exception as e:
+                    if attempt + 1 >= CASCADE_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                        raise
+                    await cascade_backoff(attempt)
 
             if result:
                 self.logger.info("✅ Knowledge base updated successfully")

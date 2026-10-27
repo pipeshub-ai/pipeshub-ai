@@ -22,11 +22,10 @@ def service(kb: dict | None) -> KbPushService:
     graph = MagicMock()
     graph.get_document = AsyncMock(return_value=kb)
     graph.delete_nodes_and_edges = AsyncMock()
-    svc = KbPushService(
+    return KbPushService(
         graph_provider=graph, kb_service=MagicMock(), processor_for_kb=AsyncMock(), schema_registry=MagicMock(),
         storage=MagicMock(), worker=MagicMock(), spool=MagicMock(), publish_event=AsyncMock(),
     )
-    return svc
 
 
 @pytest.mark.asyncio

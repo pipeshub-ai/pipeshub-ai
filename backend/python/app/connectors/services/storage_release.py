@@ -20,8 +20,8 @@ from uuid import uuid4
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.connector_intents import ConnectorIntentStore
-from app.core.org_context import for_org
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
+from app.core.org_context import for_org
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
