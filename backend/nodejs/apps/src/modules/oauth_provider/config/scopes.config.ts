@@ -359,6 +359,7 @@ export const DefaultMcpScopes = [
   'semantic:write',
   'conversation:write',
   'conversation:chat',
+  'conversation:read',
   'kb:read',
   'kb:write',
   'kb:upload',

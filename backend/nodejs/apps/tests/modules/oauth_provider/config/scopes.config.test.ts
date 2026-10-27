@@ -33,6 +33,12 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     expect(DefaultMcpScopes.every((s) => isValidScope(s))).to.be.true
   })
 
+  // semantic:read and conversation:read must be mintable from a default install:
+  // they are real route scopes (knowledge search and conversation listing).
+  it('DefaultMcpScopes includes semantic:read and conversation:read', () => {
+    expect(DefaultMcpScopes).to.include('semantic:read')
+    expect(DefaultMcpScopes).to.include('conversation:read')
+  })
   // The code-graph routes and MCP code tools need code:read; the stock presets
   // grant it so new PATs and agent logins reach them without extra setup.
   it('code:read is in the stock presets and open to non-admins', () => {
