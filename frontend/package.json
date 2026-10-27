@@ -111,7 +111,7 @@
     "pngjs": "^7.0.0",
     "sharp": "^0.35.5",
     "text-fragments-polyfill": "^6.7.0",
-    "typescript": "^5.9.2",
+    "typescript": "^6.0.3",
     "vitest": "^4.1.12"
   },
   "overrides": {
