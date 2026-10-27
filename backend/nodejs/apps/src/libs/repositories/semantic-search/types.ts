@@ -130,6 +130,18 @@ export interface SemanticSearchRepository {
     tx?: Tx,
   ): Promise<SemanticSearchDto | null>;
 
+  /**
+   * Replaces the recipients of a search after some were removed. When none
+   * remain the search stops being shared and loses its link; otherwise
+   * the sharing flag and the link stay. Unlike the other changes it returns the
+   * row AFTER the change, which is what the unshare response reports.
+   */
+  unshare(
+    id: string,
+    remaining: SearchSharing['sharedWith'],
+    tx?: Tx,
+  ): Promise<SemanticSearchDto | null>;
+
   /** Archives a search (by id; the caller checked visibility). */
   archive(
     id: string,

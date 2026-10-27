@@ -300,6 +300,29 @@ export class PgSemanticSearchRepository implements SemanticSearchRepository {
     });
   }
 
+  async unshare(
+    id: string,
+    remaining: SearchSharing['sharedWith'],
+    tx?: Tx,
+  ): Promise<SemanticSearchDto | null> {
+    const oid = oidOf(id);
+    if (!oid) return null;
+    return inUnit(tx, { write: true }, async (k) => {
+      const where = 's.org_id = $1 AND s.id = $2::text';
+      if (!(await this.before(k, where, [k.orgId, oid]))) return null;
+      // With nobody left the search stops being shared and loses its link.
+      await k.query(
+        `/* pipeshub:search.unshare */ UPDATE conversation.semantic_searches SET
+            is_shared = CASE WHEN $3::boolean THEN false ELSE is_shared END,
+            share_link = CASE WHEN $3::boolean THEN NULL ELSE share_link END, updated_at = $4
+          WHERE org_id = $1 AND id = $2::text`,
+        [k.orgId, oid, remaining.length === 0, new Date()],
+      );
+      await replaceMembers(k, 'search', oid, remaining);
+      return this.before(k, where, [k.orgId, oid]);
+    });
+  }
+
   async archive(
     id: string,
     byUserId: string,

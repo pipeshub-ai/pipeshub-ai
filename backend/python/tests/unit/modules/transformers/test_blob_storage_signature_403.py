@@ -129,3 +129,88 @@ def test_the_reader_error_classifies_transient_on_its_own(status: int | None, ra
     """No aiohttp error in the chain, and whatever the status it carries."""
     exc = SignedUrlReadError("x", status, ranged=ranged)
     assert MessageErrorClassifier.classify_by_exception(exc) == MessageErrorType.TRANSIENT
+
+
+class _MappingGraph:
+    """The mapping the re-lookup reads: each read answers the next document id (the last repeats)."""
+
+    def __init__(self, answers: list[str | None]) -> None:
+        self.answers, self.reads = list(answers), 0
+
+    async def get_document(self, key: str, collection: str, **_kw: object) -> dict | None:
+        self.reads += 1
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        return None if answer is None else {"documentId": answer, "fileSizeBytes": 10}
+
+    async def get_nodes_by_filters(self, *_a: object, **_kw: object) -> list:
+        return []
+
+
+@pytest.fixture
+async def objects() -> AsyncIterator[dict]:
+    """A gateway and object store. ``docs[doc]`` is "gone" (gateway 404) or the status the signed object answers."""
+    state: dict = {"docs": {}}
+
+    async def download(request: web.Request) -> web.Response:
+        doc = request.match_info["doc"]
+        if state["docs"].get(doc) == "gone":
+            return web.json_response({"error": "not found"}, status=404)
+        return web.json_response({"signedUrl": f"{state['origin']}/obj/{doc}?sig=x"})
+
+    async def obj(request: web.Request) -> web.Response:
+        return web.Response(status=state["docs"][request.match_info["doc"]], body=b"<Error/>")
+
+    app = web.Application()
+    app.router.add_get("/api/v1/document/internal/{doc}/download", download)
+    app.router.add_route("*", "/obj/{doc}", obj)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "127.0.0.1", 0)
+    await site.start()
+    state["origin"] = f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+    yield state
+    await bs_mod.close_shared_session()
+    await runner.cleanup()
+
+
+# name: (documents, mapping answers for the re-lookup, error type, classification). The classification is
+# what main gives these errors; the re-lookup must not change it.
+_AFTER_RELOOKUP = {
+    "gateway404_same_id": ({"old": "gone"}, ["old"], StorageDocumentNotFoundError, MessageErrorType.TRANSIENT),
+    "gateway404_no_mapping": ({"old": "gone"}, [None], StorageDocumentNotFoundError, MessageErrorType.TRANSIENT),
+    "signed404_no_mapping": ({"old": 404}, [None], SignedUrlReadError, MessageErrorType.TRANSIENT),
+    "signed404_then_new_id_gateway404": (
+        {"old": 404, "new": "gone"}, ["new"], StorageDocumentNotFoundError, MessageErrorType.TRANSIENT,
+    ),
+    "gateway404_then_new_id_signed403": (
+        {"old": "gone", "new": 403}, ["new"], SignedUrlReadError, MessageErrorType.TRANSIENT,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(_AFTER_RELOOKUP))
+async def test_errors_after_a_re_lookup_keep_their_type_and_classification(objects: dict, case: str) -> None:
+    docs, answers, error_type, expected = _AFTER_RELOOKUP[case]
+    objects["docs"].update(docs)
+    blob = _blob(objects, _MappingGraph(answers))
+
+    with pytest.raises(Exception) as raised:
+        await blob.get_record_from_storage("vr-1", "org-1", lookup_result={"record_doc_id": "old", "fileSizeBytes": 10})
+
+    assert type(raised.value) is error_type
+    assert MessageErrorClassifier.classify_by_exception(raised.value) == expected
+
+
+@pytest.mark.parametrize("case", ["gateway404_same_id", "signed404_then_new_id_gateway404"])
+async def test_a_named_entity_job_whose_document_is_gone_still_ends_gone(objects: dict, case: str) -> None:
+    from app.modules.indexing import named_entity_persist_retry as nep
+
+    docs, answers, _, _ = _AFTER_RELOOKUP[case]
+    objects["docs"].update(docs)
+    graph = MagicMock()
+    graph.get_document = AsyncMock(return_value={"_key": "r1", "id": "r1", "virtualRecordId": "vr-1", "orgId": "org-1"})
+    sink = MagicMock()
+    # The job's own lookup first, then the re-lookup's answers.
+    sink.blob_storage = _blob(objects, _MappingGraph(["old", *answers]))
+
+    assert await nep._retry_one(graph, sink, "r1", "org-1", 0) == "gone"
