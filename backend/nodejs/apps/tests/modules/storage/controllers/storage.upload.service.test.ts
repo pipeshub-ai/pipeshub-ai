@@ -1,9 +1,10 @@
 import 'reflect-metadata'
 import { expect } from 'chai'
 import sinon from 'sinon'
+import mongoose from 'mongoose'
 import { UploadDocumentService } from '../../../../src/modules/storage/controllers/storage.upload.service'
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
-import { BadRequestError, InternalServerError } from '../../../../src/libs/errors/http.errors'
+import { BadRequestError, InternalServerError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 import { DocumentModel } from '../../../../src/modules/storage/schema/document.schema'
 import { HTTP_STATUS } from '../../../../src/libs/enums/http-status.enum'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
@@ -682,6 +683,27 @@ describe('UploadDocumentService', () => {
       expect(placeholderDoc.save.calledOnce).to.be.true
       expect(res.status.calledWith(HTTP_STATUS.PERMANENT_REDIRECT)).to.be.true
       expect(res.setHeader.calledWith('x-document-id', 'doc-8')).to.be.true
+    })
+
+    it('should answer not found when the placeholder is removed before the direct upload starts', async () => {
+      const placeholderDoc: any = {
+        _id: 'doc-gone', documentName: 'big', documentPath: '507f1f77bcf86cd799439011/PipesHub/Finance',
+        isVersionedFile: false,
+        save: sinon.stub().rejects(new mongoose.Error.DocumentNotFoundError({}, 'Document', 0, {})),
+      }
+      sinon.stub(DocumentModel, 'deleteOne').resolves({} as any)
+      mockAdapter.generatePresignedUrlForDirectUpload.resolves({
+        statusCode: 200, data: { url: 'https://bucket.s3.amazonaws.com/presigned?x=1' },
+      })
+      const { service, req, res } = directUpload(placeholderDoc)
+
+      try {
+        await service.uploadDocument(req, res, sinon.stub())
+        expect.fail('Should have thrown')
+      } catch (error) {
+        expect(error).to.be.instanceOf(NotFoundError)
+      }
+      expect(res.status.called).to.be.false
     })
 
     it('should include /current/ in direct-upload path for versioned files', async () => {
