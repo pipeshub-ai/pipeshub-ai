@@ -58,9 +58,9 @@ describe('OAuthDcrService', () => {
     const orgQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
-      lean: sinon.stub().resolves([{ _id: orgId }]),
+      lean: sinon.stub().resolves({ _id: orgId }),
     }
-    sinon.stub(Org, 'find').returns(orgQuery)
+    sinon.stub(Org, 'findOne').returns(orgQuery)
     const userQuery: any = {
       sort: sinon.stub().returnsThis(),
       select: sinon.stub().returnsThis(),
