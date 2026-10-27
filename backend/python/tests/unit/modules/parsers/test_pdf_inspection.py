@@ -13,10 +13,12 @@ from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_inspection import (
     detect_ocr,
+    needs_ocr_and_page_count,
     open_pdf,
     pages_need_ocr,
     repair_pdf,
     sample_page_indices,
+    text_layer_char_counts,
 )
 from tests.support.pdf_samples import (
     MIB,
@@ -114,6 +116,83 @@ class TestDetectOcr:
 
     def test_a_pdf_with_no_pages_needs_no_ocr(self) -> None:
         assert detect_ocr(broken_xref_pdf(1024), 30) is False
+
+
+class TestTextLayerCharCounts:
+    def test_text_and_shapes_pages(self) -> None:
+        pytest.importorskip("reportlab")
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+
+        buf = io.BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        c.drawString(72, 700, "hello")
+        c.showPage()
+        c.rect(72, 600, 200, 100, fill=1)
+        c.showPage()
+        c.save()
+
+        text_page, shapes_page = text_layer_char_counts(buf.getvalue())
+        assert text_page >= len("hello")
+        assert shapes_page == 0
+
+    @pytest.mark.parametrize("content", list(NOT_PDFS.values()), ids=list(NOT_PDFS))
+    def test_a_file_pdfium_cannot_open_has_no_counts(self, content: bytes) -> None:
+        assert text_layer_char_counts(content) is None
+
+
+class TestNeedsOcrAndPageCount:
+    """pdfplumber spent over a minute deciding that a report whose glyphs were
+    drawn as vector paths had no text. pdfium's per-page character counts settle
+    textless pages first; pdfplumber's heuristic sees only pages with text."""
+
+    @staticmethod
+    def _decide(content: bytes, char_counts: list[int] | None) -> tuple[bool, int]:
+        with patch(
+            "app.modules.parsers.pdf.pdf_inspection.text_layer_char_counts", return_value=char_counts
+        ):
+            return needs_ocr_and_page_count(content)
+
+    def test_a_text_pdf_needs_no_ocr(self) -> None:
+        assert needs_ocr_and_page_count(text_pdf(pages=3)) == (False, 3)
+
+    def test_a_pdf_without_text_reads_as_scanned(self) -> None:
+        assert needs_ocr_and_page_count(blank_pdf(pages=3)) == (True, 3)
+
+    def test_pages_without_a_text_layer_never_reach_pdfplumber(self) -> None:
+        with patch.object(OCRStrategy, "needs_ocr") as needs_ocr:
+            assert needs_ocr_and_page_count(blank_pdf(pages=3)) == (True, 3)
+
+        needs_ocr.assert_not_called()
+
+    def test_enough_textless_pages_settle_it_without_pdfplumber(self) -> None:
+        with patch.object(OCRStrategy, "needs_ocr") as needs_ocr:
+            assert self._decide(text_pdf(pages=4), [0, 0, 300, 12]) == (True, 4)
+
+        needs_ocr.assert_not_called()
+
+    @pytest.mark.parametrize("pages_needing_ocr,expect", [(0, False), (1, True)])
+    def test_pages_with_text_keep_the_existing_heuristic(
+        self, pages_needing_ocr: int, expect: bool
+    ) -> None:
+        """One textless page of four plus the heuristic's verdict on the other three."""
+        verdicts = [True] * pages_needing_ocr + [False] * (3 - pages_needing_ocr)
+        with patch.object(OCRStrategy, "needs_ocr", side_effect=verdicts) as needs_ocr:
+            assert self._decide(text_pdf(pages=4), [0, 40, 300, 12]) == (expect, 4)
+
+        assert needs_ocr.call_count == 3
+
+    @pytest.mark.parametrize("char_counts", [None, [0]], ids=["pdfium-error", "page-count-mismatch"])
+    def test_every_page_gets_the_heuristic_when_pdfium_cannot_help(
+        self, char_counts: list[int] | None
+    ) -> None:
+        with patch.object(OCRStrategy, "needs_ocr", return_value=False) as needs_ocr:
+            assert self._decide(text_pdf(pages=3), char_counts) == (False, 3)
+
+        assert needs_ocr.call_count == 3
+
+    def test_a_pdf_with_no_pages_needs_no_ocr(self) -> None:
+        assert needs_ocr_and_page_count(broken_xref_pdf(1_000)) == (False, 0)
 
 
 class TestRepairPdf:

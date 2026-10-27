@@ -41673,6 +41673,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A PDF that could not be read within the upload's 50-second budget, or
+            whose parse ran out of memory, is not attached (`<name> is too large or complex to read
+            right now, so it wasn't attached. ...`). Only that upload fails.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
         '401':
           description: Unauthorized
           content:
@@ -49143,6 +49156,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: |
+            A PDF that could not be read within the upload's 50-second budget, or
+            whose parse ran out of memory, is not attached (`<name> is too large or complex to read
+            right now, so it wasn't attached. ...`). Only that upload fails.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [detail]
+                properties:
+                  detail:
+                    type: string
         '401':
           description: Unauthorized
           content:

@@ -5086,9 +5086,13 @@ class WebConnector(BaseConnector):
                     result.status_code if result else "no response",
                     result.error_message if result else None,
                 )
+                site_status = result.status_code if result else None
                 raise map_source_status(
-                    result.status_code if result and result.status_code else HttpStatusCode.BAD_GATEWAY.value,
+                    # A site's 401 is a page behind a login, not our connection to reconnect.
+                    HttpStatusCode.FORBIDDEN.value if site_status == HttpStatusCode.UNAUTHORIZED.value
+                    else site_status or HttpStatusCode.BAD_GATEWAY.value,
                     connector=self.display_name,
+                    reason=failed_page_reason(site_status),
                     retry_after=(
                         str(int(result.retry_after))
                         if result and result.retry_after

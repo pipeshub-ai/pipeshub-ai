@@ -206,6 +206,29 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         graph_provider = await app_container.graph_provider()
     app.state.graph_provider = graph_provider
 
+    # Chat attachments parse PDFs in parse workers sized from this governor, so
+    # one slow or huge file costs only its own upload: a worker can be killed on
+    # a deadline and is what runs out of memory, where a thread is neither. No
+    # admission gates are taken here, so its sampling loop is not started.
+    from app.modules.parsers import parse_pool
+    from app.modules.parsers.pdf.pdf_rasterizer import (
+        set_resource_governor as set_pdf_rasterizer_governor,
+    )
+    from app.services.messaging.config import messaging_env
+    from app.services.resource_governor import ResourceGovernor
+    from app.utils.llm import is_local_cpu_embedding_configured
+
+    governor = ResourceGovernor(
+        logger=logger,
+        env_parse=messaging_env.env_max_concurrent_parsing,
+        worker_count=configured_worker_count(),
+        reserve_embedding_cpus=await is_local_cpu_embedding_configured(
+            app_container.config_service(), logger
+        ),
+    )
+    set_pdf_rasterizer_governor(governor)
+    parse_pool.set_resource_governor(governor)
+
     # KB uploads made through chat index in this process, so it invalidates too.
     try:
         from app.services.cache.invalidation_hooks import (
@@ -432,6 +455,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         await config_service.close()
     except Exception as e:
         logger.error(f"❌ Error closing configuration service: {e}")
+
+    try:
+        from app.modules.parsers import parse_pool
+        parse_pool.set_resource_governor(None)
+        if parse_pool.shutdown_parse_pool():
+            logger.info("✅ Parse worker pool shut down")
+    except Exception as e:
+        logger.error(f"❌ Error shutting down the parse worker pool: {e}")
 
     try:
         from app.modules.parsers.pdf.pdf_rasterizer import shutdown_pdf_raster_pool

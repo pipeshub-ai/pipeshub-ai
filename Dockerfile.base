@@ -105,7 +105,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     git \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Rust (needed for maturin wheels e.g. html-to-markdown). /root/.rustup must live
+# Install Rust (for any dependency that has no prebuilt wheel on this platform). /root/.rustup must live
 # in the image layer, not a cache mount, or python-deps cannot run cargo.
 RUN --mount=type=cache,target=/root/.cargo/registry,sharing=locked \
     --mount=type=cache,target=/root/.cargo/git,sharing=locked \
