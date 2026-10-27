@@ -150,6 +150,58 @@ def test_only_the_helper_imports_the_library() -> None:
     assert offenders == []
 
 
+class _ConversionCalls(ast.NodeVisitor):
+    """Calls of the sync converter on an event loop, and un-awaited async calls."""
+
+    def __init__(self) -> None:
+        self.in_async = False
+        self.awaited: set[int] = set()
+        self.offenders: list[tuple[int, str]] = []
+
+    def _function(self, node: ast.AST, is_async: bool) -> None:
+        outer, self.in_async = self.in_async, is_async
+        self.generic_visit(node)
+        self.in_async = outer
+
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> None:
+        self._function(node, False)
+
+    def visit_AsyncFunctionDef(self, node: ast.AsyncFunctionDef) -> None:
+        self._function(node, True)
+
+    def visit_Lambda(self, node: ast.Lambda) -> None:
+        self._function(node, False)
+
+    def visit_Await(self, node: ast.Await) -> None:
+        self.awaited.add(id(node.value))
+        self.generic_visit(node)
+
+    def visit_Call(self, node: ast.Call) -> None:
+        name = getattr(node.func, "attr", getattr(node.func, "id", ""))
+        if name == "html_to_markdown" and self.in_async:
+            self.offenders.append((node.lineno, "sync converter inside async def"))
+        elif name == "html_to_markdown_async" and id(node) not in self.awaited:
+            self.offenders.append((node.lineno, "html_to_markdown_async not awaited"))
+        self.generic_visit(node)
+
+
+def test_async_code_awaits_the_async_converter() -> None:
+    """A large body converted inline would stall the event loop the connector runs on."""
+    root = Path(html_markdown.__file__).resolve().parents[1]  # backend/python/app
+    helper = Path(html_markdown.__file__).resolve()
+    offenders = []
+    for path in root.rglob("*.py"):
+        if path == helper:
+            continue
+        source = path.read_text(encoding="utf-8-sig")
+        if "html_to_markdown" not in source:
+            continue
+        visitor = _ConversionCalls()
+        visitor.visit(ast.parse(source))
+        offenders += [f"{path.relative_to(root.parent)}:{line}: {why}" for line, why in visitor.offenders]
+    assert offenders == []
+
+
 # --- input the splitter cannot take as it is ---------------------------------
 # Each of these returned "" or raised before, for a document the single call
 # (or the plain text) could have handled.
