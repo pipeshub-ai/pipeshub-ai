@@ -355,6 +355,51 @@ class TestMemoryReservation:
 
         consumer._requeue_message.assert_not_awaited()
 
+    async def test_a_big_record_of_known_size_waits_for_memory_before_it_downloads(self, monkeypatch) -> None:
+        consumer = _governor_consumer()
+        budget = consumer.governor.memory_budget
+        budget.limit = 500 * MB
+        assert await budget.reserve(400 * MB)
+        monkeypatch.setattr(concurrency, "parse_admission_wait_seconds", lambda: 0.05)
+        downloaded: list[str] = []
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id="r1", size_bytes=300 * MB),
+            )
+            downloaded.append("r1")
+            async for event in _page(300 * MB)(_msg):
+                yield event
+
+        consumer.message_handler = handler
+
+        assert await consumer._process_message_wrapper("t", "1-0", _fields()) is False
+
+        assert downloaded == []
+        consumer._requeue_message.assert_awaited_once()
+        assert budget.stats()["reserved_bytes"] == 400 * MB
+
+    async def test_a_record_reserved_before_its_download_is_not_charged_again_to_parse(self) -> None:
+        consumer = _governor_consumer()
+        budget = consumer.governor.memory_budget
+        reserved: list[int] = []
+
+        async def handler(_msg) -> AsyncGenerator[PipelineEvent, None]:
+            yield PipelineEvent(
+                event=IndexingEvent.START_DOWNLOAD, data=PipelineEventData(record_id="r1", size_bytes=300 * MB),
+            )
+            async for event in _page(300 * MB)(_msg):
+                if event.event == IndexingEvent.INDEXING_COMPLETE:
+                    reserved.append(budget.stats()["reserved_bytes"])
+                yield event
+
+        consumer.message_handler = handler
+
+        assert await consumer._process_message_wrapper("t", "1-0", _fields()) is True
+
+        assert reserved == [300 * MB * 4]
+        assert budget.stats()["reserved_bytes"] == 0
+
     async def test_the_budget_is_the_free_memory_the_governor_measured(self) -> None:
         governor = make_test_governor(logger_name="test-image-memory-limit")
 

@@ -1178,13 +1178,17 @@ async def reserve_record_memory(
     tier: ParseTier | None,
     size_bytes: int | None,
     timeout: float | None = None,
+    *,
+    downloaded: bool = False,
 ) -> "Admission | None":
     """Reserve what a record too big for the governor's count limits is
     expected to hold, until it finishes; ``None`` when it needs no reservation
     or there is no governor.
 
-    Taken before the parse permit, so a record waiting for memory holds no
-    parse slot. With *timeout*, raises ``ParseAdmissionTimeout`` instead of
+    Taken before the download when the record's size is known
+    (``START_DOWNLOAD``), else at ``START_PARSING`` with its content
+    *downloaded* and counted while it waits; either way before the parse
+    permit. With *timeout*, raises ``ParseAdmissionTimeout`` instead of
     waiting on.
     """
     governor = host.governor
@@ -1194,7 +1198,7 @@ async def reserve_record_memory(
     if not cost:
         return None
     budget = governor.memory_budget
-    if not await budget.reserve(cost, timeout, held=size_bytes or 0):
+    if not await budget.reserve(cost, timeout, held=(size_bytes or 0) if downloaded else 0):
         raise ParseAdmissionTimeout("record_memory", timeout or 0.0)
     return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 

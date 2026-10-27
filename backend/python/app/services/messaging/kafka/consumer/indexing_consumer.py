@@ -2734,6 +2734,21 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                         async with asyncio.timeout(processing_timeout) as budget:
                             async for event in event_gen:
                                 if (
+                                    event.event == IndexingEvent.START_DOWNLOAD
+                                    and memory_admission is None
+                                ):
+                                    # Before the download: a record waiting
+                                    # for memory must not hold its content.
+                                    async with concurrency.parse_admission_wait(
+                                        self, budget, message_id
+                                    ) as wait:
+                                        memory_admission = await concurrency.reserve_record_memory(
+                                            self,
+                                            index_tier,
+                                            event.data.size_bytes if event.data else None,
+                                            timeout=wait.remaining(),
+                                        )
+                                elif (
                                     event.event == IndexingEvent.START_PARSING
                                     and not parsing_held
                                 ):
@@ -2754,9 +2769,11 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         self, budget, message_id
                                     ) as wait:
                                         size_bytes = event.data.size_bytes if event.data else None
-                                        memory_admission = await concurrency.reserve_record_memory(
-                                            self, parse_tier, size_bytes, timeout=wait.remaining(),
-                                        )
+                                        if memory_admission is None:
+                                            memory_admission = await concurrency.reserve_record_memory(
+                                                self, parse_tier, size_bytes,
+                                                timeout=wait.remaining(), downloaded=True,
+                                            )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,

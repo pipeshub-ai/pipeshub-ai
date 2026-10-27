@@ -2902,6 +2902,43 @@ class TestSignedUrlPath:
         ep.on_event.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_a_record_of_known_size_announces_its_download_before_it_starts(self) -> None:
+        """The consumer reserves the record's memory on START_DOWNLOAD, so nothing
+        may be downloaded until that event has been taken."""
+        handler = _make_handler()
+        gp = handler.event_processor.graph_provider
+        record = {
+            "_key": "r1",
+            "virtualRecordId": "vr1",
+            "indexingStatus": ProgressStatus.NOT_STARTED.value,
+            "mimeType": "application/pdf",
+            "sizeInBytes": 300 * 1024 * 1024,
+        }
+        gp.get_document = AsyncMock(side_effect=[record, record])
+        gp.update_queued_duplicates_status = AsyncMock(return_value=0)
+        handler.event_processor.on_event = MagicMock(return_value=_async_gen_events([
+            {"event": "parsing_complete", "data": {"record_id": "r1"}},
+            {"event": "indexing_complete", "data": {"record_id": "r1"}},
+        ]))
+        payload = {
+            "recordId": "r1", "virtualRecordId": "vr1", "orgId": "org-1",
+            "mimeType": "application/pdf", "extension": "pdf", "signedUrl": "https://example.com/file.pdf",
+        }
+
+        with patch.object(handler, "_download_from_signed_url", new_callable=AsyncMock) as mock_dl:
+            mock_dl.return_value = b"file content"
+            events = handler.process_event(EventTypes.NEW_RECORD.value, payload)
+            first = await events.__anext__()
+            downloaded_before_it = mock_dl.await_count
+            rest = [event async for event in events]
+
+        assert first.event == IndexingEvent.START_DOWNLOAD
+        assert first.data.size_bytes == 300 * 1024 * 1024
+        assert downloaded_before_it == 0
+        mock_dl.assert_awaited_once()
+        assert len(rest) == 2
+
+    @pytest.mark.asyncio
     async def test_processing_failure_does_not_retry_via_connector(self) -> None:
         handler = _make_handler()
         gp = handler.event_processor.graph_provider
