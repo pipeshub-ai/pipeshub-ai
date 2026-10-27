@@ -101,11 +101,11 @@ def evaluate(entries: list[Any], now_ms: int, stale_ms: int = STALE_AFTER_MS) ->
 async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) -> list[str]:
     """Client ids of live members of *groups* without the tag.
 
-    aiokafka's ``describe_consumer_groups`` returns the raw ``DescribeGroupsResponse`` objects, one
-    per coordinator: ``.groups`` holds tuples ``(error_code, group, state, protocol_type, protocol,
-    members)`` and each member is ``(member_id, client_id, client_host, metadata, assignment)``,
-    the same positions in every response version. A group the broker reports with an error, or a
-    response of another shape, raises: the check then publishes nothing and readers hold.
+    aiokafka 0.14's ``describe_consumer_groups`` returns the raw ``DescribeGroupsResponse_v<N>``
+    objects, one per coordinator. ``to_object()`` names the fields the same way in every version:
+    ``groups`` is a list of ``{error_code, group, members: [{member_id, client_id, ...}]}``. A group
+    the broker reports with an error, or a response of another shape, raises: the check then
+    publishes nothing and readers hold.
     """
     admin = admin_factory()
     await admin.start()
@@ -115,12 +115,13 @@ async def kafka_untagged(admin_factory: Callable[[], Any], groups: list[str]) ->
         await admin.close()
     names: list[str] = []
     for response in described:
-        for group in response.groups:
-            error_code, group_id, members = group[0], group[1], group[5]
-            if error_code != 0:
-                raise RuntimeError(f"describing consumer group {group_id!r} failed with error code {error_code}")
-            for member in members:
-                client_id = str(member[1] or "")
+        for group in response.to_object()["groups"]:
+            if group["error_code"] != 0:
+                raise RuntimeError(
+                    f"describing consumer group {group['group']!r} failed with error code {group['error_code']}"
+                )
+            for member in group["members"]:
+                client_id = str(member["client_id"] or "")
                 if client_id and not is_tagged(client_id):
                     names.append(client_id)
     return sorted(set(names))

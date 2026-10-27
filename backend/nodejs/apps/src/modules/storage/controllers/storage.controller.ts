@@ -707,12 +707,19 @@ export class StorageController {
       const ageFilter =
         Number.isFinite(olderThanSeconds) && olderThanSeconds >= 0
           ? {
-              createdAt: { $type: 'number' },
               $expr: {
-                $lt: [
-                  '$createdAt',
+                $and: [
+                  { $isNumber: '$createdAt' },
                   {
-                    $subtract: [{ $toLong: '$$NOW' }, olderThanSeconds * 1000],
+                    $lt: [
+                      '$createdAt',
+                      {
+                        $subtract: [
+                          { $toLong: '$$NOW' },
+                          olderThanSeconds * 1000,
+                        ],
+                      },
+                    ],
                   },
                 ],
               },
@@ -728,7 +735,15 @@ export class StorageController {
       })
         .select('_id documentName documentPath createdAt retiredAt')
         .sort({ createdAt: -1, _id: -1 })
-        .lean();
+        .lean<
+          {
+            _id: unknown;
+            documentName: string;
+            documentPath?: string;
+            createdAt?: number;
+            retiredAt?: number | null;
+          }[]
+        >();
       res.status(HTTP_STATUS.OK).json({
         documents: documents.map((d) => ({
           _id: String(d._id),

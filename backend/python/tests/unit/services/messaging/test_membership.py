@@ -42,15 +42,18 @@ class TestEvaluate:
 class TestChecks:
     @staticmethod
     def _described(version: int, *groups: tuple[int, str, list[str]]) -> Any:  # noqa: ANN401
-        """A real aiokafka ``DescribeGroupsResponse`` (what ``describe_consumer_groups`` returns)."""
-        from aiokafka.protocol.admin import DescribeGroupsResponse
+        """A real aiokafka 0.14 ``DescribeGroupsResponse_v<N>`` (what ``describe_consumer_groups`` returns)."""
+        from aiokafka.protocol import admin
 
+        extra = (0,) if version == 3 else ()  # v3 adds authorized_operations to each group
         rows = [
-            (error, name, "Stable", "consumer", "range", [(f"m-{i}", cid, "/127.0.0.1", b"", b"") for i, cid in enumerate(cids)])
+            (error, name, "Stable", "consumer", "range", [(f"m-{i}", cid, "/127.0.0.1", b"", b"") for i, cid in enumerate(cids)], *extra)
             for error, name, cids in groups
         ]
-        response = DescribeGroupsResponse[version]
-        return response(groups=rows) if version == 0 else response(throttle_time_ms=0, groups=rows)
+        response = getattr(admin, f"DescribeGroupsResponse_v{version}")
+        if version == 0:
+            return response(groups=rows)
+        return response(throttle_time_ms=0, groups=rows)
 
     @staticmethod
     def _admin(described: list[Any]) -> MagicMock:

@@ -1801,7 +1801,7 @@ async def run_stale_recovery_loop(
         await asyncio.sleep(startup_grace)
 
     # On its own timer, so a slow lap or a paused sweep never makes the published result stale.
-    membership_task = asyncio.create_task(run_membership_publisher(app_container))
+    membership_task = spawn_detached(run_membership_publisher(app_container))
     try:
         while True:
             await recover_in_progress_records(app_container, graph_provider)
