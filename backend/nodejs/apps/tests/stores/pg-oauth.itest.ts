@@ -110,7 +110,6 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     this.timeout(180_000);
     let stack: PgStack;
     const ledger = new OrgLedger();
-    const orgs: Array<{ id: string; createdAt: Date; isDeleted: boolean }> = [];
 
     before(async () => {
       stack = await startPgStack(bin, 'oauth_stores');
@@ -185,11 +184,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           keysOf((await row('oauth.apps', id))!, APP_ALWAYS, APP_OPTIONAL),
         setCreatedAt: (id, at) =>
           stack.admin(
-            async (c) =>
-              void (await c.query(
+            async (c) => { await c.query(
                 'UPDATE oauth.apps SET created_at = $2 WHERE id = $1',
                 [id, at],
-              )),
+              ) },
           ),
       });
     });
@@ -231,11 +229,10 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
           documentOf(await row('oauth.device_authorizations', id)),
         setAccessCreatedAt: (id, at) =>
           stack.admin(
-            async (c) =>
-              void (await c.query(
+            async (c) => { await c.query(
                 'UPDATE oauth.access_tokens SET created_at = $2 WHERE id = $1',
                 [id, at],
-              )),
+              ) },
           ),
       });
     });

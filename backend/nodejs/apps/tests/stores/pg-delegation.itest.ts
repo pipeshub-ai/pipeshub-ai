@@ -44,7 +44,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
       repo,
       newId,
       setEventCreatedAt: (id, at) =>
-        stack.admin(async (c) => void (await c.query('UPDATE oauth.delegation_events SET created_at = $2 WHERE id = $1', [id, at]))),
+        stack.admin(async (c) => { await c.query('UPDATE oauth.delegation_events SET created_at = $2 WHERE id = $1', [id, at]) }),
     });
 
     describe('what only PostgreSQL shows', () => {

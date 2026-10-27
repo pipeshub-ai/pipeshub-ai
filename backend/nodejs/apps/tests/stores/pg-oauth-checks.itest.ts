@@ -6,13 +6,7 @@
 import 'reflect-metadata';
 import { expect } from 'chai';
 import { createHash } from 'crypto';
-import {
-  MissingOrgContext,
-  getCurrentOrgId,
-} from '../../src/libs/context/orgContext';
-import { OAuthTokenService } from '../../src/modules/oauth_provider/services/oauth_token.service';
-import { setOrgRepository } from '../../src/libs/repositories/org';
-import { setUserRepository } from '../../src/libs/repositories/user';
+import { MissingOrgContext } from '../../src/libs/context/orgContext';
 import { UniqueConstraintError } from '../../src/libs/repositories/errors';
 import { setIdentityPort } from '../../src/libs/repositories/identity';
 import { PgIdentityPort } from '../../src/libs/repositories/identity/pg';
@@ -21,12 +15,8 @@ import { PgIdentityLookup } from '../../src/libs/repositories/identity-lookup/pg
 import { PgUnitOfWork, kernelTx } from '../../src/libs/repositories/pg';
 import { PgOAuthAppRepository } from '../../src/libs/repositories/oauth-app/pg';
 import { PgOAuthTokenRepository } from '../../src/libs/repositories/oauth-token/pg';
-import {
-  OAuthDeviceCodeStatus,
-  setOAuthTokenRepository,
-} from '../../src/libs/repositories/oauth-token';
+import { OAuthDeviceCodeStatus } from '../../src/libs/repositories/oauth-token';
 import { OAuthGrantType } from '../../src/libs/repositories/oauth-app';
-import { OAuthDeviceService } from '../../src/modules/oauth_provider/services/oauth.device.service';
 import {
   PG_BINS,
   PgStack,
