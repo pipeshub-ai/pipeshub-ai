@@ -321,6 +321,13 @@ def cgroup_heavy_parse_limit(snap: ResourceSnapshot, fleet: Ceilings) -> int:
     return max(1, fleet.heavy if mem_cap is None else min(fleet.heavy, mem_cap))
 
 
+def free_memory_share_bytes(snap: ResourceSnapshot, worker_count: int = 1) -> int | None:
+    """One worker process's share of the memory free in the cgroup, or ``None``
+    when the limit is unknown. What big records reserve from (``MemoryBudget``)."""
+    free_gb = _free_memory_gb(snap)
+    return None if free_gb is None else int(free_gb * 1024 ** 3) // max(1, worker_count)
+
+
 def index_memory_cap(
     snap: ResourceSnapshot, pool: Pool, worker_count: int = 1
 ) -> int | None:

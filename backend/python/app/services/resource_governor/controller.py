@@ -17,6 +17,7 @@ from app.services.resource_governor.feedback import (
     get_default_downstream_feedback,
 )
 from app.services.resource_governor.gate import AdmissionGate, StartRateLimiter
+from app.services.resource_governor.memory_budget import MemoryBudget
 from app.services.resource_governor.models import (
     Ceilings,
     ControllerState,
@@ -41,6 +42,7 @@ from app.services.resource_governor.policy import (
     ceiling_for,
     cgroup_heavy_parse_limit,
     floor_for,
+    free_memory_share_bytes,
     next_limits,
     resolve_ceilings,
     split_ceilings,
@@ -169,6 +171,10 @@ class ResourceGovernor:
         self._last_snapshot: ResourceSnapshot = initial_snapshot
         self._last_demand: dict[Pool, PoolDemand] = {pool: PoolDemand.empty() for pool in Pool}
         self._last_feedback: FeedbackWindow = FeedbackWindow.empty()
+
+        # Records too big for the count limits reserve their memory here.
+        self.memory_budget = MemoryBudget()
+        self.memory_budget.limit = free_memory_share_bytes(initial_snapshot, self._worker_count)
 
         self._running = False
 
@@ -368,6 +374,7 @@ class ResourceGovernor:
     async def _sample_once(self) -> None:
         now = self._clock()
         snapshot = await asyncio.to_thread(self._probe.snapshot)
+        self.memory_budget.limit = free_memory_share_bytes(snapshot, self._worker_count)
         demand = self._drain_all_demand()
         feedback = self._feedback.drain()
 
@@ -540,6 +547,7 @@ class ResourceGovernor:
             "limits": {pool.value: limits.get(pool) for pool in Pool},
             "in_use": in_use,
             "downstream_feedback": feedback.as_dict(),
+            "record_memory": self.memory_budget.stats(),
             "demand": {
                 pool.value: {
                     "utilisation": demand[pool].utilisation(limits.get(pool), self._sample_interval),

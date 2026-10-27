@@ -50,6 +50,9 @@ _LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING = 7
 class IndexingEvent(str, Enum):
     """Events emitted during the indexing pipeline."""
 
+    # Handler is about to download a record of known size; its memory is
+    # reserved first, so a record waiting for memory holds no content.
+    START_DOWNLOAD = "start_download"
     # Handler has written IN_PROGRESS and needs the nested parse slot.
     START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
