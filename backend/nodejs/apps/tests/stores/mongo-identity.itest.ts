@@ -6,7 +6,9 @@
  */
 import 'reflect-metadata';
 import { randomUUID } from 'crypto';
+import { expect } from 'chai';
 import mongoose from 'mongoose';
+import sinon from 'sinon';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
 import { MongoUserRepository } from '../../src/libs/repositories/user/mongo';
@@ -87,5 +89,25 @@ describe('Identity repositories against a real MongoDB', function () {
     clearOrgAuth: async () => {
       await OrgAuthConfig.deleteMany({});
     },
+  });
+
+  it('oldestOrgId reads one organisation, not all of them', async () => {
+    await Org.create({
+      registeredName: 'Oldest Org',
+      domain: `${randomUUID().slice(0, 8)}.example.com`,
+      contactEmail: `owner-${randomUUID().slice(0, 8)}@example.com`,
+      accountType: 'business',
+      onBoardingStatus: 'configured',
+    });
+    const find = sinon.spy(Org, 'find');
+    const findOne = sinon.spy(Org, 'findOne');
+    try {
+      expect(await new MongoIdentityPort().oldestOrgId()).to.be.a('string');
+      expect(find.called).to.equal(false);
+      expect(findOne.calledOnce).to.equal(true);
+    } finally {
+      find.restore();
+      findOne.restore();
+    }
   });
 });
