@@ -11,6 +11,7 @@ leave points behind.
 """
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -19,9 +20,8 @@ from app.services.vector_db.models import (
     FilterExpression,
     VectorPoint,
 )
-
-from tests.integration.vector_db.helpers import make_collection_config, make_dense
 from tests.integration.vector_db.conftest import make_collection
+from tests.integration.vector_db.helpers import make_collection_config, make_dense
 
 pytestmark = [pytest.mark.integration, pytest.mark.asyncio(loop_scope="module")]
 
@@ -40,7 +40,7 @@ async def _count(svc, collection: str, query: str = "*") -> int:
 
 
 @pytest.fixture
-async def seeded(redis_service):
+async def seeded(redis_service) -> AsyncIterator[tuple[str, FilterExpression]]:
     col = make_collection("redis_timeout")
     await redis_service.create_collection(col, make_collection_config())
     for start in range(0, POINTS, 2000):
@@ -75,17 +75,17 @@ async def seeded(redis_service):
 
 
 class TestRedisFilterOpsUnderTimeout:
-    async def test_delete_by_filter_leaves_nothing_behind(self, redis_service, seeded):
+    async def test_delete_by_filter_leaves_nothing_behind(self, redis_service, seeded) -> None:
         col, filt = seeded
         await redis_service.delete_points(col, filt)
         assert await _count(redis_service, col) == 0
 
-    async def test_set_payload_reaches_every_point(self, redis_service, seeded):
+    async def test_set_payload_reaches_every_point(self, redis_service, seeded) -> None:
         col, filt = seeded
         await redis_service.set_payload(col, {"recordGroupIds": ["g1"]}, filt)
         assert await _count(redis_service, col, "@recordGroupIds:{g1}") == POINTS
 
-    async def test_scroll_returns_the_requested_page(self, redis_service, seeded):
+    async def test_scroll_returns_the_requested_page(self, redis_service, seeded) -> None:
         col, filt = seeded
         page = await redis_service.scroll(col, filt, limit=5000)
         assert len(page.points) == 5000
