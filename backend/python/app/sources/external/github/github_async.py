@@ -20,7 +20,7 @@ import os
 import re
 import time
 from collections.abc import AsyncGenerator, Callable, Sequence
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from contextvars import ContextVar
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, cast
@@ -36,7 +36,7 @@ from app.sources.client.github.github import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Mapping
+    from collections.abc import AsyncIterator, Generator, Mapping
 
 logger = logging.getLogger(__name__)
 
@@ -60,12 +60,16 @@ _RESERVED_RESOURCES = frozenset({"core", "graphql"})
 _DEFAULT_RESERVE_PERCENT = 10
 _RESERVE_PERCENT_ENV = "GITHUB_RATE_LIMIT_RESERVE_PERCENT"
 
-# github.com/user-attachments is the web host, not the API: it answers an API token
-# with 404 (verified against github.com, public repository included) and an
-# anonymous request with a redirect to signed storage. The token is therefore never
-# sent there; it would only make every download fail, and it has no business on a
-# host other than the API.
+# github.com/user-attachments is the web host, not the API. For a public repository
+# it answers an anonymous request with a redirect to signed storage, and an API token
+# with 404 (verified against github.com). For a private repository it answers an
+# anonymous request with 404, and a personal access token that can read the
+# repository with the redirect. So the request goes out without the token, and only
+# a 404 from https://github.com itself is asked again with it. httpx drops the
+# Authorization header on the redirect, which leaves github.com, so signed storage
+# never sees the token.
 _ATTACHMENT_HEADERS = {"Accept": "*/*"}
+_ATTACHMENT_HOST = "github.com"
 
 # Set while a record is streamed to a person who opened it: one request they
 # asked for, which the reserve would refuse although GitHub would grant it.
@@ -876,12 +880,12 @@ class GitHubAsyncDataSource:
         read whole into memory first: any upload can be embedded with image
         syntax, a 100 MB video included.
 
-        Sent without the token: see ``_ATTACHMENT_HEADERS``.
+        Sent with the token only when github.com refuses it without: see
+        ``_ATTACHMENT_HEADERS``.
         """
-        headers = dict(_ATTACHMENT_HEADERS)
         try:
             async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-                async with client.stream("GET", image_url, headers=headers) as resp:
+                async with self._open_attachment(client, image_url) as resp:
                     resp.raise_for_status()
                     declared = resp.headers.get("Content-Length")
                     if max_bytes is not None and declared and declared.isdigit() and int(declared) > max_bytes:
@@ -917,7 +921,7 @@ class GitHubAsyncDataSource:
         eager-first-chunk wrapper can surface it as a clean HTTP error.
         """
         async with httpx.AsyncClient(follow_redirects=True, timeout=_TIMEOUT_SECONDS) as client:
-            async with client.stream("GET", weburl, headers=dict(_ATTACHMENT_HEADERS)) as response:
+            async with self._open_attachment(client, weburl) as response:
                 response.raise_for_status()
                 if max_bytes is not None:
                     declared = response.headers.get("Content-Length")
@@ -933,6 +937,24 @@ class GitHubAsyncDataSource:
                             f"Attachment at {weburl} exceeded the {max_bytes}-byte limit while streaming"
                         )
                     yield chunk
+
+    @asynccontextmanager
+    async def _open_attachment(
+        self, client: httpx.AsyncClient, url: str,
+    ) -> AsyncIterator[httpx.Response]:
+        """Stream an attachment anonymously, then with the token if github.com answers 404."""
+        async with client.stream("GET", url, headers=dict(_ATTACHMENT_HEADERS)) as response:
+            refused = (
+                response.status_code == HttpStatusCode.NOT_FOUND.value
+                and response.url.scheme == "https"
+                and response.url.host == _ATTACHMENT_HOST
+            )
+            if not refused:
+                yield response
+                return
+        headers = {**_ATTACHMENT_HEADERS, "Authorization": f"Bearer {self._rest.token}"}
+        async with client.stream("GET", url, headers=headers) as response:
+            yield response
 
     # ------------------------------------------------------------------
     # Shared plumbing
