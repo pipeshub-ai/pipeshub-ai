@@ -496,11 +496,7 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { userId, orgId } = this.callerIdentity(req);
-      const userCredentialData = await UserCredentials.findOne({
-        userId,
-        orgId,
-        isDeleted: false,
-      });
+      const userCredentialData = await getCredentialRepository().find(userId, orgId);
       res.json({ hasPassword: !!userCredentialData?.hashedPassword });
     } catch (error) {
       next(error);
@@ -516,11 +512,7 @@ export class UserAccountController {
   ): Promise<void> {
     try {
       const { userId, orgId } = this.callerIdentity(req);
-      const userCredentialData = await UserCredentials.findOne({
-        userId,
-        orgId,
-        isDeleted: false,
-      });
+      const userCredentialData = await getCredentialRepository().find(userId, orgId);
       if (userCredentialData?.hashedPassword) {
         throw new BadRequestError(
           'A password is already set. Use change password instead.',
