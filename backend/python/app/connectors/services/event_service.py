@@ -33,6 +33,7 @@ from app.connectors.core.sync.sync_coordinator import (
     get_coordinator,
     stop_wait_sec,
 )
+from app.connectors.core.sync.sync_progress import SyncTrigger
 from app.connectors.core.sync.sync_runner import (
     drain_queued_syncs,
     resumes_interrupted_full_sync,
@@ -328,11 +329,14 @@ class EventService:
         """Config service for an event's org"""
         return self.app_container.config_service()
 
-    async def _ensure_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
+    async def _ensure_connector(
+        self, connector_name: str, connector_id: str, *, sync_trigger: str | None = None
+    ) -> BaseConnector | None:
         """
         Get connector from memory, or auto-initialize it if missing.
         Handles the case where the init event was missed or the service restarted.
         Checks that the connector is active in the database before initializing.
+        ``sync_trigger`` is set when a sync needs it, so an init failure is recorded as that sync failing.
         """
         # Cacheable only where the cache can be invalidated. This process pops
         # the entry when credentials or filters change (see router); a process
@@ -356,7 +360,7 @@ class EventService:
             self.logger.warning(
                 f"{connector_name} connector {connector_id} not in memory — attempting auto-initialization"
             )
-            return await self._auto_initialize_connector(connector_name, connector_id)
+            return await self._auto_initialize_connector(connector_name, connector_id, sync_trigger=sync_trigger)
 
     async def get_or_init_connector(self, connector_name: str, connector_id: str) -> BaseConnector | None:
         """Live connector instance for HTTP callers, built from its app doc if missing."""
@@ -382,7 +386,7 @@ class EventService:
         return stored
 
     async def _auto_initialize_connector(
-        self, connector_name: str, connector_id: str
+        self, connector_name: str, connector_id: str, *, sync_trigger: str | None = None
     ) -> BaseConnector | None:
         """Build and store a connector. Caller must hold ``connector_init_lock``."""
         cacheable = not sync_executor_enabled()
@@ -423,6 +427,7 @@ class EventService:
                 notification_service=self.app_container.connector_notification_service(),
                 connector_instance_name=connector_doc.get("name"),
                 last_synced_by=last_synced_by,
+                sync_trigger=sync_trigger,
             )
 
             if not connector:
@@ -771,13 +776,15 @@ class EventService:
             # Re-enabling publishes a fresh event.
             return True, False
 
-        connector = await self._ensure_connector(connector_name, connector_id)
+        trigger = payload.get("trigger")
+        connector = await self._ensure_connector(
+            connector_name, connector_id, sync_trigger=SyncTrigger.parse(trigger).value
+        )
         if not connector:
             self.logger.error(f"{connector_name.capitalize()} {connector_id} connector could not be initialized")
             return False, False
 
         synced_by = payload.get("syncedBy", "")
-        trigger = payload.get("trigger")
         # A schedule carries the id of whoever set it up; only a click is "started by" someone.
         started_by = synced_by if trigger == "manual" and synced_by else None
         if synced_by:

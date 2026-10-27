@@ -28,12 +28,13 @@ from app.connectors.core.base.connector.connector_service import (
 from app.connectors.core.constants import ConnectorStateKeys, SyncRunOutcome
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage, FullSyncSeen
 from app.connectors.core.sync.run_context import reset_run_sync_id, set_run_sync_id
-from app.connectors.core.sync.sync_errors import classify_sync_error
+from app.connectors.core.sync.sync_errors import SyncErrorCode, classify_sync_error
 from app.connectors.core.sync.sync_progress import (
     SyncPhase,
     SyncProgress,
     SyncTrigger,
     merged_run_history,
+    parse_run_history,
     reset_current_sync_progress,
     set_current_sync_progress,
 )
@@ -833,6 +834,60 @@ async def _read_history_again(
         logger.warning(f"Could not read sync history for {connector_id}: {e}")
         return HISTORY_UNREAD
     return HISTORY_UNREAD if doc is None else doc.get(ConnectorStateKeys.SYNC_RUNS)
+
+
+async def record_failed_start(
+    graph_provider: IGraphDBProvider,
+    logger: logging.Logger,
+    connector_id: str,
+    error: BaseException | None,
+    *,
+    trigger: str,
+) -> None:
+    """Record a sync that never began because the connector could not start.
+
+    No run starts, so nothing else tells the card: it would keep showing the
+    last good run, or "not synced yet", while an expired sign-in fails every
+    sync. The same failure again replaces its entry rather than pushing real
+    runs out of the history. ``error`` is what ``init`` raised, or None when
+    it returned False. Never raises.
+    """
+    try:
+        doc = await graph_provider.get_document(document_key=connector_id, collection=CollectionNames.APPS.value)
+        status = (doc or {}).get("status")
+        # A run in progress, or a connector being removed, says more than this does.
+        if not doc or status in (AppStatus.SYNCING.value, AppStatus.FULL_SYNCING.value, "DELETING"):
+            return
+        stored_runs = doc.get(ConnectorStateKeys.SYNC_RUNS)
+        failure = (
+            classify_sync_error(error)
+            if error is not None
+            else {"code": SyncErrorCode.UNKNOWN.value, "detail": None}
+        )
+        latest = next(iter(parse_run_history(stored_runs)), {})
+        repeat = (
+            latest.get("outcome") == SyncRunOutcome.FAILED.value
+            and (latest.get("error") or {}).get("code") == failure["code"]
+            and not (latest.get("counts") or {}).get("found")
+        )
+        progress = SyncProgress(
+            connector_id=connector_id,
+            run_id=str(latest.get("runId")) if repeat and latest.get("runId") else str(uuid4()),
+            full=False,
+            trigger=SyncTrigger.parse(trigger),
+        )
+        record = _run_record(
+            progress, SyncRunOutcome.FAILED, stored_runs, error=failure, skip_code=None, started_by=None
+        )
+        # Matched on the history read above, so a run that finished meanwhile is not overwritten.
+        await graph_provider.update_node_fields_if_match(
+            connector_id,
+            CollectionNames.APPS.value,
+            record,
+            {"status": status, ConnectorStateKeys.SYNC_RUNS: stored_runs},
+        )
+    except Exception as e:
+        logger.warning(f"Could not record the failed start of {connector_id}: {e}")
 
 
 async def _mark_first_sync(
