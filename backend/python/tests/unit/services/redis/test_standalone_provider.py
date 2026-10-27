@@ -29,7 +29,7 @@ class TestRespProtocol:
     arrays, so every client the provider builds must ask for protocol 2."""
 
     @pytest.mark.parametrize("blocking", [False, True])
-    def test_the_real_client_is_built_for_resp2(self, blocking):
+    def test_the_real_client_is_built_for_resp2(self, blocking: bool) -> None:
         client = StandaloneRedisProvider(_config()).create_client(
             ClientOptions(blocking=blocking)
         )

@@ -330,11 +330,11 @@ class TestRespProtocol:
     XREAD replies as maps. The vector store and streams code parse the RESP2
     arrays, so every client the providers build must ask for protocol 2."""
 
-    def test_the_cluster_client_asks_for_resp2(self, mock_cluster_cls):
+    def test_the_cluster_client_asks_for_resp2(self, mock_cluster_cls: MagicMock) -> None:
         ClusterRedisProvider(_config()).create_client()
         assert mock_cluster_cls.call_args.kwargs["protocol"] == 2
 
-    def test_the_pubsub_client_asks_for_resp2(self):
+    def test_the_pubsub_client_asks_for_resp2(self) -> None:
         provider = ClusterRedisProvider(_config())
         client = provider.create_pubsub_client()
         assert client.connection_pool.connection_kwargs["protocol"] == 2
