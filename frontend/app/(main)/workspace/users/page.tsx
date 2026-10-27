@@ -798,16 +798,6 @@ function UsersPageContent() {
   const unblockConfirmKeyword =
     unblockTarget?.name?.trim() || unblockTarget?.email || '';
 
-  // Shared "coming soon" toast helper
-  const showComingSoon = useCallback(() => {
-    addToast({
-      variant: 'info',
-      title: t('workspace.users.actions.comingSoonTitle'),
-      description: t('workspace.users.actions.comingSoonDescription'),
-      duration: 3000,
-    });
-  }, [addToast, t]);
-
   // ── Change Role handler ──
   const handleChangeRole = useCallback(
     async (user: User, newRole: string) => {
@@ -1082,11 +1072,6 @@ function UsersPageContent() {
             },
           },
           isAdmin && {
-            icon: 'person_off',
-            label: t('workspace.users.actions.deactivate'),
-            onClick: showComingSoon,
-          },
-          isAdmin && {
             icon: 'person_remove',
             label: t('workspace.users.actions.removeFromWorkspace'),
             variant: 'danger' as const,
@@ -1105,7 +1090,6 @@ function UsersPageContent() {
       isAdmin,
       addToast,
       navigateToProfilePanel,
-      showComingSoon,
       requestChangeRole,
       handleResendInvite,
       handleEditInvite,

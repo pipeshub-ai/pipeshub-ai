@@ -506,7 +506,7 @@
     "willBeReindexed": "이(가) 다시 인덱싱됩니다",
     "reindexConfirm": "이 {{type}}을(를) 다시 인덱싱하시겠습니까?",
     "reindexDescription": "이 작업은 이 {{type}} 및 그 내용의 검색 인덱스를 업데이트합니다.",
-    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 삭제됩니다. 이 컬렉션을 사용하는 모든 에이전트에서도 제거됩니다.",
+    "deleteCollectionBody": "'{{name}}' 및 그 안의 모든 항목이 영구적으로 삭제됩니다. 이 컬렉션을 사용하는 모든 에이전트에서도 제거됩니다. 이 작업은 되돌릴 수 없습니다.",
     "deleteFolderBody": "'{{name}}' 및 그 안의 모든 항목이 이 컬렉션에서 삭제됩니다.",
     "deleteFileBody": "'{{name}}'이(가) 이 컬렉션에서 삭제됩니다."
   },
@@ -1477,7 +1477,8 @@
       "download": "아티팩트 다운로드",
       "downloading": "아티팩트 다운로드 중"
     },
-    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다."
+    "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
+    "noResultsFor": "“{{query}}”에 대한 결과가 없습니다"
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -5248,7 +5249,9 @@
       "orgEmailVerifyFailedDescription": "링크가 유효하지 않거나 만료되었을 수 있습니다. 다시 가입해 주세요.",
       "loadFailedTitle": "로그인을 불러올 수 없습니다",
       "loadFailedDescription": "PipesHub가 로그인 옵션을 불러오기 위해 서버에 연결하지 못했습니다. 연결 또는 서버 주소를 확인한 후 다시 시도하세요.",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "tabPassword": "비밀번호",
+      "tabEmailOtp": "이메일 OTP"
     },
     "common": {
       "signIn": "로그인",
@@ -5285,12 +5288,49 @@
       "integrationTitle": "인증이 PipesHub로 전송되었습니다",
       "description": "이 탭을 닫고 PipesHub 앱으로 돌아가세요.",
       "openApp": "PipesHub 열기"
+    },
+    "toasts": {
+      "checkInbox": "받은편지함을 확인하세요",
+      "resetLinkSent": "이 이메일로 등록된 계정이 있으면 비밀번호 재설정 링크를 보냈습니다.",
+      "resetRequestFailed": "비밀번호 재설정을 요청할 수 없습니다",
+      "tryAgainLater": "나중에 다시 시도하세요.",
+      "contactAdmin": "관리자에게 문의하세요.",
+      "noPasswordSetTitle": "이 계정에는 비밀번호가 설정되어 있지 않습니다.",
+      "noPasswordSetDescription": "아래의 비밀번호 찾기를 사용해 비밀번호를 설정하세요.",
+      "checkEmail": "이메일을 확인하세요",
+      "otpSentDescription": "이 이메일로 코드 로그인이 가능하면 코드를 보내고 있습니다. 몇 분 안에 도착하지 않으면 스팸 폴더를 확인하거나 나중에 다시 시도하세요.",
+      "otpSendFailed": "인증 코드를 보낼 수 없습니다",
+      "additionalVerification": "추가 인증이 필요합니다",
+      "completeNextStep": "계속하려면 다음 단계를 완료하세요.",
+      "signInFailedTitle": "로그인 실패",
+      "unexpectedResponse": "예기치 않은 응답입니다. 다시 시도하세요.",
+      "signInFailed": "로그인에 실패했습니다. 다시 시도하세요.",
+      "verificationFailed": "인증에 실패했습니다. 다시 시도하세요.",
+      "googleSignInFailed": "Google 로그인에 실패했습니다. 다시 시도하세요.",
+      "microsoftSignInFailed": "Microsoft 로그인에 실패했습니다. 다시 시도하세요.",
+      "tryAgainAfter": "{{time}} 이후에 다시 시도하세요."
     }
   },
   "healthGate": {
     "title": "서버에 연결할 수 없음",
     "description": "현재 서버에 연결할 수 없습니다. 서버가 시작 중이거나 점검 중일 수 있습니다. 다시 연결을 시도하고 있습니다.",
-    "contactAdmin": "문제가 계속되면 PipesHub 관리자에게 문의해 주세요."
+    "contactAdmin": "문제가 계속되면 PipesHub 관리자에게 문의해 주세요.",
+    "toasts": {
+      "servicesUnavailableTitle": "일부 서비스를 사용할 수 없습니다",
+      "affected": "영향을 받는 서비스: {{services}}",
+      "featuresUnavailableReconnect": "일부 기능을 일시적으로 사용할 수 없습니다. 자동으로 다시 연결되며, 계속되면 관리자에게 문의하세요.",
+      "featuresUnavailable": "일부 기능을 일시적으로 사용할 수 없습니다",
+      "viewStatus": "상태 보기",
+      "servicesDown_one": "{{services}}을(를) 현재 사용할 수 없습니다",
+      "servicesDown_other": "{{services}}을(를) 현재 사용할 수 없습니다"
+    },
+    "serviceGate": {
+      "title": "서비스를 사용할 수 없음",
+      "requires_one": "이 페이지에는 {{services}}이(가) 필요하지만 현재 사용할 수 없습니다. 서비스가 복구되면 자동으로 다시 사용할 수 있습니다.",
+      "requires_other": "이 페이지에는 {{services}}이(가) 필요하지만 현재 사용할 수 없습니다. 서비스가 복구되면 자동으로 다시 사용할 수 있습니다.",
+      "memberBody": "이 페이지를 일시적으로 사용할 수 없습니다. 자동으로 다시 사용할 수 있게 되며, 계속되면 관리자에게 문의하세요.",
+      "viewStatus": "서비스 상태 보기"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "질문:",

@@ -5,6 +5,8 @@ import { Container } from 'inversify';
 import { createOrgRouter } from '../../../../src/modules/user_management/routes/org.routes';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { OrgController } from '../../../../src/modules/user_management/controller/org.controller';
+import { FileProcessorFactory } from '../../../../src/libs/middlewares/file_processor/fp.factory';
+import { userAdminCheck } from '../../../../src/modules/user_management/middlewares/userAdminCheck';
 
 describe('Org Routes', () => {
   let container: Container;
@@ -242,6 +244,21 @@ describe('Org Routes', () => {
       expect(deleteRoute).to.not.be.undefined;
       // auth + requireScopes + metrics + adminCheck + handler
       expect(deleteRoute.route.stack.length).to.be.greaterThanOrEqual(3);
+    });
+    it('should check admin before reading the PUT /logo upload body', () => {
+      const upload = (_req: any, _res: any, next: any) => next();
+      sinon
+        .stub(FileProcessorFactory, 'createBufferUploadProcessor')
+        .returns({ getMiddleware: [upload] });
+      const router = createOrgRouter(container);
+      const putLogo = (router as any).stack.find(
+        (layer: any) =>
+          layer.route && layer.route.path === '/logo' && layer.route.methods.put,
+      );
+      const handles = putLogo.route.stack.map((s: any) => s.handle);
+      const adminIdx = handles.indexOf(userAdminCheck);
+      expect(adminIdx).to.be.greaterThan(-1);
+      expect(adminIdx).to.be.lessThan(handles.indexOf(upload));
     });
   });
 

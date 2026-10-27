@@ -64,12 +64,15 @@ describe('createUserAccountRouter', () => {
     const firstHandler = (path: string) =>
       (router.stack as any[]).find((layer) => layer.route?.path === path).route.stack[0].handle;
 
-    const limited = ['/initAuth', '/authenticate', '/login/otp/generate', '/password/reset', '/password/forgot'];
+    const limited = ['/authenticate', '/login/otp/generate', '/password/reset', '/password/forgot'];
     const limiter = firstHandler(limited[0]);
     for (const path of limited) {
       expect(firstHandler(path), path).to.equal(limiter);
     }
     expect(firstHandler('/refresh/token')).to.not.equal(limiter);
+    // Loading the sign-in page calls /initAuth; it has its own bucket.
+    expect(firstHandler('/initAuth')).to.be.a('function');
+    expect(firstHandler('/initAuth')).to.not.equal(limiter);
   });
 
   afterEach(() => {

@@ -422,7 +422,7 @@
     "willBeReindexed": "wird neu indiziert",
     "reindexConfirm": "Diesen {{type}} neu indizieren?",
     "reindexDescription": "Dies aktualisiert den Suchindex für diesen {{type}} und seinen Inhalt.",
-    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden.",
+    "deleteCollectionBody": "'{{name}}' und alle Inhalte werden endgültig gelöscht. Sie wird auch aus allen Agenten entfernt, die sie verwenden. Dies kann nicht rückgängig gemacht werden.",
     "deleteFolderBody": "'{{name}}' und alle Inhalte werden aus dieser Sammlung gelöscht.",
     "deleteFileBody": "'{{name}}' wird aus dieser Sammlung gelöscht."
   },
@@ -1392,7 +1392,8 @@
       "download": "Artefakt herunterladen",
       "downloading": "Artefakt wird heruntergeladen"
     },
-    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht."
+    "deleteChatArtifactsNote": "Dateien, die der Assistent in diesem Chat erstellt hat, werden ebenfalls gelöscht.",
+    "noResultsFor": "Keine Ergebnisse für „{{query}}“"
   },
   "workspaceMenu": {
     "appearance": "Darstellung",
@@ -5183,7 +5184,9 @@
       "orgEmailVerifyFailedDescription": "Der Link ist möglicherweise ungültig oder abgelaufen. Bitte registrieren Sie sich erneut.",
       "loadFailedTitle": "Anmeldung konnte nicht geladen werden",
       "loadFailedDescription": "PipesHub konnte den Server nicht erreichen, um die Anmeldeoptionen zu laden. Prüfen Sie Ihre Verbindung oder die Serveradresse und versuchen Sie es erneut.",
-      "retry": "Erneut versuchen"
+      "retry": "Erneut versuchen",
+      "tabPassword": "Passwort",
+      "tabEmailOtp": "E-Mail-Code"
     },
     "common": {
       "signIn": "Anmelden",
@@ -5220,12 +5223,49 @@
       "integrationTitle": "Autorisierung an PipesHub gesendet",
       "description": "Sie können diesen Tab schließen und zur PipesHub-App zurückkehren.",
       "openApp": "PipesHub öffnen"
+    },
+    "toasts": {
+      "checkInbox": "Prüfen Sie Ihren Posteingang",
+      "resetLinkSent": "Falls ein Konto mit dieser E-Mail-Adresse existiert, wurde ein Link zum Zurücksetzen des Passworts gesendet.",
+      "resetRequestFailed": "Zurücksetzen des Passworts konnte nicht angefordert werden",
+      "tryAgainLater": "Bitte versuchen Sie es später erneut.",
+      "contactAdmin": "Bitte wenden Sie sich an Ihren Administrator.",
+      "noPasswordSetTitle": "Für dieses Konto ist kein Passwort festgelegt.",
+      "noPasswordSetDescription": "Verwenden Sie unten „Passwort vergessen“, um ein Passwort festzulegen.",
+      "checkEmail": "Prüfen Sie Ihre E-Mails",
+      "otpSentDescription": "Falls sich diese E-Mail-Adresse mit einem Code anmelden kann, wird einer gesendet. Kommt in einigen Minuten nichts an, prüfen Sie Ihren Spam-Ordner oder versuchen Sie es später erneut.",
+      "otpSendFailed": "Bestätigungscode konnte nicht gesendet werden",
+      "additionalVerification": "Zusätzliche Bestätigung erforderlich",
+      "completeNextStep": "Schließen Sie den nächsten Schritt ab, um fortzufahren.",
+      "signInFailedTitle": "Anmeldung fehlgeschlagen",
+      "unexpectedResponse": "Unerwartete Antwort. Bitte versuchen Sie es erneut.",
+      "signInFailed": "Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "verificationFailed": "Bestätigung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "googleSignInFailed": "Google-Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "microsoftSignInFailed": "Microsoft-Anmeldung fehlgeschlagen. Bitte versuchen Sie es erneut.",
+      "tryAgainAfter": "Versuchen Sie es nach {{time}} erneut."
     }
   },
   "healthGate": {
     "title": "Verbindung zum Server nicht möglich",
     "description": "Der Server ist derzeit nicht erreichbar. Möglicherweise wird er gerade gestartet oder gewartet. Wir versuchen, die Verbindung wiederherzustellen.",
-    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator."
+    "contactAdmin": "Falls das Problem weiterhin besteht, wenden Sie sich bitte an Ihren PipesHub-Administrator.",
+    "toasts": {
+      "servicesUnavailableTitle": "Einige Dienste sind nicht verfügbar",
+      "affected": "Betroffen: {{services}}",
+      "featuresUnavailableReconnect": "Einige Funktionen sind vorübergehend nicht verfügbar. Wir verbinden uns automatisch neu; hält das an, wenden Sie sich an Ihren Administrator.",
+      "featuresUnavailable": "Einige Funktionen sind vorübergehend nicht verfügbar",
+      "viewStatus": "Status anzeigen",
+      "servicesDown_one": "{{services}} ist derzeit nicht verfügbar",
+      "servicesDown_other": "{{services}} sind derzeit nicht verfügbar"
+    },
+    "serviceGate": {
+      "title": "Dienst nicht verfügbar",
+      "requires_one": "Diese Seite benötigt {{services}}, der derzeit nicht verfügbar ist. Sie ist automatisch wieder verfügbar, sobald sich der Dienst erholt hat.",
+      "requires_other": "Diese Seite benötigt {{services}}, die derzeit nicht verfügbar sind. Sie ist automatisch wieder verfügbar, sobald sich die Dienste erholt haben.",
+      "memberBody": "Diese Seite ist vorübergehend nicht verfügbar. Sie kommt automatisch zurück; hält das an, wenden Sie sich an Ihren Administrator.",
+      "viewStatus": "Dienststatus anzeigen"
+    }
   },
   "askUserQuestion": {
     "questionsHeadingSingular": "Frage :",

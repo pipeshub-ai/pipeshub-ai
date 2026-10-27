@@ -184,6 +184,8 @@ export function createOrgRouter(container: Container) {
     '/logo',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.ORG_WRITE),
+    // Before the upload, so a non-admin's body is never read.
+    userAdminCheck,
     ...FileProcessorFactory.createBufferUploadProcessor({
       fieldName: 'file',
       allowedMimeTypes: [
@@ -200,7 +202,6 @@ export function createOrgRouter(container: Container) {
       maxFileSize: 2 * 1024 * 1024,
       strictFileUpload: true,
     }).getMiddleware,
-    userAdminCheck,
     async (
       req: AuthenticatedUserRequest,
       res: Response,

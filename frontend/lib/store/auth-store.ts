@@ -2,6 +2,7 @@ import { create } from 'zustand';
 import { devtools } from 'zustand/middleware';
 import { immer } from 'zustand/middleware/immer';
 import { isElectron } from '@/lib/electron';
+import { getApiBaseUrl } from '@/lib/utils/api-base-url';
 import { allowChatDraftWrites, discardAllChatDrafts } from '@/lib/storage/chat-drafts';
 import { allowChatUnreadWrites, discardAllChatUnread } from '@/lib/storage/chat-unread';
 import {
@@ -209,7 +210,30 @@ export function requestElectronServerUrlChange(): void {
  * server URL ack (keep last URL for pre-fill), then route through ServerUrlGuard's
  * add-URL screen so the user can confirm or change the server before signing in.
  */
+/**
+ * Asks the server to end the session, so a copy of the tokens stops working
+ * too. Fire-and-forget: signing out on this device never waits for or depends
+ * on the answer (offline, server down). Plain fetch, not apiClient, so a 401
+ * here can't trigger a refresh or another logout.
+ */
+function endServerSession(): void {
+  try {
+    const accessToken = useAuthStore.getState().accessToken;
+    if (!accessToken) return;
+    void fetch(`${getApiBaseUrl()}/api/v1/userAccount/logout/manual`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+      // The page navigates away right after this; keepalive lets the request finish.
+      keepalive: true,
+    }).catch(() => undefined);
+  } catch {
+    // Signing out locally must still happen.
+  }
+}
+
 export function logoutFromWorkspaceMenu(): void {
+  // Read the token before anything below clears it (and, on desktop, the server URL).
+  endServerSession();
   // Deliberate sign-out: which chats had a new answer must not outlive the
   // session. A session that merely expires keeps them.
   discardAllChatUnread();
