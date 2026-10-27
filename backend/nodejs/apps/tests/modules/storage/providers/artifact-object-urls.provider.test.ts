@@ -114,11 +114,7 @@ describe('Signed object URLs for artifact sets', () => {
       sinon.stub(os, 'homedir').returns(home)
     })
 
-    // The adapter creates its mount folder in the background (an unawaited mkdir in its constructor), so a test that never
-    // touches the disk can reach this cleanup while the folder is being made: the removal then fails with ENOTEMPTY.
-    afterEach(() =>
-      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 }),
-    )
+    afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
 
     const adapter = () =>
       new LocalStorageAdapter({ mountName: 'PipesHub', baseUrl: 'http://localhost:3000' } as any)
