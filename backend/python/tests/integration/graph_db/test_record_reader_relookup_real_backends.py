@@ -5,6 +5,8 @@ The mapping is written with the stored write's own switch (``_switch_mapping``) 
 what the re-lookup sees is what a second write really left in the graph. Storage
 is a stand-in that answers 404 for retired documents: the storage routers are
 checked in ``tests/integration/test_record_reader_relookup_storage.py``.
+
+Environment: NEO4J_IT_URI, NEO4J_IT_PASSWORD, ARANGO_IT_URL, ARANGO_IT_PASSWORD.
 """
 
 from __future__ import annotations
