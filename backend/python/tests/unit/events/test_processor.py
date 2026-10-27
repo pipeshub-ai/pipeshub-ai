@@ -3052,7 +3052,7 @@ class TestProcessPdfDocumentWithOcr:
         })
 
         with patch("app.events.processor.is_multimodal_llm", return_value=False):
-            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE):
+            with pytest.raises(IndexingError, match=SCANNED_PDF_NO_OCR_MESSAGE) as raised:
                 await _collect(
                     proc.process_pdf_document_with_ocr(
                         recordName="test.pdf",
@@ -3064,6 +3064,65 @@ class TestProcessPdfDocumentWithOcr:
                         virtual_record_id="vr-1",
                     )
                 )
+
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+        # A missing image-reading model is final: retrying cannot add one.
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
+
+    @pytest.mark.asyncio
+    async def test_a_settings_store_that_does_not_answer_is_retried(self) -> None:
+        """A store outage on the indexer's own OCR path is temporary, not a final content failure."""
+        from app.exceptions.indexing_exceptions import (
+            AISettingsUnavailableError,
+            DocumentProcessingError,
+        )
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+        proc, _, gp, config = _make_processor()
+        gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
+        config.get_config = AsyncMock(side_effect=ConnectionError("etcd unreachable"))
+
+        with pytest.raises(AISettingsUnavailableError) as raised:
+            await _collect(
+                proc.process_pdf_document_with_ocr(
+                    recordName="test.pdf", recordId="rec-1", version=1, source="upload",
+                    orgId="org-1", pdf_binary=b"pdf", virtual_record_id="vr-1",
+                )
+            )
+
+        assert not isinstance(raised.value, DocumentProcessingError)
+        assert isinstance(raised.value.__cause__, ConnectionError)
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
+        assert config.get_config.await_args.kwargs.get("raise_on_error") is True
+
+    @pytest.mark.asyncio
+    async def test_settings_never_saved_read_as_no_ocr_model(self) -> None:
+        """A read that finds no AI settings is the no-OCR case, not a crash on the missing key."""
+        from app.events.processor import SCANNED_PDF_NO_OCR_MESSAGE
+        from app.exceptions.indexing_exceptions import MultimodalModelNotConfiguredError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+        proc, _, gp, config = _make_processor()
+        gp.get_document.return_value = _base_record_dict(mimeType="application/pdf")
+        config.get_config = AsyncMock(return_value=None)
+
+        with pytest.raises(MultimodalModelNotConfiguredError, match=SCANNED_PDF_NO_OCR_MESSAGE) as raised:
+            await _collect(
+                proc.process_pdf_document_with_ocr(
+                    recordName="test.pdf", recordId="rec-1", version=1, source="upload",
+                    orgId="org-1", pdf_binary=b"pdf", virtual_record_id="vr-1",
+                )
+            )
+
+        # Final on the first try: retrying cannot add a model.
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
 
     @pytest.mark.asyncio
     async def test_non_vlm_with_empty_blocks(self):

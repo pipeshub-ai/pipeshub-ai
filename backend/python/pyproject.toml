@@ -198,7 +198,7 @@ dependencies = [
     "celery==5.6.3",
     "chardet==7.7.0",
     "confluent-kafka==2.16.0",
-    "cachetools==6.2.4",
+    "cachetools==7.2.4",
     "cloudscraper==1.2.71",
     "cryptography==50.0.2",
     "dateparser>=1.2.0",
@@ -208,6 +208,8 @@ dependencies = [
     "curl-cffi==0.16.3",
     # "databricks-sdk>=0.85.0",
     "dependency-injector==4.49.1",
+    # REDIS_MODE=postgres|inprocess: the in-process caches of a deployment without a Redis server
+    "fakeredis[lua]>=2.37",
     # Site-supplied XML (sitemaps): refuses entity expansion and external entities.
     "defusedxml>=0.7.1",
     "discord.py==2.7.1",
@@ -293,14 +295,16 @@ dependencies = [
     "openpyxl==3.1.5",
     "opik==2.2.117",
     "pagerduty>=5.0.0",
-    "pandas==2.2.3",
+    "pandas==3.1.0",
     "phonenumbers>=8.13.0",
     "price-parser>=0.3.4",
     "Pillow>=13.0.0,<14",
     "pdfplumber==0.11.10",
     "pillow-avif-plugin==1.6.0",
     "pypdfium2==5.14.0",
-    "protobuf>=4.25.0,<6",
+    # The current google-api-core, grpcio-status and proto-plus need 6.33.5 or newer, and
+    # Python 3.14 has no older choice; snowflake-connector-python caps it below 7.
+    "protobuf>=6.33.5,<7",
     "pydantic==2.14.1",
     "py-trello==0.20.1",
     "python-arango==8.3.6",
@@ -317,6 +321,9 @@ dependencies = [
     "PyJWT==2.15.1",
     "pyyaml>=6.0",
     "redshift_connector==2.2.0",
+    # A runtime dependency of redshift_connector and torch that neither bounds; 84.1.0 fixes
+    # GHSA-h35f-9h28-mq5c and GHSA-xmj3-9gf7-h52w.
+    "setuptools>=84.1.0",
     "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI
@@ -393,7 +400,7 @@ parsing-service = "app.parsing_main:app"
 extraction-service = "app.extraction_main:app"
 
 [project.optional-dependencies]
-dev = ["ruff==0.17.2", "pyright", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "graphql-core==3.3.0"]
+dev = ["ruff==0.17.2", "pyright", "sqlglot>=27,<28", "pytest", "pytest-xdist", "pytest-timeout", "pytest-cov", "pytest-asyncio", "fakeredis[lua]>=2.37", "hypothesis", "graphql-core==3.3.0"]
 
 [tool.pyright]
 pythonVersion = "3.12"

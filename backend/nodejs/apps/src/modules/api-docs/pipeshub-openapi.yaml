@@ -5682,7 +5682,7 @@ components:
           description: Epoch ms the platform last queued this record for indexing; absent until first queued. Platform-owned, unlike updatedAtTimestamp
         parsingStatus:
           type: string
-          enum: [NOT_STARTED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, QUEUED]
+          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, FAILED, COMPLETED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED, SKIPPED]
           description: |
             Parse-phase status (ahead of indexing/extraction):
             - NOT_STARTED: Awaiting parsing
@@ -5693,6 +5693,9 @@ components:
             - FILE_TYPE_NOT_SUPPORTED: Unsupported file format
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
+            - PAUSED: Parsing paused
+            - ENABLE_MULTIMODAL_MODELS: Requires multimodal AI models
+            - SKIPPED: The stage did not apply to this record
           example: "COMPLETED"
         hasIndexedCopy:
           type: boolean
@@ -5704,7 +5707,7 @@ components:
             COMPLETED or EMPTY write sets it.
         indexingStatus:
           type: string
-          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED]
+          enum: [NOT_STARTED, PAUSED, IN_PROGRESS, COMPLETED, FAILED, FILE_TYPE_NOT_SUPPORTED, AUTO_INDEX_OFF, EMPTY, ENABLE_MULTIMODAL_MODELS, QUEUED, SKIPPED, PASSWORD_PROTECTED]
           description: |
             Current indexing/processing status:
             - NOT_STARTED: Awaiting indexing
@@ -5717,6 +5720,10 @@ components:
             - AUTO_INDEX_OFF: Auto-indexing disabled for this record
             - EMPTY: File has no extractable content
             - ENABLE_MULTIMODAL_MODELS: Requires multimodal AI models
+            - SKIPPED: The stage did not apply to this record
+            - PASSWORD_PROTECTED: The file needs a password to open, so it cannot be read.
+              Not retried and not counted as a failure; the record's `reason` says what to do.
+              A reindex with `statusFilters: ["PASSWORD_PROTECTED"]` tries it again
           example: "COMPLETED"
         isDeleted:
           type: boolean
@@ -7443,8 +7450,9 @@ components:
         reindex (record or record-group). Omit `statusFilters` to reindex all
         descendants regardless of status. The statuses records carry are
         `NOT_STARTED`, `QUEUED`, `IN_PROGRESS`, `COMPLETED`, `FAILED`,
-        `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF` and `EMPTY`. Any other string is
-        accepted too (no validator checks the value) and simply matches no record.
+        `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY` and `PASSWORD_PROTECTED`.
+        Any other string is accepted too (no validator checks the value) and simply
+        matches no record.
     ReindexRecordRequestBody:
       type: object
       description: |
@@ -7642,6 +7650,10 @@ components:
         ENABLE_MULTIMODAL_MODELS:
           type: integer
         QUEUED:
+          type: integer
+        SKIPPED:
+          type: integer
+        PASSWORD_PROTECTED:
           type: integer
     DateRangeFilter:
       type: object
@@ -8626,27 +8638,37 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied app/connector filter nodes
         kb:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied knowledge-base filter nodes
         recordGroups:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record-group filter nodes
         records:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied folder and record filter nodes (each with everything under it)
         recordsExact:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record filter nodes selected alone
     ChatAttachmentRef:
       type: object
@@ -9882,6 +9904,7 @@ components:
             anyOf:
               - $ref: '#/components/schemas/CitationReference'
               - $ref: '#/components/schemas/PopulatedCitationReference'
+              - $ref: '#/components/schemas/RedactedSource'
           description: |
             References to source documents used in the response. Routes that
             return the saved conversation after a turn (create, add message)
@@ -9930,33 +9953,35 @@ components:
             Reference identifiers extracted from tool responses, used to scope
             follow-up queries (for example Jira project keys or record IDs).
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -9985,6 +10010,26 @@ components:
         updatedAt:
           type: string
           format: date-time
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access]
+        name:
+          type: string
+          description: A neutral label (`Restricted source`).
     CitationReference:
       type: object
       additionalProperties: false
@@ -11469,6 +11514,16 @@ components:
             is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
             `false` ignores the field and never runs a timeline.
           example: created
+        saveHistory:
+          type: boolean
+          default: true
+          description: |
+            Whether the search is saved to the caller's search history (`GET /search`)
+            with a citation for each match. Set it to `false` for searches that are not
+            the user's own, such as an agent searching on their behalf: nothing is
+            stored and the response has no `searchId`. A server older than this field
+            ignores it and saves the search.
+          example: false
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -12174,16 +12229,17 @@ components:
       additionalProperties: false
       description: |
         Immediate POST `/search` response: persisted search id plus the raw retrieval payload.
+        `searchId` is absent when the request set `saveHistory` to `false`.
         SDK-oriented modeling: named fields only at this level; dynamic-key maps inside `searchResponse` use
         `additionalProperties` with a `$ref` (e.g. `virtual_to_record_map`) rather than boolean `additionalProperties: true`,
         so generated clients retain typed values where possible.
       required:
-        - searchId
         - searchResponse
       properties:
         searchId:
           type: string
           format: objectId
+          description: The saved search, for `GET /search/{searchId}`. Absent when `saveHistory` is `false`.
         searchResponse:
           $ref: '#/components/schemas/SemanticSearchAiResponse'
     PersistedSemanticSearchBoundingBox:
@@ -12415,8 +12471,13 @@ components:
           format: objectId
         citationIds:
           type: array
+          description: |
+            For a search shared with the viewer, a hit the viewer cannot read is a
+            `RedactedSource`.
           items:
-            $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+            anyOf:
+              - $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         records:
           type: object
           description: |
@@ -12507,6 +12568,9 @@ components:
           items:
             type: string
             format: objectId
+          description: |
+            Hit ids. For a search shared with the viewer the ids are not returned
+            (they cannot be checked against the viewer's access), so the array is empty.
         records:
           type: object
           description: |
@@ -15251,7 +15315,9 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+            anyOf:
+              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
@@ -15275,33 +15341,35 @@ components:
             Reference identifiers surfaced from tool responses, used to scope
             follow-up queries.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -28640,6 +28708,11 @@ paths:
 
         The email field may be omitted from the response if the `HIDE_EMAIL` environment variable
         is set to `true`.
+
+        A service account answers `404` for a caller who does not administer the
+        organisation, the same answer an id that is not there gets. Its `userId`
+        is what binds an agent to it, and the screens that manage these accounts
+        are admin-only, so whether one exists is an administrator's to know.
       operationId: getUserById
       security:
         - bearerAuth: []
@@ -29990,7 +30063,15 @@ paths:
         (`/api/v1/entity/user/list`). The response from the connector is then enriched locally
         with profile pictures, `hasLoggedIn` flags, group memberships, and role.
 
-        Only `page`, `limit`, and `search` are forwarded to the connector.
+        Only `page`, `limit`, `search` and `includeServiceAccounts` are forwarded
+        to the connector.
+
+        Service accounts are left out unless the caller is an organisation
+        administrator and asks for them. The connector decides that, from the
+        live role of the caller's own credentials, because the query that
+        returns these rows lives there; the gateway only passes the flag along.
+        Each row carries the `userId` that binds an agent to a service account,
+        and the gateway then attaches the groups it belongs to.
 
         **Query validation** (Zod at route layer): `page` and `limit` must be positive integer
         strings when provided; `limit` is capped at 100. The `search` parameter is additionally
@@ -30036,6 +30117,16 @@ paths:
             type: string
             maxLength: 1000
             example: "john"
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also lists service accounts, which are otherwise left out.
+            Honoured only for an organisation administrator; for anyone else it
+            is ignored rather than refused, as on `GET /users`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Paginated list of enriched users from the connector backend
@@ -30272,12 +30363,31 @@ paths:
         `hasLoggedIn`, and `groups` (array of `{ name, type }` objects for non-deleted groups
         in the same org).
 
-        Accessible by any authenticated user with `user:read` scope — no admin check. Not
-        paginated, and it takes no query parameters: any that are sent are ignored.
+        Service accounts are left out unless the caller is an organisation
+        administrator and asks for them with `includeServiceAccounts=true`.
+        Each row carries the `userId` that binds an agent to a service account,
+        next to the groups it belongs to, so this listing would otherwise say
+        which machine identity an administrator put in which group.
+
+        Accessible by any authenticated user with `user:read` scope — no admin
+        check on the route itself, only on that flag. Not paginated, and
+        `includeServiceAccounts` is the only query parameter it reads; any
+        other is ignored.
       operationId: getAllUsersWithGroups
       security:
         - bearerAuth: []
         - oauth2: [user:read]
+      parameters:
+        - name: includeServiceAccounts
+          in: query
+          required: false
+          description: |
+            `true` also returns service accounts, which are otherwise left out.
+            Honoured only for an organisation administrator; for anyone else it
+            is ignored rather than refused, as on `GET /users`.
+          schema:
+            type: string
+            enum: ['true', 'false']
       responses:
         '200':
           description: Users with group data retrieved successfully
@@ -30365,6 +30475,12 @@ paths:
         requester's organization. IDs that match nobody are left out, so an array of only
         unknown IDs gives `[]`. Any authenticated member may call it (no admin check), and
         body fields other than `userIds` are ignored.
+
+        A service account among the ids is dropped unless the caller is an
+        organisation administrator, and is left out the same way an unknown id
+        is — nothing says it was there. Its `userId` is what binds an agent to
+        it, so resolving one here would be a way around the admin-only service
+        accounts screen.
       operationId: getUsersByIds
       security:
         - bearerAuth: []
@@ -31856,6 +31972,13 @@ paths:
       description: |
         Paginated list of teams the authenticated user belongs to, with optional filters.
 
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
+
         **Gateway contract:**
         Query validated by `getUserTeamsQuerySchema`: `page`, `limit`, `search` (same rules as org list), optional `created_by` (Mongo userId of creator), `created_after` / `created_before` (positive epoch ms).
 
@@ -32020,6 +32143,14 @@ paths:
         Membership is not required: any user of the organization can read any of its teams,
         members included. For a caller who is not an OWNER, `canEdit`, `canDelete` and
         `canManageMembers` are `false`.
+
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
+
       operationId: getTeamById
       security:
         - bearerAuth: []
@@ -32380,6 +32511,13 @@ paths:
         `canManageMembers` are `false`. Query parameters not listed here are dropped by the
         gateway. A fractional `page` or `limit` (`1.5`) passes the gateway and is refused by the
         service with `422`.
+
+        Service accounts among the members are left out for a caller who does
+        not administer the organisation, and `memberCount` leaves them out too.
+        Every account joins the organisation's All team when it is created, and
+        a member row carries the `userId` that binds an agent to a service
+        account next to the address that gives it away, so `all_{orgId}` would
+        otherwise be a complete list of the organisation's machine identities.
       operationId: getTeamUsers
       security:
         - bearerAuth: []
@@ -33744,6 +33882,12 @@ paths:
 
         A soft-deleted group is still returned, with `isDeleted: true` and `deletedBy`.
         Query parameters are dropped.
+
+        The `users` array leaves out any service account in the group unless the
+        caller is an organisation administrator. A service account's id is what
+        binds an agent to it, and every one is put in the built-in `everyone`
+        group when it is created, so the group every member can read would
+        otherwise hand out all of them.
       operationId: getUserGroupById
       security:
         - bearerAuth: []
@@ -34295,6 +34439,11 @@ paths:
         Returns user details (`fullName`, `email`) with profile picture data URIs.
         Supports pagination and search by name or email. Accessible by any authenticated user.
         Member ids that name no (or a deleted) user are left out of `users` and of `totalCount`.
+
+        Service accounts in the group are left out the same way for a caller who
+        does not administer the organisation, `totalCount` included. This page
+        carries each member's id, name and address, so a service account here
+        would be fully identifiable — and its id is what binds an agent to it.
 
         `page` and `limit` are not validated by the gateway: a value below 1, a `limit` above
         100 or a non-numeric value is answered `500 INTERNAL_ERROR`, and a fractional value is
@@ -35212,8 +35361,9 @@ paths:
         of the virtual record, and returns an upload URL for each file. Its files
         live under `record-revisions/{virtualRecordId}/{rev}/` in the organisation, which
         comes from the storage token only. Calling again for the same revision
-        returns the same document, so the call is safe to repeat. URLs expire
-        after 15 minutes.
+        returns the same document, so the call is safe to repeat. Every call
+        moves the revision's `updatedAt`, so a delete that listed it earlier
+        sees the new write. URLs expire after 15 minutes.
       operationId: internalPresignArtifactSet
       security:
         - scopedToken: []
@@ -35312,11 +35462,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '409':
           description: |
-            Conflict (`CONFLICT`). Possible causes:
+            Conflict (`CONFLICT`); no URLs are issued. Possible causes:
             - The revision was deleted and not yet purged (`This revision was deleted; purge it before
               writing it again`)
             - The revision is stored on another storage than the configured one (`This revision is
               stored on <vendor>, not on the configured <type> storage`)
+            - A delete claimed the revision less than 15 minutes ago (`This revision is being
+              deleted; write it again once the delete has finished`)
           content:
             application/json:
               schema:
@@ -35371,7 +35523,24 @@ paths:
                           description: Milliseconds since the epoch.
                         updatedAt:
                           type: integer
-                          description: Milliseconds since the epoch.
+                          description: |
+                            Milliseconds since the epoch. The revision's write
+                            stamp: moved by every presign of it. Pass it as
+                            `ifUnchangedSince` to delete the revision only if
+                            nothing wrote it since.
+                        deleteFence:
+                          type: boolean
+                          description: |
+                            Always true. Present only on servers that check
+                            `ifUnchangedSince` on delete; a client that does
+                            not see it must not delete with a stamp.
+                        retiringAt:
+                          type: integer
+                          description: |
+                            Milliseconds since the epoch. Present while a delete
+                            has claimed the revision (or one died after claiming
+                            it). Presign refuses the revision while the claim is
+                            younger than 15 minutes.
         '400':
           description: |
             The virtual record id is missing or not valid.
@@ -35399,11 +35568,45 @@ paths:
         revision that is already gone counts as purged, so the call is safe to
         repeat. If the files cannot be removed the document is kept and the call
         answers 503, so it can be retried.
+
+        The revision is claimed before any file is removed, and presign refuses
+        a claimed revision. With `ifUnchangedSince`, the claim succeeds only if
+        the revision's `updatedAt` is no newer than it and no other delete holds
+        a claim younger than 15 minutes; otherwise nothing is removed and the
+        call answers 409 `changed`. While it removes files the delete renews its
+        claim (every 3 minutes), so a claim older than 15 minutes is from a
+        delete that died. A delete that dies after its claim leaves the revision
+        unwritable until then; after that, a later delete may claim it again, or
+        a presign of the revision clears the claim and writes it again. If a
+        delete finds its claim taken back after its files were removed (its
+        renewals failed for 15 minutes, or the Node replicas' clocks disagree by
+        more than 12 minutes), it keeps the document and answers 409 `lost`:
+        files may have been removed. The clocks of the replicas that serve this
+        route must agree to within 12 minutes. The `ifUnchangedSince` comparison
+        needs less than that to hold: the sweep lists only revisions whose stamp is
+        older than its retention grace (24 hours by default), so a rewrite stamped
+        by a replica whose clock is behind falls under that stamp only if the skew
+        is larger than the grace.
+
+        Query keys other than `ifUnchangedSince` are refused with 400, so a
+        misspelt key is not read as an unfenced delete. A listing from a server
+        that fences deletes carries `deleteFence: true`; callers must send a
+        stamp only to such a server, and deploy this service before them.
       operationId: internalPurgeArtifactSet
       security:
         - scopedToken: []
       parameters:
         - $ref: '#/components/parameters/InternalDocumentId'
+        - name: ifUnchangedSince
+          in: query
+          required: false
+          description: |
+            Milliseconds since the epoch, normally the `updatedAt` the revision
+            was listed with, as decimal digits only. The revision is removed
+            only if it was not written after this.
+          schema:
+            type: integer
+            minimum: 0
       responses:
         '200':
           description: |
@@ -35413,9 +35616,30 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/StoragePurgeResult'
+        '409':
+          description: |
+            `changed` (only with `ifUnchangedSince`): the revision was written
+            after it, or another delete is removing it. Nothing was removed.
+            `lost`: the delete's claim was taken back while it removed files.
+            The files may have been removed although the document was kept.
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - purged
+                  - reason
+                properties:
+                  purged:
+                    type: integer
+                    enum: [0]
+                  reason:
+                    type: string
+                    enum: [changed, lost]
         '400':
           description: |
-            The document id is not a 24-character hex id.
+            The document id is not a 24-character hex id, `ifUnchangedSince` is not a
+            non-negative integer, or the query holds a key other than `ifUnchangedSince`.
 
             Also returned, before authentication, when a query value, or any string in a JSON or form-encoded body, looks like markup to the app-wide XSS filter: an HTML tag, a script tag, `<iframe`, `<object`, `<embed` or `<svg` tag, a word starting with `on` followed by `=` (meant for inline event handlers such as `onerror=`, it also catches plain text such as `one=1`), a `javascript:` or `data:text/html` URL, an encoded script tag (`&lt;script`, `%3cscript`), or any string longer than 100,000 characters (`HTTP_BAD_REQUEST`, "HTML tags, scripts, and XSS content are not allowed in ...", naming the field or query parameter; a string over 100,000 characters is refused as too long instead).
           content:
@@ -39136,7 +39360,7 @@ paths:
         **Status filters:**
 
         Optional `statusFilters` array limits reindex to records in matching indexing states
-        (e.g. `FAILED`, `AUTO_INDEX_OFF`). Any string is accepted.
+        (e.g. `FAILED`, `AUTO_INDEX_OFF`, `PASSWORD_PROTECTED`). Any string is accepted.
 
         **Access:** any role on the record's knowledge base may reindex it, `READER` included.
         For a connector record, read access to the record is enough. A record of a disabled
@@ -40240,7 +40464,7 @@ paths:
 
             Valid values: `NOT_STARTED`, `PAUSED`, `IN_PROGRESS`, `COMPLETED`,
             `FAILED`, `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY`,
-            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`
+            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`, `SKIPPED`, `PASSWORD_PROTECTED`
           schema:
             type: string
           example: COMPLETED,FAILED
@@ -40791,7 +41015,7 @@ paths:
 
             Valid values: `NOT_STARTED`, `PAUSED`, `IN_PROGRESS`, `COMPLETED`,
             `FAILED`, `FILE_TYPE_NOT_SUPPORTED`, `AUTO_INDEX_OFF`, `EMPTY`,
-            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`
+            `ENABLE_MULTIMODAL_MODELS`, `QUEUED`, `SKIPPED`, `PASSWORD_PROTECTED`
           schema:
             type: string
           example: "COMPLETED,FAILED"
@@ -47133,7 +47357,8 @@ paths:
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
         source document's metadata. Past searches can be retrieved via
-        `GET /search`.
+        `GET /search`. With `saveHistory: false` nothing is saved and
+        there is no `searchId`.
 
         **Scopes:** an OAuth token needs `semantic:write`. The gateway also lets a token holding
         only `semantic:read` through, but the search service then refuses it with the same `403`

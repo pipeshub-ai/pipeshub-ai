@@ -530,6 +530,45 @@ class TestUnchangedRecordsAreNotRepublished:
         assert record.indexing_status == ProgressStatus.COMPLETED.value
 
     @pytest.mark.asyncio
+    async def test_unchanged_password_protected_record_publishes_nothing(self) -> None:
+        """A full re-sync does not queue a locked file again: the same bytes need the same password."""
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.PASSWORD_PROTECTED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_not_awaited()
+        assert record.indexing_status == ProgressStatus.PASSWORD_PROTECTED.value
+
+    @pytest.mark.asyncio
+    async def test_changed_password_protected_record_is_indexed_again(self) -> None:
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.PASSWORD_PROTECTED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-2"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+        assert record.indexing_status != ProgressStatus.PASSWORD_PROTECTED.value
+
+    @pytest.mark.asyncio
+    async def test_an_unchanged_failed_record_is_still_queued_again(self) -> None:
+        proc, _ = self._proc_with_existing(
+            self._existing("rev-1", ProgressStatus.FAILED.value)
+        )
+        record = _make_record()
+        record.external_revision_id = "rev-1"
+
+        await proc.on_new_records([(record, [])])
+
+        proc.messaging_producer.send_messages.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_changed_completed_record_is_requeued_and_published(self):
         proc, _ = self._proc_with_existing(
             self._existing("rev-1", ProgressStatus.COMPLETED.value)

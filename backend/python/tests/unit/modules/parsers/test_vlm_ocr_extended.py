@@ -15,9 +15,17 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
 from app.utils.opik import get_llm_invoke_config
 
 # ============================================================================
@@ -107,7 +115,7 @@ class TestGetMultimodalLLM:
         })
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No multimodal LLM found"):
+        with pytest.raises(MultimodalModelNotConfiguredError, match="No multimodal LLM found"):
             await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio
@@ -117,8 +125,26 @@ class TestGetMultimodalLLM:
         config.get_config = AsyncMock(return_value={"llm": []})
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No LLM configurations found"):
+        # Settings read and holding no model at all: the same fact as no multimodal one.
+        with pytest.raises(MultimodalModelNotConfiguredError, match="No LLM configurations found"):
             await strategy._get_multimodal_llm()
+        # Read strictly, so an empty list cannot be a store that failed to answer.
+        assert any(c.kwargs.get("raise_on_error") is True for c in config.get_config.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_settings_store_that_cannot_be_read_stays_retryable(self) -> None:
+        logger = logging.getLogger("test")
+        config = AsyncMock()
+        config.get_config = AsyncMock(side_effect=ConnectionError("etcd unreachable"))
+
+        strategy = VLMOCRStrategy(logger, config)
+        with pytest.raises(AISettingsUnavailableError) as exc_info:
+            await strategy._get_multimodal_llm()
+        # Not a DocumentProcessingError, which the classifier treats as final;
+        # the store's own error stays the cause.
+        assert not isinstance(exc_info.value, DocumentProcessingError)
+        assert isinstance(exc_info.value.__cause__, ConnectionError)
+        assert MessageErrorClassifier.classify_by_exception(exc_info.value) == MessageErrorType.TRANSIENT
 
 
 # ============================================================================

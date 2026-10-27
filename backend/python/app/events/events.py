@@ -38,6 +38,7 @@ from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
+from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
@@ -1709,6 +1710,10 @@ class EventProcessor:
                 return
 
             # ── Legacy per-format dispatch (existing behaviour) ──────────────
+            # The parsing service makes the same check on its own side.
+            raise_if_password_protected_office(
+                file_content, extension=extension, mime_type=mime_type
+            )
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(

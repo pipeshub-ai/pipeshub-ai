@@ -2,6 +2,7 @@ import asyncio
 import inspect
 import logging
 import os
+import time
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 from functools import partial
@@ -44,7 +45,11 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
-from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.modules.indexing.record_republish import (
+    is_parked_duplicate,
+    record_event,
+    republish_eligible,
+)
 from app.modules.indexing.recovery_budget import (
     ExhaustedRecordSink,
     record_handback,
@@ -65,7 +70,6 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
-from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.backpressure import (
@@ -88,6 +92,7 @@ from app.services.messaging.lanes.backlog import LaneBacklog
 from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.services.messaging.worker_loop import WorkerLoop
+from app.services.redis.connection_provider_factory import uses_pg_state
 from app.services.resource_governor import ResourceGovernor
 from app.services.resource_governor.shared_slots import shared_slots_directory
 from app.telemetry.setup import setup_telemetry
@@ -920,12 +925,16 @@ async def _sweep_retired_revisions(
         leases=concurrency_manager,
     )
     total = RetentionReport()
+    budget = messaging_env.revision_retention_tick_budget_seconds
+    deadline = time.monotonic() + budget if budget > 0 else None
     pacer = LoopShare(max_pause_seconds=ORPHAN_SCAN_MAX_PAUSE_SECONDS)
     for _ in range(RETENTION_MAX_PAGES_PER_TICK):
-        if not lease_held():
+        if not lease_held() or (deadline is not None and time.monotonic() >= deadline):
             break
         try:
-            next_key, report = await sweep.run_page(_retention_cursor, still_leader=lease_held)
+            next_key, report = await sweep.run_page(
+                _retention_cursor, still_leader=lease_held, deadline=deadline
+            )
         except Exception as exc:
             logger.warning("Revision retention skipped the rest of this pass: %s: %s", type(exc).__name__, exc)
             break
@@ -933,9 +942,17 @@ async def _sweep_retired_revisions(
         if report.interrupted:
             break
         _retention_cursor = next_key
-        if next_key is None:
+        if next_key is None or report.cut_short:
+            break
+        # A pause can last ORPHAN_SCAN_MAX_PAUSE_SECONDS; do not sleep through the deadline.
+        if deadline is not None and deadline - time.monotonic() <= ORPHAN_SCAN_MAX_PAUSE_SECONDS:
             break
         await pacer.pause()
+    if total.cut_short:
+        logger.info(
+            "Revision retention stopped early this pass (time budget or failures in a row); "
+            "the next pass goes on from there"
+        )
     if total.removed or total.failed:
         logger.info(
             "Revision retention: %d revision(s) and %d stage state(s) removed, %d revision(s) kept, "
@@ -1527,16 +1544,13 @@ async def _republish_stranded_records(
                     continue
                 # Uploads are otherwise left alone: a new one waits on its file
                 # reaching storage. A restored file's content is already there,
-                # and its restore was the only thing that would have queued it.
-                restored_upload = (
-                    status_value == ProgressStatus.NOT_STARTED.value
-                    and bool(record.get(RESTORED_AT_FIELD))
-                    and is_live_record(record)
-                )
+                # and its restore was the only thing that would have queued it;
+                # so is a pushed record's (see republish_eligible).
+                eligible, restored_upload = republish_eligible(record, status_value)
                 if (
                     not record_key
                     or not connector_id
-                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
+                    or not eligible
                     # A stub for an ancestor that was never synced: nothing to
                     # index, and the connector refuses to stream it.
                     or record.get("isPlaceholder")
@@ -1796,6 +1810,12 @@ def _indexing_worker_count() -> int:
     return max(1, int(os.getenv("INDEXING_UVICORN_WORKERS", "1")))
 
 
+def _distributed_leases_wanted() -> bool:
+    """On PostgreSQL state the leases are rows in the database, so they are always kept: a stage and a re-index of one record
+    exclude each other (``record:<id>``) whatever the capacity switch says."""
+    return messaging_env.distributed_concurrency_enabled or uses_pg_state()
+
+
 async def _start_stages_when_topics_exist(
     admin: IMessageAdmin,
     topics: list[str],
@@ -1846,16 +1866,8 @@ async def start_kafka_consumers(
         await retry_manager.initialize()
         logger.info("✅ RetryManager initialized for %s consumer", broker_type.value)
 
-        if messaging_env.distributed_concurrency_enabled:
-            concurrency_manager = DistributedConcurrencyManager(
-                logger,
-                redis_config,
-                key_prefix=messaging_env.concurrency_key_prefix,
-                operation_timeout_seconds=(
-                    messaging_env.concurrency_redis_timeout_seconds
-                ),
-                max_connections=messaging_env.concurrency_redis_max_connections,
-            )
+        if _distributed_leases_wanted():
+            concurrency_manager = MessagingFactory.create_lease_manager(logger, redis_config)
             # Fails the startup, like the RetryManager ping above: Redis is a
             # hard requirement for this service on either broker, so degrading
             # here would only mask a Redis that the line above already proved

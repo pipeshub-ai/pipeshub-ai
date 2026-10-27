@@ -190,6 +190,38 @@ class TestEmailFieldPolicy:
 
 
 # ---------------------------------------------------------------------------
+# A synced person's graph document (job title) against the strict user schema
+# ---------------------------------------------------------------------------
+class TestSyncedUserDocument:
+    TITLES = [None, "", " ", "Staff Engineer", "Ünïcødé 职位 🚀", "x" * 100_000, "a\nb\x00c"]
+
+    @staticmethod
+    def _doc(title: str | None, *, node: bool = False) -> dict:
+        from app.config.constants.arangodb import Connectors
+        from app.models.entities import AppUser
+
+        user = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                       email="u@test.com", full_name="U", title=title)
+        doc = {**user.to_arango_base_user(), "orgId": "o", "isActive": False}
+        # The graph-node form keys the user by ``id``, the Arango form by ``_key``.
+        return {**{k: v for k, v in doc.items() if k != "_key"}, "id": user.id} if node else doc
+
+    @pytest.mark.parametrize("title", TITLES, ids=lambda t: f"title-{len(t) if t else t!r}")
+    def test_the_user_schema_accepts_the_document(self, title: str | None) -> None:
+        Draft4Validator(documents.user_schema["rule"]).validate(self._doc(title))
+
+    @pytest.mark.parametrize("title", TITLES, ids=lambda t: f"title-{len(t) if t else t!r}")
+    def test_the_node_validator_accepts_the_document(self, title: str | None) -> None:
+        from app.schema.node_validator import NodeSchemaValidator
+
+        NodeSchemaValidator().validate_node_update(CollectionNames.USERS.value, self._doc(title, node=True))
+
+    def test_a_null_designation_is_what_the_schema_rejects(self) -> None:
+        with pytest.raises(ValidationError):
+            Draft4Validator(documents.user_schema["rule"]).validate({**self._doc("T"), "designation": None})
+
+
+# ---------------------------------------------------------------------------
 # Required fields on key collections
 # ---------------------------------------------------------------------------
 class TestRequiredFields:

@@ -16,6 +16,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from app.exceptions.indexing_exceptions import PasswordProtectedError
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseAbandonedError, ParseWorkerError
 from app.modules.parsers.pdf import untrusted_pdf
@@ -147,14 +148,23 @@ class TestStructure:
         assert to_user_reason(raised.value) == UNREADABLE_FILE
         assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TERMINAL
 
-    async def test_a_password_keeps_its_own_reason(self, worker) -> None:
-        # pdfminer raises an empty error; pdfium names the password.
+    async def test_a_password_in_an_error_text_only_sets_the_reason(self, worker) -> None:
+        # Without pdfium's status code the file is not recognised as encrypted
+        # (it stays unreadable); the text can still shape the reason shown.
         worker(open=ValueError(""), repair=RuntimeError("Failed to load document (PDFium: Incorrect password error)."))
 
         with pytest.raises(UnreadablePdfError) as raised:
             await inspect_untrusted_pdf(ORIGINAL)
 
         assert to_user_reason(raised.value) == PASSWORD_PROTECTED
+
+    async def test_a_worker_that_found_a_password_is_not_second_guessed(self, worker) -> None:
+        jobs = worker(open=ValueError(""), repair=PasswordProtectedError("needs a password"))
+
+        with pytest.raises(PasswordProtectedError):
+            await inspect_untrusted_pdf(ORIGINAL)
+
+        assert jobs.calls == [("open_pdf", ORIGINAL), ("repair_pdf", ORIGINAL)]
 
     async def test_a_rewrite_that_also_overruns_reads_as_too_slow(self, worker) -> None:
         worker(open=_timed_out(), reopen=_timed_out())
@@ -300,8 +310,8 @@ class TestRealFilesInThreads:
 
         assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=1)
 
-    async def test_a_password_protected_pdf_fails_with_the_password_reason(self) -> None:
-        with pytest.raises(UnreadablePdfError) as raised:
+    async def test_a_password_protected_pdf_raises_the_typed_error(self) -> None:
+        with pytest.raises(PasswordProtectedError) as raised:
             await inspect_untrusted_pdf(password_protected_pdf())
 
         assert to_user_reason(raised.value) == PASSWORD_PROTECTED
@@ -450,7 +460,7 @@ class TestRealFilesInWorkers:
         assert await inspect_untrusted_pdf(content) == InspectedPdf(content, False, repaired=False, page_count=1)
 
     async def test_a_password_protected_pdf_fails_the_same_way_in_a_worker(self, pool: None) -> None:
-        with pytest.raises(UnreadablePdfError) as raised:
+        with pytest.raises(PasswordProtectedError) as raised:
             await inspect_untrusted_pdf(password_protected_pdf())
 
         assert to_user_reason(raised.value) == PASSWORD_PROTECTED

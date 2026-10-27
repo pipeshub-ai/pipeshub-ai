@@ -9,6 +9,11 @@ updates:
     groups:
       node-api-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # bullmq 5 pins ioredis 5.11.1, so ioredis 6 installs a second copy whose types the queue
+      # code cannot pass to bullmq. bullmq 6 takes ioredis as a peer but drops repeatable jobs.
+      - dependency-name: "ioredis"
+        versions: [">=6"]
 
   - package-ecosystem: npm
     directory: /frontend
@@ -17,6 +22,19 @@ updates:
     groups:
       frontend-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # 16.4 enables react-hooks rules (use-memo, immutability, purity) that fail next build in
+      # 14 places, each a change to component behaviour rather than a lint fix.
+      - dependency-name: "eslint-config-next"
+        versions: [">=16.4"]
+      # i18next and typescript-eslint require TypeScript 5, and next 15 type-checks through the
+      # JavaScript compiler API that TypeScript 7 no longer ships.
+      - dependency-name: "typescript"
+        versions: [">=7"]
+      # react-pdf-highlighter 7 brings its own pdfjs-dist 4. The worker this app loads has to
+      # be the same release as that copy, so pdfjs-dist moves when the highlighter does.
+      - dependency-name: "pdfjs-dist"
+        versions: [">=5"]
 
   - package-ecosystem: pip
     directory: /backend/python
@@ -33,16 +51,13 @@ updates:
         versions: [">=1.13"]
       - dependency-name: "Pillow"
         versions: [">=14"]
-      - dependency-name: "protobuf"
-        versions: [">=6"]
       - dependency-name: "reportlab"
         versions: [">=5"]
       - dependency-name: "fpdf2"
         versions: [">=3"]
       - dependency-name: "mariadb"
         versions: [">=3"]
-      # Held until the code moves with them; integration-tests imports app code, so both
-      # manifests hold the same versions. 0.137 nests included routers, which changes the
+      # Held until the code moves with it. 0.137 nests included routers, which changes the
       # matched route path used as the request-metrics label.
       - dependency-name: "fastapi"
         versions: [">=0.137"]
@@ -62,6 +77,8 @@ updates:
       - dependency-name: "langchain-google-genai"
         versions: [">=4.4"]
 
+  # The backend's packages come in through the ai-service path dependency, so this entry only
+  # moves the suites' own packages and the lock; backend/python above moves the rest.
   - package-ecosystem: uv
     directory: /integration-tests
     schedule: { interval: weekly, day: monday }
@@ -69,31 +86,6 @@ updates:
     groups:
       integration-tests-minor-and-patch:
         update-types: [minor, patch]
-    ignore:
-      - dependency-name: "Pillow"
-        versions: [">=14"]
-      - dependency-name: "protobuf"
-        versions: [">=6"]
-      # Held until the code moves with them; integration-tests imports app code, so both
-      # manifests hold the same versions. 0.137 nests included routers, which changes the
-      # matched route path used as the request-metrics label.
-      - dependency-name: "fastapi"
-        versions: [">=0.137"]
-      # 12.20+ change download and listing response shapes the Azure Files source reads.
-      - dependency-name: "azure-storage-file-share"
-        versions: [">=12.20"]
-      # 2.9+ change compare_commits, which the GitHub source calls.
-      - dependency-name: "PyGithub"
-        versions: [">=2.9"]
-      # 1.2+ count cached tokens inside input tokens, so Bedrock usage would be counted twice.
-      - dependency-name: "langchain-aws"
-        versions: [">=1.2"]
-      # 1.6+ move ChatAnthropic's HTTP clients, so the model egress guard is not installed.
-      - dependency-name: "langchain-anthropic"
-        versions: [">=1.6"]
-      # 4.4+ need google-cloud-storage 3, which conflicts with langchain-google-vertexai on 3.13+.
-      - dependency-name: "langchain-google-genai"
-        versions: [">=4.4"]
 
   - package-ecosystem: github-actions
     directory: /

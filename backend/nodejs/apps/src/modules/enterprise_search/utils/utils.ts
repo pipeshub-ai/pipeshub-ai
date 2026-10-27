@@ -989,9 +989,13 @@ export const addComputedFields = <
   conversation: T,
   userId: string,
 ) => {
+  const isOwner = conversation.initiator.toString() === userId;
+  // Owner-run fields are for the owner only, in every list a shared chat appears in.
   return {
-    ...withoutErrorStacks(conversation),
-    isOwner: conversation.initiator.toString() === userId,
+    ...withoutErrorStacks(
+      isOwner ? conversation : withoutOwnerOnlyFields(conversation),
+    ),
+    isOwner,
     accessLevel:
       conversation.sharedWith?.find(
         (share) => share.userId.toString() === userId,

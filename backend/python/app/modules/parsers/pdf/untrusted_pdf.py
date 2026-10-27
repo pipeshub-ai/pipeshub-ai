@@ -28,7 +28,10 @@ import logging
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, TypeVar
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    DocumentProcessingError,
+    PasswordProtectedError,
+)
 from app.modules.parsers import parse_pool
 from app.modules.parsers.parse_pool import ParseAbandonedError, ParseWorkerError
 from app.modules.parsers.pdf.pdf_inspection import (
@@ -88,7 +91,8 @@ def ocr_sample_pages() -> int:
 async def inspect_untrusted_pdf(content: bytes, *, label: str = "") -> InspectedPdf:
     """The bytes to parse, whether they need OCR, and the page count.
 
-    Raises ``UnreadablePdfError`` when the file cannot be opened either way. A
+    Raises ``PasswordProtectedError`` when the file needs a password, and
+    ``UnreadablePdfError`` when it cannot be opened either way. A
     worker that died (most likely out of memory) or a cancelled caller is
     raised as it is, so those are retried rather than read as a bad file.
     """
@@ -172,7 +176,10 @@ def _about_the_file(exc: Exception) -> bool:
     """False for failures a rewrite cannot help: a dead worker, a stop, a broken install."""
     if isinstance(exc, ParseWorkerError):
         return _timed_out(exc)
-    return not isinstance(exc, (ParseAbandonedError, MemoryError, ImportError))
+    # A password is a fact about the file, but no rewrite or second reader can help.
+    return not isinstance(
+        exc, (ParseAbandonedError, MemoryError, ImportError, PasswordProtectedError)
+    )
 
 
 def _timed_out(exc: Exception) -> bool:

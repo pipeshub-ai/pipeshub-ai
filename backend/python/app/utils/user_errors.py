@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 from app.agents.agent_loop.error_classification import classify_error
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordTypes
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
@@ -23,6 +24,8 @@ from app.exceptions.indexing_exceptions import (
     EmbeddingModelUnavailableError,
     EmbeddingNotConfiguredError,
     ExtractionError,
+    MultimodalModelNotConfiguredError,
+    PasswordProtectedError,
     ProcessingError,
     RecordStatusUpdateError,
     VectorStoreError,
@@ -271,6 +274,11 @@ def text_file_too_large(size_bytes: int, limit_bytes: int, *, repository_file: b
         "files, or ask your admin to raise the limit (CODE_FILE_MAX_SIZE_MB) and then "
         f"{after_raising}."
     )
+
+
+def duplicate_password_protected(primary_reason: str | None) -> str:
+    base = "An identical file is password-protected, so this copy was skipped."
+    return f"{base} {primary_reason}" if primary_reason else base
 
 
 def duplicate_failed(primary_reason: str | None) -> str:
@@ -652,12 +660,31 @@ def to_user_reason(
     return reason
 
 
+def is_password_protected(exc: BaseException | None) -> bool:
+    """Whether the file itself was found to need a password, which ends its indexing as
+    ``PASSWORD_PROTECTED`` rather than ``FAILED``.
+
+    Only the typed error counts, or the parsing service's PASSWORD_REQUIRED code.
+    The wording of an error does not: a reason can still read "password-protected"
+    from ``_PASSWORD_HINTS`` for a file nothing recognised as encrypted.
+    """
+    if exc is None:
+        return False
+    return any(
+        isinstance(e, PasswordProtectedError)
+        or getattr(e, "code", None) == ParseErrorCode.PASSWORD_REQUIRED
+        for e in _chain(exc)
+    )
+
+
 def _reason(exc: BaseException | None) -> str:
     if exc is None:
         return GENERIC_FAILURE
     chain = list(_chain(exc))
 
     for e in chain:
+        if isinstance(e, PasswordProtectedError):
+            return PASSWORD_PROTECTED
         # ParseError raised in-process, or ParsingClientError carrying the
         # parsing service's answer: the same code and details either way.
         if getattr(e, "code", None) == ParseErrorCode.UNSUPPORTED_FORMAT:
@@ -669,6 +696,10 @@ def _reason(exc: BaseException | None) -> str:
             return e.args[0]
         if isinstance(e, EmbeddingNotConfiguredError):
             return EMBEDDING_NOT_CONFIGURED
+        if isinstance(e, MultimodalModelNotConfiguredError):
+            return SCANNED_DOCUMENT_NEEDS_OCR
+        if isinstance(e, AISettingsUnavailableError):
+            return TEMPORARY_PROBLEM
         if isinstance(e, StorageRequestRejectedError):
             # Refused for what it is, not for when it was sent: not a temporary problem.
             return FILE_TOO_LARGE if e.too_large else GENERIC_FAILURE

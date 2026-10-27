@@ -27,6 +27,7 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
 from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
@@ -239,6 +240,8 @@ def promoted_duplicate_extraction_status(
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
+    if new_indexing_status == ProgressStatus.PASSWORD_PROTECTED.value:
+        return ProgressStatus.SKIPPED.value
     return ProgressStatus.FAILED.value
 
 
@@ -2344,6 +2347,49 @@ class IGraphDBProvider(ABC):
         ``visibility`` defaults to ``ALL`` (trashed records included, which is
         what the vector-store rebuild has always done); ``LIVE`` leaves the
         trash alone.
+        """
+        pass
+
+    @abstractmethod
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        """Claim a push of record ``key`` in knowledge base ``kb_id``, first in its transaction.
+
+        ``expected=None`` is a create: it succeeds only while no record has the key. Otherwise it
+        is an update: it succeeds only while the record is live, in this KB and org, and still
+        holds ``expected`` (document id, revision, version), and it then writes ``new`` (document
+        id and version; the revision follows with the record upsert). A create takes the KB node's
+        lock on Neo4j so two creates of one key serialise; on ArangoDB the record upsert's write
+        conflict is the arbiter.
+
+        A KB that is missing or being deleted refuses the claim. The caller rolls its transaction
+        back on any result but ``CLAIMED``; a provider error (a write conflict) is raised.
+        """
+        pass
+
+    @abstractmethod
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Set only ``externalRevisionId`` on a live pushed record, while it still holds ``expected_revision``.
+
+        Used when the normaliser tag of a stored revision is upgraded: no content, status or
+        event changes. Returns whether the write applied.
         """
         pass
 
@@ -6563,7 +6609,9 @@ class IGraphDBProvider(ABC):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -6574,6 +6622,11 @@ class IGraphDBProvider(ABC):
                 when it belongs to this org
             user_key (str): Current user's key (for permission checking)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with members and permissions, None if not found
@@ -6590,7 +6643,9 @@ class IGraphDBProvider(ABC):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
@@ -6604,6 +6659,11 @@ class IGraphDBProvider(ABC):
             created_after (Optional[int]): Filter teams created after this timestamp (ms)
             created_before (Optional[int]): Filter teams created before this timestamp (ms)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
@@ -6619,7 +6679,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -6632,6 +6694,11 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with paginated members, None if not found
@@ -6752,7 +6819,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -6763,6 +6832,10 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of items per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                in the answer. Off by default, because this is the directory of
+                people and a service account's id is what binds an agent to it.
+                Only an organisation administrator may turn it on.
 
         Returns:
             Tuple[List[Dict], int]: (List of users, total count)

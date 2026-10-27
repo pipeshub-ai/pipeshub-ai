@@ -1,4 +1,6 @@
 import { Worker, Job, WorkerOptions, JobProgress } from 'bullmq';
+import { PgJobWorker } from '../../../libs/services/pg-job-queue.service';
+import { usesPgScheduler } from './crawling_pg';
 import { Logger } from '../../../libs/services/logger.service';
 import { inject, injectable } from 'inversify';
 import { RedisConfig } from '../../../libs/types/redis.types';
@@ -32,6 +34,14 @@ export class CrawlingWorkerService {
     // A lazily resolved service may be constructed inside a request; its
     // sockets and timers must not keep that request's org context.
     this.worker = spawnDetached(() => {
+      if (usesPgScheduler()) {
+        // no Redis: the same worker contract on PostgreSQL (claimed with SKIP LOCKED, woken by NOTIFY)
+        return new PgJobWorker(
+          'crawling-scheduler',
+          this.processJob.bind(this) as never,
+          { concurrency: 5, maxStalledCount: 3, stalledInterval: 30000 },
+        ) as unknown as Worker;
+      }
       const provider = crawlingRedisProvider(redisConfig);
 
       const workerOptions: WorkerOptions = {

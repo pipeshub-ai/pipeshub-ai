@@ -102,6 +102,8 @@ class PendingEdgeFact:
     receiver: str | None = None
     receiver_type: str | None = None
     qualified_prefix: str | None = None
+    # TS: the function-scoped type (or `=initializer`) of the receiver chain's first name.
+    head_type: str | None = None
     # The name an import binds in the importing file, when it differs from the
     # imported one: `b` in `from m import a as b` and `import { a as b }`, `ns`
     # in `import * as ns`. Calls are written against this name.
@@ -131,6 +133,8 @@ class PendingEdgeFact:
             out["receiverType"] = self.receiver_type
         if self.qualified_prefix:
             out["qualifiedPrefix"] = self.qualified_prefix
+        if self.head_type:
+            out["headType"] = self.head_type
         if self.local_name:
             out["localName"] = self.local_name
         if self.context:
