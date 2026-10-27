@@ -35,7 +35,7 @@ column content.project_members.added_at type=timestamp with time zone notnull=tr
 column content.project_members.added_by type=content.oid24 notnull=true identity= generated= default=-
 column content.project_members.org_id type=text notnull=true identity= generated= default=-
 column content.project_members.pos type=integer notnull=true identity= generated= default=-
-column content.project_members.principal_id type=content.oid24 notnull=true identity= generated= default=-
+column content.project_members.principal_id type=text notnull=true identity= generated= default=-
 column content.project_members.principal_type type=text notnull=true identity= generated= default=-
 column content.project_members.project_id type=content.oid24 notnull=true identity= generated= default=-
 column content.project_members.role type=text notnull=true identity= generated= default=-
@@ -58,6 +58,7 @@ column content.projects.linked_knowledge_base_id type=text notnull=false identit
 column content.projects.metadata type=jsonb notnull=false identity= generated= default=-
 column content.projects.name type=text notnull=true identity= generated= default=-
 column content.projects.org_id type=text notnull=true identity= generated= default=-
+column content.projects.pinned_by type=content.oid24[] notnull=true identity= generated= default='{}'::content.oid24[]
 column content.projects.tools type=text[] notnull=true identity= generated= default='{}'::text[]
 column content.projects.updated_at type=timestamp with time zone notnull=true identity= generated= default=-
 column content.projects.user_id type=content.oid24 notnull=true identity= generated= default=-
@@ -364,6 +365,7 @@ constraint content.documents org_id_format c def=e0f1eb94c06a8955f0a535ae12b2783
 constraint content.documents org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
 constraint content.project_members org_id_format c def=e0f1eb94c06a8955f0a535ae12b27833
 constraint content.project_members org_id_not_empty c def=86dc6958e5ad13c746af6a127e1321fd
+constraint content.project_members project_members_check c def=d72ee771d9f21f18e0f46be4e293ff5f
 constraint content.project_members project_members_org_id_project_id_fkey f def=17dee742ff9d65e8724ed6a047860dfc
 constraint content.project_members project_members_pkey p def=e88678dfb6b494b2ce463f88bd173d4e
 constraint content.project_members project_members_principal_type_check c def=1c6663dcf95b1a2e30b84a356413e428
@@ -534,7 +536,7 @@ index content.documents_pkey on content.documents unique=true exclusion=false va
 index content.project_members_by_principal on content.project_members unique=false exclusion=false valid=true def=918e2f7029497eb377d5490a98a08b4e
 index content.project_members_pkey on content.project_members unique=true exclusion=false valid=true def=b4c0bb1adc3426ea9706bd8f6840535d
 index content.projects_by_owner on content.projects unique=false exclusion=false valid=true def=9ccd15db66f5b07ae6e2fd9c2b53ae98
-index content.projects_listing on content.projects unique=false exclusion=false valid=true def=637b8b304dc2836f46bb1cfafcb36c56
+index content.projects_listing on content.projects unique=false exclusion=false valid=true def=cc4f0bcb27b311a5ac6446b71e43aa44
 index content.projects_org_visible on content.projects unique=false exclusion=false valid=true def=8daa63a4d0b3c374164bc9edae5e2b7f
 index content.projects_pkey on content.projects unique=true exclusion=false valid=true def=04834da7e2baaae39859e25b2da11435
 index conversation.chat_messages_content_trgm on conversation.chat_messages unique=false exclusion=false valid=true def=c0c702f06a1dc68cb013424aadb66757

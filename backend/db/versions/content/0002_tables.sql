@@ -66,7 +66,8 @@ CREATE TABLE content.projects (
   linked_knowledge_base_id text,                   -- emitted as null when unset
   visibility text NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'org')),
   chat_sharing text NOT NULL DEFAULT 'private' CHECK (chat_sharing IN ('private', 'members')),
-  is_pinned boolean NOT NULL DEFAULT false,
+  is_pinned boolean NOT NULL DEFAULT false,         -- the legacy project-wide pin; it counts only as the owner's own pin
+  pinned_by content.oid24[] NOT NULL DEFAULT '{}',  -- the people who pinned the project in their own list
   is_archived boolean NOT NULL DEFAULT false,
   archived_by content.oid24,
   is_deleted boolean NOT NULL DEFAULT false,
@@ -82,16 +83,17 @@ CREATE TABLE content.project_members (
   org_id text NOT NULL,
   project_id content.oid24 NOT NULL,
   principal_type text NOT NULL CHECK (principal_type IN ('user', 'team')),
-  principal_id content.oid24 NOT NULL,
+  principal_id text NOT NULL,                      -- a user's id, or a team's graph id (a UUID or all_<org>)
   role text NOT NULL CHECK (role IN ('viewer', 'editor')),
   added_by content.oid24 NOT NULL,
   added_at timestamptz NOT NULL,
   pos int NOT NULL,                                -- the index in the project's members array
   PRIMARY KEY (org_id, project_id, principal_type, principal_id),
+  CHECK (principal_id <> '' AND (principal_type = 'team' OR principal_id ~ '^[0-9a-f]{24}$')),
   FOREIGN KEY (org_id, project_id) REFERENCES content.projects (org_id, id) ON DELETE CASCADE
 );
 CREATE INDEX projects_by_owner ON content.projects (org_id, user_id, name);
-CREATE INDEX projects_listing ON content.projects (org_id, is_pinned DESC, last_activity_at DESC, id DESC) WHERE NOT is_deleted;
+CREATE INDEX projects_listing ON content.projects (org_id, last_activity_at DESC, id DESC) WHERE NOT is_deleted;
 CREATE INDEX projects_org_visible ON content.projects (org_id, visibility) WHERE NOT is_deleted;
 CREATE INDEX project_members_by_principal ON content.project_members (org_id, principal_id, principal_type);
 
