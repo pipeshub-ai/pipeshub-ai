@@ -6,6 +6,7 @@ import { NextFunction, Response } from 'express'
 import { setConversationProject } from '../../../../src/modules/enterprise_search/controller/es_controller'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { ProjectsFeature } from '../../../../src/modules/projects/utils/projects-feature'
 import { AuthenticatedUserRequest } from '../../../../src/libs/middlewares/types'
 import { IProjectDocument, ProjectAccess } from '../../../../src/modules/projects/types/project.interfaces'
 
@@ -44,6 +45,12 @@ function sessionDoc(fields: Record<string, unknown>): SessionDoc {
 }
 
 describe('setConversationProject response', () => {
+  // The flag is read through a process-wide cache that other test files in the same
+  // worker can leave set; these tests run with Projects on.
+  beforeEach(() => {
+    sinon.stub(ProjectsFeature, 'isEnabled').resolves(true)
+  })
+
   afterEach(() => {
     sinon.restore()
   })

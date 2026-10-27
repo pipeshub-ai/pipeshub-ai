@@ -40,6 +40,14 @@ function makeProject(overrides: Record<string, any> = {}): any {
 }
 
 describe('project-context', () => {
+  // The flag is read through a process-wide cache that other test files in the same
+  // worker can leave set; each test states the flag it runs under instead.
+  let projectsEnabled: sinon.SinonStub
+
+  beforeEach(() => {
+    projectsEnabled = sinon.stub(ProjectsFeature, 'isEnabled').resolves(true)
+  })
+
   afterEach(() => {
     sinon.restore()
   })
@@ -341,7 +349,7 @@ describe('project-context', () => {
   // -----------------------------------------------------------------------
   describe('resolveProjectLink', () => {
     it('refuses a new project chat while Projects is turned off, before any access check', async () => {
-      sinon.stub(ProjectsFeature, 'isEnabled').resolves(false)
+      projectsEnabled.resolves(false)
       const accessStub = sinon.stub(ProjectService, 'assertAccess')
       try {
         await resolveProjectLink(ORG_ID, USER_ID, { projectId: PROJECT_ID })
@@ -449,7 +457,7 @@ describe('project-context', () => {
   // -----------------------------------------------------------------------
   describe('loadProjectForSession', () => {
     it('runs a follow-up without project context while Projects is turned off, keeping the link', async () => {
-      sinon.stub(ProjectsFeature, 'isEnabled').resolves(false)
+      projectsEnabled.resolves(false)
       const accessStub = sinon.stub(ProjectService, 'assertAccess')
       const updateStub = sinon.stub(ChatSession, 'updateOne')
       const result = await loadProjectForSession(ORG_ID, USER_ID, PROJECT_ID, {
