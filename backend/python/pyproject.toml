@@ -203,7 +203,7 @@ dependencies = [
     "cryptography==50.0.2",
     "dateparser>=1.2.0",
     # Free web search when no provider key is set: one query spread over several engines.
-    "ddgs==9.16.0",
+    "ddgs==9.16.1",
     "crawl4ai==0.9.5",
     "curl-cffi==0.16.3",
     # "databricks-sdk>=0.85.0",
