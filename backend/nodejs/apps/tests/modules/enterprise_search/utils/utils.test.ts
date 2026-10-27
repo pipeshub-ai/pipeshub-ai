@@ -4138,7 +4138,15 @@ describe('chatSessions helpers', () => {
     const agg = sinon.stub(ChatSessionMessage, 'aggregate').resolves([{ _id: sid }])
     const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 10)
     expect(ids).to.deep.equal([sid.toString()])
-    expect(agg.firstCall.args[0][2]).to.deep.equal({ $limit: 10 })
+    // One more than the cap is asked for, to tell whether the search was cut short.
+    expect(agg.firstCall.args[0][2]).to.deep.equal({ $limit: 11 })
+  })
+
+  it('findSessionIdsMatchingContent returns only the capped ids when more sessions match', async () => {
+    const rows = [1, 2, 3].map(() => ({ _id: new mongoose.Types.ObjectId() }))
+    sinon.stub(ChatSessionMessage, 'aggregate').resolves(rows)
+    const ids = await findSessionIdsMatchingContent(VALID_OID2, 'hello', 2)
+    expect(ids).to.deep.equal([rows[0]._id.toString(), rows[1]._id.toString()])
   })
 
   // -----------------------------------------------------------------------

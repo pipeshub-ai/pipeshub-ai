@@ -81,11 +81,15 @@ describe('oauth_provider/config/scopes.config - coverage', () => {
     for (const list of [stock, DefaultMcpScopes]) {
       expect(mcpDiscoveryScopes(list)).to.have.members([...McpToolScopes])
     }
+    // Project scopes cap personal access tokens and OAuth apps; no MCP tool calls a project route.
     expect(stock.filter((s) => !mcpDiscoveryScopes(stock).includes(s))).to.have.members([
       'openid',
       'profile',
       'email',
       'conversation:write',
+      'project:read',
+      'project:write',
+      'project:delete',
     ])
     expect(McpToolScopes.filter((s) => AdminOnlyScopes.has(s))).to.deep.equal([])
   })

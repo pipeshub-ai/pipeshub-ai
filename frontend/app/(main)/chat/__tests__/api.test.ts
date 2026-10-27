@@ -282,4 +282,17 @@ describe('mapApiConversationToConversation', () => {
     expect(mapApiConversationToConversation({ ...(base as object), agentKey: 'agent-7' } as never).agentKey).toBe('agent-7');
     expect(mapApiConversationToConversation(base).agentKey).toBeUndefined();
   });
+
+  it('keeps the project a chat belongs to, so its menu offers the right move and removal', async () => {
+    const { mapApiConversationToConversation } = await import('../api');
+    const base = { _id: 'c1', title: 'T', createdAt: 'a', updatedAt: 'b', isShared: false, isOwner: true } as never;
+    const inProject = mapApiConversationToConversation({
+      ...(base as object),
+      projectId: 'p1',
+      projectVisibility: 'private',
+    } as never);
+    expect(inProject.projectId).toBe('p1');
+    expect(inProject.projectVisibility).toBe('private');
+    expect('projectId' in mapApiConversationToConversation(base)).toBe(false);
+  });
 });

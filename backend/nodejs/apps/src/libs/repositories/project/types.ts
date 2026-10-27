@@ -40,7 +40,6 @@ export interface ProjectPatch {
   tools?: string[];
   visibility?: ProjectVisibility;
   chatSharing?: ProjectChatSharing;
-  isPinned?: boolean;
   isArchived?: boolean;
   archivedBy?: string;
 }
@@ -50,7 +49,7 @@ export interface ProjectListQuery {
   includeArchived: boolean;
   isArchived?: boolean;
   search?: string;
-  /** Team ids the caller belongs to; malformed ids are ignored. */
+  /** Graph ids of the teams the caller belongs to. */
   teamIds: string[];
   skip: number;
   limit: number;
@@ -68,7 +67,11 @@ export interface ProjectRepository {
   /** The project if it is deleted. */
   getDeleted(id: string): Promise<ProjectDto | null>;
   create(orgId: string, userId: string, input: NewProject): Promise<ProjectDto>;
-  /** Pinned first, then most recent activity; `total` ignores the page. */
+  /**
+   * The caller's pinned projects first (their own pin; a legacy project-wide
+   * pin counts only for the owner), then most recent activity; `total`
+   * ignores the page.
+   */
   list(
     orgId: string,
     userId: string,
@@ -76,6 +79,17 @@ export interface ProjectRepository {
   ): Promise<{ rows: ProjectDto[]; total: number }>;
   /** Writes the patch on the live project; null when there is none. */
   update(id: string, patch: ProjectPatch): Promise<ProjectDto | null>;
+  /**
+   * Pins or unpins the project in one person's own list; atomic, so two people
+   * pinning at once both stick. Unpinning as the owner also clears the legacy
+   * project-wide pin (`clearLegacyPin`). Null when there is no live project.
+   */
+  setPinned(
+    id: string,
+    userId: string,
+    pinned: boolean,
+    clearLegacyPin: boolean,
+  ): Promise<ProjectDto | null>;
   /** Marks the live project deleted; null when there is none. */
   markDeleted(
     id: string,
@@ -103,8 +117,19 @@ export interface ProjectRepository {
   ): Promise<ProjectDto[]>;
   /** Removes the person from every project's members in the organisation. */
   removeUserFromAll(orgId: string, userId: string): Promise<void>;
-  /** Ids of live projects the person owns, belongs to, or can see because they are organisation-wide. */
-  listAccessibleIds(orgId: string, userId: string): Promise<string[]>;
+  /**
+   * Ids of live projects the person owns, belongs to (directly or through one of
+   * `teamIds`), or can see because they are organisation-wide.
+   */
+  listAccessibleIds(
+    orgId: string,
+    userId: string,
+    teamIds: string[],
+  ): Promise<string[]>;
+  /** Whether some live project of the organisation has a team among its members. */
+  orgHasTeamMembers(orgId: string): Promise<boolean>;
+  /** Whether the project is live and has no team among its members. */
+  isLiveWithoutTeamMembers(id: string): Promise<boolean>;
   /** Sets the activity time to now. */
   touchActivity(id: string): Promise<void>;
   /**

@@ -43,7 +43,7 @@ func TestHandwritten_ErrorResponses(t *testing.T) {
 	_, err = s.SemanticSearch.DeleteSearchHistory(ctx, pipeshub.Pointer("<script>sdk-test</script>"), nil, nil, nil)
 	requireStatus(t, 400, err)
 
-	_, err = s.KnowledgeBase.GetRecordByID(ctx, noUUID, nil)
+	_, err = s.KnowledgeBase.GetRecordByID(ctx, noUUID, nil, nil)
 	requireStatus(t, 404, err)
 	_, err = s.Connector.GetRecordContent(ctx, operations.GetRecordContentRequest{RecordID: noUUID})
 	requireStatus(t, 403, err)
@@ -74,7 +74,7 @@ func TestHandwritten_ErrorResponses(t *testing.T) {
 	requireStatus(t, 404, err)
 	_, err = s.ConnectorInstances.DeleteConnectorInstance(ctx, noUUID)
 	requireStatus(t, 404, err)
-	_, err = s.OAuthConfiguration.GetOAuthConnectorType(ctx, "RSS")
+	_, err = s.OAuthConfiguration.GetOAuthConnectorType(ctx, "RSS", nil, nil, nil)
 	requireStatus(t, 404, err)
 	_, err = s.OAuthConfiguration.GetOAuthConfig(ctx, "Jira", noUUID, nil)
 	requireStatus(t, 404, err)

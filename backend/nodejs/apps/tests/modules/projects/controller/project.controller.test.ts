@@ -22,7 +22,6 @@ import { ProjectService } from '../../../../src/modules/projects/services/projec
 import { ProjectKnowledgeBaseService } from '../../../../src/modules/projects/services/project-kb.service'
 import { ChatSession } from '../../../../src/modules/enterprise_search/schema/chat.session.schema'
 import { AIServiceCommand } from '../../../../src/libs/commands/ai_service/ai.service.command'
-import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service.command'
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../../../src/libs/errors/http.errors'
 
 const VALID_OID = 'aaaaaaaaaaaaaaaaaaaaaaaa'
@@ -89,6 +88,11 @@ function makeProjectDoc(overrides: Record<string, any> = {}): any {
 }
 
 /** `resolveCallerTeamIds` (team-membership.ts) hits this same class for `entity/user/teams` — stub it so route handlers under test never issue a real HTTP call. */
+function stubExistingUsers(...ids: string[]): sinon.SinonStub {
+  sinon.stub(ProjectService, 'withMemberNames').callsFake(async (_org, members) => members as any)
+  return sinon.stub(ProjectService, 'findExistingUserIds').resolves(new Set(ids))
+}
+
 function stubNoTeamMemberships(): sinon.SinonStub {
   return sinon
     .stub(AIServiceCommand.prototype, 'execute')
@@ -747,8 +751,8 @@ describe('project.controller', () => {
   })
 
   describe('upsertProjectMembers', () => {
-    it('rejects when a user member does not exist in IAM', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 404, data: null } as any)
+    it('rejects when a user member is not a live user of the org', async () => {
+      sinon.stub(ProjectService, 'findExistingUserIds').resolves(new Set())
 
       const handler = upsertProjectMembers(createMockAppConfig())
       const req = createMockRequest({
@@ -782,7 +786,7 @@ describe('project.controller', () => {
     })
 
     it('upserts a validated user member and returns the updated member list', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } } as any)
+      stubExistingUsers(VALID_OID2)
       const updated = makeProjectDoc({
         members: [{ principalType: 'user', principalId: new mongoose.Types.ObjectId(VALID_OID2), role: 'viewer' }],
       })
@@ -801,19 +805,20 @@ describe('project.controller', () => {
 
       expect(upsertStub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, members)).to.be.true
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ members: updated.members })).to.be.true
+      expect(res.json.firstCall.args[0].members).to.deep.equal(updated.members)
     })
 
-    it('upserts a validated team member without an IAM user lookup', async () => {
+    it('upserts a team member whose id is a graph UUID, not an ObjectId', async () => {
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any)
-      const iamStub = sinon.stub(IAMServiceCommand.prototype, 'execute')
+      const lookupStub = sinon.stub(ProjectService, 'findExistingUserIds').resolves(new Set())
+      sinon.stub(ProjectService, 'withMemberNames').callsFake(async (_org, members) => members as any)
       const updated = makeProjectDoc({
-        members: [{ principalType: 'team', principalId: new mongoose.Types.ObjectId(VALID_OID2), role: 'editor' }],
+        members: [{ principalType: 'team', principalId: 'a3e8fa11-team', role: 'editor' }],
       })
       const upsertStub = sinon.stub(ProjectService, 'upsertMembers').resolves(updated)
 
       const handler = upsertProjectMembers(createMockAppConfig())
-      const members = [{ principalId: VALID_OID2, principalType: 'team' as const, role: 'editor' as const }]
+      const members = [{ principalId: 'a3e8fa11-team', principalType: 'team' as const, role: 'editor' as const }]
       const req = createMockRequest({
         params: { projectId: PROJECT_ID },
         body: { members },
@@ -823,13 +828,13 @@ describe('project.controller', () => {
 
       await handler(req, res, next)
 
-      expect(iamStub.called).to.be.false
+      expect(lookupStub.firstCall.args[1]).to.deep.equal([])
       expect(upsertStub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, members)).to.be.true
       expect(res.status.calledWith(200)).to.be.true
     })
 
     it('syncs KB permissions when the project has a linked KB', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } } as any)
+      stubExistingUsers(VALID_OID2)
       const updated = makeProjectDoc({
         linkedKnowledgeBaseId: 'kb-1',
         members: [{ principalType: 'user', principalId: new mongoose.Types.ObjectId(VALID_OID2), role: 'viewer' }],
@@ -852,7 +857,7 @@ describe('project.controller', () => {
     })
 
     it('skips the KB sync call when the project has no linked KB', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { _id: VALID_OID2 } } as any)
+      stubExistingUsers(VALID_OID2)
       const updated = makeProjectDoc({
         members: [{ principalType: 'user', principalId: new mongoose.Types.ObjectId(VALID_OID2), role: 'viewer' }],
       })
@@ -873,7 +878,7 @@ describe('project.controller', () => {
     })
 
     it('forwards ForbiddenError from the service (non-owner caller) to next', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any)
+      stubExistingUsers(VALID_OID, VALID_OID2)
       const error = new Error('Only the project owner can manage members')
       sinon.stub(ProjectService, 'upsertMembers').rejects(error)
 
@@ -890,23 +895,17 @@ describe('project.controller', () => {
       expect(next.calledWith(error)).to.be.true
     })
 
-    it('rejects a user member when the IAM lookup itself throws, without upserting', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').rejects(new Error('connect ECONNREFUSED'))
-      const upsertStub = sinon.stub(ProjectService, 'upsertMembers')
-
+    it('checks users in the org without calling the IAM API with the caller token', async () => {
+      const lookupStub = stubExistingUsers(VALID_OID2)
+      sinon.stub(ProjectService, 'upsertMembers').resolves(makeProjectDoc())
       const req = createMockRequest({
         params: { projectId: PROJECT_ID },
         body: { members: [{ principalId: VALID_OID2, role: 'viewer' }] },
       })
-      const res = createMockResponse()
-      const next = createMockNext()
 
-      await upsertProjectMembers(createMockAppConfig())(req, res, next)
+      await upsertProjectMembers(createMockAppConfig())(req, createMockResponse(), createMockNext())
 
-      const forwarded = next.firstCall.args[0]
-      expect(forwarded).to.be.instanceOf(BadRequestError)
-      expect(forwarded.message).to.equal(`User not found: ${VALID_OID2}`)
-      expect(upsertStub.called).to.be.false
+      expect(lookupStub.calledOnceWith(VALID_OID2, [VALID_OID2])).to.be.true
     })
 
     it('rejects a team member when the team lookup itself throws, without upserting', async () => {
@@ -929,7 +928,7 @@ describe('project.controller', () => {
     })
 
     it('upserts nobody when one member of a mixed batch fails validation', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any)
+      stubExistingUsers(VALID_OID, VALID_OID2)
       sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 404, data: null } as any)
       const upsertStub = sinon.stub(ProjectService, 'upsertMembers')
 
@@ -954,7 +953,7 @@ describe('project.controller', () => {
     })
 
     it('reports a failed KB permission sync instead of answering 200', async () => {
-      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} } as any)
+      stubExistingUsers(VALID_OID, VALID_OID2)
       sinon.stub(ProjectService, 'upsertMembers').resolves(makeProjectDoc({ linkedKnowledgeBaseId: 'kb-1' }))
       const error = new Error('KB service unavailable')
       sinon.stub(ProjectKnowledgeBaseService, 'syncMemberPermissions').rejects(error)
@@ -974,25 +973,49 @@ describe('project.controller', () => {
   })
 
   describe('removeProjectMember', () => {
+    /** Stubs the service, running the controller's pre-save hook the way the service does when a row matched. */
+    function stubRemoveMember(project: any, removed: boolean): sinon.SinonStub {
+      return sinon.stub(ProjectService, 'removeMember').callsFake(async (...args: any[]) => {
+        const beforeSave = args[6] as ((p: any) => Promise<void>) | undefined
+        if (removed) await beforeSave?.(project)
+        return { project, removed }
+      })
+    }
+
     it('removes a user member by default and returns the updated member list', async () => {
       const updated = makeProjectDoc({ members: [] })
-      const removeMemberStub = sinon.stub(ProjectService, 'removeMember').resolves(updated)
+      const removeMemberStub = stubRemoveMember(updated, true)
 
+      stubNoTeamMemberships()
       const req = createMockRequest({ params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 } })
       const res = createMockResponse()
       const next = createMockNext()
 
       await removeProjectMember(createMockAppConfig())(req, res, next)
 
-      expect(removeMemberStub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, VALID_OID2, 'user')).to.be.true
+      expect(removeMemberStub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, VALID_OID2, 'user', [])).to.be.true
       expect(res.status.calledWith(200)).to.be.true
-      expect(res.json.calledWith({ members: updated.members })).to.be.true
+      expect(res.json.firstCall.args[0]).to.deep.equal({ members: [], removed: true })
+    })
+
+    it('skips the KB revoke and reports removed=false when nobody matched', async () => {
+      stubNoTeamMemberships()
+      stubRemoveMember(makeProjectDoc({ linkedKnowledgeBaseId: 'kb-1' }), false)
+      const revokeStub = sinon.stub(ProjectKnowledgeBaseService, 'revokePrincipalPermission').resolves()
+      const req = createMockRequest({ params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 } })
+      const res = createMockResponse()
+
+      await removeProjectMember(createMockAppConfig())(req, res, createMockNext())
+
+      expect(revokeStub.called).to.be.false
+      expect(res.json.firstCall.args[0].removed).to.equal(false)
     })
 
     it('removes a team member when principalType=team is passed as a query param', async () => {
       const updated = makeProjectDoc({ members: [] })
-      const removeMemberStub = sinon.stub(ProjectService, 'removeMember').resolves(updated)
+      const removeMemberStub = stubRemoveMember(updated, true)
 
+      stubNoTeamMemberships()
       const req = createMockRequest({
         params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 },
         query: { principalType: 'team' },
@@ -1002,14 +1025,15 @@ describe('project.controller', () => {
 
       await removeProjectMember(createMockAppConfig())(req, res, next)
 
-      expect(removeMemberStub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, VALID_OID2, 'team')).to.be.true
+      expect(removeMemberStub.calledWith(VALID_OID2, VALID_OID, PROJECT_ID, VALID_OID2, 'team', [])).to.be.true
     })
 
     it('revokes the KB permission when the project has a linked KB', async () => {
       const updated = makeProjectDoc({ members: [], linkedKnowledgeBaseId: 'kb-1' })
-      sinon.stub(ProjectService, 'removeMember').resolves(updated)
+      stubRemoveMember(updated, true)
       const revokeStub = sinon.stub(ProjectKnowledgeBaseService, 'revokePrincipalPermission').resolves()
 
+      stubNoTeamMemberships()
       const req = createMockRequest({
         params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 },
         query: { principalType: 'team' },
@@ -1025,24 +1049,25 @@ describe('project.controller', () => {
       expect(res.status.calledWith(200)).to.be.true
     })
 
-    it('skips the KB revoke call when the project has no linked KB', async () => {
-      const updated = makeProjectDoc({ members: [] })
-      sinon.stub(ProjectService, 'removeMember').resolves(updated)
-      const revokeStub = sinon.stub(ProjectKnowledgeBaseService, 'revokePrincipalPermission').resolves()
+    it('answers 200 without a KB call when the project has no linked KB', async () => {
+      stubRemoveMember(makeProjectDoc({ members: [] }), true)
 
+      const aiStub = stubNoTeamMemberships()
       const req = createMockRequest({ params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 } })
       const res = createMockResponse()
-      const next = createMockNext()
 
-      await removeProjectMember(createMockAppConfig())(req, res, next)
+      await removeProjectMember(createMockAppConfig())(req, res, createMockNext())
 
-      expect(revokeStub.called).to.be.false
+      expect(res.status.calledWith(200)).to.be.true
+      // Only the team lookup reached the connector service.
+      expect(aiStub.callCount).to.equal(1)
     })
 
     it('forwards ForbiddenError (non-owner) to next', async () => {
       const error = new Error('Only the project owner can manage members')
       sinon.stub(ProjectService, 'removeMember').rejects(error)
 
+      stubNoTeamMemberships()
       const req = createMockRequest({ params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 } })
       const res = createMockResponse()
       const next = createMockNext()
@@ -1052,11 +1077,12 @@ describe('project.controller', () => {
       expect(next.calledWith(error)).to.be.true
     })
 
-    it('reports a failed KB revoke instead of answering 200 while the member still holds KB access', async () => {
-      sinon.stub(ProjectService, 'removeMember').resolves(makeProjectDoc({ linkedKnowledgeBaseId: 'kb-1' }))
+    it('revokes before the removal is saved, so a failed revoke leaves the member in place', async () => {
+      stubRemoveMember(makeProjectDoc({ linkedKnowledgeBaseId: 'kb-1' }), true)
       const error = new Error('KB service unavailable')
       sinon.stub(ProjectKnowledgeBaseService, 'revokePrincipalPermission').rejects(error)
 
+      stubNoTeamMemberships()
       const req = createMockRequest({ params: { projectId: PROJECT_ID, memberUserId: VALID_OID2 } })
       const res = createMockResponse()
       const next = createMockNext()

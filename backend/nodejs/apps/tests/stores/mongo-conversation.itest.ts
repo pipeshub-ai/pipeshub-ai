@@ -9,6 +9,7 @@ import { randomUUID } from 'crypto';
 import { expect } from 'chai';
 import mongoose from 'mongoose';
 import sinon from 'sinon';
+import { ChatSession } from '../../src/modules/enterprise_search/schema/chat.session.schema';
 import { ChatSessionMessage } from '../../src/modules/enterprise_search/schema/chat.session.message.schema';
 import { MongoService } from '../../src/libs/services/mongo.service';
 import { MongoUnitOfWork } from '../../src/libs/repositories/mongo';
@@ -50,6 +51,25 @@ describe('MongoConversationRepository against a real MongoDB', function () {
     uow: new MongoUnitOfWork(rsAvailable),
     transactional: rsAvailable,
     newId: () => new mongoose.Types.ObjectId().toHexString(),
+  });
+
+  it('clearing the share link removes the stored field', async () => {
+    const repo = new MongoConversationRepository();
+    const org = new mongoose.Types.ObjectId().toHexString();
+    const user = new mongoose.Types.ObjectId().toHexString();
+    const s = await repo.openSession(
+      { orgId: org, userId: user, initiator: user, lastActivityAt: 1, status: 'Complete', sessionType: 'chat' },
+      { messageType: 'user_query', content: 'q' },
+    );
+    const scope = { kind: 'chat' } as const;
+    await ChatSession.updateOne({ _id: s._id }, { $set: { shareLink: 'https://x/chat/1', isShared: true } });
+
+    const cleared = await repo.setSharing(scope, s._id, { isShared: false, sharedWith: [], clearShareLink: true });
+
+    expect(cleared).to.not.have.property('shareLink');
+    const stored = await ChatSession.findById(s._id).lean();
+    expect(stored).to.not.have.property('shareLink');
+    expect(stored!.isShared).to.equal(false);
   });
 
   it('reads a page of sessions\' messages with one query', async () => {

@@ -8,9 +8,15 @@ export type ProjectChatSharing = 'private' | 'members';
 /** Effective access role computed for the requesting user, or 'none' for an unauthorized caller. */
 export type ProjectRole = 'owner' | 'editor' | 'viewer' | 'none';
 
+/** A user member row with the name and email read from the users collection, when the user still exists. */
+export type ProjectMemberView = IProjectMember & {
+  name?: string;
+  email?: string;
+};
+
 export interface IProjectMember {
   principalType: ProjectPrincipalType;
-  /** userId (principalType 'user') or teamId (principalType 'team'). */
+  /** userId (principalType 'user') or the team's graph id string (principalType 'team'). */
   principalId: string;
   role: ProjectMemberRole;
   addedBy: string;
@@ -54,7 +60,10 @@ export interface IProject {
   visibility: ProjectVisibility;
   chatSharing: ProjectChatSharing;
   members: IProjectMember[];
+  /** Legacy project-wide pin; counts only as the owner's pin. See `ProjectService.isPinnedFor`. */
   isPinned: boolean;
+  /** Users who pinned this project in their own list. */
+  pinnedBy?: string[];
   isArchived: boolean;
   archivedBy?: string;
   isDeleted: boolean;

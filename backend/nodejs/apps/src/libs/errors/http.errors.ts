@@ -119,6 +119,17 @@ export class UnprocessableEntityError extends HttpError {
   }
 }
 
+export class UnsupportedMediaTypeError extends HttpError {
+  constructor(message: string, metadata?: ErrorMetadata) {
+    super(
+      'UNSUPPORTED_MEDIA_TYPE',
+      message,
+      HTTP_STATUS.UNSUPPORTED_MEDIA_TYPE,
+      metadata,
+    );
+  }
+}
+
 export class NotImplementedError extends HttpError {
   constructor(message: string, metadata?: ErrorMetadata) {
     super('NOT_IMPLEMENTED', message, HTTP_STATUS.NOT_IMPLEMENTED, metadata);

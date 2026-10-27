@@ -172,6 +172,7 @@ class KnowledgeBaseResponse(BaseModel):
     updatedAtTimestamp: int = Field(..., description="Update timestamp")
     createdBy: str = Field(..., description="Created by user ID")
     userRole: Optional[str] = Field(None, description="User's role in this KB")
+    status: Optional[str] = Field(None, description="DELETING while the knowledge base is being deleted; absent otherwise")
     folders: Optional[List[FolderResponse]] = Field(None, description="List of folders")
 
 class KnowledgeBasePaginationResponse(BaseModel):

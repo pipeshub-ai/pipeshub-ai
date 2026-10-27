@@ -159,6 +159,7 @@ const stubAccess = (readable: string[] | null) => {
 
 const stubConversation = (messages: unknown[]) => {
   sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+  sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
   sinon.stub(Users, 'find').returns(chain([]))
   sinon.stub(ChatSession, 'findOne').returns(
     chain({ _id: SESSION, title: 't', initiator: OWNER, isShared: true, sharedWith: [{ userId: VIEWER }], status: 'complete' }),
@@ -255,6 +256,7 @@ describe('shared chats: per-viewer citations', () => {
   it('an agent conversation opened by a project member or shared user is redacted too', async () => {
     stubAccess(['rec-ok', 'att-ok', R_OK])
     sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
+    sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
     sinon.stub(Users, 'find').returns(chain([]))
     sinon.stub(ChatSession, 'findOne').returns(chain({ _id: SESSION, orgId: ORG, title: 't', initiator: OWNER, isShared: true, sharedWith: [], status: 'complete' }))
     sinon.stub(ChatSessionMessage, 'countDocuments').resolves(1)
