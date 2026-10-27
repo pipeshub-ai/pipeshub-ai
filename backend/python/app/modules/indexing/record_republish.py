@@ -8,13 +8,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from app.config.constants.arangodb import EventTypes
-from app.services.graph_db.common.record_visibility import is_searchable_record
+from app.config.constants.arangodb import EventTypes, OriginTypes, ProgressStatus
+from app.connectors.sources.localKB.push.contract import is_pushed_revision
+from app.services.graph_db.common.record_visibility import (
+    is_live_record,
+    is_searchable_record,
+)
+from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
 
-__all__ = ["is_parked_duplicate", "record_event", "reembeds_from_storage"]
+__all__ = ["is_parked_duplicate", "record_event", "reembeds_from_storage", "republish_eligible"]
 
 
 def reembeds_from_storage(record: Mapping[str, object]) -> bool:
@@ -87,3 +92,25 @@ def is_parked_duplicate(record: Mapping[str, object], *, restored_upload: bool =
     return bool(
         record.get("md5Checksum") and record.get("virtualRecordId") and not restored_upload
     )
+
+
+def republish_eligible(record: Mapping[str, object], status: str) -> tuple[bool, bool]:
+    """``(eligible, restored_upload)`` for a record found waiting in ``status``.
+
+    A connector's record is always eligible. An upload is left alone, since a new one waits on
+    its file reaching storage, except a restored one (its content is stored and the restore was
+    the only thing that queued it) and a pushed one: a push writes the row only after its
+    content is stored, so a row still waiting means the publish after the commit was lost.
+    """
+    live = is_live_record(record)
+    restored_upload = (
+        status == ProgressStatus.NOT_STARTED.value and bool(record.get(RESTORED_AT_FIELD)) and live
+    )
+    pushed = (
+        record.get("origin") == OriginTypes.UPLOAD.value
+        and is_pushed_revision(record.get("externalRevisionId"))  # type: ignore[arg-type]
+        and live
+        and status in (ProgressStatus.NOT_STARTED.value, ProgressStatus.QUEUED.value)
+    )
+    eligible = record.get("origin") == OriginTypes.CONNECTOR.value or restored_upload or pushed
+    return eligible, restored_upload

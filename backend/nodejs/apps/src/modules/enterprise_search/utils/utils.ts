@@ -904,9 +904,13 @@ export const addComputedFields = <
 ) => {
   // Callers may hand over an ObjectId where a string is typed.
   const viewerId = String(userId);
+  const isOwner = conversation.initiator.toString() === viewerId;
+  // Owner-run fields are for the owner only, in every list a shared chat appears in.
   return {
-    ...withoutErrorStacks(conversation),
-    isOwner: conversation.initiator.toString() === viewerId,
+    ...withoutErrorStacks(
+      isOwner ? conversation : withoutOwnerOnlyFields(conversation),
+    ),
+    isOwner,
     accessLevel:
       conversation.sharedWith?.find(
         (share) => share.userId.toString() === viewerId,

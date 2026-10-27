@@ -204,6 +204,12 @@ from app.services.graph_db.neo4j.neo4j_client import (
     DEFAULT_TRANSACTION_TIMEOUT,
     Neo4jClient,
 )
+from app.services.graph_db.push_claim import (
+    KB_DELETING_STATUS,
+    PushClaim,
+    PushExpect,
+    PushSet,
+)
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
@@ -15641,6 +15647,108 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 str(e),
             )
             raise
+
+    @override
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        apps = collection_to_label(CollectionNames.APPS.value)
+        records = collection_to_label(CollectionNames.RECORDS.value)
+        if expected is None:
+            # The record upsert is a MERGE by id and cannot refuse, so creates of one key are
+            # serialised on the KB node: the second sees the first's record once it gets the lock.
+            rows = await self.client.execute_query(
+                f"""
+                MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}})
+                SET kb.{_MATCH_LOCK} = true
+                REMOVE kb.{_MATCH_LOCK}
+                WITH kb
+                OPTIONAL MATCH (r:{records} {{id: $key}})
+                RETURN kb.status AS status, kb.orgId AS org, r IS NULL AS free
+                """,
+                parameters={"kb_id": kb_id, "key": key},
+                txn_id=transaction,
+            )
+            refusal = self._push_kb_refusal(rows, org_id)
+            if refusal:
+                return refusal
+            return PushClaim.CLAIMED if rows[0]["free"] else PushClaim.KEY_TAKEN
+        kb_rows = await self.client.execute_query(
+            f"MATCH (kb:{apps} {{id: $kb_id, type: 'KB'}}) RETURN kb.status AS status, kb.orgId AS org",
+            parameters={"kb_id": kb_id},
+            txn_id=transaction,
+        )
+        refusal = self._push_kb_refusal(kb_rows, org_id)
+        if refusal:
+            return refusal
+        # The write on the record takes its lock, so the conditions after it read what a
+        # concurrent push or trash committed while this waited.
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:{records} {{id: $key}})
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH r
+            WHERE r.orgId = $org_id AND r.connectorId = $kb_id
+              AND coalesce(r.isDeleted, false) <> true
+              AND r.externalRecordId = $expected_doc
+              AND r.externalRevisionId = $expected_rev
+              AND r.version = $expected_version
+            SET r.externalRecordId = $new_doc, r.version = $new_version
+            RETURN r.id AS id
+            """,
+            parameters={
+                "key": key, "org_id": org_id, "kb_id": kb_id,
+                "expected_doc": expected.document_id, "expected_rev": expected.revision,
+                "expected_version": expected.version,
+                "new_doc": new.document_id, "new_version": new.version,
+            },
+            txn_id=transaction,
+        )
+        return PushClaim.CLAIMED if len(rows) == 1 else PushClaim.LOST
+
+    @staticmethod
+    def _push_kb_refusal(rows: list[dict[str, Any]], org_id: str) -> PushClaim | None:
+        if not rows or rows[0].get("org") != org_id:
+            return PushClaim.KB_MISSING
+        if rows[0].get("status") == KB_DELETING_STATUS:
+            return PushClaim.KB_DELETING
+        return None
+
+    @override
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        records = collection_to_label(CollectionNames.RECORDS.value)
+        rows = await self.client.execute_query(
+            f"""
+            MATCH (r:{records} {{id: $key}})
+            SET r.{_MATCH_LOCK} = true
+            REMOVE r.{_MATCH_LOCK}
+            WITH r
+            WHERE r.orgId = $org_id AND r.connectorId = $kb_id
+              AND coalesce(r.isDeleted, false) <> true AND r.externalRevisionId = $expected
+            SET r.externalRevisionId = $new
+            RETURN r.id AS id
+            """,
+            parameters={"key": key, "org_id": org_id, "kb_id": kb_id, "expected": expected_revision, "new": new_revision},
+            txn_id=transaction,
+        )
+        return len(rows) == 1
 
     async def compare_and_set_indexing_status(
         self,

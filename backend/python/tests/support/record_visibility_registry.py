@@ -175,6 +175,8 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
+    "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
+    "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
     "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "stage_states_delete_for_virtual_records": (
         Rule.WRITE,
