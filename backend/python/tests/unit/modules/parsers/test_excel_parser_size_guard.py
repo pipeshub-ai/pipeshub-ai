@@ -132,9 +132,9 @@ def _sheet(cells: int, tag: str = "c") -> str:
 def test_cells_are_counted_across_read_chunks(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "_CHUNK_BYTES", 64, raising=False)
     monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
-    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(100)}))  # exactly at the limit
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(100)}))  # 100 cells x 0.95 + worksheet, sheetData, row
     with pytest.raises(ParseError):
-        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(101)}))
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(110)}))
 
 
 def test_cells_written_with_a_namespace_prefix_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -182,10 +182,12 @@ def test_the_combined_budget_is_shared_between_cells_strings_and_styles(monkeypa
         module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(30), "xl/sharedStrings.xml": sst, "xl/styles.xml": styles}))
 
 
-def test_a_doctype_or_entity_is_not_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
-    bomb = '<!DOCTYPE lolz [<!ENTITY a "' + "x" * 100 + '"><!ENTITY b "&a;&a;&a;&a;">]><worksheet><sheetData>&b;</sheetData></worksheet>'
-    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": bomb}))  # left to the loader, which refuses entities
+@pytest.mark.parametrize("head", ["<!DOCTYPE worksheet>", '<!DOCTYPE a [<!ENTITY e "x">]>'])
+def test_a_doctype_or_entity_is_refused_as_unreadable_not_counted_as_nothing(head: str) -> None:
+    sheet = _sheet(3).replace("<worksheet", head + "<worksheet", 1)
+    with pytest.raises(ParseError) as raised:
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))
+    assert raised.value.message == user_errors.UNREADABLE_FILE
 
 
 def test_binary_parts_are_dropped_at_the_first_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -205,26 +207,18 @@ def test_bytes_are_counted_as_decompressed_not_as_declared(monkeypatch: pytest.M
         module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/sharedStrings.xml": strings}))
 
 
-def test_calc_chain_is_not_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_a_calc_chain_is_counted_like_any_other_part(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Nothing is skipped by name: a part called calcChain.xml could be a sheet.
     monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
-    chain = "<calcChain>" + '<c r="A1"/>' * 500 + "</calcChain>"  # a cell per formula; openpyxl does not load it
-    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/calcChain.xml": chain}))
+    chain = "<calcChain>" + '<c r="A1"/>' * 500 + "</calcChain>"
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/calcChain.xml": chain}))
 
 
-@pytest.mark.parametrize("value", ["", "abc", "1.5", "0", "-5"])
-def test_a_bad_limit_falls_back_to_the_default(value: str, monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.utils.env_config import env_positive_int
-
-    monkeypatch.setenv("SOME_EXCEL_LIMIT", value)
-    assert env_positive_int("SOME_EXCEL_LIMIT", 42) == 42
-    monkeypatch.setenv("SOME_EXCEL_LIMIT", " 7 ")
-    assert env_positive_int("SOME_EXCEL_LIMIT", 42) == 7
-
-
-def test_legacy_vml_drawings_are_not_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_legacy_vml_drawings_cost_little(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
-    vml = "<xml>" + "<v:shape><v:textbox/></v:shape>" * 200 + "</xml>"
-    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/drawings/vmlDrawing1.vml": vml.replace("<v:", "<").replace("</v:", "</")}))
+    vml = "<xml xmlns:v='urn:schemas-microsoft-com:vml'>" + "<v:shape><v:textbox/></v:shape>" * 200 + "</xml>"
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/drawings/vmlDrawing1.vml": vml}))
 
 
 def test_cells_with_attributes_after_any_xml_whitespace_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -233,3 +227,23 @@ def test_cells_with_attributes_after_any_xml_whitespace_are_counted(monkeypatch:
         sheet = f"{_SHEET_HEAD}<sheetData><row>" + f'<c{sep}r="A1"/>' * 10 + "</row></sheetData></worksheet>"
         with pytest.raises(ParseError):
             module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))
+
+
+def test_dense_cells_values_and_plain_rows_cost_one_cell_each(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 120)
+    rows = "".join(f'<row r="{i}" spans="1:1"><c r="A{i}"><v>1</v></c></row>' for i in range(1, 100))
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": f"{_SHEET_HEAD}<sheetData>{rows}</sheetData></worksheet>"}))
+
+
+def test_a_row_with_attributes_costs_more_than_a_plain_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 120)
+    rows = "".join(f'<row r="{i}" ht="20"/>' for i in range(1, 100))
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": f"{_SHEET_HEAD}<sheetData>{rows}</sheetData></worksheet>"}))
+
+
+def test_rich_text_runs_in_shared_strings_do_not_multiply_the_cost(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    run = "<r><rPr><b/><sz val='11'/><color rgb='FF000000'/><rFont val='Calibri'/></rPr><t>x</t></r>"
+    sst = "<sst>" + f"<si>{run * 3}</si>" * 100 + "</sst>"  # about 0.9 each; 1.0+ per child element would be 140 or more
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/sharedStrings.xml": sst}))

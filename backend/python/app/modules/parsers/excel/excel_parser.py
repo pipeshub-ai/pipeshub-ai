@@ -52,7 +52,7 @@ from app.utils.streaming import (
     invoke_with_structured_output_and_reflection,
 )
 from app.utils.table_enrichment import fallback_table_summary
-from app.utils.user_errors import EXCEL_TOO_LARGE
+from app.utils.user_errors import EXCEL_TOO_LARGE, UNREADABLE_FILE
 
 
 def _color_to_str(color: object) -> str | None:
@@ -108,84 +108,71 @@ EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, env_int("EXCEL_HEADER_GENERA
 EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX", 20000)
 
 # openpyxl builds Python objects for what it reads, and the memory follows the
-# counts, not the file size. Measured peaks above the ~0.74 GB the service
-# modules take on import (generated workbooks, openpyxl 3.1.5):
-#   a cell             about 430 bytes   (3.0 M empty cells 1.90 GB, 2.9 M numbers 1.99 GB)
-#   a shared string    about 160 bytes   (12 M strings 2.60 GB)
-#   a style entry      about 1.7 KB      (1 M cellXfs 2.43 GB)
-#   a chart/drawing/comment/pivot element  about 420 bytes (3 M chart points 3.28 GB)
-# EXCEL_MAX_CELLS is a budget in cell-equivalents spent by all of them
-# (weights below), so the combined peak stays near 2.3 GB whatever the mix.
-EXCEL_MAX_CELLS = env_positive_int("EXCEL_MAX_CELLS", 3_000_000)
-_CELL_WEIGHT = 1.0
-_SHARED_STRING_WEIGHT = 0.4
-_STYLE_ELEMENT_WEIGHT = 4.0
-_OTHER_ELEMENT_WEIGHT = 1.0
+# counts, not the file size. Every XML element in every part of the zip is
+# weighted by its local name, in cell-equivalents (1.0 = a cell, about 430
+# bytes), from load peaks measured above the ~0.74 GB the service modules take
+# on import (generated workbooks, openpyxl 3.1.5); the notes/qa handoff lists
+# the measurements. Nothing is classified by part name or root element, so
+# there is nothing to spoof.
+EXCEL_MAX_CELLS = env_positive_int("EXCEL_MAX_CELLS", 3_500_000)
+_DEFAULT_WEIGHT = 1.0  # an element not listed costs at least a cell
+_WEIGHTS = {
+    "c": 0.95,  # a cell (0.95 + its value 0.05 = the measured ~430 bytes)
+    "v": 0.05, "f": 0.3, "is": 0.2,  # what a cell holds (the cell's own cost includes its value)
+    "si": 0.35, "t": 0.05,  # a shared string: 0.4 together
+    "r": 0.03, "rPr": 0.03, "rPh": 0.03, "phoneticPr": 0.03, "rFont": 0.02, "sz": 0.02, "color": 0.02,
+    "b": 0.02, "i": 0.02, "u": 0.02, "family": 0.02, "charset": 0.02, "scheme": 0.02,
+    "vertAlign": 0.02, "strike": 0.02,  # rich-text runs, read as plain text (+71 MB for 1.5 M runs)
+    "xf": 4.0, "font": 4.0, "fill": 4.0, "border": 4.0, "numFmt": 4.0, "dxf": 4.0,  # style entries, ~1.7 KB
+    "hyperlink": 1.6, "mergeCell": 2.8, "dataValidation": 3.0,
+    "conditionalFormatting": 1.75, "cfRule": 1.75,
+    "row": 1.6,  # with attributes beyond r/spans; see _PLAIN_ROW_WEIGHT
+    "pt": 2.0,  # a chart point (pt + v) ~850 bytes
+}
+_PLAIN_ROW_WEIGHT = 0.1  # a <row> with only r/spans makes no row dimension in openpyxl
+_ROW_ATTRS = frozenset({"r", "spans"})
+# Legacy VML drawings (a dozen elements per comment) are not read into objects.
+_VML_NAMESPACE = "urn:schemas-microsoft-com:"
+_VML_WEIGHT = 0.1
 # Backstop on the XML actually decompressed, all parts together, for what the
-# counts do not see (a few very long strings). Honest workbooks at the cell
-# limit stay under it (see the handoff).
+# counts do not see (a few very long strings).
 EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
 
 _CHUNK_BYTES = 1024 * 1024
-_SHEET_ROOT, _STRINGS_ROOT, _STYLES_ROOT = "worksheet", "sst", "styleSheet"
-# Parts openpyxl does not build objects from: the calculation chain (a cell per
-# formula) and legacy VML drawings (a dozen elements per comment); both can
-# be as big as the sheets.
-_UNREAD_ROOTS = frozenset({"calcChain", "xml"})
 
 
-class _StopPart(Exception):
-    """This part needs no more reading (not XML, not read by openpyxl, or not safe to parse)."""
+def _unreadable() -> ParseError:
+    return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
 
 
 class _PartCounter:
-    """Counts, with a namespace-aware expat parser, what one XML part makes openpyxl build.
+    """Totals the weight of the elements of one XML part with a namespace-aware expat parser.
 
-    The part is classified by its root element, not by its name or extension:
-    a worksheet counts its ``c`` cells, shared strings their ``si`` entries,
-    styles every element, anything else every element. The parser handles
-    prefixes, whitespace, comments and CDATA; no tree is built and no text is kept.
+    The parser handles prefixes, whitespace, comments and CDATA; no tree is
+    built and no text is kept. A DOCTYPE or entity declaration is how an XML
+    bomb is built and Excel never writes one, so it is refused outright.
     """
 
     def __init__(self) -> None:
-        self.n = 0
-        self.weight = _OTHER_ELEMENT_WEIGHT
+        self.units = 0.0
         self.parser = expat.ParserCreate(namespace_separator=" ")
         self.parser.buffer_text = False
-        self.parser.StartElementHandler = self._root
-        # A DOCTYPE or entity is how an XML bomb is built; a workbook has neither
-        # (openpyxl refuses them too), so stop here rather than expand anything.
+        self.parser.StartElementHandler = self._start
         self.parser.StartDoctypeDeclHandler = self._refuse
         self.parser.EntityDeclHandler = self._refuse
 
-    def _refuse(self, *_args: object) -> None:
-        raise _StopPart
+    @staticmethod
+    def _refuse(*_args: object) -> None:
+        raise _unreadable()
 
-    def _root(self, name: str, _attrs: object) -> None:
+    def _start(self, name: str, attrs: dict[str, str]) -> None:
         local = name.rpartition(" ")[2]
-        if local in _UNREAD_ROOTS:
-            raise _StopPart
-        if local == _SHEET_ROOT:
-            self.weight, self.parser.StartElementHandler = _CELL_WEIGHT, self._cell
-            return
-        if local == _STRINGS_ROOT:
-            self.weight, self.parser.StartElementHandler = _SHARED_STRING_WEIGHT, self._string
-            return
-        if local == _STYLES_ROOT:
-            self.weight = _STYLE_ELEMENT_WEIGHT
-        self.parser.StartElementHandler = self._element
-        self.n = 1
-
-    def _cell(self, name: str, _attrs: object) -> None:
-        if name == "c" or name.endswith(" c"):
-            self.n += 1
-
-    def _string(self, name: str, _attrs: object) -> None:
-        if name == "si" or name.endswith(" si"):
-            self.n += 1
-
-    def _element(self, _name: str, _attrs: object) -> None:
-        self.n += 1
+        weight = _WEIGHTS.get(local)
+        if weight is None:
+            weight = _VML_WEIGHT if name.startswith(_VML_NAMESPACE) else _DEFAULT_WEIGHT
+        elif local == "row" and _ROW_ATTRS.issuperset(key.rpartition(" ")[2] for key in attrs):
+            weight = _PLAIN_ROW_WEIGHT
+        self.units += weight
 
 
 def _too_large(**details: float) -> ParseError:
@@ -200,13 +187,15 @@ def check_workbook_size(file_binary: bytes) -> None:
     """Refuse a workbook that is too large to load, without loading it.
 
     Streams every part of the zip, whatever its name, in bounded chunks
-    through a real XML parser (constant memory, nothing kept) and totals what
-    openpyxl would build objects for, weighted into cell-equivalents (see
-    ``EXCEL_MAX_CELLS``), plus the decompressed bytes. Counts come from the
-    data actually read, never from the zip's declared sizes or a sheet's
-    ``<dimension>``; reading stops at the first limit passed. A part that is
-    not XML (an image) is dropped at its first chunk. Not a workbook zip, or a
-    part that cannot be read: left for the loader to report.
+    through a real XML parser (constant memory, nothing kept) and totals the
+    weight of every element (see ``_WEIGHTS``) against ``EXCEL_MAX_CELLS``,
+    plus the decompressed bytes. Counts come from the data actually read,
+    never from the zip's declared sizes or a sheet's ``<dimension>``; reading
+    stops at the first limit passed. A part that is not XML (an image) is
+    dropped at its first chunk. A DOCTYPE or entity anywhere is refused as
+    unreadable. Not a workbook zip, or a part that cannot be read: left for
+    the loader to report. This is an estimate: a hard memory bound needs the
+    load itself in a memory-limited worker.
     """
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
@@ -227,14 +216,14 @@ def check_workbook_size(file_binary: bytes) -> None:
                             raise _too_large(xml_bytes=total_bytes)
                         try:
                             counter.parser.Parse(chunk, not chunk)
-                        except (_StopPart, expat.ExpatError):
-                            break
+                        except expat.ExpatError:
+                            break  # not XML (or broken): the loader reports it
                         finally:
-                            if units + counter.n * counter.weight > EXCEL_MAX_CELLS:
-                                raise _too_large(cell_equivalents=units + counter.n * counter.weight)
+                            if units + counter.units > EXCEL_MAX_CELLS:
+                                raise _too_large(cell_equivalents=units + counter.units)
                         if not chunk:
                             break
-                units += counter.n * counter.weight
+                units += counter.units
     except ParseError:
         raise
     except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
