@@ -1752,6 +1752,7 @@ export const useChatStore = create<ChatState>((set, get) => ({
     set({
       searchResults: [],
       searchQuery: '',
+      isSearching: false,
       searchId: null,
       searchError: null,
       searchResponseMeta: null,

@@ -372,6 +372,9 @@ services:
     command: ["notion"]
     environment:
       CONNSIM_SOURCES: notion
+      # Only the listed tokens are accepted, as on Notion: by default any unknown token acts as
+      # the default integration, so the suite's invalid-token case could never fail to connect.
+      CONNSIM_NOTION_AUTH: strict
       CONNSIM_PACK: /pack
       CONNSIM_SEED: "42"
       CONNSIM_BUILD_TIME_MS: "1767225600000"

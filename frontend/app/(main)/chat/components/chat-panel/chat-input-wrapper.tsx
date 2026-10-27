@@ -80,7 +80,8 @@ export function ChatInputWrapper() {
     currentSearchAbort = searchController;
 
     store.setIsSearching(true);
-    store.setSearchError(null);
+    // The query first, so the heading shows while loading and a closed search can be told apart.
+    store.setSearchResults([], null, query);
 
     const request: SearchRequest = {
       query,
@@ -88,8 +89,13 @@ export function ChatInputWrapper() {
       filters: buildAssistantApiFilters(store.settings.filters),
     };
 
+    // Closing search (clearSearchResults) or a newer search makes this answer stale.
+    const isStale = () =>
+      myGeneration !== searchSubmitGeneration || useChatStore.getState().searchQuery !== query;
+
     try {
       const response = await ChatApi.search(request, searchController.signal);
+      if (isStale()) return;
       store.setSearchResults(
         response.searchResponse.searchResults,
         response.searchId,
@@ -97,9 +103,10 @@ export function ChatInputWrapper() {
         response,
       );
     } catch (error: unknown) {
-      if (isRequestCancelledError(error)) return;
+      if (isRequestCancelledError(error) || isStale()) return;
       if (isSearchNoAccessibleDocumentsNotFound(error)) {
-        store.setSearchResults([], null, query);
+        // Keep the server's reason ("No documents are available…") for the empty state.
+        store.setSearchResults([], null, query, { message: (error as Error).message });
         return;
       }
       store.setSearchError((error as Error)?.message || 'Search failed');

@@ -1,3 +1,5 @@
+import json
+
 import aiohttp  # type: ignore
 from tenacity import (  # type: ignore
     retry,
@@ -7,6 +9,7 @@ from tenacity import (  # type: ignore
 )
 
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.error.stream_errors import SOURCE_REFUSAL_HEADER
 from app.services.base_client import parse_retry_after
 from app.utils.request_context import inject_request_headers
 
@@ -29,6 +32,8 @@ class ApiCallError(Exception):
     Carries ``status_code`` (when known) so callers can branch on the
     upstream HTTP status without parsing the message, and
     ``retry_after_seconds`` when the response said how long to wait.
+    ``source_reason`` is set when the answer relayed the source's own refusal
+    (``SOURCE_REFUSAL_HEADER``): its detail, written for people.
     """
 
     def __init__(
@@ -36,10 +41,23 @@ class ApiCallError(Exception):
         message: str,
         status_code: int | None = None,
         retry_after_seconds: float | None = None,
+        source_reason: str | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code = status_code
         self.retry_after_seconds = retry_after_seconds
+        self.source_reason = source_reason
+
+
+def _source_reason(headers: object, body: str) -> str | None:
+    """The detail of an answer marked as the source's refusal, else None."""
+    if not hasattr(headers, "get") or headers.get(SOURCE_REFUSAL_HEADER) is None:
+        return None
+    try:
+        detail = json.loads(body).get("detail")
+    except (ValueError, AttributeError):
+        return None
+    return detail if isinstance(detail, str) and detail.strip() else None
 
 
 def _should_retry(exc: BaseException) -> bool:
@@ -104,6 +122,7 @@ async def make_api_call(route: str, token: str) -> dict:
                         f"API call to {url} failed with status {response.status}: {error_text}",
                         status_code=response.status,
                         retry_after_seconds=parse_retry_after(response.headers.get("Retry-After")),
+                        source_reason=_source_reason(response.headers, error_text),
                     )
 
                 content_type = response.headers.get("Content-Type", "").lower()

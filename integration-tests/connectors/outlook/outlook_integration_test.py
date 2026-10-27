@@ -844,7 +844,10 @@ async def phase_b1(ctx: Ctx) -> dict[str, Any]:
     async def _source_settled() -> bool:
         moved = await h.find_messages_by_subject(p, w.subjects["move"], f["target"])
         soft = await h.message_exists(p, state["soft_deleted_id"])
-        group_ok = (await h.get_group(new_group.id)).mail is not None
+        # The connector reads the /groups list, which shows a new group later than GET /groups/{id}.
+        group_ok = any(
+            g.id == new_group.id and g.mail for g in await h.list_unified_groups()
+        )
         reply_post = await _group_reply_post(h, w)
         pending = [name for name, ok in (
             ("moved mail in Target", moved), ("soft-deleted mail in Deleted Items", soft),

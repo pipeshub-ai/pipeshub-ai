@@ -5807,3 +5807,59 @@ class TestRunSyncAdditions:
         await zendesk_connector._sync_tickets()
 
         assert states[SYNC_POINT_KEY]["grantModel"] == TICKET_GRANT_MODEL
+
+
+class TestConverterReachesTheBlock:
+    """Nothing here patches the HTML-to-Markdown helper: the real converter runs."""
+
+    async def test_ticket_comment_keeps_form_and_hidden_text(self, zendesk_connector) -> None:
+        datasource = _ready(zendesk_connector)
+        datasource.list_comments = AsyncMock(return_value=_make_response(data={
+            "comments": [{
+                "id": 1,
+                "author_id": 9,
+                "public": True,
+                "html_body": (
+                    "<p>Hello <b>team</b>,</p>"
+                    "<form><label>Order number</label> <span>A-1042</span></form>"
+                    '<div hidden>Escalated to tier 2</div>'
+                    "<ul><li>first</li><li>second</li></ul>"
+                ),
+            }],
+        }))
+        zendesk_connector._user_id_to_data = {"9": {"name": "Sarah"}}
+        record = MagicMock()
+        record.record_type = RecordType.TICKET
+        record.external_record_id = "23"
+        record.record_name = "Latency"
+        record.weburl = None
+
+        payload = json.loads(await zendesk_connector._process_ticket_blockgroups_for_streaming(record))
+
+        assert payload["block_groups"][0]["data"] == (
+            "Hello **team**,\n\nOrder number A-1042\n\nEscalated to tier 2\n\n- first\n- second\n"
+        )
+
+    async def test_article_body_keeps_header_and_nav_text(self, zendesk_connector) -> None:
+        datasource = _ready(zendesk_connector)
+        datasource.list_article_attachments = AsyncMock(
+            return_value=_make_response(data={"article_attachments": []})
+        )
+        datasource.show_article = AsyncMock(return_value=_make_response(data={
+            "article": {
+                "id": 55,
+                "title": "How to reset",
+                "body": "<header><h2>Before you start</h2></header><nav>See also: SSO</nav><p>Click <i>Reset</i>.</p>",
+            },
+        }))
+        record = MagicMock()
+        record.record_type = RecordType.WEBPAGE
+        record.external_record_id = "article_55"
+        record.record_name = "How to reset"
+        record.weburl = None
+
+        payload = json.loads(await zendesk_connector._process_article_blockgroups_for_streaming(record))
+
+        assert payload["block_groups"][0]["data"] == (
+            "## Before you start\n\nSee also: SSO\n\nClick *Reset*.\n"
+        )

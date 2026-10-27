@@ -34,6 +34,9 @@ export interface Readable {
   urls: Set<string>;
 }
 
+const isStringList = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((v) => typeof v === 'string');
+
 /**
  * Record ids and record addresses the viewer may read,
  * from the query service's `check_access`. Fails closed: an error means none.
@@ -86,8 +89,14 @@ export const readableRecordIds = async (
           `record access returned ${String(response.statusCode)}`,
         );
       }
-      for (const id of response.data?.accessible ?? []) readable.ids.add(id);
-      for (const u of response.data?.accessibleUrls ?? []) readable.urls.add(u);
+      const accessible: unknown = response.data?.accessible ?? [];
+      const accessibleUrls: unknown = response.data?.accessibleUrls ?? [];
+      // Only lists of strings: a string is read per character, String(['id']) is 'id'.
+      if (!isStringList(accessible) || !isStringList(accessibleUrls)) {
+        throw new Error('record access returned a malformed body');
+      }
+      for (const id of accessible) readable.ids.add(id);
+      for (const u of accessibleUrls) readable.urls.add(u);
     }
     return readable;
   } catch (error: unknown) {
