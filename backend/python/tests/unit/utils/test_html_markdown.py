@@ -1,13 +1,15 @@
 """app.utils.html_markdown: callers get a ``str`` whatever the library returns."""
 
 import ast
+import asyncio
 import logging
+import time
 from pathlib import Path
 
 import pytest
 
 from app.utils import html_markdown
-from app.utils.html_markdown import html_to_markdown
+from app.utils.html_markdown import html_to_markdown, html_to_markdown_async
 
 
 def test_returns_markdown_text_not_a_result_object() -> None:
@@ -344,3 +346,54 @@ def test_ordinary_documents_never_fall_back_to_plain_text(monkeypatch: pytest.Mo
         if html_markdown._split_convert(f.read_text(encoding="utf-8", errors="replace")) is None
     ]
     assert fell_back == []
+
+
+# --- async entry point -------------------------------------------------------
+
+
+async def test_async_quick_path_converts_inline(monkeypatch: pytest.MonkeyPatch) -> None:
+    def no_thread(*args: object, **kwargs: object) -> None:
+        raise AssertionError("a small body must not take a thread hop")
+
+    monkeypatch.setattr(asyncio, "to_thread", no_thread)
+    html = "<h1>Title</h1><p>a <b>bold</b> word</p>"
+    assert await html_to_markdown_async(html) == html_to_markdown(html)
+
+
+async def test_async_large_input_runs_in_a_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[str] = []
+    real = asyncio.to_thread
+
+    async def spy(func: object, *args: str) -> str:
+        calls.append(getattr(func, "__name__", ""))
+        return await real(func, *args)
+
+    monkeypatch.setattr(asyncio, "to_thread", spy)
+    html = "<p>x</p>" * (html_markdown.MAX_ELEMENTS_PER_BLOCK + 1)
+
+    assert await html_to_markdown_async(html) == html_to_markdown(html)
+    assert calls == ["html_to_markdown"]
+
+
+async def test_event_loop_keeps_running_during_a_large_conversion(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(html_markdown, "html_to_markdown", lambda html: time.sleep(0.5) or "done")
+    ticks = 0
+
+    async def ticker() -> None:
+        nonlocal ticks
+        while True:
+            await asyncio.sleep(0.01)
+            ticks += 1
+
+    task = asyncio.create_task(ticker())
+    out = await html_to_markdown_async("<p>x</p>" * (html_markdown.MAX_ELEMENTS_PER_BLOCK + 1))
+    task.cancel()
+
+    assert out == "done"
+    assert ticks >= 10  # about 50 while the thread sleeps; 0 if the loop were blocked
+
+
+@pytest.mark.parametrize("value", [None, b"<p>x</p>", 5])
+async def test_async_rejects_non_str_input(value: object) -> None:
+    with pytest.raises(TypeError, match="html must be str"):
+        await html_to_markdown_async(value)  # type: ignore[arg-type]

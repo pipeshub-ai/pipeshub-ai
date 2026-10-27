@@ -17,6 +17,7 @@ Anything the split path cannot do faithfully (too large, too deep, a parse that
 loses text) degrades to the document's plain text, never to an empty string.
 """
 
+import asyncio
 import logging
 import re
 from html import escape, unescape
@@ -243,3 +244,16 @@ def html_to_markdown(html: str) -> str:
         )
         html = html[:MAX_FALLBACK_CHARS]
     return _plain_text(html)
+
+
+async def html_to_markdown_async(html: str) -> str:
+    """``html_to_markdown`` for async code: large input runs off the event loop.
+
+    Input on the quick path (one library call, milliseconds) is converted inline,
+    so ordinary bodies pay no thread hop. Anything larger can take seconds.
+    """
+    if not isinstance(html, str):
+        raise TypeError(f"html must be str, got {type(html).__name__}")
+    if html.count("<") <= MAX_ELEMENTS_PER_BLOCK:
+        return html_to_markdown(html)
+    return await asyncio.to_thread(html_to_markdown, html)
