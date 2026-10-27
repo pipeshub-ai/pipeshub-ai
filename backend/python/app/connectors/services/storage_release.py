@@ -21,7 +21,7 @@ from app.config.constants.arangodb import CollectionNames, Connectors
 from app.connectors.core.base.data_processor.storage_cleanup import StorageCleanupHelper
 from app.connectors.services.connector_intents import ConnectorIntentStore
 from app.connectors.sources.localKB.handlers.delete_lease import lease_is_held
-from app.core.org_context import for_org
+from app.core.org_context import for_org, spawn_in_request
 from app.modules.indexing.vector_membership_backfill import (
     VectorMembershipBackfillLeaderLock,
 )
@@ -259,7 +259,7 @@ class StorageReleaseReconciler:
                 except Exception:
                     self.logger.warning("Could not renew the storage-release leader lock", exc_info=True)
 
-        heartbeat = asyncio.create_task(keep_leadership(), name="storage-release-heartbeat")
+        heartbeat = spawn_in_request(keep_leadership(), name="storage-release-heartbeat")
         try:
             result = await self.finish_kb_delete(org_id, kb_id)
         except Exception:

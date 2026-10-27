@@ -49,6 +49,11 @@ FLAG_CHECKING_HARD_DELETERS: set[str] = set()
 # Whole-collection delete: a hard delete by design, as in the soft-delete design (section 6).
 KB_DELETE = {"localKB/handlers/kb_service.py": {"delete_connector_instance"}}
 
+# A push whose create committed after the knowledge base was marked DELETING removes that
+# record itself, because the cascade may have collected before it: the record belongs to a
+# knowledge base being hard-deleted (as KB_DELETE above), and nobody was ever shown it.
+KB_DELETE_COMPENSATION = {"localKB/push/service.py": ("_undo_create_in_deleted_kb", "delete_nodes_and_edges")}
+
 
 def _called_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -70,6 +75,24 @@ def _calls_by_module() -> dict[str, set[str]]:
     return calls
 
 
+def _compensating_calls(module: str) -> set[str]:
+    allowed = KB_DELETE_COMPENSATION.get(module)
+    return {allowed[1]} if allowed else set()
+
+
+def test_the_compensating_hard_delete_is_only_in_its_function() -> None:
+    for module, (function, call) in KB_DELETE_COMPENSATION.items():
+        tree = ast.parse((SOURCES / module).read_text(encoding="utf-8"))
+        callers = {
+            fn.name
+            for fn in ast.walk(tree)
+            if isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute) and node.func.attr == call
+        }
+        assert callers == {function}, (module, callers)
+
+
 def test_the_scan_sees_the_connectors() -> None:
     calls = _calls_by_module()
     users = {module for module, names in calls.items() if names & TRASH_AWARE.keys()}
@@ -82,7 +105,7 @@ def test_only_flag_checking_connectors_call_a_raw_hard_delete() -> None:
     offenders = {
         module: sorted(names & RAW_HARD_DELETES)
         for module, names in _calls_by_module().items()
-        if names & RAW_HARD_DELETES and module not in FLAG_CHECKING_HARD_DELETERS
+        if names & RAW_HARD_DELETES - _compensating_calls(module) and module not in FLAG_CHECKING_HARD_DELETERS
     }
     assert offenders == {}, (
         "These connectors remove records without the trash. Use on_record_deleted, "

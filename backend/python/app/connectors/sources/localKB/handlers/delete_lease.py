@@ -13,6 +13,8 @@ import contextlib
 import time
 from typing import TYPE_CHECKING
 
+from app.core.org_context import spawn_in_request
+
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator
     from logging import Logger
@@ -63,7 +65,7 @@ async def hold_delete_lease(
                 except Exception:
                     logger.warning("Could not renew the delete lease of KB %s", kb_id, exc_info=True)
 
-        task = asyncio.create_task(renew(), name=f"kb-delete-lease-{kb_id}")
+        task = spawn_in_request(renew(), name=f"kb-delete-lease-{kb_id}")
     try:
         yield
     finally:
