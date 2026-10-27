@@ -578,6 +578,7 @@ export class PgUserRepository implements UserRepository {
   }
 
   async listMembersPage(
+    orgId: string,
     ids: string[],
     q: {
       search?: string;
@@ -589,6 +590,7 @@ export class PgUserRepository implements UserRepository {
     const list = oidsOf(ids);
     if (list.length === 0) return { rows: [], total: 0 };
     return inUnit(undefined, { write: false }, async (k) => {
+      assertOrg(k, orgId);
       const p = new Params();
       const conds = [
         `u.org_id = ${p.add(k.orgId)}`,
