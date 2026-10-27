@@ -896,7 +896,7 @@ class _Builder:
         if not receiver_type and fact.get("qualifiedPrefix") and self._family_of(block_id) == "js":
             # `this._editor.getModel().getValue()`, `c.run()` with `const c = Ctl.get(e)`.
             owner = self._expr_type(fact["qualifiedPrefix"], record_id, self._enclosing_type(block_id),
-                                    head_type=fact.get("headType"))
+                                    head_type=fact.get("headType"), head_type_arg=fact.get("headTypeArg"))
             if owner:
                 target = self._methods_on(owner, name)
                 if target:
@@ -941,7 +941,8 @@ class _Builder:
         return type_candidates
 
     def _expr_type(self, expr: str, record_id: str, this_type: str | None, depth: int = 0, *,
-                   head_type: str | None = None, array: bool = False) -> str | None:
+                   head_type: str | None = None, array: bool = False,
+                   head_type_arg: str | None = None) -> str | None:
         """The type block a JS/TS receiver expression evaluates to, or None.
 
         Walks `a.b().c` left to right through the parser's type tables: a
@@ -955,17 +956,17 @@ class _Builder:
         element = expr.endswith("[*]")
         if element:
             expr = expr[:-3]
-        key = (record_id, this_type, expr, head_type, element)
+        key = (record_id, this_type, expr, head_type, head_type_arg, element)
         if key not in self._expr_memo:
             self._expr_memo[key] = None  # a cycle (`a = a.next`) resolves to nothing
-            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type)
+            self._expr_memo[key] = self._eval_expr(expr, record_id, this_type, depth, head_type, head_type_arg)
         owner = self._expr_memo[key]
         if element:
             return owner[2:] if owner and owner.startswith("[]") else None
         return owner if array or not owner or not owner.startswith("[]") else None
 
     def _eval_expr(self, expr: str, record_id: str, this_type: str | None, depth: int,
-                   head_type: str | None) -> str | None:
+                   head_type: str | None, head_type_arg: str | None = None) -> str | None:
         segments = _receiver_segments(expr) if depth < _EXPR_DEPTH else None
         owner = None
         if segments:
@@ -980,8 +981,9 @@ class _Builder:
                 owner = self._declared_type(head_type, record_id, this_type, depth)
             else:
                 owner = self._value_type(head, record_id, this_type, depth)
-            # `IObservable<Foo>`'s argument, for a `read(): T` called on it next.
-            declared_arg = None if called or head == "this" else \
+            # `IObservable<Foo>`'s argument, for a `read(): T` called on it next. A scoped
+            # head keeps its own scope's argument: another function's `v` may differ.
+            declared_arg = None if called or head == "this" else head_type_arg if head_type else \
                 self.index.type_table_by_record.get(record_id, {}).get(f"{head}<>")
             type_arg = self._declared_type(declared_arg, record_id, this_type, depth) if declared_arg else None
             for name, called, first_arg in rest:

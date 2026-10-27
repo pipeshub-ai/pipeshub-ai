@@ -238,6 +238,20 @@ async def test_a_generic_read_returns_the_type_argument(graph, index_file) -> No
     assert "src/o.ts::method:Ghost.render" in _targets(graph, CALLS, "src/o.ts")
 
 
+async def test_a_generic_read_uses_its_own_functions_type_argument(graph, index_file) -> None:
+    # Two functions in one file name `v` with different type arguments.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(): T;\n}\n"
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function first(v: IObservable<A>) {\n  v.read().go();\n}\n"
+                     b"export function second(v: IObservable<B>) {\n  v.read().go();\n}\n", "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert {t for f, t in callers if f == "function:first" and t.endswith(".go")} == {"method:A.go"}
+    assert {t for f, t in callers if f == "function:second" and t.endswith(".go")} == {"method:B.go"}
+
+
 async def test_a_typescript_namespace_function_is_called_through_the_namespace(graph, index_file) -> None:
     # vscode: `Event.map(...)`, where `namespace Event` shares its name with an interface.
     await index_file("event", "src/event.ts",

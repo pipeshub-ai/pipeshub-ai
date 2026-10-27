@@ -1544,14 +1544,18 @@ class _Walker:
             receiver_type=self._receiver_type(node, receiver, qualifier),
             qualified_prefix=qualifier,
             head_type=self._head_type(node, qualifier),
+            head_type_arg=self._head_type(node, qualifier, suffix="<>"),
         ))
 
-    def _head_type(self, node: Node, qualifier: str | None) -> str | None:
-        """The function-scoped type of the variable a TS receiver chain starts from."""
+    def _head_type(self, node: Node, qualifier: str | None, suffix: str = "") -> str | None:
+        """The function-scoped type of the variable a TS receiver chain starts from;
+        *suffix* `<>` asks for its type argument instead."""
         if not qualifier or self.cfg.type_table_handler_name != "ts":
             return None
         head = _TS_HEAD.match(qualifier)
-        return self._ts_scoped_type(node, head.group()) if head and head.group() != "this" else None
+        if not head or head.group() == "this" or self._ts_scoped_type(node, head.group()) is None:
+            return None
+        return self._ts_scoped_type(node, head.group() + suffix)
 
     def _receiver_type(self, node: Node, receiver: str | None, qualifier: str | None = None) -> str | None:
         """The receiver's type, from its own function first in Go: one file's
