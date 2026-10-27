@@ -107,7 +107,7 @@ def _convert(html: str) -> str:
 def _subtree_sizes(root: lxml_html.HtmlElement) -> dict:
     """Element count under each node, in one pass (``iter()`` per level is quadratic)."""
     nodes = list(root.iter())  # keeps the proxies alive, so they are valid dict keys
-    sizes = {node: 1 for node in nodes}
+    sizes = dict.fromkeys(nodes, 1)
     for node in reversed(nodes):
         parent = node.getparent()
         if parent is not None:
@@ -206,7 +206,7 @@ def html_to_markdown(html: str) -> str:
     else:
         try:
             result = _split_convert(html)
-        except Exception:  # noqa: BLE001  parse errors, recursion limits: all end in plain text
+        except Exception:  # parse errors, recursion limits: all end in plain text
             result = None
             reason = "could not be parsed"
         else:
