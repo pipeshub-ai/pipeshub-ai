@@ -1,4 +1,4 @@
-import { Router, Response, NextFunction } from 'express';
+import { Router, Request, Response, NextFunction } from 'express';
 import { z } from 'zod';
 import { Container } from 'inversify';
 import { ValidationMiddleware } from '../../../libs/middlewares/validation.middleware';
@@ -25,6 +25,7 @@ import {
   AuthAppConfigReloader,
 } from '../container/authService.container';
 import { emailCheck } from '../../../libs/utils/zod-formats';
+import { AuthMethodType } from '../schema/orgAuthConfiguration.schema';
 
 const otpGenerationBody = z.object({
   email: z.string().check(emailCheck('Invalid email')),
@@ -71,6 +72,31 @@ export function createUserAccountRouter(container: Container) {
     logger,
     maxAuthRequestsPerMinute,
   );
+  // A provider sign-in (Google, Microsoft, OAuth) carries a token the
+  // provider verifies, so there is nothing to guess, and it usually names no
+  // email: the account limiter would put everyone on one IP in one bucket.
+  // Those count against the per-IP backstop only; every other method,
+  // including an unknown one, is counted per account.
+  const providerVerifiedMethods = new Set<string>([
+    AuthMethodType.GOOGLE,
+    AuthMethodType.MICROSOFT,
+    AuthMethodType.AZURE_AD,
+    AuthMethodType.OAUTH,
+    AuthMethodType.GITHUB,
+  ]);
+  const authenticateRateLimiter = (
+    req: Request,
+    res: Response,
+    next: NextFunction,
+  ): void => {
+    const method: unknown = (req.body as { method?: unknown } | undefined)
+      ?.method;
+    if (typeof method === 'string' && providerVerifiedMethods.has(method)) {
+      next();
+      return;
+    }
+    void authRateLimiter(req, res, next);
+  };
 
   router.post(
     '/initAuth',
@@ -120,7 +146,7 @@ export function createUserAccountRouter(container: Container) {
     '/authenticate',
     authIpRateLimiter,
     authSessionMiddleware,
-    authRateLimiter,
+    authenticateRateLimiter,
     ValidationMiddleware.validate(authenticateValidationSchema),
     async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
       try {

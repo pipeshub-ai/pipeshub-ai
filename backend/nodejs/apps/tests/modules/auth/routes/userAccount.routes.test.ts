@@ -71,14 +71,13 @@ describe('createUserAccountRouter', () => {
         .route.stack.map((layer: any) => layer.handle);
 
     // Anonymous routes: per-IP backstop first, then the per-account bucket.
-    // /authenticate counts after the session lookup, which names the account.
-    const ipLimiter = handlers('/authenticate')[0];
-    const accountLimiter = handlers('/authenticate')[2];
-    expect(handlers('/authenticate')[1]).to.equal(authSessionMiddleware);
+    const ipLimiter = handlers('/login/otp/generate')[0];
+    const accountLimiter = handlers('/login/otp/generate')[1];
     expect(accountLimiter).to.not.equal(ipLimiter);
-    for (const path of ['/login/otp/generate', '/password/forgot']) {
-      expect(handlers(path).slice(0, 2), path).to.deep.equal([ipLimiter, accountLimiter]);
-    }
+    expect(handlers('/password/forgot').slice(0, 2)).to.deep.equal([ipLimiter, accountLimiter]);
+    // /authenticate counts after the session lookup, which names the account.
+    expect(handlers('/authenticate').slice(0, 2)).to.deep.equal([ipLimiter, authSessionMiddleware]);
+    expect(handlers('/authenticate')[2]).to.be.a('function');
     // Signed-in routes count per user, so the limiter runs after userValidator.
     for (const path of ['/password/reset', '/password/setup/email']) {
       expect(handlers(path).slice(0, 2), path).to.deep.equal([userValidator, accountLimiter]);
@@ -88,6 +87,43 @@ describe('createUserAccountRouter', () => {
     expect(handlers('/initAuth')[0]).to.be.a('function');
     expect(handlers('/initAuth')).to.not.include(accountLimiter);
     expect(handlers('/initAuth')).to.not.include(ipLimiter);
+  });
+
+  it('should count password and OTP sign-ins per account but provider sign-ins only per IP', async () => {
+    const router = createUserAccountRouter(container);
+    const limiter = (router.stack as any[]).find((layer) => layer.route?.path === '/authenticate')
+      .route.stack[2].handle;
+    // Resolves with 200 when the limiter lets the request through, else its status.
+    const send = (body: Record<string, unknown>): Promise<number> =>
+      new Promise((resolve) => {
+        const headers: Record<string, unknown> = {};
+        const res: any = {
+          statusCode: 200,
+          setHeader: (k: string, v: unknown) => { headers[k] = v; return res; },
+          getHeader: (k: string) => headers[k],
+          header: (k: string, v: unknown) => { headers[k] = v; return res; },
+          set: (k: string, v: unknown) => { headers[k] = v; return res; },
+          status: (code: number) => { res.statusCode = code; return res; },
+          json: () => { resolve(res.statusCode); return res; },
+          send: () => { resolve(res.statusCode); return res; },
+        };
+        const req: any = {
+          method: 'POST', path: '/authenticate', ip: '10.0.9.1', headers: {},
+          socket: { remoteAddress: '10.0.9.1' }, app: { enabled: () => false }, get: () => undefined,
+          sessionInfo: { email: '' }, body,
+        };
+        limiter(req, res, () => resolve(200));
+      });
+
+    // Google sign-ins name no email; they must not share one bucket per IP.
+    for (let i = 0; i < 11; i++) {
+      expect(await send({ method: 'google', credentials: 'id-token' }), `google ${i + 1}`).to.equal(200);
+    }
+    for (let i = 0; i < 10; i++) {
+      expect(await send({ method: 'password', email: 'ada@example.com' }), `password ${i + 1}`).to.equal(200);
+    }
+    expect(await send({ method: 'password', email: 'ada@example.com' })).to.equal(429);
+    expect(await send({ method: 'password', email: 'grace@example.com' })).to.equal(200);
   });
 
   afterEach(() => {

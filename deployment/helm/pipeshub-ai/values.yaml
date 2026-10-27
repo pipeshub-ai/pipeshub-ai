@@ -113,6 +113,7 @@ trustProxy: ""
 
 # Per-account limit for login, OTP and password endpoints (per client IP and
 # email, or per signed-in user). One client IP may send six times this in total.
+# Each replica counts on its own, so N replicas allow up to N times this.
 maxAuthRequestsPerMinute: 10
 
 ingress:
