@@ -1381,6 +1381,19 @@ describe('Knowledge base page — uploading', () => {
     await waitFor(() => expect(api.hub.loadFolderData).toHaveBeenCalled());
   });
 
+  it('does not offer Upload data on the collections list, where there is no collection to upload into', async () => {
+    withCollections();
+    openAt('/knowledge-base');
+    await screen.findByRole('row', { name: 'Engineering' });
+
+    const trigger = screen.getByTestId('new-dropdown-trigger');
+    await act(async () => {
+      fireEvent.keyDown(trigger, { key: 'Enter' });
+    });
+    expect(await screen.findByRole('menuitem', { name: /New folder$/ })).toBeTruthy();
+    expect(screen.queryByRole('menuitem', { name: /Upload data$/ })).toBeNull();
+  });
+
   it('marks every file failed when the upload connection drops', async () => {
     await openEngineering();
     const a = fileOfSize('a.txt', 10);

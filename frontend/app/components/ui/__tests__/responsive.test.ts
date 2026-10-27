@@ -9,7 +9,7 @@ describe('responsive helpers', () => {
 
   it('touchTarget is undefined when disabled and 44px when enabled', () => {
     expect(touchTarget(false)).toBeUndefined();
-    expect(touchTarget(true)).toEqual({ minWidth: 44, minHeight: 44 });
+    expect(touchTarget(true)).toEqual({ minWidth: 44, minHeight: 44, boxSizing: 'border-box' });
   });
 
   it('exposes the page padding token', () => {

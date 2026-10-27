@@ -1580,7 +1580,15 @@ th code {
   .touch-hit {
     position: relative;
   }
-  .touch-hit::after {
+  /* Segment items are wider than 44px, so growing them never reaches a neighbour; checkboxes
+     sit alone at the start of a row. Radix draws the checkbox box with ::before, not ::after. */
+  .rt-SegmentedControlItem,
+  .rt-BaseCheckboxRoot {
+    position: relative;
+  }
+  .touch-hit::after,
+  .rt-SegmentedControlItem::after,
+  .rt-BaseCheckboxRoot::after {
     content: '';
     position: absolute;
     top: 50%;
