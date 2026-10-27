@@ -3734,14 +3734,14 @@ class TestInitSetupErrors:
         return caught.value
 
     @pytest.mark.asyncio
-    async def test_an_unknown_sharepoint_resource_names_the_domain_to_check(self) -> None:
+    async def test_an_unknown_sharepoint_resource_says_to_check_the_domain(self) -> None:
         error = await self._init_with_sharepoint_token_error(ClientAuthenticationError(message=(
             "AADSTS500011: The resource principal named https://contoso.sharepoint.com was not found in the "
             "tenant named Contoso. This can happen if the application has not been installed by the administrator "
             "of the tenant or consented to by any user in the tenant.")))
 
         assert isinstance(error, ConnectorInitError)
-        assert "https://contoso.sharepoint.com" in str(error)
+        assert "Microsoft sign-in failed (AADSTS500011)" in str(error)
         assert "Check the SharePoint domain" in str(error)
 
     @pytest.mark.asyncio
