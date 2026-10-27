@@ -269,7 +269,7 @@ export function CollectionsTab({
       setHasError(true);
       console.error('Error loading more hub apps for chat:', err);
     } finally {
-      setLoadingMoreApps(false);
+      if (gen === fetchGenRef.current) setLoadingMoreApps(false);
     }
   }, [rootsListMeta, loadingMoreApps, origins, setCollectionNamesCache, setCollectionMetaCache]);
 
