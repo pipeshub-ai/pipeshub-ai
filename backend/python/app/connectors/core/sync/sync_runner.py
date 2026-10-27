@@ -724,13 +724,14 @@ async def _write_progress_while_running(
     connector_id: str,
     progress: SyncProgress,
     lease: SyncLease | None,
-    run_status: str,
+    run_mark: dict[str, Any],
 ) -> None:
     """Keep ``syncProgress`` on the app doc current until cancelled.
 
     An update, never an upsert, so it cannot resurrect a connector deleted
-    mid-run, and only while the doc still says this run's status: a write that
-    outlives the finalizer's cancel wait lands on an IDLE doc and is dropped.
+    mid-run, and only while the doc still carries ``run_mark`` (this run's status
+    and start time): a write that outlives the finalizer's cancel wait is dropped,
+    on an IDLE doc and on the next run's alike.
     Failures are logged and retried on the next tick: progress is for people to
     look at, and must never fail the sync.
     """
@@ -742,13 +743,13 @@ async def _write_progress_while_running(
         version = progress.version
         if version != written:
             try:
-                await graph_provider.update_node_fields_if_match(
+                if await graph_provider.update_node_fields_if_match(
                     connector_id,
                     CollectionNames.APPS.value,
                     {ConnectorStateKeys.SYNC_PROGRESS: json.dumps(progress.snapshot(), default=str)},
-                    {"status": run_status},
-                )
-                written = version
+                    run_mark,
+                ):
+                    written = version
             except Exception as e:
                 logger.debug(f"Could not write sync progress for {connector_id}: {e}")
         await asyncio.sleep(_PROGRESS_WRITE_INTERVAL_S)
@@ -765,8 +766,9 @@ def _run_record(
 ) -> dict[str, object]:
     """The app-doc fields that close a run: history, the failure reason, and no live snapshot.
 
-    History is left alone when it could not be read at the start of the run:
-    writing this run alone would replace the stored runs.
+    When the history could not be read, it is left alone, and so is the last
+    failure: writing this run alone would replace the stored runs, and the card
+    reads the latest run from the history, so the two must move together.
     """
     entry = progress.run_entry(
         outcome=outcome.value,
@@ -781,13 +783,11 @@ def _run_record(
         if outcome is SyncRunOutcome.FAILED
         else None
     )
+    if stored_runs is HISTORY_UNREAD:
+        return {ConnectorStateKeys.SYNC_PROGRESS: None}
     return {
         ConnectorStateKeys.SYNC_PROGRESS: None,
-        **(
-            {ConnectorStateKeys.SYNC_RUNS: merged_run_history(stored_runs, entry)}
-            if stored_runs is not HISTORY_UNREAD
-            else {}
-        ),
+        ConnectorStateKeys.SYNC_RUNS: merged_run_history(stored_runs, entry),
         # A stopped or skipped run says nothing about whether the source works,
         # so only a success clears the last failure.
         **(
@@ -796,6 +796,18 @@ def _run_record(
             else {}
         ),
     }
+
+
+async def _read_history_again(
+    graph_provider: IGraphDBProvider, logger: logging.Logger, connector_id: str
+) -> object:
+    """One more try at the stored runs, for a run whose start-of-run read failed."""
+    try:
+        doc = await graph_provider.get_document(document_key=connector_id, collection=CollectionNames.APPS.value)
+    except Exception as e:
+        logger.warning(f"Could not read sync history for {connector_id}: {e}")
+        return HISTORY_UNREAD
+    return HISTORY_UNREAD if doc is None else doc.get(ConnectorStateKeys.SYNC_RUNS)
 
 
 async def _mark_first_sync(
@@ -864,6 +876,7 @@ async def run_sync_task(
     processor, seen = None, None
     scope_generation: int | None = None
     stored_runs: object = HISTORY_UNREAD
+    run_mark: dict[str, Any] = {"status": start_status}
     progress_writer: asyncio.Task | None = None
     # One id per run, stamped on every record-event this sync publishes so
     # downstream processing can be correlated back to the run.
@@ -897,6 +910,10 @@ async def run_sync_task(
             doc = await graph_provider.get_document(
                 document_key=connector_id, collection=CollectionNames.APPS.value
             )
+            if doc is not None:
+                stored_runs = doc.get(ConnectorStateKeys.SYNC_RUNS)
+                if doc.get(ConnectorStateKeys.LAST_SYNC_STARTED_AT) is not None:
+                    run_mark[ConnectorStateKeys.LAST_SYNC_STARTED_AT] = doc[ConnectorStateKeys.LAST_SYNC_STARTED_AT]
             full_owed = bool((doc or {}).get(ConnectorStateKeys.PENDING_FULL_SYNC))
             # Only when set: writing the field on every sync put it on every app
             # doc, and main's strict Arango app schema rejects any doc carrying it.
@@ -907,13 +924,11 @@ async def run_sync_task(
                     CollectionNames.APPS.value,
                     {ConnectorStateKeys.PENDING_RESYNC: False},
                 )
-            if doc is not None:
-                stored_runs = doc.get(ConnectorStateKeys.SYNC_RUNS)
             await _mark_first_sync(graph_provider, logger, connector_id, doc)
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
         progress_writer = spawn_in_request(
-            _write_progress_while_running(graph_provider, logger, connector_id, progress, lease, start_status),
+            _write_progress_while_running(graph_provider, logger, connector_id, progress, lease, run_mark),
             name=f"sync_progress_{connector_id}",
         )
         if lease is None:
@@ -963,6 +978,8 @@ async def run_sync_task(
         if lease is not None and lease.stop_requested.is_set():
             stopped = True
         outcome = _run_outcome(stopped=stopped, failed=failed, skipped=skipped_code is not None, finished=finished)
+        if stored_runs is HISTORY_UNREAD:
+            stored_runs = await _read_history_again(graph_provider, logger, connector_id)
         run_record = _run_record(progress, outcome, stored_runs, error=error, skip_code=skipped_code, started_by=started_by)
         elapsed = time.monotonic() - start
         mins, secs = divmod(elapsed, 60)

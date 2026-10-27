@@ -327,7 +327,7 @@ def test_a_restart_with_no_snapshot_only_clears_it() -> None:
     assert interrupted_run_record({}, 99) == {Keys.SYNC_PROGRESS: None}
 
 
-async def test_history_that_could_not_be_read_is_not_overwritten() -> None:
+async def test_history_unread_at_the_start_is_read_again_before_the_idle_write() -> None:
     gp = _graph_provider()
     stored = {"id": "c1", "status": "SYNCING", Keys.SYNC_RUNS: json.dumps([{"runId": "older"}])}
     reads = iter([None])
@@ -337,13 +337,28 @@ async def test_history_that_could_not_be_read_is_not_overwritten() -> None:
         return None
 
     await run_sync_task(_connector(run_sync), "c1", gp, _LOG)
+    runs = parse_run_history(_idle_write(gp)[Keys.SYNC_RUNS])
+    assert [r["runId"] for r in runs][1:] == ["older"]
+
+
+async def test_history_that_cannot_be_read_is_left_alone_with_the_last_failure() -> None:
+    """The card reads the latest run from the history, so the last error must not move without it."""
+    gp = _graph_provider()
+    stored = {"id": "c1", "status": "SYNCING"}
+    reads = iter([None, None])
+    gp.get_document = AsyncMock(side_effect=lambda **_: next(reads, stored))
+
+    async def run_sync() -> None:
+        return None
+
+    await run_sync_task(_connector(run_sync), "c1", gp, _LOG)
     idle = _idle_write(gp)
-    assert Keys.SYNC_RUNS not in idle
+    assert Keys.SYNC_RUNS not in idle and Keys.LAST_SYNC_ERROR not in idle
     assert idle[Keys.SYNC_PROGRESS] is None
 
 
-async def test_live_progress_is_written_only_while_the_run_holds_the_status() -> None:
-    gp = _graph_provider()
+async def test_live_progress_is_written_only_while_the_doc_is_this_runs() -> None:
+    gp = _graph_provider({"id": "c1", "status": "SYNCING", Keys.LAST_SYNC_STARTED_AT: 1234})
 
     async def run_sync() -> None:
         current_sync_progress("c1").note_record("a", ChangeKind.NEW)
@@ -351,7 +366,8 @@ async def test_live_progress_is_written_only_while_the_run_holds_the_status() ->
 
     await run_sync_task(_connector(run_sync), "c1", gp, _LOG)
     writes = [c for c in gp.update_node_fields_if_match.await_args_list if Keys.SYNC_PROGRESS in c.args[2]]
-    assert writes and all(c.args[3] == {"status": AppStatus.SYNCING.value} for c in writes)
+    expected = {"status": AppStatus.SYNCING.value, Keys.LAST_SYNC_STARTED_AT: 1234}
+    assert writes and all(c.args[3] == expected for c in writes)
 
 
 # ---- first sync ready -----------------------------------------------------
