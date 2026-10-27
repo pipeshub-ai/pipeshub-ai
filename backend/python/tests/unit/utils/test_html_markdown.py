@@ -187,16 +187,33 @@ def test_unclosed_nesting_keeps_every_word() -> None:
     assert out.count("x") == 30_000
 
 
-def test_nested_containers_are_counted_once() -> None:
-    """Counting a subtree per level made the cost grow with depth x elements."""
-    html = "<div>" * 600 + "<p>w</p>" * 120_000 + "</div>" * 600
+def test_nested_containers_are_counted_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Sizes come from one pass; looking one up per child, not counting per level."""
+    monkeypatch.setattr(html_markdown, "MAX_ELEMENTS_PER_BLOCK", 100)
+    real = html_markdown._subtree_sizes
+    passes: list[int] = []
+    lookups: list[object] = []
+    converts: list[str] = []
 
-    start = time.perf_counter()
-    out = html_to_markdown(html)
-    elapsed = time.perf_counter() - start
+    class Spy(dict):
+        def __getitem__(self, key: object) -> int:
+            lookups.append(key)
+            return super().__getitem__(key)
 
-    assert out.count("w") == 120_000
-    assert elapsed < 6.0  # about 3 s; per-level counting takes about 10 s
+    def spy_sizes(root: object) -> Spy:
+        passes.append(1)
+        return Spy(real(root))
+
+    real_convert = html_markdown._convert
+    monkeypatch.setattr(html_markdown, "_subtree_sizes", spy_sizes)
+    monkeypatch.setattr(html_markdown, "_convert", lambda m: converts.append(m) or real_convert(m))
+
+    out = html_to_markdown("<div>" * 60 + "<p>w</p>" * 1_000 + "</div>" * 60)
+
+    assert out.count("w") == 1_000
+    assert passes == [1]
+    assert len(lookups) >= 1_000  # every child asks the precomputed table
+    assert len(converts) <= 20  # batches of about 100 elements, not one per level or block
 
 
 def test_input_over_the_size_cap_is_text_only_and_not_empty(
@@ -205,6 +222,7 @@ def test_input_over_the_size_cap_is_text_only_and_not_empty(
     called: list[str] = []
     monkeypatch.setattr(html_markdown, "_convert", lambda markup: called.append(markup) or "")
     monkeypatch.setattr(html_markdown, "MAX_INPUT_CHARS", 1_000)
+    monkeypatch.setattr(html_markdown, "MAX_ELEMENTS_PER_BLOCK", 10)
     html = "<h1>Title</h1><script>BAD()</script><p>one <b>two</b></p>" * 30
 
     with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
@@ -234,3 +252,90 @@ def test_reduced_block_leaves_out_script_and_style(monkeypatch: pytest.MonkeyPat
     assert "BAD" not in out
     assert "bad" not in out
     assert out.endswith("tail")
+
+
+def test_cap_does_not_apply_to_a_body_with_few_tags(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A big inline image or href is one attribute, not many elements."""
+    monkeypatch.setattr(html_markdown, "MAX_INPUT_CHARS", 1_000)
+    out = html_to_markdown(f'<p>see <a href="http://e.x/{"a" * 5_000}">the link</a></p>')
+    assert out.startswith("see [the link](http://e.x/aaa")
+
+
+def test_fallback_input_is_cut_and_the_cut_is_reported(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    monkeypatch.setattr(html_markdown, "MAX_ELEMENTS_PER_BLOCK", 10)
+    monkeypatch.setattr(html_markdown, "MAX_INPUT_CHARS", 100)
+    monkeypatch.setattr(html_markdown, "MAX_FALLBACK_CHARS", 500)
+    html = "".join(f"<p>word{i:04d}</p>" for i in range(200))
+
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown(html)
+
+    assert "word0000" in out
+    assert "word0199" not in out
+    assert [r.getMessage() for r in caplog.records][-1] == (
+        f"html_to_markdown: plain text taken from the first 500 of {len(html)} characters"
+    )
+
+
+def test_lone_surrogate_is_handled_like_any_other_character() -> None:
+    assert html_to_markdown("<p>a\ud800b</p>") == "a?b\n"
+    assert html_to_markdown("<p>a\ud800b</p>" * _MANY).count("a?b") == _MANY
+
+
+# --- the parse must account for every word -----------------------------------
+
+_FILLER = "<p>some filler text of moderate length here</p>" * _MANY
+
+
+@pytest.mark.parametrize("words", [1, 50, 1_000])
+def test_text_lost_by_the_parser_triggers_the_plain_text_fallback(
+    words: int, caplog: pytest.LogCaptureFixture
+) -> None:
+    """libxml2 stops at depth 2048; the lost part is a tiny share of a big document."""
+    html = _FILLER + "<div>" * 2_100 + "LOSTWORD " * words + "</div>" * 2_100
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown(html)
+    assert out.count("LOSTWORD") == words
+    assert [r.getMessage() for r in caplog.records] == [
+        "html_to_markdown: document lost text while parsing, converted as plain text"
+    ]
+
+
+@pytest.mark.parametrize(
+    "attribute",
+    ["title='x > y > z'", 'title="x > y"', "onclick='if(a>b){go()}'", "data-x=\"it's > ok\""],
+)
+def test_greater_than_in_an_attribute_does_not_cause_a_fallback(
+    attribute: str, caplog: pytest.LogCaptureFixture
+) -> None:
+    with caplog.at_level(logging.WARNING, logger=html_markdown.logger.name):
+        out = html_to_markdown(f"<p {attribute}><b>w</b> text</p>" * _MANY)
+    assert out.count("**w** text") == _MANY
+    assert caplog.records == []
+
+
+def _fixture_html_files() -> list[Path]:
+    here = Path(__file__).resolve()
+    roots = [
+        here.parent / "golden" / "html_markdown",
+        here.parents[1] / "modules" / "parsers" / "fixtures",
+        here.parents[2] / "fixtures" / "text_fragments" / "html",
+        here.parents[4] / "integration-tests" / "parsers" / "fixtures",
+        here.parents[4] / "integration-tests" / "web_fixtures" / "seed",
+    ]
+    return sorted(f for root in roots if root.is_dir() for f in root.rglob("*.html"))
+
+
+def test_ordinary_documents_never_fall_back_to_plain_text(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The check is exact, so both sides must read markup the same way."""
+    monkeypatch.setattr(html_markdown, "MAX_ELEMENTS_PER_BLOCK", 30)
+    files = _fixture_html_files()
+    assert len(files) >= 15
+    fell_back = [
+        f.name
+        for f in files
+        if html_markdown._split_convert(f.read_text(encoding="utf-8", errors="replace")) is None
+    ]
+    assert fell_back == []

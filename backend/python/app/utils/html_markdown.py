@@ -36,12 +36,14 @@ MAX_ELEMENTS_PER_BLOCK = 25_000
 # Split-path cost is about 1.6 s and 25x the input in memory per MB of tiny
 # elements (3.2 MB of 400k paragraphs: 5 s, 210 MB peak). 8 Mi characters keeps
 # the worst case near 13 s and 200 MB, and is far above any ticket, article or
-# email body; larger input is reduced to text instead (about 0.5 s per MB).
-MAX_INPUT_CHARS = 8 * 1024 * 1024
+# email body; larger input with many tags is reduced to text instead.
+MAX_INPUT_CHARS = 8 * 1024 * 1024  # counted only for input with many tags
 
-# Text kept by the parsed tree must be at least this share of the input's text,
-# else the parse lost content (libxml2 stops silently on very deep nesting).
-_MIN_KEPT_RATIO = 0.98
+# Beyond this the plain-text fallback itself (1.2-2.2 s per MB, 5-7x the input in
+# memory) would hold a worker for minutes, so the input is cut and the cut is
+# reported. 24 Mi characters is three times the split-path cap and thousands of
+# times a realistic body; the worst case stays under about a minute.
+MAX_FALLBACK_CHARS = 24 * 1024 * 1024
 
 _OPTIONS = _lib.ConversionOptions(
     preprocessing=_lib.PreprocessingOptions(enabled=False),
@@ -52,13 +54,22 @@ _OPTIONS = _lib.ConversionOptions(
 _CONTAINERS = frozenset({"html", "body", "div", "section", "article", "main"})
 
 _SKIPPED_TEXT = frozenset({"script", "style", "template"})
+_RAW_TEXT = frozenset({"script", "style"})
 _BLOCK_TAGS = frozenset({
     "address", "article", "aside", "blockquote", "br", "dd", "div", "dl", "dt",
     "figcaption", "figure", "footer", "form", "h1", "h2", "h3", "h4", "h5", "h6",
     "header", "hr", "li", "main", "nav", "ol", "p", "pre", "section", "table",
     "tr", "ul",
 })  # fmt: skip
-_TAG = re.compile(r"<[^<>]*>")  # not `[^>]*`: a run of bare "<" would be quadratic
+# One markup construct, the way the parser sees it: a comment (to the end if never
+# closed), script/style with their raw text, or a tag whose quoted attribute
+# values may contain ">". Possessive quantifiers keep every scan linear.
+_MARKUP = re.compile(
+    r"<(?:!--.*?(?:-->|\Z)"
+    r"|(script|style)\b(?:[^<>\"']++|\"[^\"]*+\"|'[^']*+')*+>.*?(?:</\1\s*>|\Z)"
+    r"|[A-Za-z/!?](?:[^<>\"']++|\"[^\"]*+\"|'[^']*+')*+>)",
+    re.DOTALL | re.IGNORECASE,
+)
 _XML_DECLARATION = re.compile(r"^\s*<\?xml[^>]*\?>")
 
 
@@ -116,14 +127,16 @@ def _subtree_sizes(root: lxml_html.HtmlElement) -> dict:
 
 
 def _input_text_chars(html: str) -> int:
-    """Characters of text outside tags: a cheap reference that does not use lxml."""
-    return _text_chars(unescape(_TAG.sub(" ", html)))
+    """Characters of text outside markup: a cheap reference that does not use lxml."""
+    return _text_chars(unescape(_MARKUP.sub(" ", html)))
 
 
 def _tree_text_chars(root: lxml_html.HtmlElement) -> int:
     total = 0
     for node in root.iter():
-        if node.text:
+        # Comments and processing instructions have a non-str tag; their text is
+        # markup, like script and style text, which the reference leaves out too.
+        if node.text and isinstance(node.tag, str) and node.tag not in _RAW_TEXT:
             total += _text_chars(node.text)
         if node.tail:
             total += _text_chars(node.tail)
@@ -175,7 +188,9 @@ def _split_convert(html: str) -> str | None:
     """Convert block by block; ``None`` when the parse cannot be trusted."""
     parser = lxml_html.HTMLParser(huge_tree=True)
     root = lxml_html.document_fromstring(_XML_DECLARATION.sub("", html, count=1), parser=parser)
-    if _tree_text_chars(root) < _MIN_KEPT_RATIO * _input_text_chars(html):
+    # Exact, not a share: libxml2 stops at depth 2048 and a large document makes
+    # the lost part small, but one lost word is still lost content.
+    if _tree_text_chars(root) < _input_text_chars(html):
         return None
     plain_blocks = [0]
     parts = _pieces(root, _subtree_sizes(root), plain_blocks)
@@ -193,16 +208,20 @@ def html_to_markdown(html: str) -> str:
 
     A block with more than ``MAX_ELEMENTS_PER_BLOCK`` elements is reduced to its
     text (links and emphasis dropped); the rest of the document keeps its markup.
-    A document over ``MAX_INPUT_CHARS``, or one the splitter cannot parse
+    A document with many tags over ``MAX_INPUT_CHARS``, or one the splitter cannot parse
     completely, is reduced to its text as a whole.
     """
     if not isinstance(html, str):
         raise TypeError(f"html must be str, got {type(html).__name__}")
+    try:
+        html.encode("utf-8")
+    except UnicodeEncodeError:  # a lone surrogate: the library cannot take it
+        html = html.encode("utf-8", "replace").decode("utf-8")
+    # Each element has at least one "<", so this bounds the element count cheaply.
+    if html.count("<") <= MAX_ELEMENTS_PER_BLOCK:
+        return _convert(html)
     if len(html) > MAX_INPUT_CHARS:
         reason = "is over %d characters" % MAX_INPUT_CHARS
-    # Each element has at least one "<", so this bounds the element count cheaply.
-    elif html.count("<") <= MAX_ELEMENTS_PER_BLOCK:
-        return _convert(html)
     else:
         try:
             result = _split_convert(html)
@@ -214,4 +233,11 @@ def html_to_markdown(html: str) -> str:
         if result is not None:
             return result
     logger.warning("html_to_markdown: document %s, converted as plain text", reason)
+    if len(html) > MAX_FALLBACK_CHARS:
+        logger.warning(
+            "html_to_markdown: plain text taken from the first %d of %d characters",
+            MAX_FALLBACK_CHARS,
+            len(html),
+        )
+        html = html[:MAX_FALLBACK_CHARS]
     return _plain_text(html)
