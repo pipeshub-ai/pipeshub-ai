@@ -13,6 +13,7 @@ from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
@@ -208,7 +209,7 @@ class TestSharePointInitCertificate:
                 "privateKey": "-----BEGIN PRIVATE KEY-----\nKEY\n-----END PRIVATE KEY-----",
             }
         })
-        with pytest.raises(ValueError, match="Failed to set up certificate"):
+        with pytest.raises(ConnectorInitError, match="could not be read"):
             await c.init()
 
     @pytest.mark.asyncio
@@ -223,7 +224,7 @@ class TestSharePointInitCertificate:
                 "privateKey": 12345,
             }
         })
-        with pytest.raises(ValueError, match="Failed to set up certificate"):
+        with pytest.raises(ConnectorInitError, match="could not be read"):
             await c.init()
 
     @pytest.mark.asyncio

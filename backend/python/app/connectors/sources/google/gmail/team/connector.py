@@ -26,7 +26,7 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.constants import IconPaths
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import BaseConnector, ConnectorInitError
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
     map_source_status,
@@ -68,6 +68,10 @@ from app.connectors.core.registry.filters import (
     IndexingFilterKey,
     SyncFilterKey,
     load_connector_filters,
+)
+from app.connectors.sources.google.common.access_problems import (
+    classify_access_problem,
+    setup_problem_message,
 )
 from app.connectors.sources.google.common.apps import GmailTeamApp
 from app.connectors.sources.google.common.gmail_call_policy import GmailCallPolicy
@@ -331,8 +335,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.error(
                     "Service account credentials not found in config. Ensure credentials JSON is configured under 'auth' field."
                 )
-                raise ValueError(
-                    "Service account credentials not found. Ensure credentials JSON is configured under 'auth' field."
+                raise ConnectorInitError(
+                    "Service account credentials not found. Upload the service account's JSON key in the "
+                    "connector's settings."
                 )
 
             # Extract admin email from credentials JSON
@@ -341,8 +346,9 @@ class GoogleGmailTeamConnector(BaseConnector):
                 self.logger.error(
                     "Admin email not found in credentials. Ensure adminEmail is set in credentials JSON."
                 )
-                raise ValueError(
-                    "Admin email not found in credentials. Ensure adminEmail is set in credentials JSON."
+                raise ConnectorInitError(
+                    "Admin email not found. Enter a Google Workspace administrator's email in the connector's "
+                    "settings."
                 )
 
             # Initialize Google Admin Client using build_from_services
@@ -371,6 +377,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     f"❌ Failed to initialize Google Admin client: {e}",
                     exc_info=True
                 )
+                self._raise_setup_problem(e, admin_email, credentials_json.get("client_id"))
                 raise ValueError(f"Failed to initialize Google Admin client: {e}") from e
 
             # Initialize Google Gmail Client using build_from_services
@@ -400,6 +407,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     f"❌ Failed to initialize Google Gmail client: {e}",
                     exc_info=True
                 )
+                self._raise_setup_problem(e, admin_email, credentials_json.get("client_id"))
                 raise ValueError(f"Failed to initialize Google Gmail client: {e}") from e
 
             self.logger.info("✅ Google Gmail workspace connector initialized successfully")
@@ -408,6 +416,15 @@ class GoogleGmailTeamConnector(BaseConnector):
         except Exception as ex:
             self.logger.error(f"❌ Error initializing Google Gmail workspace connector: {ex}", exc_info=True)
             raise
+
+    @staticmethod
+    def _raise_setup_problem(error: Exception, admin_email: str | None, client_id: str | None) -> None:
+        """Raise what an admin must fix (such as a key that is not a key file) in words they can act on."""
+        message = setup_problem_message(classify_access_problem(error, personal=False),
+                                        apis="Gmail API and the Admin SDK API", admin_email=admin_email,
+                                        client_id=client_id)
+        if message:
+            raise ConnectorInitError(message) from error
 
     async def _delete_stale_drive_attachment(
         self, drive_file_id: str, mailbox_email: str, scoped_id: str
@@ -1830,21 +1847,23 @@ class GoogleGmailTeamConnector(BaseConnector):
         await self.user_sync_point.update_sync_point(_MAILBOXES_SYNC_POINT_KEY, {"emails": current})
 
     async def test_connection_and_access(self) -> bool:
-        """Reads the admin's directory entry and mailbox: fails when the key, the delegation or a scope is not
-        accepted. Never raises."""
+        """Reads the admin's directory entry and mailbox. Raises ConnectorInitError with what to fix when Google
+        refuses the setup (key, delegation, scopes, admin account, API turned off); returns False otherwise."""
         self.logger.info("Testing connection and access to Google Gmail workspace account")
+        auth = ((self.config or {}).get("credentials") or {}).get("auth") or {}
+        admin_email = auth.get("adminEmail")
         try:
             if not self.gmail_data_source or not self.admin_data_source or not self.gmail_client \
                     or not self.admin_client:
                 self.logger.error("Gmail Workspace clients not initialized. Call init() first.")
                 return False
-            admin_email = (((self.config or {}).get("credentials") or {}).get("auth") or {}).get("adminEmail")
             policy = GmailCallPolicy(self.logger, max_wait_s=15)
             await policy.run(lambda: self.admin_data_source.users_get(userKey=admin_email), "directory check")
             await policy.run(lambda: self.gmail_data_source.users_get_profile(userId=admin_email), "mailbox check")
             return True
         except Exception as e:
             self.logger.error(f"❌ Gmail Workspace connection test failed ({classify(e).value}): {e}")
+            self._raise_setup_problem(e, admin_email, auth.get("client_id"))
             return False
 
     def get_signed_url(self, record: Record) -> Optional[str]:

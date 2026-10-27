@@ -103,7 +103,6 @@ from app.connectors.sources.microsoft.common.outlook_constants import (
     OutlookSyncConfig,
     OutlookSyncPointKeys,
     OutlookThreadDetection,
-    describe_sign_in_error,
     graph_error_status,
     is_folder_not_found_error,
     is_no_mailbox_error,
@@ -128,6 +127,7 @@ from app.connectors.sources.microsoft.common.outlook_folders import (
     removed_mail_update,
     unsynced_attachment_kind,
 )
+from app.connectors.sources.microsoft.common.sign_in_errors import describe_sign_in_error
 from app.models.entities import (
     AppUser,
     AppUserGroup,
