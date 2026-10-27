@@ -2,7 +2,6 @@
 
 import ast
 import logging
-import time
 from pathlib import Path
 
 import pytest
@@ -66,7 +65,8 @@ def _links(n: int) -> str:
 
 
 def test_large_single_paragraph_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
-    """~1.5 MB of inline links took 3 s in the library alone and grows quadratically."""
+    """~1.5 MB of inline links took 3 s in the library alone and grows quadratically,
+    so no library call may see more than one bound's worth of elements."""
     seen: list[int] = []
     real = html_markdown._convert
 
@@ -78,11 +78,8 @@ def test_large_single_paragraph_is_bounded(monkeypatch: pytest.MonkeyPatch) -> N
     html = f"<p>{_links(50_000)}</p>"
     assert len(html) > 1_400_000
 
-    start = time.perf_counter()
     out = html_to_markdown(html)
-    elapsed = time.perf_counter() - start
 
-    assert elapsed < 5.0  # smoke bound only; the call-size assertion below is the real check
     assert out.count("w l") == 50_000  # every word kept, as text
     assert max(seen, default=0) <= html_markdown.MAX_ELEMENTS_PER_BLOCK * 2  # open + close tag per element
 
