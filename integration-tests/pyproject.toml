@@ -20,8 +20,8 @@ dependencies = [
   "pymongo>=4.5.0",
   # CPU builds, as in the image (TORCH_VERSION and TORCHVISION_VERSION in Dockerfile.base);
   # the PyPI wheels pull about 4 GB of CUDA libraries on Linux.
-  "torch==2.12.0",
-  "torchvision==0.27.0",
+  "torch==2.13.0",
+  "torchvision==0.28.0",
 ]
 
 [tool.setuptools.packages.find]

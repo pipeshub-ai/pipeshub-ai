@@ -12,7 +12,11 @@ from langchain.chat_models.base import BaseChatModel
 from langchain_core.messages import HumanMessage
 from PIL import Image
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
 from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.ocr_handler import OCRStrategy
 from app.modules.parsers.pdf.pdf_rasterizer import render_batch_from_path_sync
@@ -152,7 +156,8 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             BaseChatModel: Multimodal LLM instance
 
         Raises:
-            ValueError: If no multimodal LLM is found in configuration
+            MultimodalModelNotConfiguredError: If no multimodal LLM is configured
+            DocumentProcessingError: If the configuration could not be read
         """
         self.logger.info("🔍 Getting multimodal LLM for VLM OCR")
 
@@ -169,8 +174,16 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 pass
 
             # 2. Scan all LLM configs for the best multimodal candidate
-            # `{}` until an admin saves AI settings, so a fresh org gets a readable error below.
-            raw_configs = (await load_ai_models(self.config)).get("llm")
+            # `{}` until an admin saves AI settings. A store that cannot be read
+            # raises instead: an outage, retried, never "no model is set up".
+            try:
+                ai_models = await load_ai_models(self.config, raise_on_error=True)
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    details={"error": str(e)},
+                ) from e
+            raw_configs = ai_models.get("llm")
             llm_configs: list[dict[str, Any]] = (
                 [cast("dict[str, Any]", c) for c in cast("list[object]", raw_configs) if isinstance(c, dict)]
                 if isinstance(raw_configs, list)
@@ -178,7 +191,9 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             )
 
             if not llm_configs:
-                raise DocumentProcessingError(
+                # The settings were read and hold no model at all (a new org):
+                # the same fact as holding no multimodal one.
+                raise MultimodalModelNotConfiguredError(
                     "No LLM configurations found",
                     details={"required": "multimodal LLM"},
                 )
@@ -217,12 +232,12 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 "VLM OCR requires a multimodal LLM. Please configure at least one multimodal LLM."
             )
             self.logger.error(error_msg)
-            raise DocumentProcessingError(
+            raise MultimodalModelNotConfiguredError(
                 error_msg,
                 details={"required": "multimodal LLM"},
             )
 
-        except DocumentProcessingError:
+        except (DocumentProcessingError, AISettingsUnavailableError):
             raise
         except Exception as e:
             self.logger.error(f"❌ Error getting multimodal LLM: {str(e)}")

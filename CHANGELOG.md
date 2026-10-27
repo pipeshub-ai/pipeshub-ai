@@ -90,10 +90,10 @@ Changes merged to `main` since the last release: [`v0.10.0...HEAD`](https://gith
 A large release, 373 PRs since 0.9.1. It adds recoverable trash, knowledge-graph tools for agents, AI model discovery and prompt caching, and a security sweep that locks down the code sandbox and MCP.
 
 ### Breaking changes & upgrade notes
-- `SANDBOX_MODE` must be set. `local` needs `SANDBOX_ALLOW_LOCAL=true`, and `SANDBOX_ALLOW_NETWORK` now defaults to `false` ([#3725](https://github.com/pipeshub-ai/pipeshub-ai/pull/3725), [#3803](https://github.com/pipeshub-ai/pipeshub-ai/pull/3803), [#3780](https://github.com/pipeshub-ai/pipeshub-ai/pull/3780))
-- Custom STDIO MCP servers need `MCP_ALLOW_CUSTOM_STDIO=true` ([#3887](https://github.com/pipeshub-ai/pipeshub-ai/pull/3887))
+- `SANDBOX_MODE` must be set. `local` needs `SANDBOX_ALLOW_LOCAL=true`, and `SANDBOX_ALLOW_NETWORK` now defaults to `false`. In Helm these are `config.sandboxMode`, `config.sandboxAllowLocal` and `config.sandboxAllowNetwork` ([#3725](https://github.com/pipeshub-ai/pipeshub-ai/pull/3725), [#3803](https://github.com/pipeshub-ai/pipeshub-ai/pull/3803), [#3780](https://github.com/pipeshub-ai/pipeshub-ai/pull/3780))
+- Custom STDIO MCP servers need `MCP_ALLOW_CUSTOM_STDIO=true` (Helm: `config.mcpAllowCustomStdio: true`) ([#3887](https://github.com/pipeshub-ai/pipeshub-ai/pull/3887))
 - The parsing and extraction services require a service token, and the query and connector services drop wildcard credentialed CORS ([#3818](https://github.com/pipeshub-ai/pipeshub-ai/pull/3818), [#3890](https://github.com/pipeshub-ai/pipeshub-ai/pull/3890))
-- `FAIR_SCHEDULING_LANE_ASSIGNMENT` defaults to `assigned` on Redis. Set it to `hash` to go back ([#3982](https://github.com/pipeshub-ai/pipeshub-ai/pull/3982))
+- `FAIR_SCHEDULING_LANE_ASSIGNMENT` (Helm `messageBroker.laneAssignment`) defaults to `assigned` on Redis. Set it to `hash` to go back ([#3982](https://github.com/pipeshub-ai/pipeshub-ai/pull/3982))
 - Some status codes and fields change, for example `403` for member calls to admin routes and `blockedRecordId` on restore refusals. The full list is in the [full changelog](changelog/0.10.0.md#breaking-changes--upgrade-notes)
 
 ### New features
@@ -114,7 +114,7 @@ A large release, 373 PRs since 0.9.1. It adds recoverable trash, knowledge-graph
 - Three GitHub security advisories are fixed: signed download URLs, `SANDBOX_MODE` fail-closed, and id encoding in service URLs ([#3723](https://github.com/pipeshub-ai/pipeshub-ai/pull/3723), [#3725](https://github.com/pipeshub-ai/pipeshub-ai/pull/3725), [#3728](https://github.com/pipeshub-ai/pipeshub-ai/pull/3728))
 
 ### Performance & reliability
-- Each connector gets its own Redis Streams indexing lane ([#3982](https://github.com/pipeshub-ai/pipeshub-ai/pull/3982))
+- Each connector is given the least-loaded Redis Streams indexing lane and keeps it, instead of hashing onto one ([#3982](https://github.com/pipeshub-ai/pipeshub-ai/pull/3982))
 
 ---
 
@@ -180,7 +180,7 @@ About 290 PRs since 0.8.0. Projects, identities for automation and three new con
 - Python services accept scoped-secret tokens only as service tokens with service scopes ([#3283](https://github.com/pipeshub-ai/pipeshub-ai/pull/3283))
 
 ### New features
-- Fair scheduling: each connector gets its own lane into indexing ([#3126](https://github.com/pipeshub-ai/pipeshub-ai/pull/3126))
+- Fair scheduling: each connector is hashed onto one of a pool of lanes, so one connector's backlog no longer blocks the others ([#3126](https://github.com/pipeshub-ai/pipeshub-ai/pull/3126))
 - One Redis connection provider per backend, with Redis Cluster and AWS MemoryDB support ([#3155](https://github.com/pipeshub-ai/pipeshub-ai/pull/3155), [#3254](https://github.com/pipeshub-ai/pipeshub-ai/pull/3254))
 - `VECTOR_COLLECTION_STRATEGY`, and S3 authentication with an instance IAM role ([#3112](https://github.com/pipeshub-ai/pipeshub-ai/pull/3112), [#3143](https://github.com/pipeshub-ai/pipeshub-ai/pull/3143))
 

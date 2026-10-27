@@ -2778,7 +2778,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(req, res, next)
+      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -2806,7 +2806,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(req, res, next)
+      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -2905,6 +2905,41 @@ describe('Enterprise Search Controller', () => {
       const response = res.json.firstCall.args[0]
       expect(response).to.have.property('searchId')
       expect(response).to.have.property('searchResponse')
+    })
+
+    it('saves nothing and returns no searchId when saveHistory is false', async () => {
+      const handler = search(createMockAppConfig())
+      const sent: any[] = []
+      sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+        sent.push(JSON.parse(this.body))
+        return Promise.resolve({
+          statusCode: 200,
+          data: {
+            searchResults: [{ content: 'result1', chunkIndex: 0, citationType: 'text', metadata: {} }],
+            records: [{ _key: 'r1', recordName: 'Runbook' }],
+          },
+        } as any)
+      })
+      const insertManyStub = sinon.stub(Citation, 'insertMany').resolves([] as any)
+      const saveStub = sinon.stub(EnterpriseSemanticSearch.prototype, 'save')
+
+      const req = createMockRequest({
+        body: { query: 'q', limit: 10, saveHistory: false },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+      await handler(req, res, next)
+
+      expect(next.called).to.be.false
+      expect(insertManyStub.called).to.be.false
+      expect(saveStub.called).to.be.false
+      expect(sent[0]).to.not.have.property('saveHistory')
+      expect(res.status.calledWith(200)).to.be.true
+      const response = res.json.firstCall.args[0]
+      expect(response).to.not.have.property('searchId')
+      expect(response.searchResponse.searchResults).to.have.length(1)
+      expect(response.searchResponse.records[0]).to.include({ _key: 'r1' })
     })
 
     it('forwards the date bounds a caller set, and only those', async () => {
@@ -3170,7 +3205,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory(req, res, next)
+      await searchHistory(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3196,7 +3231,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory(req, res, next)
+      await searchHistory(createMockAppConfig())(req, res, next)
 
       // the count must use the same org/user filter as the page query
       expect(countStub.firstCall.args[0]).to.equal((EnterpriseSemanticSearch.find as sinon.SinonStub).firstCall.args[0])
@@ -3220,7 +3255,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById(req, res, next)
+      await getSearchById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3230,7 +3265,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById(req, res, next)
+      await getSearchById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -3251,7 +3286,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById(req, res, next)
+      await getSearchById(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -5460,7 +5495,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory(req, res, next)
+      await searchHistory(createMockAppConfig())(req, res, next)
 
       if (!next.called) {
         expect(res.status.calledWith(200)).to.be.true
@@ -8356,7 +8391,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await searchHistory(req, res, next)
+      await searchHistory(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -8381,7 +8416,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await getSearchById(req, res, next)
+      await getSearchById(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })
@@ -8805,7 +8840,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       const next = createMockNext()
 
-      await listAllArchivesConversation(req, res, next)
+      await listAllArchivesConversation(createMockAppConfig())(req, res, next)
 
       expect(next.calledOnce).to.be.true
     })

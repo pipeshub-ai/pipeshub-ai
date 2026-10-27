@@ -244,6 +244,7 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
+from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
     MAX_TAXONOMY_ALIASES,
@@ -2703,6 +2704,80 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 str(e),
             )
             raise
+
+    @override
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        apps, records = CollectionNames.APPS.value, CollectionNames.RECORDS.value
+        # A read: it does not conflict with a KB rename. The record write below is the arbiter.
+        kb_rows = await self.http_client.execute_aql(
+            f"LET kb = DOCUMENT('{apps}', @kb_id) RETURN kb == null || kb.type != 'KB' ? null : {{status: kb.status, org: kb.orgId}}",
+            {"kb_id": kb_id},
+            transaction,
+        )
+        kb = kb_rows[0] if kb_rows else None
+        if not kb or kb.get("org") != org_id:
+            return PushClaim.KB_MISSING
+        if kb.get("status") == KB_DELETING_STATUS:
+            return PushClaim.KB_DELETING
+        if expected is None:
+            free = await self.http_client.execute_aql(
+                f"RETURN DOCUMENT('{records}', @key) == null", {"key": key}, transaction
+            )
+            return PushClaim.CLAIMED if free and free[0] is True else PushClaim.KEY_TAKEN
+        updated = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {records}
+              FILTER r._key == @key AND r.orgId == @org_id AND r.connectorId == @kb_id
+                AND r.isDeleted != true
+                AND r.externalRecordId == @expected_doc
+                AND r.externalRevisionId == @expected_rev
+                AND r.version == @expected_version
+              UPDATE r WITH {{externalRecordId: @new_doc, version: @new_version}} IN {records}
+              RETURN NEW._key
+            """,
+            {
+                "key": key, "org_id": org_id, "kb_id": kb_id,
+                "expected_doc": expected.document_id, "expected_rev": expected.revision,
+                "expected_version": expected.version,
+                "new_doc": new.document_id, "new_version": new.version,
+            },
+            transaction,
+        )
+        return PushClaim.CLAIMED if len(updated or []) == 1 else PushClaim.LOST
+
+    @override
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        records = CollectionNames.RECORDS.value
+        updated = await self.http_client.execute_aql(
+            f"""
+            FOR r IN {records}
+              FILTER r._key == @key AND r.orgId == @org_id AND r.connectorId == @kb_id
+                AND r.isDeleted != true AND r.externalRevisionId == @expected
+              UPDATE r WITH {{externalRevisionId: @new}} IN {records}
+              RETURN NEW._key
+            """,
+            {"key": key, "org_id": org_id, "kb_id": kb_id, "expected": expected_revision, "new": new_revision},
+            transaction,
+        )
+        return len(updated or []) == 1
 
     async def compare_and_set_indexing_status(
         self,
