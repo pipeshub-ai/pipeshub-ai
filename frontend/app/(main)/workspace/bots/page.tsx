@@ -24,7 +24,7 @@ export default function BotsPage() {
     if (isProfileInitialized && isAdmin === false) {
       router.replace('/workspace/general');
     }
-  }, [isProfileInitialized, isAdmin]);
+  }, [isProfileInitialized, isAdmin, router]);
 
   const {
     slackBotConfigs,
@@ -66,14 +66,20 @@ export default function BotsPage() {
     }
   }, [setConfigs, setAgents, setLoading, setError]);
 
+  // Only an admin may read these; a member would get a 403 before the redirect.
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     fetchData();
-  }, [fetchData]);
+  }, [isProfileInitialized, isAdmin, fetchData]);
 
   const handleRefresh = useCallback(() => {
     fetchData();
     toast.success(t('workspace.bots.refreshed'));
   }, [fetchData]);
+
+  if (!isProfileInitialized || isAdmin === false) {
+    return null;
+  }
 
   return (
     <ServiceGate services={['query']}>
