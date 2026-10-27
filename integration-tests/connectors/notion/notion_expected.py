@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import mimetypes
 from typing import Any, Optional
+from urllib.parse import unquote, urlparse
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, PermissionModel
 from app.models.entities import (
@@ -191,14 +192,9 @@ class NotionExpected:
         else:
             file_url = (type_data.get("file") or {}).get("url", "")
 
-        file_name = type_data.get("name") or ""
+        file_name = type_data.get("name") or unquote(urlparse(file_url).path.rsplit("/", 1)[-1])
         if not file_name:
-            if block_type == "pdf":
-                file_name = "document.pdf"
-            else:
-                file_name = file_url.split("/")[-1].split("?")[0]
-                if not file_name:
-                    file_name = f"attachment_{str(block_data['id'])[:8]}"
+            file_name = "document.pdf" if block_type == "pdf" else f"attachment_{str(block_data['id'])[:8]}"
 
         extension = file_name.split(".")[-1].lower() if "." in file_name else None
         mime_type, _ = mimetypes.guess_type(file_name)
@@ -220,6 +216,7 @@ class NotionExpected:
             parent_external_record_id=page_id,
             record_group_type=RecordGroupType.NOTION_WORKSPACE,
             external_record_group_id=workspace_id,
+            external_revision_id=block_data.get("last_edited_time"),
             version=1,
             origin=OriginTypes.CONNECTOR,
             connector_name=Connectors.NOTION,

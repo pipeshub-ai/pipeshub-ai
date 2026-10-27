@@ -34,6 +34,7 @@ from helper.source_credentials import source_unavailable
 from helper.assertions import ConnectorAssertions  # type: ignore[import-not-found]
 from helper.graph_provider import GraphProviderProtocol  # type: ignore[import-not-found]
 from helper.graph_provider_utils import wait_for_sync_completion  # type: ignore[import-not-found]
+from helper.second_user import SecondUser, source_user_account  # type: ignore[import-not-found]
 from pipeshub_client import PipeshubClient  # type: ignore[import-not-found]
 from connectors.notion.constants import (  # type: ignore[import-not-found]
     ENV_ROOT_DATABASE_ID,
@@ -115,9 +116,34 @@ async def connector_assertions(graph_provider: GraphProviderProtocol) -> Connect
     return ConnectorAssertions(graph_provider)
 
 
+@pytest_asyncio.fixture(scope="session", loop_scope="session")
+async def notion_reader(
+    notion_source_helper: NotionSourceHelper,
+    pipeshub_client: PipeshubClient,
+) -> SecondUser:
+    """A PipesHub account with a workspace member's email, to open records as.
+
+    A Notion record is open only to the workspace's members, and the org admin the suite runs
+    as is not one in the simulator's workspace.
+    """
+    email = next(
+        (
+            str((user.get("person") or {}).get("email") or "").strip().lower()
+            for user in await notion_source_helper.list_all_users()
+            if user.get("type") == "person" and (user.get("person") or {}).get("email")
+        ),
+        "",
+    )
+    assert email, "the Notion workspace lists no member with an email to open records as"
+    pipeshub_client._ensure_access_token()
+    return await asyncio.to_thread(source_user_account, pipeshub_client, email, "Notion IT reader")
+
+
 @pytest_asyncio.fixture(scope="module", loop_scope="session")
 async def notion_connector(
     notion_source_helper: NotionSourceHelper,
+    # Created before the baseline sync, whose user sync links it to the app.
+    notion_reader: SecondUser,
     pipeshub_client: PipeshubClient,
     graph_provider: GraphProviderProtocol,
 ) -> AsyncGenerator[dict[str, Any], None]:
