@@ -57,7 +57,7 @@ class TestDecisions(unittest.TestCase):
     def test_a_node_only_change_runs_no_python(self) -> None:
         checks = runs("backend/nodejs/apps/src/libs/errors/backend-error.ts")
         self.assertTrue({"node_unit", "node_build", "codeql_javascript", "e2e_smoke"} <= checks)
-        self.assertFalse(checks & (PYTHON_CHECKS | MATRIX | {"redis_cluster", "frontend"}))
+        self.assertFalse(checks & (PYTHON_CHECKS | MATRIX | {"frontend"}))
 
     def test_a_python_only_change_runs_no_node_or_frontend(self) -> None:
         checks = runs("backend/python/app/connectors/sources/jira/connector.py")
@@ -94,9 +94,29 @@ class TestDecisions(unittest.TestCase):
     def test_node_code_outside_storage_runs_no_matrix_leg(self) -> None:
         self.assertEqual(runs("backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts") & MATRIX, set())
 
-    def test_the_node_cluster_test_runs_the_redis_cluster_job(self) -> None:
-        self.assertIn("redis_cluster", runs("backend/nodejs/apps/tests/libs/services/redis/clusterRedisProvider.integration.test.ts"))
-        self.assertIn("redis_cluster", runs("backend/nodejs/apps/src/libs/services/redis/clusterRedisProvider.ts"))
+    def test_the_redis_cluster_job_runs_on_any_backend_change(self) -> None:
+        # Its Node step runs the whole suite in cluster mode, and its Python suite
+        # imports the messaging scenarios.
+        for path in (
+            "backend/nodejs/apps/tests/libs/services/redis/clusterRedisProvider.integration.test.ts",
+            "backend/nodejs/apps/src/libs/errors/backend-error.ts",
+            "backend/nodejs/apps/.mocharc.yaml",
+            "backend/nodejs/apps/tsconfig.test.json",
+            "backend/python/tests/integration/messaging/report_scenario.py",
+            "backend/python/tests/support/require_service.py",
+        ):
+            with self.subTest(path=path):
+                self.assertIn("redis_cluster", runs(path))
+        self.assertNotIn("redis_cluster", runs("frontend/app/(main)/chat/page.tsx"))
+
+    def test_a_helper_the_integration_suites_import_runs_every_python_leg(self) -> None:
+        for path in (
+            "backend/python/tests/support/vector_db.py",
+            "backend/python/tests/unit/modules/pipeline/fakes.py",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & PYTHON_LEGS, PYTHON_LEGS)
+        self.assertEqual(runs("backend/python/tests/unit/modules/pipeline/test_other.py") & MATRIX, set())
 
     def test_a_frontend_change_runs_the_frontend_checks_only(self) -> None:
         checks = runs("frontend/app/(main)/chat/page.tsx")
@@ -151,6 +171,55 @@ class TestNothingTheOldTriggersCoveredIsDropped(unittest.TestCase):
 
     def test_the_codeql_languages_match_the_checks(self) -> None:
         self.assertEqual(set(pc.CODEQL_LANGUAGES), {name for name in pc.NAMES if name.startswith("codeql_")})
+
+
+_TESTS_IMPORT = re.compile(r"^\s*(?:from|import)\s+(tests(?:\.\w+)+)", re.M)
+
+
+def _module_file(python: Path, module: str) -> Path | None:
+    """The file ``module`` names, or for ``from tests.a import b`` the one ``tests.a`` names."""
+    while module.count(".") >= 1:
+        path = python.joinpath(*module.split("."))
+        for candidate in (path.with_suffix(".py"), path / "__init__.py"):
+            if candidate.exists():
+                return candidate
+        module = module.rsplit(".", 1)[0]
+    return None
+
+
+def _helpers_the_integration_tests_import() -> set[str]:
+    python = ROOT / "backend" / "python"
+    integration = python / "tests" / "integration"
+    todo = list(integration.rglob("*.py"))
+    seen: set[Path] = set()
+    while todo:
+        path = todo.pop()
+        if path in seen:
+            continue
+        seen.add(path)
+        for module in _TESTS_IMPORT.findall(path.read_text(encoding="utf-8", errors="ignore")):
+            found = _module_file(python, module)
+            if found is not None and found not in seen:
+                todo.append(found)
+    return {
+        path.relative_to(ROOT).as_posix()
+        for path in seen
+        if integration not in path.parents and path.name != "__init__.py"
+    }
+
+
+class TestEveryImportedHelperIsCovered(unittest.TestCase):
+    """A helper the integration suites import must start them when it changes."""
+
+    def test_the_matrix_rules_and_trigger_list_every_helper(self) -> None:
+        helpers = _helpers_the_integration_tests_import()
+        self.assertTrue(helpers, "the import walk found nothing, so it checked nothing")
+        on = _workflow("backend-matrix.yml").get(True) or _workflow("backend-matrix.yml")["on"]
+        trigger = on["pull_request"]["paths"]
+        for path in sorted(helpers):
+            with self.subTest(path=path):
+                self.assertTrue(pc.matches(path, pc.MATRIX_PYTHON))
+                self.assertTrue(pc.matches(path, trigger))
 
 
 class TestTheActionAndWorkflowsAgree(unittest.TestCase):

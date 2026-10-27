@@ -119,45 +119,57 @@ STORAGE_NODE = (
 )
 
 
+# Test helpers outside tests/integration that the integration suites import.
+# test_pr_changes.py walks those imports and fails when this list misses one.
+INTEGRATION_HELPERS = (
+    f"{PYTHON}/tests/conftest.py",
+    f"{PYTHON}/tests/support/**",
+    f"{PYTHON}/tests/unit/agents/adapter/conftest.py",
+    f"{PYTHON}/tests/unit/agents/adapter/support/scripted_transport.py",
+    f"{PYTHON}/tests/unit/connectors/sources/test_connector_workflow_integration.py",
+    f"{PYTHON}/tests/unit/modules/entity_resolution/conftest.py",
+    f"{PYTHON}/tests/unit/modules/indexing/test_entity_index_rebuild.py",
+    f"{PYTHON}/tests/unit/modules/pipeline/fakes.py",
+    f"{PYTHON}/tests/unit/modules/transformers/test_entity_vectorstore_delete.py",
+    f"{PYTHON}/tests/unit/services/artifact_registry/fakes.py",
+    f"{PYTHON}/tests/unit/services/vector_db/test_strategy_contract.py",
+    f"{PYTHON}/tests/unit/web/qa/lab.py",
+)
+
 # backend-matrix.yml's Python suites. Their tests import more than their own
 # directories: the shared tests/conftest.py loads the graph, messaging and vector
-# packages, and through them most of app/. So any Python change runs every
-# suite; only a change outside Python (Node, frontend, docs) skips them, since
-# none of them runs Node.
+# packages, and through them most of app/. So once the workflow starts (its
+# trigger paths list what the suites cover), any change to app/, the integration
+# tests or the helpers they import runs every suite; only a change outside Python
+# (Node, frontend, docs) skips them, since none of them runs Node.
 MATRIX_PYTHON = (
     f"{PYTHON}/app/**",
     f"{INTEGRATION}/**",
-    f"{PYTHON}/tests/conftest.py",
     f"{COMPOSE}/docker-compose.integration.messaging.yml",
     f"{COMPOSE}/docker-compose.integration.vector-db.yml",
     f"{COMPOSE}/docker-compose.integration.graph-db.yml",
     f"{COMPOSE}/docker-compose.integration.kv.yml",
     ".github/workflows/backend-matrix.yml",
-) + PYTHON_PACKAGING
+) + INTEGRATION_HELPERS + PYTHON_PACKAGING
 
 for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):
     CHECKS[f"matrix_{_suite}"] = MATRIX_PYTHON
 # The storage job runs the Python storage tests against the Node storage server.
 CHECKS["matrix_storage"] = MATRIX_PYTHON + STORAGE_NODE
 
-# unit-test.yml's Redis Cluster job: the Python cluster suite (which, like the
-# matrix suites, loads most of app/ through the shared conftest), then the Node
-# suite, where only the cluster provider's test reaches the cluster.
+# unit-test.yml's Redis Cluster job. Its Python suite loads most of app/ through
+# the shared conftest and imports the messaging integration scenarios, and its
+# Node step runs the whole Node suite with REDIS_MODE=cluster, which is what
+# catches a unit test that reads the ambient mode. So it runs on any backend
+# change the unit tests run on.
 CHECKS["redis_cluster"] = (
-    f"{PYTHON}/app/**",
-    f"{PYTHON}/tests/conftest.py",
-    f"{INTEGRATION}/conftest.py",
-    f"{INTEGRATION}/redis_cluster/**",
-    "backend/nodejs/apps/src/libs/services/redis/**",
-    "backend/nodejs/apps/src/libs/keyValueStore/**",
-    "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
-    "backend/nodejs/apps/tests/libs/services/redis/**",
-    "backend/nodejs/apps/tests/helpers/*edis*",
-    "backend/nodejs/apps/package.json",
-    "backend/nodejs/apps/package-lock.json",
-    f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
-    ".github/workflows/unit-test.yml",
-) + PYTHON_PACKAGING
+    NODE_APP
+    + PYTHON_APP
+    + (
+        f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
+        ".github/workflows/unit-test.yml",
+    )
+)
 
 # Checks that run for any change outside DOCS: they exercise the whole product.
 ANY_CODE = ("e2e_smoke",)
