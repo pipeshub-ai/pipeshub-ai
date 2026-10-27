@@ -740,7 +740,9 @@
       "needsMultimodalModel": "需要多模态模型",
       "passwordProtected": "受密码保护",
       "skipped": "已跳过",
-      "pending": "待处理"
+      "pending": "待处理",
+      "emptyFileZeroBytes": "空文件 — 没有可索引的内容（0 字节）",
+      "emptyNoContent": "空 — 未找到可索引的文本"
     },
     "allRecordsBusy_other": "此视图当前繁忙，将在 {{count}} 秒后重试。",
     "allRecordsLoadFailed": "加载记录失败",
@@ -779,6 +781,10 @@
     "createDialog": {
       "titlePlaceholder": "例如：工程",
       "descriptionPlaceholder": "例如：开发团队文档"
+    },
+    "nameRules": {
+      "folderSeparator": "文件夹名称不能包含“/”或“\\”。",
+      "collectionExists": "你已有名为“{{name}}”的集合。请换一个名称。"
     }
   },
   "connectorTypes": {
@@ -1550,7 +1556,17 @@
     },
     "deleteChatArtifactsNote": "助手在此聊天中创建的文件也将被删除。",
     "noResultsFor": "未找到“{{query}}”的结果",
-    "removeSelectedSource": "移除 {{name}}"
+    "removeSelectedSource": "移除 {{name}}",
+    "diagramSourceCopied": "已复制图表源代码",
+    "diagramImageCopied": "已复制图表图片",
+    "diagramImageDownloaded": "剪贴板不可用，已将图表保存为 PNG",
+    "diagramCopyFailed": "无法复制图表",
+    "fitDiagram": "适应屏幕",
+    "answerMode": {
+      "internalSearch": "内部搜索",
+      "webSearch": "网络搜索",
+      "internalAndWebSearch": "内部 + 网络搜索"
+    }
   },
   "workspaceMenu": {
     "appearance": "外观",
@@ -1690,7 +1706,15 @@
         "editError": "更新邀请失败",
         "editTitle": "编辑邀请",
         "update": "更新邀请",
-        "smtpNotConfiguredTooltip": "尚未配置 SMTP。发送邀请前请先设置邮件。"
+        "smtpNotConfiguredTooltip": "尚未配置 SMTP。发送邀请前请先设置邮件。",
+        "userCount_other": "{{count}} 位用户",
+        "successDescriptionCount_other": "已邀请 {{count}} 位用户",
+        "alreadyMembersSkipped_other": "{{count}} 个地址已属于成员，因此未向其发送邀请。",
+        "alreadyMembersTitle": "已是成员 — 未发送邀请",
+        "alreadyMembersDescription_other": "所有地址都已属于活跃成员。",
+        "importUnsupportedType": "只能导入 .csv、.xlsx 和 .xls 文件。",
+        "importTooLongSkipped_other": "已略过 {{count}} 个超过 254 个字符的条目。",
+        "invalidBlocksSend_other": "{{count}} 个无效地址已标红。请修正或删除后再发送邀请。"
       },
       "bulk": {
         "resendInvite": "重新发送邀请",
@@ -1816,7 +1840,11 @@
         "viewTeam": "查看团队",
         "delete": "删除",
         "deleteSuccess": "团队已删除",
-        "deleteError": "删除团队失败"
+        "deleteError": "删除团队失败",
+        "deleteConfirmTitle": "删除团队？",
+        "deleteConfirmMessage": "“{{name}}”将被删除，其成员将失去通过该团队共享的访问权限。此操作无法撤销。",
+        "deleteConfirmButton": "删除团队",
+        "deleting": "正在删除…"
       },
       "create": {
         "title": "创建团队",
@@ -1835,7 +1863,8 @@
         "successDescription": "“{{name}}”已成功创建",
         "errorGeneric": "创建团队失败",
         "applyToAll": "应用于全部",
-        "memberRoles": "成员角色"
+        "memberRoles": "成员角色",
+        "errorDescription": "无法创建团队，请重试。"
       },
       "detail": {
         "nameLabel": "团队名称",

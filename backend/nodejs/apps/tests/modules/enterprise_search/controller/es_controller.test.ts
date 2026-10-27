@@ -55,6 +55,7 @@ import {
   unarchiveAgentConversation,
   updateAgentConversationTitle,
   uploadChatAttachments,
+  resolveChatAttachmentMimeType,
   uploadChatAttachmentsInternal,
   deleteChatAttachment,
   cancelConversationStream,
@@ -72,6 +73,7 @@ import { IAMServiceCommand } from '../../../../src/libs/commands/iam/iam.service
 import { Users } from '../../../../src/modules/user_management/schema/users.schema'
 import { Notifications } from '../../../../src/modules/notification/schema/notification.schema'
 import { ProjectService } from '../../../../src/modules/projects/services/project.service'
+import { ProjectsFeature } from '../../../../src/modules/projects/utils/projects-feature'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import * as searchUtils from '../../../../src/modules/enterprise_search/utils/utils'
 import { CHAT_ERROR_MESSAGES } from '../../../../src/modules/enterprise_search/utils/chat-error-messages'
@@ -689,6 +691,8 @@ describe('Enterprise Search Controller', () => {
 
     it('refuses a project the caller cannot use before opening the stream', async () => {
       const handler = streamChat(createMockAppConfig())
+      // The flag is cached across the suite; this test is about project access, not the flag.
+      sinon.stub(ProjectsFeature, 'assertEnabled').resolves()
       sinon.stub(ProjectService, 'assertAccess').rejects(new NotFoundError('Project not found'))
       const saveStub = sinon.stub(ChatSession.prototype, 'save')
       const req = createMockRequest({
@@ -14011,6 +14015,53 @@ describe('Enterprise Search Controller', () => {
 
         expect(next.calledOnce).to.be.true
         expect(next.firstCall.args[0].message).to.match(/Unsupported attachment type/)
+        expect(next.firstCall.args[0].message).to.include('received content type: application/zip')
+      })
+
+      it('should accept an .xlsx sent as application/octet-stream by its extension', async () => {
+        let sentMime = ''
+        sinon.stub(AIServiceCommand.prototype, 'execute').callsFake(function (this: any) {
+          sentMime = JSON.parse(this.body).attachments[0].mimeType
+          return Promise.resolve({ statusCode: 200, data: {} } as any)
+        })
+        const handler = uploadChatAttachments(createMockAppConfig())
+        const req = createMockRequest({
+          files: [{ ...pdfMulterFile, mimetype: 'application/octet-stream', originalname: 'X.xlsx' }],
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.called).to.be.false
+        expect(sentMime).to.equal('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+      })
+
+      it('should still refuse a generic content type whose extension is unsupported', async () => {
+        const handler = uploadChatAttachments(createMockAppConfig())
+        const req = createMockRequest({
+          files: [{ ...pdfMulterFile, mimetype: 'application/octet-stream', originalname: 'run.exe' }],
+        })
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(req, res, next)
+
+        expect(next.calledOnce).to.be.true
+        expect(next.firstCall.args[0].message).to.include('received content type: application/octet-stream')
+      })
+
+      it('should not let an extension override a specific unsupported content type', () => {
+        expect(resolveChatAttachmentMimeType({ mimetype: 'application/zip', originalname: 'a.pdf' })).to.equal(null)
+        expect(resolveChatAttachmentMimeType({ mimetype: '', originalname: 'notes.MD' })).to.equal('text/markdown')
+      })
+
+      it('should not resolve an extension that names an inherited object key', () => {
+        for (const name of ['file.constructor', 'file.toString', 'file.__proto__', 'file.hasOwnProperty']) {
+          expect(
+            resolveChatAttachmentMimeType({ mimetype: 'application/octet-stream', originalname: name }),
+          ).to.equal(null)
+        }
       })
 
       it('should POST attachment payload to the AI backend and return its JSON', async () => {

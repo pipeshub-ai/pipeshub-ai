@@ -2,7 +2,7 @@ import { NextFunction, Response } from 'express';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { Types } from 'mongoose';
 import {
-  BadRequestError,
+  ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { isUserOrgAdmin } from '../services/user-admin.service';
@@ -23,8 +23,8 @@ export const userAdminOrSelfCheck = async (
     const { id } = req.params;
 
     if (!isAdmin && !new Types.ObjectId(userId).equals(id)) {
-      throw new BadRequestError(
-        "You dont have admin access and can't change other users",
+      throw new ForbiddenError(
+        "You don't have admin access and can't change other users",
       );
     }
 

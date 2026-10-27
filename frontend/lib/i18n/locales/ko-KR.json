@@ -740,7 +740,9 @@
       "needsMultimodalModel": "멀티모달 모델 필요",
       "passwordProtected": "비밀번호로 보호됨",
       "skipped": "건너뜀",
-      "pending": "보류 중"
+      "pending": "보류 중",
+      "emptyFileZeroBytes": "빈 파일 — 색인할 내용이 없습니다(0바이트)",
+      "emptyNoContent": "비어 있음 — 색인할 텍스트를 찾지 못했습니다"
     },
     "allRecordsBusy_other": "이 보기는 지금 사용량이 많습니다. {{count}}초 후에 다시 시도합니다.",
     "allRecordsLoadFailed": "레코드를 불러오지 못했습니다",
@@ -779,6 +781,10 @@
     "createDialog": {
       "titlePlaceholder": "예: 엔지니어링",
       "descriptionPlaceholder": "예: 개발팀 문서"
+    },
+    "nameRules": {
+      "folderSeparator": "폴더 이름에는 \"/\" 또는 \"\\\"를 사용할 수 없습니다.",
+      "collectionExists": "\"{{name}}\" 컬렉션이 이미 있습니다. 다른 이름을 선택하세요."
     }
   },
   "connectorTypes": {
@@ -1550,7 +1556,17 @@
     },
     "deleteChatArtifactsNote": "이 채팅에서 어시스턴트가 만든 파일도 함께 삭제됩니다.",
     "noResultsFor": "“{{query}}”에 대한 결과가 없습니다",
-    "removeSelectedSource": "{{name}} 제거"
+    "removeSelectedSource": "{{name}} 제거",
+    "diagramSourceCopied": "다이어그램 소스를 복사했습니다",
+    "diagramImageCopied": "다이어그램 이미지를 복사했습니다",
+    "diagramImageDownloaded": "클립보드를 사용할 수 없어 다이어그램을 PNG로 저장했습니다",
+    "diagramCopyFailed": "다이어그램을 복사하지 못했습니다",
+    "fitDiagram": "화면에 맞추기",
+    "answerMode": {
+      "internalSearch": "내부 검색",
+      "webSearch": "웹 검색",
+      "internalAndWebSearch": "내부 + 웹 검색"
+    }
   },
   "workspaceMenu": {
     "appearance": "화면 모드",
@@ -1690,7 +1706,15 @@
         "editError": "초대를 업데이트하지 못했습니다",
         "editTitle": "초대 편집",
         "update": "초대 업데이트",
-        "smtpNotConfiguredTooltip": "SMTP가 구성되지 않았습니다. 초대를 보내기 전에 이메일 설정을 완료하세요."
+        "smtpNotConfiguredTooltip": "SMTP가 구성되지 않았습니다. 초대를 보내기 전에 이메일 설정을 완료하세요.",
+        "userCount_other": "사용자 {{count}}명",
+        "successDescriptionCount_other": "사용자 {{count}}명을 초대했습니다",
+        "alreadyMembersSkipped_other": "주소 {{count}}개는 이미 구성원의 주소이므로 초대를 보내지 않았습니다.",
+        "alreadyMembersTitle": "이미 구성원입니다 — 초대를 보내지 않았습니다",
+        "alreadyMembersDescription_other": "모든 주소가 이미 활성 구성원의 주소입니다.",
+        "importUnsupportedType": ".csv, .xlsx, .xls 파일만 가져올 수 있습니다.",
+        "importTooLongSkipped_other": "254자를 넘는 항목 {{count}}개는 제외했습니다.",
+        "invalidBlocksSend_other": "잘못된 주소 {{count}}개가 빨간색으로 표시되어 있습니다. 초대를 보내려면 수정하거나 삭제하세요."
       },
       "bulk": {
         "resendInvite": "초대 다시 보내기",
@@ -1816,7 +1840,11 @@
         "viewTeam": "팀 보기",
         "delete": "삭제",
         "deleteSuccess": "팀이 삭제되었습니다",
-        "deleteError": "팀을 삭제하지 못했습니다"
+        "deleteError": "팀을 삭제하지 못했습니다",
+        "deleteConfirmTitle": "팀을 삭제할까요?",
+        "deleteConfirmMessage": "\"{{name}}\" 팀이 삭제되고 구성원은 이 팀을 통해 공유된 액세스 권한을 잃게 됩니다. 이 작업은 되돌릴 수 없습니다.",
+        "deleteConfirmButton": "팀 삭제",
+        "deleting": "삭제 중…"
       },
       "create": {
         "title": "팀 만들기",
@@ -1835,7 +1863,8 @@
         "successDescription": "\"{{name}}\"이(가) 성공적으로 생성되었습니다",
         "errorGeneric": "팀을 생성하지 못했습니다",
         "applyToAll": "전체에 적용",
-        "memberRoles": "멤버 역할"
+        "memberRoles": "멤버 역할",
+        "errorDescription": "팀을 만들지 못했습니다. 다시 시도하세요."
       },
       "detail": {
         "nameLabel": "팀 이름",

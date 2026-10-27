@@ -447,6 +447,50 @@ export const SUPPORTED_CHAT_ATTACHMENT_MIMETYPES = new Set([
   'text/tab-separated-values', // .tsv
 ]);
 
+const CHAT_ATTACHMENT_MIME_BY_EXTENSION: Record<string, string> = {
+  pdf: 'application/pdf',
+  jpg: 'image/jpeg',
+  jpeg: 'image/jpeg',
+  png: 'image/png',
+  txt: 'text/plain',
+  md: 'text/markdown',
+  mdx: 'text/mdx',
+  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  csv: 'text/csv',
+  tsv: 'text/tab-separated-values',
+};
+
+/** Types a client sends when it does not know the real one (curl, SDKs, some browsers). */
+const GENERIC_UPLOAD_MIMETYPES = new Set([
+  '',
+  'application/octet-stream',
+  'binary/octet-stream',
+  'application/x-binary',
+  'application/binary',
+]);
+
+/**
+ * The supported attachment type for an upload, or null. A generic or missing
+ * content type falls back to the file extension, so `curl -F files=@x.xlsx`
+ * is not refused for a type the error message says is supported.
+ */
+export const resolveChatAttachmentMimeType = (
+  file: Pick<Express.Multer.File, 'mimetype' | 'originalname'>,
+): string | null => {
+  const declared = (file.mimetype || '').trim().toLowerCase();
+  if (SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has(declared)) return declared;
+  if (!GENERIC_UPLOAD_MIMETYPES.has(declared)) return null;
+  const name = file.originalname || '';
+  const dot = name.lastIndexOf('.');
+  if (dot < 0) return null;
+  const extension = name.slice(dot + 1).toLowerCase();
+  // Own keys only: a file named "x.constructor" would otherwise resolve to Object.
+  return Object.prototype.hasOwnProperty.call(CHAT_ATTACHMENT_MIME_BY_EXTENSION, extension)
+    ? (CHAT_ATTACHMENT_MIME_BY_EXTENSION[extension] ?? null)
+    : null;
+};
+
 export const uploadChatAttachments =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -456,13 +500,15 @@ export const uploadChatAttachments =
         throw new BadRequestError('At least one file is required');
       }
 
-      const invalidFile = files.find(
-        (file) => !SUPPORTED_CHAT_ATTACHMENT_MIMETYPES.has((file.mimetype || '').toLowerCase()),
-      );
-      if (invalidFile) {
-        throw new BadRequestError(
-          `Unsupported attachment type: ${invalidFile.originalname}. Supported types: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV.`,
-        );
+      for (const file of files) {
+        const resolved = resolveChatAttachmentMimeType(file);
+        if (!resolved) {
+          const received = (file.mimetype || '').trim() || 'none';
+          throw new BadRequestError(
+            `Unsupported attachment type: ${file.originalname} (received content type: ${received}). Supported types: PDF, JPEG, PNG, TXT, MD, MDX, DOCX, XLSX, CSV, TSV.`,
+          );
+        }
+        file.mimetype = resolved;
       }
 
       const conversationIdRaw = req.body?.conversationId;

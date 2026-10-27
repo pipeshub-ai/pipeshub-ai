@@ -3,8 +3,8 @@ import bcrypt from 'bcryptjs';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import mongoose from 'mongoose';
-import { UserController, USER_DELETE_NOT_RECORDED } from '../../../../src/modules/user_management/controller/users.controller';
-import { ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
+import { UserController, USER_DELETE_NOT_RECORDED, isValidEmail } from '../../../../src/modules/user_management/controller/users.controller';
+import { ConflictError, ServiceUnavailableError } from '../../../../src/libs/errors/http.errors';
 import * as userAdminService from '../../../../src/modules/user_management/services/user-admin.service';
 import { Users } from '../../../../src/modules/user_management/schema/users.schema';
 import { UserGroups } from '../../../../src/modules/user_management/schema/userGroup.schema';
@@ -1324,6 +1324,92 @@ describe('UserController', () => {
       expect(mockEventService.start.calledOnce).to.be.true;
       expect(mockEventService.publishEvent.calledOnce).to.be.true;
       expect(res.json.calledOnce).to.be.true;
+    });
+
+    it('refuses a member who marks their own account as not signed in', async () => {
+      // The route lets a member edit their own record; without this check a
+      // member could flip themselves to "Pending" in the admin's user list.
+      req.params.id = req.user.userId;
+      req.body = { hasLoggedIn: false };
+      const findOne = sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error.statusCode).to.equal(403);
+      expect(error.message).to.equal(
+        'Only admins can change whether a user has signed in',
+      );
+      expect(findOne.calledOnce).to.be.true;
+      expect(res.json.called).to.be.false;
+    });
+
+    it('lets a member mark their own account as signed in, as first sign-in does', async () => {
+      // userAccount.controller sends { hasLoggedIn: true } with the new
+      // member's own token on their first sign-in.
+      req.params.id = req.user.userId;
+      req.body = { hasLoggedIn: true, email: 'test@test.com' };
+      const mockUser = {
+        _id: req.user.userId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'test@test.com',
+        hasLoggedIn: false,
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({ _id: req.user.userId, hasLoggedIn: true }),
+      };
+      const findOne = sinon.stub(Users, 'findOne').resolves(mockUser as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockUser.hasLoggedIn).to.equal(true);
+      expect(mockUser.save.calledOnce).to.be.true;
+      // No admin lookup: the transition is allowed for the user themselves.
+      expect(findOne.calledOnce).to.be.true;
+    });
+
+    it("refuses a member who marks someone else's account as signed in", async () => {
+      req.params.id = '507f1f77bcf86cd799439013';
+      req.body = { hasLoggedIn: true };
+      sinon.stub(Users, 'findOne').returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'member' }),
+      } as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].statusCode).to.equal(403);
+    });
+
+    it('lets an admin set hasLoggedIn on a user', async () => {
+      const targetId = '507f1f77bcf86cd799439013';
+      req.params.id = targetId;
+      req.body = { hasLoggedIn: true };
+      const mockUser = {
+        _id: targetId,
+        orgId: new mongoose.Types.ObjectId(req.user.orgId),
+        email: 'member@test.com',
+        hasLoggedIn: false,
+        save: sinon.stub().resolves(),
+        toObject: sinon.stub().returns({ _id: targetId, hasLoggedIn: true }),
+      };
+      const findOneStub = sinon.stub(Users, 'findOne');
+      findOneStub.onFirstCall().returns({
+        select: sinon.stub().returnsThis(),
+        lean: sinon.stub().resolves({ role: 'admin' }),
+      } as any);
+      findOneStub.onSecondCall().resolves(mockUser as any);
+
+      await controller.updateUser(req, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockUser.hasLoggedIn).to.equal(true);
+      expect(mockUser.save.calledOnce).to.be.true;
     });
 
     it('should update role when actor is admin', async () => {
@@ -3038,7 +3124,7 @@ describe('UserController', () => {
       expect(next.called).to.be.true;
     });
 
-    it('should return error message when all emails already have active accounts', async () => {
+    it('refuses with 409 when all emails already have active accounts', async () => {
       req.body = {
         emails: ['existing@test.com'],
         groupIds: ['group1'],
@@ -3055,11 +3141,14 @@ describe('UserController', () => {
 
       await controller.addManyUsers(req, res, next);
 
-      if (!next.called) {
-        expect(res.status.calledWith(200)).to.be.true;
-        const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.errorMessage).to.include('already have active accounts');
-      }
+      expect(res.status.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      const error = next.firstCall.args[0];
+      expect(error).to.be.instanceOf(ConflictError);
+      expect(error.statusCode).to.equal(409);
+      expect(error.message).to.equal(
+        'All provided emails already have active accounts',
+      );
     });
 
     it('should throw BadRequestError for invalid emails', async () => {
@@ -3144,7 +3233,13 @@ describe('UserController', () => {
       expect(mockMailService.sendMail.calledOnce).to.be.true;
       expect(mockMailService.sendMail.firstCall.args[0].usersMails).to.deep.equal(['pending@test.com']);
       expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.firstCall.args[0].queued).to.equal(true);
+      expect(res.json.firstCall.args[0]).to.include({
+        queued: true,
+        invited: 0,
+        reinvited: 1,
+        restored: 0,
+        alreadyActive: 0,
+      });
     });
 
     it('should not resend invite for pending blocked users', async () => {
@@ -3178,10 +3273,9 @@ describe('UserController', () => {
 
       await controller.addManyUsers(req, res, next);
 
-      expect(next.called).to.be.false;
       expect(mockMailService.sendMail.called).to.be.false;
-      expect(res.status.calledWith(200)).to.be.true;
-      expect(res.json.firstCall.args[0].errorMessage).to.include('already have active accounts');
+      expect(res.status.called).to.be.false;
+      expect(next.firstCall.args[0]).to.be.instanceOf(ConflictError);
     });
   });
 
@@ -6253,6 +6347,24 @@ describe('UserController', () => {
       );
     });
 
+    it('rejects groupIds that are not a JSON array instead of ignoring them', async () => {
+      for (const groupIds of ['not-json', '{"a":1}', '"507f1f77bcf86cd799439013"']) {
+        next.resetHistory();
+        res.status.resetHistory();
+        req.body = {
+          fileBuffer: { buffer: Buffer.from('a@test.com\n') },
+          groupIds,
+        };
+        await controller.addManyUsersFromFile(req, res, next);
+        expect(next.calledOnce, groupIds).to.be.true;
+        expect(next.firstCall.args[0].statusCode).to.equal(400);
+        expect(next.firstCall.args[0].message).to.equal(
+          'groupIds must be a JSON array of group ids, such as ["<id>"]',
+        );
+        expect(res.status.called).to.be.false;
+      }
+    });
+
     it('rejects invalid groupIds before starting the import', async () => {
       req.body = {
         fileBuffer: { buffer: Buffer.from('a@test.com\n') },
@@ -6333,5 +6445,50 @@ describe('UserController', () => {
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0].message).to.equal('Invalid emails are found');
     });
+  });
+});
+
+describe('isValidEmail', () => {
+  it('accepts ordinary addresses', () => {
+    for (const email of [
+      'alice@acme.com',
+      'first.last+tag@sub.example.co.uk',
+      "o'brien@example.org",
+      'user@xn--bcher-kva.example',
+      'jose@bücher.de',
+    ]) {
+      expect(isValidEmail(email), email).to.be.true;
+    }
+  });
+
+  it('refuses quoting, brackets and list punctuation', () => {
+    for (const email of [
+      '"user@example.com")',
+      '=HYPERLINK("http://evil","user@example.com")',
+      'a,b@example.com',
+      'a;b@example.com',
+      '<a@example.com>',
+      'a b@example.com',
+      '(a)@example.com',
+      '[a]@example.com',
+      'a@example',
+      'a@example.c',
+      'a@@example.com',
+      'a@exa_mple.com',
+    ]) {
+      expect(isValidEmail(email), email).to.be.false;
+    }
+  });
+
+  it('refuses addresses longer than 254 characters', () => {
+    expect(isValidEmail(`${'a'.repeat(64)}@${'b'.repeat(186)}.com`)).to.be.false;
+    expect(isValidEmail(`${'a'.repeat(64)}@${'b'.repeat(185)}.com`)).to.be.true;
+  });
+
+  it('answers quickly for a long near-miss (no catastrophic backtracking)', () => {
+    const started = Date.now();
+    isValidEmail(`a@${'b.'.repeat(5000)}`);
+    isValidEmail(`a@${'b'.repeat(50000)}!`);
+    expect(Date.now() - started).to.be.lessThan(100);
   });
 });

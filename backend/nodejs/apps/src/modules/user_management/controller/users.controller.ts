@@ -20,6 +20,7 @@ import {
 import { getBrandConfig } from '../../../libs/branding';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   InternalServerError,
   LargePayloadError,
@@ -141,11 +142,20 @@ export const USER_DELETE_NOT_RECORDED =
   "We couldn't delete this user just now. They are still a member; please try again in a moment.";
 
 // Linear-time email check: each segment excludes its following separator
-// (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS).
-const EMAIL_REGEX = /^[^\s@]+@[^\s@.]+(?:\.[^\s@.]+)+$/;
+// (`@`/`.`), so there is no ambiguous backtracking (avoids ReDoS). The local
+// part also refuses quoting and list punctuation, so a spreadsheet formula such
+// as `=HYPERLINK("http://x","a@b.co")` split at its comma is not an address.
+const EMAIL_REGEX =
+  /^[^\s@"(),:;<>[\]\\`]+@(?:[\p{L}\p{N}-]+\.)+[\p{L}\p{N}-]{2,}$/u;
+// RFC 5321 caps a forward path at 254 characters.
+const MAX_EMAIL_LENGTH = 254;
 
-function isValidEmail(email: string): boolean {
-  return EMAIL_REGEX.test(email);
+export function isValidEmail(email: unknown): boolean {
+  return (
+    typeof email === 'string' &&
+    email.length <= MAX_EMAIL_LENGTH &&
+    EMAIL_REGEX.test(email)
+  );
 }
 
 export interface InviteResult {
@@ -1095,6 +1105,9 @@ export class UserController {
         'hasLoggedIn',
         'role',
       ] as const;
+      // Fields that change account state rather than profile data; only an org
+      // admin may set them, even on their own record.
+      const ADMIN_ONLY_FIELDS = ['role', 'hasLoggedIn'] as const;
 
       // List of sensitive system fields that must never be updated via API
       const RESTRICTED_FIELDS = ['_id', 'orgId', 'slug', '__v'];
@@ -1109,20 +1122,35 @@ export class UserController {
         );
       }
 
-      // Role changes require org admin (userAdminOrSelfCheck alone is not enough).
+      // Role and login-state changes require org admin (userAdminOrSelfCheck
+      // alone is not enough: it lets a member edit their own record).
       // After userExists, req.user is the target document but still carries JWT userId.
-      if ('role' in req.body && req.body.role !== undefined) {
+      const sentBody = req.body as Record<string, unknown>;
+      // First sign-in marks the user's own record as logged in with the user's
+      // own token (userAccount.controller); that one transition stays open, so
+      // only an admin can reset someone to "Pending".
+      const isSelfMarkedLoggedIn =
+        req.params.id === String(req.user.userId) &&
+        sentBody.hasLoggedIn === true;
+      const adminOnlyFieldsSent = ADMIN_ONLY_FIELDS.filter(
+        (field) =>
+          field in sentBody &&
+          sentBody[field] !== undefined &&
+          !(field === 'hasLoggedIn' && isSelfMarkedLoggedIn),
+      );
+      if (adminOnlyFieldsSent.length > 0) {
         const actorUserId = req.user.userId;
-        if (!actorUserId) {
-          throw new ForbiddenError('Only admins can change user roles');
-        }
-        const requesterIsAdmin = await isUserOrgAdmin(
-          actorUserId,
-          req.user.orgId,
-        );
+        const requesterIsAdmin =
+          !!actorUserId && (await isUserOrgAdmin(actorUserId, req.user.orgId));
         if (!requesterIsAdmin) {
-          throw new ForbiddenError('Only admins can change user roles');
+          throw new ForbiddenError(
+            adminOnlyFieldsSent.includes('role')
+              ? 'Only admins can change user roles'
+              : 'Only admins can change whether a user has signed in',
+          );
         }
+      }
+      if ('role' in req.body && req.body.role !== undefined) {
         const normalizedRole = normalizeUserRole(req.body.role);
         if (!normalizedRole) {
           throw new BadRequestError('Invalid role. Must be admin or member');
@@ -2033,10 +2061,9 @@ export class UserController {
         result.restored === 0 &&
         result.reinvited === 0
       ) {
-        res.status(200).json({
-          errorMessage: 'All provided emails already have active accounts',
-        });
-        return;
+        throw new ConflictError(
+          'All provided emails already have active accounts',
+        );
       }
 
       if (result.mailFailed.length > 0) {
@@ -2050,6 +2077,10 @@ export class UserController {
         message:
           'Invites queued. Emails are being sent in the background and may take a few minutes.',
         queued: true,
+        invited: result.invited,
+        reinvited: result.reinvited,
+        restored: result.restored,
+        alreadyActive: result.alreadyActive,
       });
     } catch (error) {
       next(error);
@@ -2092,12 +2123,18 @@ export class UserController {
 
       let groupIds: string[] | undefined;
       if (typeof req.body.groupIds === 'string' && req.body.groupIds) {
+        let parsed: unknown;
         try {
-          const parsed = JSON.parse(req.body.groupIds);
-          groupIds = Array.isArray(parsed) ? parsed : undefined;
+          parsed = JSON.parse(req.body.groupIds);
         } catch {
-          groupIds = undefined;
+          parsed = undefined;
         }
+        if (!Array.isArray(parsed)) {
+          throw new BadRequestError(
+            'groupIds must be a JSON array of group ids, such as ["<id>"]',
+          );
+        }
+        groupIds = parsed;
       } else if (Array.isArray(req.body.groupIds)) {
         groupIds = req.body.groupIds;
       }
