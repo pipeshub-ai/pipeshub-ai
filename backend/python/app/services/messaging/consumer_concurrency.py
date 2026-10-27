@@ -1194,7 +1194,7 @@ async def reserve_record_memory(
     if not cost:
         return None
     budget = governor.memory_budget
-    if not await budget.reserve(cost, timeout):
+    if not await budget.reserve(cost, timeout, held=size_bytes or 0):
         raise ParseAdmissionTimeout("record_memory", timeout or 0.0)
     return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 

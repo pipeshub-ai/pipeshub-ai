@@ -95,4 +95,37 @@ class TestMemoryBudget:
         budget.release(100 * MB)
 
         assert await budget.reserve(50 * MB, timeout=0.05)
-        assert budget.stats() == {"limit_bytes": 100 * MB, "reserved_bytes": 50 * MB, "waiting": 0}
+        assert budget.stats() == {
+            "limit_bytes": 100 * MB, "reserved_bytes": 50 * MB, "waiting": 0, "waiting_held_bytes": 0,
+        }
+
+    async def test_what_a_waiting_record_already_holds_counts_against_everyone_else(self) -> None:
+        """A record waits here after its download: its buffer is in memory already."""
+        budget = MemoryBudget()
+        budget.limit = 1000 * MB
+        assert await budget.reserve(800 * MB, held=200 * MB)
+        waiting = asyncio.create_task(budget.reserve(800 * MB, held=200 * MB))
+        await asyncio.sleep(0.01)
+
+        assert budget.stats()["waiting_held_bytes"] == 200 * MB
+        # 800 running + 200 held by the waiter + 150 > 1000.
+        assert not await budget.reserve(150 * MB, timeout=0.05, held=50 * MB)
+
+        waiting.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await waiting
+        assert budget.stats()["waiting_held_bytes"] == 0
+        assert await budget.reserve(150 * MB, timeout=0.05, held=50 * MB)
+
+    async def test_a_waiter_s_own_held_bytes_are_part_of_its_reservation(self) -> None:
+        budget = MemoryBudget()
+        budget.limit = 900 * MB
+        assert await budget.reserve(500 * MB)
+        waiting = asyncio.create_task(budget.reserve(500 * MB, held=400 * MB))
+        await asyncio.sleep(0.01)
+        assert not waiting.done()
+
+        # Exactly enough for 500 running + this 500, its 400 held counted once.
+        budget.limit = 1000 * MB
+        assert await asyncio.wait_for(waiting, 3)
+        assert budget.stats()["reserved_bytes"] == 1000 * MB

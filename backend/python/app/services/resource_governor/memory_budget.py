@@ -51,35 +51,48 @@ class MemoryBudget:
     def __init__(self) -> None:
         self.limit: int | None = None
         self._reserved = 0
+        # Bytes waiters already hold: a record waits here after its download.
+        self._held = 0
         self._loop: asyncio.AbstractEventLoop | None = None
         self._waiters: deque[_Waiter] = deque()
 
-    def _fits(self, nbytes: int) -> bool:
-        return self.limit is None or self._reserved == 0 or self._reserved + nbytes <= self.limit
+    def _fits(self, nbytes: int, held: int) -> bool:
+        if self.limit is None or self._reserved == 0:
+            return True
+        # The caller's own held bytes are part of *nbytes*, not in addition to it.
+        return self._reserved + self._held - held + nbytes <= self.limit
 
-    async def reserve(self, nbytes: int, timeout: float | None = None) -> bool:
-        """Reserve *nbytes*; False if *timeout* passed first."""
+    async def reserve(self, nbytes: int, timeout: float | None = None, *, held: int = 0) -> bool:
+        """Reserve *nbytes*; False if *timeout* passed first.
+
+        *held* is what the caller already holds and is part of *nbytes*: a
+        record that waits here has downloaded its content. It counts against
+        the budget while the caller waits, so a queue of waiting records
+        cannot hide their buffers between the governor's samples.
+        """
         loop = asyncio.get_running_loop()
         if self._loop is None:
             self._loop = loop
         elif loop is not self._loop:
             raise RuntimeError("MemoryBudget is bound to another event loop")
-        if not self._waiters and self._fits(nbytes):
+        if not self._waiters and self._fits(nbytes, 0):
             self._reserved += nbytes
             return True
         deadline = None if timeout is None else loop.time() + timeout
         waiter = _Waiter(loop)
         self._waiters.append(waiter)
+        self._held += held
         try:
             while True:
                 remaining = None if deadline is None else deadline - loop.time()
                 if remaining is not None and remaining <= 0:
                     return False
                 await waiter.wait(_RECHECK_SECONDS if remaining is None else min(_RECHECK_SECONDS, remaining))
-                if self._waiters[0] is waiter and self._fits(nbytes):
+                if self._waiters[0] is waiter and self._fits(nbytes, held):
                     self._reserved += nbytes
                     return True
         finally:
+            self._held -= held
             with contextlib.suppress(ValueError):
                 self._waiters.remove(waiter)
             self._wake_head()
@@ -93,4 +106,9 @@ class MemoryBudget:
             self._waiters[0].wake()
 
     def stats(self) -> dict[str, int | None]:
-        return {"limit_bytes": self.limit, "reserved_bytes": self._reserved, "waiting": len(self._waiters)}
+        return {
+            "limit_bytes": self.limit,
+            "reserved_bytes": self._reserved,
+            "waiting": len(self._waiters),
+            "waiting_held_bytes": self._held,
+        }
