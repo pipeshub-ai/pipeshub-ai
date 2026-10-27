@@ -77,7 +77,7 @@ async def folder(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch
             with contextlib.suppress(Exception):
                 if isinstance(graph, Neo4jProvider):
                     await graph.client.execute_query(
-                        "MATCH (n:Record) WHERE n.id ENDS WITH $run DETACH DELETE n", parameters={"run": run},
+                        "MATCH (n) WHERE n.id ENDS WITH $run DETACH DELETE n", parameters={"run": run},
                     )
                     return
                 keys = [tree.parent, *tree.children]
