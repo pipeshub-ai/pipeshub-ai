@@ -2,6 +2,7 @@
 
 import React, { useCallback, useEffect, useState } from 'react';
 import { Trans, useTranslation } from 'react-i18next';
+import { useRouter } from 'next/navigation';
 import {
   Box,
   Button,
@@ -14,9 +15,11 @@ import {
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { SettingsSaveBar } from '../components';
 import { useToastStore } from '@/lib/store/toast-store';
+import { useUserStore, selectIsAdmin, selectIsProfileInitialized } from '@/lib/store/user-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ============================================================
 // Sub-components
@@ -177,6 +180,9 @@ function PromptConfigCallout() {
 export default function PromptsPage() {
   const { t } = useTranslation();
   const addToast = useToastStore((s) => s.addToast);
+  const router = useRouter();
+  const isAdmin = useUserStore(selectIsAdmin);
+  const isProfileInitialized = useUserStore(selectIsProfileInitialized);
 
   const [isLoading, setIsLoading] = useState(true);
   const [isSaving, setIsSaving] = useState(false);
@@ -196,8 +202,17 @@ export default function PromptsPage() {
     customPromptWebSearch !== savedPromptWebSearch ||
     customPromptAgent !== savedPromptAgent;
 
+  // The sidebar hides this page from members, but the URL still opens it. A profile that failed
+  // to load leaves isAdmin null; General is open to everyone, so that goes there too.
+  useEffect(() => {
+    if (isProfileInitialized && isAdmin !== true) {
+      router.replace('/workspace/general');
+    }
+  }, [isProfileInitialized, isAdmin, router]);
+
   // ── Load on mount ──────────────────────────────────────────
   useEffect(() => {
+    if (!isProfileInitialized || isAdmin !== true) return;
     const load = async () => {
       try {
         const prompts = await PromptsApi.getSystemPrompts();
@@ -212,7 +227,7 @@ export default function PromptsPage() {
       }
     };
     load();
-  }, []);
+  }, [isProfileInitialized, isAdmin]);
 
   // ── Handlers ───────────────────────────────────────────────
   // "Reset to Default" means removing the org override entirely — an empty
@@ -270,6 +285,10 @@ export default function PromptsPage() {
     });
   }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast, t]);
 
+  if (!isProfileInitialized || isAdmin !== true) {
+    return null;
+  }
+
   // ── Loading state ──────────────────────────────────────────
   if (isLoading) {
     return (
@@ -282,11 +301,11 @@ export default function PromptsPage() {
   return (
     <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
+      <SettingsPageContainer>
 
         {/* ── Page Header ── */}
-        <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
-          <Box>
+        <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
+          <Box style={{ flex: '1 1 240px', minWidth: 0 }}>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
               {t('workspace.prompts.customInstructionsTitle')}
             </Heading>
@@ -348,7 +367,7 @@ export default function PromptsPage() {
         {/* ── Prompt Configuration Callout ── */}
         <PromptConfigCallout />
 
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Settings Save Bar ── */}
       <SettingsSaveBar

@@ -2,7 +2,7 @@
  * chat-edit-question.spec.ts
  *
  * Editing the last question of a chat: the edit icon on the question, the
- * "Edit Query" composer, the files of the question, and what is sent to the
+ * "Edit query" composer, the files of the question, and what is sent to the
  * regenerate endpoint.
  *
  * The chat is opened from a mocked conversation and the regenerate endpoint is
@@ -166,7 +166,7 @@ const composer = (page: Page) => page.locator('textarea').last();
 async function startEdit(page: Page, question: string) {
   await questionHeading(page, question).first().hover();
   await editButton(page).click();
-  await expect(page.getByText('Edit Query')).toBeVisible();
+  await expect(page.getByText('Edit query')).toBeVisible();
 }
 
 test.describe('Chat — editing the last question', () => {
@@ -182,7 +182,7 @@ test.describe('Chat — editing the last question', () => {
     await expect(page.getByText(EDITED_ANSWER).first()).toBeVisible({ timeout: 20_000 });
     await expect(questionHeading(page, EDITED_QUESTION)).toBeVisible();
     await expect(questionHeading(page, QUESTION)).toHaveCount(0);
-    await expect(page.getByText('Edit Query')).toHaveCount(0);
+    await expect(page.getByText('Edit query')).toHaveCount(0);
 
     expect(regenerates).toHaveLength(1);
     expect(regenerates[0].url).toContain(`/conversations/${CONV_ID}/message/${BOT_ID}/regenerate`);
@@ -198,7 +198,7 @@ test.describe('Chat — editing the last question', () => {
     await composer(page).fill(EDITED_QUESTION);
     await composer(page).press('Escape');
 
-    await expect(page.getByText('Edit Query')).toHaveCount(0);
+    await expect(page.getByText('Edit query')).toHaveCount(0);
     await expect(composer(page)).toHaveValue('');
     await expect(questionHeading(page, QUESTION)).toBeVisible();
     expect(regenerates).toEqual([]);
@@ -269,7 +269,7 @@ test.describe('Chat — editing the files of the question', () => {
     await page.getByRole('button', { name: 'Remove report.pdf' }).click();
     await composer(page).press('Escape');
 
-    await expect(page.getByText('Edit Query')).toHaveCount(0);
+    await expect(page.getByText('Edit query')).toHaveCount(0);
     await expect(page.getByText('report.pdf').first()).toBeVisible();
     expect(regenerates).toEqual([]);
     expect(attachmentDeletes).toEqual([]);

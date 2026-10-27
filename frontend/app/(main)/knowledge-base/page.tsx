@@ -33,7 +33,6 @@ import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
 import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
-// import KnowledgeBaseSidebar from './sidebar';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
   KnowledgeBaseItem,
@@ -1629,10 +1628,7 @@ function KnowledgeBasePageContent() {
   // Handle upload save - add items to upload store and start uploading
   const handleUploadSave = useCallback(
     async (items: UploadFileItem[]) => {
-      if (!selectedKbId) {
-        console.error('Cannot upload: No knowledge base ID found');
-        return;
-      }
+      if (!selectedKbId) return;
 
       setIsUploading(true);
 
@@ -1968,6 +1964,22 @@ function KnowledgeBasePageContent() {
       }
     },
     [selectedKbId, isAllRecordsMode, allRecordsTableData, tableData, addUploadItems, startUpload, completeUpload, failUpload, refreshData, maxFileSizeBytes, maxFileSizeMB, t]
+  );
+
+  // Returns false so the upload panel keeps the picked files when there is
+  // nowhere to put them, instead of clearing them with nothing uploaded.
+  const handleUploadSubmit = useCallback(
+    (items: UploadFileItem[]) => {
+      if (!selectedKbId) {
+        toast.error(t('sidebar.noCollectionSelected'), {
+          description: t('sidebar.selectCollectionOrCreate'),
+        });
+        return false;
+      }
+      void handleUploadSave(items);
+      return true;
+    },
+    [selectedKbId, handleUploadSave, t]
   );
 
   // Handle folder info click
@@ -2946,34 +2958,26 @@ function KnowledgeBasePageContent() {
     }
   }, [tickedRows, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
-  // Derive current title based on mode
+  // Derive current title based on mode. A search keeps the scope's name, so the
+  // chat box still says what it searches ("Ask in 'Docs'", not "Ask in 'Results'").
   const currentTitle = useMemo(() => {
-    // Show "Results" when actively searching
-    const activeSearchQuery = isAllRecordsMode ? allRecordsSearchQuery : searchQuery;
-    if (activeSearchQuery && activeSearchQuery.trim()) {
-      return 'Results';
-    }
-
     if (isAllRecordsMode) {
-      if (allRecordsSidebarSelection.type === 'all') {
-        return 'All Records';
-      } else if (allRecordsSidebarSelection.type === 'collection') {
+      if (allRecordsSidebarSelection.type === 'collection') {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
         return allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType;
       } else if (allRecordsSidebarSelection.type === 'explorer') {
-        return allRecordsTableData?.currentNode?.name || 'All Records';
+        return allRecordsTableData?.currentNode?.name || t('nav.allRecords');
       }
-      return 'All';
+      return t('nav.allRecords');
     }
-    return tableData?.currentNode?.name || 'Collections';
+    return tableData?.currentNode?.name || t('nav.collections');
   }, [
     isAllRecordsMode,
     allRecordsSidebarSelection,
     tableData,
-    allRecordsSearchQuery,
-    searchQuery,
     allRecordsTableData?.currentNode?.name,
+    t,
   ]);
 
   const chatScopeNode = useMemo((): MentionNode | null => {
@@ -3027,12 +3031,12 @@ function KnowledgeBasePageContent() {
   const allRecordsBreadcrumbs = useMemo<Breadcrumb[]>(() => {
     const rootCrumb: Breadcrumb = {
       id: 'all-records-root',
-      name: 'All Records',
+      name: t('nav.allRecords'),
       nodeType: 'all-records',
     };
     const apiBreadcrumbs = allRecordsTableData?.breadcrumbs || [];
     return [rootCrumb, ...apiBreadcrumbs];
-  }, [allRecordsTableData?.breadcrumbs]);
+  }, [allRecordsTableData?.breadcrumbs, t]);
 
   return (
     <Flex style={{ height: '100%', width: '100%' }}>
@@ -3069,7 +3073,7 @@ function KnowledgeBasePageContent() {
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
               onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
-              onUpload={isAllRecordsMode ? undefined : handleUpload}
+              onUpload={isAllRecordsMode || !selectedKbId ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
               folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
@@ -3115,6 +3119,7 @@ function KnowledgeBasePageContent() {
           showSourceColumn={isAllRecordsMode}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          onClearSearch={handleSearchClose}
           extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
@@ -3163,7 +3168,7 @@ function KnowledgeBasePageContent() {
           onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
           onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
-          onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
+          onUpload={!isAllRecordsMode && canEditCollection && selectedKbId ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
           hasCollectionContext={Boolean(selectedKbId)}
@@ -3299,7 +3304,7 @@ function KnowledgeBasePageContent() {
           <UploadDataSidebar
             open={isUploadSidebarOpen}
             onOpenChange={setIsUploadSidebarOpen}
-            onSave={handleUploadSave}
+            onSave={handleUploadSubmit}
             isSaving={isUploading}
             remainingFolderLevels={remainingFolderLevels}
             maxFolderDepth={maxFolderDepth}

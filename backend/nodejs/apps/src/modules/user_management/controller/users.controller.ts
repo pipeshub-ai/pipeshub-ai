@@ -29,10 +29,9 @@ import {
 } from '../../../libs/errors/http.errors';
 import {
   markClientSafe,
-  serverFailureMessage,
 } from '../../../libs/errors/reader-friendly';
 import { inject, injectable } from 'inversify';
-import { MailService } from '../services/mail.service';
+import { MailService, mailFailureError } from '../services/mail.service';
 import {
   EntitiesEventProducer,
   Event,
@@ -435,15 +434,34 @@ export class UserController {
     req: AuthenticatedUserRequest,
     res: Response,
   ): Promise<void> {
+    const { includeServiceAccounts } = req.query;
     const orgId = req.user?.orgId;
     const orgIdObj = new mongoose.Types.ObjectId(orgId);
 
+    // The same rule as getAllUsers above, for the same reason, and it matters
+    // more here: this route returns each user's `userId` together with the
+    // groups they belong to, and `userId` is exactly what an agent stores when
+    // it is bound to a service account. Left open, any signed-in member could
+    // read off the id of an account an administrator put in a sensitive group
+    // and then bind an agent to it. Admin-only, and only when asked for, so no
+    // existing caller changes behaviour — the people table does not ask.
+    const wantsServiceAccounts = includeServiceAccounts === 'true';
+    const maySeeServiceAccounts =
+      wantsServiceAccounts &&
+      req.user?.userId !== undefined &&
+      (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+
+    const match: Record<string, unknown> = {
+      orgId: orgIdObj, // Only include users from the same org
+      isDeleted: false, // Exclude deleted users
+    };
+    if (!maySeeServiceAccounts) {
+      match.kind = { $ne: 'service' };
+    }
+
     const users = await Users.aggregate([
       {
-        $match: {
-          orgId: orgIdObj, // Only include users from the same org
-          isDeleted: false, // Exclude deleted users
-        },
+        $match: match,
       },
       {
         $lookup: {
@@ -517,6 +535,22 @@ export class UserController {
         throw new NotFoundError('User not found');
       }
 
+      // A service account is a user record, so it would be returned here like
+      // anyone else — including its `userId`, which is what binds an agent to
+      // it. The screens that manage these accounts are admin-only and so is
+      // the list of them, so this answers the way it would for an id that is
+      // not there. Checked after the read rather than filtered into it, so the
+      // ordinary case still costs one query.
+      if (
+        user.kind === 'service' &&
+        !(
+          req.user?.userId !== undefined &&
+          (await isUserOrgAdmin(String(req.user.userId), String(orgId)))
+        )
+      ) {
+        throw new NotFoundError('User not found');
+      }
+
       if (hideEmail) {
         delete (user as any)?.email;
       }
@@ -558,7 +592,7 @@ export class UserController {
             blockExpiresAt: null,
           },
         },
-        { new: true },
+        { returnDocument: 'after' },
       );
 
       if (!credential) {
@@ -628,13 +662,28 @@ export class UserController {
 
       const orgId = req.user?.orgId;
 
-      const users = await Users.find({
+      const found = await Users.find({
         orgId,
         isDeleted: false,
         _id: { $in: userObjectIds },
       })
         .lean()
         .exec();
+
+      // Same rule as getUserById: a service account is a user record and would
+      // come back here like anyone else, carrying the `userId` that binds an
+      // agent to it. Callers ask this for the people behind agents, chats and
+      // shares, so in practice nothing is dropped — and the admin lookup only
+      // happens when a service account actually turns up.
+      const hasServiceAccount = found.some((u) => u.kind === 'service');
+      const maySeeServiceAccounts =
+        hasServiceAccount &&
+        req.user?.userId !== undefined &&
+        (await isUserOrgAdmin(String(req.user.userId), String(orgId)));
+      const users =
+        hasServiceAccount && !maySeeServiceAccounts
+          ? found.filter((u) => u.kind !== 'service')
+          : found;
 
       const userIdStrs = users.map((u) => u._id.toString());
       const dpMap = new Map<string, string>();
@@ -791,7 +840,7 @@ export class UserController {
         }
         try {
           if (hashedPassword !== undefined) {
-            await UserCredentials.deleteOne({ userId: newUser._id });
+            await UserCredentials.deleteOne({ userId: String(newUser._id) });
           }
           await Users.deleteOne({ _id: newUser._id });
         } catch (cleanupError) {
@@ -884,67 +933,6 @@ export class UserController {
     } catch (error) {
       next(error);
     }
-  }
-
-  /**
-   * Just-In-Time user provisioning from SAML assertion
-   * Creates user, adds to everyone group, and publishes creation event
-   */
-  async provisionSamlUser(
-    email: string,
-    samlUser: any,
-    orgId: string,
-    logger: Logger,
-  ) {
-    logger.info('Auto-provisioning user from SAML', { email, orgId });
-
-    const userDetails = this.extractSamlUserDetails(samlUser, email);
-    const newUser = new Users({
-      email,
-      ...userDetails,
-      orgId,
-      hasLoggedIn: false,
-      isDeleted: false,
-      role: 'member',
-    });
-
-    await newUser.save();
-
-    // Add to everyone group
-    await UserGroups.updateOne(
-      { orgId, type: 'everyone', isDeleted: false },
-      { $addToSet: { users: newUser._id } },
-    );
-
-    // Publish user creation event
-    try {
-      await this.eventService.start();
-      await this.eventService.publishEvent({
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: orgId.toString(),
-          userId: newUser._id.toString(),
-          fullName: newUser.fullName,
-          email: newUser.email,
-          syncAction: SyncAction.Immediate,
-        } as UserAddedEvent,
-      });
-    } catch (eventError) {
-      logger.error('Failed to publish user creation event', {
-        error: eventError,
-        userId: newUser._id,
-      });
-    } finally {
-      await this.eventService.stop();
-    }
-
-    logger.info('User auto-provisioned successfully', {
-      userId: newUser._id,
-      email,
-    });
-
-    return newUser.toObject();
   }
 
   /**
@@ -1720,7 +1708,7 @@ export class UserController {
       user.deletedBy = req.user.userId ?? req.user._id;
 
       await UserCredentials.updateOne(
-        { userId },
+        { userId: String(userId) },
         { $unset: { hashedPassword: '' } },
       );
 
@@ -1792,7 +1780,7 @@ export class UserController {
           pic: compressedPic,
           mimeType: compressedPicMimeType,
         },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
       res.setHeader('Content-Type', compressedPicMimeType);
       res.status(201).send(compressedImageBuffer);
@@ -1930,9 +1918,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       } else {
         result = await this.mailService.sendMail({
@@ -1954,9 +1940,7 @@ export class UserController {
             statusCode: result.statusCode,
             reason: result.data,
           });
-          throw markClientSafe(
-            new InternalServerError(serverFailureMessage('send the invitation')),
-          );
+          throw mailFailureError(result, 'send the invitation');
         }
       }
 
@@ -2643,7 +2627,7 @@ export class UserController {
         throw new BadRequestError('User ID is required');
       }
 
-      const { page, limit, search } = req.query;
+      const { page, limit, search, includeServiceAccounts } = req.query;
 
       // Validate search parameter for XSS and format specifiers
       if (search) {
@@ -2668,6 +2652,11 @@ export class UserController {
       if (page) queryParams.append('page', String(page));
       if (limit) queryParams.append('limit', String(limit));
       if (search) queryParams.append('search', String(search));
+      // Forwarded, not decided here: the connector service holds the query that
+      // returns these rows, and it checks the caller's role before honouring it.
+      if (includeServiceAccounts === 'true') {
+        queryParams.append('includeServiceAccounts', 'true');
+      }
       const queryString = queryParams.toString();
 
       const aiCommandOptions: AICommandOptions = {
@@ -2787,56 +2776,6 @@ export class UserController {
       });
       next(error);
     }
-  }
-
-  /**
-   * Extract user details from SAML assertion with fallbacks for different IdP formats
-   */
-  private extractSamlUserDetails(samlUser: any, email: string) {
-    const SAML_CLAIM_GIVENNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname';
-    const SAML_OID_GIVENNAME = 'urn:oid:2.5.4.42';
-    const SAML_CLAIM_SURNAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname';
-    const SAML_OID_SURNAME = 'urn:oid:2.5.4.4';
-    const SAML_CLAIM_NAME =
-      'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/name';
-    const SAML_OID_DISPLAYNAME = 'urn:oid:2.16.840.1.113730.3.1.241';
-
-    // Try multiple SAML attribute names for first name
-    const firstName =
-      samlUser.firstName ||
-      samlUser.givenName ||
-      samlUser[SAML_CLAIM_GIVENNAME] ||
-      samlUser[SAML_OID_GIVENNAME];
-
-    // Try multiple SAML attribute names for last name
-    const lastName =
-      samlUser.lastName ||
-      samlUser.surname ||
-      samlUser.sn ||
-      samlUser[SAML_CLAIM_SURNAME] ||
-      samlUser[SAML_OID_SURNAME];
-
-    // Try multiple SAML attribute names for display name
-    const displayName =
-      samlUser.displayName ||
-      samlUser.name ||
-      samlUser.fullName ||
-      samlUser[SAML_CLAIM_NAME] ||
-      samlUser[SAML_OID_DISPLAYNAME];
-
-    // Construct full name with fallbacks
-    const fullName =
-      displayName ||
-      [firstName, lastName].filter(Boolean).join(' ') ||
-      email.split('@')[0];
-
-    return {
-      firstName: firstName || undefined,
-      lastName: lastName || undefined,
-      fullName,
-    };
   }
 
   async emailChange(

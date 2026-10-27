@@ -2125,7 +2125,7 @@ class TestSearchWithFilters:
 
     async def _knowledge_search_over_a_thread(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock,
-        *, passages: int, hit: int | list[int] | dict[int, float] | None,
+        *, passages: int, hit: int | list[int] | dict[int, float] | None, group_index: int | None = None,
     ) -> dict:
         """A match inside a long thread: the thread is expanded into every passage."""
         from app.models.blocks import GroupType
@@ -2160,6 +2160,8 @@ class TestSearchWithFilters:
                 for i in range(passages)
             ]),
         }
+        if group_index is not None:
+            unit["block_group_index"] = group_index
         if hit is not None:
             if isinstance(hit, int):
                 hit = [hit]
@@ -2192,13 +2194,43 @@ class TestSearchWithFilters:
         assert result["omittedPassages"] == {"rec1": 36}
 
     @pytest.mark.asyncio
+    async def test_each_passage_of_an_expanded_section_names_its_section(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """Two sections of one record can share an RRF score, so the score cannot say
+        which section a passage came from; the section's block group index can."""
+        result = await self._knowledge_search_over_a_thread(
+            retrieval_service, mock_graph_provider, passages=4, hit=2, group_index=7
+        )
+
+        assert [hit.get("block_group_index") for hit in result["searchResults"]] == [7, 7, 7, 7]
+
+    @pytest.mark.asyncio
+    async def test_the_search_apis_links_keep_to_a_connected_apps_limit(
+        self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
+    ) -> None:
+        """The limit the request's filters carry reaches the links named on each record."""
+        limit = {"apps": [], "recordGroups": [], "records": ["rec1"]}
+        described = AsyncMock()
+        with patch("app.modules.retrieval.retrieval_service.describe_search_records", new=described), \
+             patch("app.modules.retrieval.retrieval_service.connection_sources_of", return_value=limit) as read:
+            await self._knowledge_search_over_a_thread(retrieval_service, mock_graph_provider, passages=4, hit=2)
+
+        described.assert_awaited_once()
+        assert described.await_args.kwargs["connection_sources"] is limit
+        assert read.call_args.args[0] == {}  # the search's own filter groups
+
+    @pytest.mark.asyncio
     async def test_search_api_records_carry_status_and_links(
         self, retrieval_service: RetrievalService, mock_graph_provider: MagicMock
     ) -> None:
         """An API caller gets each record's status and the records it links to,
         as the assistant does in its record headers, read for the asking user."""
 
-        async def describe(records: list, graph: object, org_id: str, *, user_id: str) -> None:
+        async def describe(
+            records: list, graph: object, org_id: str, *, user_id: str, connection_sources: object = None,
+        ) -> None:
+            assert connection_sources is None  # the search carried no connection limit
             for record in records:
                 record["statusSummary"] = f"seen by {user_id} in {org_id}"
 

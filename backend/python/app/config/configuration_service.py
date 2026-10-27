@@ -5,7 +5,7 @@ import os
 import threading
 
 import dotenv
-from cachetools import LRUCache
+from cachetools import LRUCache, TTLCache
 
 from app.config.constants.service import (
     RedisDefaults,
@@ -46,7 +46,12 @@ class ConfigurationService:
         self.logger.debug("🔐 Initialized EncryptionService")
 
         # Initialize LRU cache
-        self.cache = LRUCache(maxsize=1000)
+        # On the PostgreSQL key-value store a change made by another process arrives by NOTIFY. A notification can be lost (a dropped
+        # connection, a pooler with no direct address), so the cache also expires: a stale value lives at most this long.
+        if os.getenv("KV_STORE_TYPE", "").lower() == "postgres":
+            self.cache = TTLCache(maxsize=1000, ttl=float(os.getenv("CONFIG_CACHE_TTL_SECONDS", "60")))
+        else:
+            self.cache = LRUCache(maxsize=1000)
         # LRUCache is not thread-safe (even a read reorders it), and it is used from every
         # event loop's thread plus the watch thread. Never hold this across an await.
         self._cache_lock = threading.Lock()
@@ -114,26 +119,29 @@ class ConfigurationService:
             if value is None:
                 # Try environment variable fallback for specific services
                 env_fallback = self._get_env_fallback(key)
+                # No key in these two lines either, for the same reason as the
+                # cache hit above.
                 if env_fallback is not None:
-                    self.logger.debug("📦 Using environment variable fallback for key: %s", key)
+                    self.logger.debug("📦 Using environment variable fallback for a config key")
                     with self._cache_lock:
                         self.cache[key] = env_fallback
                     return env_fallback
 
-                self.logger.debug("📦 Cache miss for key: %s", key)
+                self.logger.debug("📦 Config cache miss")
                 return default
             if keep_in_cache:
                 with self._cache_lock:
                     self.cache[key] = value
             return value
         except Exception as e:
-            self.logger.error("❌ Failed to get config %s: %s", key, str(e))
+            self.logger.error("❌ Failed to get config %s: %s", key, type(e).__name__)
             if raise_on_error:
                 raise
             # Try environment variable fallback on error
             env_fallback = self._get_env_fallback(key)
             if env_fallback is not None:
-                self.logger.debug("📦 Using environment variable fallback due to error for key: %s", key)
+                # The error line above already names the key.
+                self.logger.debug("📦 Using environment variable fallback after the error")
                 return env_fallback
             return default
 
@@ -540,11 +548,12 @@ class ConfigurationService:
     async def get_redis_config(self) -> RedisConfig:
         """Get typed Redis connection configuration."""
         raw = await self.get_config(config_node_constants.REDIS.value) or {}
+        # A stored value of null (an install with no Redis writes its Redis entry from unset variables) reads as absent
         return RedisConfig(
-            host=raw.get("host", os.getenv(RedisEnv.HOST, RedisDefaults.HOST)),
-            port=int(raw.get("port", os.getenv(RedisEnv.PORT, RedisDefaults.PORT))),
+            host=raw.get("host") or os.getenv(RedisEnv.HOST, RedisDefaults.HOST),
+            port=int(raw.get("port") or os.getenv(RedisEnv.PORT, RedisDefaults.PORT)),
             password=raw.get("password", os.getenv(RedisEnv.PASSWORD)) or None,
-            db=int(raw.get("db", os.getenv(RedisEnv.DB, RedisDefaults.DB))),
+            db=int(raw.get("db") or os.getenv(RedisEnv.DB, RedisDefaults.DB)),
             tls=bool(raw.get("tls", False)),
         )
 

@@ -327,6 +327,8 @@ class ConfluenceDataCenterConnector(ConfluenceDataCenterRemovalMixin, BaseConnec
     OAuth is not supported.
     """
 
+    user_link_steps = ("_sync_users", "_sync_user_groups")
+
     def __init__(
         self,
         logger: Logger,

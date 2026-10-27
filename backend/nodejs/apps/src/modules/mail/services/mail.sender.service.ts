@@ -6,17 +6,15 @@ import { AppConfig } from '../../tokens_manager/config/config';
 import { MailBody, SmtpConfig } from '../middlewares/types';
 import { MailModel } from '../schema/mailInfo.schema';
 import { getEmailContent } from '../utils/email-content';
+import { smtpTransportOptions } from '../utils/smtp-transport';
 import {
   classifyMailError,
   MailSendResult,
   SMTP_CONNECTION_ERROR_CODES,
   SMTP_DEADLINE_ERROR_CODE,
+  smtpProblemOf,
 } from '../types/mail-event.types';
 
-const SMTP_DNS_TIMEOUT_MS = 30_000;
-const SMTP_CONNECTION_TIMEOUT_MS = 30_000;
-const SMTP_GREETING_TIMEOUT_MS = 30_000;
-const SMTP_SOCKET_TIMEOUT_MS = 60_000;
 export const SMTP_SEND_DEADLINE_MS = 120_000;
 export const SMTP_SYNC_SEND_DEADLINE_MS = 25_000;
 const SMTP_POOL_MAX_CONNECTIONS = 5;
@@ -93,24 +91,10 @@ export class MailSenderService {
       this.retire(this.pooled);
     }
     const transporter = nodemailer.createTransport({
-      host: smtpConfig.host,
-      port: smtpConfig.port || 587,
-      secure: false,
+      ...smtpTransportOptions(smtpConfig),
       pool: true,
       maxConnections: SMTP_POOL_MAX_CONNECTIONS,
       maxMessages: SMTP_POOL_MAX_MESSAGES,
-      dnsTimeout: SMTP_DNS_TIMEOUT_MS,
-      connectionTimeout: SMTP_CONNECTION_TIMEOUT_MS,
-      greetingTimeout: SMTP_GREETING_TIMEOUT_MS,
-      socketTimeout: SMTP_SOCKET_TIMEOUT_MS,
-      // Attachments come from the request body; never let one read a local file or fetch a URL.
-      disableFileAccess: true,
-      disableUrlAccess: true,
-      ...(!smtpConfig.username
-        ? {}
-        : smtpConfig.password
-          ? { auth: { user: smtpConfig.username, pass: smtpConfig.password } }
-          : { auth: { user: smtpConfig.username } }),
     });
     this.pooled = { key, transporter, inFlight: 0 };
     return this.pooled;
@@ -266,6 +250,7 @@ export class MailSenderService {
     if (openUntil !== null) {
       return {
         status: 'unavailable',
+        problem: 'unreachable',
         error: `SMTP server unreachable; sending paused until ${new Date(openUntil).toISOString()}`,
       };
     }
@@ -314,8 +299,9 @@ export class MailSenderService {
       // An unknown template is a caller bug; replaying it fails identically.
       const kind =
         typeof error === 'string' ? 'permanent' : classifyMailError(error);
-      this.logger.error('Mail send error', { error: message, kind });
-      return { status: kind, error: message };
+      const problem = smtpProblemOf(error);
+      this.logger.error('Mail send error', { error: message, kind, problem });
+      return { status: kind, error: message, ...(problem && { problem }) };
     }
   }
 }

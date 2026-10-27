@@ -38,6 +38,7 @@ from app.models.entities import Record
 from app.modules.parsers.code_parser.file_role import is_generated_file_name
 from app.modules.parsers.code_parser.routing import CodeFileRoute, plan_code_file
 from app.modules.parsers.code_parser.secret_scan import redact_secrets_bytes
+from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.modules.parsers.pdf.untrusted_pdf import inspect_untrusted_pdf
 from app.modules.pipeline.fingerprint import content_revision
 from app.modules.pipeline.ingress import StageIngress
@@ -47,7 +48,13 @@ from app.modules.transformers.sink_orchestrator import SinkOrchestrator
 from app.modules.transformers.transformer import ENRICHMENT_FOLLOWS
 from app.services.base_client import ServiceUnavailableError
 from app.services.cache.invalidation_hooks import notify_record_indexed
-from app.services.docling.client import within_docling_size_limit
+from app.services.docling.client import (
+    MAX_PAGES_ENV,
+    DoclingUnavailableError,
+    docling_max_pages,
+    docling_takes,
+    within_docling_size_limit,
+)
 from app.services.extraction.client import ExtractionClient
 from app.services.graph_db.common.record_visibility import (
     indexed_copy_fields,
@@ -102,6 +109,9 @@ def _is_code_file(mime_type: str | None, code_ext: str | None) -> bool:
         or normalize_file_extension(code_ext) in CODE_FILE_EXTENSION_VALUES
     )
 
+
+# Storage cleanups of abandoned virtual record ids still running in the background.
+_ABANDONED_VRID_CLEANUPS: set[asyncio.Task] = set()
 
 class EventProcessor:
     def __init__(
@@ -186,6 +196,16 @@ class EventProcessor:
             self.logger.error(
                 "Failed to rewrite/delete vectors for %s: %s", virtual_record_id, e
             )
+
+    def _spawn_abandoned_vrid_cleanup(self, org_id: str, virtual_record_id: str) -> asyncio.Task:
+        task = asyncio.create_task(
+            self._cleanup_abandoned_vrid_storage(org_id, virtual_record_id),
+            name=f"abandoned-vrid-cleanup-{virtual_record_id}",
+        )
+        # Held until done: the event loop keeps only weak references to tasks.
+        _ABANDONED_VRID_CLEANUPS.add(task)
+        task.add_done_callback(_ABANDONED_VRID_CLEANUPS.discard)
+        return task
 
     async def _cleanup_abandoned_vrid_storage(
         self, org_id: str, virtual_record_id: str
@@ -276,23 +296,40 @@ class EventProcessor:
             self.logger.info("📄 Using PdfPlumber+OpenCV processor (ENABLE_PDFPLUMBER_PROCESSOR=true)")
         elif not within_docling_size_limit(len(pdf_binary)):
             self.logger.info("📄 PDF is larger than Docling accepts; using the PdfPlumber+OpenCV processor")
+        elif not docling_takes(len(pdf_binary), inspected.page_count):
+            self.logger.info(
+                "📄 PDF has %d pages, more than Docling takes (%s=%d); using the PdfPlumber+OpenCV processor",
+                inspected.page_count, MAX_PAGES_ENV, docling_max_pages(),
+            )
         else:
             docling_failed = False
-            async for event in self.processor.process_pdf_with_docling(
-                recordName=record_name,
-                recordId=record_id,
-                pdf_binary=pdf_binary,
-                virtual_record_id=virtual_record_id,
-                event_type=event_type,
-                prev_virtual_record_id=prev_virtual_record_id,
-            ):
-                if event.event == IndexingEvent.DOCLING_FAILED:
-                    docling_failed = True
-                else:
-                    yield event
-            if not docling_failed:
-                return
-            self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
+            yielded = False
+            try:
+                async for event in self.processor.process_pdf_with_docling(
+                    recordName=record_name,
+                    recordId=record_id,
+                    pdf_binary=pdf_binary,
+                    virtual_record_id=virtual_record_id,
+                    event_type=event_type,
+                    prev_virtual_record_id=prev_virtual_record_id,
+                ):
+                    if event.event == IndexingEvent.DOCLING_FAILED:
+                        docling_failed = True
+                    else:
+                        yielded = True
+                        yield event
+            except DoclingUnavailableError as exc:
+                # Only before Docling produced anything: after PARSING_COMPLETE a
+                # second parse would index the record twice.
+                if yielded:
+                    raise
+                self.logger.warning(
+                    "⚠️ Docling is unavailable (%s); using the PdfPlumber+OpenCV processor", exc
+                )
+            else:
+                if not docling_failed:
+                    return
+                self.logger.warning("⚠️ Docling could not read the PDF; using the PdfPlumber+OpenCV processor")
 
         async for event in self.processor.process_pdf_with_pdf_plumber(
             recordName=record_name,
@@ -798,6 +835,9 @@ class EventProcessor:
         if blob_storage is None:
             # Cannot check; keep reusing the duplicate as before.
             return True
+        # Raises StorageLookupUnavailableError when storage cannot tell (a 503
+        # mid-move): neither "present" nor "gone" is safe to assume, so the event
+        # fails and is retried.
         return await blob_storage.get_actual_content_path(org_id, virtual_record_id) is not None
 
     async def _check_duplicate_by_md5(
@@ -1577,9 +1617,9 @@ class EventProcessor:
                 abandoned_virtual_record_id
                 and abandoned_virtual_record_id != virtual_record_id
             ):
-                await self._cleanup_abandoned_vrid_storage(
-                    org_id, abandoned_virtual_record_id
-                )
+                # Off the indexing slot: the cleanup waits to confirm no record
+                # still uses the vrid, and backs off on errors, before deleting.
+                self._spawn_abandoned_vrid_cleanup(org_id, abandoned_virtual_record_id)
                 await self._rewrite_or_delete_vrid_vectors(abandoned_virtual_record_id)
 
             # Ask the consumer for a nested parsing slot only after the record
@@ -1670,6 +1710,10 @@ class EventProcessor:
                 return
 
             # ── Legacy per-format dispatch (existing behaviour) ──────────────
+            # The parsing service makes the same check on its own side.
+            raise_if_password_protected_office(
+                file_content, extension=extension, mime_type=mime_type
+            )
             if mime_type == MimeTypes.GOOGLE_SLIDES.value:
                 self.logger.info("🚀 Processing Google Slides")
                 async for event in self.processor.process_pptx_document(

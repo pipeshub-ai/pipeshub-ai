@@ -26,6 +26,8 @@ from app.api.middlewares.token_policy import (
 )
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.core.org_context import OrgContext, set_request_context
+from app.utils.request_context import get_context as get_request_context
 
 # Marks the dependency that states which token classes a route accepts; the route
 # inventory test requires one on every route so no route admits service tokens by omission.
@@ -294,6 +296,7 @@ async def authMiddleware(request: Request) -> Request:
 
         # Attach the authenticated user information to the request state
         request.state.user = payload
+        _bind_org_context(request, payload)
 
         logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
 
@@ -305,6 +308,29 @@ async def authMiddleware(request: Request) -> Request:
         raise credentials_exception
 
     return request
+
+
+# Pre-org routes: the only paths that accept a service token with no ``orgId``. Any other
+# route receiving one answers 401 (same as ``service_token_org``). Keep in sync with docs/org-context.md.
+PRE_ORG_SERVICE_ROUTES = frozenset({"/api/v1/parse/providers"})
+
+
+def _bind_org_context(request: Request, payload: dict[str, Any]) -> None:
+    """Bind the verified token's org for the rest of the request (never a client field)."""
+    scoped = payload.get("token_type") == AuthTokenType.SCOPED.value
+    org_id = payload.get("orgId")
+    if not org_id:
+        if scoped and getattr(getattr(request, "url", None), "path", None) not in PRE_ORG_SERVICE_ROUTES:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing orgId")
+        return  # stays unbound: current() fails closed
+    rc = get_request_context()
+    set_request_context(OrgContext(
+        org_id=org_id,
+        user_id=payload.get("userId"),
+        kind="service" if scoped else "user",
+        source="scoped_jwt" if scoped else "jwt",
+        request_id=rc.root_id if rc else "-",
+    ))
 
 
 def is_request_admin(request: Request) -> bool:

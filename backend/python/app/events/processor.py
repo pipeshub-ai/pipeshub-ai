@@ -15,8 +15,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.service import config_node_constants
 from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
     DocumentProcessingError,
     IndexingError,
+    MultimodalModelNotConfiguredError,
     RecordStatusUpdateError,
 )
 from app.models.blocks import (
@@ -32,6 +34,7 @@ from app.models.blocks import (
     Point,
 )
 from app.models.entities import Record, RecordType
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD
 from app.modules.code_graph import enabled as code_graph_switch
 from app.modules.code_graph.block_projection import (
     BlockProjectionContext,
@@ -65,7 +68,7 @@ from app.services.messaging.config import (
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
-from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -121,6 +124,7 @@ def convert_record_dict_to_record(record_dict: dict[str, Any]) -> Record:
         ),
         source_created_at=record_dict.get("sourceCreatedAtTimestamp"),
         source_updated_at=record_dict.get("sourceLastModifiedTimestamp"),
+        source_timestamp_origin=record_dict.get(SOURCE_TIMESTAMP_ORIGIN_FIELD),
         weburl=record_dict.get("webUrl"),
         mime_type=mime_type,
         external_revision_id=record_dict.get("externalRevisionId"),
@@ -427,11 +431,22 @@ class Processor:
 
         try:
             self.logger.debug("📄 Processing PDF binary content")
-            # Get OCR configurations
-            ai_models = await self.config_service.get_config(
-                config_node_constants.AI_MODELS.value
-            )
-            ocr_configs = ai_models["ocr"]
+            # Get OCR configurations. A store that does not answer is an outage,
+            # retried: AISettingsUnavailableError is an IndexingError, which the
+            # handler below re-raises as it is. Settings never saved read as none.
+            try:
+                ai_models = await self.config_service.get_config(
+                    config_node_constants.AI_MODELS.value, raise_on_error=True
+                )
+            except Exception as e:
+                raise AISettingsUnavailableError(
+                    "Could not read the workspace's AI settings",
+                    record_id=recordId,
+                    details={"error": str(e)},
+                ) from e
+            if not isinstance(ai_models, dict):
+                ai_models = {}
+            ocr_configs = ai_models.get("ocr") or []
 
             # Configure OCR handler
             self.logger.debug("🛠️ Configuring OCR handler")
@@ -472,7 +487,8 @@ class Processor:
                     provider = OCRProvider.VLM_OCR.value
                 else:
                     self.logger.warning("⚠️ Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
-                    raise IndexingError(SCANNED_PDF_NO_OCR_MESSAGE, record_id=recordId)
+                    # Final on the first try: retrying cannot add a model.
+                    raise MultimodalModelNotConfiguredError(SCANNED_PDF_NO_OCR_MESSAGE, doc_id=recordId)
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
@@ -1592,6 +1608,7 @@ class Processor:
 
             # Use the unified HTML parser interface
             self.logger.debug("📄 Processing HTML content")
+            html_content = await asyncio.to_thread(fit_inline_images, html_content)
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.clean_html(html_content)
             html_content = html_parser.replace_relative_image_urls(html_content)
@@ -1619,6 +1636,8 @@ class Processor:
                 caption_map=caption_map if caption_map else None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the page.
+            del html_content, modified_html, images, caption_map
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1741,6 +1760,7 @@ class Processor:
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
+            markdown = await asyncio.to_thread(fit_inline_images, markdown)
             parser = self.parsers[ExtensionTypes.MD.value]
 
             # Each regex pass over a large document is one C call that holds
@@ -1773,6 +1793,8 @@ class Processor:
                 caption_map=caption_map or None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the document.
+            del md_content, markdown, modified_markdown, images, caption_map
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 

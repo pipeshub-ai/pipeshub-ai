@@ -246,12 +246,13 @@ class TestBuildPriorRoutingMessages:
         msgs = await _build_prior_routing_messages({
             "previous_conversations": [{"role": "user_query", "content": "Hello"}],
         })
-        assert len(msgs) == 1
+        # The open question is closed before the current one (HumanMessage, placeholder).
+        assert len(msgs) == 2
         assert isinstance(msgs[0], HumanMessage)
         assert msgs[0].content == "Hello"
 
     @pytest.mark.asyncio
-    async def test_bot_response_first_line_only(self) -> None:
+    async def test_bot_response_keeps_more_than_its_first_line(self) -> None:
         from langchain_core.messages import AIMessage
 
         from app.api.routes.agent import _build_prior_routing_messages
@@ -262,7 +263,52 @@ class TestBuildPriorRoutingMessages:
         })
         assert len(msgs) == 1
         assert isinstance(msgs[0], AIMessage)
-        assert msgs[0].content == "Line one"
+        # The intent step reads past an answer's first line: a follow-up often
+        # refers to something further down (HG-04).
+        assert msgs[0].content == "Line one\nLine two"
+
+    @pytest.mark.asyncio
+    async def test_a_long_failed_answer_keeps_its_outcome_after_truncation(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import FAILED, FAILED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "bot_response", "content": "x" * 5000, "status": FAILED},
+            ],
+        })
+        assert msgs[0].content.startswith("x" * 100)
+        assert msgs[0].content.endswith(FAILED_ANSWER)
+
+    @pytest.mark.asyncio
+    async def test_a_question_without_an_answer_row_is_closed_before_the_next(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import UNANSWERED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "user_query", "content": "List every open epic"},
+                {"role": "user_query", "content": "Only the blocked ones"},
+                {"role": "bot_response", "content": "Two are blocked."},
+            ],
+        })
+        assert [type(m) for m in msgs] == [HumanMessage, AIMessage, HumanMessage, AIMessage]
+        assert msgs[1].content == UNANSWERED_ANSWER
+
+    @pytest.mark.asyncio
+    async def test_history_ending_on_an_open_question_is_closed_before_the_current_one(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import UNANSWERED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [{"role": "user_query", "content": "List every open epic"}],
+        })
+        assert isinstance(msgs[-1], AIMessage)
+        assert msgs[-1].content == UNANSWERED_ANSWER
 
     @pytest.mark.asyncio
     async def test_user_and_bot_turns_in_order(self) -> None:
@@ -278,18 +324,21 @@ class TestBuildPriorRoutingMessages:
         assert isinstance(msgs[0], HumanMessage)
         assert msgs[0].content == "Q?"
         assert isinstance(msgs[1], AIMessage)
-        assert msgs[1].content == "A1"
+        assert msgs[1].content == "A1\nmore"
 
     @pytest.mark.asyncio
     async def test_only_last_six_messages(self) -> None:
+        from langchain_core.messages import HumanMessage
+
         from app.api.routes.agent import _build_prior_routing_messages
         convs = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
         msgs = await _build_prior_routing_messages({
             "previous_conversations": convs,
         })
-        assert len(msgs) == 6
-        assert "q9" in str(msgs[-1].content)
-        assert "q3" not in str(msgs[0].content)
+        questions = [m for m in msgs if isinstance(m, HumanMessage)]
+        assert len(questions) == 6
+        assert "q9" in str(questions[-1].content)
+        assert "q3" not in str(questions[0].content)
 
     @pytest.mark.asyncio
     async def test_user_content_truncated_to_200(self) -> None:
@@ -338,7 +387,7 @@ class TestBuildPriorRoutingMessages:
             graph_provider=_readable_graph(),
             is_multimodal_llm=False,
         )
-        assert len(msgs) == 1
+        assert len(msgs) == 2
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[0].content, list)
         blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x", lookup_result=None)

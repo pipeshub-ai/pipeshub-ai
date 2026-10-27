@@ -78,13 +78,12 @@ class ConfluenceAdapter(ScenarioAdapter):
             timeout=_SOURCE_VISIBLE_TIMEOUT_SEC, poll_interval=_POLL_SEC,
         )
 
-    async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
-        title = f"PipesHub IT matrix {role.value} {token}"
-        resp = await self.confluence.create_page(
-            root_level=True,
-            body={"spaceId": self.space_id, "status": "current", "title": title,
-                  "body": _storage(text)},
-        )
+    async def _create_page(self, title: str, text: str, parent_id: str | None = None) -> str:
+        body: dict[str, Any] = {"spaceId": self.space_id, "status": "current", "title": title,
+                                "body": _storage(text)}
+        if parent_id:
+            body["parentId"] = parent_id
+        resp = await self.confluence.create_page(root_level=parent_id is None, body=body)
         assert resp.status in (200, 201), f"create_page {title!r}: HTTP {resp.status}"
         page_id = str(resp.json()["id"])
         self.created.append(page_id)
@@ -92,8 +91,43 @@ class ConfluenceAdapter(ScenarioAdapter):
             lambda: check_page_in_v1_search_bool(self.confluence, self.space_key, page_id),
             f"page {page_id} visible in content search",
         )
+        return page_id
+
+    async def create_item(self, role: Role, text: str, token: str) -> SourceItem:
+        title = f"PipesHub IT matrix {role.value} {token}"
+        extra: dict[str, Any] = {}
+        parent_id = None
+        if role is Role.FOLDER:
+            parent_id = extra["parent_id"] = await self._create_page(
+                f"PipesHub IT matrix dir {token}", "Parent page of the folder-rename item.",
+            )
+        page_id = await self._create_page(title, text, parent_id)
         return SourceItem(role=role, key=page_id, record_name=title, text=text, token=token,
-                          external_id=page_id)
+                          external_id=page_id, extra=extra)
+
+    async def move_item(self, item: SourceItem) -> SourceItem:
+        folder = f"PipesHub IT matrix moved {item.token}"
+        parent_id = await self._create_page(folder, "Parent page the move item is moved under.")
+        resp = await self.confluence.move_page(item.key, parent_id)
+        assert resp.status == 200, f"move_page {item.key} -> {parent_id}: HTTP {resp.status}"
+        return SourceItem(role=item.role, key=item.key, record_name=item.record_name, text=item.text,
+                          token=item.token, external_id=item.external_id,
+                          extra={**item.extra, "folder": folder})
+
+    async def rename_folder(self, item: SourceItem) -> SourceItem:
+        new = f"PipesHub IT matrix dir {item.token} renamed"
+        parent_id = item.extra["parent_id"]
+        resp = await self.confluence.update_page_title(
+            id=int(parent_id), body={"status": "current", "title": new},
+        )
+        assert resp.status == 200, f"update_page_title {parent_id}: HTTP {resp.status}"
+        await self._wait(
+            lambda: check_page_title_bool(self.confluence, parent_id, new),
+            f"page {parent_id} titled {new!r}",
+        )
+        return SourceItem(role=item.role, key=item.key, record_name=item.record_name, text=item.text,
+                          token=item.token, external_id=item.external_id,
+                          extra={**item.extra, "folder": new})
 
     async def _version(self, page_id: str) -> int:
         return int(await get_confluence_page_version_number_v1(self.confluence, page_id))
@@ -218,6 +252,7 @@ async def scenario_adapter(
 @pytest.mark.confluence
 class TestConfluenceScenarioMatrix(ConnectorScenarioMatrix):
     SOURCE = "Confluence"
+    TREE_MOVES = True
     UNSUPPORTED = {
         Action.CHANGE_PERMISSION.value: (
             "the CI site has one Confluence account (CONFLUENCE_TEST_EMAIL); a page "

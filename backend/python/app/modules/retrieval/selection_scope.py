@@ -265,6 +265,33 @@ async def resolve_request_scopes(
     return selection, [*([selection] if selection is not None else []), *bounds]
 
 
+def connection_sources_of(filters: Mapping[str, Any] | None) -> dict[str, list[str]] | None:
+    """The connected app's limit a turn's filters carry, as the sources
+    ``outside_connection`` takes; None when they carry none."""
+    if not any(key in (filters or {}) for key in CONNECTION_BOUND_FILTER_KEYS):
+        return None
+    return {target: _ids(filters, key) for key, target in CONNECTION_BOUND_FILTER_KEYS.items()}
+
+
+async def connection_bound_scope(
+    graph_provider: IGraphDBProvider,
+    user_key: str,
+    org_id: str,
+    filters: Mapping[str, Any] | None,
+) -> SelectionScope | None:
+    """The connected app's limit among ``filters``' bounds, or None when the
+    request carries none. Resolved as ``resolve_request_scopes`` resolves it,
+    so a search that already did reads it from the memo."""
+    bound = {key: (filters or {})[key] for key in CONNECTION_BOUND_FILTER_KEYS if key in (filters or {})}
+    if not bound:
+        return None
+    (selection,) = allowed_filters(bound)
+    return (
+        await resolve_selection_scope(graph_provider, user_key, org_id, selection, readable_only=False)
+        or SelectionScope(app_ids=frozenset(selection["apps"]))
+    )
+
+
 def selection_app_ids(filters: Mapping[str, Any] | None) -> list[str] | None:
     """Every app a selection below app level touches, as recorded at the start
     of the turn, or None when the filters select whole apps only."""

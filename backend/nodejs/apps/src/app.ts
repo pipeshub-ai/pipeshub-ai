@@ -1,3 +1,6 @@
+// The edition seam loads first: an edition's schemas register their model names
+// (org, users) before any shared module imports a schema with the same name.
+import './config';
 import express, { Express, Response } from 'express';
 import path from 'path';
 import helmet from 'helmet';
@@ -10,6 +13,7 @@ import { HttpMethod } from './libs/enums/http-methods.enum';
 import { Container } from 'inversify';
 import { Logger } from './libs/services/logger.service';
 import { createHealthRouter } from './modules/tokens_manager/routes/health.routes';
+import { ConfigService } from './modules/tokens_manager/services/cm.service';
 import { createCodeGraphRouter } from './modules/enterprise_search/routes/code-graph.routes';
 import { ErrorMiddleware } from './libs/middlewares/error.middleware';
 import { OAuthTokenService } from './modules/oauth_provider/services/oauth_token.service';
@@ -20,6 +24,7 @@ import {
   newSystemRoot,
 } from './libs/context/request-context';
 import { metricsMiddleware } from './libs/middlewares/telemetry.middleware';
+import { configureEnvelopeFromSecret } from './libs/context/envelope';
 import { startOrgMetricsRefresh } from './modules/user_management/services/metrics.refresh.service';
 import { OutboxDispatcher } from './libs/services/outbox/outbox.dispatcher';
 import { IMessageProducer } from './libs/types/messaging.types';
@@ -48,14 +53,13 @@ import {
   UserManagerContainer,
   AuthServiceContainer,
   createUserAccountRouter,
-  createSamlRouter,
   createOrgAuthConfigRouter,
-  SamlController,
   MailServiceContainer,
   createMailServiceRouter,
   EnterpriseSearchAgentContainer,
   createConversationalRouter,
   createSemanticSearchRouter,
+  createRetrieveRouter,
   createAgentConversationalRouter,
   createChatSpeechRouter,
   KnowledgeBaseContainer,
@@ -219,6 +223,9 @@ export class Application {
       // Loads configuration
       const configurationManagerConfig = loadConfigurationManagerConfig();
       const appConfig = await loadAppConfig();
+      configureEnvelopeFromSecret(appConfig.scopedJwtSecret, () =>
+        ConfigService.getInstance().getScopedJwtSecret(),
+      );
 
       // Ensure message broker topics/streams exist
       try {
@@ -437,6 +444,16 @@ export class Application {
           return;
         }
 
+        // Every workspace page is pre-rendered, so an unmatched /workspace/
+        // URL is a page this build does not have. The root shell would
+        // hydrate as `/` and redirect to /chat; serve the not-found page.
+        if (/^\/workspace\//.test(_req.path)) {
+          res.status(404).sendFile(path.join(publicDir, '404.html'), {
+            headers: { 'Cache-Control': 'no-cache' },
+          });
+          return;
+        }
+
         sendShell(res);
       });
 
@@ -504,6 +521,8 @@ export class Application {
               imgSrc: ["'self'", 'data:', 'blob:', 'https:'], // Images in PDFs
               fontSrc: ["'self'", 'data:', 'https:'], // Fonts in PDFs
               mediaSrc: ["'self'", 'blob:', 'data:'], // Media in PDFs
+              // Answers render model output; a form in one must not post off-origin.
+              formAction: ["'self'"],
             },
           },
         }),
@@ -556,7 +575,9 @@ export class Application {
         stream: {
           write: (message: string) => this.logger.info(message.trim()),
         },
-        skip: (req) => !isApiPath(req.path),
+        // Evaluated after the response: a mounted router has rewritten req.path
+        // to its own mount-relative path by then, originalUrl keeps the full one.
+        skip: (req) => !isApiPath(req.originalUrl.split('?')[0] ?? ''),
       }),
     );
 
@@ -616,8 +637,6 @@ export class Application {
       createFeatureFlagRouter(this.entityManagerContainer),
     );
 
-    this.app.use('/api/v1/saml', createSamlRouter(this.authServiceContainer));
-
     this.app.use(
       '/api/v1/userAccount',
       createUserAccountRouter(this.authServiceContainer),
@@ -666,6 +685,12 @@ export class Application {
     this.app.use(
       '/api/v1/search',
       createSemanticSearchRouter(this.esAgentContainer),
+    );
+
+    // chunks with citations for developers' own RAG; stores nothing
+    this.app.use(
+      '/api/v1/retrieve',
+      createRetrieveRouter(this.esAgentContainer),
     );
 
     // code-graph status for the dashboard (repos and their graph status)
@@ -903,11 +928,7 @@ export class Application {
           resolve();
         });
       });
-      if (this.authServiceContainer) {
-        await this.updateSamlStrategies();
-      }
       await editionBoot.afterListen(this.logger, this.editionContainers());
-
     } catch (error) {
       this.logger.error('Failed to start server', {
         error: error instanceof Error ? error.message : 'Unknown error',
@@ -1218,16 +1239,6 @@ export class Application {
       this.logger.info('OAuth token service registered for AuthMiddleware factory');
     } catch (error) {
       this.logger.warn('Failed to register OAuth token service', {
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
-    }
-  }
-  async updateSamlStrategies(): Promise<void> {
-    try {
-      const samlController = this.authServiceContainer.get<SamlController>('SamlController');
-      await samlController.updateSamlStrategiesWithCallback();
-    } catch (error) {
-      this.logger.warn('Failed to update passport strategies', {
         error: error instanceof Error ? error.message : 'Unknown error',
       });
     }

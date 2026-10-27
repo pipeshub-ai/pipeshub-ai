@@ -8,6 +8,7 @@ import { ChatApi, type KnowledgeBaseForChat } from '@/chat/api';
 import { useChatStore } from '@/chat/store';
 import type { AppliedFilterNode, AppliedFilters, ChatKnowledgeFilters } from '@/chat/types';
 import type { ProjectKnowledgeScope } from '@/chat/project-types';
+import { CONNECTOR_ICONS } from '@/app/components/ui/ConnectorIcon';
 
 const CONNECTORS_PAGE_LIMIT = 100;
 const CONNECTORS_MAX_PAGES = 10;
@@ -21,6 +22,32 @@ interface ConnectorRow {
 
 function isCollectionOrigin(item: KnowledgeBaseForChat): boolean {
   return (item.origin ?? '').toString().trim().toUpperCase() === 'COLLECTION';
+}
+
+/**
+ * A connector row's name and icon key. Some connectors name their instance
+ * after a raw URL (RSS, web) and some rows arrive without a `connector`, which
+ * left a generic icon; fall back to the sub-type, then to the name itself.
+ */
+export function connectorRowDisplay(item: Pick<KnowledgeBaseForChat, 'name' | 'connector' | 'subType'>): {
+  name: string;
+  connector: string;
+} {
+  const rawName = (item.name ?? '').trim();
+  let connector = (item.connector ?? '').trim() || (item.subType ?? '').trim();
+  // Only a name that is exactly a connector's ("Zendesk"): a fuzzy match would give "Acme docs" a Google Docs icon.
+  if (!connector && rawName.toLowerCase().replace(/[_\s]+/g, '-') in CONNECTOR_ICONS) connector = rawName;
+  let name = rawName;
+  if (/^https?:\/\//i.test(rawName)) {
+    try {
+      const url = new URL(rawName);
+      const path = url.pathname.replace(/\/+$/, '');
+      name = `${url.hostname.replace(/^www\./, '')}${path}`;
+    } catch {
+      // Not a parseable URL after all; keep the name as given.
+    }
+  }
+  return { name: name || rawName, connector };
 }
 
 const BELOW_APPS = { recordGroups: 'recordGroup', records: 'folder' } as const;
@@ -66,11 +93,12 @@ export function ConnectorsCard({ knowledgeScope, appliedFilters, canEdit, onChan
           for (const item of res.knowledgeBases) {
             if (seen.has(item.id) || isCollectionOrigin(item)) continue;
             seen.add(item.id);
+            const display = connectorRowDisplay(item);
             rows.push({
               id: item.id,
-              name: item.name,
+              name: display.name,
               nodeType: item.nodeType || 'app',
-              connector: item.connector ?? '',
+              connector: display.connector,
             });
           }
           cursor = res.nextCursor;

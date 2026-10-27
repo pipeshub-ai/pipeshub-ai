@@ -19,6 +19,7 @@ from app.config.constants.arangodb import (
     ProgressStatus,
     RecordRelations,
 )
+from app.core.org_context import instrument_org_methods
 from app.exceptions.graph_db_exceptions import PermissionVerificationUnavailableError
 from app.models.entities import Person
 from app.services.graph_db.common.record_visibility import (
@@ -26,7 +27,9 @@ from app.services.graph_db.common.record_visibility import (
     is_live_record,
     is_searchable_record,
 )
+from app.services.graph_db.push_claim import PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import MAX_TAXONOMY_ALIASES
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.kh_breadcrumbs import browse_scope
 from app.utils.kh_chain_tops import place_chain_tops
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -237,6 +240,8 @@ def promoted_duplicate_extraction_status(
         return primary_status or ProgressStatus.COMPLETED.value
     if new_indexing_status == ProgressStatus.EMPTY.value:
         return ProgressStatus.EMPTY.value
+    if new_indexing_status == ProgressStatus.PASSWORD_PROTECTED.value:
+        return ProgressStatus.SKIPPED.value
     return ProgressStatus.FAILED.value
 
 
@@ -493,6 +498,11 @@ class IGraphDBProvider(ABC):
        During transition, providers should handle both old format (with _key, _from, _to)
        and new generic format to ensure smooth migration.
     """
+
+    def __init_subclass__(cls, **kwargs: object) -> None:
+        super().__init_subclass__(**kwargs)
+        instrument_org_methods(cls)  # shadow/enforce check of every org_id argument
+
 
     # ==================== Connection Management ====================
 
@@ -1853,7 +1863,8 @@ class IGraphDBProvider(ABC):
         Those queries are issued concurrently. Awaiting them in place would make
         an unspecialised provider slower than the per-record code this replaced,
         which gathered the same calls; a caller must not lose latency by moving
-        to the batch API.
+        to the batch API. At most ``GRAPH_FANOUT_CONCURRENCY`` run at once, so a
+        page of hits does not open a burst of new database connections.
         """
         jobs = [
             (record_id, relation_type, outgoing)
@@ -1870,7 +1881,8 @@ class IGraphDBProvider(ABC):
             )
             return await call(record_id, relation_type, transaction, limit=limit_per_direction)
 
-        results = await asyncio.gather(
+        results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[fetch(rid, rel, outgoing=out) for rid, rel, out in jobs],
             return_exceptions=True,
         )
@@ -2339,6 +2351,49 @@ class IGraphDBProvider(ABC):
         pass
 
     @abstractmethod
+    async def claim_push_record(
+        self,
+        *,
+        kb_id: str,
+        org_id: str,
+        key: str,
+        expected: PushExpect | None,
+        new: PushSet,
+        transaction: str | None = None,
+    ) -> PushClaim:
+        """Claim a push of record ``key`` in knowledge base ``kb_id``, first in its transaction.
+
+        ``expected=None`` is a create: it succeeds only while no record has the key. Otherwise it
+        is an update: it succeeds only while the record is live, in this KB and org, and still
+        holds ``expected`` (document id, revision, version), and it then writes ``new`` (document
+        id and version; the revision follows with the record upsert). A create takes the KB node's
+        lock on Neo4j so two creates of one key serialise; on ArangoDB the record upsert's write
+        conflict is the arbiter.
+
+        A KB that is missing or being deleted refuses the claim. The caller rolls its transaction
+        back on any result but ``CLAIMED``; a provider error (a write conflict) is raised.
+        """
+        pass
+
+    @abstractmethod
+    async def retag_push_record(
+        self,
+        *,
+        key: str,
+        kb_id: str,
+        org_id: str,
+        expected_revision: str,
+        new_revision: str,
+        transaction: str | None = None,
+    ) -> bool:
+        """Set only ``externalRevisionId`` on a live pushed record, while it still holds ``expected_revision``.
+
+        Used when the normaliser tag of a stored revision is upgraded: no content, status or
+        event changes. Returns whether the write applied.
+        """
+        pass
+
+    @abstractmethod
     async def compare_and_set_indexing_status(
         self,
         record_ids: list[str],
@@ -2441,6 +2496,36 @@ class IGraphDBProvider(ABC):
         """
 
     @abstractmethod
+    async def stage_states_unheld_revisions(
+        self, virtual_record_ids: list[str], *, updated_before_ms: int
+    ) -> list[tuple[str, str]]:
+        """``(virtualRecordId, rev)`` of these virtual records' revisions that have stage states,
+        that no record holding the virtual record is on (``contentRev``; records in the trash
+        count), and whose newest state was updated before ``updated_before_ms``.
+
+        Sorted by virtual record id, then rev. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def stage_states_delete_unheld_revisions(
+        self, revisions: list[tuple[str, str]], *, updated_before_ms: int
+    ) -> int:
+        """Delete the stage states of each ``(virtualRecordId, rev)`` that still meets the rule of
+        :meth:`stage_states_unheld_revisions`, re-checked in the delete itself; returns how many went.
+
+        Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_revision_pointers(self, after_key: str | None, limit: int) -> list[dict[str, Any]]:
+        """A page of ``virtualRecordToDocIdMapping`` rows, up to ``limit`` by key after ``after_key``.
+
+        Each is ``{"virtualRecordId", "orgId", "currentRev", "previousRev"}``; the revs are None
+        on a row whose virtual record has no artifact set, and such rows are returned too, so
+        one walk covers every virtual record. Raises on infrastructure errors.
+        """
+
+    @abstractmethod
     async def get_record_content_revs(
         self,
         record_ids: list[str],
@@ -2465,6 +2550,19 @@ class IGraphDBProvider(ABC):
 
         Returns the ids updated; a record that moved to another revision is left alone.
         Raises on infrastructure errors.
+        """
+
+    @abstractmethod
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``; raises when the read fails.
+
+        A delete is complete when none of the keys it collected remain, so unlike
+        ``get_existing_record_keys`` a failed read must not look like "nothing remains".
         """
 
     @abstractmethod
@@ -2927,6 +3025,21 @@ class IGraphDBProvider(ABC):
         i.e. the content stored under this record's storage path.
 
         Raises on a query failure: an empty list means "owns no content", which
+        a storage move acts on.
+        """
+        pass
+
+    @abstractmethod
+    async def get_record_group_virtual_record_ids(
+        self,
+        record_group_id: str,
+        transaction: str | None = None,
+    ) -> list[str]:
+        """Return the distinct virtualRecordIds of every record in *record_group_id*
+        or in a record group nested beneath it -- the content stored under the
+        group's storage prefix.
+
+        Raises on a query failure: an empty list means "holds no content", which
         a storage move acts on.
         """
         pass
@@ -4319,8 +4432,8 @@ class IGraphDBProvider(ABC):
         over to one of these holders. A trashed holder counts: a restore needs
         the content, and the trash purge releases it later. VRIDs nobody holds
         are absent from the result. Each holder carries ``id``, ``connectorId``,
-        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl`` and
-        ``isDeleted`` (a bool).
+        ``connectorName``, ``recordGroupId``, ``recordName``, ``webUrl``,
+        ``contentRev`` (None when unset) and ``isDeleted`` (a bool).
 
         Raises on failure rather than returning an empty mapping, which would
         read as "nothing is shared" and let the caller delete shared storage.
@@ -4387,6 +4500,26 @@ class IGraphDBProvider(ABC):
 
         Raises on failure rather than answering an empty set, which would read
         as "nothing references these" and let the caller delete their vectors.
+        """
+        raise NotImplementedError
+
+    @abstractmethod
+    async def has_records_indexed_since(
+        self,
+        connector_id: str,
+        since_ms: int,
+        *,
+        transaction: str | None = None,
+    ) -> bool:
+        """Whether a record of this connector finished indexing after ``since_ms``.
+
+        Asked when a record has waited a day on its source's rate limit. If the
+        connector's other records were indexed meanwhile, the source is serving
+        the connector and the record is only waiting its turn in a backlog.
+        Looks for one COMPLETED record with a ``lastIndexTimestamp`` after
+        ``since_ms`` and stops at the first.
+
+        Raises on failure; the caller decides what an unknown answer means.
         """
         raise NotImplementedError
 
@@ -5212,6 +5345,17 @@ class IGraphDBProvider(ABC):
             transaction (Optional[str]): Optional transaction context
         """
         pass
+
+    async def remove_user_access_to_connector(
+        self,
+        connector_id: str,
+        user_id: str,
+        transaction: str | None = None,
+    ) -> int:
+        """Delete the user's own PERMISSION edges to the connector's records, record groups and user groups,
+        for a person the source no longer lets in (a suspended or deleted account). Grants through groups,
+        teams or the organization are left alone. Returns how many edges were deleted."""
+        raise NotImplementedError
 
     @abstractmethod
     async def get_uploaded_document_ids(
@@ -6478,7 +6622,9 @@ class IGraphDBProvider(ABC):
         team_id: str,
         org_id: str,
         user_key: str,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get a single team with its members and permissions.
@@ -6489,6 +6635,11 @@ class IGraphDBProvider(ABC):
                 when it belongs to this org
             user_key (str): Current user's key (for permission checking)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with members and permissions, None if not found
@@ -6505,7 +6656,9 @@ class IGraphDBProvider(ABC):
         created_by: str | None = None,
         created_after: int | None = None,
         created_before: int | None = None,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get all teams that a user is a member of.
@@ -6519,6 +6672,11 @@ class IGraphDBProvider(ABC):
             created_after (Optional[int]): Filter teams created after this timestamp (ms)
             created_before (Optional[int]): Filter teams created before this timestamp (ms)
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Tuple[List[Dict], int]: (List of teams with members and permissions, total count)
@@ -6534,7 +6692,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> dict | None:
         """
         Get all users in a specific team.
@@ -6547,6 +6707,11 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of members per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                among the members. Off by default: every account joins the
+                organisation's All team when it is created, and a member row
+                carries the `userId` that binds an agent to a service account.
+                Only an organisation administrator sees them.
 
         Returns:
             Optional[Dict]: Team data with paginated members, None if not found
@@ -6667,7 +6832,9 @@ class IGraphDBProvider(ABC):
         search: str | None = None,
         page: int = 1,
         limit: int = 100,
-        transaction: str | None = None
+        transaction: str | None = None,
+        *,
+        include_service_accounts: bool = False,
     ) -> tuple[list[dict], int]:
         """
         Get users in an organization with pagination and search.
@@ -6678,6 +6845,10 @@ class IGraphDBProvider(ABC):
             page (int): Page number (1-indexed)
             limit (int): Number of items per page
             transaction (Optional[str]): Optional transaction ID
+            include_service_accounts (bool): Whether machine identities belong
+                in the answer. Off by default, because this is the directory of
+                people and a service account's id is what binds an agent to it.
+                Only an organisation administrator may turn it on.
 
         Returns:
             Tuple[List[Dict], int]: (List of users, total count)

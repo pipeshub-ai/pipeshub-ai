@@ -1,11 +1,14 @@
 'use client';
 
 import React, { useMemo } from 'react';
-import { Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
+import { Box, Flex, Grid, Heading, SegmentedControl, Text, TextField } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import type { ActionCatalogItem } from '../types';
 import { ActionCard, type ActionCardCta } from './action-card';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { pagePaddingX } from '@/app/components/ui/responsive';
+import { MOBILE_PAGE_PADDING_TOP } from '@/app/(main)/workspace/components/settings-page-container';
 
 interface SegmentedTab {
   value: string;
@@ -75,6 +78,7 @@ export function ActionsCatalogLayout({
   showQuickAddOnMergedCards = true,
   preFilteredCatalog = false,
 }: ActionsCatalogLayoutProps) {
+  const isMobile = useIsMobile();
   const tabFiltered = useMemo(() => {
     if (preFilteredCatalog) return items;
     if (tabFilterMode === 'orgInstances') {
@@ -140,15 +144,14 @@ export function ActionsCatalogLayout({
       style={{
         width: '100%',
         height: '100%',
-        paddingTop: 64,
+        paddingTop: isMobile ? MOBILE_PAGE_PADDING_TOP : 64,
         paddingBottom: 64,
-        paddingLeft: 100,
-        paddingRight: 100,
+        paddingInline: pagePaddingX(100),
         overflowY: 'auto',
       }}
     >
-      <Flex justify="between" align="start" gap="2" style={{ width: '100%' }}>
-        <Flex direction="column" gap="2" style={{ flex: 1 }}>
+      <Flex justify="between" align="start" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        <Flex direction="column" gap="2" style={{ flex: '1 1 240px', minWidth: 0 }}>
           <Heading size="5" weight="medium" style={{ color: 'var(--gray-12)' }}>
             {title}
           </Heading>
@@ -157,32 +160,41 @@ export function ActionsCatalogLayout({
           </Text>
         </Flex>
 
-        <TextField.Root
-          size="2"
-          placeholder={searchPlaceholder}
-          value={searchQuery}
-          onChange={(e) => onSearchChange(e.target.value)}
-          style={{ width: 224, flexShrink: 0 }}
-        >
-          <TextField.Slot>
-            <MaterialIcon name="search" size={16} color="var(--gray-9)" />
-          </TextField.Slot>
-        </TextField.Root>
+        {/* Phones: the trailing link sits under the subtitle, above search */}
+        {isMobile && trailingAction && <Box width="100%">{trailingAction}</Box>}
+
+        <Box width={{ initial: '100%', sm: '224px' }} flexShrink="0">
+          <TextField.Root
+            size="2"
+            placeholder={searchPlaceholder}
+            value={searchQuery}
+            onChange={(e) => onSearchChange(e.target.value)}
+            style={{ width: '100%' }}
+          >
+            <TextField.Slot>
+              <MaterialIcon name="search" size={16} color="var(--gray-9)" />
+            </TextField.Slot>
+          </TextField.Root>
+        </Box>
       </Flex>
 
-      <Flex align="center" justify="between" style={{ width: '100%' }}>
-        <SegmentedControl.Root
-          value={activeTab}
-          onValueChange={(value) => onTabChange(value)}
-          size="2"
-        >
-          {tabs.map((tab) => (
-            <SegmentedControl.Item key={tab.value} value={tab.value}>
-              {tab.label} ({tabCounts[tab.value] ?? 0})
-            </SegmentedControl.Item>
-          ))}
-        </SegmentedControl.Root>
-        {trailingAction}
+      <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ width: '100%' }}>
+        {/* Phones: scroll the tab row sideways instead of pushing it off-screen */}
+        <Box className="no-scrollbar tab-scroll-fade" style={{ maxWidth: '100%', overflowX: 'auto' }}>
+          <SegmentedControl.Root
+            value={activeTab}
+            onValueChange={(value) => onTabChange(value)}
+            size="2"
+            style={{ minWidth: 'max-content' }}
+          >
+            {tabs.map((tab) => (
+              <SegmentedControl.Item key={tab.value} value={tab.value}>
+                {tab.label} ({tabCounts[tab.value] ?? 0})
+              </SegmentedControl.Item>
+            ))}
+          </SegmentedControl.Root>
+        </Box>
+        {!isMobile && trailingAction}
       </Flex>
 
       {leadingSection}
@@ -215,7 +227,7 @@ export function ActionsCatalogLayout({
           </Text>
         </Flex>
       ) : (
-        <Grid columns={{ initial: '2', md: '3', lg: '3' }} gap="4" style={{ width: '100%' }}>
+        <Grid columns={{ initial: '1', sm: '2', md: '3', lg: '3' }} gap="4" style={{ width: '100%' }}>
           {filtered.map((item) => {
             const { cta, label } = resolveCta(item);
             return (

@@ -162,11 +162,21 @@ REGISTRY: dict[str, tuple[Rule, str]] = {
         Rule.ALL,
         "a storage move takes every stored file under the folder, or a restored record would lose its content",
     ),
+    "get_record_group_virtual_record_ids": (
+        Rule.ALL,
+        "a storage move takes every stored file under the group, or a restored record would lose its content",
+    ),
+    "has_records_indexed_since": (
+        Rule.ALL,
+        "asks whether the source served the connector; a record trashed after it was indexed still shows it did",
+    ),
     # Writes.
     "records_accept_indexed_copy": (Rule.ALL, "reads the records collection's schema, never a record"),
     "reindex_single_record": (Rule.WRITE, "refuses a deleted record"),
     "reindex_record_group_records": (Rule.WRITE, "walks with get_records_by_record_group"),
     "update_indexing_status_for_record_ids": (Rule.WRITE, ""),
+    "claim_push_record": (Rule.WRITE, "claims a push of a live record only: a trashed record never matches"),
+    "retag_push_record": (Rule.WRITE, "retags a live pushed record only"),
     "compare_and_set_record_fields": (Rule.WRITE, "writes only records still on the given contentRev"),
     "stage_states_delete_for_virtual_records": (
         Rule.WRITE,

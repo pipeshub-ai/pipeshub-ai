@@ -167,7 +167,7 @@ async function loadMcpServersForAgentContext(
 
 async function fetchAgentAndToolsets(editingAgentKey: string | null) {
   const agentDetails = editingAgentKey
-    ? await AgentsApi.getAgent(editingAgentKey).then((r) => r.agent).catch(() => null)
+    ? await AgentsApi.getAgent(editingAgentKey, { quiet: true }).then((r) => r.agent).catch(() => null)
     : null;
   const [allToolsets, mcpServers] = await Promise.all([
     loadToolsetsForAgentContext(agentDetails, editingAgentKey),
@@ -274,6 +274,10 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     [refreshToolsets, refreshMcpServers]
   );
 
+  // Bumped by `retryLoad` to run the load again after an agent failed to load.
+  const [loadAttempt, setLoadAttempt] = useState(0);
+  const retryLoad = useCallback(() => setLoadAttempt((n) => n + 1), []);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -286,7 +290,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
           const [staticRes, agentPromise] = await Promise.all([
             fetchStaticBuilderResources(),
             editingAgentKey
-              ? AgentsApi.getAgent(editingAgentKey).then((r) => r.agent).catch(() => null)
+              ? AgentsApi.getAgent(editingAgentKey, { quiet: true }).then((r) => r.agent).catch(() => null)
               : Promise.resolve(null),
           ]);
 
@@ -346,7 +350,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     return () => {
       cancelled = true;
     };
-  }, [editingAgentKey]);
+  }, [editingAgentKey, loadAttempt]);
 
   useEffect(() => {
     setAvailableTools(mergeToolsFromAgentDetail(loadedAgent, buildToolsCatalogFromToolsets(toolsets)));
@@ -365,6 +369,7 @@ export function useAgentBuilderData(editingAgentKey: string | null) {
     mcpServersLoaded,
     loading,
     loadedAgent,
+    retryLoad,
     error,
     setError,
     refreshToolsets,

@@ -227,6 +227,7 @@ class TestApplyUsesOverride:
         """When no existing doc is found, apply() calls save_record_to_storage with document_path."""
         bs = _make_bs()
         bs.get_document_id_by_virtual_record_id = AsyncMock(return_value=None)
+        bs._find_unmapped_record_document = AsyncMock(return_value=None)
         expected_path = "records/conn-1/My_Space/Parent_Page"
         bs._build_hierarchical_storage_path = AsyncMock(return_value=expected_path)
         bs.save_record_to_storage = AsyncMock(return_value=("doc-new", 200))

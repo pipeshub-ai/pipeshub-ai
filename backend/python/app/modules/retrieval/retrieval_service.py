@@ -59,6 +59,8 @@ from app.modules.retrieval.selection_scope import (
     SelectionNotReadyError,
     SelectionScope,
     SelectionTooLargeError,
+    connection_bound_scope,
+    connection_sources_of,
     require_membership_ready,
     resolve_request_scopes,
 )
@@ -115,9 +117,11 @@ from app.utils.chat_helpers import (
     group_child_results,
     valid_group_labels,
 )
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.embedding_retry import await_with_retry
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.query_instruction import instruct_query
+from app.utils.stage_timer import span, spanned
 from app.utils.text_fragments.cache import TtlCache
 
 # OPTIMIZATION: User data cache with TTL
@@ -1072,9 +1076,10 @@ class RetrievalService:
             })
 
             self.logger.debug(f"Fetching {len(record_ids_to_fetch)} records by permission-verified record IDs")
-            fetched_records = await self.graph_provider.get_records_by_record_ids(
-                record_ids_to_fetch, org_id
-            )
+            with span("records"):
+                fetched_records = await self.graph_provider.get_records_by_record_ids(
+                    record_ids_to_fetch, org_id
+                )
 
             if not fetched_records:
                 self.logger.error("Failed to fetch records by record IDs")
@@ -1091,6 +1096,15 @@ class RetrievalService:
                     )
 
             await self._attach_connector_instance_names(fetched_records)
+            limit_sources = connection_sources_of(filter_groups)
+            if limit_sources is not None:
+                # The app's own name is its source's or collection's name: shown
+                # only when the limit covers that app whole, as the Location
+                # trail and record details show it.
+                whole_apps = set(limit_sources.get("apps") or ())
+                for r in fetched_records:
+                    if r and r.get("connectorId") not in whole_apps:
+                        r.pop("connectorInstanceName", None)
 
             record_id_to_record_map = {}
             for r in fetched_records:
@@ -1185,7 +1199,8 @@ class RetrievalService:
                                 # a later hit left raw was neither expanded nor known
                                 # as a match, and could repeat a passage already shown.
                                 if virtual_id not in virtual_record_id_to_record:
-                                    await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
+                                    with span("content"):
+                                        await get_record(virtual_id, virtual_record_id_to_record, self.blob_store, org_id, virtual_to_record_map)
                                 if virtual_record_id_to_record[virtual_id] is None:
                                     continue
                                 new_type_results.append(result)
@@ -1243,7 +1258,8 @@ class RetrievalService:
                 # ids actually came back instead.
                 missing = [rid for rid in unique_ids if rid not in resolved]
                 if missing:
-                    per_id = await asyncio.gather(
+                    per_id = await gather_with_concurrency(
+                        GRAPH_FANOUT_CONCURRENCY,
                         *[
                             self.graph_provider.get_document(rid, collection)
                             for rid in missing
@@ -1282,12 +1298,23 @@ class RetrievalService:
                     if not rids:
                         return {}
 
+                    # A connected app's limit trims the trail to what it shares;
+                    # past it, the trail names nothing rather than everything.
+                    try:
+                        limit_scope = await connection_bound_scope(
+                            self.graph_provider, user_key or "", org_id, filter_groups,
+                        )
+                    except Exception as limit_exc:
+                        self.logger.warning("fetch_locations: limit unresolved — %s", limit_exc)
+                        return {}
+
                     result = await resolve_ancestor_locations(
                         rids,
                         graph_provider=self.graph_provider,
                         org_id=org_id,
                         user_key=user_key or "",
                         record_docs=record_id_to_record_map,
+                        connection_limit=limit_scope,
                     )
                     self.logger.debug(
                         "fetch_locations: %d/%d trails resolved",
@@ -1363,7 +1390,8 @@ class RetrievalService:
             match_scores: dict[int, float] = {}
             if new_type_results:
                 is_multimodal_llm = False   #doesn't matter for retrieval service
-                flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
+                with span("content"):
+                    flattened_results = await get_flattened_results(new_type_results, self.blob_store, org_id, is_multimodal_llm, virtual_record_id_to_record, from_retrieval_service=True)
                 for result in flattened_results:
                     block_type = result.get("block_type")
                     child_results = group_child_results(result)
@@ -1377,6 +1405,10 @@ class RetrievalService:
                         }
                         for child in child_results:
                             child_index = child.get("block_index")
+                            # RRF scores tie, so two sections of one record can share
+                            # a score; this is what tells their passages apart.
+                            if result.get("block_group_index") is not None:
+                                child["block_group_index"] = result["block_group_index"]
                             if matched and isinstance(child_index, int):
                                 # 0 is a passage the search matched; the per-record
                                 # cap below keeps those first, then their neighbours.
@@ -1445,6 +1477,7 @@ class RetrievalService:
                 # search tool) gets the same on each record document.
                 await describe_search_records(
                     records, self.graph_provider, org_id, user_id=user_id,
+                    connection_sources=connection_sources_of(filter_groups),
                 )
             if search_results or records:
                 response_data = {
@@ -1642,6 +1675,7 @@ class RetrievalService:
             )
         return selection, scopes
 
+    @spanned("access")
     async def _resolve_search_scope(
         self,
         user_id: str,
@@ -1728,6 +1762,7 @@ class RetrievalService:
             return None, await _legacy(), user
         return containers, {}, user
 
+    @spanned("access")
     async def _permission_filter(
         self,
         org_id: str,
@@ -2363,12 +2398,14 @@ class RetrievalService:
                 f"{self.vector_db_service.get_service_name()} has no lexical index to search"
             )
         embedder = await self._ensure_sparse_embedder()
-        sparse = await asyncio.gather(*(embedder.embed_query(query) for query in queries))
+        with span("embed"):
+            sparse = await asyncio.gather(*(embedder.embed_query(query) for query in queries))
         return [
             ((vector if getattr(vector, "indices", None) is not None and len(vector.indices) else None), None)
             for vector in sparse
         ]
 
+    @spanned("access")
     async def _keep_permitted_hits(
         self,
         search_results: list[dict[str, Any]],
@@ -2594,7 +2631,7 @@ class RetrievalService:
 
         # The tasks gather() starts copy the context when they are created, so the
         # scope has to be open across the awaits, not just where the coroutines are built.
-        with narrow_workload(Workload.QUERY_EMBEDDING):
+        with narrow_workload(Workload.QUERY_EMBEDDING), span("embed"):
             if sparse_embedder is not None and supports_sparse:
                 # Parallelise dense and sparse embedding generation
                 sparse_tasks = [sparse_embedder.embed_query(query) for query in queries]
@@ -2811,6 +2848,7 @@ class RetrievalService:
             "message": message,
         }
 
+    @spanned("records")
     async def _attach_connector_instance_names(self, records: list[dict[str, Any]]) -> None:
         """Set ``connectorInstanceName``: the name the admin gave the record's connector.
 

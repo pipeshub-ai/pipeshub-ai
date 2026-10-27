@@ -8,7 +8,7 @@ The query service does not wire ``FeatureFlagService`` with an ``EtcdProvider``
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from app.services.featureflag.config.config import CONFIG
 from app.utils.env_utils import high_accuracy_mode
@@ -142,6 +142,49 @@ async def is_named_entity_extraction_enabled(config_service: ConfigurationServic
     if high_accuracy_mode():
         return True
     return await _platform_flag(config_service, CONFIG.ENABLE_NAMED_ENTITY_EXTRACTION, default=False)
+
+
+async def is_artifact_write_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether indexing writes each content revision's artifact set beside the stored
+    record. Read once per indexed record, through the config cache; a save in Labs
+    invalidates it everywhere. Defaults to DISABLED."""
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_ARTIFACT_WRITE, config_service, default=False, use_cache=True,
+    )
+
+
+async def is_kb_push_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether the knowledge-base push routes exist. Read on every request, through the
+    config cache. Defaults to DISABLED (experimental)."""
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_KB_PUSH, config_service, default=False, use_cache=True,
+    )
+
+
+ArtifactReadMode = Literal["legacy", "shadow", "artifact"]
+
+
+async def artifact_read_mode(config_service: ConfigurationService | None = None) -> ArtifactReadMode:
+    """How query-side reads use artifact sets: ``artifact`` (``ENABLE_ARTIFACT_READ``:
+    serve them, the stored record when one cannot be read), ``shadow``
+    (``ENABLE_ARTIFACT_READ_SHADOW``: serve the stored record, compare the artifact
+    set with it) or ``legacy``. ``ENABLE_ARTIFACT_READ`` wins when both are on.
+    Read on every record read, through the config cache. Defaults to ``legacy``."""
+    if config_service is None:
+        return "legacy"
+    if await read_platform_feature_flag(
+        CONFIG.ENABLE_ARTIFACT_READ, config_service, default=False, use_cache=True,
+    ):
+        return "artifact"
+    if await read_platform_feature_flag(
+        CONFIG.ENABLE_ARTIFACT_READ_SHADOW, config_service, default=False, use_cache=True,
+    ):
+        return "shadow"
+    return "legacy"
 
 
 async def is_soft_delete_enabled(config_service: ConfigurationService | None = None) -> bool:

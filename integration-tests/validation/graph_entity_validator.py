@@ -50,6 +50,7 @@ _ENTITY_SCHEMA_LAYERS: Final[dict[str, tuple[str, ...]]] = {
     "code_file_record": ("record.yaml", "code_file_record.yaml"),
     "link_record": ("record.yaml", "link_record.yaml"),
     "webpage_record": ("record.yaml", "webpage_record.yaml"),
+    "mail_record": ("record.yaml", "mail_record.yaml"),
     "record_group": ("record_group.yaml",),
     "app_user_group": ("app_user_group.yaml",),
     "app_role": ("app_role.yaml",),
@@ -63,6 +64,7 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
     "code_file_record",
     "link_record",
     "webpage_record",
+    "mail_record",
     "record_group",
     "app_user_group",
     "app_role",
@@ -77,6 +79,8 @@ GraphEntityKind = Literal[  # ``entity`` values accepted by ``assert_graph_entit
 _RECORD_DEFAULT_SKIP: Final[frozenset[str]] = frozenset({
     "id", "org_id", "indexing_status", "parsing_status", "queued_at", "processing_started_at",
     "record_group_id", "virtual_record_id", "parent_record_type", "record_group_type",
+    # Write-time permission hints (Record model), never persisted on the node.
+    "inherit_permissions_from_group", "rewrite_permissions",
 })
 
 _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
@@ -86,6 +90,7 @@ _DEFAULT_SKIP_COMPARE_BY_ENTITY: Final[dict[str, frozenset[str]]] = {
     "code_file_record": _RECORD_DEFAULT_SKIP,
     "link_record": _RECORD_DEFAULT_SKIP,
     "webpage_record": _RECORD_DEFAULT_SKIP,
+    "mail_record": _RECORD_DEFAULT_SKIP,
     "record_group": frozenset({"id", "org_id"}),
     "app_user_group": frozenset({"id", "org_id"}),
     "app_role": frozenset({"id", "org_id"}),
@@ -166,7 +171,7 @@ def assert_graph_entity_matches(
 
 _ENTITY_KINDS_WITH_RECORD_EDGES: Final[frozenset[str]] = frozenset({
     "ticket_record", "file_record", "link_record", "webpage_record",
-    "pull_request_record", "code_file_record",
+    "pull_request_record", "code_file_record", "mail_record",
 })
 
 

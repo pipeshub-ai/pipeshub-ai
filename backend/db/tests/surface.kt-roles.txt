@@ -1,0 +1,2 @@
+member pipeshub_owner -> pipeshub_vetted_kt inherit=false set=false admin=true
+role pipeshub_vetted_kt login=false super=false inherit=true createrole=false createdb=false replication=false bypassrls=false connlimit=-1 valid_until=-

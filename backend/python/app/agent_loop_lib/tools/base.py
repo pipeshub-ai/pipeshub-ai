@@ -438,3 +438,10 @@ class Tool(ABC):
         a record's fields), computed from the FULL result. It is stored with the conversation,
         so keep it small. `None` (the default): the card shows the raw preview."""
         return None
+
+    def result_failed(self, args: dict[str, Any], result: "CoreToolResult") -> bool:
+        """Whether the tool card should show this call as failed even though the tool returned
+        normally — e.g. `run_code` returns a non-zero exit as data so the model can read the
+        error and retry, but the person should still see the step failed. Display only: the
+        model gets `result` unchanged. `False` (the default): failed iff `result.is_error`."""
+        return False

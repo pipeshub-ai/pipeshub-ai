@@ -295,7 +295,7 @@ export function CreateOAuthApplicationPanel({
         setGrantTypes((prev) => new Set(prev).add(value));
         return;
       }
-      // Read latest grants in the event handler ΓÇö never call addToast inside setState updaters.
+      // Read latest grants in the event handler — never call addToast inside setState updaters.
       if (grantTypesRef.current.size <= 1) {
         addToast({
           variant: 'error',

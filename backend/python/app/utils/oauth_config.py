@@ -4,7 +4,7 @@ import re
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Dict, Optional  # noqa: UP035 - keep aliases for legacy callers
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from app.config.configuration_service import ConfigurationService
 from app.connectors.core.base.token_service.oauth_service import OAuthConfig
@@ -241,6 +241,29 @@ def _apply_salesforce_login_host(url: str, login_url: str) -> str:
     return urlparse(url)._replace(scheme="https", netloc=urlparse(login_url).netloc).geturl()
 
 
+_MICROSOFT_TENANT_SEGMENT = re.compile(r"^(https://login\.microsoftonline\.com/)[^/]+(/)")
+
+
+def apply_tenant_to_microsoft_oauth_url(url: str, tenant_id: str | None) -> str:
+    """Put *tenant_id* in place of the tenant segment of a Microsoft login URL.
+
+    A single-tenant Azure AD app cannot use the /common endpoints, so sign-in and every
+    refresh of its tokens must use its own tenant's. A blank or "common" tenant, or a URL
+    that is not Microsoft's, is returned unchanged.
+    """
+    # Anchored: only a URL on Microsoft's login host is changed, never one that merely mentions it.
+    if not url or not _MICROSOFT_TENANT_SEGMENT.match(url):
+        return url
+    tenant = str(tenant_id or "").strip()
+    if not tenant or tenant.lower() == "common":
+        return url
+    # The tenant is user input: encoded so it stays one path segment ("/", "?" and "#" cannot
+    # reshape the URL), and inserted by a function so a backslash is not read as a regex template.
+    # A real tenant (a GUID or a domain) has nothing to encode.
+    segment = quote(tenant, safe="")
+    return _MICROSOFT_TENANT_SEGMENT.sub(lambda m: f"{m.group(1)}{segment}{m.group(2)}", url, count=1)
+
+
 def check_salesforce_login_url_setting(connector_type: str, settings: dict[str, Any] | None) -> None:
     """Raise ValueError when a Salesforce OAuth app's Login URL is not a Salesforce host.
 
@@ -356,7 +379,7 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
         try:
             parsed_url = urlparse(token_url)
             hostname = parsed_url.hostname or ''
-            if _is_host_or_subdomain(hostname, 'notion.com'):
+            if _is_host_or_subdomain(hostname, 'notion.com') or _is_notion_override(token_url):
                 oauth_config.additional_params["use_basic_auth"] = True
                 oauth_config.additional_params["use_json_body"] = True
                 oauth_config.additional_params["notion_version"] = "2025-09-03"
@@ -372,6 +395,17 @@ def get_oauth_config(auth_config: dict) -> OAuthConfig:
 # Token endpoints whose providers accept client credentials only in a Basic
 # header: their OAuth metadata lists client_secret_basic and no client_secret_post.
 _BASIC_AUTH_ONLY_TOKEN_HOSTS = ("airtable.com", "zoom.us")
+
+
+def _is_notion_override(token_url: str) -> bool:
+    """A token URL under NOTION_API_BASE_URL (a test stack's stand-in for Notion) is Notion's too."""
+    from app.sources.client.notion.notion import (
+        DEFAULT_NOTION_API_BASE_URL,
+        notion_api_base_url,
+    )
+
+    base = notion_api_base_url()
+    return base != DEFAULT_NOTION_API_BASE_URL and token_url.startswith(f"{base}/")
 
 
 def _is_host_or_subdomain(hostname: str, domain: str) -> bool:

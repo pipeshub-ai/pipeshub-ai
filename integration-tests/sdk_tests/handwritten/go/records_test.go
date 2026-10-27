@@ -46,7 +46,7 @@ func TestHandwritten_RecordLifecycle(t *testing.T) {
 	require.NotEmpty(t, recordID, "upload did not succeed")
 	assert.Equal(t, map[string]any{"total": 1.0, "succeeded": 1.0, "failed": 0.0}, summary)
 
-	record, err := s.KnowledgeBase.GetRecordByID(ctx, recordID, nil)
+	record, err := s.KnowledgeBase.GetRecordByID(ctx, recordID, nil, nil)
 	require.NoError(t, err)
 	assert.Equal(t, recordID, record.GetRecordByIDResponseSchema.Record.ID)
 
@@ -65,7 +65,7 @@ func TestHandwritten_RecordLifecycle(t *testing.T) {
 		RecordName: pipeshub.Pointer("sdk-test-record-renamed"),
 	})
 	require.NoError(t, err)
-	assert.Equal(t, pipeshub.Pointer(recordID), updated.Object.Record.ID)
+	assert.Equal(t, pipeshub.Pointer(recordID), updated.UpdateRecordResponseSchema.Record.ID)
 
 	folder, err := s.KnowledgeBase.CreateFolder(ctx, kbID, operations.CreateFolderRequestBody{FolderName: "sdk-test-destination"}, nil)
 	require.NoError(t, err)

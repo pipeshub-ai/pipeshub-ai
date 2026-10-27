@@ -1,7 +1,7 @@
 import { injectable, inject } from 'inversify'
 import { randomUUID } from 'crypto'
 import crypto from 'crypto'
-import { Types } from 'mongoose'
+import mongoose, { Types } from 'mongoose'
 import { Logger } from '../../../libs/services/logger.service'
 import { EncryptionService } from '../../../libs/encryptor/encryptor'
 import { ScopeValidatorService } from './scope.validator.service'
@@ -13,7 +13,9 @@ import {
   OAuthGrantType,
 } from '../schema/oauth.app.schema'
 import {
+  isKnowledgeLimitWithin,
   sameKnowledgeLimit,
+  storedKnowledgeLimitFilter,
   toKnowledgeLimit,
 } from '../schema/knowledge_limit.schema';
 import {
@@ -26,6 +28,7 @@ import {
   ForbiddenError,
 } from '../../../libs/errors/http.errors';
 import { ADMIN_ACCESS_REQUIRED_MESSAGE } from '../../user_management/services/user-admin.service';
+import { ConflictError } from '../../../libs/errors/http.errors';
 import { Users } from '../../user_management/schema/users.schema'
 import {
   CreateOAuthAppRequest,
@@ -202,7 +205,7 @@ export class OAuthAppService {
     })
 
     this.logger.info('OAuth app created', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       clientId,
       orgId,
       name: data.name,
@@ -215,26 +218,6 @@ export class OAuthAppService {
   }
 
   /**
-   * Point an app's `client_credentials` tokens at a service account, or put
-   * them back to acting as the app's creator.
-   *
-   * This is the way out of the problem the grant has: without it, a token
-   * minted from an app acts as whoever created that app, carrying their
-   * document access and their role, and stops working when they leave. Aimed
-   * at a service account instead, it acts as an identity that exists for the
-   * job, holds only what someone granted it, and survives any one person
-   * leaving.
-   *
-   * Takes effect for tokens already issued, because the middleware reads this
-   * field per request rather than trusting what the token was minted with. A
-   * change that waited for every outstanding token to expire would not stop
-   * those tokens acting as a person, which is the entire point of making it.
-   *
-   * The app's `createdBy` is untouched: that is who manages the app, and it
-   * is what Developer Settings filters on. Moving it would leave the app
-   * visible to nobody, since no person can sign in as a service account.
-   */
-  /**
    * The service account an app's own tokens may act as, or a refusal.
    *
    * `kind` is part of the query on purpose: a colleague's user id cannot be
@@ -246,7 +229,10 @@ export class OAuthAppService {
     orgId: string,
   ): Promise<Types.ObjectId> {
     if (!Types.ObjectId.isValid(serviceAccountId)) {
-      throw new NotFoundError('Service account not found');
+      throw new NotFoundError(
+        'That service account was not found in this organisation. Choose one ' +
+          'from Workspace → Service accounts, or create one there first.',
+      );
     }
 
     const serviceAccount = await Users.findOne({
@@ -260,7 +246,10 @@ export class OAuthAppService {
       .exec();
 
     if (!serviceAccount) {
-      throw new NotFoundError('Service account not found');
+      throw new NotFoundError(
+        'That service account was not found in this organisation. Choose one ' +
+          'from Workspace → Service accounts, or create one there first.',
+      );
     }
     if (serviceAccount.isDisabled === true) {
       throw new BadRequestError(
@@ -271,6 +260,34 @@ export class OAuthAppService {
     return new Types.ObjectId(serviceAccountId);
   }
 
+  /**
+   * Point an app's `client_credentials` tokens at a different service account.
+   *
+   * This is the way out of the problem the grant has: without it, a token
+   * minted from an app acts as whoever created that app, carrying their
+   * document access and their role, and stops working when they leave. Aimed
+   * at a service account instead, it acts as an identity that exists for the
+   * job, holds only what someone granted it, and survives any one person
+   * leaving.
+   *
+   * Clearing it (`serviceAccountId: null`) is refused while the app allows
+   * the grant, since that would put the tokens back on the creator — the
+   * thing this exists to prevent. Only an app that does not allow the grant
+   * can be cleared. An app that predates the requirement and still allows it
+   * is refused too, even though it has no binding to remove — the carve-out
+   * for those lives on `updateApp`, which lets them be edited, and not here.
+   *
+   * Revokes the tokens the app has already issued. They are not carried over
+   * to the new identity: the middleware reads this field per request, and a
+   * token whose `createdBy` claim disagrees with the record is refused with
+   * 401 rather than honoured as the new account. So a token minted before
+   * the change stops working, which is the point — anything still holding
+   * one has to ask for another.
+   *
+   * The app's `createdBy` is untouched: that is who manages the app, and it
+   * is what Developer Settings filters on. Moving it would leave the app
+   * visible to nobody, since no person can sign in as a service account.
+   */
   async setTokenIdentity(
     appId: string,
     orgId: string,
@@ -608,9 +625,42 @@ export class OAuthAppService {
     }
     if (data.knowledgeLimit !== undefined) {
       app.knowledgeLimit = data.knowledgeLimit ?? undefined;
+      // Saved only over the limit read above. Two edits from one snapshot
+      // are each judged against it, so without this the later save could
+      // pass as a widening while dropping what the earlier one added.
+      app.$where = storedKnowledgeLimitFilter(previousLimit);
     }
 
-    await app.save()
+    // The knowledge limit rides in each token's claim. A narrowed one may
+    // hide what a token reaches, so those tokens go below. A widened one
+    // keeps them: each token, and each refresh, stays at the limit its user
+    // agreed to, and the new items reach a user once they connect again.
+    const limitNarrowed = !isKnowledgeLimitWithin(
+      previousLimit,
+      app.knowledgeLimit,
+    );
+    const limitWidened =
+      !limitNarrowed && !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
+    if (limitWidened) {
+      // Refresh tokens stored before they kept the user's limit take the
+      // app's on refresh. Revoked before the save, so a refresh that still
+      // gets through read the app before it and carries the old limit;
+      // revoked after, a refresh in between could mint with the wider one.
+      await this.oauthTokenService.revokeRefreshTokensWithoutKnowledgeLimit(
+        app.clientId,
+      );
+    }
+
+    try {
+      await app.save();
+    } catch (error) {
+      if (error instanceof mongoose.Error.DocumentNotFoundError) {
+        throw new ConflictError(
+          'This application changed while you were editing it. Reload it and save again.',
+        );
+      }
+      throw error;
+    }
 
     // Tokens carry their scopes in the claim, and neither Node nor the Python
     // services compare that claim with the app on each request. Removing a
@@ -618,29 +668,40 @@ export class OAuthAppService {
     const removedScopes = previousScopes.filter(
       (scope) => !app.allowedScopes.includes(scope),
     )
-    // The knowledge limit rides in the claim the same way. Any change goes:
-    // a new limit may hide what a token reaches, and a lifted one widens what
-    // users agreed to, so they connect again.
-    const limitChanged = !sameKnowledgeLimit(app.knowledgeLimit, previousLimit);
-    if (removedScopes.length > 0 || limitChanged) {
+    if (removedScopes.length > 0 || limitNarrowed) {
       try {
         await this.oauthTokenService.revokeAllTokensForApp(app.clientId)
       } catch (error) {
+        // Put back only over the limit this request saved: an edit that
+        // landed since stands, and was judged against what is stored.
+        if (data.knowledgeLimit !== undefined) {
+          app.$where = storedKnowledgeLimitFilter(
+            toKnowledgeLimit(app.knowledgeLimit),
+          );
+        }
         app.allowedScopes = previousScopes
         app.knowledgeLimit = previousLimit;
-        await app.save()
+        try {
+          await app.save();
+        } catch (rollbackError) {
+          if (
+            !(rollbackError instanceof mongoose.Error.DocumentNotFoundError)
+          ) {
+            throw rollbackError;
+          }
+        }
         throw error
       }
       this.logger.info('OAuth app access changed; tokens revoked', {
-        appId: (app._id as Types.ObjectId).toString(),
+        appId: app._id.toString(),
         orgId,
         removedScopes,
-        limitChanged,
+        limitNarrowed,
       })
     }
 
     this.logger.info('OAuth app updated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -670,7 +731,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app deleted', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
       userId,
     })
@@ -698,7 +759,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app secret regenerated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -733,7 +794,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app suspended', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -769,7 +830,7 @@ export class OAuthAppService {
     await app.save()
 
     this.logger.info('OAuth app activated', {
-      appId: (app._id as Types.ObjectId).toString(),
+      appId: app._id.toString(),
       orgId,
     })
 
@@ -891,7 +952,9 @@ export class OAuthAppService {
     }
   }
 
-  private validateGrantTypes(grantTypes: string[]): void {
+  private validateGrantTypes(
+    grantTypes: string[],
+  ): asserts grantTypes is OAuthGrantType[] {
     const validGrantTypes = Object.values(OAuthGrantType)
     for (const grantType of grantTypes) {
       if (!validGrantTypes.includes(grantType as OAuthGrantType)) {
@@ -902,7 +965,7 @@ export class OAuthAppService {
 
   private toAppResponse(app: IOAuthApp): OAuthAppResponse {
     return {
-      id: (app._id as Types.ObjectId).toString(),
+      id: app._id.toString(),
       slug: app.slug,
       clientId: app.clientId,
       name: app.name,
@@ -919,6 +982,7 @@ export class OAuthAppService {
       accessTokenLifetime: app.accessTokenLifetime,
       refreshTokenLifetime: app.refreshTokenLifetime,
       knowledgeLimit: toKnowledgeLimit(app.knowledgeLimit),
+      tokenIdentityUserId: app.tokenIdentityUserId?.toString(),
       createdAt: app.createdAt,
       updatedAt: app.updatedAt,
     }

@@ -917,7 +917,7 @@ class TestDiscoverToolsDictFallbackException:
             def __init__(self, fn):
                 self._fn = fn
 
-            def __call__(self, *args, **kwargs):
+            def __call__(self, *args: object, **kwargs: object) -> None:
                 return self._fn(*args, **kwargs)
 
             @property
@@ -945,7 +945,7 @@ class TestDiscoverToolsDictFallbackException:
             def __init__(self, func):
                 self.__func__ = func
 
-            def __call__(self, *args, **kwargs):
+            def __call__(self, *args: object, **kwargs: object) -> None:
                 return self.__func__(*args, **kwargs)
 
         # The __func__ works fine, but the actual_func._tool_metadata check raises
@@ -1254,3 +1254,31 @@ class TestGetAllRegisteredToolsetsSerializationFailure:
 
         assert result["toolsets"] == []
         assert result["pagination"]["total"] == 0
+
+
+class TestDiscoverToolsFromCompiledMethods:
+    """A compiled build turns a toolset's methods into compiled callables:
+    neither Python functions nor bound methods, yet they still carry the tool
+    metadata the decorator set."""
+
+    def test_a_tool_on_a_callable_that_is_not_a_python_function_is_found(self) -> None:
+        from types import SimpleNamespace
+
+        class CompiledMethod:
+            def __call__(self, *args: object, **kwargs: object) -> None:
+                return None
+
+        compiled = CompiledMethod()
+        compiled._tool_metadata = SimpleNamespace(
+            tool_name="compiled_tool", description="runs", parameters=[], args_schema=None,
+        )
+
+        class Toolset:
+            pass
+
+        Toolset.compiled_tool = compiled
+        Toolset.not_a_tool = "plain attribute"
+
+        result = _fresh_registry()._discover_tools_from_class(Toolset)
+
+        assert [t["name"] for t in result] == ["compiled_tool"]

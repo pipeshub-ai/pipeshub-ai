@@ -9,6 +9,12 @@ vi.mock('next/navigation', () => ({
   usePathname: () => '/workspace/general',
 }));
 
+// jsdom has no matchMedia; these tests cover the desktop sidebar.
+vi.mock('@/lib/hooks/use-is-mobile', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/hooks/use-is-mobile')>()),
+  useIsMobile: () => false,
+}));
+
 // user-store and feature-flags-store both persist to real `localStorage`
 // (via zustand `persist`/`createJSONStorage`), which jsdom in this test
 // environment doesn't implement — swap in trivial in-memory stores exposing

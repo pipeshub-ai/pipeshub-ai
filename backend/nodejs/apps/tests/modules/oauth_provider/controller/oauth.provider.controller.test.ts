@@ -16,6 +16,7 @@ import { ScopeValidatorService } from '../../../../src/modules/oauth_provider/se
 import type { z } from 'zod'
 import type { authorizeConsentSchema } from '../../../../src/modules/oauth_provider/validators/oauth.validators'
 import type { TokenRequest } from '../../../../src/modules/oauth_provider/types/oauth.types'
+import { eventBuffer } from '../../../../src/libs/services/telemetry/event-buffer'
 
 type ConsentRequest = Parameters<OAuthProviderController['authorizeConsent']>[0]
 type TokenHttpRequest = Parameters<OAuthProviderController['token']>[0]
@@ -67,6 +68,7 @@ describe('OAuthProviderController', () => {
     mockAuthCodeService = {
       generateCode: sinon.stub(),
       exchangeCode: sinon.stub(),
+      wasReplayed: sinon.stub().resolves(false),
     }
     mockScopeValidatorService = {
       parseScopes: sinon.stub().returns(['org:read']),
@@ -525,6 +527,57 @@ describe('OAuthProviderController', () => {
       expect(mockRes.setHeader.calledWith('Cache-Control', 'no-store')).to.be.true
     })
 
+    it('records oauth_token_issued with the grant, client and channel', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ orgId: 'o1', isConfidential: false, allowedGrantTypes: ['authorization_code'], allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'] })
+      mockOAuthTokenService.generateTokens.resolves({ accessToken: 'secret-at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read' })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+      eventBuffer.drain()
+
+      await controller.token({
+        body: { grant_type: 'authorization_code', client_id: 'cid', code: 'c', redirect_uri: 'https://example.com/cb' },
+        headers: { 'user-agent': 'cursor/1.2', 'x-pipeshub-channel': 'docs' },
+      } as any, mockRes, mockNext)
+
+      const events = eventBuffer.drain().filter((e) => e.event === 'oauth_token_issued')
+      expect(events).to.have.length(1)
+      expect(events[0].props).to.deep.equal({
+        grant_type: 'authorization_code', client_id: 'cid', user_agent: 'cursor/1.2', channel: 'docs',
+      })
+      expect(JSON.stringify(events[0])).to.not.include('secret-at')
+    })
+
+    it('takes back its own tokens when the code was replayed while it was minting them', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ orgId: 'o1', isConfidential: false, allowedGrantTypes: ['authorization_code'], allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'] })
+      mockOAuthTokenService.generateTokens.resolves({ accessToken: 'at', refreshToken: 'rt', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read' })
+      mockAuthCodeService.wasReplayed.resolves(true)
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token({
+        body: { grant_type: 'authorization_code', client_id: 'cid', code: 'c', redirect_uri: 'https://example.com/cb' },
+        headers: {},
+      } as any, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.revokeToken.calledWith('at', 'cid', 'access_token')).to.be.true
+      expect(mockOAuthTokenService.revokeToken.calledWith('rt', 'cid', 'refresh_token')).to.be.true
+      expect(mockRes.status.calledWith(400)).to.be.true
+      expect(mockRes.json.firstCall.args[0]).to.have.property('error', 'invalid_grant')
+      expect(mockRes.json.firstCall.args[0].access_token).to.be.undefined
+    })
+
+    it('records nothing when no token is issued', async () => {
+      eventBuffer.drain()
+      await controller.token({ body: { grant_type: 'password', client_id: 'cid' }, headers: {} } as any, mockRes, mockNext)
+      expect(eventBuffer.drain().filter((e) => e.event === 'oauth_token_issued')).to.be.empty
+    })
+
     it('refuses a client_credentials grant when the identity is disabled', async () => {
       // These tokens are stored with no userId, so they are invisible to the
       // revocation that runs when a service account is disabled or restored.
@@ -616,6 +669,10 @@ describe('OAuthProviderController', () => {
   })
 
   describe('revoke', () => {
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
+    })
+
     it('should return 200 even for invalid token', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
       mockOAuthTokenService.revokeToken.resolves(false)
@@ -634,6 +691,47 @@ describe('OAuthProviderController', () => {
       } as any
 
       await controller.revoke(req, mockRes, mockNext)
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    // The device app is public: before, its revoke hashed an absent secret,
+    // threw, and was answered 200 with the token still valid.
+    it('revokes for a public client that sends no secret', async () => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: false })
+      mockOAuthTokenService.revokeToken.resolves(true)
+      const req = {
+        body: { token: 'refresh', client_id: 'pipeshub-agent', token_type_hint: 'refresh_token' },
+      } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.calledOnceWith('refresh', 'pipeshub-agent', 'refresh_token')).to.be.true
+      expect(mockRes.status.calledWith(200)).to.be.true
+    })
+
+    it('refuses a confidential client that sends no secret', async () => {
+      const req = { body: { token: 'tok', client_id: 'cid' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    it('refuses a confidential client whose secret is not a string', async () => {
+      const req = { body: { token: 'tok', client_id: 'cid', client_secret: null } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthAppService.verifyClientCredentials.called).to.be.false
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
+      expect(mockRes.status.calledWith(401)).to.be.true
+    })
+
+    it('refuses an unknown client', async () => {
+      mockOAuthAppService.getAppByClientId.rejects(new InvalidClientError('Invalid client_id'))
+      const req = { body: { token: 'tok', client_id: 'nope' } } as any
+
+      await controller.revoke(req, mockRes, mockNext)
+      expect(mockOAuthTokenService.revokeToken.called).to.be.false
       expect(mockRes.status.calledWith(401)).to.be.true
     })
   })
@@ -1027,16 +1125,63 @@ describe('OAuthProviderController', () => {
         grant_type: 'authorization_code', client_id: 'cid', code: 'code',
         redirect_uri: 'https://ex.com/cb',
       })
-      const narrow = { apps: [], recordGroups: [], records: ['f1'] }
+      const agreed = { apps: [], recordGroups: [], records: ['f1', 'f2'] }
+      const narrowed = { apps: [], recordGroups: [], records: ['f1'] }
 
-      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'], knowledgeLimit: narrowed })
       mockOAuthAppService.isGrantTypeAllowed.returns(true)
-      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: narrow })
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: agreed })
 
       await controller.token(req, mockRes, mockNext)
 
       expect(mockOAuthTokenService.generateTokens.called).to.be.false
       expect(mockRes.status.calledWith(400)).to.be.true
+    })
+
+    it('issues with the limit on the code when the app limit has widened since', async () => {
+      const req = tokenRequest({
+        grant_type: 'authorization_code', client_id: 'cid', code: 'code',
+        redirect_uri: 'https://ex.com/cb',
+      })
+      const agreed = { apps: [], recordGroups: [], records: ['f1'] }
+
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'], knowledgeLimit: agreed })
+      mockOAuthTokenService.generateTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
+      })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.deep.include({
+        recheckAppScopes: true,
+        grantedKnowledgeLimit: agreed,
+      })
+    })
+
+    it('issues with no limit for a code issued under none', async () => {
+      const req = tokenRequest({
+        grant_type: 'authorization_code', client_id: 'cid', code: 'code',
+        redirect_uri: 'https://ex.com/cb',
+      })
+
+      mockOAuthAppService.getAppByClientId.resolves({ clientId: 'cid', orgId: 'o1', isConfidential: false, allowedScopes: ['org:read'] })
+      mockOAuthAppService.isGrantTypeAllowed.returns(true)
+      mockAuthCodeService.exchangeCode.resolves({ userId: 'u1', orgId: 'o1', scopes: ['org:read'] })
+      mockOAuthTokenService.generateTokens.resolves({
+        accessToken: 'at', tokenType: 'Bearer', expiresIn: 3600, scope: 'org:read',
+      })
+      const chainable = { select: sinon.stub().returnsThis(), lean: sinon.stub().returnsThis(), exec: sinon.stub().resolves(null) }
+      sinon.stub(Users, 'findOne').returns(chainable as any)
+      sinon.stub(Org, 'findOne').returns(chainable as any)
+
+      await controller.token(req, mockRes, mockNext)
+
+      expect(mockOAuthTokenService.generateTokens.firstCall.args[7]).to.have.property('grantedKnowledgeLimit', null)
     })
 
     it('issues for a code whose limit is the app limit listed in another order', async () => {
@@ -1265,6 +1410,10 @@ describe('OAuthProviderController', () => {
   // revoke – additional branches
   // -----------------------------------------------------------------------
   describe('revoke (extended)', () => {
+    beforeEach(() => {
+      mockOAuthAppService.getAppByClientId.resolves({ isConfidential: true })
+    })
+
     it('should return 200 on non-client errors', async () => {
       mockOAuthAppService.verifyClientCredentials.resolves({})
       mockOAuthTokenService.revokeToken.rejects(new Error('token not found'))

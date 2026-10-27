@@ -4,6 +4,7 @@ import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Flex, Text } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Types
@@ -142,6 +143,7 @@ export function McpServerCard({
 // ========================================
 
 function SetupButton({ onClick }: { onClick?: () => void }) {
+  const isMobile = useIsMobile();
   const [isHovered, setIsHovered] = useState(false);
   const { t } = useTranslation();
 
@@ -165,7 +167,7 @@ function SetupButton({ onClick }: { onClick?: () => void }) {
         justifyContent: 'center',
         gap: 8,
         width: '100%',
-        height: 32,
+        height: isMobile ? 44 : 32,
         borderRadius: 'var(--radius-2)',
         backgroundColor: isHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
         cursor: 'pointer',
@@ -190,6 +192,7 @@ function InstanceCountBar({
   onAdd?: () => void;
   onBadgeClick?: () => void;
 }) {
+  const isMobile = useIsMobile();
   const [isAddHovered, setIsAddHovered] = useState(false);
   const { t } = useTranslation();
 
@@ -246,8 +249,8 @@ function InstanceCountBar({
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            width: 32,
-            height: 32,
+            width: isMobile ? 44 : 32,
+            height: isMobile ? 44 : 32,
             borderRadius: 'var(--radius-2)',
             backgroundColor: isAddHovered ? 'var(--gray-a4)' : 'var(--gray-a3)',
             cursor: 'pointer',

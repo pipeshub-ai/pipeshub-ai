@@ -1029,7 +1029,7 @@ class TestAuthMiddleware:
     @patch("app.api.middlewares.auth.fetch_caller_role", new_callable=AsyncMock)
     @patch("app.api.middlewares.auth.isJwtTokenValid")
     async def test_service_tokens_never_call_node(self, mock_validate, mock_role):
-        mock_validate.return_value = {"userId": "svc", "token_type": "scoped", "role": "member"}
+        mock_validate.return_value = {"userId": "svc", "orgId": "org-1", "token_type": "scoped", "role": "member"}
 
         await authMiddleware(_make_fake_request(authorization="Bearer tok"))
 

@@ -1,6 +1,6 @@
 import asyncio
 import uuid
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, List, Literal, Optional, Union
 
 from app.config.constants.arangodb import (
     FOLDER_MIME_TYPES,
@@ -37,11 +37,23 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
+from app.connectors.sources.localKB.handlers.delete_lease import hold_delete_lease
+from app.connectors.sources.localKB.push.contract import is_pushed_revision
 from app.models.entities import FileRecord, RecordType
+from app.models.source_dates import (
+    UPLOAD_SOURCE_CREATED_FIELD,
+    SourceTimestampOrigin,
+    epoch_ms,
+    parse_origin,
+    upload_origin,
+)
 from app.modules.indexing.record_republish import reembeds_from_storage
 from app.modules.retrieval.selection_scope import CONNECTION_OUTSIDE_MESSAGE
 from app.services.cache.invalidation_hooks import notify_kb_records_changed
 from app.services.featureflag.platform_settings import is_soft_delete_enabled
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.common.record_visibility import RecordVisibility, is_live_record
 from app.services.graph_db.common.utils import KB_MAX_FOLDER_DEPTH, RESTORED_AT_FIELD
 from app.services.messaging.lanes.lifecycle import (
@@ -108,6 +120,42 @@ FOLDER_DEPTH_LIMIT_REASON = (
     "Move this content higher up, or flatten some of the folders."
 )
 MOVE_INTO_ACTION = "move items into it"
+
+KB_BEING_DELETED_REASON = "This knowledge base is being deleted, so it can't be changed."
+
+# Every public coroutine of KnowledgeBaseService, by what DELETING means for it. A "write" must
+# refuse a KB being deleted (409); a new method fails the classification test until it is listed.
+KB_METHOD_CLASS: dict[str, Literal["write", "read", "exempt"]] = {
+    "update_knowledge_base": "write",
+    "create_folder_in_kb": "write",
+    "create_nested_folder": "write",
+    "updateFolder": "write",
+    "delete_folder": "write",
+    "update_record": "write",
+    "delete_records_in_kb": "write",
+    "delete_records_in_folder": "write",
+    "restore_record": "write",
+    "restore_records": "write",
+    "create_kb_permissions": "write",
+    "update_kb_permission": "write",
+    "remove_kb_permission": "write",
+    "upload_records_to_kb": "write",
+    "upload_records_to_folder": "write",
+    "validate_folder_for_upload": "write",
+    "move_record": "write",
+    "get_knowledge_base": "read",
+    "list_user_knowledge_bases": "read",
+    "list_trash": "read",
+    "list_kb_permissions": "read",
+    "list_kb_records": "read",
+    "get_kb_children": "read",
+    "get_folder_children": "read",
+    "create_knowledge_base": "exempt",
+    "delete_knowledge_base": "exempt",
+    "finish_delete": "exempt",
+}
+
+_KEEP_STATUS = object()
 
 
 def folder_levels_in_path(file_path: str) -> int:
@@ -256,6 +304,8 @@ class KnowledgeBaseService:
         user_id: str,
         required_roles: Optional[List[str]] = None,
         permission_denied_reason: Optional[str] = None,
+        *,
+        for_write: bool = False,
     ) -> tuple[Optional[str], Optional[str], Optional[Dict]]:
         """
         Resolve user + KB access in one place, minimising DB round-trips.
@@ -276,6 +326,8 @@ class KnowledgeBaseService:
             required_roles: roles that grant access (None = any role).
             permission_denied_reason: custom message when the user's role is
                 insufficient (overrides the generic message).
+            for_write: refuse (409) a KB that is being deleted. Checked after the role, so
+                a caller with no access cannot learn that the KB is being deleted.
         """
         user = await self.graph_provider.get_user_by_user_id(user_id=user_id)
         if not user:
@@ -319,7 +371,19 @@ class KnowledgeBaseService:
             )
             return None, None, {"success": False, "code": 403, "reason": reason}
 
+        if for_write:
+            refusal = await self._refuse_if_deleting(kb_id)
+            if refusal:
+                return None, None, refusal
+
         return user_key, user_role, None
+
+    async def _refuse_if_deleting(self, kb_id: str) -> dict | None:
+        """409 when the KB is being deleted. A failed read raises: an unknown state is not "live"."""
+        kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+        if kb is not None and kb.get("status") == APP_STATUS_DELETING:
+            return {"success": False, "code": 409, "reason": KB_BEING_DELETED_REASON, "errorCode": "KB_BEING_DELETED"}
+        return None
 
     async def _resolve_user_ids_to_graph_keys(
         self,
@@ -736,6 +800,7 @@ class KnowledgeBaseService:
             user_key, user_role, err = await self._resolve_user_and_kb_access(
                 kb_id, user_id,
                 required_roles=["OWNER", "WRITER"],
+                for_write=True,
             )
             if err:
                 return err
@@ -744,11 +809,20 @@ class KnowledgeBaseService:
                     return {"success": False, "code": 400, "reason": "Knowledge base name cannot be empty"}
                 updates["name"] = str(updates["name"]).strip()
             updates["updatedAtTimestamp"] = timestamp
-            # Update in database
-            result = await self.graph_provider.update_knowledge_base(
-                kb_id=kb_id,
-                updates=updates
-            )
+            # Update in database. A push or a delete writes the same KB document, and the store aborts
+            # one of two concurrent writers: write again instead of failing the rename.
+            result = None
+            for attempt in range(CASCADE_ATTEMPTS):
+                try:
+                    result = await self.graph_provider.update_knowledge_base(
+                        kb_id=kb_id,
+                        updates=updates
+                    )
+                    break
+                except Exception as e:
+                    if attempt + 1 >= CASCADE_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                        raise
+                    await cascade_backoff(attempt)
 
             if result:
                 self.logger.info("✅ Knowledge base updated successfully")
@@ -820,13 +894,104 @@ class KnowledgeBaseService:
                 }
             self.logger.info("Storage release intent recorded | org=%s connector=%s", org_id, kb_id)
 
+            # Committed before the cascade collects anything: a push that commits
+            # after this sees the marker and refuses; one that committed before it
+            # is collected. A failure before the cascade starts puts the status back.
+            previous = await self._mark_deleting(kb_id)
+            if previous is None:
+                return {"success": False, "code": 404, "reason": "Knowledge base not found"}
+            restore = _KEEP_STATUS if previous[0] == APP_STATUS_DELETING else previous[0]
+
+            result = await self._run_delete(kb_id, org_id, restore_status=restore)
+            if result.get("success"):
+                self._start_storage_cleanup(org_id, kb_id)
+                self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
+            return result
+
+        except Exception as e:
+            self.logger.error(f"❌ Failed to delete knowledge base {kb_id}: {str(e)}")
+            self.logger.error(f"❌ Error type: {type(e).__name__}")
+
+            # Only log full traceback for unexpected errors
+            if not isinstance(e, (ValueError, KeyError, PermissionError)):
+                import traceback
+                self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+            return {
+                "success": False,
+                "code": 500,
+                "reason": action_failed("delete this knowledge base")
+            }
+
+    async def finish_delete(self, org_id: str, kb_id: str) -> dict:
+        """Run the rest of a delete the owner started: the cascade and its cleanup events.
+
+        For the storage-release finisher, when the owner can no longer retry (the cascade
+        removed the owner's permission edge before it failed). Every step is idempotent, so
+        it is safe next to an owner's retry. The storage release is left to the finisher's
+        next pass. Never raises.
+        """
+        try:
+            kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+            if kb is None:
+                return {"success": True, "code": 200, "reason": "Knowledge base already deleted"}
+            if kb.get("status") != APP_STATUS_DELETING:
+                return {"success": False, "code": 409, "reason": "Knowledge base is not being deleted"}
+            return await self._run_delete(kb_id, org_id, restore_status=_KEEP_STATUS)
+        except Exception as e:
+            self.logger.error("❌ Could not finish the delete of knowledge base %s: %s", kb_id, e)
+            return {"success": False, "code": 500, "reason": action_failed("delete this knowledge base")}
+
+    async def _mark_deleting(self, kb_id: str) -> tuple[str | None] | None:
+        """Commit ``apps.status = DELETING``. ``(previous status,)``, or None when the KB is gone.
+
+        Two deleters (an owner's retry next to another, or the finisher) write the same field, and one
+        of them is told it lost a write-write conflict. It reads the KB again: the rival's marker is
+        then as good as its own, and a status that is still not DELETING is written once more.
+        """
+        for attempt in range(CASCADE_ATTEMPTS):
+            kb = await self.graph_provider.get_document(kb_id, CollectionNames.APPS.value, raise_on_error=True)
+            if kb is None:
+                return None
+            previous = kb.get("status")
+            if previous == APP_STATUS_DELETING:
+                return (previous,)
+            try:
+                if not await self.graph_provider.update_knowledge_base(
+                    kb_id=kb_id, updates={"status": APP_STATUS_DELETING}
+                ):
+                    return None
+            except Exception as e:
+                if attempt + 1 >= CASCADE_ATTEMPTS or not self.graph_provider.is_write_conflict(e):
+                    raise
+                await cascade_backoff(attempt)
+                continue
+            return (previous,)
+        raise RuntimeError(f"could not mark knowledge base {kb_id} as being deleted")
+
+    async def _restore_status(self, kb_id: str, status: Optional[str]) -> None:
+        try:
+            await self.graph_provider.update_knowledge_base(kb_id=kb_id, updates={"status": status})
+        except Exception as e:
+            self.logger.error("❌ Could not put back the status of knowledge base %s: %s", kb_id, e)
+
+    async def _run_delete(self, kb_id: str, org_id: str, *, restore_status: object) -> dict:
+        async with hold_delete_lease(self.config_service, kb_id, f"kb-delete:{uuid.uuid4().hex}", self.logger):
             # A failed delete leaves the intent: a concurrent delete of this KB
             # may have committed and still owe its release, and the reconciler
             # drops the intent once stale if the KB does still exist.
-            refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
+            try:
+                refused = await self._schedule_upload_removal(kb_id, org_id=org_id)
+            except Exception:
+                if restore_status is not _KEEP_STATUS:
+                    await self._restore_status(kb_id, restore_status)
+                raise
             if refused:
+                if restore_status is not _KEEP_STATUS:
+                    await self._restore_status(kb_id, restore_status)
                 return refused
 
+            # From here the cascade may have removed part of the KB, so the status stays DELETING.
             result = await self.graph_provider.delete_connector_instance(
                 connector_id=kb_id, org_id=org_id
             )
@@ -874,38 +1039,22 @@ class KnowledgeBaseService:
                     f"event(s) for KB {kb_id}; some embeddings were not cleaned up"
                 )
             await free_lane_of_deleted_connector(self.logger, kb_id)
-
-            # Fire-and-forget: etcd config + blob storage cleanup runs in the
-            # background so the API response is not blocked (mirrors the async
-            # connector-delete pattern in event_service._handle_delete).
-            task = asyncio.create_task(
-                self._cleanup_kb_storage(org_id, kb_id),
-                name=f"kb-cleanup-{kb_id}",
-            )
-            _BACKGROUND_TASKS.add(task)
-            task.add_done_callback(_BACKGROUND_TASKS.discard)
-
-            self.logger.info(f"✅ Knowledge base {kb_id} deleted successfully by user_key={user_key}")
             return {
                 "success": True,
                 "reason": "Knowledge base and all contents deleted successfully",
                 "code": 200,
             }
 
-        except Exception as e:
-            self.logger.error(f"❌ Failed to delete knowledge base {kb_id}: {str(e)}")
-            self.logger.error(f"❌ Error type: {type(e).__name__}")
-
-            # Only log full traceback for unexpected errors
-            if not isinstance(e, (ValueError, KeyError, PermissionError)):
-                import traceback
-                self.logger.error(f"❌ Traceback: {traceback.format_exc()}")
-
-            return {
-                "success": False,
-                "code": 500,
-                "reason": action_failed("delete this knowledge base")
-            }
+    def _start_storage_cleanup(self, org_id: str, kb_id: str) -> None:
+        # Fire-and-forget: etcd config + blob storage cleanup runs in the
+        # background so the API response is not blocked (mirrors the async
+        # connector-delete pattern in event_service._handle_delete).
+        task = asyncio.create_task(
+            self._cleanup_kb_storage(org_id, kb_id),
+            name=f"kb-cleanup-{kb_id}",
+        )
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     async def _schedule_upload_removal(
         self,
@@ -1047,6 +1196,8 @@ class KnowledgeBaseService:
             validation_result = await self.graph_provider._validate_folder_creation(kb_id, user_id)
             if not validation_result["valid"]:
                 return self._validation_failure(validation_result, "create this folder")
+            if (deleting := await self._refuse_if_deleting(kb_id)):
+                return deleting
 
             # Check for name conflicts in KB root
             existing_folder = await self.graph_provider.find_folder_by_name_in_parent(
@@ -1108,6 +1259,8 @@ class KnowledgeBaseService:
             validation_result = await self.graph_provider._validate_folder_creation(kb_id, user_id)
             if not validation_result["valid"]:
                 return self._validation_failure(validation_result, "create this folder")
+            if (deleting := await self._refuse_if_deleting(kb_id)):
+                return deleting
 
             if not await self.graph_provider.validate_folder_in_kb(kb_id, parent_folder_id):
                 return await self._destination_folder_refusal(
@@ -1170,7 +1323,8 @@ class KnowledgeBaseService:
         try:
             self.logger.info(f"🚀 Updating folder {folder_id} in KB {kb_id}")
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER", "WRITER"]
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
+                for_write=True,
             )
             if err:
                 return err
@@ -1203,8 +1357,9 @@ class KnowledgeBaseService:
             
             current_name = current_folder.get("recordName", "")
             
-            # Early exit if name hasn't changed
-            if current_name.lower() == name.lower():
+            # Early exit if name hasn't changed. Case counts: "reports" -> "Reports"
+            # is a rename the user asked for, and the stored path follows the name.
+            if current_name == name:
                 self.logger.info(f"↩️ Folder name unchanged, skipping update")
                 return {
                     "success": True,
@@ -1272,6 +1427,7 @@ class KnowledgeBaseService:
             user_key, user_role, err = await self._resolve_user_and_kb_access(
                 kb_id, user_id, required_roles=["OWNER", "WRITER"],
                 permission_denied_reason="User lacks permission to delete folder",
+                for_write=True,
             )
             if err:
                 return err
@@ -1368,7 +1524,7 @@ class KnowledgeBaseService:
         user_id: str,
         record_id: str,
         updates: Dict,
-        file_metadata: Optional[Dict] = None,
+        file_metadata: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict]:
         """
         Update a record directly in KB root (not in any folder).
@@ -1380,6 +1536,8 @@ class KnowledgeBaseService:
             kb_context, refusal = await self._record_edit_context(user_id, record_id)
             if refusal:
                 return refusal
+            if (deleting := await self._refuse_if_deleting(kb_context["kb_id"])):
+                return deleting
 
             # Check for file rename duplicate conflicts
             if "recordName" in updates:
@@ -1432,6 +1590,18 @@ class KnowledgeBaseService:
             if not record:
                 return {"success": False, "code": 404, "reason": "Record not found"}
 
+            if file_metadata is not None and is_pushed_revision(record.external_revision_id):
+                # A pushed record's bytes come only from a push: a replaced file would leave its
+                # revision naming content the storage document no longer holds.
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": (
+                        "RECORD_IS_PUSHED: this record was pushed through the API. "
+                        "Push a new version of it instead of replacing its file."
+                    ),
+                }
+
             timestamp = get_epoch_timestamp_in_ms()
             if "recordName" in updates:
                 record.record_name = updates["recordName"]
@@ -1444,7 +1614,15 @@ class KnowledgeBaseService:
             if file_metadata is not None:
                 # Content changed (new blob uploaded): bump revision so the record is
                 # re-persisted, force reindex, and emit updateRecord (Qdrant refresh).
+                if parse_origin(record.source_timestamp_origin) is SourceTimestampOrigin.CONTENT:
+                    # The old content's date goes with it; indexing dates the new one.
+                    stored = await self.graph_provider.get_document(record_id, CollectionNames.RECORDS.value) or {}
+                    record.source_created_at = stored.get(UPLOAD_SOURCE_CREATED_FIELD) or record.created_at
                 record.source_updated_at = file_metadata.get("lastModified", timestamp)
+                # Node stamps receivedAt off the clock its missing-lastModified fallback
+                # reads, before the storage upload; ``timestamp`` comes after that upload.
+                received_at = epoch_ms(file_metadata.get("receivedAt")) or timestamp
+                record.source_timestamp_origin = upload_origin(record.source_updated_at, received_at).value
                 record.external_revision_id = str(timestamp)
                 await processor.on_record_content_update(record)
             else:
@@ -1482,7 +1660,8 @@ class KnowledgeBaseService:
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from KB {kb_id} root")
 
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER", "WRITER"]
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
+                for_write=True,
             )
             if err:
                 return err
@@ -1541,7 +1720,8 @@ class KnowledgeBaseService:
             self.logger.info(f"🚀 Bulk deleting {len(record_ids)} records from folder {folder_id} in KB {kb_id}")
 
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER", "WRITER"]
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
+                for_write=True,
             )
             if err:
                 return err
@@ -1638,7 +1818,7 @@ class KnowledgeBaseService:
                     ),
                 }
             kb_id = record.get("connectorId")
-            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id)
+            user_key, user_role, err = await self._resolve_user_and_kb_access(kb_id, user_id, for_write=True)
             if err:
                 return err
             if is_live_record(record):
@@ -1676,7 +1856,7 @@ class KnowledgeBaseService:
                 }
 
             name = record.get("recordName") or "This item"
-            if parent_refusal := self._trashed_parent_refusal(name, members, member_ids):
+            if parent_refusal := await self._trashed_parent_refusal(name, members, member_ids, kb_id, outside):
                 return parent_refusal
 
             renames = await self._restore_renames(kb_id, members, member_ids)
@@ -1728,7 +1908,7 @@ class KnowledgeBaseService:
                     kb_id, batch_id, items, restore_source=DeleteSource.USER, require_live_parent=True
                 )
             except RestoreRefused as refused:
-                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id)
+                return await self._restore_refused_response(refused, name, kb_id, batch_id, org_id, outside)
 
             return await self._finish_restore(
                 processor, batch_id, members, renames, reindex_ids, reembed_ids=reembed_ids
@@ -1772,10 +1952,29 @@ class KnowledgeBaseService:
         return response
 
     @staticmethod
-    def _trashed_parent_refusal(name: str, members: list[dict], member_ids: set[str]) -> dict | None:
-        """The 409 for a batch whose folder is in the trash outside it, else None."""
+    async def _trashed_parent_refusal(
+        name: str, members: list[dict], member_ids: set[str], kb_id: str, outside: ConnectionCheck | None,
+    ) -> dict | None:
+        """The 409 for a batch whose folder is in the trash outside it, else None.
+
+        A connected app whose limit leaves that folder out is told what to do
+        without the folder's name or id: a file the limit names does not name
+        the folder above it."""
         for item in members:
-            if item.get("parentIsDeleted") and item.get("parentId") not in member_ids:
+            parent_id = item.get("parentId")
+            if item.get("parentIsDeleted") and parent_id not in member_ids:
+                hidden = outside is not None and bool(
+                    await outside(kb_id, [], [{"record": {"_key": parent_id}, "parentId": None}])
+                )
+                if hidden:
+                    return {
+                        "success": False,
+                        "code": 409,
+                        "reason": (
+                            f"'{name}' was in a folder that is also in the trash. Ask someone who can "
+                            f"open that folder to restore it, then restore '{name}'."
+                        ),
+                    }
                 parent = item.get("parentName") or "the folder it was in"
                 return {
                     "success": False,
@@ -1784,12 +1983,13 @@ class KnowledgeBaseService:
                         f"'{name}' was in '{parent}', which is also in the trash. Restore "
                         f"'{parent}' first, then restore '{name}'."
                     ),
-                    "parentId": item.get("parentId"),
+                    "parentId": parent_id,
                 }
         return None
 
     async def _restore_refused_response(
-        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str
+        self, refused: RestoreRefused, name: str, kb_id: str, batch_id: str, org_id: str,
+        outside: ConnectionCheck | None = None,
     ) -> dict:
         """The answer for a restore the write refused, nothing written.
 
@@ -1799,8 +1999,8 @@ class KnowledgeBaseService:
         try:
             batch = await self.graph_provider.get_records_in_delete_batch(batch_id, org_id)
             members = [item for item in batch if item["record"].get("connectorId") == kb_id]
-            parent_refusal = self._trashed_parent_refusal(
-                name, members, {item["record"]["_key"] for item in members}
+            parent_refusal = await self._trashed_parent_refusal(
+                name, members, {item["record"]["_key"] for item in members}, kb_id, outside,
             )
         except Exception as e:
             self.logger.warning("Could not re-read delete batch %s after a refused restore: %s", batch_id, e)
@@ -1974,6 +2174,8 @@ class KnowledgeBaseService:
                 restored_ids.update(r["recordId"] for r in outcome.get("restoredRecords", []))
             results.append({"recordId": record_id, **outcome})
         failed = [r for r in results if not r.get("success")]
+        if failed and len(failed) == len(results) and all(r.get("errorCode") == "KB_BEING_DELETED" for r in failed):
+            return {"success": False, "code": 409, "reason": KB_BEING_DELETED_REASON, "errorCode": "KB_BEING_DELETED"}
         return {
             "success": not failed,
             "code": 200,
@@ -2103,6 +2305,7 @@ class KnowledgeBaseService:
             requester_key, _, err = await self._resolve_user_and_kb_access(
                 kb_id, requester_id, required_roles=["OWNER"],
                 permission_denied_reason="Only KB owners can grant permissions",
+                for_write=True,
             )
             if err:
                 return err
@@ -2207,6 +2410,7 @@ class KnowledgeBaseService:
             requester_key, _, err = await self._resolve_user_and_kb_access(
                 kb_id, requester_id, required_roles=["OWNER"],
                 permission_denied_reason="Only KB owners can update permissions",
+                for_write=True,
             )
             if err:
                 return err
@@ -2417,9 +2621,15 @@ class KnowledgeBaseService:
                 }
 
             self.logger.info(f"Looking up requester by requester: {requester_id}")
+            # Anyone with access may drop their own permission (leaving a shared
+            # project removes its member's edge on the project's hidden collection).
+            # The owner and creator checks below still apply to that removal.
+            removing_only_self = not team_ids and user_ids == [requester_id]
             requester_key, _, err = await self._resolve_user_and_kb_access(
-                kb_id, requester_id, required_roles=["OWNER"],
+                kb_id, requester_id,
+                required_roles=None if removing_only_self else ["OWNER"],
                 permission_denied_reason="Only KB owners can remove permissions",
+                for_write=True,
             )
             if err:
                 return err
@@ -2979,6 +3189,7 @@ class KnowledgeBaseService:
         frec.parent_external_record_id = parent_folder_id or None
         # Server-side stamp: never trust a client-supplied uploader.
         frec.uploaded_by = uploaded_by or None
+        frec.source_timestamp_origin = upload_origin(frec.source_created_at, frec.created_at).value
         if storage_url and frec.external_record_id:
             frec.fetch_signed_url = (
                 f"{storage_url}/api/v1/document/internal/{frec.external_record_id}/download"
@@ -3097,6 +3308,8 @@ class KnowledgeBaseService:
             )
             if not validation.get("valid"):
                 return self._validation_failure(validation, "upload these files")
+            if (deleting := await self._refuse_if_deleting(kb_id)):
+                return deleting
 
             added_levels = max((folder_levels_in_path(f.get("filePath", "")) for f in files), default=0)
             if await self._exceeds_folder_depth(parent_folder_id, added_levels):
@@ -3148,6 +3361,8 @@ class KnowledgeBaseService:
         )
         if isinstance(result, dict) and not result.get("valid"):
             return self._validation_failure(result, "upload to this folder")
+        if (deleting := await self._refuse_if_deleting(kb_id)):
+            return {**deleting, "valid": False}
         return result
 
     async def move_record(
@@ -3179,7 +3394,8 @@ class KnowledgeBaseService:
 
             # ── 1. Resolve user + KB access ──────────────────────────────────
             user_key, user_role, err = await self._resolve_user_and_kb_access(
-                kb_id, user_id, required_roles=["OWNER", "WRITER"]
+                kb_id, user_id, required_roles=["OWNER", "WRITER"],
+                for_write=True,
             )
             if err:
                 return err

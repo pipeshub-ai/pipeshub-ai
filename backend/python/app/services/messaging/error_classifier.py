@@ -309,6 +309,17 @@ class MessageErrorClassifier:
         except ImportError:
             pass
 
+        # 0b3. A stored record that could not be read from its signed URL: an
+        # expired or skewed signature answers 403 like a retired document, and
+        # only the reader (which re-looks-up first) can tell them apart.
+        try:
+            from app.modules.transformers.blob_storage import SignedUrlReadError
+
+            if any(isinstance(chain_exc, SignedUrlReadError) for chain_exc in chain):
+                return MessageErrorType.TRANSIENT
+        except ImportError:
+            pass
+
         # 0c. Parsing-service structured errors: PARSE_BACKPRESSURE means the
         # service is saturated but healthy (admission gate timed out) and
         # must be retried, never treated as a content failure or bubbled up

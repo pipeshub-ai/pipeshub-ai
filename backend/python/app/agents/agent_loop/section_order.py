@@ -95,6 +95,12 @@ PIPESHUB_SECTION_ORDER: tuple[tuple[str, Volatility], ...] = (
     # Same relationship to `available_tools` (Band B) that `preloaded_skills`
     # has to `skills_overview` — written by the `tool_preloading` middleware.
     ("preloaded_tools",            Volatility.TURN),
+    # The person's words for this turn, verbatim: a second copy of the current
+    # request that no compaction of the message list can drop.
+    ("current_request",            Volatility.TURN),
+    # The intent step's reading of the request, when one ran (never the
+    # current user message, which stays the person's own words).
+    ("request_interpretation",     Volatility.TURN),
     # The router's requirements, success criteria and gaps for this question.
     ("goal_brief",                 Volatility.TURN),
     ("time_context",               Volatility.TURN),

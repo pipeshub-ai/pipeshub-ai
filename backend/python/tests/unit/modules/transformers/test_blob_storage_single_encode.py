@@ -16,7 +16,6 @@ from app.modules.transformers import blob_storage as bs_mod
 from app.modules.transformers.blob_storage import (
     BlobStorage,
     _ascii_json_size,
-    _cloud_envelope_size,
     _encode_record_json,
     _json_utf8_bytes,
     _plain_envelope_bytes,
@@ -73,13 +72,6 @@ def test_plain_envelope_bytes_are_unchanged(record, vrid) -> None:
     envelope = {"isCompressed": False, "record": record, "virtualRecordId": vrid}
     assert _plain_envelope_bytes(record, _encode_record_json(record), vrid) == _json_utf8_bytes(envelope)
     assert _plain_envelope_bytes(record, None, vrid) == _json_utf8_bytes(envelope)
-
-
-@pytest.mark.parametrize("record", _records())
-@pytest.mark.parametrize("vrid", ["vr-1", None, "vr-ü"])
-def test_cloud_envelope_size_is_what_aiohttp_sends(record, vrid) -> None:
-    sent = {"record": record, "isCompressed": False, "virtualRecordId": vrid}
-    assert _cloud_envelope_size(_encode_record_json(record), vrid) == len(json.dumps(sent).encode("utf-8"))
 
 
 def test_unserializable_record_has_no_encoding() -> None:
@@ -197,8 +189,8 @@ async def test_cloud_save_reports_the_size_it_sends_without_reencoding() -> None
         _, size = await bs.save_record_to_storage("org-1", "rec-1", "vr-1", record)
 
     sent = bs._upload_to_signed_url.await_args.args[2]
-    assert sent == {"record": record, "isCompressed": False, "virtualRecordId": "vr-1"}
-    assert size == len(json.dumps(sent).encode("utf-8"))
+    assert sent == _json_utf8_bytes({"isCompressed": False, "record": record, "virtualRecordId": "vr-1"})
+    assert size == len(sent)
     assert counter.large == 1
 
 

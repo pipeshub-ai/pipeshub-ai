@@ -1,6 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
+import type { TFunction } from 'i18next';
 import { Box, Flex, Text } from '@radix-ui/themes';
 import type { AuthMethod } from '../api';
 import SingleProvider from './single-provider';
@@ -26,23 +28,17 @@ interface TabConfig {
   iconType: 'material' | 'image';
 }
 
-function getTabConfig(
-  method: AuthMethod,
-  authProviders: Record<string, Record<string, string>>,
-): TabConfig {
+function getTabConfig(method: AuthMethod, t: TFunction): TabConfig {
   switch (method) {
     case 'password':
       return {
         method,
-        label: 'Password',
+        label: t('auth.login.tabPassword'),
         icon: '/icons/auth-config/lock-closed.svg',
         iconType: 'image',
       };
     case 'otp':
-      return { method, label: 'Email OTP', icon: 'mail_lock', iconType: 'material' };
-    case 'samlSso':
-      const providerName = authProviders?.saml?.samlPlatform ?? 'SSO';
-      return { method, label: 'SSO', icon: 'security', iconType: 'material' };
+      return { method, label: t('auth.login.tabEmailOtp'), icon: 'mail_lock', iconType: 'material' };
     case 'google':
       return {
         method,
@@ -51,17 +47,12 @@ function getTabConfig(
         iconType: 'image',
       };
     case 'microsoft':
-    case 'azureAd':
       return {
         method,
         label: 'Microsoft',
         icon: '/icons/auth-config/windows.svg',
         iconType: 'image',
       };
-    case 'oauth': {
-      const providerName = authProviders?.oauth?.providerName ?? 'OAuth';
-      return { method, label: "OAuth", icon: 'vpn_key', iconType: 'material' };
-    }
     default:
       return { method, label: method, icon: 'login', iconType: 'material' };
   }
@@ -86,7 +77,8 @@ export default function MultipleProviders({
   const [canScrollLeft, setCanScrollLeft] = useState(false);
   const [canScrollRight, setCanScrollRight] = useState(false);
 
-  const tabs = allowedMethods.map((method) => getTabConfig(method, authProviders));
+  const { t } = useTranslation();
+  const tabs = allowedMethods.map((method) => getTabConfig(method, t));
 
   const updateScrollState = useCallback(() => {
     const el = scrollRef.current;
@@ -167,6 +159,7 @@ export default function MultipleProviders({
               <button
                 key={tab.method}
                 type="button"
+                className="touch-hit"
                 onClick={() => setActiveMethod(tab.method)}
                 style={{
                   flexShrink: 0,

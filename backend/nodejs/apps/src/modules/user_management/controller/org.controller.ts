@@ -45,8 +45,19 @@ import {
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  signupSource,
+} from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
+
+const ADDRESS_FIELDS = [
+  'addressLine1',
+  'city',
+  'state',
+  'country',
+  'postCode',
+] as const;
 
 @injectable()
 export class OrgController {
@@ -192,10 +203,15 @@ export class OrgController {
         );
       }
 
+      const source = signupSource(
+        req.body as { ref?: unknown; referrerDomain?: unknown },
+      );
       const org = new Org({
         ...req.body,
         domain,
         onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+        signupChannel: source.channel,
+        signupReferrerDomain: source.referrerDomain,
       });
 
       const adminUser = new Users({
@@ -307,6 +323,10 @@ export class OrgController {
         email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
+        channel: source.channel,
+        ...(source.referrerDomain !== undefined
+          ? { referrer_domain: source.referrerDomain }
+          : {}),
       });
 
       if (sendEmail) {
@@ -366,20 +386,66 @@ export class OrgController {
     }
   }
 
+  /** A request-body field that, when present, must be a string. */
+  private optionalString(field: string, value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') {
+      throw new BadRequestError(`${field} must be a string`);
+    }
+    return value;
+  }
+
+  /**
+   * The address fields of a request body, each a string. Anything else (an
+   * operator object, an array, a number) is refused rather than stored.
+   */
+  private pickAddress(value: unknown): Record<string, string> | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestError('permanentAddress must be an object');
+    }
+    const address: Record<string, string> = {};
+    for (const field of ADDRESS_FIELDS) {
+      const part = (value as Record<string, unknown>)[field];
+      if (part === undefined) continue;
+      if (typeof part !== 'string') {
+        throw new BadRequestError(`permanentAddress.${field} must be a string`);
+      }
+      address[field] = part;
+    }
+    return address;
+  }
+
+  private savedAddress(org: unknown): Record<string, string> {
+    const doc = org as { toObject?: () => Record<string, unknown> };
+    const plain = doc.toObject?.() ?? (org as Record<string, unknown>);
+    const stored = plain.permanentAddress;
+    const saved: Record<string, string> = {};
+    if (stored === null || typeof stored !== 'object') return saved;
+    for (const field of ADDRESS_FIELDS) {
+      const part = (stored as Record<string, unknown>)[field];
+      if (typeof part === 'string') saved[field] = part;
+    }
+    return saved;
+  }
+
   async updateOrganizationDetails(
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     const { contactEmail, registeredName, shortName, permanentAddress } =
-      req.body as {
-        contactEmail?: string;
-        registeredName?: string;
-        shortName?: string;
-        permanentAddress?: string;
-      };
+      req.body as Record<string, unknown>;
 
     try {
+      // The route schema already forces these shapes. Checked again here so a
+      // query operator ({ "$ne": null }, { "$where": ... }) can never be spread
+      // into the update, whatever route reaches this method.
+      const email = this.optionalString('contactEmail', contactEmail);
+      const regName = this.optionalString('registeredName', registeredName);
+      const short = this.optionalString('shortName', shortName);
+      const address = this.pickAddress(permanentAddress);
+
       const orgId = req.user?.orgId;
 
       const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
@@ -389,21 +455,22 @@ export class OrgController {
       }
 
       // Update only the fields that are provided in the request body
-      const updateData: Partial<{
-        contactEmail: string;
-        registeredName: string;
-        shortName: string;
-        permanentAddress: string;
-      }> = {};
+      const updateData: Record<string, string | Record<string, string>> = {};
 
-      if (contactEmail) updateData.contactEmail = contactEmail;
-      if (registeredName) updateData.registeredName = registeredName;
-      if (shortName) updateData.shortName = shortName;
-      if (permanentAddress) updateData.permanentAddress = permanentAddress;
+      if (email) updateData.contactEmail = email;
+      if (regName) updateData.registeredName = regName;
+      if (short) updateData.shortName = short;
+      // Merge the supplied fields into the saved address so a partial address
+      // keeps the fields it omits. A whole-object $set also works when the
+      // stored value is null, where a dotted path would fail.
+      if (address && Object.keys(address).length > 0) {
+        const saved = this.savedAddress(org);
+        updateData.permanentAddress = { ...saved, ...address };
+      }
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
-        new: true,
+        returnDocument: 'after',
       });
 
       await this.eventService.start();
@@ -523,7 +590,7 @@ export class OrgController {
           orgId,
         },
         { orgId, logo: base64Logo, mimeType },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability
@@ -557,6 +624,12 @@ export class OrgController {
       if (orgLogo.mimeType) {
         res.setHeader('Content-Type', orgLogo.mimeType);
       }
+      // An SVG logo opened as a page must not run script on this origin.
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader(
+        'Content-Security-Policy',
+        "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+      );
 
       res.status(200).send(logoBuffer);
       return;

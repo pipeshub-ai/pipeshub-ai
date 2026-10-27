@@ -4,7 +4,7 @@ import logging
 import random
 import re
 from collections.abc import Awaitable, Callable
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from logging import Logger
 from typing import Any, AsyncContextManager, Optional, TypeVar
 
@@ -416,6 +416,9 @@ class GraphTransactionStore(TransactionStore):
     async def remove_user_access_to_record(self, connector_id: str, external_id: str, user_id: str) -> None:
         return await self.graph_provider.remove_user_access_to_record(connector_id, external_id, user_id, transaction=self.txn)
 
+    async def remove_user_access_to_connector(self, connector_id: str, user_id: str) -> int:
+        return await self.graph_provider.remove_user_access_to_connector(connector_id, user_id, transaction=self.txn)
+
     async def delete_edge(self, from_id: str, from_collection: str, to_id: str, to_collection: str, collection: str) -> None:
         return await self.graph_provider.delete_edge(from_id, from_collection, to_id, to_collection, collection, transaction=self.txn)
 
@@ -543,6 +546,13 @@ class GraphTransactionStore(TransactionStore):
             restores, batch_id, transaction=self.txn,
             connector_id=connector_id, require_live_parent=require_live_parent,
         )
+
+    async def claim_push_record(self, **claim: object) -> object:
+        """The conditional write that arbitrates concurrent pushes, within the active transaction."""
+        return await self.graph_provider.claim_push_record(transaction=self.txn, **claim)
+
+    async def retag_push_record(self, **retag: object) -> bool:
+        return await self.graph_provider.retag_push_record(transaction=self.txn, **retag)
 
     async def delete_single_record(self, record_id: str) -> dict:
         """Single-record delete within the active transaction — no containment walk."""
@@ -1331,6 +1341,10 @@ class GraphDataStore(DataStoreProvider):
                 # its locks until the server's idle timeout, so abort it. Neo4j has
                 # already closed the session and answers the abort with ValueError.
                 self.logger.warning("Transaction commit failed (%s); aborting it", type(e).__name__)
+                # The store may still have applied it: callers that created something outside the
+                # transaction (a pushed record's storage document) must not undo it on this error.
+                with suppress(Exception):
+                    e.commit_outcome_unknown = True  # type: ignore[attr-defined]
                 try:
                     await tx_store.rollback()
                 except ValueError:

@@ -18,9 +18,12 @@ from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     get_flattened_results,
+    keep_record_text_inside_connection,
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+
     from app.config.configuration_service import ConfigurationService
     from app.modules.retrieval.context.units import Unit
     from app.modules.transformers.blob_storage import BlobStorage
@@ -44,7 +47,11 @@ class KnowledgeContextBuilder:
         org_id: str,
         user_id: str,
         config_service: ConfigurationService | None = None,
+        connection_sources: Mapping[str, Iterable[str]] | None = None,
     ) -> None:
+        """``connection_sources`` is a connected app's limit, which keeps a
+        parent outside it out of the graph context."""
+        self._connection_sources = connection_sources
         self._blob_store = blob_store
         self._graph_provider = graph_provider
         self._org_id = org_id
@@ -86,7 +93,7 @@ class KnowledgeContextBuilder:
         if include_fk_children:
             await enrich_virtual_record_id_to_result_with_fk_children(
                 records, self._blob_store, self._org_id, self._graph_provider, ranked,
-                user_id=self._user_id,
+                user_id=self._user_id, connection_sources=self._connection_sources,
             )
         if ranked and self._graph_provider:
             await enrich_records_with_graph_context(
@@ -98,8 +105,13 @@ class KnowledgeContextBuilder:
                 org_id=self._org_id,
                 config_service=self._config_service,
                 user_id=self._user_id,
+                connection_sources=self._connection_sources,
             )
             await enrich_records_with_address_links(
                 records, self._graph_provider, self._org_id, user_id=self._user_id,
+                connection_sources=self._connection_sources,
             )
+        await keep_record_text_inside_connection(
+            records.values(), self._graph_provider, self._user_id, self._org_id, self._connection_sources,
+        )
         return KnowledgeContext(ranked=ranked, virtual_record_id_to_result=records)

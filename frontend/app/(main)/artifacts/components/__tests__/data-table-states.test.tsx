@@ -10,7 +10,7 @@ import { ArtifactsDataTable } from '../artifacts-data-table';
 vi.mock('@/app/components/ui', () => ({ FileIcon: () => null, EmptyIcon: () => null }));
 vi.mock('@/app/components/ui/MaterialIcon', () => ({ MaterialIcon: () => null }));
 vi.mock('../artifact-thumbnail', () => ({ ArtifactThumbnail: () => null }));
-vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false }));
+vi.mock('@/lib/hooks/use-is-mobile', () => ({ useIsMobile: () => false, useIsBelowDesktop: () => false }));
 
 const ITEM: ArtifactListItem = { artifactId: 'a1', name: 'mine.csv', artifactType: 'DATA_FILE', version: 1 };
 

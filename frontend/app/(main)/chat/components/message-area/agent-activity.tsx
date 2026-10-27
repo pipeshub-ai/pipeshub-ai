@@ -20,13 +20,15 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { ICON_SIZES } from '@/lib/constants/icon-sizes';
 import { useCopyText } from '@/lib/hooks/use-copy-text';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { markdownUrlTransform } from '@/lib/utils/image-url-policy';
 import type { MessagePart, StatusMessage } from '../../types';
 import { looksLikeJson, safeLink, toolResultView, type ToolResultView } from '../../tool-result-view';
-import { parseArtifactMarkers, parseDownloadMarkers } from '../../utils/parse-download-markers';
+import { stripAnswerMarkers } from '../../utils/parse-download-markers';
 import type { CitationMaps, CitationCallbacks } from './response-tabs/citations';
-import { createMarkdownComponents } from './answer-content';
+import { CodeBlock, createMarkdownComponents } from './answer-content';
 import { processMarkdownContent } from '../../utils/process-markdown-content';
 import {
+  extractSqlQuery,
   extractToolsetLabel,
   isMcpTool,
   isWebTool,
@@ -372,9 +374,7 @@ const CONFIDENCE_TRAILER_RE = /(?:\n*-{3,}\s*\n)?\s*Confidence:\s*(?:Very High|H
 const NARRATION_REMARK_PLUGINS: PluggableList = [remarkGfm];
 
 function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const { text: withoutArtifacts } = parseArtifactMarkers(content);
-  const { text: afterDownloads } = parseDownloadMarkers(withoutArtifacts);
-  const withoutConfidence = afterDownloads.replace(CONFIDENCE_TRAILER_RE, '');
+  const withoutConfidence = stripAnswerMarkers(content).replace(CONFIDENCE_TRAILER_RE, '');
 
   // After stripping markers, lines like `- ::artifact[...]{...}` become
   // bare `- ` or `- \n`. Remove empty list items / headings so they don't
@@ -397,7 +397,7 @@ function NarrationTextImpl({ content, citationMaps, citationCallbacks }: { conte
 
   return (
     <Box className="narration-text agent-activity-enter" style={{ color: 'var(--slate-12)', fontSize: 'var(--font-size-2)', lineHeight: 1.6 }}>
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
@@ -417,7 +417,7 @@ const NarrationText = React.memo(NarrationTextImpl);
  * animation (see `TimelineRow`) signals "in progress" instead of an
  * in-text cursor, so this doesn't need its own accent bar. */
 function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { content: string; citationMaps?: CitationMaps; citationCallbacks?: CitationCallbacks }) {
-  const cleanContent = processMarkdownContent(content);
+  const cleanContent = processMarkdownContent(stripAnswerMarkers(content));
 
   const citMapsRef = useRef(citationMaps);
   citMapsRef.current = citationMaps;
@@ -442,7 +442,7 @@ function LiveNarrationTextImpl({ content, citationMaps, citationCallbacks }: { c
         lineHeight: 1.6,
       }}
     >
-      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} components={components}>
+      <ReactMarkdown remarkPlugins={NARRATION_REMARK_PLUGINS} urlTransform={markdownUrlTransform} components={components}>
         {cleanContent}
       </ReactMarkdown>
     </Box>
@@ -946,6 +946,7 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
     () => (status === 'completed' && isWebTool(part.toolName) ? toolResultView(part.resultView) : null),
     [status, part.toolName, part.resultView],
   );
+  const sqlQuery = extractSqlQuery(part.toolName, part.args);
   return (
     <>
       {(part.argsSummary || part.args) && (
@@ -954,6 +955,26 @@ function ToolDetails({ part, status }: { part: MessagePart; status: NonNullable<
             {t('chat.toolCard.arguments')}
           </Text>
           {part.argsSummary ? <ToolSummaryText content={part.argsSummary} /> : <Box style={TOOL_TEXT_STYLE}>{part.args}</Box>}
+        </Box>
+      )}
+      {sqlQuery && (
+        <Box>
+          <Text size="1" weight="medium" style={{ color: 'var(--slate-9)' }}>
+            {t('chat.toolCard.query')}
+          </Text>
+          {/* No copy or download for a cut-off query: it can still run, e.g. when the cut falls in a `--` comment. */}
+          <CodeBlock
+            language="sql"
+            codeText={sqlQuery.text}
+            actions={!sqlQuery.cutOff}
+            maxHeight="260px"
+            style={{ marginBottom: 0, marginTop: 'var(--space-1)' }}
+          />
+          {sqlQuery.cutOff && (
+            <Text as="p" size="1" mt="1" style={{ color: 'var(--slate-10)' }}>
+              {t('chat.toolCard.queryCutOff')}
+            </Text>
+          )}
         </Box>
       )}
       {/* A skill tool's raw `resultPreview` is a truncated SKILL.md body or bundled-file content

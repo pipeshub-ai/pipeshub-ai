@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import AISettingsUnavailableError, DocumentProcessingError
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 
@@ -458,15 +458,16 @@ class TestGetMultimodalLLMEdgeCases:
 
     @pytest.mark.asyncio
     async def test_config_get_raises_exception(self):
-        """Exception from config.get_config is wrapped in ValueError."""
+        """A settings store that is down is an outage: retried, with its error as the cause."""
         logger = logging.getLogger("test")
         config = AsyncMock()
         config.get_config = AsyncMock(side_effect=RuntimeError("Config service down"))
 
         strategy = VLMOCRStrategy(logger, config)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to get multimodal LLM"):
+        with pytest.raises(AISettingsUnavailableError, match="Could not read the workspace's AI settings") as exc_info:
             await strategy._get_multimodal_llm()
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 # ============================================================================

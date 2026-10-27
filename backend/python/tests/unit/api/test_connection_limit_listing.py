@@ -55,7 +55,8 @@ CORPUS = {
     "kb-big": [
         *(node(f"big-{i:02d}", f"budget {i:02d}", origin="COLLECTION") for i in range(60)),
         node(FOLDER, "shared folder", "folder", origin="COLLECTION"),
-        *(node(f"zz-{c}", f"zz budget {c}", parent_id=FOLDER, origin="COLLECTION") for c in "abc"),
+        *({**node(f"zz-{c}", f"zz budget {c}", parent_id=FOLDER, origin="COLLECTION"),
+           "parentType": "folder", "parentName": "shared folder"} for c in "abc"),
     ],
     "kb-other": [node("other-1", "budget other", origin="COLLECTION")],
 }
@@ -457,6 +458,124 @@ class TestTheNavigateRoot:
 
 def _raw_cursor(payload: dict[str, Any]) -> str:
     return "lim1." + base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
+
+
+class TestTheParentOfARow:
+    """A file the limit names can sit in a folder the limit leaves out; the row
+    is kept and that folder is not named."""
+
+    async def test_a_named_file_in_a_folder_outside_the_limit_has_no_parent(self) -> None:
+        result = await _nodes(_graph(), FILES_LIMIT, q="zz budget")
+
+        (row,) = result.items
+        assert row.id == "zz-a"
+        assert row.parent is None and row.parentId is None
+        assert "shared folder" not in result.model_dump_json() and FOLDER not in result.model_dump_json()
+
+    async def test_a_named_file_under_its_app_does_not_name_the_app(self) -> None:
+        result = await _nodes(_graph(), FILES_LIMIT, q="budget 07")
+
+        assert [(item.id, item.parentId) for item in result.items] == [("big-07", None)]
+
+    async def test_a_file_in_a_folder_inside_the_limit_keeps_its_parent(self) -> None:
+        result = await _nodes(_graph(), FOLDER_LIMIT, q="zz budget")
+
+        assert {item.id: item.parent.id for item in result.items} == {f"zz-{c}": FOLDER for c in "abc"}
+        assert all(item.parentId == FOLDER and item.parent.name == "shared folder" for item in result.items)
+
+    async def test_a_browse_inside_a_named_folder_keeps_the_folder_as_parent(self) -> None:
+        result = await _nodes(_graph(), FOLDER_LIMIT, parent_id=FOLDER, parent_type="folder")
+
+        assert [item.id for item in result.items] == ["zz-a", "zz-b", "zz-c"]
+        assert all(item.parentId == FOLDER for item in result.items)
+
+    @staticmethod
+    def _with_the_path_above(graph: MagicMock) -> MagicMock:
+        """The browse scope names the folder's own parent and trail, as the providers do."""
+        page = graph.get_knowledge_hub_connector_page_v3.side_effect
+
+        def with_path(**kwargs: object) -> dict[str, Any]:
+            result = page(**kwargs)
+            if (result.get("scope") or {}).get("nodeId") == FOLDER:
+                app = {"id": "kb-big", "name": "kb-big", "nodeType": "app"}
+                result["scope"] = {**result["scope"], "parentNode": app,
+                                   "breadcrumbs": [app, result["scope"]["currentNode"]]}
+            return result
+
+        graph.get_knowledge_hub_connector_page_v3.side_effect = with_path
+        return graph
+
+    async def test_a_browse_inside_a_named_folder_does_not_name_what_is_above_it(self) -> None:
+        graph = self._with_the_path_above(_graph())
+
+        result = await _nodes(graph, FOLDER_LIMIT, parent_id=FOLDER, parent_type="folder", include="breadcrumbs")
+
+        assert result.parentNode is None
+        assert [crumb.id for crumb in result.breadcrumbs] == [FOLDER]
+
+    async def test_an_unlimited_browse_keeps_the_path_above(self) -> None:
+        graph = self._with_the_path_above(_graph())
+
+        result = await _nodes(graph, None, parent_id=FOLDER, parent_type="folder", include="breadcrumbs")
+
+        assert result.parentNode.id == "kb-big"
+        assert [crumb.id for crumb in result.breadcrumbs] == ["kb-big", FOLDER]
+
+    async def test_an_unlimited_token_keeps_every_parent(self) -> None:
+        graph = _graph()
+
+        result = await _nodes(graph, None, q="zz budget")
+
+        assert {item.id: (item.parentId, item.parent.id) for item in result.items} == {
+            f"zz-{c}": (FOLDER, FOLDER) for c in "abc"
+        }
+        graph.check_access.assert_not_called()
+
+    async def test_a_whole_app_limit_keeps_every_parent(self) -> None:
+        result = await _nodes(_graph(), APP_LIMIT, q="budget", limit=100)
+
+        assert all(item.parentId for item in result.items)
+        assert {item.parent.id for item in result.items if item.parent} == {FOLDER}
+
+
+class TestTheFilterMenu:
+    """``filters.available.connectors`` names an app or collection by its own
+    name, so a limited connection is offered only those its limit covers whole."""
+
+    @staticmethod
+    async def _offered(limit: dict | None, q: str | None) -> list[str]:
+        result = await _nodes(_graph(), limit, q=q, include="availableFilters")
+        return [option.id for option in result.filters.available.connectors]
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_a_folder_limit_is_offered_no_partly_shared_collection(self, q) -> None:
+        assert await self._offered(FOLDER_LIMIT, q) == []
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_a_mixed_limit_is_offered_only_its_whole_collection(self, q) -> None:
+        assert await self._offered(MIXED_LIMIT, q) == ["kb-other"]
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_a_whole_app_limit_is_offered_its_apps(self, q) -> None:
+        assert await self._offered(APP_LIMIT, q) == ["kb-big"]
+
+    @pytest.mark.parametrize("q", [None, "budget"])
+    async def test_an_unlimited_token_is_offered_every_source(self, q) -> None:
+        assert await self._offered(None, q) == ["kb-big", "kb-other"]
+
+    @staticmethod
+    async def _offered_below(limit: dict | None, parent_id: str, parent_type: str) -> list[str]:
+        result = await _nodes(_graph(), limit, parent_id=parent_id, parent_type=parent_type, include="availableFilters")
+        return [option.id for option in result.filters.available.connectors]
+
+    async def test_a_folder_opened_under_a_folder_limit_offers_no_collection(self) -> None:
+        assert await self._offered_below(FOLDER_LIMIT, FOLDER, "folder") == []
+
+    async def test_a_folder_opened_under_a_whole_app_limit_offers_only_that_app(self) -> None:
+        assert await self._offered_below(APP_LIMIT, FOLDER, "folder") == ["kb-big"]
+
+    async def test_a_folder_opened_without_a_limit_offers_every_source(self) -> None:
+        assert await self._offered_below(None, FOLDER, "folder") == ["kb-big", "kb-other"]
 
 
 class TestTheBoundedCursor:

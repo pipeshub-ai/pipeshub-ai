@@ -1,7 +1,17 @@
 import { Types } from 'mongoose';
 import { BadRequestError, ForbiddenError, NotFoundError } from '../../../libs/errors/http.errors';
+import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
+import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { Logger } from '../../../libs/services/logger.service';
+import { AppConfig } from '../../tokens_manager/config/config';
 import { IProjectDocument } from '../../projects/types/project.interfaces';
 import { ProjectService } from '../../projects/services/project.service';
+import { Project } from '../../projects/schema/project.schema';
+import { resolveCallerTeamIds } from '../../projects/utils/team-membership';
+import { ProjectsFeature } from '../../projects/utils/projects-feature';
+import { ChatSession } from '../schema/chat.session.schema';
+
+const logger = Logger.getInstance({ service: 'ProjectContext' });
 
 /** Sentinel accepted by `?projectId=` query params to mean "no project". */
 export const PROJECT_ID_UNASSIGNED = 'unassigned';
@@ -10,6 +20,58 @@ export interface ResolvedProjectLink {
   projectId?: string;
   projectVisibility?: 'private' | 'project';
   project?: IProjectDocument;
+}
+
+/** Who is asking, for the project access checks a chat makes. */
+export interface ProjectCaller {
+  /** Graph team ids, fetched only when a chat actually involves a project. */
+  resolveTeamIds: () => Promise<string[]>;
+  /** The scopes of an OAuth token or PAT; undefined for a session token, which is not scope-limited. */
+  oauthScopes?: string[];
+}
+
+type TokenFields = { isOAuth?: boolean; oauthScopes?: string[] };
+
+export function projectCallerFromRequest(
+  req: AuthenticatedUserRequest,
+  appConfig: AppConfig,
+): ProjectCaller {
+  const user = req.user as TokenFields | undefined;
+  return {
+    resolveTeamIds: () => resolveCallerTeamIds(req, appConfig),
+    oauthScopes: user?.isOAuth === true ? (user.oauthScopes ?? []) : undefined,
+  };
+}
+
+/**
+ * Projects whose shared chats the caller may read. Teams are resolved only
+ * when the org has a project shared with a team, so the common case adds no
+ * call to the connector service on every chat list.
+ */
+export async function accessibleProjectIdsFor(
+  orgId: string,
+  userId: string,
+  caller?: ProjectCaller,
+): Promise<Types.ObjectId[]> {
+  const teamIds =
+    caller && (await ProjectService.orgHasTeamMembers(orgId))
+      ? await caller.resolveTeamIds()
+      : [];
+  return ProjectService.getAccessibleProjectIds(orgId, userId, teamIds);
+}
+
+/**
+ * A chat in a project reads the project's instructions, scope and files, so
+ * an OAuth token or PAT needs project:read for it, as for GET /projects/:id.
+ * conversation:chat alone used to reach all of it.
+ */
+function assertProjectReadScope(caller: ProjectCaller | undefined): void {
+  const scopes = caller?.oauthScopes;
+  if (scopes && !scopes.includes(OAuthScopeNames.PROJECT_READ)) {
+    throw new ForbiddenError(
+      `Insufficient scope. Required: ${OAuthScopeNames.PROJECT_READ}`,
+    );
+  }
 }
 
 /**
@@ -27,18 +89,23 @@ export async function resolveProjectLink(
   orgId: string,
   userId: string,
   body: Record<string, unknown>,
+  caller?: ProjectCaller,
 ): Promise<ResolvedProjectLink> {
   const projectId =
     typeof body.projectId === 'string' ? body.projectId : undefined;
   if (!projectId) {
     return {};
   }
+  await ProjectsFeature.assertEnabled();
+  assertProjectReadScope(caller);
   const { project } = await ProjectService.assertAccess(
     orgId,
     userId,
     projectId,
     'viewer',
+    caller ? await caller.resolveTeamIds() : [],
   );
+  ProjectService.assertNotArchived(project);
   const requestedVisibility = body.projectVisibility;
   const projectVisibility: 'private' | 'project' =
     requestedVisibility === 'project' || requestedVisibility === 'private'
@@ -209,25 +276,74 @@ export function bareToolFullName(key: string): string {
  * Returns undefined for a plain (non-project) session or if the linked
  * project was hard-deleted from under it — either way the chat should keep
  * working without project context rather than failing the turn.
+ *
+ * When the chat's owner has lost access to its project (removed as a
+ * member, or the project made private), the chat is unlinked from the
+ * project before the turn runs. Otherwise their new messages kept landing in
+ * a chat the project's members can still read.
  */
 export async function loadProjectForSession(
   orgId: string,
   userId: string,
   projectId: Types.ObjectId | string | undefined,
+  options: {
+    caller?: ProjectCaller;
+    conversationId?: Types.ObjectId | string;
+  } = {},
 ): Promise<IProjectDocument | undefined> {
   if (!projectId) return undefined;
+  // With Projects off the chat carries on without project context; the link
+  // is kept, so turning Projects back on restores it.
+  if (!(await ProjectsFeature.isEnabled())) return undefined;
+  assertProjectReadScope(options.caller);
   try {
     const { project } = await ProjectService.assertAccess(
       orgId,
       userId,
       projectId.toString(),
       'viewer',
+      options.caller ? await options.caller.resolveTeamIds() : [],
     );
     return project;
   } catch (error) {
     if (error instanceof NotFoundError || error instanceof ForbiddenError || error instanceof BadRequestError) {
+      if (
+        options.conversationId &&
+        Types.ObjectId.isValid(projectId.toString())
+      ) {
+        await unlinkFromProject(orgId, options.conversationId, projectId);
+      }
       return undefined;
     }
     throw error;
   }
+}
+
+async function unlinkFromProject(
+  orgId: string,
+  conversationId: Types.ObjectId | string,
+  projectId: Types.ObjectId | string,
+): Promise<void> {
+  // A failed team lookup reads as "in no teams", which would wrongly unlink a
+  // chat whose owner has access through a team, so such projects are left alone.
+  // A deleted project already had its chats unlinked by its delete.
+  const stillRestricted = await Project.exists({
+    _id: new Types.ObjectId(projectId.toString()),
+    isDeleted: false,
+    'members.principalType': { $ne: 'team' },
+  });
+  if (!stillRestricted) return;
+  // Guarded on the same projectId so a chat moved elsewhere meanwhile stays put.
+  await ChatSession.updateOne(
+    {
+      _id: new Types.ObjectId(conversationId.toString()),
+      orgId: new Types.ObjectId(orgId),
+      projectId: new Types.ObjectId(projectId.toString()),
+    },
+    { $unset: { projectId: '', projectVisibility: '' } },
+  );
+  logger.info('Unlinked a chat from a project its owner can no longer access', {
+    conversationId: conversationId.toString(),
+    projectId: projectId.toString(),
+  });
 }

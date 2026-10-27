@@ -2,7 +2,9 @@
 
 ## Overview
 
-The Authentication settings page (`/workspace/authentication`) lets admins configure which authentication method is active for their organisation, and configure OAuth/SAML providers.
+The Authentication settings page (`/workspace/authentication`) lets admins choose which sign-in methods are active for their organisation, and configure the Google and Microsoft providers.
+
+> **SAML SSO and generic OAuth/OIDC sign-in were removed in PipesHub 1.0.** The upgrade turns them off and falls back to password sign-in. Until everyone affected has a password, the page shows a notice listing the people who have signed in but have no password yet (see [Sign-in removal notice](#sign-in-removal-notice)).
 
 ### Route
 
@@ -17,10 +19,8 @@ The Authentication settings page (`/workspace/authentication`) lets admins confi
 | `types.ts` | TypeScript types & per-method metadata |
 | `components/auth-method-row.tsx` | Row for a single auth method |
 | `components/configure-panel.tsx` | Right-side panel (reuses `WorkspaceRightPanel`) |
-| `components/forms/google-config-form.tsx` | Google OAuth config form |
-| `components/forms/microsoft-config-form.tsx` | Microsoft OAuth config form |
-| `components/forms/saml-config-form.tsx` | SAML SSO config form |
-| `components/forms/oauth-config-form.tsx` | Generic OAuth 2.0 config form |
+| `components/forms/provider-config-form.tsx` | Google and Microsoft config form, driven by `PROVIDER_CONFIGS` in `constants.ts` |
+| `components/sign-in-removal-notice.tsx` | Notice after the 1.0 upgrade turned SAML or OAuth sign-in off |
 
 ---
 
@@ -32,8 +32,6 @@ The Authentication settings page (`/workspace/authentication`) lets admins confi
 | `otp` | One-Time Password | — | ✓ |
 | `google` | Google | ✓ | — |
 | `microsoft` | Microsoft | ✓ | — |
-| `samlSso` | SAML SSO | ✓ | — |
-| `oauth` | OAuth | ✓ | — |
 
 **Policy:** Only **one** method can be active at a time.
 
@@ -166,75 +164,7 @@ POST /api/v1/configurationManager/authConfig/microsoft
 
 ---
 
-### 7. Get SAML SSO Config
-
-```
-GET /api/v1/configurationManager/authConfig/sso
-```
-
-**Response:**
-```json
-{
-  "entryPoint": "https://idp.example.com/sso/saml",
-  "certificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----",
-  "emailKey": "http://schemas.xmlsoap.org/ws/2005/05/identity/claims/emailaddress",
-  "logoutUrl": "https://idp.example.com/logout",
-  "entityId": "https://your-app.example.com",
-  "enableJit": true
-}
-```
-
----
-
-### 8. Save SAML SSO Config
-
-```
-POST /api/v1/configurationManager/authConfig/sso
-```
-
-**Request body:** Same shape as the GET response. `logoutUrl` and `entityId` are optional.
-
-**Required fields:** `entryPoint`, `certificate`, `emailKey`
-
----
-
-### 9. Get OAuth Config
-
-```
-GET /api/v1/configurationManager/authConfig/oauth
-```
-
-**Response:**
-```json
-{
-  "clientId": "your-oauth-client-id",
-  "providerName": "Okta",
-  "authorizationUrl": "https://your.okta.com/oauth2/v1/authorize",
-  "tokenEndpoint": "https://your.okta.com/oauth2/v1/token",
-  "userInfoEndpoint": "https://your.okta.com/oauth2/v1/userinfo",
-  "scope": "openid email profile",
-  "redirectUri": "https://app.example.com/auth/oauth/callback",
-  "enableJit": true
-}
-```
-
-Note: `clientSecret` is **not** returned for security reasons (it's stored encrypted).
-
----
-
-### 10. Save OAuth Config
-
-```
-POST /api/v1/configurationManager/authConfig/oauth
-```
-
-**Request body:** Same shape as the GET response, but **include** `clientSecret`.
-
-**Required fields:** `clientId`, `clientSecret`, `providerName`, `authorizationUrl`, `tokenEndpoint`, `userInfoEndpoint`
-
----
-
-### 11. Check SMTP Configuration
+### 7. Check SMTP Configuration
 
 ```
 GET /api/v1/configurationManager/smtpConfig
@@ -255,7 +185,7 @@ The OTP method is considered "available" when both `host` and `fromEmail` are pr
 
 ---
 
-### 12. Get Frontend URL
+### 8. Get Frontend URL
 
 ```
 GET /api/v1/configurationManager/frontendPublicUrl
@@ -272,7 +202,27 @@ GET /api/v1/configurationManager/frontendPublicUrl
 
 The redirect URI is built as `{frontendUrl}/auth/{method}/callback`.
 
-The desktop app uses the same redirect URIs: sign-in opens in the user's browser and the callback page hands the result back over a `pipeshub://` link. For generic OAuth, a custom `redirectUri` must still be `{frontendUrl}/auth/oauth/callback`, since that page is what completes the handoff. SAML needs no IdP change; its result goes through `{frontendUrl}/auth/sign-in/samlSso/success`, which carries a single-use `code` rather than tokens or cookies. A sign-in started from PipesHub (`/saml/signIn`, including the login page) redeems that code with the PKCE verifier from the same tab. Hitting `/saml/signIn` without a challenge is sent back with `saml_error=sign_in_restart`. An IdP-initiated sign-in (for example the Okta app tile) never hits `/saml/signIn` and has no verifier; the success page redeems the code alone.
+The desktop app uses the same redirect URIs: sign-in opens in the user's browser and the callback page hands the result back over a `pipeshub://` link.
+
+### 9. Get Sign-In Removal Status
+
+```
+GET /api/v1/orgAuthConfig/signInRemoval
+```
+
+**Authentication:** Required (admin)
+
+**Response:**
+```json
+{
+  "removedMethods": ["samlSso"],
+  "peopleWithoutPassword": [
+    { "userId": "665f…", "fullName": "Alice Chen", "email": "alice@example.com" }
+  ]
+}
+```
+
+`removedMethods` lists what the 1.0 upgrade turned off for this workspace (`samlSso`, `oauth`); it is empty when the workspace used neither. `peopleWithoutPassword` lists people who have signed in but have no password.
 
 ---
 
@@ -282,7 +232,7 @@ The desktop app uses the same redirect URIs: sign-in opens in the user's browser
 - Click **Edit** to enter edit mode (toggles become interactive)
 - Toggles with unmet requirements show a tooltip explaining why they're disabled:
   - OTP requires SMTP
-  - Configurable methods (Google, Microsoft, SAML, OAuth) must be configured before enabling
+  - Configurable methods (Google, Microsoft) must be configured before enabling
   - Single-method policy enforced: can't enable a method when another is already ON
 - SettingsSaveBar appears when there are unsaved changes
 
@@ -292,6 +242,12 @@ The desktop app uses the same redirect URIs: sign-in opens in the user's browser
 - Forms load existing config on mount
 - "Save" in the panel ONLY saves the provider configuration — it does **not** enable the method
 - On success: updates "Configured" badge + shows success toast
+
+### Sign-in removal notice
+- Shown above the method list when the 1.0 upgrade removed SAML or OAuth sign-in for this workspace **and** someone who has signed in still has no password
+- Names the removed methods and the methods now on, then lists up to 10 people (name and email) and "and N more"
+- Explains how they get a password: "Forgot Password" on the sign-in page (needs SMTP), or a set-password link created by whoever runs the PipesHub server (1.0 upgrade guide)
+- Renders nothing once the list is empty, or if the status request fails
 
 ### Success Toast
 ```
@@ -307,5 +263,3 @@ Description: "Your users can sign in with their {Provider} accounts"
 |--------|----------------|
 | Google | `clientId` |
 | Microsoft | `clientId` + `tenantId` |
-| SAML SSO | `entryPoint` + `certificate` + `emailKey` |
-| OAuth | `clientId` + `providerName` |

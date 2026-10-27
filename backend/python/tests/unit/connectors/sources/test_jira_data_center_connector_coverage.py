@@ -2086,6 +2086,31 @@ async def test_fetch_project_permission_scheme_scheme_missing_id_returns_none():
 
 
 @pytest.mark.asyncio
+async def test_fetch_project_permission_scheme_reads_the_default_scheme_with_id_zero() -> None:
+    """Jira's built-in "Default Permission Scheme" has id 0; it was taken for a missing id."""
+    conn = _make_connector()
+    conn.data_source = MagicMock()
+    sch = MagicMock()
+    sch.status = HttpStatusCode.OK.value
+    sch.json = MagicMock(return_value={"id": 0, "name": "Default Permission Scheme"})
+    grants = MagicMock()
+    grants.status = HttpStatusCode.OK.value
+    grants.json = MagicMock(return_value={
+        "permissions": [
+            {"permission": "BROWSE_PROJECTS", "holder": {"type": "group", "parameter": "jira-software-users"}},
+        ],
+    })
+    ds = MagicMock()
+    ds.get_assigned_permission_scheme_v2 = AsyncMock(return_value=sch)
+    ds.get_permission_scheme_grants_v2 = AsyncMock(return_value=grants)
+    with patch.object(conn, "_get_fresh_datasource", new_callable=AsyncMock, return_value=ds):
+        perms = await conn._fetch_project_permission_scheme("P", {})
+
+    assert ds.get_permission_scheme_grants_v2.await_args.kwargs["schemeId"] == 0
+    assert [p.external_id for p in perms] == ["jira-software-users"]
+
+
+@pytest.mark.asyncio
 async def test_fetch_project_permission_scheme_dedupes_duplicate_holders():
     conn = _make_connector()
     conn.data_source = MagicMock()

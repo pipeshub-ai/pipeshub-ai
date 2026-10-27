@@ -62,7 +62,7 @@ import {
   clearToasts,
 } from '../../__tests__/fixtures';
 
-const jira = makeConnector({ isAdminAccessRequired: true, personalConnectorType: 'Jira Personal' });
+const jira = makeConnector({ isAdminAccessRequired: true, personalConnectorType: 'Jira personal' });
 const slack = makeConnector({ name: 'Slack', type: 'Slack', appGroup: 'Slack' });
 
 beforeEach(() => {
@@ -140,7 +140,7 @@ describe('Team connectors page: setup that needs admin access at the provider', 
     renderInTheme(<TeamConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Jira');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     const dialog = await screen.findByRole('dialog', { name: 'Admin access required' });
     expect(
@@ -155,15 +155,15 @@ describe('Team connectors page: setup that needs admin access at the provider', 
   it('points a non-admin at the personal connector', async () => {
     renderInTheme(<TeamConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Jira');
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
     const dialog = await screen.findByRole('dialog', { name: 'Admin access required' });
 
     fireEvent.click(within(dialog).getByRole('button', { name: "No, I'm not an admin" }));
 
     const redirect = await screen.findByRole('dialog', { name: 'Use the personal connector instead' });
-    fireEvent.click(within(redirect).getByRole('button', { name: 'Go to Atlassian Personal' }));
+    fireEvent.click(within(redirect).getByRole('button', { name: 'Go to Atlassian personal' }));
     expect(nav.push).toHaveBeenCalledWith(
-      '/workspace/connectors/personal/?connectorType=Jira%20Personal'
+      '/workspace/connectors/personal/?connectorType=Jira%20personal'
     );
     expect(useConnectorsStore.getState().isPanelOpen).toBe(false);
   });
@@ -172,7 +172,7 @@ describe('Team connectors page: setup that needs admin access at the provider', 
     renderInTheme(<TeamConnectorsPage />);
     const card = await screen.findByTestId('connector-card-Slack');
 
-    fireEvent.click(within(card).getByRole('button', { name: /Setup/ }));
+    fireEvent.click(within(card).getByRole('button', { name: /Set up/ }));
 
     expect(await screen.findByRole('dialog', { name: 'Set up Slack' })).toBeTruthy();
     expect(screen.queryByRole('dialog', { name: 'Admin access required' })).toBeNull();

@@ -3,6 +3,8 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { MailController } from '../../../../src/modules/mail/controller/mail.controller'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { isReaderWritten } from '../../../../src/libs/errors/reader-friendly'
+import { SMTP_PROBLEM_MESSAGES } from '../../../../src/modules/mail/types/mail-event.types'
 
 describe('mail/controller/mail.controller', () => {
   let controller: MailController
@@ -246,6 +248,22 @@ describe('mail/controller/mail.controller', () => {
       expect(next.calledOnce).to.be.true
       const err = next.firstCall.args[0]
       expect(err.message).to.contain('PipesHub tried to send that email')
+    })
+  })
+
+  describe('sendMail - the SMTP setup is at fault', () => {
+    it('says what an admin can fix instead of "something went wrong"', async () => {
+      mockSender.send.resolves({ status: 'permanent', error: 'Invalid login: 535', problem: 'auth' })
+      const req: any = { body: {} }
+      const res: any = { status: sinon.stub().returnsThis(), json: sinon.stub() }
+      const next = sinon.stub()
+
+      await controller.sendMail(req, res, next)
+
+      const err = next.firstCall.args[0]
+      expect(err.statusCode).to.equal(502)
+      expect(err.message).to.equal(SMTP_PROBLEM_MESSAGES.auth)
+      expect(isReaderWritten(err.message)).to.be.true
     })
   })
 })

@@ -574,7 +574,7 @@ describe('ChatInput — attachments', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Attach files and capabilities' }));
     fireEvent.click(screen.getByText('Attach files'));
 
-    expect(screen.getByText('Upload your File')).toBeTruthy();
+    expect(screen.getByText('Upload your file')).toBeTruthy();
     expect(screen.getByText('Up to 10 files per message')).toBeTruthy();
     expect(
       screen.getByText('Supports: PDF, PNG, JPEG, JPG, TXT, MD, DOCX, XLSX, CSV.'),
@@ -626,6 +626,55 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     expect(screen.queryByText('Regenerate response')).toBeNull();
   });
 
+  it("re-runs a question card's reply with the answers picked again on the card", () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.updateSlot(slotId, { isInitialized: true });
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+    expect(useChatStore.getState().regenTargetMessageId).toBe('msg-7');
+
+    const message = 'User selections:\n1. "Which region?" → US';
+    act(() => useChatStore.getState().setRegenAnswers({ messageId: 'msg-7', payload: { name: 'ask_user_question', questions: [] }, message, answers: {} }));
+    fireEvent.click(sendButton());
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledWith(slotId, 'msg-7', undefined, undefined, undefined, message);
+    expect(useChatStore.getState().regenTargetMessageId).toBeNull();
+  });
+
+  it('regenerates when the reopened card is submitted', () => {
+    const store = useChatStore.getState();
+    const slotId = store.createSlot('conv-1');
+    store.setActiveSlot(slotId);
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+    });
+
+    act(() => {
+      useCommandStore.getState().dispatch('runRegenerate');
+    });
+
+    expect(streaming.streamRegenerateForSlot).toHaveBeenCalledTimes(1);
+    expect(streaming.streamRegenerateForSlot.mock.calls[0][1]).toBe('msg-7');
+  });
+
+  it('forgets answers picked on the card when the bar is closed', () => {
+    renderInput();
+    act(() => {
+      useCommandStore.getState().dispatch('showRegenBar', { messageId: 'msg-7', text: 'Plan it' });
+      useChatStore.getState().setRegenAnswers({ messageId: 'msg-7', payload: { name: 'ask_user_question', questions: [] }, message: 'User selections:', answers: {} });
+    });
+
+    fireEvent.keyDown(composer(), { key: 'Escape' });
+
+    expect(useChatStore.getState().regenAnswers).toBeNull();
+    expect(useChatStore.getState().regenTargetMessageId).toBeNull();
+  });
+
   it('leaves regenerate mode on Escape without regenerating', () => {
     renderInput();
     act(() => {
@@ -661,7 +710,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     });
 
     expect(screen.queryByText('Regenerate response')).toBeNull();
-    expect(screen.queryByText('Edit Query')).toBeNull();
+    expect(screen.queryByText('Edit query')).toBeNull();
   });
 
   it('re-asks with the edited question when the user sends an edit', () => {
@@ -671,7 +720,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
       useCommandStore.getState().dispatch('showEditQuery', { messageId: 'msg-3', text: 'Original question' });
     });
 
-    expect(screen.getByText('Edit Query')).toBeTruthy();
+    expect(screen.getByText('Edit query')).toBeTruthy();
     expect(composer().value).toBe('Original question');
     expect(composer().readOnly).toBe(false);
 
@@ -684,7 +733,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
       slotId, 'msg-3', undefined, undefined, { query: 'Edited question' },
     );
     expect(composer().value).toBe('');
-    expect(screen.queryByText('Edit Query')).toBeNull();
+    expect(screen.queryByText('Edit query')).toBeNull();
   });
 
   it('regenerates without a new question when the edit leaves the text unchanged', () => {
@@ -919,7 +968,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
 
       act(() => useChatStore.getState().setActiveSlot(other));
 
-      expect(screen.queryByText('Edit Query')).toBeNull();
+      expect(screen.queryByText('Edit query')).toBeNull();
       expect(chip('rec-a.pdf')).toBeNull();
       expect(chip('report.pdf')).toBeNull();
       expect(onDeleteFile).toHaveBeenCalledWith('rec-c');
@@ -961,7 +1010,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
       startEdit([]);
       fireEvent.keyDown(composer(), { key: 'Escape' });
 
-      expect(screen.queryByText('Edit Query')).toBeNull();
+      expect(screen.queryByText('Edit query')).toBeNull();
     });
   });
 
@@ -975,7 +1024,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
     fireEvent.keyDown(composer(), { key: 'Enter' });
 
     expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
-    expect(screen.getByText('Edit Query')).toBeTruthy();
+    expect(screen.getByText('Edit query')).toBeTruthy();
   });
 
   it('leaves edit mode on Escape without re-asking', () => {
@@ -986,7 +1035,7 @@ describe('ChatInput — regenerate and edit a previous message', () => {
 
     fireEvent.keyDown(composer(), { key: 'Escape' });
 
-    expect(screen.queryByText('Edit Query')).toBeNull();
+    expect(screen.queryByText('Edit query')).toBeNull();
     expect(composer().value).toBe('');
     expect(streaming.streamRegenerateForSlot).not.toHaveBeenCalled();
   });
@@ -1289,7 +1338,7 @@ describe('ChatInput — model, voice and search view', () => {
     renderInput();
 
     const mic = screen.getByRole('button', {
-      name: 'Configure a Speech-to-Text (STT) model in AI Models settings to enable voice input.',
+      name: 'Configure a Speech-to-Text (STT) model in AI models settings to enable voice input.',
     }) as HTMLButtonElement;
     expect(mic.disabled).toBe(true);
   });
@@ -1324,6 +1373,16 @@ describe('ChatInput — compact widget', () => {
     renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
 
     fireEvent.click(screen.getByRole('button', { name: 'Expand composer' }));
+
+    expect(document.activeElement).toBe(composer());
+  });
+
+  it('on a phone, expands when the tap lands in the row around the one-line field', () => {
+    device.isMobile = true;
+    renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
+    const row = screen.getByRole('button', { name: 'Expand composer' }).parentElement as HTMLElement;
+
+    fireEvent.click(row);
 
     expect(document.activeElement).toBe(composer());
   });

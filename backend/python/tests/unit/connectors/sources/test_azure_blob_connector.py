@@ -1,7 +1,9 @@
 """Tests for Azure Blob Storage connector."""
 
+import base64
 import logging
 from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import urlparse
@@ -9,11 +11,19 @@ from urllib.parse import urlparse
 import pytest
 from fastapi import HTTPException
 
-from app.config.constants.arangodb import MimeTypes
+from app.config.constants.arangodb import (
+    Connectors,
+    MimeTypes,
+    OriginTypes,
+    ProgressStatus,
+)
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.core.registry.connector_builder import ConnectorScope
+from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from app.connectors.sources.azure_blob.connector import (
     AzureBlobConnector,
     AzureBlobDataSourceEntitiesProcessor,
+    _NotReindexable,
     get_file_extension,
     get_folder_path_segments_from_blob_name,
     get_mimetype_for_azure_blob,
@@ -22,13 +32,7 @@ from app.connectors.sources.azure_blob.connector import (
     get_parent_weburl_for_azure_blob,
     parse_parent_external_id,
 )
-import base64
-from contextlib import asynccontextmanager
-from app.config.constants.arangodb import ProgressStatus
-from app.connectors.core.registry.filters import FilterCollection, FilterOperator
-from app.models.entities import RecordType, User
-from app.config.constants.arangodb import Connectors, OriginTypes
-from app.models.entities import FileRecord, RecordGroupType
+from app.models.entities import FileRecord, RecordGroupType, RecordType, User
 
 
 # ---------------------------------------------------------------------------
@@ -138,9 +142,12 @@ class TestAzureBlobHelpers:
 
     def test_parent_weburl(self):
         url = get_parent_weburl_for_azure_blob("container/folder/", "https://testacc.blob.core.windows.net")
-        assert "testacc.blob.core.windows.net" in url
+        assert urlparse(url).hostname == "testacc.blob.core.windows.net"
+        assert urlparse(url).path == "/container/folder/"
         url = get_parent_weburl_for_azure_blob("container", "https://testacc.blob.core.windows.net")
-        assert "testacc.blob.core.windows.net/container" in url
+        parsed = urlparse(url)
+        assert parsed.hostname == "testacc.blob.core.windows.net"
+        assert parsed.path == "/container"
 
     def test_parent_path(self):
         assert get_parent_path_for_azure_blob("container/folder") == "folder/"
@@ -916,15 +923,15 @@ class TestTestConnectionAndAccess:
         azure_connector.data_source.list_containers = AsyncMock(
             return_value=_make_response(False, error="denied")
         )
-        result = await azure_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="Cannot list containers: denied"):
+            await azure_connector.test_connection_and_access()
 
     @pytest.mark.asyncio
     async def test_exception(self, azure_connector):
         azure_connector.data_source = MagicMock()
         azure_connector.data_source.list_containers = AsyncMock(side_effect=Exception("err"))
-        result = await azure_connector.test_connection_and_access()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="err"):
+            await azure_connector.test_connection_and_access()
 
 
 # ===========================================================================
@@ -1016,8 +1023,9 @@ class TestGetSignedUrl:
 class TestStreamRecord:
     @pytest.mark.asyncio
     async def test_folder_raises(self, azure_connector):
-        from app.models.entities import FileRecord
         from fastapi import HTTPException
+
+        from app.models.entities import FileRecord
         record = MagicMock(spec=FileRecord)
         record.is_file = False
         with pytest.raises(HTTPException):
@@ -1186,7 +1194,7 @@ class TestCheckAndFetchUpdatedRecord:
             return_value=_make_response(False, error="not found")
         )
         # Raised so reindex_records publishes nothing for a blob that is gone.
-        with pytest.raises(LookupError):
+        with pytest.raises(_NotReindexable):
             await azure_connector._check_and_fetch_updated_record("org-1", record)
 
     @pytest.mark.asyncio
@@ -2887,7 +2895,8 @@ class TestFailedBlobCheckpoint:
 
         await self._sync(c)
 
-        c._ensure_parent_folders_exist.assert_awaited_once_with("c1", ["dir"])
+        c._ensure_parent_folders_exist.assert_awaited_once()
+        assert c._ensure_parent_folders_exist.await_args.args[:2] == ("c1", ["dir"])
         c._process_azure_blob.assert_not_called()
         assert self._saved_time(c) == _ms(_JAN[2])
 

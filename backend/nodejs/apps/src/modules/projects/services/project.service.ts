@@ -1,12 +1,14 @@
-import mongoose, { ClientSession, FilterQuery, Types } from 'mongoose';
+import mongoose, { ClientSession, QueryFilter, Types } from 'mongoose';
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
 import { Project } from '../schema/project.schema';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { Users } from '../../user_management/schema/users.schema';
 import {
   IProject,
   IProjectDocument,
@@ -14,6 +16,7 @@ import {
   IProjectMember,
   ProjectAccess,
   ProjectContext,
+  ProjectMemberView,
   ProjectRole,
 } from '../types/project.interfaces';
 
@@ -22,6 +25,12 @@ type ProjectAccessFields = Pick<
   IProject,
   'orgId' | 'userId' | 'members' | 'visibility'
 >;
+
+type ProjectPinFields = Pick<IProject, 'userId' | 'isPinned' | 'pinnedBy'>;
+
+/** Refused while a project is archived: archive makes it read-only until the owner restores it. */
+export const ARCHIVED_PROJECT_MESSAGE =
+  'This project is archived. Unarchive it to make changes or start new chats in it.';
 
 /** A `.lean()`-read project row enriched with the list endpoint's computed fields. */
 export type ProjectListItem = IProject & {
@@ -67,6 +76,35 @@ const ROLE_RANK: Record<ProjectRole, number> = {
 
 function hasAtLeastRole(role: ProjectRole, required: ProjectRole): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[required];
+}
+
+/**
+ * Filter clauses matching projects where the caller is a member directly or
+ * through a team. `$elemMatch` keeps type and id on the same member row. Team
+ * ids are graph id strings and are matched as stored.
+ */
+function memberClauses(
+  userObjId: Types.ObjectId,
+  callerTeamIds: string[],
+): QueryFilter<IProjectDocument>[] {
+  const clauses: QueryFilter<IProjectDocument>[] = [
+    {
+      members: {
+        $elemMatch: { principalType: 'user', principalId: userObjId },
+      },
+    },
+  ];
+  if (callerTeamIds.length > 0) {
+    clauses.push({
+      members: {
+        $elemMatch: {
+          principalType: 'team',
+          principalId: { $in: callerTeamIds },
+        },
+      },
+    });
+  }
+  return clauses;
 }
 
 /**
@@ -123,6 +161,25 @@ export class ProjectService {
       return 'viewer';
     }
     return 'none';
+  }
+
+  /**
+   * Whether `userId` pinned the project in their own list. A legacy
+   * project-wide `isPinned` counts only for the owner, who was the one
+   * pinning it in almost every case, so members' lists stop re-sorting.
+   */
+  static isPinnedFor(project: ProjectPinFields, userId: string): boolean {
+    if ((project.pinnedBy ?? []).some((id) => id.toString() === userId)) {
+      return true;
+    }
+    return project.isPinned && project.userId.toString() === userId;
+  }
+
+  /** Throws ConflictError when the project is archived, for the writes archive freezes. */
+  static assertNotArchived(project: Pick<IProject, 'isArchived'>): void {
+    if (project.isArchived) {
+      throw new ConflictError(ARCHIVED_PROJECT_MESSAGE);
+    }
   }
 
   /** Loads a project and asserts the caller has at least `required` role: NotFoundError if they cannot see it, ForbiddenError if their role is too low (see class doc). */
@@ -205,31 +262,19 @@ export class ProjectService {
   ): Promise<{ projects: ProjectListItem[]; totalCount: number }> {
     const orgObjId = new Types.ObjectId(orgId);
     const userObjId = new Types.ObjectId(userId);
-    const teamObjIds = callerTeamIds
-      .filter((id) => Types.ObjectId.isValid(id))
-      .map((id) => new Types.ObjectId(id));
 
-    const scopeOr: FilterQuery<IProjectDocument>[] = [];
+    const scopeOr: QueryFilter<IProjectDocument>[] = [];
     if (opts.scope === 'mine' || opts.scope === 'all') {
       scopeOr.push({ userId: userObjId });
     }
     if (opts.scope === 'shared' || opts.scope === 'all') {
-      scopeOr.push({
-        'members.principalType': 'user',
-        'members.principalId': userObjId,
-      });
-      if (teamObjIds.length > 0) {
-        scopeOr.push({
-          'members.principalType': 'team',
-          'members.principalId': { $in: teamObjIds },
-        });
-      }
+      scopeOr.push(...memberClauses(userObjId, callerTeamIds));
     }
     if (opts.scope === 'all') {
       scopeOr.push({ visibility: 'org' });
     }
 
-    const filter: FilterQuery<IProjectDocument> = {
+    const filter: QueryFilter<IProjectDocument> = {
       orgId: orgObjId,
       isDeleted: false,
       $or: scopeOr,
@@ -246,23 +291,45 @@ export class ProjectService {
     }
 
     const skip = (opts.page - 1) * opts.limit;
+    // Pins are per user, so the sort key is computed for this caller.
     const [projects, totalCount] = await Promise.all([
-      Project.find(filter)
-        .sort({ isPinned: -1, lastActivityAt: -1, _id: -1 })
-        .skip(skip)
-        .limit(opts.limit)
-        .lean()
-        .exec(),
+      Project.aggregate<IProject & { _id: Types.ObjectId }>([
+        { $match: filter },
+        {
+          $addFields: {
+            callerPinned: {
+              $or: [
+                { $in: [userObjId, { $ifNull: ['$pinnedBy', []] }] },
+                {
+                  $and: [
+                    { $eq: ['$isPinned', true] },
+                    { $eq: ['$userId', userObjId] },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+        { $sort: { callerPinned: -1, lastActivityAt: -1, _id: -1 } },
+        { $skip: skip },
+        { $limit: opts.limit },
+        { $project: { callerPinned: 0 } },
+      ]),
       Project.countDocuments(filter),
     ]);
 
-    const projectIds = projects.map((p) => p._id as Types.ObjectId);
+    const projectIds = projects.map((p) => p._id);
+    // Counts only the chats this caller can open, the same rows
+    // GET /:projectId/conversations returns: their own, plus chats shared to
+    // the project. Counting every chat leaked how many private chats exist.
     const counts = projectIds.length
       ? await ChatSession.aggregate<{ _id: Types.ObjectId; count: number }>([
           {
             $match: {
+              orgId: orgObjId,
               projectId: { $in: projectIds },
               isDeleted: false,
+              $or: [{ userId: userObjId }, { projectVisibility: 'project' }],
             },
           },
           { $group: { _id: '$projectId', count: { $sum: 1 } } },
@@ -273,11 +340,10 @@ export class ProjectService {
     );
 
     const enriched: ProjectListItem[] = projects.map((p) => ({
-      ...(p as unknown as IProject),
-      _id: p._id as Types.ObjectId,
+      ...this.toCallerView(p, userId),
+      _id: p._id,
       role: this.computeRole(p, userId, orgId, callerTeamIds),
-      conversationCount:
-        countByProject.get((p._id as Types.ObjectId).toString()) || 0,
+      conversationCount: countByProject.get(p._id.toString()) || 0,
     }));
 
     return { projects: enriched, totalCount };
@@ -297,6 +363,8 @@ export class ProjectService {
       'editor',
       callerTeamIds,
     );
+
+    this.assertNotArchived(project);
 
     if (
       (patch.visibility !== undefined || patch.chatSharing !== undefined) &&
@@ -331,6 +399,11 @@ export class ProjectService {
     return project.save();
   }
 
+  /**
+   * Pins or unpins the project in the caller's own list. Anyone who can see
+   * the project may do it, and it never re-sorts anyone else's list. The
+   * array update is atomic so two members pinning at once both stick.
+   */
   static async setPinned(
     orgId: string,
     userId: string,
@@ -338,17 +411,32 @@ export class ProjectService {
     isPinned: boolean,
     callerTeamIds: string[] = [],
   ): Promise<IProjectDocument> {
-    const { project } = await this.assertAccess(
+    const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
-      'editor',
+      'viewer',
       callerTeamIds,
     );
-    project.isPinned = isPinned;
-    return project.save();
+    const userObjId = new Types.ObjectId(userId);
+    const update = isPinned
+      ? { $addToSet: { pinnedBy: userObjId } }
+      : {
+          $pull: { pinnedBy: userObjId },
+          ...(role === 'owner' ? { $set: { isPinned: false } } : {}),
+        };
+    const updated = await Project.findOneAndUpdate(
+      { _id: project._id, isDeleted: false },
+      update,
+      { returnDocument: 'after' },
+    );
+    if (!updated) {
+      throw new NotFoundError('Project not found');
+    }
+    return updated;
   }
 
+  /** Owner-only: archiving hides the project from every member's default list and freezes it. */
   static async setArchived(
     orgId: string,
     userId: string,
@@ -356,13 +444,18 @@ export class ProjectService {
     isArchived: boolean,
     callerTeamIds: string[] = [],
   ): Promise<IProjectDocument> {
-    const { project } = await this.assertAccess(
+    const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
-      'editor',
+      'viewer',
       callerTeamIds,
     );
+    if (role !== 'owner') {
+      throw new ForbiddenError(
+        'Only the project owner can archive or restore this project',
+      );
+    }
     project.isArchived = isArchived;
     project.archivedBy = isArchived ? new Types.ObjectId(userId) : undefined;
     return project.save();
@@ -464,7 +557,7 @@ export class ProjectService {
     userId: string,
     projectId: string,
     callerTeamIds: string[] = [],
-  ): Promise<IProjectMember[]> {
+  ): Promise<ProjectMemberView[]> {
     const { project } = await this.assertAccess(
       orgId,
       userId,
@@ -472,7 +565,72 @@ export class ProjectService {
       'viewer',
       callerTeamIds,
     );
-    return project.members;
+    return this.withMemberNames(orgId, project.members);
+  }
+
+  /**
+   * Adds each user member's name and email, read in one query, so a client
+   * does not resolve every id on its own. Team rows and users that no longer
+   * exist come back as stored.
+   */
+  static async withMemberNames(
+    orgId: string,
+    members: IProjectMember[],
+  ): Promise<ProjectMemberView[]> {
+    const userIds = members
+      .filter((m) => m.principalType === 'user')
+      .map((m) => m.principalId.toString())
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
+    const users = userIds.length
+      ? await Users.find(
+          {
+            _id: { $in: userIds },
+            orgId: new Types.ObjectId(orgId),
+            isDeleted: false,
+          },
+          { fullName: 1, email: 1 },
+        ).lean()
+      : [];
+    const byId = new Map(users.map((u) => [String(u._id), u]));
+    return members.map((m) => {
+      // Rows of a hydrated project are subdocuments; spread their plain form.
+      const asDoc = m as { toObject?: () => IProjectMember };
+      const plain = asDoc.toObject ? asDoc.toObject() : m;
+      const user =
+        m.principalType === 'user'
+          ? byId.get(m.principalId.toString())
+          : undefined;
+      return user
+        ? {
+            ...plain,
+            ...(user.fullName ? { name: user.fullName } : {}),
+            email: user.email,
+          }
+        : plain;
+    });
+  }
+
+  /**
+   * The ids in `userIds` that name live users of this org. Read from Mongo
+   * rather than through the IAM API, so the check works with an OAuth token
+   * or PAT that carries no user:read scope.
+   */
+  static async findExistingUserIds(
+    orgId: string,
+    userIds: string[],
+  ): Promise<Set<string>> {
+    const valid = userIds.filter((id) => Types.ObjectId.isValid(id));
+    if (valid.length === 0) return new Set();
+    const users = await Users.find(
+      {
+        _id: { $in: valid.map((id) => new Types.ObjectId(id)) },
+        orgId: new Types.ObjectId(orgId),
+        isDeleted: false,
+      },
+      { _id: 1 },
+    ).lean();
+    return new Set(users.map((u) => String(u._id)));
   }
 
   static async upsertMembers(
@@ -494,6 +652,7 @@ export class ProjectService {
     if (role !== 'owner') {
       throw new ForbiddenError('Only the project owner can manage members');
     }
+    this.assertNotArchived(project);
 
     const existingByPrincipal = new Map(
       project.members.map((m) => [
@@ -516,7 +675,10 @@ export class ProjectService {
       } else {
         project.members.push({
           principalType,
-          principalId: new Types.ObjectId(incoming.principalId),
+          principalId:
+            principalType === 'team'
+              ? incoming.principalId
+              : new Types.ObjectId(incoming.principalId),
           role: incoming.role,
           addedBy: new Types.ObjectId(userId),
           addedAt: new Date(),
@@ -526,22 +688,37 @@ export class ProjectService {
     return project.save();
   }
 
+  /**
+   * Owner removes anyone; a member may remove only their own user row, which
+   * is how they leave. `removed` is false when no row matched, so a client can
+   * tell a repeated or mistaken removal from a real one.
+   *
+   * `beforeSave` runs once a row matched and before the removal is saved: the
+   * caller revokes the member's access to the files collection there, so a
+   * failed revoke leaves the membership in place to retry instead of a former
+   * member who can still read the project's files.
+   */
   static async removeMember(
     orgId: string,
     userId: string,
     projectId: string,
     memberPrincipalId: string,
     principalType: 'user' | 'team' = 'user',
-  ): Promise<IProjectDocument> {
+    callerTeamIds: string[] = [],
+    beforeSave?: (project: IProjectDocument) => Promise<void>,
+  ): Promise<{ project: IProjectDocument; removed: boolean }> {
     const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'viewer',
+      callerTeamIds,
     );
-    if (role !== 'owner') {
+    const isLeaving = principalType === 'user' && memberPrincipalId === userId;
+    if (role !== 'owner' && !isLeaving) {
       throw new ForbiddenError('Only the project owner can manage members');
     }
+    const before = project.members.length;
     project.members = project.members.filter(
       (m) =>
         !(
@@ -549,7 +726,12 @@ export class ProjectService {
           m.principalId.toString() === memberPrincipalId
         ),
     );
-    return project.save();
+    const removed = project.members.length < before;
+    if (!removed) {
+      return { project, removed };
+    }
+    await beforeSave?.(project);
+    return { project: await project.save(), removed };
   }
 
   /**
@@ -607,6 +789,16 @@ export class ProjectService {
     );
   }
 
+  /** True when some live project in the org has a team member row. */
+  static async orgHasTeamMembers(orgId: string): Promise<boolean> {
+    const found = await Project.exists({
+      orgId: new Types.ObjectId(orgId),
+      isDeleted: false,
+      'members.principalType': 'team',
+    });
+    return found !== null;
+  }
+
   /**
    * All project ids the caller has at least viewer access to (owner, member,
    * or org-visible) — used by `buildFilter` / `buildAgentConversationFilter`
@@ -618,6 +810,7 @@ export class ProjectService {
   static async getAccessibleProjectIds(
     orgId: string,
     userId: string,
+    callerTeamIds: string[] = [],
   ): Promise<Types.ObjectId[]> {
     const orgObjId = new Types.ObjectId(orgId);
     const userObjId = new Types.ObjectId(userId);
@@ -627,13 +820,25 @@ export class ProjectService {
         isDeleted: false,
         $or: [
           { userId: userObjId },
-          { 'members.principalType': 'user', 'members.principalId': userObjId },
+          ...memberClauses(userObjId, callerTeamIds),
           { visibility: 'org' },
         ],
       },
       { _id: 1 },
     ).lean();
     return projects.map((p) => p._id as Types.ObjectId);
+  }
+
+  /**
+   * A project as one caller should see it: `isPinned` is their own pin, and
+   * who else pinned it is not shown.
+   */
+  static toCallerView<T extends ProjectPinFields>(
+    project: T,
+    userId: string,
+  ): Omit<T, 'pinnedBy'> & { isPinned: boolean } {
+    const { pinnedBy: _pinnedBy, ...rest } = project;
+    return { ...rest, isPinned: this.isPinnedFor(project, userId) };
   }
 
   static async touchActivity(projectId: string): Promise<void> {

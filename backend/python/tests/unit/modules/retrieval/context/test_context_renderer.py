@@ -379,6 +379,17 @@ class TestKnowledgeContextBuilder:
         mock_fk.assert_not_awaited()
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("limit", [None, {"apps": [], "recordGroups": [], "records": ["f"]}])
+    async def test_a_connected_apps_limit_reaches_the_graph_context(self, records, limit) -> None:
+        flatten, graph, fk = self._patches([_unit("a", 4, "a4", 0.2)], records)
+        with flatten, graph as mock_graph, fk:
+            await KnowledgeContextBuilder(
+                blob_store=object(), graph_provider=object(), org_id="o1", user_id="u1", connection_sources=limit,
+            ).build([], {}, is_multimodal_llm=False)
+
+        assert mock_graph.await_args.kwargs["connection_sources"] == limit
+
+    @pytest.mark.asyncio
     async def test_hits_carry_the_records_that_name_them(self, records) -> None:
         """Every hit, whatever its connector, is given the records joined to it by
         address or issue key, checked against the asking user."""

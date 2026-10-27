@@ -5,13 +5,12 @@ import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import nock from 'nock';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
   SALT_ROUNDS,
   SIGN_IN_SESSION_EXPIRED,
-  OAUTH_SIGN_IN_FAILED,
-  SAML_HAS_ITS_OWN_SIGN_IN,
   EMAIL_MISMATCH,
   OTP_SEND_FAILED,
   OTP_ALREADY_USED,
@@ -21,8 +20,11 @@ import {
   ACCOUNT_NO_LONGER_ACTIVE,
   RESET_LINK_ALREADY_USED,
   RESET_LINK_NOT_CHECKED,
+  SESSION_NO_LONGER_VALID,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
+import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
 import { AuthTokenService } from '../../../../src/libs/services/authtoken.service';
 import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum';
@@ -42,6 +44,7 @@ import {
   ForbiddenError,
   ServiceUnavailableError,
 } from '../../../../src/libs/errors/http.errors';
+import { useCommunitySignInLists } from '../../../helpers/sign-in-lists';
 
 // The account-locked email is sent in the background; this lets it run.
 const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -76,6 +79,8 @@ function resetLinkRequest(password: string, token = 'reset-link-token'): any {
 }
 
 describe('UserAccountController', () => {
+  useCommunitySignInLists();
+
   let controller: UserAccountController;
   let mockConfig: any;
   let mockIamService: any;
@@ -137,8 +142,6 @@ describe('UserAccountController', () => {
       provisionUser: sinon.stub(),
       extractGoogleUserDetails: sinon.stub(),
       extractMicrosoftUserDetails: sinon.stub(),
-      extractOAuthUserDetails: sinon.stub(),
-      extractSamlUserDetails: sinon.stub(),
     };
 
     mockEventService = {
@@ -557,7 +560,7 @@ describe('UserAccountController', () => {
           wrongCredentialCount: { $lt: 5 },
         },
         { $inc: { wrongCredentialCount: 1 } },
-        { new: true },
+        { returnDocument: 'after' },
       ]);
     });
   });
@@ -673,12 +676,17 @@ describe('UserAccountController', () => {
   });
 
   describe('hasPasswordMethod', () => {
+  const stubPolicy = (policy: unknown) =>
+    sinon.stub(OrgAuthConfig, 'findOne').returns({
+      select: () => ({ lean: async () => policy }),
+    } as any);
+
     it('should return isPasswordAuthEnabled true when password method exists', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1' },
       };
 
-      sinon.stub(OrgAuthConfig, 'exists').resolves({ _id: 'some-id' } as any);
+      stubPolicy({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] });
 
       await controller.hasPasswordMethod(req, res, next);
 
@@ -691,7 +699,7 @@ describe('UserAccountController', () => {
         tokenPayload: { orgId: 'o1' },
       };
 
-      sinon.stub(OrgAuthConfig, 'exists').resolves(null);
+      stubPolicy({ authSteps: [{ order: 1, allowedMethods: [{ type: 'google' }] }] });
 
       await controller.hasPasswordMethod(req, res, next);
 
@@ -699,12 +707,28 @@ describe('UserAccountController', () => {
       expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.false;
     });
 
+    it('should return false when the org has no sign-in policy', async () => {
+      stubPolicy(null);
+
+      await controller.hasPasswordMethod({ tokenPayload: { orgId: 'o1' } } as any, res, next);
+
+      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.false;
+    });
+
+    it('counts password for a SAML-only policy saved before 1.0, before the migration rewrites it', async () => {
+      stubPolicy({ authSteps: [{ order: 1, allowedMethods: [{ type: 'samlSso' }] }] });
+
+      await controller.hasPasswordMethod({ tokenPayload: { orgId: 'o1' } } as any, res, next);
+
+      expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.true;
+    });
+
     it('should call next(error) on exception', async () => {
       const req: any = {
         tokenPayload: { orgId: 'o1' },
       };
 
-      sinon.stub(OrgAuthConfig, 'exists').rejects(new Error('DB error'));
+      sinon.stub(OrgAuthConfig, 'findOne').throws(new Error('DB error'));
 
       await controller.hasPasswordMethod(req, res, next);
 
@@ -736,6 +760,20 @@ describe('UserAccountController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0]).to.have.property('authMethods');
+    });
+
+    it('shows a policy saved before 1.0 without its removed methods', async () => {
+      mockIamService.checkAdminUser.resolves({ statusCode: 200, data: { isAdmin: true } });
+      sinon.stub(OrgAuthConfig, 'findOne').resolves({
+        orgId: 'o1',
+        authSteps: [{ order: 1, allowedMethods: [{ type: 'samlSso' }, { type: 'azureAd' }] }],
+      } as any);
+
+      await controller.getAuthMethod({ user: { orgId: 'o1', userId: 'u1' } } as any, res, next);
+
+      expect(res.json.firstCall.args[0].authMethods).to.deep.equal([
+        { order: 1, allowedMethods: [{ type: 'microsoft' }, { type: 'password' }] },
+      ]);
     });
 
     it('should call next(error) when user is not authenticated', async () => {
@@ -1127,6 +1165,62 @@ describe('UserAccountController', () => {
     });
   });
 
+  describe('password setup for users without a password', () => {
+    // userValidator sets req.user and nothing else, so the handlers must not need a bound context.
+    const authedReq: any = {
+      user: { userId: '507f1f77bcf86cd799439011', orgId: '507f1f77bcf86cd799439012' },
+    };
+
+    it('getPasswordStatus reports hasPassword false when no credentials are stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: false })).to.be.true;
+    });
+
+    it('getPasswordStatus reports hasPassword true when a hashed password is stored', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.getPasswordStatus(authedReq, res, next);
+
+      expect(res.json.calledWith({ hasPassword: true })).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail mails a reset link to a user with no password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves(null);
+      sinon.stub(Org, 'findOne').resolves({ shortName: 'TestOrg' } as any);
+      mockIamService.getUserById.resolves({
+        statusCode: 200,
+        data: { _id: 'u1', orgId: 'o1', email: 'test@test.com', fullName: 'T' },
+      });
+      mockMailService.sendMail.resolves({ statusCode: 200, data: 'sent' });
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.called).to.be.false;
+      expect(mockMailService.sendMail.calledOnce).to.be.true;
+      expect(mockMailService.sendMail.firstCall?.args[0]?.usersMails).to.deep.equal(['test@test.com']);
+      expect(res.status.calledWith(200)).to.be.true;
+    });
+
+    it('sendPasswordSetupEmail refuses a request with no authenticated user', async () => {
+      await controller.sendPasswordSetupEmail({} as any, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+
+    it('sendPasswordSetupEmail refuses a user who already has a password', async () => {
+      sinon.stub(UserCredentials, 'findOne').resolves({ hashedPassword: 'x' } as any);
+
+      await controller.sendPasswordSetupEmail(authedReq, res, next);
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
+      expect(mockMailService.sendMail.called).to.be.false;
+    });
+  });
+
   describe('resetPasswordViaEmailLink', () => {
     it('should call next(error) when password is missing', async () => {
       const req: any = {
@@ -1450,104 +1544,6 @@ describe('UserAccountController', () => {
       await controller.setUpAuthConfig(req, res);
 
       expect(res.status.calledWith(500)).to.be.true;
-    });
-  });
-
-  describe('initAuth - OAuth credentials are never returned', () => {
-    const oauthConfig = (enableJit: boolean) => ({
-      providerName: 'Okta',
-      clientId: 'public-client-id',
-      clientSecret: 'SUPER-SECRET',
-      authorizationUrl: 'https://idp.example.com/authorize',
-      tokenEndpoint: 'https://idp.example.com/token',
-      userInfoEndpoint: 'https://idp.example.com/userinfo',
-      enableJit,
-    });
-
-    const arrange = (enableJit: boolean) => {
-      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'o1',
-        authSteps: [{ order: 1, allowedMethods: [{ type: 'oauth' }] }],
-      } as any);
-      mockConfigService.getConfig.resolves({ data: oauthConfig(enableJit) });
-      mockSessionService.createSession.resolves({
-        token: 'session-oauth-123',
-        userId: 'u1',
-        email: 'user@example.com',
-        authConfig: [{ order: 1, allowedMethods: [{ type: 'oauth' }] }],
-        currentStep: 0,
-      });
-    };
-
-    // initAuth is unauthenticated. The server-side credentials must not appear
-    // in its response whether or not JIT provisioning happens to be enabled.
-    [true, false].forEach((enableJit) => {
-      it(`should not return clientSecret, tokenEndpoint or userInfoEndpoint when enableJit is ${enableJit}`, async () => {
-        const req: any = { body: { email: 'user@example.com' } };
-        arrange(enableJit);
-
-        await controller.initAuth(req, res, next);
-
-        expect(next.called, 'initAuth should not error').to.be.false;
-        const oauth = res.json.firstCall.args[0].authProviders.oauth;
-
-        expect(oauth).to.not.have.property('clientSecret');
-        expect(oauth).to.not.have.property('tokenEndpoint');
-        expect(oauth).to.not.have.property('userInfoEndpoint');
-
-        // the values the sign-in page legitimately needs are still there
-        expect(oauth.clientId).to.equal('public-client-id');
-        expect(oauth.providerName).to.equal('Okta');
-        expect(oauth.authorizationUrl).to.equal('https://idp.example.com/authorize');
-      });
-    });
-
-    it('should still report JIT as enabled when the config enables it', async () => {
-      const req: any = { body: { email: 'user@example.com' } };
-      arrange(true);
-
-      await controller.initAuth(req, res, next);
-
-      expect(res.json.firstCall.args[0].jitEnabled).to.be.true;
-    });
-
-    it('should report JIT as disabled when the config disables it', async () => {
-      const req: any = { body: { email: 'user@example.com' } };
-      arrange(false);
-
-      await controller.initAuth(req, res, next);
-
-      expect(res.json.firstCall.args[0].jitEnabled).to.be.false;
-    });
-  });
-
-  describe('exchangeOAuthToken', () => {
-    it('should call next(BadRequestError) when required params are missing', async () => {
-      const req: any = {
-        body: { code: 'abc' }, // missing email, provider, redirectUri
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.equal(
-        OAUTH_SIGN_IN_FAILED,
-      );
-    });
-
-    it('should call next(BadRequestError) when all params are missing', async () => {
-      const req: any = {
-        body: {},
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
     });
   });
 
@@ -2445,7 +2441,7 @@ describe('UserAccountController', () => {
       }
     });
 
-    it('refuses SAML and points to the SAML sign-in route', async () => {
+    it('refuses a removed method left in a sign-in started before the upgrade', async () => {
       const req: any = {
         body: {
           method: 'samlSso',
@@ -2467,7 +2463,10 @@ describe('UserAccountController', () => {
 
       expect(next.calledOnce).to.be.true;
       expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.equal(SAML_HAS_ITS_OWN_SIGN_IN);
+      expect(next.firstCall.args[0].message).to.equal(SIGN_IN_METHOD_NOT_ALLOWED);
+      expect(req.sessionInfo.authConfig).to.deep.equal([
+        { order: 1, allowedMethods: [{ type: 'password' }] },
+      ]);
       expect(res.json.called).to.be.false;
     });
   });
@@ -2644,32 +2643,6 @@ describe('UserAccountController', () => {
     });
   });
 
-  describe('exchangeOAuthToken', () => {
-    it('should call next(BadRequestError) for missing provider', async () => {
-      const req: any = {
-        body: { code: 'abc', email: 'test@test.com', redirectUri: 'http://localhost' },
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-    });
-
-    it('should call next(BadRequestError) for missing code', async () => {
-      const req: any = {
-        body: { email: 'test@test.com', provider: 'oauth', redirectUri: 'http://localhost' },
-        ip: '127.0.0.1',
-      };
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-    });
-  });
-
   describe('resetPasswordViaEmailLink - one use per link', () => {
     const newResponse = () => ({
       status: sinon.stub().returnsThis(),
@@ -2741,6 +2714,37 @@ describe('UserAccountController', () => {
       expect(rebuild.calledOnce).to.be.true;
       expect(next.called).to.be.false;
       expect(used.size).to.equal(1);
+    });
+
+    // Through the real IAM client: a deleted account comes back from IAM as an
+    // HTTP 404, which used to reach the error middleware as a raw axios error
+    // and be answered with a 500.
+    describe('when the account was deleted after the link was sent', () => {
+      beforeEach(() => {
+        const realIam = new IamService(mockConfig, mockLogger);
+        mockIamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        nock(mockConfig.iamBackend)
+          .get('/api/v1/users/internal/u1')
+          .reply(404, { error: { message: 'User not found' } });
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers that the link is no longer valid (404), changing nothing', async () => {
+        const used = fakeUsedResetLinks();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(NotFoundError);
+        expect(error.message).to.equal(SESSION_NO_LONGER_VALID);
+        expect((UserCredentials.prototype.save as sinon.SinonStub).called).to.be.false;
+        expect(used.size).to.equal(0, 'the link is handed back, as for any reset that changed nothing');
+      });
     });
 
     it('refuses a link that was already used', async () => {
@@ -3105,8 +3109,8 @@ describe('UserAccountController', () => {
     });
   });
 
-  describe('initAuth - with azureAd auth provider', () => {
-    it('should include azuread auth config for existing user', async () => {
+  describe('initAuth - a saved Azure AD method', () => {
+    it('offers it as Microsoft sign-in', async () => {
       const req: any = {
         body: { email: 'user@example.com' },
       };
@@ -3124,8 +3128,10 @@ describe('UserAccountController', () => {
         ],
       } as any);
 
+      // Until the migration copies them, the Microsoft settings route serves
+      // the Azure AD settings (see getMicrosoftAuthConfig).
       mockConfigService.getConfig.resolves({
-        data: { tenantId: 'azure-tenant-id' },
+        data: { clientId: 'az-client', tenantId: 'azure-tenant-id' },
       });
 
       mockSessionService.createSession.resolves({
@@ -3140,164 +3146,40 @@ describe('UserAccountController', () => {
 
       await controller.initAuth(req, res, next);
 
-      if (!next.called) {
-        const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.authProviders).to.have.property('azureAd');
-      }
+      expect(next.called).to.be.false;
+      const jsonArg = res.json.firstCall.args[0];
+      expect(jsonArg.allowedMethods).to.deep.equal(['microsoft']);
+      expect(jsonArg.authProviders.microsoft).to.include({ clientId: 'az-client' });
+      expect(jsonArg.authProviders).to.not.have.property('azureAd');
+      expect(mockSessionService.createSession.firstCall.args[0].authConfig).to.deep.equal([
+        { order: 1, allowedMethods: [{ type: 'microsoft' }] },
+      ]);
     });
   });
 
-  describe('initAuth - with oauth auth provider', () => {
-    it('should include oauth config (with secrets stripped) for existing user', async () => {
-      const req: any = {
-        body: { email: 'user@example.com' },
-      };
+  describe('initAuth - a policy saved before 1.0 names a removed method', () => {
+    for (const removed of ['samlSso', 'oauth']) {
+      it(`offers password instead of ${removed}, before the migration has run`, async () => {
+        sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
+        sinon.stub(OrgAuthConfig, 'findOne').resolves({
+          orgId: 'o1',
+          authSteps: [{ order: 1, allowedMethods: [{ type: removed }] }],
+        } as any);
+        mockSessionService.createSession.resolves({ token: 'session-1' });
 
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'user@example.com', orgId: 'o1' },
+        await controller.initAuth({ body: { email: 'user@example.com' } } as any, res, next);
+
+        expect(next.called).to.be.false;
+        expect(res.json.firstCall.args[0].allowedMethods).to.deep.equal(['password']);
+        expect(mockConfigService.getConfig.called).to.be.false;
+        expect(mockSessionService.createSession.firstCall.args[0].authConfig).to.deep.equal([
+          { order: 1, allowedMethods: [{ type: 'password' }] },
+        ]);
       });
-
-      sinon.stub(Org, 'findOne').resolves({ _id: 'o1', isDeleted: false } as any);
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'o1',
-        authSteps: [
-          { order: 1, allowedMethods: [{ type: 'oauth' }] },
-        ],
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: {
-          enableJit: true,
-          clientId: 'oauth-client-id',
-          clientSecret: 'secret-should-not-appear',
-          tokenEndpoint: 'https://oauth/token',
-          userInfoEndpoint: 'https://oauth/userinfo',
-          authorizationEndpoint: 'https://oauth/authorize',
-        },
-      });
-
-      mockSessionService.createSession.resolves({
-        token: 'session-oauth-123',
-        userId: 'u1',
-        email: 'user@example.com',
-        authConfig: [
-          { order: 1, allowedMethods: [{ type: 'oauth' }] },
-        ],
-        currentStep: 0,
-      });
-
-      await controller.initAuth(req, res, next);
-
-      if (!next.called) {
-        const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.authProviders).to.have.property('oauth');
-        expect(jsonArg.authProviders.oauth).to.not.have.property('clientSecret');
-        expect(jsonArg.authProviders.oauth).to.not.have.property('tokenEndpoint');
-        expect(jsonArg.authProviders.oauth).to.not.have.property('userInfoEndpoint');
-      }
-    });
+    }
   });
 
   describe('initAuth - JIT with multiple providers', () => {
-    it('should handle JIT with microsoft and azureAd enabled', async () => {
-      const req: any = {
-        body: { email: 'newuser@example.com' },
-      };
-
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'Not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
-      } as any);
-
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'org1',
-        authSteps: [
-          { order: 1, allowedMethods: [{ type: 'microsoft' }, { type: 'azureAd' }] },
-        ],
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: { enableJit: true, tenantId: 'test-tenant' },
-      });
-
-      mockSessionService.createSession.resolves({
-        token: 'session-jit-multi-123',
-        userId: 'NOT_FOUND',
-        email: 'newuser@example.com',
-        authConfig: [
-          { order: 1, allowedMethods: [{ type: 'microsoft' }, { type: 'azureAd' }] },
-        ],
-        currentStep: 0,
-      });
-
-      await controller.initAuth(req, res, next);
-
-      if (!next.called) {
-        const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.jitEnabled).to.be.true;
-        expect(jsonArg.allowedMethods).to.include('microsoft');
-        expect(jsonArg.allowedMethods).to.include('azureAd');
-      }
-    });
-
-    it('should handle JIT with oauth provider', async () => {
-      const req: any = {
-        body: { email: 'newuser@example.com' },
-      };
-
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 404,
-        data: 'Not found',
-      });
-
-      sinon.stub(Org, 'findOne').resolves({
-        _id: 'org1',
-        isDeleted: false,
-      } as any);
-
-      sinon.stub(OrgAuthConfig, 'findOne').resolves({
-        orgId: 'org1',
-        authSteps: [
-          { order: 1, allowedMethods: [{ type: 'oauth' }] },
-        ],
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: {
-          enableJit: true,
-          clientId: 'oauth-client-id',
-          clientSecret: 'secret',
-          tokenEndpoint: 'https://oauth/token',
-          userInfoEndpoint: 'https://oauth/userinfo',
-        },
-      });
-
-      mockSessionService.createSession.resolves({
-        token: 'session-jit-oauth-123',
-        userId: 'NOT_FOUND',
-        email: 'newuser@example.com',
-        authConfig: [
-          { order: 1, allowedMethods: [{ type: 'oauth' }] },
-        ],
-        currentStep: 0,
-      });
-
-      await controller.initAuth(req, res, next);
-
-      if (!next.called) {
-        const jsonArg = res.json.firstCall.args[0];
-        expect(jsonArg.jitEnabled).to.be.true;
-        expect(jsonArg.allowedMethods).to.include('oauth');
-        // oauth provider should not include secrets
-        expect(jsonArg.authProviders.oauth).to.not.have.property('clientSecret');
-      }
-    });
 
     it('should handle JIT config fetch failures gracefully', async () => {
       const req: any = {
@@ -3378,60 +3260,6 @@ describe('UserAccountController', () => {
         expect(jsonArg.allowedMethods).to.include('password');
       }
       mockConfig.skipDomainCheck = false;
-    });
-  });
-
-  describe('exchangeOAuthToken - existing user flow', () => {
-    it('should call next(BadRequestError) when oauth config has no token endpoint', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code-123',
-          email: 'user@test.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: { clientId: 'id', clientSecret: 'secret', tokenEndpoint: '' },
-      });
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
-    });
-
-    it('should call next(BadRequestError) when no oauth config data', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code-123',
-          email: 'user@test.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: null,
-      });
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
     });
   });
 
@@ -3687,114 +3515,6 @@ describe('UserAccountController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // authenticateWithAzureAd
-  // -----------------------------------------------------------------------
-  describe('authenticateWithAzureAd', () => {
-    it('should authenticate and log activity', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { clientId: 'client-1', tenantId: 'tenant-1' },
-      });
-
-      const azureAdModule = require('../../../../src/modules/auth/utils/azureAdTokenValidation');
-      sinon.stub(azureAdModule, 'validateAzureAdUser').resolves({
-        email: 'test@test.com',
-      });
-      sinon.stub(UserActivities, 'create').resolves({} as any);
-
-      await controller.authenticateWithAzureAd(user, { idToken: 'token' }, '127.0.0.1');
-      expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
-    });
-
-    it('should refuse a token for a different account than the one signing in', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'member@test.com' };
-      mockConfigService.getConfig.resolves({
-        data: { clientId: 'client-1', tenantId: 'common' },
-      });
-      const azureAdModule = require('../../../../src/modules/auth/utils/azureAdTokenValidation');
-      sinon.stub(azureAdModule, 'validateAzureAdUser').resolves({
-        tid: 'other-tenant',
-        email: 'member@test.com',
-        preferred_username: 'other@elsewhere.test',
-      });
-      const activity = sinon.stub(UserActivities, 'create').resolves({} as any);
-
-      try {
-        await controller.authenticateWithAzureAd(user, { idToken: 'token' }, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(UnauthorizedError);
-      }
-      expect(activity.called).to.be.false;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // authenticateWithOAuth
-  // -----------------------------------------------------------------------
-  describe('authenticateWithOAuth', () => {
-    it('should throw BadRequestError when accessToken is missing', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
-      });
-
-      try {
-        await controller.authenticateWithOAuth(user, {}, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal(OAUTH_SIGN_IN_FAILED);
-      }
-    });
-
-    it('should throw BadRequestError when userInfoEndpoint is missing', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: '' },
-      });
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(BadRequestError);
-        expect((error as BadRequestError).message).to.equal(OAUTH_SIGN_IN_FAILED);
-      }
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // exchangeOAuthToken - JIT user flow
-  // -----------------------------------------------------------------------
-  describe('exchangeOAuthToken - JIT user flow', () => {
-    it('should call next(BadRequestError) when user not found and no org matches domain', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'jit@unknown.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve(null) }),
-      } as any);
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include('Organization not found');
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // getAccessTokenFromRefreshToken - full success with credential update
   // -----------------------------------------------------------------------
   describe('getAccessTokenFromRefreshToken - success with credential update', () => {
@@ -4002,7 +3722,11 @@ describe('UserAccountController', () => {
   // -----------------------------------------------------------------------
   describe('hasPasswordMethod - via tokenPayload', () => {
     it('should return isPasswordAuthEnabled based on OrgAuthConfig', async () => {
-      sinon.stub(OrgAuthConfig, 'exists').resolves(true as any);
+      sinon.stub(OrgAuthConfig, 'findOne').returns({
+        select: () => ({
+          lean: async () => ({ authSteps: [{ order: 1, allowedMethods: [{ type: 'password' }] }] }),
+        }),
+      } as any);
 
       const req: any = {
         tokenPayload: { orgId: 'o1' },
@@ -4012,418 +3736,6 @@ describe('UserAccountController', () => {
 
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0].isPasswordAuthEnabled).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // exchangeOAuthToken - JIT flow with org and auth config found
-  // -----------------------------------------------------------------------
-  describe('exchangeOAuthToken - JIT with org found', () => {
-    it('should call next(BadRequestError) when oauth config is missing', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'jit@example.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
-      } as any);
-
-      // Config returns null data, so oauthConfig is null
-      mockConfigService.getConfig.resolves({ data: null });
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
-    });
-
-    it('should call next(BadRequestError) when oauth config has no tokenEndpoint', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'jit@example.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: { clientId: 'id', clientSecret: 'secret', tokenEndpoint: '' },
-      });
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      expect(next.firstCall.args[0].message).to.include("Single sign-on isn't fully set up yet");
-    });
-
-    it('should call next(NotFoundError) when JIT not enabled', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'jit@example.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: {
-          enableJit: false,
-          clientId: 'id',
-          clientSecret: 'secret',
-          tokenEndpoint: 'https://oauth/token',
-          userInfoEndpoint: 'https://oauth/userinfo',
-        },
-      });
-
-      const originalFetch = global.fetch;
-      // Mock token exchange
-      const fetchStub = sinon.stub();
-      fetchStub.onFirstCall().resolves({
-        ok: true,
-        json: sinon.stub().resolves({ access_token: 'at', id_token: 'it', token_type: 'bearer', expires_in: 3600 }),
-      } as any);
-      // Mock user info
-      fetchStub.onSecondCall().resolves({
-        ok: true,
-        json: sinon.stub().resolves({ email: 'jit@example.com' }),
-      } as any);
-      global.fetch = fetchStub as any;
-
-      try {
-        mockIamService.getUserByEmail.resolves({
-          statusCode: 404,
-          data: 'User not found',
-        });
-
-        await controller.exchangeOAuthToken(req, res, next);
-
-        expect(next.calledOnce).to.be.true;
-        expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError);
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    it('should call next with error when JIT config fetch fails', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'jit@example.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
-      } as any);
-
-      // Config fetch throws
-      mockConfigService.getConfig.rejects(new Error('Config unavailable'));
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      expect(next.firstCall.args[0]).to.be.instanceOf(Error);
-    });
-
-    it('should use skipDomainCheck to find org when configured', async () => {
-      mockConfig.skipDomainCheck = true;
-
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'jit@unknown.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'org1', isDeleted: false }) }),
-      } as any);
-
-      // Config returns null data, so oauth is not properly configured
-      mockConfigService.getConfig.resolves({ data: null });
-
-      await controller.exchangeOAuthToken(req, res, next);
-
-      expect(next.calledOnce).to.be.true;
-      mockConfig.skipDomainCheck = false;
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // authenticateWithOAuth - success and error paths
-  // -----------------------------------------------------------------------
-  describe('authenticateWithOAuth - additional paths', () => {
-    it('shows a plain message, not the network error, when the provider cannot be reached', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
-      });
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().rejects(new TypeError('fetch failed: getaddrinfo ENOTFOUND provider.com')) as any;
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.instanceOf(UnauthorizedError);
-        expect((error as UnauthorizedError).message).to.equal(OAUTH_SIGN_IN_FAILED);
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-
-    it('should throw UnauthorizedError when fetch response is not ok', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo', providerName: 'TestOAuth' },
-      });
-
-      // Stub global fetch
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
-        ok: false,
-        status: 401,
-      } as any);
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        // Should throw UnauthorizedError for failed fetch
-        expect(error).to.be.an('error');
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    it('should throw BadRequestError when no email in provider response', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
-      });
-
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
-        ok: true,
-        json: sinon.stub().resolves({}), // No email field
-      } as any);
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.an('error');
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    it('should throw BadRequestError when email mismatch', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
-      });
-
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
-        ok: true,
-        json: sinon.stub().resolves({ email: 'other@test.com' }),
-      } as any);
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect.fail('Should have thrown');
-      } catch (error) {
-        expect(error).to.be.an('error');
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    it('should succeed when email matches', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
-      });
-
-      sinon.stub(UserActivities, 'create').resolves({} as any);
-
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
-        ok: true,
-        json: sinon.stub().resolves({ email: 'test@test.com' }),
-      } as any);
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    it('should use preferred_username as fallback email', async () => {
-      const user = { _id: 'u1', orgId: 'o1', email: 'test@test.com' };
-
-      mockConfigService.getConfig.resolves({
-        data: { userInfoEndpoint: 'https://provider.com/userinfo' },
-      });
-
-      sinon.stub(UserActivities, 'create').resolves({} as any);
-
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
-        ok: true,
-        json: sinon.stub().resolves({ preferred_username: 'test@test.com' }),
-      } as any);
-
-      try {
-        await controller.authenticateWithOAuth(user, { accessToken: 'tok' }, '127.0.0.1');
-        expect((UserActivities.create as sinon.SinonStub).calledOnce).to.be.true;
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // exchangeOAuthToken - successful token exchange for existing user
-  // -----------------------------------------------------------------------
-  describe('exchangeOAuthToken - success flow', () => {
-    it('should return tokens for existing user when fetch succeeds', async () => {
-      const req: any = {
-        body: {
-          code: 'auth-code',
-          email: 'user@test.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
-      } as any);
-
-      mockIamService.getUserByEmail.resolves({
-        statusCode: 200,
-        data: { _id: 'u1', email: 'user@test.com', orgId: 'o1' },
-      });
-
-      mockConfigService.getConfig.resolves({
-        data: {
-          clientId: 'id',
-          clientSecret: 'secret',
-          tokenEndpoint: 'https://oauth/token',
-          userInfoEndpoint: 'https://oauth/userinfo',
-          providerName: 'TestOAuth',
-        },
-      });
-
-      sinon.stub(UserActivities, 'create').resolves({} as any);
-
-      const originalFetch = global.fetch;
-      const fetchStub = sinon.stub();
-      // First call: token exchange
-      fetchStub.onFirstCall().resolves({
-        ok: true,
-        json: sinon.stub().resolves({
-          access_token: 'at-123',
-          id_token: 'it-123',
-          token_type: 'bearer',
-          expires_in: 3600,
-        }),
-      } as any);
-      // Second call: user info
-      fetchStub.onSecondCall().resolves({
-        ok: true,
-        json: sinon.stub().resolves({ email: 'user@test.com' }),
-      } as any);
-      global.fetch = fetchStub as any;
-
-      try {
-        await controller.exchangeOAuthToken(req, res, next);
-
-        if (!next.called) {
-          expect(res.status.calledWith(200)).to.be.true;
-          const jsonArg = res.json.firstCall.args[0];
-          expect(jsonArg.access_token).to.equal('at-123');
-          expect(jsonArg.id_token).to.equal('it-123');
-        }
-      } finally {
-        global.fetch = originalFetch;
-      }
-    });
-
-    it('should call next when token exchange fetch fails', async () => {
-      const req: any = {
-        body: {
-          code: 'bad-code',
-          email: 'user@test.com',
-          provider: 'oauth',
-          redirectUri: 'http://localhost:3000/callback',
-        },
-        ip: '127.0.0.1',
-      };
-
-      sinon.stub(Org, 'findOne').returns({
-        lean: () => ({ exec: () => Promise.resolve({ _id: 'o1', isDeleted: false }) }),
-      } as any);
-
-      mockConfigService.getConfig.resolves({
-        data: {
-          clientId: 'id',
-          clientSecret: 'secret',
-          tokenEndpoint: 'https://oauth/token',
-        },
-      });
-
-      const originalFetch = global.fetch;
-      global.fetch = sinon.stub().resolves({
-        ok: false,
-        status: 400,
-        statusText: 'Bad Request',
-        text: sinon.stub().resolves('invalid_grant'),
-      } as any);
-
-      try {
-        await controller.exchangeOAuthToken(req, res, next);
-        expect(next.calledOnce).to.be.true;
-        expect(next.firstCall.args[0]).to.be.instanceOf(BadRequestError);
-      } finally {
-        global.fetch = originalFetch;
-      }
     });
   });
 

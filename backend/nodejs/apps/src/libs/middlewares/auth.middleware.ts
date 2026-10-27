@@ -18,6 +18,7 @@ import { OAuthApp } from '../../modules/oauth_provider/schema/oauth.app.schema';
 import { assertDelegationStillHolds } from '../../modules/oauth_provider/services/delegation-guard';
 import { resolveOAuthTokenService } from '../services/oauth-token-service.provider';
 import { stripTokenDisplayPrefix } from '../../modules/oauth_provider/constants/constants';
+import { makeOrgContext, runWithOrgContext } from '../context/orgContext';
 
 const CLIENT_NAME_HEADER = 'client-name';
 const WEB_CLIENT_NAME = 'pipeshub-ai';
@@ -69,7 +70,21 @@ export class AuthMiddleware {
         await this.authenticateOAuthToken(token, req);
       }
 
-      next();
+      // Bind the verified token's org for the rest of the request (never a client field).
+      const orgId = req.user?.orgId as string | undefined;
+      if (orgId) {
+        runWithOrgContext(
+          makeOrgContext({
+            orgId,
+            userId: req.user?.userId ? String(req.user.userId) : null,
+            kind: 'user',
+            source: 'jwt',
+          }),
+          next,
+        );
+      } else {
+        next();
+      }
     } catch (error) {
       next(error);
     }
@@ -119,11 +134,14 @@ export class AuthMiddleware {
     // identity the token acts as.
     //
     // Read from the app record every time, rather than trusting the
-    // `createdBy` the token was minted with. An administrator can point an
-    // app at a service account, and that has to take effect for tokens
-    // already issued: the whole reason to do it is to stop those tokens
-    // acting as a person, and a change that waits for every outstanding token
-    // to be re-minted would not stop anything.
+    // `createdBy` the token was minted with: the record is the authority on
+    // whose documents these tokens reach.
+    //
+    // A token that disagrees with it is refused below rather than honoured
+    // under the identity it was minted with. It is not re-pointed at the
+    // current one — pointing an app at a different service account revokes
+    // the tokens it has already issued, so a disagreeing claim should not
+    // arrive at all.
     const isClientCredentials = userId === payload.client_id;
     if (isClientCredentials) {
       try {
@@ -304,7 +322,7 @@ export class AuthMiddleware {
         req.verifiedToken = token;
 
         const userId = decoded?.userId;
-        const orgId = decoded?.orgId;
+        const orgId = decoded?.orgId as string | undefined;
 
         this.logger.debug(`userId: ${userId}, orgId: ${orgId}, scope: ${scope}`);
 
@@ -335,7 +353,20 @@ export class AuthMiddleware {
         }
 
         this.logger.debug('User authenticated', decoded);
-        next();
+        // Pre-org flows (login lookups, mail) mint scoped tokens without an orgId; they stay unbound.
+        if (orgId) {
+          runWithOrgContext(
+            makeOrgContext({
+              orgId,
+              userId: userId ? String(userId) : null,
+              kind: 'service',
+              source: 'scoped_jwt',
+            }),
+            next,
+          );
+        } else {
+          next();
+        }
       } catch (error) {
         next(error);
       }

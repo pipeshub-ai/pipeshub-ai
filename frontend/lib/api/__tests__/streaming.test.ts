@@ -125,6 +125,13 @@ describe('streamSSERequest frame parsing', () => {
     expect(sink.errors).toEqual([]);
   });
 
+  it('joins the data lines of one frame with a newline, as the SSE format defines', async () => {
+    fetchMock.mockResolvedValueOnce(sseResponse(['event: multi\ndata: {"text": "a",\ndata: "more": "b"}\n\n']));
+    const sink = collect();
+    await streamSSERequest('/s', {}, sink);
+    expect(sink.events).toEqual([{ event: 'multi', data: { text: 'a', more: 'b' } }]);
+  });
+
   it('delivers a final frame that arrives in the very last chunk', async () => {
     fetchMock.mockResolvedValueOnce(sseResponse(['event: a\ndata: {}\n\nevent: last\ndata: {"end":true}', '\n\n']));
     const sink = collect();

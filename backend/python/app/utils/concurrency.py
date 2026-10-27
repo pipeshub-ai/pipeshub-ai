@@ -25,6 +25,12 @@ MAX_CONCURRENT_TABLES = 15
 MAX_CONCURRENT_ROW_BATCHES = 8
 MAX_CONCURRENT_PAGE_BUILDS = 4
 
+# Graph queries one fan-out (one query per record or per relation pair) runs at
+# once. Each concurrent query can open a new database connection, and a burst
+# wider than the server's accept backlog has its connects dropped until
+# aiohttp's 30s sock_connect fails them together ("Connection timeout to host").
+GRAPH_FANOUT_CONCURRENCY = 16
+
 TABLE_ROW_BATCH_SIZE = 50
 
 

@@ -1,12 +1,19 @@
 'use client';
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useId, useRef } from 'react';
 import { Box, Button, Callout, Dialog, Flex, Text, TextArea, TextField, VisuallyHidden } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
+import {
+  CharCount,
+  LabeledField,
+  PROJECT_DESCRIPTION_MAX,
+  PROJECT_INSTRUCTIONS_MAX,
+  PROJECT_NAME_MAX,
+} from './project-form-fields';
 
 export interface CreateProjectDialogProps {
   open: boolean;
@@ -30,6 +37,14 @@ export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreatePro
   const [error, setError] = useState<string | null>(null);
   const [nameError, setNameError] = useState(false);
   const createRef = useRef(false);
+  const fieldId = useId();
+  const nameId = `${fieldId}-name`;
+  const nameErrorId = `${fieldId}-name-error`;
+  const nameCountId = `${fieldId}-name-count`;
+  const descriptionId = `${fieldId}-description`;
+  const descriptionCountId = `${fieldId}-description-count`;
+  const instructionsId = `${fieldId}-instructions`;
+  const instructionsCountId = `${fieldId}-instructions-count`;
 
   useEffect(() => {
     if (!open) {
@@ -110,11 +125,15 @@ export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreatePro
             </Text>
           </Flex>
 
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-12)' }}>
-              {t('chat.projects.createDialog.nameLabel')}
-            </Text>
+          <LabeledField
+            id={nameId}
+            label={t('chat.projects.createDialog.nameLabel')}
+            error={nameError ? t('chat.projects.createDialog.nameRequired') : null}
+            errorId={nameErrorId}
+            counter={<CharCount id={nameCountId} length={name.length} max={PROJECT_NAME_MAX} />}
+          >
             <TextField.Root
+              id={nameId}
               placeholder={t('chat.projects.createDialog.namePlaceholder')}
               value={name}
               onChange={(e) => {
@@ -124,46 +143,51 @@ export function CreateProjectDialog({ open, onOpenChange, onCreated }: CreatePro
               }}
               disabled={creating}
               autoFocus
-              maxLength={100}
+              required
+              maxLength={PROJECT_NAME_MAX}
+              aria-invalid={nameError || undefined}
+              aria-describedby={`${nameErrorId} ${nameCountId}`}
               onKeyDown={(e) => {
                 if (e.key === 'Enter' && !e.shiftKey) void handleCreate();
               }}
               style={nameError ? { outline: '2px solid var(--red-8)' } : {}}
             />
-            {nameError && (
-              <Text size="1" style={{ color: 'var(--red-11)' }}>
-                {t('chat.projects.createDialog.nameRequired')}
-              </Text>
-            )}
-          </Flex>
+          </LabeledField>
 
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-12)' }}>
-              {t('chat.projects.createDialog.descriptionLabel')}
-            </Text>
+          <LabeledField
+            id={descriptionId}
+            label={t('chat.projects.createDialog.descriptionLabel')}
+            counter={<CharCount id={descriptionCountId} length={description.length} max={PROJECT_DESCRIPTION_MAX} />}
+          >
             <TextArea
+              id={descriptionId}
               placeholder={t('chat.projects.createDialog.descriptionPlaceholder')}
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               disabled={creating}
               rows={2}
-              maxLength={1000}
+              maxLength={PROJECT_DESCRIPTION_MAX}
+              aria-describedby={descriptionCountId}
             />
-          </Flex>
+          </LabeledField>
 
-          <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--olive-12)' }}>
-              {t('chat.projects.createDialog.instructionsLabel')}
-            </Text>
+          <LabeledField
+            id={instructionsId}
+            label={t('chat.projects.createDialog.instructionsLabel')}
+            counter={<CharCount id={instructionsCountId} length={instructions.length} max={PROJECT_INSTRUCTIONS_MAX} />}
+          >
             <TextArea
+              id={instructionsId}
               placeholder={t('chat.projects.createDialog.instructionsPlaceholder')}
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
               disabled={creating}
-              rows={3}
-              maxLength={8000}
+              rows={4}
+              maxLength={PROJECT_INSTRUCTIONS_MAX}
+              aria-describedby={instructionsCountId}
+              style={{ resize: 'vertical' }}
             />
-          </Flex>
+          </LabeledField>
 
           {error && (
             <Callout.Root color="red" variant="soft" size="2">

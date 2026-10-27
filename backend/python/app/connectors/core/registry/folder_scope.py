@@ -412,21 +412,24 @@ async def remove_container(
     container_name: str,
     reason: str,
     logger: logging.Logger,
-) -> None:
-    """Delete every record of ``container_name``, then its record group; what fails is retried next sync."""
+) -> bool:
+    """Delete every record of ``container_name``, then its record group; what fails is retried next sync.
+    Returns whether the container is gone."""
     try:
         result = await _remove_records(
             data_entities_processor, connector_id, container_name, lambda record, path: True, reason, logger,
         )
     except Exception as e:  # retried on the next sync
         logger.warning(f"Could not read the records of {container_name} to remove: {e}")
-        return
+        return False
     if result.failed:
         logger.warning(f"{result.failed} records of {container_name} could not be removed; retrying next sync")
-        return
+        return False
     # The group goes last: while it stays, the next sync finds the container again.
     if not await data_entities_processor.on_record_group_deleted(container_name, connector_id):
         logger.warning(f"Could not remove the record group of {container_name}; retrying next sync")
+        return False
+    return True
 
 
 async def clean_up_scope(

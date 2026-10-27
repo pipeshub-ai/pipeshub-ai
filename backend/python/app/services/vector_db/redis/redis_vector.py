@@ -108,6 +108,15 @@ _REDIS_CAPABILITIES = VectorDBCapabilities(
 # RediSearch caps offset+limit at MAXSEARCHRESULTS; the default is 10000.
 _MAX_SEARCH_RESULTS = 10000
 
+# Scans that select points to act on (delete, payload write, scroll) must see
+# every match. RediSearch's default ON_TIMEOUT is RETURN: a query past its
+# timeout (500 ms by default) answers with the rows it had, and a RESP2 reply
+# carries no flag saying so, so a delete or payload write would quietly miss
+# points. ``TIMEOUT 0`` lifts the limit for these page-bounded queries. Newer
+# servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
+# want a hard guarantee can also set ``search-on-timeout FAIL``.
+_NO_TIMEOUT = ("TIMEOUT", "0")
+
 # Page size for paged deletes and aggregate-cursor reads.
 _DELETE_PAGE_SIZE = 500
 
@@ -680,6 +689,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", "0", str(_DELETE_PAGE_SIZE),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 # Do not swallow: callers treat a returned delete as complete and
@@ -701,8 +711,7 @@ class RedisVectorService(IVectorDBService):
 
             await self.client.delete(*page_keys)  # type: ignore
             total_deleted += len(page_keys)
-            if len(page_keys) < _DELETE_PAGE_SIZE:
-                break
+            # No short-page exit: only an empty re-query proves nothing is left.
         return total_deleted
 
     async def _delete_filtered(
@@ -722,6 +731,7 @@ class RedisVectorService(IVectorDBService):
             raw = await self.client.execute_command(  # type: ignore
                 "FT.AGGREGATE", idx, query,
                 "LOAD", str(len(load)), *load,
+                *_NO_TIMEOUT,
                 "WITHCURSOR", "COUNT", str(_DELETE_PAGE_SIZE),
                 "MAXIDLE", str(_CURSOR_MAX_IDLE_MS),
             )
@@ -800,6 +810,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "RETURN", str(len(return_fields)), *return_fields,
                     "LIMIT", str(offset), str(_DELETE_PAGE_SIZE),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 raise RuntimeError(
@@ -972,11 +983,13 @@ class RedisVectorService(IVectorDBService):
                 "FT.SEARCH", idx, query,
                 "RETURN", str(len(return_fields)), *return_fields,
                 "LIMIT", str(int_offset), str(limit),
+                *_NO_TIMEOUT,
             )
         else:
             raw = await self.client.execute_command(  # type: ignore
                 "FT.SEARCH", idx, query,
                 "LIMIT", str(int_offset), str(limit),
+                *_NO_TIMEOUT,
             )
 
         points: list[VectorPoint] = []
@@ -1209,6 +1222,7 @@ class RedisVectorService(IVectorDBService):
                     "FT.SEARCH", idx, query,
                     "NOCONTENT",
                     "LIMIT", str(offset), str(page_size),
+                    *_NO_TIMEOUT,
                 )
             except Exception as e:
                 # A partial key list would silently update only some of a VRID's

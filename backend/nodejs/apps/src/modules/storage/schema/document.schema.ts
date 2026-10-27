@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document as MongooseDocument } from 'mongoose';
 import {
+  ArtifactSet,
   Document as IDocument,
   DocumentPermission,
   StorageInfo,
@@ -52,6 +53,17 @@ const DocumentVersionSchema = new Schema<DocumentVersion>(
     createdAt: { type: Number },
     initiatedByUserId: { type: String },
     size: { type: Number },
+  },
+  { _id: false },
+);
+
+const ArtifactSetSchema = new Schema<ArtifactSet>(
+  {
+    virtualRecordId: { type: String, required: true },
+    rev: { type: String, required: true },
+    root: { type: String, required: true },
+    // Set when a delete claims the revision; presign refuses it from then on.
+    retiringAt: { type: Number },
   },
   { _id: false },
 );
@@ -164,6 +176,9 @@ const DocumentSchema = new Schema(
     awaitingDirectUpload: {
       type: Boolean,
     },
+    artifactSet: {
+      type: ArtifactSetSchema,
+    },
   },
   {
     timestamps: {
@@ -183,6 +198,18 @@ DocumentSchema.index(
   {
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
+  },
+);
+// One document per content revision of a virtual record, so two presigns of
+// the same revision racing each other settle on one. Its prefix also serves
+// listing and purging a virtual record's revisions.
+DocumentSchema.index(
+  { orgId: 1, 'artifactSet.virtualRecordId': 1, 'artifactSet.rev': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      'artifactSet.virtualRecordId': { $exists: true },
+    },
   },
 );
 

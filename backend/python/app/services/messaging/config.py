@@ -1,7 +1,7 @@
 import os
 from collections.abc import AsyncGenerator, Awaitable, Callable
 from enum import Enum
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, JsonValue
 
@@ -16,6 +16,7 @@ class MessageBrokerType(str, Enum):
 
     KAFKA = "kafka"
     REDIS = "redis"
+    POSTGRES = "postgres"
 
 
 class ConsumerType(str, Enum):
@@ -49,6 +50,9 @@ _LEGACY_DEFAULT_MAX_CONCURRENT_INDEXING = 7
 class IndexingEvent(str, Enum):
     """Events emitted during the indexing pipeline."""
 
+    # Handler is about to download a record of known size; its memory is
+    # reserved first, so a record waiting for memory holds no content.
+    START_DOWNLOAD = "start_download"
     # Handler has written IN_PROGRESS and needs the nested parse slot.
     START_PARSING = "start_parsing"
     PARSING_COMPLETE = "parsing_complete"
@@ -69,6 +73,8 @@ class StreamMessage(BaseModel):
     timestamp: int | None = None
     # Trace id propagated from the producer; optional so legacy messages parse.
     requestId: str | None = None
+    # Verified (or fallback) org of the message; set by the consumer's envelope wrapper, never serialised.
+    org_ctx: Any = Field(default=None, exclude=True)
     is_final_failure: bool | None = None  # Set by consumer: True = will commit/dead-letter, False = will retry
 
 
@@ -401,6 +407,27 @@ class MessagingEnvConfig:
         return _env_seconds("STRANDED_RECORD_REPUBLISH_AFTER_SECONDS", 3600.0)
 
     @property
+    def revision_retention_grace_seconds(self) -> float:
+        """How old an artifact-set revision or a revision's stage states must be before the
+        retention sweep may remove them, once nothing points at or is on that revision.
+
+        Covers a revision being written or flipped to while the sweep reads, and a
+        record moving back to earlier content. Zero turns the sweep off (see
+        ``app/modules/artifacts/retention.py``).
+        """
+        return _env_seconds("REVISION_RETENTION_GRACE_SECONDS", 24 * 3600.0)
+
+    @property
+    def revision_retention_tick_budget_seconds(self) -> float:
+        """Wall-clock time one recovery pass may spend retiring revisions.
+
+        The pass runs inline in the recovery loop (60 s interval), so slow storage
+        must not hold up stale-record recovery behind it; the walk resumes where
+        the budget stopped it. 0 or less is unbounded.
+        """
+        return _env_seconds("REVISION_RETENTION_TICK_BUDGET_SECONDS", 20.0)
+
+    @property
     def rate_limit_defer_max_seconds(self) -> float:
         """How long a record may wait in total on its source's rate limit.
 
@@ -408,7 +435,9 @@ class MessagingEnvConfig:
         back in line until then, and the stranded sweep re-sends it (see
         ``app/modules/indexing/rate_limit_deferral.py``). Counted from the first
         such wait; a limit that would carry the record past this ends it FAILED
-        instead. Zero turns deferral off, as does a disabled stranded sweep,
+        instead, unless the connector's other records were indexed meanwhile,
+        which means the record is only waiting its turn and its count starts
+        again. Zero turns deferral off, as does a disabled stranded sweep,
         which is what re-sends the record.
         """
         return _env_seconds("INDEXING_RATE_LIMIT_MAX_DEFER_SECONDS", 24 * 3600.0)
@@ -431,17 +460,15 @@ class MessagingEnvConfig:
 
     @property
     def redis_max_deliveries(self) -> int:
-        """Delivery-count ceiling for the Redis dead-letter backstop.
+        """How many times a message may be handed back without an attempt
+        (``RequeueWithoutAttempt``), and stale recovery may hand a record back.
 
         Distinct from ``max_delivery_attempts``, which counts *processing
-        failures*. Redis's ``times_delivered`` counts every delivery: the
-        first read, a claim after a restart, an idle-drain recovery pass. A
-        record delivered three times may have failed zero times, so sharing
-        one threshold dead-letters healthy work — especially with fair
-        scheduling, where an entry legitimately sits un-ACKed while it waits
-        its turn. The backstop only needs to bound a true poison loop that
-        kills the process before the failure counter can be written (#2992),
-        so it is deliberately slack.
+        failures*. Without a retry tracker it is also the Redis dead-letter
+        backstop on ``times_delivered`` (#2992). With one, a record that kills
+        the process is bounded by its unfinished attempts instead
+        (``consumer_concurrency.MAX_UNFINISHED_ATTEMPTS``): ``times_delivered``
+        also counts every claim after a restart, of entries that never ran.
         """
         return max(
             self.max_delivery_attempts + 1,
@@ -542,6 +569,10 @@ class MessagingEnvConfig:
         Redis Streams this is the actual number of ``record-events.N``
         streams and must match on producers and consumers.
         """
+        if os.getenv("MESSAGE_BROKER", "").strip().lower() == MessageBrokerType.POSTGRES.value:
+            # The PostgreSQL queue orders deliveries of one message key. A lane key (the connector) as that key made every record of a
+            # connector wait for the one before it; with no lanes the key is the record, and records index side by side.
+            return 1
         return max(1, _env_int("FAIR_SCHEDULING_LANE_COUNT", 8))
 
     @property

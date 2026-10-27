@@ -159,6 +159,9 @@ class AgentContext(BaseModel):
     # (see `prompt_builder.py`), distinct from `instructions` (agent-specific)
     # and `custom_instructions` (org-level) — never touches agent identity.
     project_instructions: str | None = None
+    # A project chat: every tool loaded is one enabled on the project (Node
+    # narrows `tools` to them), which `tool_approvals.decide` relies on.
+    project_tools_selected: bool = False
     timezone: str | None = None
     current_time: str | None = None
 
@@ -489,6 +492,7 @@ class AgentContext(BaseModel):
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
             project_instructions=state.get("project_instructions"),
+            project_tools_selected=bool(state.get("project_tools_selected", False)),
             timezone=state.get("timezone"),
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
@@ -541,6 +545,12 @@ class AgentContext(BaseModel):
             return False
         self._run_usage_claimed = True
         return True
+
+    def citation_ref_to_url(self) -> dict[str, str] | None:
+        """This request's citation refs and the URLs they stand for, read at
+        call time: the mapper in `tool_state` can be replaced mid-request."""
+        mapper = self.tool_state.get("citation_ref_mapper")
+        return mapper.ref_to_url if mapper is not None else None
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
@@ -629,6 +639,7 @@ class AgentContext(BaseModel):
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
             "project_instructions": self.project_instructions,
+            "project_tools_selected": self.project_tools_selected,
             "timezone": self.timezone,
             "current_time": self.current_time,
             "previous_conversations": self.previous_conversations,

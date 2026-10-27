@@ -24,7 +24,10 @@ from typing import TYPE_CHECKING, Any
 from app.modules.demo_data.chat import excluded_app_ids
 from app.agent_loop_lib.tools.base import ParameterType, Tag, ToolParameter
 from app.agent_loop_lib.tools.decorators import tool
-from app.agents.agent_loop.entity_search_tool import entity_search_offered_in
+from app.agents.agent_loop.entity_search_tool import (
+    entity_search_offered_in,
+    named_entities_enabled_in,
+)
 from app.connectors.core.registry.auth_builder import AuthBuilder
 from app.connectors.core.registry.tool_builder import ToolsetBuilder, ToolsetCategory
 from app.config.constants.arangodb import FOLDER_MIME_TYPES
@@ -33,7 +36,12 @@ from app.modules.agents.qna.chat_state import (
     remember_record_ids,
 )
 from app.modules.named_entities.linking.mentions import MENTION_KIND_HINTS
-from app.utils.chat_helpers import resolve_frontend_url
+from app.modules.retrieval.selection_scope import connection_sources_of
+from app.utils.chat_helpers import (
+    keep_context_blocks_inside_connection,
+    keep_row_summaries_inside_connection,
+    resolve_frontend_url,
+)
 
 from .catalog import ConnectorCatalog
 from .models import NavigationView
@@ -194,9 +202,14 @@ def _time_range_error_message(error_json: str) -> str:
         return error_json
 
 
-def _copies_outside_selection(identifier: str, matches: list) -> str:
+def _copies_outside_selection(identifier: str, matches: list, *, connected_app: bool = False) -> str:
     """Where the readable copies of an issue key or URL live, when none of
-    them is inside this conversation. Success, not a failed tool call."""
+    them is inside this conversation. Success, not a failed tool call.
+
+    A connected app's limit is the most it may learn about, so a copy outside
+    it is not named (``connected_app``)."""
+    if connected_app:
+        return f"{identifier} is outside what this conversation is limited to."
     places = []
     for match in matches:
         name = getattr(match, "name", None) or match.id
@@ -259,12 +272,13 @@ class KnowledgeGraph:
             "  Path: breadcrumb trail with node IDs\n"
             "  Record ID / Node ID: stable id, pass back to navigate() or to fetch_record()\n"
             "  Children listing with record_id= or node_id= for each item, with a created: date "
-            "when known\n"
+            "when known (uploaded: for a knowledge-base file — an upload time, not a document date)\n"
             "  Related: cross-references (page 1 only, record nodes only)\n"
             "  Next: exactly what to call next\n\n"
             "Time-scoped browsing: pass created_after/created_before or modified_after/modified_before "
             "to filter children by source timestamp (see parameter descriptions for date format) — "
             "use this instead of fetching all children when the question specifies a date range. "
+            "Inside a knowledge base these filter by when each file was uploaded. "
             "Use conservative ranges (pad by a day on each side) since source timestamps may differ "
             "from the user's timezone. If time-filtered results are empty or too few, widen the "
             "range or retry without time filters and filter manually from the listing."
@@ -493,7 +507,10 @@ class KnowledgeGraph:
                     )
                     chosen = next((match for match in result.matches if match.id in inside), None)
                     if chosen is None:
-                        return True, _copies_outside_selection(node_id, result.matches)
+                        return True, _copies_outside_selection(
+                            node_id, result.matches,
+                            connected_app=connection_sources_of(state.get("filters")) is not None,
+                        )
                     node_id = chosen.id
 
         refusal = await selection_browse_refusal(state, graph_provider, user_key, org_id, node_id)
@@ -540,6 +557,14 @@ class KnowledgeGraph:
                 view.breadcrumbs = [crumb for crumb in view.breadcrumbs if crumb.id in ancestors]
             view.rows = [row for row in view.rows if row.id in rows]
             view.related = [row for row in view.related if row.id in related]
+            limit_sources = connection_sources_of(state.get("filters"))
+            await keep_context_blocks_inside_connection(
+                [(view.current.id if view.current else None, view)], graph_provider,
+                state.get("user_id", ""), org_id, limit_sources,
+            )
+            await keep_row_summaries_inside_connection(
+                [*view.rows, *view.related], graph_provider, state.get("user_id", ""), org_id, limit_sources,
+            )
         except Exception:
             logger.exception("navigate failed for node_id=%s", node_id)
             return False, "Navigation failed — try again or use a different node_id."
@@ -680,6 +705,10 @@ class KnowledgeGraph:
         if len(inside) < len(result.matches):
             kept = [m for m in result.matches if m.id in inside]
             result = result.model_copy(update={"matches": kept, "ambiguous": result.ambiguous and len(kept) > 1})
+        await keep_context_blocks_inside_connection(
+            [(m.id, m) for m in result.matches], graph_provider, state.get("user_id", ""), org_id,
+            connection_sources_of(state.get("filters")),
+        )
 
         # TEMPORARY token-savings experiment (opt-in, disabled by default —
         # see `ChatQuery.enableRecordIdShortening`) — see `RecordIdShortener`
@@ -737,8 +766,13 @@ class KnowledgeGraph:
             "asked to search just those sources.\n\n"
             "Time filtering: use created_after/created_before to scope by source creation date, "
             "and modified_after/modified_before to scope by source last-modified date. "
-            "All dates use the source system's timestamp (when the file was created in Drive, "
-            "when the Jira ticket was filed), not when it was indexed by PipesHub.\n\n"
+            "For connected apps these are the source system's timestamps (when the file was "
+            "created in Drive, when the Jira ticket was filed), not when PipesHub indexed it. "
+            "A knowledge-base upload is dated as its record header shows: by a date the "
+            "document states when one was found in it, otherwise only by the upload (the "
+            "file's last-modified time or the upload time), which is not when it was written. "
+            "A date filter can keep an upload dated only by its upload although it was written "
+            "outside the range, so check its header before treating it as in range.\n\n"
             "Time-filter guidance:\n"
             "  - Prefer conservative (wider) date ranges. 'This quarter' means the full "
             "quarter boundaries, not today's date as the end.\n"
@@ -779,8 +813,9 @@ class KnowledgeGraph:
                     "Only include records created at the source on or after this date. "
                     "ISO 8601 format: 'YYYY-MM-DD' (e.g. '2026-01-15') or full datetime "
                     "with timezone (e.g. '2026-01-15T00:00:00Z'). "
-                    "This filters by the document's original creation date at the source "
-                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed. "
+                    "For connected apps this is the creation date at the source "
+                    "(Google Drive, Jira, Confluence, etc.), not when it was indexed; for a "
+                    "knowledge-base upload, the date its record header shows. "
                     "Use for questions like 'files created this quarter' or 'tickets opened "
                     "after January'. YYYY-MM-DD is interpreted as the start of that day in UTC."
                 ),
@@ -1209,13 +1244,18 @@ class KnowledgeGraph:
 
     def tools_for_request(self, tools: list[Tool]) -> list[Tool]:
         """This request's tools: ``search_by_entities`` and the descriptions
-        that go with it only where the deployment offers it
+        that go with it only where the deployment offers it, and the
+        named-entity tools only where extraction is on
         (``entity_search_surface``); ``search_timeline`` unless
         ``TIMELINE_SUMMARIES`` is false."""
         from .entity_search_surface import tools_for_request
         from .ops.timeline import without_timeline_unless_enabled
         tools = without_timeline_unless_enabled(tools)
-        return tools_for_request(self, tools, offered=entity_search_offered_in(self.state))
+        return tools_for_request(
+            self, tools,
+            offered=entity_search_offered_in(self.state),
+            named_entities=named_entities_enabled_in(self.state),
+        )
 
     # -----------------------------------------------------------------------
     # list_files — name-based search / browse (metadata only)
@@ -1284,7 +1324,11 @@ class KnowledgeGraph:
             ToolParameter(
                 name="sort_by",
                 type=ParameterType.STRING,
-                description="Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'.",
+                description=(
+                    "Sort field: 'name', 'createdAt', 'updatedAt', 'size', 'type'. For "
+                    "knowledge-base files createdAt and updatedAt are upload times, not "
+                    "document dates."
+                ),
                 required=False,
                 default="updatedAt",
             ),
@@ -1400,7 +1444,11 @@ class KnowledgeGraph:
                 description=(
                     "'created' (default) places each record by when it was created at its source: "
                     "a Slack thread by its first message, a ticket by when it was filed. 'modified' "
-                    "places it by its last update, for tickets or pages that changed over the span."
+                    "places it by its last update, for tickets or pages that changed over the span. "
+                    "A knowledge-base upload is placed by a date its content states when one was "
+                    "found, otherwise by its file's last-modified time or its upload time; the "
+                    "result's header says when an upload dated only by its upload time is instead "
+                    "listed with no source date."
                 ),
                 required=False,
                 default="created",

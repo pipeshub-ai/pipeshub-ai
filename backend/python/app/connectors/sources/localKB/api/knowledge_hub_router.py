@@ -506,12 +506,15 @@ async def _handle_get_nodes(
             "cursor": cursor,
             "is_org_admin": is_request_admin(request),
         }
-        if parent_id is None and connection_limit(request.state.user) is not None:
+        limit_sources = connection_limit(request.state.user)
+        if parent_id is None and limit_sources is not None:
             result = await _root_inside_connection(
                 request, knowledge_hub_service, query, bounded=bounded, params=listing_params,
             )
         else:
             result = await knowledge_hub_service.get_nodes(**query)
+        if limit_sources is not None:
+            _offer_whole_apps_only(result, limit_sources.get("apps") or [])
 
         if not result.success:
             # The service flags what it wrote for a person with a 4xx code (a node
@@ -537,12 +540,26 @@ async def _handle_get_nodes(
             )
 
         # Every listing above keeps to the limit before it is paged; this only
-        # guards against a row that should not have reached it.
+        # guards against a row that should not have reached it. A node inside
+        # the limit can sit in a folder outside it, as a file or folder the
+        # limit names does: that folder is left out of the row's parent, the
+        # browsed node's parent and the breadcrumbs rather than named.
+        named_ids = [i for item in result.items for i in (item.id, item.parentId, item.parent and item.parent.id)]
+        named_ids += [crumb.id for crumb in result.breadcrumbs or []]
+        named_ids.append(result.parentNode.id if result.parentNode else None)
         outside = await ids_outside_connection(
-            request, request.app.state.graph_provider, org_id, user_id, [item.id for item in result.items],
+            request, request.app.state.graph_provider, org_id, user_id, [i for i in named_ids if i],
         )
         if outside:
             result.items = [item for item in result.items if item.id not in outside]
+            for item in result.items:
+                if item.parentId in outside or (item.parent and item.parent.id in outside):
+                    item.parentId = None
+                    item.parent = None
+            if result.breadcrumbs:
+                result.breadcrumbs = [crumb for crumb in result.breadcrumbs if crumb.id not in outside]
+            if result.parentNode and result.parentNode.id in outside:
+                result.parentNode = None
             if result.typed_records:
                 result.typed_records = {k: v for k, v in result.typed_records.items() if k not in outside}
 
@@ -625,12 +642,27 @@ async def _root_inside_connection(
     if mode == "search" and not cursor and query["page"] > _MAX_BOUNDED_SEARCH_PAGE:
         raise _page_walk_refused(_MAX_BOUNDED_SEARCH_PAGE)
     if mode == "search":
-        return await _search_inside_connection(
+        response = await _search_inside_connection(
             request, service, query, whole | partial, seen=seen, position=position, by_cursor=bool(cursor),
             params=params,
         )
-    offset = seen if cursor else (query["page"] - 1) * query["limit"]
-    return await _named_root(request, service, query, whole | partial, offset=offset, params=params)
+    else:
+        offset = seen if cursor else (query["page"] - 1) * query["limit"]
+        response = await _named_root(request, service, query, whole | partial, offset=offset, params=params)
+    return response
+
+
+def _offer_whole_apps_only(response: KnowledgeHubNodesResponse, whole_apps: list[str]) -> None:
+    """A filter option carries its app's or collection's own name, so a
+    connected app with a limit is offered only those its limit covers whole:
+    not one it covers in part, nor one outside it. The root listing is read
+    over every app the limit touches, and a node below it over the user's
+    whole gate."""
+    filters = getattr(response, "filters", None)
+    available = filters.available if filters is not None else None
+    if available is not None:
+        whole = set(whole_apps)
+        available.connectors = [option for option in available.connectors if option.id in whole]
 
 
 def _admits(item: NodeItem, query: dict[str, Any]) -> bool:
@@ -686,8 +718,8 @@ async def _named_root(
         request, request.app.state.graph_provider, query["org_id"], query["user_id"],
     )
     named_apps = {node.id for node in named if node.node_type == "app"}
-    # Read over every app the limit touches, so the filter options name them all;
-    # an app reached only through some of its folders is not itself listed.
+    # Read over every app the limit touches; an app reached only through some
+    # of its folders is neither listed nor offered as a filter option.
     listing = await service.get_nodes(
         **{**query, "page": 1, "limit": _APP_BATCH, "cursor": None, "flattened": False,
            "include": [i for i in include if i != "counts"] or None},

@@ -1247,7 +1247,7 @@ class TestStartKafkaConsumers:
             patch("app.indexing_main.MessagingUtils._get_redis_config", new_callable=AsyncMock, return_value=MagicMock()),
             patch("app.indexing_main.MessagingFactory.create_retry_manager", return_value=MagicMock(initialize=AsyncMock(), cleanup=AsyncMock())),
             patch("app.indexing_main.MessagingUtils.create_record_consumer_config", new_callable=AsyncMock, return_value={}),
-            patch("app.indexing_main.DistributedConcurrencyManager", return_value=mock_manager),
+            patch("app.indexing_main.MessagingFactory.create_lease_manager", return_value=mock_manager),
         ):
             with pytest.raises(RuntimeError, match="redis down"):
                 await start_kafka_consumers(mock_container)
@@ -1697,6 +1697,37 @@ class TestIndexingHealthCheck:
 
         body = json.loads(result.body)
         assert body["resource_governor"] == {"ceilings": {"index": 5}}
+
+    @pytest.mark.parametrize("failure", [None, SystemExit("worker loop killed")])
+    async def test_health_check_is_unhealthy_once_the_worker_loop_died(self, failure) -> None:
+        """Its consumers stopped themselves, so the node no longer indexes and the probe must
+        say so; it names the exception type but never echoes its text."""
+        import json
+
+        from app.indexing_main import health_check
+
+        worker = MagicMock(spec=WorkerLoop)
+        worker.failure = failure
+        mock_container = MagicMock()
+        mock_container.worker_loop = worker
+        mock_container.kafka_consumers = []
+
+        with (
+            patch("app.indexing_main.container", mock_container),
+            patch("app.indexing_main.get_epoch_timestamp_in_ms", return_value=1),
+        ):
+            result = await health_check(_make_health_request())
+
+        body = json.loads(result.body)
+        if failure is None:
+            assert result.status_code == 200
+            assert body["status"] == "healthy"
+            assert "worker_loop_failure" not in body
+        else:
+            assert result.status_code == 503
+            assert body["status"] == "unhealthy"
+            assert body["worker_loop_failure"] == "SystemExit"
+            assert "worker loop killed" not in bytes(result.body).decode()
 
     async def test_the_queue_lane_view_is_included_once_upkeep_has_run(self) -> None:
         import json

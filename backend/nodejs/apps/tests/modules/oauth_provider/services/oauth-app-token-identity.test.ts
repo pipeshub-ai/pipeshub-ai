@@ -120,6 +120,25 @@ describe('pointing an OAuth app at a service account', () => {
     expect(String(app.tokenIdentityUserId)).to.equal(other);
   });
 
+  /**
+   * The migration screen cannot exist without this: it has to show which
+   * applications act as a service account and which still act as their
+   * creator, and the only way to tell them apart is this field.
+   */
+  it('returns the binding, so a listing can tell bound from unbound', async () => {
+    app.allowedGrantTypes = [OAuthGrantType.CLIENT_CREDENTIALS];
+    stubUser({ isDisabled: false });
+
+    const result = await makeService().service.setTokenIdentity(
+      appId,
+      orgId,
+      userId,
+      serviceAccountId,
+    );
+
+    expect(result.tokenIdentityUserId).to.equal(serviceAccountId);
+  });
+
   it('refuses a colleague, not just any user id', async () => {
     // kind is part of the query, so a person's id finds nothing here and an
     // app cannot be made to act as them.
@@ -129,7 +148,10 @@ describe('pointing an OAuth app at a service account', () => {
       await makeService().service.setTokenIdentity(appId, orgId, userId, serviceAccountId);
       expect.fail('expected a non-service account to be refused');
     } catch (error) {
-      expect((error as Error).message).to.equal('Service account not found');
+      // The part that tells someone what to do next, not just that it failed.
+      expect((error as Error).message).to.contain(
+        'Workspace \u2192 Service accounts',
+      );
     }
     expect(findOne.firstCall.args[0]).to.include({ kind: 'service' });
   });

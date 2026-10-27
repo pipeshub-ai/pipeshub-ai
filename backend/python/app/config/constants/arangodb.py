@@ -390,6 +390,25 @@ class ExtensionTypes(Enum):
     YAML = "yaml"
     YML = "yml"
 
+# Common file types PipesHub cannot index. Sync filters offer them so a user can
+# exclude them (Not in); they are kept out of ExtensionTypes because that enum
+# lists the types that can be indexed.
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
+    # archives
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
+    # databases
+    "db", "sqlite", "sqlite3", "mdb", "accdb",
+    # executables and installers
+    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
+    # temporary and backup files
+    "tmp", "bak", "swp", "lock",
+    # logs
+    "log",
+    # video and audio
+    "mp4", "mov", "avi", "mkv", "webm", "wmv",
+    "mp3", "wav", "flac", "m4a", "aac", "ogg",
+)
+
 class MimeTypes(Enum):
     PDF = "application/pdf"
     GMAIL = "text/gmail_content"
@@ -644,6 +663,9 @@ class ProgressStatus(Enum):
     QUEUED = "QUEUED"
     # A stage that does not apply to this record (policy off, nothing to process).
     SKIPPED = "SKIPPED"
+    # The file needs a password to open. Terminal: only a new version of the
+    # file (or, later, a password) changes the outcome, so nothing retries it.
+    PASSWORD_PROTECTED = "PASSWORD_PROTECTED"
 
 
 class DeleteSource(str, Enum):

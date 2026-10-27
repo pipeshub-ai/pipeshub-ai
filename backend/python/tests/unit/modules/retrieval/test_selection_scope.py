@@ -645,6 +645,29 @@ class TestConnectionLimit:
         turn = await prepare_turn_scope(provider, "u", "o", {}, connection_sources={"apps": ["a"]})
         assert turn["apps"] == ["a"] and turn["connectionApps"] == ["a"]
 
+    def test_a_turns_limit_is_read_back_as_its_sources(self) -> None:
+        turn = mod.within_connection({}, {"apps": ["a"], "recordGroups": [], "records": ["r"]})
+
+        assert mod.connection_sources_of(turn) == {"apps": ["a"], "recordGroups": [], "records": ["r"]}
+        assert mod.connection_sources_of({"apps": ["a"], "allowedApps": ["a"]}) is None
+        assert mod.connection_sources_of(None) is None
+
+    @pytest.mark.asyncio
+    async def test_the_limit_alone_is_read_back_from_the_bounds(self) -> None:
+        provider = _provider(records=[{"id": "f", "vrid": "", "connectorId": "a"}])
+        filters = {"allowedApps": ["agent-app"], "connectionApps": [], "connectionRecords": ["f"]}
+
+        limit = await mod.connection_bound_scope(provider, "u", "o", filters)
+
+        assert limit is not None and set(limit.records) == {"f"} and not limit.app_ids
+        assert await mod.connection_bound_scope(provider, "u", "o", {"allowedApps": ["agent-app"]}) is None
+
+    @pytest.mark.asyncio
+    async def test_a_whole_app_limit_reads_back_as_its_apps(self) -> None:
+        limit = await mod.connection_bound_scope(_provider(), "u", "o", {"connectionApps": ["a"]})
+
+        assert limit == SelectionScope(app_ids=frozenset({"a"}))
+
     @pytest.mark.asyncio
     async def test_no_limit_asks_the_graph_nothing(self) -> None:
         provider = _provider()

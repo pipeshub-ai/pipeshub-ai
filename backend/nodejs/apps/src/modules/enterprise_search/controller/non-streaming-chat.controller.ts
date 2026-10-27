@@ -7,6 +7,7 @@ import {
   AuthenticatedUserRequest,
 } from '../../../libs/middlewares/types';
 import { Logger } from '../../../libs/services/logger.service';
+import { logLevelFor } from '../../../libs/utils/error.middleware.utils';
 import {
   validateNoFormatSpecifiers,
   validateNoXSS,
@@ -32,6 +33,7 @@ import {
 } from '../utils/non-streaming-chat';
 import {
   loadProjectForSession,
+  projectCallerFromRequest,
   resolveProjectLink,
 } from '../utils/project-context';
 import { buildUserQueryMessage, extractModelInfo } from '../utils/utils';
@@ -122,6 +124,7 @@ const nonStreamingTurn =
           String(orgId),
           String(userId),
           body,
+          projectCallerFromRequest(req, appConfig),
         );
         conversation = await openConversation(
           {
@@ -135,9 +138,8 @@ const nonStreamingTurn =
           },
           userMessage,
         );
-        previousConversations = Array.isArray(body.previousConversations)
-          ? body.previousConversations
-          : [];
+        // A new conversation has no stored history, and history is never taken from the client (CE-19).
+        previousConversations = [];
         project = link.project;
       } else {
         // Project context always comes from the session row, never the
@@ -160,13 +162,17 @@ const nonStreamingTurn =
           String(conversation.orgId),
           String(conversation.userId),
           conversation.projectId,
+          {
+            caller: projectCallerFromRequest(req, appConfig),
+            conversationId: String(conversation._id),
+          },
         );
       }
 
       const conversationId = String(conversation._id);
       res.setHeader(CONVERSATION_ID_HEADER, conversationId);
-      if (conversation.projectId) {
-        void ProjectService.touchActivity(conversation.projectId.toString());
+      if (project) {
+        void ProjectService.touchActivity(String(project._id));
       }
 
       const turn = await completeTurn({
@@ -201,7 +207,7 @@ const nonStreamingTurn =
         });
       }
     } catch (error: unknown) {
-      logger.error('Non-streaming chat turn failed', {
+      logger[logLevelFor(error)]('Non-streaming chat turn failed', {
         requestId,
         mode,
         conversationId: req.params.conversationId,

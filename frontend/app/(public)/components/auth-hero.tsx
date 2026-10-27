@@ -49,10 +49,10 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
 
   return (
     <Box
+      className="viewport-height"
       style={{
         position: 'relative',
         flex: '0 0 57%',
-        height: '100vh',
         overflow: 'hidden',
         backgroundColor: '#0a0a0c',
       }}
@@ -110,7 +110,7 @@ export default function AuthHero({ splitLayout }: AuthHeroProps) {
           left: '50%',
           top: '42.3%',
           transform: 'translateX(-50%)',
-          width: '559px',
+          width: 'min(559px, 90%)',
           height: '74px',
           backgroundColor: 'rgba(31, 31, 31, 0.8)',
           backdropFilter: 'blur(5px)',

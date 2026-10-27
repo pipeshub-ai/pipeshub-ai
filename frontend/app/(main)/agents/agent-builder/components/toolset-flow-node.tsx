@@ -234,7 +234,7 @@ export function ToolsetFlowNode({
                   size="1"
                   variant="soft"
                   color="gray"
-                  className="toolset-flow-add-tools"
+                  className="toolset-flow-add-tools touch-hit"
                   aria-label={t('agentBuilder.addToolsAriaLabel')}
                   aria-expanded={addToolsOpen}
                   onClick={(e) => e.stopPropagation()}
@@ -435,7 +435,7 @@ export function ToolsetFlowNode({
                       size="1"
                       variant="soft"
                       color="red"
-                      className="toolset-flow-remove-tool"
+                      className="toolset-flow-remove-tool touch-hit"
                       aria-label={t('agentBuilder.removeToolAriaLabel', { name: tool.name })}
                       onClick={(e) => {
                         e.stopPropagation();

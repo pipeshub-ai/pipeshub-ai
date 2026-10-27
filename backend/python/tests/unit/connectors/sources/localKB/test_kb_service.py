@@ -738,7 +738,13 @@ class TestDeleteKBStorageCleanup:
         result = await service.delete_knowledge_base("kb1", "user1", "org1")
 
         assert result["success"] is False
-        mock_config_service.delete_config.assert_not_awaited()
+        self._assert_intents_kept(mock_config_service)
+
+    @staticmethod
+    def _assert_intents_kept(config_service) -> None:
+        """The delete lease is a hint the delete removes itself; the intents must stay."""
+        deleted = [c.args[0] for c in config_service.delete_config.await_args_list]
+        assert not [k for k in deleted if "/storageRelease/" in k or "/entityCleanup/" in k], deleted
 
     @pytest.mark.asyncio
     async def test_a_refused_upload_removal_leaves_its_intent_to_the_reconciler(self, service, mock_config_service):
@@ -749,7 +755,7 @@ class TestDeleteKBStorageCleanup:
 
         assert result["code"] == 503
         service.graph_provider.delete_connector_instance.assert_not_called()
-        mock_config_service.delete_config.assert_not_awaited()
+        self._assert_intents_kept(mock_config_service)
 
     @pytest.mark.asyncio
     async def test_a_storage_intent_that_cannot_be_recorded_stops_the_delete(
@@ -951,9 +957,26 @@ class TestUpdateFolder:
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Docs"})
 
-        result = await service.updateFolder("f1", "kb1", "user1", "docs")
+        result = await service.updateFolder("f1", "kb1", "user1", "Docs")
         assert result["success"] is True
         service.processor_for_kb.return_value.on_record_metadata_update.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_case_only_rename_is_applied(self, service) -> None:
+        # "reports" -> "Reports" used to answer 200 "unchanged" and do nothing.
+        _setup_writer(service)
+        service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "reports"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
+        service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
+        folder = MagicMock()
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=folder)
+
+        result = await service.updateFolder("f1", "kb1", "user1", "Reports")
+
+        assert result["success"] is True
+        assert folder.record_name == "Reports"
+        service.processor_for_kb.return_value.on_record_metadata_update.assert_awaited_once_with(folder)
 
     @pytest.mark.asyncio
     async def test_folder_document_missing(self, service):
@@ -1185,6 +1208,7 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "old.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -1227,6 +1251,7 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "same.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
                 {"recordName": "same.pdf"},
@@ -1291,6 +1316,7 @@ class TestUpdateRecord:
         service.graph_provider._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "old.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -1972,6 +1998,33 @@ class TestRemoveKbPermission:
         assert result["success"] is True
 
     @pytest.mark.asyncio
+    async def test_reader_may_remove_only_their_own_permission(self, service: KnowledgeBaseService) -> None:
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.get_kb_permissions = AsyncMock(return_value={
+            "users": {"gk_req1": "READER"}, "teams": {}
+        })
+        service.graph_provider.get_document = AsyncMock(return_value={"createdBy": "owner1"})
+        service.graph_provider.remove_kb_permission = AsyncMock(return_value=True)
+
+        result = await service.remove_kb_permission("kb1", "req1", ["req1"], [])
+
+        assert result["success"] is True
+        service.graph_provider.remove_kb_permission.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_reader_cannot_remove_someone_else_alongside_themselves(self, service: KnowledgeBaseService) -> None:
+        _setup_kb_owner_resolve(service)
+        service.graph_provider.get_user_kb_permission = AsyncMock(return_value="READER")
+        service.graph_provider.remove_kb_permission = AsyncMock(return_value=True)
+
+        result = await service.remove_kb_permission("kb1", "req1", ["req1", "u1"], [])
+
+        assert result["success"] is False
+        assert result["code"] == 403
+        service.graph_provider.remove_kb_permission.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_all_targets_skipped(self, service):
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "rk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
@@ -2250,8 +2303,13 @@ class TestUpdateFolderException:
         service.graph_provider.get_user_by_user_id = AsyncMock(return_value={"id": "uk1"})
         service.graph_provider.get_user_kb_permission = AsyncMock(return_value="OWNER")
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
+        service.graph_provider.get_document = AsyncMock(return_value={"recordName": "Old Name"})
+        service.graph_provider.get_record_parent_info = AsyncMock(return_value=None)
         service.graph_provider.find_folder_by_name_in_parent = AsyncMock(return_value=None)
-        service.graph_provider.update_folder = AsyncMock(return_value=False)
+        service.graph_provider.get_file_record_by_id = AsyncMock(return_value=MagicMock())
+        service.processor_for_kb.return_value.on_record_metadata_update = AsyncMock(
+            side_effect=RuntimeError("graph write failed")
+        )
         result = await service.updateFolder("f1", "kb1", "user1", "New Name")
         assert result["success"] is False
 
@@ -2496,6 +2554,7 @@ class TestMoveRecord:
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "a.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -2530,6 +2589,7 @@ class TestMoveRecord:
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
             side_effect=[
+                {},  # the KB, read to see that it is not being deleted
                 {"recordName": "a.pdf"},
                 {"isFile": True, "mimeType": "application/pdf"},
             ]
@@ -2553,7 +2613,7 @@ class TestMoveRecord:
         graph.validate_folder_in_kb = AsyncMock(return_value=True)
         graph.is_record_folder = AsyncMock(return_value=False)
         graph.get_document = AsyncMock(
-            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+            side_effect=[{}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
         )
         graph.find_file_by_name_in_parent = AsyncMock(return_value=None)
         graph.get_file_record_by_id = AsyncMock(return_value=stored.model_copy())
@@ -2627,7 +2687,7 @@ class TestMoveRecord:
         tx_store.upsert_record_under_parent.side_effect = MoveDestinationMissing("rec-upload-1", "new-folder")
         service.graph_provider.validate_folder_in_kb = AsyncMock(side_effect=[True, True])
         service.graph_provider.get_document.side_effect = [
-            {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}, {"recordName": "Archive"},
+            {}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}, {"recordName": "Archive"},
         ]
 
         result = await service.move_record("kb1", "rec-upload-1", "new-folder", "user1")
@@ -2673,7 +2733,12 @@ class TestMoveRecord:
         graph._get_kb_context_for_record = AsyncMock(return_value={"kb_id": "kb1"})
         graph.get_record_parent_info = AsyncMock(return_value={"id": "old"})
         graph.validate_folder_in_kb = _folder_in_trash()
-        graph.get_document = AsyncMock(side_effect=RuntimeError("read timed out"))
+        async def read(key: str, collection: str, **_: object) -> dict:
+            if collection == "apps":
+                return {}  # the KB is live; only the folder's name cannot be read
+            raise RuntimeError("read timed out")
+
+        graph.get_document = AsyncMock(side_effect=read)
 
         result = await service.move_record("kb1", "rec1", "trashed-folder", "user1")
 
@@ -2756,7 +2821,7 @@ class TestMoveRecord:
         service.graph_provider.get_record_parent_info = AsyncMock(return_value={"id": "old-parent"})
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
-            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+            side_effect=[{}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
         )
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         mock_record = MagicMock()
@@ -2787,7 +2852,7 @@ class TestMoveRecord:
         service.graph_provider.validate_folder_in_kb = AsyncMock(return_value=True)
         service.graph_provider.is_record_folder = AsyncMock(return_value=False)
         service.graph_provider.get_document = AsyncMock(
-            side_effect=[{"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
+            side_effect=[{}, {"recordName": "a.pdf"}, {"isFile": True, "mimeType": "application/pdf"}]
         )
         service.graph_provider.find_file_by_name_in_parent = AsyncMock(return_value=None)
         service.graph_provider.get_file_record_by_id = AsyncMock(return_value=None)
@@ -3246,3 +3311,34 @@ class TestFolderDepthLimit:
 
         assert result["code"] == 400
         assert result["reason"] == FOLDER_DEPTH_LIMIT_REASON
+
+
+class TestPushedRecordFileReplace:
+    """A pushed record's file cannot be replaced; a rename can."""
+
+    async def _service(self, revision: str) -> tuple[KnowledgeBaseService, AsyncMock]:
+        graph = AsyncMock()
+        graph.get_file_record_by_id = AsyncMock(return_value=MagicMock(external_revision_id=revision, source_timestamp_origin="UPLOAD"))
+        graph.get_document = AsyncMock(return_value={"recordName": "n"})
+        processor = AsyncMock()
+        svc = KnowledgeBaseService(MagicMock(), graph, MagicMock(), processor_for_kb=AsyncMock(return_value=processor))
+        svc._record_edit_context = AsyncMock(return_value=({"kb_id": "kb"}, None))
+        return svc, processor
+
+    async def test_pushed_record_file_replace_refused(self) -> None:
+        svc, processor = await self._service("pb1:" + "a" * 64 + ":" + "b" * 16)
+        result = await svc.update_record("u", "r", {}, file_metadata={"lastModified": 1})
+        assert result["success"] is False and result["code"] == 409 and "RECORD_IS_PUSHED" in result["reason"]
+        processor.on_record_content_update.assert_not_called()
+
+    async def test_rename_of_a_pushed_record_is_allowed(self) -> None:
+        svc, processor = await self._service("pb1:" + "a" * 64 + ":" + "b" * 16)
+        result = await svc.update_record("u", "r", {"recordName": "new"})
+        assert result["success"] is True
+        processor.on_record_metadata_update.assert_called_once()
+
+    async def test_ordinary_upload_file_replace_still_works(self) -> None:
+        svc, processor = await self._service("1700000000000")
+        result = await svc.update_record("u", "r", {}, file_metadata={"lastModified": 1})
+        assert result["success"] is True
+        processor.on_record_content_update.assert_called_once()

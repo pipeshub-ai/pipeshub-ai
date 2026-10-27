@@ -17,6 +17,7 @@ from typing import Any
 
 from app.config.constants.arangodb import ProgressStatus
 from app.models.entities import resolve_weburl
+from app.models.source_dates import RecordDates
 
 # Statuses whose record should become readable without anyone acting on it.
 _PENDING = frozenset({
@@ -30,6 +31,8 @@ _WHY = {
         "automatic indexing is off for it, so it stays unindexed until someone indexes it",
     ProgressStatus.PAUSED.value: "indexing of its source is paused",
     ProgressStatus.FAILED.value: "indexing it failed",
+    ProgressStatus.PASSWORD_PROTECTED.value:
+        "it is password-protected, so its text cannot be read",
     ProgressStatus.FILE_TYPE_NOT_SUPPORTED.value: "its file type cannot be indexed",
     ProgressStatus.EMPTY.value: "it had no text to index",
     ProgressStatus.ENABLE_MULTIMODAL_MODELS.value:
@@ -75,9 +78,18 @@ def record_metadata_lines(doc: dict[str, Any], frontend_url: str | None = None) 
         ("Connector", doc.get("connectorName")),
         ("Type", doc.get("recordType")),
         ("External ID", doc.get("externalRecordId")),
-        ("Created At", _date(doc.get("sourceCreatedAtTimestamp") or doc.get("createdAtTimestamp"))),
-        ("Last Updated At", _date(doc.get("sourceLastModifiedTimestamp") or doc.get("updatedAtTimestamp"))),
-        ("Web URL", None if doc.get("hideWeburl") else resolve_weburl(doc.get("webUrl"), frontend_url)),
     ]
     lines.extend(f"{label}: {value}" for label, value in pairs if value)
+    dates = RecordDates.from_graph(doc)
+    if dates.origin is None:
+        date_pairs = [
+            ("Created At", _date(doc.get("sourceCreatedAtTimestamp") or doc.get("createdAtTimestamp"))),
+            ("Last Updated At", _date(doc.get("sourceLastModifiedTimestamp") or doc.get("updatedAtTimestamp"))),
+        ]
+        lines.extend(f"{label}: {value}" for label, value in date_pairs if value)
+    else:
+        lines.extend(dates.header_lines(lambda ms: _date(ms) or "N/A"))
+    web_url = None if doc.get("hideWeburl") else resolve_weburl(doc.get("webUrl"), frontend_url)
+    if web_url:
+        lines.append(f"Web URL: {web_url}")
     return lines

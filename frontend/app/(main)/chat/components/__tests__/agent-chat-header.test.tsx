@@ -1,6 +1,6 @@
 import React from 'react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { render, screen, cleanup } from '@testing-library/react';
+import { render, screen, cleanup, fireEvent } from '@testing-library/react';
 import { Theme } from '@radix-ui/themes';
 
 vi.mock('next/navigation', () => ({ useRouter: () => ({ push: vi.fn() }) }));
@@ -25,12 +25,23 @@ vi.mock('@/chat/store', () => {
 
 import { AgentChatHeader } from '../agent-chat-header';
 
-const renderHeader = (props: { displayName: string | null; readOnly?: boolean }) =>
+// The open menu measures itself; jsdom has no ResizeObserver.
+globalThis.ResizeObserver ??= class {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+} as unknown as typeof ResizeObserver;
+
+const renderHeader = (props: Partial<React.ComponentProps<typeof AgentChatHeader>> & { displayName: string | null }) =>
   render(
     <Theme>
       <AgentChatHeader agentId="agent-7" isMobile={false} {...props} />
     </Theme>,
   );
+
+function openMenu() {
+  fireEvent.keyDown(screen.getByLabelText('chat.agentHeaderMenuAria'), { key: 'Enter' });
+}
 
 afterEach(cleanup);
 
@@ -58,5 +69,24 @@ describe('agent chat header', () => {
     renderHeader({ displayName: 'Support Bot', readOnly: true });
     expect(screen.getByText('Support Bot')).toBeTruthy();
     expect(screen.getByLabelText('chat.agentHeaderMenuAria')).toBeTruthy();
+  });
+
+  it('lists the agent creator in the menu on a phone', () => {
+    renderHeader({ displayName: 'Support Bot', isMobile: true, creatorName: 'Ada' });
+    openMenu();
+    expect(screen.getByText('agentBuilder.createdBy: Ada')).toBeTruthy();
+  });
+
+  it('keeps the creator out of the menu on desktop, where the chip shows it', () => {
+    renderHeader({ displayName: 'Support Bot', creatorName: 'Ada' });
+    openMenu();
+    expect(screen.queryByText('agentBuilder.createdBy: Ada')).toBeNull();
+  });
+
+  it('stops the mobile title short of the share group', () => {
+    const { container } = renderHeader({ displayName: 'Support Bot', isMobile: true, hasShareGroup: true });
+    expect((container.querySelector('[style*="absolute"]') as HTMLElement).style.maxWidth).toBe(
+      'calc(100vw - 52px - 200px)',
+    );
   });
 });

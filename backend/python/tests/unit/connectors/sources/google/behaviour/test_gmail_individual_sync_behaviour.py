@@ -184,12 +184,6 @@ async def test_a_thread_deleted_during_the_full_sync_is_skipped_and_the_rest_syn
     assert mail.checkpoint() is not None
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="A full sync that fails partway saves a history position before it finishes, so the next "
-    "run only looks for new mail; the older mail (even what was read before the failure, which was "
-    "still waiting to be saved) is never synced.",
-)
 async def test_a_full_sync_that_fails_partway_is_completed_on_the_next_run(mail: Harness) -> None:
     for n in range(5):
         mail.gmail.deliver(ME, f"m{n}", sender=FRIEND, date_ms=1_700_000_000_000 + n)
@@ -239,8 +233,9 @@ async def test_every_history_page_is_read(mail: Harness) -> None:
     await mail.sync()
 
     assert mail.mail_ids() == {f"n{n}" for n in range(5)}
-    inbox_pages = [r for r in mail.http.calls("GET", "/gmail/v1/users/me/history") if r.query.get("labelId") == "INBOX"]
-    assert len(inbox_pages) == 3
+    # One history listing for the whole mailbox: no label filter, so mail outside the inbox is seen too.
+    pages = mail.http.calls("GET", "/gmail/v1/users/me/history")
+    assert len(pages) == 3 and all("labelId" not in r.query for r in pages)
 
 
 async def test_trashed_and_deleted_mail_is_removed_with_its_attachments(mail: Harness) -> None:
@@ -279,17 +274,11 @@ async def test_a_new_message_that_vanished_before_it_was_read_does_not_stop_the_
     assert mail.mail_ids() == {"kept"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="When reading the inbox's change history fails (an outage or quota that outlasts the "
-    "retries), the error is swallowed and the saved history position still moves forward, so the "
-    "mail that arrived in that window is never synced.",
-)
 async def test_a_failed_history_read_does_not_advance_the_history_id(mail: Harness) -> None:
     await mail.sync()
     checkpoint = mail.checkpoint()
     mail.gmail.deliver(ME, "during-outage", sender=FRIEND)
-    mail.http.fail("GET", "/gmail/v1/users/me/history", 500, "backendError", when=lambda r: r.query.get("labelId") == "INBOX")
+    mail.http.fail("GET", "/gmail/v1/users/me/history", 500, "backendError")
 
     with contextlib.suppress(Exception):
         await mail.sync()
@@ -300,11 +289,6 @@ async def test_a_failed_history_read_does_not_advance_the_history_id(mail: Harne
     assert "during-outage" in mail.mail_ids()
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="When Gmail says the saved history position is too old (HTTP 404), the connector does not "
-    "fall back to a full sync; it skips ahead to the current position and the mail in the gap is lost.",
-)
 async def test_an_expired_history_id_falls_back_to_a_full_sync(mail: Harness) -> None:
     mail.gmail.deliver(ME, "early", sender=FRIEND)
     await mail.sync()
@@ -316,11 +300,6 @@ async def test_an_expired_history_id_falls_back_to_a_full_sync(mail: Harness) ->
     assert mail.mail_ids() == {"early", "in-the-gap"}
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="If saving newly arrived mail to the database fails, the error is logged and the history "
-    "position still moves forward, so that mail is never retried.",
-)
 async def test_a_database_failure_saving_new_mail_keeps_the_history_id(mail: Harness) -> None:
     await mail.sync()
     checkpoint = mail.checkpoint()
@@ -347,14 +326,18 @@ async def test_quota_errors_are_retried_with_backoff(mail: Harness, backoff_slee
     assert len(backoff_sleeps) == 2
 
 
-async def test_a_thread_list_quota_error_that_outlasts_the_retries_fails_without_a_checkpoint(mail: Harness, backoff_sleeps: list[float]) -> None:
+async def test_a_thread_list_quota_error_that_outlasts_the_retries_fails_without_a_checkpoint(
+    mail: Harness, backoff_sleeps: list[float], policy_sleeps: list[float]
+) -> None:
     mail.gmail.deliver(ME, "m1", sender=FRIEND)
     mail.http.fail("GET", "/gmail/v1/users/me/threads", 429, "rateLimitExceeded")
 
     with pytest.raises(HttpError):
         await mail.sync()
 
-    assert len(backoff_sleeps) == 3
+    # The client's own retries, then the connector's longer waits for the per-minute quota, all bounded.
+    assert len(backoff_sleeps) >= 3
+    assert policy_sleeps and sum(policy_sleeps) <= 300
     assert mail.checkpoint() is None
 
 

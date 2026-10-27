@@ -403,6 +403,98 @@ class TestGrepHitOnARecordTheFitDrops:
         assert "v4" in state["virtual_record_id_to_result"]
 
 
+def _grep_only_record(i: int) -> dict[str, Any]:
+    return {
+        "_key": f"rec-g{i:02d}",
+        "recordName": f"Grep doc {i:02d}",
+        "recordType": "FILE",
+        "webUrl": "https://drive.example/file/" + "u" * 400,
+    }
+
+
+class TestManyGrepOnlyRecords:
+    """A large store's keyword index returns up to 50 records per command. As
+    full metadata blocks, sized before the ranked records, they displaced the
+    passages the search exists to show."""
+
+    @staticmethod
+    async def _search_with_grep_only(state: dict[str, Any], count: int) -> str | list[Any]:
+        records = {f"v{i:02d}": _record(f"v{i:02d}") for i in range(16)}
+        units = [_unit(vrid, 1, f"{vrid} " + "x" * 2_000, 0.9 - i / 100) for i, vrid in enumerate(records)]
+
+        async def merge(**kwargs: Any) -> list[dict[str, Any]]:  # noqa: ANN401
+            for i in range(count):
+                kwargs["virtual_record_id_to_result"][f"g{i:02d}"] = _grep_only_record(i)
+            return [{"virtual_record_id": f"g{i:02d}", "source": "pattern_match"} for i in range(count)]
+
+        grep = [{"virtual_record_id": f"g{i:02d}"} for i in range(count)]
+        with patch(f"{_SEARCH}.run_pattern_match_with_llm_grep", AsyncMock(return_value=grep)), \
+                patch(f"{_SEARCH}.merge_pattern_match_results", side_effect=merge):
+            return await _search(state, records, units, cap=32_000)
+
+    @staticmethod
+    def _shown(result: str) -> int:
+        return sum(f"v{i:02d} xxx" in result for i in range(16))
+
+    @pytest.mark.asyncio
+    async def test_the_best_few_get_full_metadata_and_the_rest_one_line_each(self) -> None:
+        from app.agents.actions.knowledge_graph.ops.search import (
+            _GREP_ONLY_HINT_SHARE,
+            _MAX_FULL_GREP_ONLY_HINTS,
+        )
+
+        baseline = self._shown(await self._search_with_grep_only(_state(config_service=MagicMock()), 0))
+        state = _state(config_service=MagicMock())
+
+        result = await self._search_with_grep_only(state, 45)
+
+        assert isinstance(result, str)
+        assert len(result) <= 32_000
+        hint = result[result.index("Additional records found via pattern matching"):]
+        assert len(hint) <= 32_000 // _GREP_ONLY_HINT_SHARE + 600
+        full = [i for i in range(45) if f"Name: Grep doc {i:02d}" in hint]
+        assert full == list(range(len(full)))
+        assert 0 < len(full) <= _MAX_FULL_GREP_ONLY_HINTS
+        brief = [i for i in range(45) if f"- Grep doc {i:02d} (Record ID: rec-g{i:02d})" in hint]
+        assert brief == list(range(len(full), len(full) + len(brief)))
+        assert len(brief) >= 20
+        assert hint.count("<record>") == len(full)
+        per_record = 2_000
+        assert self._shown(result) >= baseline - (32_000 // _GREP_ONLY_HINT_SHARE) // per_record - 1
+
+    @pytest.mark.asyncio
+    async def test_one_line_records_are_registered_as_shown(self) -> None:
+        state = _state(config_service=MagicMock(), include_retrieval_context=True)
+
+        result = await self._search_with_grep_only(state, 45)
+
+        brief = [i for i in range(45) if f"- Grep doc {i:02d} (Record ID: rec-g{i:02d})" in result]
+        unlisted = [i for i in range(45) if f"Grep doc {i:02d}" not in result]
+        assert brief
+        for i in brief:
+            assert f"rec-g{i:02d}" in state["known_record_ids"]
+            assert f"g{i:02d}" in state["virtual_record_id_to_result"]
+            assert state["retrieved_by"][f"g{i:02d}"].layers == ["pattern_match"]
+        for i in unlisted:
+            assert f"rec-g{i:02d}" not in state["known_record_ids"]
+        if unlisted:
+            assert f"{len(unlisted)} more keyword-matched record" in result
+
+    @pytest.mark.asyncio
+    async def test_a_few_grep_only_records_render_as_before(self) -> None:
+        from app.utils.pattern_match import render_pattern_match_hint
+
+        state = _state(config_service=MagicMock())
+
+        result = await self._search_with_grep_only(state, 3)
+
+        entries = [{"virtual_record_id": f"g{i:02d}", "source": "pattern_match"} for i in range(3)]
+        expected = render_pattern_match_hint(entries, {f"g{i:02d}": _grep_only_record(i) for i in range(3)})
+        assert expected.count("<record>") == 3
+        assert result.endswith(expected)
+        assert "Record ID only" not in result
+
+
 class TestReadingOrder:
     @pytest.mark.asyncio
     async def test_by_default_records_keep_their_id_order(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -523,16 +615,6 @@ class TestImages:
         assert state["image_budget"].used == 1
 
     @pytest.mark.asyncio
-    async def test_without_native_multipart_support_the_image_is_also_stashed(self) -> None:
-        records, units = _image_units()
-        state = _state(is_multimodal_llm=True, supports_multipart_tool_result=False)
-
-        result = await _search(state, records, units)
-
-        assert isinstance(result, list)
-        assert len(state["pending_tool_images"]) == 1
-
-    @pytest.mark.asyncio
     async def test_a_text_model_gets_text_only(self) -> None:
         records, units = _image_units()
         state = _state(is_multimodal_llm=False)
@@ -589,7 +671,6 @@ class TestSearchLeavesImageRoomForAFetch:
         budget = ImageBudget()
         return _state(
             is_multimodal_llm=True,
-            supports_multipart_tool_result=True,
             image_budget=budget,
             image_admission=ImageAdmission(resolve_image_policy(provider=provider, is_multimodal=True), budget=budget),
         )
@@ -719,3 +800,29 @@ class TestEmpty:
         result = await _search(_state(), {"v1": None}, [_unit("v1", 0, "lost", 0.9)])
 
         assert json.loads(result)["result_count"] == 0
+
+
+class TestAConnectedAppsLimit:
+    """The search tool hands the turn's connection limit to the graph context."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("filters", "sources"), [
+        ({"apps": ["app-1"], "kb": []}, None),
+        ({"apps": ["app-1"], "kb": [], "records": ["f"], "connectionApps": [], "connectionRecordGroups": [],
+             "connectionRecords": ["f"]}, {"apps": [], "recordGroups": [], "records": ["f"]}),
+    ])
+    async def test_the_turns_limit_reaches_the_graph_context(self, filters, sources) -> None:
+        records, units = _five_records()
+        graph_context = AsyncMock()
+
+        async def flatten(_results, _blob, _org, _mm, vr_map, *_a, **_kw) -> list[dict[str, Any]]:
+            vr_map.update(records)
+            return [dict(unit) for unit in units]
+
+        with patch(f"{_BUILDER}.get_flattened_results", side_effect=flatten), \
+                patch(f"{_BUILDER}.enrich_records_with_graph_context", graph_context), \
+                patch(f"{_SEARCH}.BlobStorage"):
+            await execute_search(_state(filters=filters), "annual fee")
+
+        graph_context.assert_awaited()
+        assert graph_context.await_args.kwargs["connection_sources"] == sources

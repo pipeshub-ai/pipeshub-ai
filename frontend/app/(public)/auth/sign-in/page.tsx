@@ -1,11 +1,3 @@
-import { Suspense } from 'react';
+import { AuthSignInErrorPage } from '@/config-pages';
 
-import { AuthSignInErrorBridge } from './auth-sign-in-error-bridge';
-
-export default function AuthSignInErrorBridgePage() {
-  return (
-    <Suspense fallback={null}>
-      <AuthSignInErrorBridge />
-    </Suspense>
-  );
-}
+export default AuthSignInErrorPage;

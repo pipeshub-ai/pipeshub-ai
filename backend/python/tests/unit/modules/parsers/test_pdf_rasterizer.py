@@ -1,7 +1,12 @@
 """Tests for thread-safe PDF rasterization helpers."""
 
+import select
+import subprocess
+import sys
+import time
 from concurrent.futures.process import BrokenProcessPool
 from io import BytesIO
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -228,3 +233,66 @@ def test_broken_process_pool_without_governor_does_not_raise():
     with patch.object(rasterizer, "_get_pdf_raster_pool", return_value=mock_pool):
         with pytest.raises(BrokenProcessPool):
             rasterizer._run_in_pool(lambda: None)
+
+
+class TestRasterWorkerSizing:
+    """The default pool size follows the container-aware CPU count, not the host's."""
+
+    def test_follows_effective_cpu_count_not_host(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PDF_RASTER_WORKERS", raising=False)
+        monkeypatch.setattr(rasterizer.os, "cpu_count", lambda: 64)
+        monkeypatch.setattr(rasterizer, "effective_cpu_count", lambda: 1)
+        assert rasterizer._get_pdf_raster_worker_count() == 1
+
+    def test_still_capped_at_two(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.delenv("PDF_RASTER_WORKERS", raising=False)
+        monkeypatch.setattr(rasterizer, "effective_cpu_count", lambda: 16)
+        assert rasterizer._get_pdf_raster_worker_count() == 2
+
+    def test_env_override_wins(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("PDF_RASTER_WORKERS", "5")
+        monkeypatch.setattr(rasterizer, "effective_cpu_count", lambda: 1)
+        assert rasterizer._get_pdf_raster_worker_count() == 5
+
+    def test_pool_size_is_scaled_share(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(rasterizer, "PDF_RASTER_WORKERS", 4)
+        monkeypatch.setattr(rasterizer, "scaled", lambda n: n // 2)
+        assert rasterizer.pdf_raster_pool_size() == 2
+
+
+def _alive(pid: int) -> bool:
+    try:
+        with open(f"/proc/{pid}/stat") as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except FileNotFoundError:
+        return False
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="reads /proc")
+def test_pool_workers_exit_when_their_parent_is_killed() -> None:
+    code = (
+        "import os, time\n"
+        "from app.modules.parsers.pdf import pdf_rasterizer as r\n"
+        "print(r._run_in_pool(os.getpid), flush=True)\n"
+        "time.sleep(600)\n"
+    )
+    parent = subprocess.Popen(
+        [sys.executable, "-c", code],
+        cwd=Path(rasterizer.__file__).parents[4],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready, _, _ = select.select([parent.stdout], [], [], 20)
+        assert ready, "the pool never reported a worker pid"
+        worker_pid = int(parent.stdout.readline())
+        assert _alive(worker_pid)
+    finally:
+        parent.kill()
+        parent.wait()
+        parent.stdout.close()
+
+    deadline = time.monotonic() + 10
+    while _alive(worker_pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert not _alive(worker_pid)

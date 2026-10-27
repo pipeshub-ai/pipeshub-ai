@@ -42,6 +42,16 @@ def is_word_char(char: str) -> bool:
     return char.isalnum() or char == "_" or unicodedata.category(char).startswith("M")
 
 
+def _is_internal_apostrophe(token: str, index: int) -> bool:
+    return (
+        token[index] in ("'", "\u2019")
+        and index > 0
+        and index + 1 < len(token)
+        and is_word_char(token[index - 1])
+        and is_word_char(token[index + 1])
+    )
+
+
 @dataclass(frozen=True)
 class Unit:
     start: int
@@ -132,7 +142,9 @@ def _runs_of_word_chars(token: str, offset: int) -> list[Unit]:
     units: list[Unit] = []
     run_start: int | None = None
     for index, char in enumerate(token + "\0"):
-        if index < len(token) and is_word_char(char):
+        if index < len(token) and (
+            is_word_char(char) or _is_internal_apostrophe(token, index)
+        ):
             if run_start is None:
                 run_start = index
             continue

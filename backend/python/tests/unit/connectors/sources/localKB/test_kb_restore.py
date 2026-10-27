@@ -422,8 +422,8 @@ class TestBulk:
     async def test_ids_of_one_batch_restore_it_once_and_each_id_gets_an_outcome(self, svc, mock_processor) -> None:
         folder, child = _doc("f1", name="Docs"), _doc("c1")
         members = [_member(folder, is_file=False), _member(child, parent="f1", parent_deleted=True)]
-        docs = {"f1": folder, "c1": child, "x1": None}
-        svc.graph_provider.get_document = AsyncMock(side_effect=lambda key, collection: docs[key])
+        docs = {"f1": folder, "c1": child, "x1": None, KB: {}}
+        svc.graph_provider.get_document = AsyncMock(side_effect=lambda key, collection, **_: docs[key])
         svc.graph_provider.get_records_in_delete_batch = AsyncMock(return_value=members)
 
         result = await svc.restore_records(["f1", "c1", "x1"], "u1", ORG)

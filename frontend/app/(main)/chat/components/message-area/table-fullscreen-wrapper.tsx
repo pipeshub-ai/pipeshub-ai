@@ -36,11 +36,12 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
     <Box style={{ marginBottom: 'var(--space-3)' }}>
       {/* ── Expand toolbar ── */}
       <Flex
+        className="touch-row"
         justify="end"
         align="center"
         style={{ marginBottom: '2px' }}
       >
-        <IconButton
+        <IconButton className="touch-hit"
           size="1"
           variant="ghost"
           color="gray"
@@ -51,7 +52,7 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
           <MaterialIcon name="open_in_full" size={ICON_SIZES.SECONDARY} />
         </IconButton>
         {onDownloadCsv && (
-          <IconButton
+          <IconButton className="touch-hit"
             size="1"
             variant="ghost"
             color="gray"
@@ -87,8 +88,8 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
           style={{
             maxWidth: '92vw',
             width: '92vw',
+            // No fixed height: a short table gets a short dialog; the scroller below takes over at the max.
             maxHeight: '88vh',
-            height: '88vh',
             padding: 0,
             overflow: 'hidden',
             display: 'flex',
@@ -113,16 +114,31 @@ export function TableFullscreenWrapper({ children, onDownloadCsv }: TableFullscr
             <Text size="2" weight="medium" style={{ color: 'var(--slate-11)' }}>
               {t('chat.fullTableView')}
             </Text>
-            <Dialog.Close>
-              <IconButton
-                size="1"
-                variant="ghost"
-                color="gray"
-                style={{ cursor: 'pointer' }}
-              >
-                <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
-              </IconButton>
-            </Dialog.Close>
+            <Flex className="touch-row" align="center" gap="1">
+              {onDownloadCsv && (
+                <IconButton className="touch-hit"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  title={t('chat.downloadCsv')}
+                  aria-label={t('chat.downloadCsv')}
+                  style={{ cursor: 'pointer' }}
+                  onClick={onDownloadCsv}
+                >
+                  <MaterialIcon name="download" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+              )}
+              <Dialog.Close>
+                <IconButton className="touch-hit"
+                  size="1"
+                  variant="ghost"
+                  color="gray"
+                  style={{ cursor: 'pointer' }}
+                >
+                  <MaterialIcon name="close" size={ICON_SIZES.SECONDARY} />
+                </IconButton>
+              </Dialog.Close>
+            </Flex>
           </Flex>
 
           {/*

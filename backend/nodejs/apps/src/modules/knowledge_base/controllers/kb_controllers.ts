@@ -6,6 +6,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ForbiddenError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   UnauthorizedError,
@@ -37,15 +38,24 @@ import {
   handleConnectorResponse,
 } from '../../tokens_manager/utils/connector.utils';
 import { safeParsePagination } from '../../../utils/safe-integer';
+import { KB_BEING_DELETED_MESSAGE } from '../../../libs/errors/backend-error';
 
 /** Shape of the KB detail response used during pre-upload permission checks. */
 interface KbCheckData {
   userRole?: string;
+  /** `DELETING` while the knowledge base is being deleted. */
+  status?: string;
 }
+
+/** A pushed record's revision id, as the Python service writes it (`pb1:...`). */
+export const PUSHED_REVISION = /^pb[0-9]+:/;
+
+const kbBeingDeleted = (): HttpError =>
+  new HttpError('KB_BEING_DELETED', KB_BEING_DELETED_MESSAGE, 409);
 
 /** Fields of the record detail response read before a file replace. */
 interface RecordDetailData {
-  record?: { externalRecordId?: string };
+  record?: { externalRecordId?: string; externalRevisionId?: string };
   knowledgeBase?: { id?: string };
 }
 import {
@@ -725,7 +735,18 @@ export const createFolder =
     try {
       const { userId, orgId } = req.user || {};
       const { kbId } = req.params as { kbId: string };
-      const { folderId } = req.query as { folderId?: string };
+      // For the subfolder route (/:kbId/folder/:folderId/subfolder) the parent
+      // id is a path parameter; the root-folder route passes it as a query
+      // param. If both are passed, verify they do not conflict to avoid creating
+      // the folder under the wrong parent.
+      const pathFolderId = (req.params as { folderId?: string }).folderId;
+      const queryFolderId = (req.query as { folderId?: string }).folderId;
+      if (pathFolderId && queryFolderId && pathFolderId !== queryFolderId) {
+        throw new BadRequestError(
+          'Conflicting folderId in path and query parameters',
+        );
+      }
+      const folderId: string | undefined = pathFolderId ?? queryFolderId;
       const { folderName } = req.body;
 
       if (!userId || !orgId) {
@@ -1159,11 +1180,16 @@ const assertKbWritePermission = async (
   if (kbCheckResponse.statusCode !== 200) {
     throw handleBackendError(kbCheckResponse, 'verify knowledge base access');
   }
-  const kbUserRole = (kbCheckResponse.data as KbCheckData | undefined)?.userRole;
+  const kbCheck = kbCheckResponse.data as KbCheckData | undefined;
+  const kbUserRole = kbCheck?.userRole;
   if (!kbUserRole || !['OWNER', 'WRITER'].includes(kbUserRole)) {
     throw new ForbiddenError(
       'You do not have permission to upload to this knowledge base',
     );
+  }
+  // After the role check, so a caller with no access cannot learn the state of the KB.
+  if (kbCheck.status === 'DELETING') {
+    throw kbBeingDeleted();
   }
 };
 
@@ -1338,6 +1364,10 @@ export const updateRecord =
           extension,
           lastModified,
           sha256Hash,
+          // Same clock and stage as the file processor's fallback for a missing
+          // lastModified. Python's own clock is read after the storage upload
+          // below, which has no time limit, so it cannot tell the two apart.
+          receivedAt: Date.now(),
         };
 
         // Get filename without extension to use as record name
@@ -1387,6 +1417,18 @@ export const updateRecord =
           kbId,
           req.headers as Record<string, string>,
         );
+
+        // A pushed record's content is whatever its pusher sent; a file replaced here would be
+        // overwritten by the next push and would break the revision the record names.
+        if (
+          PUSHED_REVISION.test(recordDetail.record?.externalRevisionId ?? '')
+        ) {
+          throw new HttpError(
+            'RECORD_IS_PUSHED',
+            'This record was pushed through the API, so its file cannot be replaced here. Push a new version instead.',
+            409,
+          );
+        }
 
         storageDocumentId = recordDetail?.record?.externalRecordId;
 

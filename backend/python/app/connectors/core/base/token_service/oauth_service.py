@@ -13,6 +13,8 @@ from aiohttp import ClientSession
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.url_fetcher import private_addresses_blocked
 
 
 class GrantType(Enum):
@@ -210,7 +212,13 @@ class OAuthProvider:
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            self._session = ClientSession()
+            # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
+            # aiohttp refuses any header over 8190 bytes by default.
+            # The token URL is configured by an administrator: the deployment's rule for such
+            # hosts applies (this server, link-local and cloud metadata never).
+            self._session = ClientSession(
+                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=not private_addresses_blocked()),
+            )
         return self._session
 
     async def close(self) -> None:

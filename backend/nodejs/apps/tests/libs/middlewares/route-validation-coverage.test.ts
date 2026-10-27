@@ -17,12 +17,12 @@ const WRITE_METHODS = ['post', 'put', 'patch'] as const
 // Mongo filter.
 const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   // Config-change notices from other PipesHub services: scoped token, no body read.
-  'createSamlRouter POST /updateAppConfig',
   'createSemanticSearchRouter POST /updateAppConfig',
   'createMailServiceRouter POST /updateSmtpConfig',
   'createStorageRouter POST /updateAppConfig',
   'createConnectorRouter POST /updateAppConfig',
   'createUserRouter POST /updateAppConfig',
+  'createUserAccountRouter POST /updateAppConfig',
 
   // Multipart uploads: the file processor checks the file, and no field of the
   // body reaches a query.
@@ -33,9 +33,7 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   'createUserRouter PUT /dp',
   'createUserRouter POST /bulk/invite/upload',
 
-  // Identity flows: the SAML assertion is verified by passport, and the rest
-  // read their subject from a verified token rather than the body.
-  'createSamlRouter POST /signIn/callback',
+  // Identity flows: these read their subject from a verified token rather than the body.
   'createUserAccountRouter POST /refresh/token',
   'createUserAccountRouter POST /logout/manual',
   'createUserAccountRouter POST /password/reset/token',
@@ -94,7 +92,6 @@ const ROUTES_WITHOUT_VALIDATION = new Set<string>([
   // Follow-ups: these read body fields in Node and should get a Zod schema.
   'createOrgAuthConfigRouter POST /',
   'createUserAccountRouter POST /password/forgot',
-  'createUserAccountRouter POST /oauth/exchange',
   'createConfigurationManagerRouter PUT /prompts/system',
   'createConfigurationManagerRouter PUT /ai-models/roles',
   'createConfigurationManagerRouter POST /ai-models/prepare-model',

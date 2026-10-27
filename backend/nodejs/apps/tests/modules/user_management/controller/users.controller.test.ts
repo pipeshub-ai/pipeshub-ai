@@ -725,6 +725,41 @@ describe('UserController', () => {
       expect(res.status.calledWith(200)).to.be.true;
       expect(res.json.calledWith(mockUsersWithGroups)).to.be.true;
     });
+
+    // This route hands back each user's `userId` next to the groups they are
+    // in, and `userId` is exactly what an agent stores when it is bound to a
+    // service account. Open to any member, it is a list of which machine
+    // identities an administrator put in which sensitive groups.
+    it('leaves service accounts out of the groups listing by default', async () => {
+      const aggregate = sinon.stub(Users, 'aggregate').resolves([]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const match = (aggregate.firstCall.args[0] as any[])[0].$match;
+      expect(match.kind).to.deep.equal({ $ne: 'service' });
+    });
+
+    it('includes them for an administrator who asks for them', async () => {
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+      const aggregate = sinon.stub(Users, 'aggregate').resolves([]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const match = (aggregate.firstCall.args[0] as any[])[0].$match;
+      expect(match.kind).to.equal(undefined);
+    });
+
+    it('ignores the flag for someone who does not administer the org', async () => {
+      req.query = { includeServiceAccounts: 'true' };
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+      const aggregate = sinon.stub(Users, 'aggregate').resolves([]);
+
+      await controller.getAllUsersWithGroups(req, res);
+
+      const match = (aggregate.firstCall.args[0] as any[])[0].$match;
+      expect(match.kind).to.deep.equal({ $ne: 'service' });
+    });
   });
 
   describe('getUserById', () => {
@@ -747,6 +782,46 @@ describe('UserController', () => {
 
       expect(res.json.calledOnce).to.be.true;
       expect(res.json.firstCall.args[0]).to.deep.equal(mockUser);
+    });
+
+    it('answers not found when a member asks for a service account', async () => {
+      // A service account is a user record, so it would come back here like
+      // anyone else, `userId` and all. The screens that manage these accounts
+      // are administrator-only, and so is knowing one exists.
+      req.params.id = '507f1f77bcf86cd799439011';
+      sinon.stub(Users, 'findOne').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves({
+            _id: '507f1f77bcf86cd799439011',
+            userId: 'u-service-1',
+            kind: 'service',
+          }),
+        }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUserById(req, res, next);
+
+      expect(res.json.called).to.be.false;
+      expect(next.calledOnce).to.be.true;
+      expect(next.firstCall.args[0].message).to.equal('User not found');
+    });
+
+    it('still returns a service account to an administrator', async () => {
+      req.params.id = '507f1f77bcf86cd799439011';
+      const account = {
+        _id: '507f1f77bcf86cd799439011',
+        userId: 'u-service-1',
+        kind: 'service',
+      };
+      sinon.stub(Users, 'findOne').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves(account) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+
+      await controller.getUserById(req, res, next);
+
+      expect(res.json.firstCall.args[0]).to.deep.equal(account);
     });
 
     it('should call next with NotFoundError when user not found', async () => {
@@ -920,6 +995,53 @@ describe('UserController', () => {
       expect(payload).to.have.length(2);
       expect(payload[0].profilePicture).to.equal('data:image/png;base64,abc123');
       expect(payload[1].profilePicture).to.be.undefined;
+    });
+
+    it('drops a service account for a member', async () => {
+      const person = new mongoose.Types.ObjectId().toString();
+      const account = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [person, account] };
+
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { _id: person, fullName: 'User One' },
+            { _id: account, userId: 'u-service-1', kind: 'service' },
+          ]),
+        }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(false);
+
+      await controller.getUsersByIds(req, res, next);
+
+      const payload = res.json.firstCall.args[0];
+      expect(payload).to.have.length(1);
+      expect(payload[0]._id).to.equal(person);
+    });
+
+    it('keeps a service account for an administrator', async () => {
+      const account = new mongoose.Types.ObjectId().toString();
+      req.body = { userIds: [account] };
+
+      sinon.stub(Users, 'find').returns({
+        lean: sinon.stub().returns({
+          exec: sinon.stub().resolves([
+            { _id: account, userId: 'u-service-1', kind: 'service' },
+          ]),
+        }),
+      } as any);
+      sinon.stub(UserDisplayPicture, 'find').returns({
+        lean: sinon.stub().returns({ exec: sinon.stub().resolves([]) }),
+      } as any);
+      sinon.stub(userAdminService, 'isUserOrgAdmin').resolves(true);
+
+      await controller.getUsersByIds(req, res, next);
+
+      const payload = res.json.firstCall.args[0];
+      expect(payload).to.have.length(1);
     });
 
     it('should call next with BadRequestError when userIds is empty', async () => {
@@ -2424,14 +2546,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('extractSamlUserDetails', () => {
-    it('should be a private method on the controller', () => {
-      // extractSamlUserDetails is a private method, so not accessible via public interface
-      // but exists at runtime on the instance
-      expect((controller as any).extractSamlUserDetails).to.be.a('function');
-    });
-  });
-
   describe('extractGoogleUserDetails (additional)', () => {
     it('should use display name from payload.name', () => {
       const payload = { name: 'Display Name Only' };
@@ -2686,41 +2800,6 @@ describe('UserController', () => {
     });
   });
 
-  describe('provisionSamlUser', () => {
-    it('should create user, add to group, and publish event', async () => {
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-        orgId: 'org1',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({
-          _id: 'new-user-id',
-          email: 'saml@test.com',
-          fullName: 'SAML User',
-        }),
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      sinon.stub(Users.prototype, 'toObject').returns(mockNewUser.toObject());
-      Object.defineProperty(Users.prototype, '_id', { get: () => 'new-user-id', configurable: true });
-      Object.defineProperty(Users.prototype, 'fullName', { get: () => 'SAML User', configurable: true });
-      Object.defineProperty(Users.prototype, 'email', { get: () => 'saml@test.com', configurable: true });
-
-      try {
-        await controller.provisionSamlUser(
-          'saml@test.com',
-          { firstName: 'SAML', lastName: 'User' },
-          'org1',
-          mockLogger,
-        );
-      } catch (err) {
-        // May fail due to prototype manipulation; that's fine - we're testing the flow
-      }
-    });
-  });
-
   describe('provisionJitUser', () => {
     it('should throw BadRequestError for deleted user with same email', async () => {
       sinon.stub(Users, 'findOne').resolves({ _id: 'deleted-user', isDeleted: true } as any);
@@ -2737,101 +2816,6 @@ describe('UserController', () => {
       } catch (error: any) {
         expect(error.message).to.include('deleted by admin');
       }
-    });
-  });
-
-  describe('extractSamlUserDetails', () => {
-    it('should extract details from standard SAML claims', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { firstName: 'John', lastName: 'Doe', displayName: 'John Doe' },
-        'john@test.com',
-      );
-      expect(result.fullName).to.equal('John Doe');
-      expect(result.firstName).to.equal('John');
-      expect(result.lastName).to.equal('Doe');
-    });
-
-    it('should use SAML claim URIs as fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/givenname': 'Jane',
-          'http://schemas.xmlsoap.org/ws/2005/05/identity/claims/surname': 'Smith',
-        },
-        'jane@test.com',
-      );
-      expect(result.firstName).to.equal('Jane');
-      expect(result.lastName).to.equal('Smith');
-      expect(result.fullName).to.equal('Jane Smith');
-    });
-
-    it('should use OID-based SAML attributes as fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'urn:oid:2.5.4.42': 'Bob',
-          'urn:oid:2.5.4.4': 'Jones',
-        },
-        'bob@test.com',
-      );
-      expect(result.firstName).to.equal('Bob');
-      expect(result.lastName).to.equal('Jones');
-    });
-
-    it('should use display name SAML OID attribute', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {
-          'urn:oid:2.16.840.1.113730.3.1.241': 'Display Name',
-        },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Display Name');
-    });
-
-    it('should fall back to email prefix when no name info', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        {},
-        'fallback@test.com',
-      );
-      expect(result.fullName).to.equal('fallback');
-    });
-
-    it('should use givenName as firstName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { givenName: 'Given' },
-        'user@test.com',
-      );
-      expect(result.firstName).to.equal('Given');
-    });
-
-    it('should use surname as lastName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { surname: 'Surname' },
-        'user@test.com',
-      );
-      expect(result.lastName).to.equal('Surname');
-    });
-
-    it('should use sn as lastName fallback', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { sn: 'SN' },
-        'user@test.com',
-      );
-      expect(result.lastName).to.equal('SN');
-    });
-
-    it('should use name attribute for display name', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { name: 'Name Attr' },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Name Attr');
-    });
-
-    it('should use fullName attribute for display name', () => {
-      const result = (controller as any).extractSamlUserDetails(
-        { fullName: 'Full Name Attr' },
-        'user@test.com',
-      );
-      expect(result.fullName).to.equal('Full Name Attr');
     });
   });
 
@@ -3733,57 +3717,6 @@ describe('UserController', () => {
   });
 
   // -----------------------------------------------------------------------
-  // provisionSamlUser - success flow
-  // -----------------------------------------------------------------------
-  describe('provisionSamlUser - success', () => {
-    it('should create user and publish event', async () => {
-      const saveStub = sinon.stub().resolves();
-      const toObjectStub = sinon.stub().returns({
-        _id: 'new-u1',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-      });
-      sinon.stub(Users.prototype, 'save').callsFake(saveStub);
-      sinon.stub(Users.prototype, 'toObject').callsFake(toObjectStub);
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML', lastName: 'User' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      expect(saveStub.calledOnce).to.be.true;
-      expect(mockEventService.start.calledOnce).to.be.true;
-      expect(mockEventService.publishEvent.calledOnce).to.be.true;
-      expect(result).to.have.property('fullName');
-    });
-
-    it('should handle event publish failure gracefully', async () => {
-      sinon.stub(Users.prototype, 'save').resolves();
-      sinon.stub(Users.prototype, 'toObject').returns({
-        _id: 'new-u1',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-      });
-      sinon.stub(UserGroups, 'updateOne').resolves({} as any);
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML', lastName: 'User' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      // Should still succeed even if event fails
-      expect(result).to.have.property('fullName');
-      expect(mockEventService.stop.calledOnce).to.be.true;
-    });
-  });
-
-  // -----------------------------------------------------------------------
   // provisionJitUser - success flow
   // -----------------------------------------------------------------------
   describe('provisionJitUser - success', () => {
@@ -3837,6 +3770,13 @@ describe('UserController', () => {
   // createUser - success
   // -----------------------------------------------------------------------
   describe('createUser - success', () => {
+    // A demo address first clears this org's removed sample account; none here.
+    beforeEach(() => {
+      sinon.stub(Users, 'find').returns({
+        select: () => ({ lean: async () => [] }),
+      } as any);
+    });
+
     it('should create a user, add to group, and publish event', async () => {
       req.body = {
         email: 'newuser@test.com',
@@ -5266,6 +5206,37 @@ describe('UserController', () => {
       }
     });
 
+    // Each row the connector returns carries the `userId` that binds an agent
+    // to a service account, so the flag is forwarded and the connector decides
+    // it from the caller's live role. The gateway never decides it here.
+    const uriOf = async (query: Record<string, string>): Promise<string> => {
+      req.query = query;
+      let uri = '';
+      const AISvcCmd = require('../../../../src/libs/commands/ai_service/ai.service.command').AIServiceCommand;
+      sinon.stub(AISvcCmd.prototype, 'execute').callsFake(function (this: any) {
+        uri = String(this.uri);
+        return Promise.resolve({ statusCode: 200, data: { users: [] } });
+      });
+      await controller.listUsers(req, res, next);
+      return uri;
+    };
+
+    it('does not ask the connector for service accounts by default', async () => {
+      expect(await uriOf({})).to.not.include('includeServiceAccounts');
+    });
+
+    it('forwards the flag when it is asked for', async () => {
+      expect(await uriOf({ includeServiceAccounts: 'true' })).to.include(
+        'includeServiceAccounts=true',
+      );
+    });
+
+    it('forwards nothing for any other value', async () => {
+      expect(await uriOf({ includeServiceAccounts: 'false' })).to.not.include(
+        'includeServiceAccounts',
+      );
+    });
+
     it('should throw when orgId is missing', async () => {
       req.user = { userId: '507f1f77bcf86cd799439011', orgId: undefined };
       req.query = {};
@@ -5593,39 +5564,6 @@ describe('UserController', () => {
       } catch (error: any) {
         expect(error.message).to.include('User account deleted by admin');
       }
-    });
-  });
-
-  // -----------------------------------------------------------------------
-  // Branch coverage: provisionSamlUser - event publish error
-  // -----------------------------------------------------------------------
-  describe('provisionSamlUser - event publish error', () => {
-    it('should continue when event publishing fails', async () => {
-      const mockNewUser = {
-        _id: 'new-user-id',
-        email: 'saml@test.com',
-        fullName: 'SAML User',
-        save: sinon.stub().resolves(),
-        toObject: sinon.stub().returns({ _id: 'new-user-id' }),
-      };
-
-      sinon.stub(Users.prototype, 'save').resolves(mockNewUser);
-      (mockNewUser as any).constructor = Users;
-      sinon.stub(UserGroups, 'updateOne').resolves();
-      mockEventService.start.resolves();
-      mockEventService.publishEvent.rejects(new Error('Kafka down'));
-      mockEventService.stop.resolves();
-
-      // The method should not throw despite event publishing failure
-      const result = await controller.provisionSamlUser(
-        'saml@test.com',
-        { firstName: 'SAML' },
-        '507f1f77bcf86cd799439012',
-        mockLogger,
-      );
-
-      expect(mockLogger.error.called).to.be.true;
-      expect(mockEventService.stop.called).to.be.true;
     });
   });
 

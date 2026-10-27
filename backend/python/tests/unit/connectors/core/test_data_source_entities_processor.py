@@ -22,6 +22,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.config.constants.arangodb import (
+    AccessRule,
     CollectionNames,
     EntityRelations,
     MimeTypes,
@@ -987,10 +988,13 @@ class TestOnNewRecordGroupsMovesBlobsOnRename:
             connector_id="conn-1",
         )
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v1", "v2"])
         await proc.on_new_record_groups([(rg, [])])
 
+        # Named content only: another group whose name sanitizes the same shares the prefix.
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project"
+            "org-1", "records/conn-1/Old Project", "records/conn-1/New Project",
+            virtual_record_ids=["v1", "v2"],
         )
 
     @pytest.mark.asyncio
@@ -2786,12 +2790,14 @@ class TestUpdateRecordGroupNameMovesBlobs:
         )
         proc._get_storage_cleanup = MagicMock(return_value=mock_cleanup)
 
+        mock_cleanup.graph_provider.get_record_group_virtual_record_ids = AsyncMock(return_value=["v9"])
         await proc.update_record_group_name(
             "ext-folder", "New Space", old_name="Old Space", connector_id="conn-1"
         )
 
         mock_cleanup.move_record_tree.assert_awaited_once_with(
-            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space"
+            "org-1", "records/conn-1/Old Space", "records/conn-1/New Space",
+            virtual_record_ids=["v9"],
         )
 
     @pytest.mark.asyncio
@@ -3300,7 +3306,7 @@ class TestNameChangedTriggersMove:
         )
 
         assert len(moves) == 1
-        assert moves[0][3] == "vrid-abc-123"
+        assert moves[0][3] == ("vrid-abc-123",)
 
 
 # ===========================================================================
@@ -5393,6 +5399,42 @@ class TestOnRecordMetadataUpdateAndDelete:
         assert written.storage_document_id == "live-doc"
 
     @pytest.mark.asyncio
+    async def test_metadata_update_with_a_new_revision_stores_it_and_keeps_the_record_indexed(self) -> None:
+        """A Google Doc's version moves on a sharing change. Drive writes that through this
+        path, so the new revision is stored and the indexed record is not queued again."""
+        proc = _make_processor()
+        tx_store = _make_tx_store()
+        proc.data_store_provider.transaction.return_value = _make_ctx(tx_store)
+
+        existing = MagicMock()
+        existing.id = "existing-id"
+        existing.external_revision_id = "7"
+        existing.version = 0
+        existing.record_group_id = None
+        existing.weburl = "https://example.com"
+        existing.is_placeholder = False
+        existing.indexing_status = ProgressStatus.COMPLETED.value
+        existing.parsing_status = ProgressStatus.COMPLETED.value
+        existing.extraction_status = ProgressStatus.COMPLETED.value
+        existing.processing_started_at = None
+        existing.reason = None
+        existing.is_vlm_ocr_processed = False
+        existing.md5_hash = None
+        existing.storage_document_id = "live-doc"
+        tx_store.get_record_by_external_id.return_value = existing
+
+        record = _make_record(external_revision_id="8")
+        record.indexing_status = ProgressStatus.COMPLETED.value
+
+        await proc.on_record_metadata_update(record)
+
+        written = tx_store.batch_upsert_records.await_args.args[0][0]
+        assert written.external_revision_id == "8"
+        assert written.indexing_status == ProgressStatus.COMPLETED.value
+        assert written.storage_document_id == "live-doc"
+        proc.messaging_producer.send_message.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_metadata_update_keeps_caller_supplied_md5(self):
         """A connector that does report a checksum still wins over the stored one."""
         proc = _make_processor()
@@ -6725,7 +6767,9 @@ class TestKbUploadProcessRecord:
         tx_store.create_record_relation.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_preserves_explicit_org_id(self):
+    async def test_an_upload_naming_another_org_is_written_to_the_processors_org(self) -> None:
+        # The knowledge-base route hands out a processor only for the request's
+        # own org, so a different org on the record can only be a mistake.
         proc = _make_processor()
         proc.org_id = "org-default"
         tx_store = _make_tx_store()
@@ -6736,7 +6780,7 @@ class TestKbUploadProcessRecord:
         ):
             await proc._process_record(record, [], tx_store)
 
-        assert record.org_id == "org-explicit"
+        assert record.org_id == "org-default"
 
     @pytest.mark.asyncio
     async def test_existing_upload_does_not_requeue_completed(self):
@@ -7478,6 +7522,26 @@ class TestPlaceholderFlag:
 
         assert incoming.is_placeholder is True
         assert incoming.version == 0
+
+    @pytest.mark.asyncio
+    async def test_stub_that_knows_its_restriction_overrides_the_stored_rule(self) -> None:
+        """A stub written OPEN by an earlier sync is corrected when the sweep learns its level."""
+        for knows, expected in ((True, AccessRule.RESTRICTED), (False, AccessRule.OPEN)):
+            proc = _make_processor()
+            tx_store = _make_tx_store()
+            existing = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            existing.id = "rec-1"
+            existing.access_rule = AccessRule.OPEN
+            existing.indexing_status = ProgressStatus.NOT_STARTED.value
+            tx_store.get_record_by_external_id.return_value = existing
+            for name in ("_handle_record_group", "_handle_new_record", "_handle_updated_record",
+                         "_link_record_to_group", "_handle_parent_record", "_handle_record_permissions"):
+                setattr(proc, name, AsyncMock(return_value=MagicMock(permissions_from_group=False, parent_outside_group=False)))
+            incoming = _make_record(external_revision_id="placeholder:1", version=0, is_placeholder=True)
+            incoming.access_rule = AccessRule.RESTRICTED if knows else AccessRule.STRICT
+            incoming.rewrite_permissions = knows
+            await proc._process_record(incoming, [], tx_store)
+            assert incoming.access_rule == expected
 
     @pytest.mark.asyncio
     async def test_process_record_bumps_version_on_real_revision_change(self):

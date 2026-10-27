@@ -19,3 +19,7 @@ In-repo design docs:
 - [Vector database sizing — how much memory Qdrant needs for a given corpus, and the Services page warning](./deployment/vector-db-sizing.md)
 - [Web search and fetch — providers, typed failures, address policy, metrics and QA checks](./web-search.md)
 - [Query service profiling — one-command load test, flame graphs and resource usage](./query-profiling.md)
+
+Upgrading:
+
+- [Upgrading to 1.0: SAML and generic OAuth sign-in are removed](./deployment/upgrading-to-1.0-sign-in.md)

@@ -7,7 +7,7 @@ import logging
 import math
 import re
 from collections import defaultdict
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass
 from itertools import groupby
 from typing import TYPE_CHECKING, Any, Optional
@@ -46,6 +46,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.models.source_dates import SOURCE_TIMESTAMP_ORIGIN_FIELD, epoch_ms
 from app.modules.artifacts.reader import record_artifact_reader
 from app.modules.qna.prompt_templates import (
     agent_block_group_prompt,
@@ -60,6 +61,7 @@ from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.vector_db.collection_registry import CollectionRegistry  # noqa: TC001
 from app.services.vector_db.strategy import QueryContext
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 from app.utils.image_utils import get_extension_from_mimetype
 from app.utils.jinja_templates import compiled_template
 from app.utils.logger import create_logger
@@ -129,8 +131,7 @@ def image_dict_to_part(image: dict[str, Any]) -> Any | None:  # noqa: ANN401
     """Convert a `collected_images` entry (`{"image_url": {"url": ...}, ...}`)
     into an `ImagePart` for a multipart `ToolOutput`/`UserMessage`. Shared by
     every tool (`retrieval.py`, `citations.py`) and hook
-    (`attachment_resolver.py`'s `shape_image_injection`/
-    `shape_retrieved_image_injection`) that needs to hand collected images to
+    (`attachment_resolver.py`'s `shape_image_injection`) that needs to hand collected images to
     the agent loop, so the dict-to-Part conversion lives in exactly one
     place. Local import avoids a module-level dependency from this
     low-level formatting module onto `agent_loop_lib`.
@@ -917,6 +918,46 @@ _GRAPH_TO_RECORD_FIELDS: dict[str, str] = {
     "sourceLastModifiedTimestamp": "source_updated_at",
 }
 
+# The graph holds a record's dates and what set them; a blob keeps the dates
+# the record had when it was indexed.
+_GRAPH_DATE_FIELDS: dict[str, str] = {
+    "createdAtTimestamp": "created_at",
+    "sourceCreatedAtTimestamp": "source_created_at",
+    "sourceLastModifiedTimestamp": "source_updated_at",
+    SOURCE_TIMESTAMP_ORIGIN_FIELD: "source_timestamp_origin",
+}
+
+
+def graph_record_dates(base_doc: dict[str, Any]) -> dict[str, Any]:
+    """The record-dict date fields a graph record document sets."""
+    return {
+        name: base_doc[graph_key]
+        for graph_key, name in _GRAPH_DATE_FIELDS.items()
+        if base_doc.get(graph_key) is not None
+    }
+
+
+def _put_graph_dates(record: dict[str, Any], base_doc: dict[str, Any], *, copy_of_another: bool) -> None:
+    """Sets ``record``'s dates from its graph document. A stored copy that belongs
+    to another record keeps none of its own, even where the graph has none."""
+    if copy_of_another:
+        for name in _GRAPH_DATE_FIELDS.values():
+            record.pop(name, None)
+    record.update(graph_record_dates(base_doc))
+
+
+def _record_date_args(record_dict: dict[str, Any]) -> dict[str, Any]:
+    args: dict[str, Any] = {
+        "source_created_at": record_dict.get("source_created_at") or None,
+        "source_updated_at": record_dict.get("source_updated_at") or None,
+        "source_timestamp_origin": record_dict.get("source_timestamp_origin") or None,
+    }
+    # Left unset when unknown: the model's default is the time it is built.
+    created_at = epoch_ms(record_dict.get("created_at"))
+    if created_at is not None:
+        args["created_at"] = created_at
+    return args
+
 # Matches BlobStorage.VIRTUAL_RECORD_LOOKUP_CHUNK_SIZE: the graph accepts an IN
 # list, but an unbounded one turns one slow query into a timeout.
 GRAPH_BATCH_CHUNK_SIZE = 500
@@ -974,8 +1015,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
                 version=version,
                 origin=OriginTypes(record_dict.get("origin")) if record_dict.get("origin") else OriginTypes.UPLOAD,
                 connector_id=connector_id,
-                source_created_at=record_dict.get("source_created_at") or None,
-                source_updated_at=record_dict.get("source_updated_at") or None,
+                **_record_date_args(record_dict),
                 semantic_metadata=SemanticMetadata(**(record_dict.get("semantic_metadata") or {})),
                 parent_external_record_id=record_dict.get("parent_external_record_id"),
             )
@@ -997,8 +1037,7 @@ def create_record_instance_from_dict(record_dict: dict[str, Any], graph_doc: dic
             "connector_name": Connectors(record_dict.get("connector_name")) if record_dict.get("connector_name") else Connectors.KNOWLEDGE_BASE,
             "connector_id": connector_id,
             "mime_type": record_dict.get("mime_type", ""),
-            "source_created_at": record_dict.get("source_created_at") or None,
-            "source_updated_at": record_dict.get("source_updated_at") or None,
+            **_record_date_args(record_dict),
             "location": record_dict.get("location"),
             "weburl": record_dict.get("weburl", ""),
             "hide_weburl": bool(record_dict.get("hide_weburl")),
@@ -1217,19 +1256,32 @@ def _merge_graph_into_blob_record(
     blob_record: dict[str, Any],
     base_doc: dict[str, Any] | None,
 ) -> dict[str, Any]:
-    """Merge graph base doc fields into a blob record (blob values take priority via setdefault)."""
+    """Merge graph base doc fields into a blob record; the graph wins where it has a value.
+
+    Deduplicated content is stored once for every record that shares it, so the
+    stored copy's name, link and ids can belong to another record (even one in a
+    connector this user cannot see). The record being described is the graph's.
+    """
     if not base_doc or not isinstance(base_doc, dict):
         return blob_record
     merged = dict(blob_record)
     record_key = base_doc.get("id") or base_doc.get("_key")
+    # A copy stored by another record says nothing about this one, not even
+    # where the graph has no value.
+    copy_of_another = bool(record_key) and blob_record.get("id") not in (None, record_key)
     if record_key:
         merged["id"] = record_key
     for graph_key, record_key_name in _GRAPH_TO_RECORD_FIELDS.items():
         val = base_doc.get(graph_key)
         if val:
-            merged.setdefault(record_key_name, val)
-    # A link the graph hides stays hidden, whatever the blob copy says.
-    merged["hide_weburl"] = bool(merged.get("hide_weburl") or base_doc.get("hideWeburl"))
+            merged[record_key_name] = val
+        elif copy_of_another:
+            merged.pop(record_key_name, None)
+    _put_graph_dates(merged, base_doc, copy_of_another=copy_of_another)
+    # A link the graph hides stays hidden, whatever the blob copy says; another
+    # record's copy does not hide this one's.
+    stored_hides = not copy_of_another and merged.get("hide_weburl")
+    merged["hide_weburl"] = bool(stored_hides or base_doc.get("hideWeburl"))
     return merged
 
 def as_blob_record(record: dict[str, Any]) -> dict[str, Any]:
@@ -1271,6 +1323,7 @@ def _build_record_dict_from_graph_base(base_doc: dict[str, Any]) -> dict[str, An
         record_dict[record_key_name] = base_doc.get(graph_key) or ""
     record_dict["source_created_at"] = base_doc.get("sourceCreatedAtTimestamp")
     record_dict["source_updated_at"] = base_doc.get("sourceLastModifiedTimestamp")
+    record_dict.update(graph_record_dates(base_doc))
     record_dict["hide_weburl"] = bool(base_doc.get("hideWeburl"))
     record_dict["location"] = base_doc.get("location") or ""
     record_dict["parent_external_record_id"] = base_doc.get("externalParentId")
@@ -1475,7 +1528,8 @@ async def _relations_per_record(
         for relation_type in relation_types
         for outgoing in (True, False)
     ]
-    results = await asyncio.gather(
+    results = await gather_with_concurrency(
+        GRAPH_FANOUT_CONCURRENCY,
         *[one(rid, rel, outgoing=out) for rid, rel, out in jobs],
         return_exceptions=True,
     )
@@ -1680,7 +1734,8 @@ async def _resolve_target_metadata(
         # Anything the batch did not account for is retried individually.
         missing = [rid for rid in ids_needing_docs if rid not in resolved]
         if missing:
-            per_id = await asyncio.gather(
+            per_id = await gather_with_concurrency(
+                GRAPH_FANOUT_CONCURRENCY,
                 *[graph_provider.get_document(rid, collection) for rid in missing],
                 return_exceptions=True,
             )
@@ -1743,7 +1798,8 @@ async def _resolve_target_metadata(
             graph_provider, out_of_context_ids, doc_index
         )
 
-        ctx_results = await asyncio.gather(
+        ctx_results = await gather_with_concurrency(
+            GRAPH_FANOUT_CONCURRENCY,
             *[
                 _build_linked_record_context_metadata(
                     rid, graph_provider, doc_index, frontend_url,
@@ -1896,6 +1952,7 @@ async def enrich_records_with_graph_context(
     config_service: "ConfigurationService | None" = None,
     *,
     user_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """
     Unified graph context enrichment for search results. Performs both:
@@ -1905,6 +1962,9 @@ async def enrich_records_with_graph_context(
     Only records ``user_id`` may read are shown: hits were adjudicated by the
     search, and everything reached from them is adjudicated here. If that check
     cannot run nothing is added; the hits themselves are left untouched.
+    ``connection_sources`` is a connected app's limit: a record reached from a
+    hit that lies outside it (a parent, child, attachment or link) is not
+    named, so the app learns nothing about what its limit leaves out.
     All graph/blob calls are batched and deduplicated across both paths.
     """
     if not graph_provider or flattened_results is None:
@@ -1957,6 +2017,18 @@ async def enrich_records_with_graph_context(
             # Fail closed: without a verdict a related record may be one the user cannot open.
             logger.warning("Graph context enrichment skipped: access check unavailable: %s", exc)
             return
+    if connection_sources is not None:
+        from app.modules.retrieval.selection_scope import outside_connection
+
+        # Hits are inside the limit already; every record reached from them,
+        # parent, child, attachment or link, is checked against it.
+        try:
+            readable_ids -= await outside_connection(
+                graph_provider, user_id, org_id, readable_ids - in_context_ids, connection_sources,
+            )
+        except Exception as exc:
+            logger.warning("Graph context enrichment skipped: limit check unavailable: %s", exc)
+            return
 
     # Keep each hit's first MAX_RELATED_RECORDS_PER_HIT readable relations (parents
     # come first), and full metadata for the first MAX_FULL_METADATA_RELATED_PER_HIT.
@@ -1990,6 +2062,14 @@ async def enrich_records_with_graph_context(
         in_context_ids, frontend_url, blob_store, org_id,
         full_metadata_ids=full_metadata_ids,
     )
+    if connection_sources is not None:
+        # Each related record's own header names its parent and links too.
+        shown = [
+            {"id": rid, "context_metadata": text, "connector_id": (doc_index.get(rid) or {}).get("connectorId")}
+            for rid, text in context_map.items()
+        ]
+        await keep_record_text_inside_connection(shown, graph_provider, user_id, org_id, connection_sources)
+        context_map = {rec["id"]: rec["context_metadata"] for rec in shown}
 
     # Step 6: Distribute results
     if dependent_vrid_to_parent_id:
@@ -2089,6 +2169,7 @@ async def enrich_records_with_address_links(
     org_id: str,
     *,
     user_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """Attach to each hit the records that name it, and that it names, by web
     address or issue key: a Slack thread that pasted a pull request's link, the
@@ -2097,7 +2178,8 @@ async def enrich_records_with_address_links(
     For every connector: these joins cross connectors, so the per-connector
     rollout gate of ``enrich_records_with_graph_context`` does not apply. Only
     records ``user_id`` may read are shown; if that check cannot run, nothing
-    is added. Sets ``record["address_links"]`` to
+    is added. ``connection_sources`` is a connected app's limit: a record
+    outside it is not shown either. Sets ``record["address_links"]`` to
     ``{"mentioned_in": [...], "links_to": [...]}``, each item
     ``{"record_id", "record_name", "connector_name", "record_type"}`` and,
     for a ticket, pull request or project, ``"status"``: "the pull request
@@ -2147,6 +2229,10 @@ async def enrich_records_with_address_links(
             readable |= await graph_provider.filter_accessible_record_ids(
                 wanted[start:start + GRAPH_BATCH_CHUNK_SIZE], user_id, org_id,
             )
+        if connection_sources is not None:
+            from app.modules.retrieval.selection_scope import outside_connection
+
+            readable -= await outside_connection(graph_provider, user_id, org_id, readable, connection_sources)
         # Names only for what can be shown: at most the cap per direction per hit.
         shown: list[str] = list(dict.fromkeys(
             rid
@@ -2205,6 +2291,7 @@ async def enrich_read_records_with_address_links(
     org_id: str | None,
     *,
     user_id: str | None,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """``enrich_records_with_address_links`` for records read by id (a fetch,
     the record-content API), which do not pass through the search pipeline:
@@ -2216,6 +2303,7 @@ async def enrich_read_records_with_address_links(
         graph_provider,
         org_id or "",
         user_id=user_id or "",
+        connection_sources=connection_sources,
     )
 
 
@@ -2229,6 +2317,7 @@ async def describe_search_records(
     org_id: str,
     *,
     user_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """Add to each record document the search API returns where it stands
     and what it links to, so an API caller sees what the assistant sees.
@@ -2253,7 +2342,9 @@ async def describe_search_records(
     for rid, summary in (await status_summaries_by_id(graph_provider, docs)).items():
         docs[rid]["statusSummary"] = summary
     holders = {rid: {"id": rid} for rid in docs}
-    await enrich_records_with_address_links(holders, graph_provider, org_id, user_id=user_id)
+    await enrich_records_with_address_links(
+        holders, graph_provider, org_id, user_id=user_id, connection_sources=connection_sources,
+    )
     for rid, holder in holders.items():
         links = holder.get("address_links") or {}
         linked = [
@@ -2388,6 +2479,201 @@ async def live_record_ids(
     }
 
 
+_EXTERNAL_PARENT_LINE = "External Parent ID: "
+_LINKED_RECORD_LINE = "* Linked Record ID: "
+_SOURCE_PATH_LINE = "Path: "
+# A deal's org and product lines name each one as ``from records/<id>``.
+_RECORD_REF = re.compile(rf"\bfrom {CollectionNames.RECORDS.value}/([\w-]+)")
+
+
+def _named_record_ids(text: str) -> set[str]:
+    ids: set[str] = set()
+    for line in text.split("\n"):
+        if line.startswith(_LINKED_RECORD_LINE):
+            ids.add(line[len(_LINKED_RECORD_LINE):].strip())
+        ids.update(_RECORD_REF.findall(line))
+    return ids - {""}
+
+
+def _says_external_parent(text: object) -> bool:
+    return isinstance(text, str) and any(
+        line.startswith(_EXTERNAL_PARENT_LINE) and line != f"{_EXTERNAL_PARENT_LINE}N/A"
+        for line in text.split("\n")
+    )
+
+
+def _text_inside(text: str, inside: set[str], *, keep_parent: bool) -> str:
+    lines: list[str] = []
+    for line in text.split("\n"):
+        if line.startswith(_EXTERNAL_PARENT_LINE) and not keep_parent:
+            lines.append(f"{_EXTERNAL_PARENT_LINE}N/A")
+        elif line.startswith(_SOURCE_PATH_LINE):
+            continue
+        elif line.startswith(_LINKED_RECORD_LINE) and line[len(_LINKED_RECORD_LINE):].strip() not in inside:
+            continue
+        elif any(ref not in inside for ref in _RECORD_REF.findall(line)):
+            continue
+        else:
+            lines.append(line)
+    return "\n".join(lines)
+
+
+async def keep_record_text_inside_connection(
+    records: Iterable[dict[str, Any] | None],
+    graph_provider: IGraphDBProvider | None,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """Leave out of each record's rendered text (``context_metadata``) what a
+    connected app's limit does not cover: the source system's parent id (its
+    ``External Parent ID`` line), the file's source path (``Path:`` and
+    ``file_path``), and every record it names that lies outside the limit (a
+    link's ``Linked Record ID``, a deal's orgs and products).
+
+    A record whose whole app the limit covers is left as it is. Otherwise its
+    parent is judged by its own node, and left out when there is none to judge;
+    when the check cannot run, every name goes. Nothing is asked of the graph
+    without a limit."""
+    if connection_sources is None:
+        return
+    whole_apps = set(connection_sources.get("apps") or ())
+    recs = [rec for rec in records if isinstance(rec, dict)]
+
+    def app_of(rec: dict[str, Any]) -> str | None:
+        return rec.get("connector_id") or rec.get("connectorId")
+
+    def judged_by_parent(rec: dict[str, Any]) -> bool:
+        return bool(rec.get("parent_external_record_id") or _says_external_parent(rec.get("context_metadata")))
+
+    parent_of: dict[str, str] = {}
+    app_from_graph: dict[str, str] = {}
+    inside: set[str] = set()
+    try:
+        if graph_provider is not None:
+            # A record read without its app (a navigate or lookup block) is
+            # looked up, so a whole-app limit leaves it as it is too.
+            asked = [
+                str(rec["id"]) for rec in recs
+                if rec.get("id") and (
+                    (app_of(rec) is None and whole_apps)
+                    or (app_of(rec) not in whole_apps and judged_by_parent(rec))
+                )
+            ]
+            docs = (await graph_provider.get_records_by_record_ids(list(dict.fromkeys(asked)), org_id) or []) if asked else []
+            for doc in docs:
+                if not isinstance(doc, dict):
+                    continue
+                key = str(doc.get("id") or doc.get("_key"))
+                if doc.get("connectorId"):
+                    app_from_graph[key] = doc["connectorId"]
+                if doc.get("parentNodeId"):
+                    parent_of[key] = doc["parentNodeId"]
+        named = [rec for rec in recs if (app_of(rec) or app_from_graph.get(str(rec.get("id")))) not in whole_apps]
+        mentioned = {
+            i for rec in named if isinstance(rec.get("context_metadata"), str)
+            for i in _named_record_ids(rec["context_metadata"])
+        }
+        ids = {parent_of[str(rec.get("id"))] for rec in named if str(rec.get("id")) in parent_of} | mentioned
+        if ids and graph_provider is not None:
+            from app.modules.retrieval.selection_scope import outside_connection
+
+            inside = ids - await outside_connection(graph_provider, user_id, org_id, ids, connection_sources)
+    except Exception as exc:
+        # Lose the names, never show them unchecked.
+        logger.warning("Record text limit check skipped: %s", exc)
+        named = [rec for rec in recs if app_of(rec) not in whole_apps]
+        inside = set()
+    for rec in named:
+        keep_parent = parent_of.get(str(rec.get("id"))) in inside
+        if not keep_parent:
+            rec["parent_external_record_id"] = None
+        if rec.get("file_path"):
+            rec["file_path"] = None
+        text = rec.get("context_metadata")
+        if isinstance(text, str):
+            rec["context_metadata"] = _text_inside(text, inside, keep_parent=keep_parent)
+
+
+_SUMMARY_JOIN = ", "
+
+
+async def keep_row_summaries_inside_connection(
+    rows: Iterable[Any],
+    graph_provider: IGraphDBProvider | None,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """``keep_record_text_inside_connection`` for navigation rows: each row's
+    ``context_summary`` is its record's ``* `` lines joined by ``", "``, and
+    names what those lines name (a link's ``Linked Record ID``, a deal's
+    orgs and products)."""
+    if connection_sources is None:
+        return
+    held = [row for row in rows if getattr(row, "context_summary", None)]
+    records = [
+        {"id": row.id, "context_metadata": "\n".join(f"* {part}" for part in row.context_summary.split(_SUMMARY_JOIN))}
+        for row in held
+    ]
+    await keep_record_text_inside_connection(records, graph_provider, user_id, org_id, connection_sources)
+    for row, record in zip(held, records, strict=True):
+        parts = [line[2:] for line in record["context_metadata"].split("\n") if line.startswith("* ")]
+        row.context_summary = _SUMMARY_JOIN.join(parts) or None
+
+
+async def keep_graph_docs_inside_connection(
+    docs: Iterable[dict[str, Any] | None],
+    graph_provider: IGraphDBProvider | None,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """``keep_record_text_inside_connection`` for graph documents rendered as
+    they are (a grep-only search hit): each one's source parent and source
+    path, unless the limit covers its whole app. Nothing is asked of the graph
+    without a limit."""
+    if connection_sources is None:
+        return
+    whole_apps = set(connection_sources.get("apps") or ())
+    named = [doc for doc in docs if isinstance(doc, dict) and doc.get("connectorId") not in whole_apps]
+    parents = {doc["parentNodeId"] for doc in named if doc.get("parentNodeId") and doc.get("externalParentId")}
+    inside: set[str] = set()
+    if parents and graph_provider is not None:
+        from app.modules.retrieval.selection_scope import outside_connection
+
+        try:
+            inside = parents - await outside_connection(graph_provider, user_id, org_id, parents, connection_sources)
+        except Exception as exc:
+            logger.warning("Graph doc limit check skipped: %s", exc)
+    for doc in named:
+        if doc.get("parentNodeId") not in inside:
+            doc["externalParentId"] = None
+        for key in ("path", "filePath", "localFsRelativePath"):
+            if doc.get(key):
+                doc[key] = None
+
+
+async def keep_context_blocks_inside_connection(
+    holders: Iterable[tuple[str | None, Any]],
+    graph_provider: IGraphDBProvider | None,
+    user_id: str,
+    org_id: str,
+    connection_sources: Mapping[str, Iterable[str]] | None,
+) -> None:
+    """``keep_record_text_inside_connection`` for rendered blocks held on
+    objects (a navigation view, a lookup match): each ``(record id, holder)``
+    with a ``holder.context_block``. The holder carries no app, so its record's
+    parent is always judged by its own node."""
+    if connection_sources is None:
+        return
+    pairs = [(node_id, holder) for node_id, holder in holders if node_id and getattr(holder, "context_block", None)]
+    records = [{"id": node_id, "context_metadata": holder.context_block} for node_id, holder in pairs]
+    await keep_record_text_inside_connection(records, graph_provider, user_id, org_id, connection_sources)
+    for record, (_, holder) in zip(records, pairs, strict=True):
+        holder.context_block = record["context_metadata"]
+
+
 async def enrich_virtual_record_id_to_result_with_fk_children(
     virtual_record_id_to_result: dict[str, dict[str, Any]],
     blob_store: BlobStorage,
@@ -2395,6 +2681,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     graph_provider: IGraphDBProvider | None = None,
     flattened_results: list[dict[str, Any]] | None = None,
     user_id: str = "",
+    connection_sources: Mapping[str, Iterable[str]] | None = None,
 ) -> None:
     """
     For each SQL_TABLE record in virtual_record_id_to_result that has child_record_ids
@@ -2406,7 +2693,8 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     (each containing record_id, table name, source column, and target column metadata)
     so the agent knows which related tables it can fetch via tools.
 
-    Only tables the user may access are fetched or named.
+    Only tables the user may access are fetched or named, and for a connected
+    app with a limit (``connection_sources``), only those inside it.
 
     Field naming conventions:
     - Graph DB (ArangoDB) returns camelCase: recordName, recordType, webUrl, hideWeburl, etc.
@@ -2482,6 +2770,15 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
     # trash keeps a dropped table's node and FK edges until the purge.
     allowed = await accessible_node_ids_for_enrichment(graph_provider, related_record_ids | named_ids(), user_id, org_id)
     allowed &= await live_record_ids(graph_provider, allowed, org_id)
+    if connection_sources is not None and allowed:
+        from app.modules.retrieval.selection_scope import outside_connection
+
+        try:
+            allowed -= await outside_connection(graph_provider, user_id, org_id, allowed, connection_sources)
+        except Exception as exc:
+            # The related tables are extra context: name none, and the turn goes on.
+            logger.warning("FK enrichment: limit check unavailable, naming no related table: %s", exc)
+            allowed = set()
     related_record_ids &= allowed
     for relations in record_id_to_fk_relations.values():
         for key in ("children", "parents"):
@@ -2534,6 +2831,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         record_id, CollectionNames.RECORDS.value
                     )
                     if graph_rec and isinstance(graph_rec, dict):
+                        copy_of_another = rec.get("id") not in (None, record_id)
                         rec["id"] = record_id
                         rec["org_id"] = graph_rec.get("orgId")
                         rec["record_name"] = graph_rec.get("recordName")
@@ -2548,6 +2846,7 @@ async def enrich_virtual_record_id_to_result_with_fk_children(
                         rec["hide_weburl"] = graph_rec.get("hideWeburl", False)
                         rec["source_created_at"] = graph_rec.get("sourceCreatedAtTimestamp")
                         rec["source_updated_at"] = graph_rec.get("sourceLastModifiedTimestamp")
+                        _put_graph_dates(rec, graph_rec, copy_of_another=copy_of_another)
 
                 except Exception as graph_e:
                     logger.debug("FK enrichment: could not fetch graph metadata for record_id=%s: %s", record_id, graph_e)
@@ -3088,7 +3387,8 @@ async def get_flattened_results(result_set: list[dict[str, Any]], blob_store: Bl
             data = block.get("data")
             if data:
                 if from_retrieval_service:
-                    result["content"] = f"image_{image_index}"
+                    # Search shows this as the passage; the placeholder is only for an image with no text.
+                    result["content"] = image_block_text(block) or f"image_{image_index}"
                     image_index += 1
                 else:
                     if is_multimodal_llm:
@@ -3636,6 +3936,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
             if graphDb_record:
                 record_type = graphDb_record.get("recordType")
                 record_key = graphDb_record.get("id") or graphDb_record.get("_key")
+                copy_of_another = bool(record_key) and record.get("id") not in (None, record_key)
 
                 record["id"] = record_key
                 record["org_id"] = org_id
@@ -3652,6 +3953,7 @@ async def get_record(virtual_record_id: str,virtual_record_id_to_result: dict[st
                 record["mime_type"] = graphDb_record.get("mimeType")
                 record["source_created_at"] = graphDb_record.get("sourceCreatedAtTimestamp")
                 record["source_updated_at"] = graphDb_record.get("sourceLastModifiedTimestamp")
+                _put_graph_dates(record, graphDb_record, copy_of_another=copy_of_another)
                 if graphDb_record.get("location"):
                     record["location"] = graphDb_record["location"]
                 graph_external_id = graphDb_record.get("externalRecordId")

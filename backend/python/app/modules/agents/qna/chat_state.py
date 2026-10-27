@@ -100,6 +100,7 @@ class ChatState(TypedDict):
     instructions: str | None  # Agent-specific instructions for the LLM
     custom_instructions: str | None  # Org-level Chat Assistant / Universal Agent Mode instructions
     project_instructions: str | None  # Author-set instructions from a linked Project (Node ProjectService)
+    project_tools_selected: bool  # A project chat whose tools are the ones enabled on the project
     timezone: str | None  # User's timezone (e.g., "America/New_York")
     current_time: str | None  # Current time in user's timezone (ISO 8601)
     apps: list[str] | None  # List of app IDs to search in (extracted from knowledge array)
@@ -229,7 +230,7 @@ class ChatState(TypedDict):
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
     has_code_connector: bool  # True when org has at least one configured repo connector (GitLab/GitHub)
     has_code_knowledge: bool  # True when agent_knowledge contains a repo connector
-    has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
+    has_ui_client: bool  # True when the client can show and answer a question card; gates UI-only tools like ask_user_question
     # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
     client_name: str | None
     agent_key: str | None
@@ -513,6 +514,11 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
         state["tool_repetition_warnings"] = []
 
 
+# Clients that show question cards and send the answer back: the web app (the desktop app too) and
+# Slack. Node names API-token callers `api`; they, like headless runs, have no one to answer.
+_CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
+
+
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
                         reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
@@ -542,6 +548,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
     # its own prompt section, never merged into system_prompt/instructions,
     # so it never touches a real Agent Builder agent's identity.
     project_instructions = chat_query.get("projectInstructions")
+    project_tools_selected = bool(chat_query.get("projectToolsSelected"))
     timezone = chat_query.get("timezone")
     current_time = chat_query.get("currentTime")
     output_file_path = chat_query.get("outputFilePath")
@@ -636,6 +643,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "instructions": instructions,
         "custom_instructions": custom_instructions,
         "project_instructions": project_instructions,
+        "project_tools_selected": project_tools_selected,
         "timezone": timezone,
         "current_time": current_time,
         "apps": apps,  # Extracted from knowledge connector IDs
@@ -752,7 +760,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_slack_knowledge": has_slack_knowledge,
         "has_code_connector": has_code_connector,
         "has_code_knowledge": has_code_knowledge,
-        "has_ui_client": bool(client_name),
+        "has_ui_client": client_name in _CARD_CLIENTS,
         "client_name": client_name,
         "agent_key": chat_query.get("agentKey"),
         "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),

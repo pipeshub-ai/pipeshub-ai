@@ -119,7 +119,7 @@ class TestRSSConnectorFaults:
         connector_id = rss_connector["connector_id"]
         item = FeedItem("fixture-news-fault-1", "Fixture News: Rate Limit Drill",
                         "feeds/news/rate-limit-drill.html", "Sat, 06 Sep 2025 09:00:00 GMT")
-        known = [i.guid for i in NEWS_ITEMS[:MAX_ARTICLES_PER_FEED]] + CHANGELOG_GUIDS
+        known = [i.record_id for i in NEWS_ITEMS[:MAX_ARTICLES_PER_FEED]] + CHANGELOG_GUIDS
         before_count = await _settle(pipeshub_client, graph_provider, connector_id, known)
 
         _serve_item(rss_fixtures, item, "news-rate-limit-drill")
@@ -130,12 +130,12 @@ class TestRSSConnectorFaults:
 
         assert rss_fixtures.fault_hits(NEWS_FEED) == 2, "TC-FAULT-001: the sync did not get past the rate limit"
         assert rss_fixtures.fault_hits(item.article_path) == 1, "TC-FAULT-001: the article was never requested"
-        await _wait_for_item(graph_provider, connector_id, item.guid)
+        await _wait_for_item(graph_provider, connector_id, item.record_id)
         after_count = await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id)
         assert after_count == before_count + 1, (
             f"TC-FAULT-001: expected one new record, count went {before_count} -> {after_count}"
         )
-        record = await graph_provider.get_record_by_external_id(connector_id, item.guid)
+        record = await graph_provider.get_record_by_external_id(connector_id, item.record_id)
         assert record.size_in_bytes and record.size_in_bytes > 1000, (
             f"TC-FAULT-001: the item holds {record.size_in_bytes} bytes; the sync kept the "
             "summary, not the article it should have fetched again after the cut"
@@ -173,14 +173,14 @@ class TestRSSConnectorFaults:
             assert await graph_provider.get_record_by_external_id(connector_id, guid) is not None, (
                 f"TC-FAULT-002: {guid} was removed while its feed was failing"
             )
-        assert await graph_provider.get_record_by_external_id(connector_id, item.guid) is None, (
+        assert await graph_provider.get_record_by_external_id(connector_id, item.record_id) is None, (
             "TC-FAULT-002: the new item was indexed although its feed answered 500"
         )
 
         rss_fixtures.remove_fault(NEWS_FEED)
         _resync(pipeshub_client, connector_id)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id)
-        await _wait_for_item(graph_provider, connector_id, item.guid)
+        await _wait_for_item(graph_provider, connector_id, item.record_id)
         after_count = await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id)
         assert after_count == before_count + 1, (
             f"TC-FAULT-002: the sync after the outage should add one record, count went {before_count} -> {after_count}"
@@ -207,12 +207,12 @@ class TestRSSConnectorFaults:
         rss_fixtures.add_fault(item.article_path, status=500)
         _resync(pipeshub_client, connector_id)
         await wait_for_sync_completion(pipeshub_client, graph_provider, connector_id)
-        await _wait_for_item(graph_provider, connector_id, item.guid)
-        await wait_for_records_indexed(graph_provider, connector_id, [item.guid])
+        await _wait_for_item(graph_provider, connector_id, item.record_id)
+        await wait_for_records_indexed(graph_provider, connector_id, [item.record_id])
 
         degraded = await graph_provider.get_record_by_name(connector_id, item.title)
         assert degraded is not None, f"TC-FAULT-003: {item.title} is not in the graph"
-        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, item.guid)
+        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, item.record_id)
         assert f"Summary for {item.title}" in text and "news-article-outage" not in text, (
             f"TC-FAULT-003: with its article down the item should carry the feed summary: {text[:300]!r}"
         )
@@ -222,7 +222,7 @@ class TestRSSConnectorFaults:
         await wait_for_record_reindex(
             graph_provider, connector_id, item.title, degraded.get("version"), timeout=FAULT_SYNC_TIMEOUT
         )
-        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, item.guid)
+        text = await _streamed_text(pipeshub_client, graph_provider, connector_id, item.record_id)
         assert "news-article-outage" in text, (
             f"TC-FAULT-003: the next sync did not bring the article back: {text[:300]!r}"
         )

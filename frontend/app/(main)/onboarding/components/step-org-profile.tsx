@@ -159,7 +159,7 @@ export function StepOrgProfile({ onSuccess }: StepOrgProfileProps) {
           backgroundColor: 'var(--gray-2)',
           border: '1px solid var(--gray-4)',
           borderRadius: 'var(--radius-3)',
-          width: '576px',
+          width: 'min(576px, 100%)',
           maxHeight: '100%',
           display: 'flex',
           flexDirection: 'column',

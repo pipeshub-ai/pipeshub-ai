@@ -4,6 +4,7 @@ import {
   ConflictError,
   ForbiddenError,
   GatewayTimeoutError,
+  HttpError,
   InternalServerError,
   NotFoundError,
   PaymentRequiredError,
@@ -13,6 +14,10 @@ import {
   UnprocessableEntityError,
 } from './http.errors';
 import { BaseError } from './base.error';
+
+/** The connector service's refusal of a write to a knowledge base that is being deleted. */
+export const KB_BEING_DELETED_MESSAGE =
+  "This knowledge base is being deleted, so it can't be changed.";
 import {
   isReaderWritten,
   markClientSafe,
@@ -108,7 +113,7 @@ const transientError = (
   statusCode: 429 | 503 | 504,
   upstreamDetail: unknown,
   error: { headers?: Record<string, unknown> } | undefined,
-): Error => {
+): BaseError => {
   const retry = retryAfterMetadata(error);
   const detail = upstreamDetail ? stringifyErrorDetail(upstreamDetail) : '';
   // A 429 is about the caller, so the service's own words are worth repeating.
@@ -174,7 +179,12 @@ export const handleBackendError = (
     return transientError(504, undefined, undefined);
   }
 
-  if (isConnectionRefused(source)) {
+  // An answer with a status reached us; words like "fetch failed" in its body
+  // describe the service's own work, not our connection to it.
+  const answered =
+    typeof asRecord(source.response)?.status === 'number' ||
+    typeof source.statusCode === 'number';
+  if (!answered && isConnectionRefused(source)) {
     logger.error(`Could not reach the service during ${operation}`, {
       cause: asText(asRecord(source.cause)?.code) ?? asText(source.message),
     });
@@ -231,12 +241,29 @@ export const handleBackendError = (
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  logger.error(`Backend error during ${operation}`, {
+  const mapped = errorForStatus(
     statusCode,
     errorDetail,
-    fullResponse: data,
-  });
+    bodyDetail,
+    response ?? source,
+    operation,
+  );
+  // Logged by what the caller is answered: a refusal passed on as the same
+  // 4xx is routine, anything that becomes a 5xx (a 405 included) is ours.
+  logger[mapped.statusCode >= 500 ? 'error' : 'warn'](
+    `Backend error during ${operation}`,
+    { statusCode, errorDetail, fullResponse: data },
+  );
+  return mapped;
+};
 
+const errorForStatus = (
+  statusCode: number,
+  errorDetail: string,
+  bodyDetail: unknown,
+  source: { headers?: Record<string, unknown> },
+  operation: string,
+): BaseError => {
   switch (statusCode) {
     case 400:
       return new BadRequestError(errorDetail);
@@ -251,6 +278,11 @@ export const handleBackendError = (
     case 404:
       return new NotFoundError(errorDetail);
     case 409:
+      // The connector service words this refusal the same way everywhere (kb_service.py); it is
+      // the one 409 a client may want to tell apart, because retrying the write can never work.
+      if (errorDetail === KB_BEING_DELETED_MESSAGE) {
+        return new HttpError('KB_BEING_DELETED', KB_BEING_DELETED_MESSAGE, 409);
+      }
       return new ConflictError(errorDetail);
     case 422:
       return new UnprocessableEntityError(errorDetail);
@@ -258,7 +290,7 @@ export const handleBackendError = (
     case 429:
     case 503:
     case 504:
-      return transientError(statusCode, bodyDetail, response ?? source);
+      return transientError(statusCode, bodyDetail, source);
     default:
       // Every 5xx (502 included, as the upload pre-check documents), and
       // anything unrecognised: the service's own words describe its internals,

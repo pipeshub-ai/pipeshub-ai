@@ -8,11 +8,11 @@ import { useTranslation } from 'react-i18next';
 import type { ArtifactListItem } from '../types';
 import { ArtifactActionMenu, type ArtifactActionHandlers } from './artifact-actions';
 import { ArtifactThumbnail } from './artifact-thumbnail';
-import { PaginationFooter, type ArtifactsPagination } from './pagination-footer';
+import { PaginationFooter, type PaginationState } from '@/app/components/data-display/pagination-footer';
 
 interface ArtifactsGridViewProps extends ArtifactActionHandlers {
   items: ArtifactListItem[];
-  pagination: ArtifactsPagination;
+  pagination: PaginationState;
   onPageChange: (page: number) => void;
 }
 

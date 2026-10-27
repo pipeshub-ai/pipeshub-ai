@@ -26,21 +26,22 @@ Do not open a Neo4j, Arango, Qdrant, or Kafka client from indexing/query/connect
 | --- | --- | --- | --- |
 | Graph | `DATA_STORE` | `neo4j` (what `install.sh`, Helm, and `backend/env.template` ship), `arangodb` | `IGraphDBProvider` / `GraphDBProviderFactory`; connectors use `GraphDataStore` |
 | Vector | `VECTOR_DB_TYPE` | `qdrant` (default), `opensearch`, `redis` | `IVectorDBService` / `VectorDBProviderFactory` |
-| KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
+| KV / config | `KV_STORE_TYPE` | `redis` (default), `etcd`, `postgres` | `KeyValueStore` / `KeyValueStoreFactory`. Python config reads go through `ConfigurationService`, never the store directly |
 | Document | — | MongoDB | Mongoose in the Node API (users, orgs, sessions). Not swapped today |
 | Blob | storage config | local, S3, Azure Blob | `StorageServiceInterface` (`backend/nodejs/apps/src/modules/storage/`) |
-| Broker | `MESSAGE_BROKER` | `kafka`, `redis` (streams) | `MessagingFactory` |
+| Broker | `MESSAGE_BROKER` | `kafka`, `redis` (streams), `postgres` (queue tables) | `MessagingFactory` |
 
 Redis can be KV, vector, and broker at once; that does not make it the graph or the document store. PostgreSQL is a **connector** (a source to index), not PipesHub's document store.
 
 ## What lives where
 
-**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, SAML, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
+**Node.js** (`backend/nodejs/apps/`): identity (users, orgs, auth — JWT, OAuth, PAT), knowledge-base metadata in Mongo, blob upload/download, HTTP API gateway, MCP at `/mcp`, Kafka/Redis producers for work the Python services consume.
 
 **Python** (`backend/python/`):
 
 - **Connectors** `:8088` (`app.connectors_main`) — OAuth, token refresh, sync from Slack/Drive/Jira/… into the graph. New sources extend `ConnectorFactory`.
 - **Indexing** `:8091` (`app.indexing_main`) — parse, chunk, embed; write records through `IGraphDBProvider` and `IVectorDBService`. How it works end to end (consumer loop, heavy/light tiers, gates, leases, governor, recovery, known throughput-collapse root cause): [docs/indexing-service.md](./docs/indexing-service.md). Read it before touching `app/services/messaging/`, `app/services/resource_governor/`, `app/events/`, `app/modules/transformers/`, or `app/modules/pipeline/`.
+- **Agent context** (what each model call receives) — history replay, the current request, the PRE_MODEL shaping pipeline, protection and the final guard: [docs/context-engineering.md](./docs/context-engineering.md). Read it before touching `app/agent_loop_lib/context/`, `app/agent_loop_lib/hooks/middleware/builtin/`, `app/agents/agent_loop/history_window.py`, history seeding in `factory.py`, `converters.py` or the transports.
 - **Text fragments** (`#:~:text=` citation links) — built only by `app/utils/text_fragments/`; do not hand-roll a fragment or strip one with a regex. Design, encoding rules, golden corpus and browser verification: [docs/text-fragments.md](./docs/text-fragments.md). Read it before touching `app/utils/text_fragments/`, the fragment call sites in `chat_helpers.py`/`citations.py`/`tool_handlers.py`, or `slack-bot/src/utils/citations.ts`.
 - **Query** `:8000` (`app.query_main`) — semantic search, RAG/chat, in-product agents, LLM orchestration (LiteLLM). Configured-model discovery, health checks, and the OpenAI-compatible model catalog: [docs/ai-models.md](./docs/ai-models.md). Identity (user and groups) forwarded to an LLM gateway: [docs/llm-gateway-identity.md](./docs/llm-gateway-identity.md). Read it before touching `app/services/model_identity/` or adding a model call outside a route that binds a call context.
 - **Docling** `:8081` (`app.docling_main`) — heavy PDF/OCR for complex documents.

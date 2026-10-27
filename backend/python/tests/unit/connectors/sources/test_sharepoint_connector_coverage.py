@@ -3,32 +3,30 @@
 import base64
 import json
 import logging
-import urllib.parse
+from collections.abc import AsyncIterator, Callable
 from datetime import datetime, timezone
 from http import HTTPStatus
 from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
-from fastapi import HTTPException
-
 import pytest
+from fastapi import HTTPException
 
 from app.config.constants.arangodb import CollectionNames, Connectors
 from app.config.constants.http_status_code import HttpStatusCode
 from app.connectors.core.registry.filters import FilterCollection
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.sharepoint_online.connector import (
-    COMPOSITE_SITE_ID_COMMA_COUNT,
-    COMPOSITE_SITE_ID_PARTS_COUNT,
-    CountryToRegionMapper,
-    MicrosoftRegion,
+    DRIVE_CHECKPOINT,
+    ListPermissionScope,
     SharePointConnector,
-    SharePointCredentials,
-    SharePointRecordType,
     SiteMetadata,
     _sharepoint_filter_options_max_search_batches,
 )
-from app.models.entities import Record, RecordType
-from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.sources.microsoft.sharepoint_online.everyone_groups import (
+    EVERYONE_EXCEPT_EXTERNAL,
+)
+from app.models.entities import RecordType
+from app.models.permission import EntityType
 
 MODULE = "app.connectors.sources.microsoft.sharepoint_online.connector"
 
@@ -45,6 +43,7 @@ def _make_connector(*, return_dep: bool = False):
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.reindex_existing_records = AsyncMock()
     dep.inheritance_when_unreadable = AsyncMock(return_value=False)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
     dsp = MagicMock()
     cs = MagicMock()
     cs.get_config = AsyncMock()
@@ -55,6 +54,23 @@ def _make_connector(*, return_dep: bool = False):
     if return_dep:
         return c, dep
     return c
+
+
+def _rest_pages(*bodies) -> Callable[..., AsyncIterator[dict]]:
+    """A stand-in for _sharepoint_rest_pages that yields the given ``d`` bodies."""
+    calls = []
+
+    async def pages(url, **_kwargs) -> AsyncIterator[dict]:
+        calls.append(url)
+        for body in bodies:
+            yield body
+
+    pages.calls = calls
+    return pages
+
+
+def _role_assignment(member, role_name="Read") -> dict:
+    return {"Member": member, "RoleDefinitionBindings": {"results": [{"Name": role_name, "RoleTypeKind": 2}]}}
 
 
 class TestSharePointSiteUrlConstruction:
@@ -283,26 +299,34 @@ class TestSharePointTestConnection:
         c.client = MagicMock()
         root_site = MagicMock()
         root_site.display_name = "Root Site"
+        root_site.web_url = "https://contoso.sharepoint.com"
         c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root_site)
+        c.client.sites.get = AsyncMock(return_value=MagicMock(value=[]))
+        c.client.sites.by_site_id.return_value.permissions.get = AsyncMock(return_value=MagicMock(value=[]))
+        c._sharepoint_rest_pages = _rest_pages({"results": []})
         result = await c.test_connection_and_access()
         assert result is True
+        c.client.sites.by_site_id.return_value.permissions.get.assert_awaited_once()
+        assert c._sharepoint_rest_pages.calls == [
+            "https://contoso.sharepoint.com/_api/web/roleassignments?$top=1"
+        ]
 
     @pytest.mark.asyncio
-    async def test_connection_always_returns_true(self):
-        """SharePoint test_connection_and_access always returns True (no actual check)."""
+    async def test_connection_returns_false_when_reads_fail(self):
+        """test_connection_and_access really reads the sites, so a client that can't returns False."""
         c = _make_connector()
         c.client = MagicMock()
         result = await c.test_connection_and_access()
-        assert result is True
+        assert result is False
 
 
 class TestSharePointMisc:
     @pytest.mark.asyncio
     async def test_run_incremental_sync(self):
         c = _make_connector()
-        c._reinitialize_credential_if_needed = AsyncMock()
-        c._get_all_sites = AsyncMock(return_value=[])
+        c.run_sync = AsyncMock()
         await c.run_incremental_sync()
+        c.run_sync.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_handle_webhook(self):
@@ -436,45 +460,42 @@ class TestSharePointGetSitePermissionsExtended:
             site_name="Test",
             is_root=False,
         )
-        c._get_sharepoint_access_token = AsyncMock(return_value="token")
+        c._site_groups_read = {"site-1"}
         sec_guid = "00000000-0000-0000-0000-000000000001"
-        c._get_sharepoint_group_users = AsyncMock(side_effect=[
-            [{
+        c._get_directory_object_type = AsyncMock(return_value="#microsoft.graph.group")
+        c._sharepoint_rest_pages = _rest_pages({"results": [
+            _role_assignment({
                 "LoginName": f"c:0t.c|tenant|{sec_guid}",
                 "Title": "Sec Group",
                 "PrincipalType": 4,
-            }, {
+            }, "Full Control"),
+            _role_assignment({
                 "LoginName": (
                     "c:0o.c|federateddirectoryclaimprovider|"
                     "abcdefab-1234-5678-9012-abcdefabcdef"
                 ),
                 "Title": "M365",
                 "PrincipalType": 4,
-            }],
-            [],
-            [{
-                "LoginName": "c:0t.c|tenant|9908e57b-4444-4a0e-af96-e8ca83c0a0e5",
-                "Title": "Everyone except external users",
-                "PrincipalType": 4,
-            }, {
-                "LoginName": f"c:0t.c|tenant|{sec_guid}",
-                "Title": "Visitor Sec",
-                "PrincipalType": 4,
-            }, {
+            }, "Edit"),
+            _role_assignment({
                 "LoginName": "c:0(.s|true|spo-grid-all-users",
                 "PrincipalType": 0,
-                "Title": "Everyone",
-            }],
-        ])
-        c._get_custom_sharepoint_groups = AsyncMock(return_value=[{
-            "id": "99",
-            "title": "Custom",
-            "permission_level": PermissionType.READ,
-        }])
+                "Title": "Everyone except external users",
+            }),
+            _role_assignment({"Id": 99, "Title": "Custom", "PrincipalType": 8}),
+        ]})
         perms = await c._get_site_permissions("site-1")
+        assert c._sharepoint_rest_pages.calls == [
+            "https://contoso.sharepoint.com/sites/test/_api/web/roleassignments"
+            "?$expand=Member,RoleDefinitionBindings"
+        ]
         assert any(getattr(p, "external_id", None) == sec_guid for p in perms)
-        assert any(getattr(p, "entity_type", None) == EntityType.ORG for p in perms)
-        assert any(getattr(p, "entity_type", None) == EntityType.GROUP for p in perms)
+        # A tenant-wide claim is a grant to its claim group, not to the organization.
+        assert not any(getattr(p, "entity_type", None) == EntityType.ORG for p in perms)
+        assert any(
+            p.external_id == EVERYONE_EXCEPT_EXTERNAL and p.entity_type == EntityType.GROUP for p in perms
+        )
+        assert any(p.external_id == "site-1-99" and p.entity_type == EntityType.GROUP for p in perms)
 
     @pytest.mark.asyncio
     async def test_security_group_without_guid(self):
@@ -485,14 +506,10 @@ class TestSharePointGetSitePermissionsExtended:
             site_name="Test",
             is_root=False,
         )
-        c._get_sharepoint_access_token = AsyncMock(return_value="token")
-        c._get_sharepoint_group_users = AsyncMock(side_effect=[
-            [{"LoginName": "bad-login", "Title": "Bad", "PrincipalType": 4}],
-            [],
-            [],
-        ])
-        c._get_custom_sharepoint_groups = AsyncMock(return_value=[])
-        assert isinstance(await c._get_site_permissions("site-1"), list)
+        c._sharepoint_rest_pages = _rest_pages({"results": [
+            _role_assignment({"LoginName": "bad-login", "Title": "Bad", "PrincipalType": 4}),
+        ]})
+        assert await c._get_site_permissions("site-1") == []
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +532,7 @@ class TestSharePointSyncUserGroups:
         site.id = "contoso.sharepoint.com,g1,g2"
         site.display_name = "Site A"
         site.name = "site-a"
+        site.web_url = "https://contoso.sharepoint.com/sites/a"
         c._get_all_sites = AsyncMock(return_value=[site])
         site_details = MagicMock()
         site_details.web_url = "https://contoso.sharepoint.com/sites/a"
@@ -557,17 +575,19 @@ class TestSharePointSyncUserGroups:
         mock_http.__aexit__ = AsyncMock(return_value=False)
         mock_cred = AsyncMock()
         mock_cred.get_token = AsyncMock(return_value=MagicMock(token="sp-token"))
+        c.credential = mock_cred
+        c.drive_delta_sync_point = MagicMock()
+        c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        c.drive_delta_sync_point.update_sync_point = AsyncMock()
+        c._get_directory_object_type = AsyncMock(return_value="#microsoft.graph.group")
         c._fetch_graph_group_members = AsyncMock(
             return_value=[{"id": "u1", "email": "a@b.com", "name": "Alice"}]
         )
-        cred_ctx = MagicMock()
-        cred_ctx.__aenter__ = AsyncMock(return_value=mock_cred)
-        cred_ctx.__aexit__ = AsyncMock(return_value=False)
-        with patch(f"{MODULE}.ClientSecretCredential", return_value=cred_ctx), \
-             patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http):
+        with patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http):
             await c._sync_user_groups()
         dep.on_new_user_groups.assert_awaited_once()
         assert len(dep.on_new_user_groups.await_args[0][0]) >= 1
+        mock_cred.get_token.assert_awaited_with("https://contoso.sharepoint.com/.default")
 
     @pytest.mark.asyncio
     async def test_certificate_credential_context(self):
@@ -678,24 +698,17 @@ class TestSharePointGetPageContentExtended:
         page_resp = MagicMock()
         page_resp.status_code = HTTPStatus.OK.value
         page_resp.json.return_value = {"d": {"CanvasContent1": canvas}}
-        img_resp = MagicMock()
-        img_resp.status_code = HTTPStatus.OK.value
-        img_resp.headers = {"Content-Type": "image/png"}
-        img_resp.content = b"\x89PNG"
-        list_resp = MagicMock()
-        list_resp.status_code = HTTPStatus.OK.value
-        list_resp.json.return_value = {
-            "d": {"results": [{"Title": "Task 1", "Description": "Do it"}]}
-        }
         mock_http = AsyncMock()
-        mock_http.get = AsyncMock(side_effect=[page_resp, img_resp, list_resp])
+        mock_http.get = AsyncMock(side_effect=[page_resp])
         mock_http.__aenter__ = AsyncMock(return_value=mock_http)
         mock_http.__aexit__ = AsyncMock(return_value=False)
         with patch(f"{MODULE}.httpx.AsyncClient", return_value=mock_http), \
              patch(f"{MODULE}.clean_html_output", side_effect=lambda soup, **_: str(soup)):
             result = await c._get_page_content("site-1", "page-1")
-        assert result is not None
-        assert mock_http.get.await_count >= 2
+        assert "[image: pic.png]" in result
+        assert "[embedded list: My Tasks]" in result
+        # Neither the image nor the list's items are fetched: only the page itself is read.
+        assert mock_http.get.await_count == 1
 
     @pytest.mark.asyncio
     async def test_list_webpart_fetch_failure(self):
@@ -905,12 +918,11 @@ class TestSharePointAccessToken:
         c.certificate_path = None
         mock_cred = AsyncMock()
         mock_cred.get_token = AsyncMock(return_value=MagicMock(token="tok"))
-        cred_ctx = MagicMock()
-        cred_ctx.__aenter__ = AsyncMock(return_value=mock_cred)
-        cred_ctx.__aexit__ = AsyncMock(return_value=False)
-        with patch("azure.identity.aio.ClientSecretCredential", return_value=cred_ctx):
+        c.credential = mock_cred
+        with patch(f"{MODULE}.ClientSecretCredential") as new_credential:
             token = await c._get_sharepoint_access_token()
         assert token == "tok"
+        new_credential.assert_not_called()
         assert mock_cred.get_token.await_args[0][0] == "https://contoso.sharepoint.com/.default"
 
 
@@ -925,12 +937,12 @@ class TestSharePointAccessToken:
         c.certificate_password = None
         mock_cred = AsyncMock()
         mock_cred.get_token = AsyncMock(return_value=MagicMock(token="cert-tok"))
-        cred_ctx = MagicMock()
-        cred_ctx.__aenter__ = AsyncMock(return_value=mock_cred)
-        cred_ctx.__aexit__ = AsyncMock(return_value=False)
-        with patch("azure.identity.aio.CertificateCredential", return_value=cred_ctx):
+        c.credential = mock_cred
+        with patch(f"{MODULE}.CertificateCredential") as new_credential:
             token = await c._get_sharepoint_access_token()
         assert token == "cert-tok"
+        mock_cred.get_token.assert_awaited_once_with("https://contoso.sharepoint.com/.default")
+        new_credential.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -952,17 +964,18 @@ class TestSharePointGetSubsites:
         subsite.last_modified_date_time = None
         result = MagicMock()
         result.value = [subsite]
-        c._safe_api_call = AsyncMock(return_value=result)
+        result.odata_next_link = None
+        c.client.sites.by_site_id.return_value.sites.get = AsyncMock(return_value=result)
         subsites = await c._get_subsites("site-1")
         assert len(subsites) == 1
         assert "sub-1" in c.site_cache
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _make_connector()
         c.client = MagicMock()
-        c._safe_api_call = AsyncMock(side_effect=Exception("fail"))
-        assert await c._get_subsites("site-1") == []
+        c.client.sites.by_site_id.return_value.sites.get = AsyncMock(side_effect=Exception("fail"))
+        assert await c._get_subsites("site-1") is None
 
 
 class TestSharePointSyncAzureAdGroups:
@@ -1096,9 +1109,9 @@ class TestSharePointPerformInitialFullSync:
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_all_user_groups = AsyncMock(return_value=[group])
         user_group = MagicMock()
-        c._process_single_group = AsyncMock(return_value=(user_group, []))
-        await c._perform_initial_full_sync()
-        dep.on_new_user_groups.assert_awaited_once()
+        c._group_with_members = AsyncMock(return_value=(user_group, []))
+        assert await c._perform_initial_full_sync() is True
+        dep.on_new_user_groups.assert_awaited_once_with([(user_group, [])])
 
 
 class TestSharePointPerformDeltaSync:
@@ -1120,8 +1133,9 @@ class TestSharePointPerformDeltaSync:
             ]
         }
         c._handle_delete_group = AsyncMock(return_value=True)
-        c._handle_group_create = AsyncMock(return_value=True)
-        c._process_member_change = AsyncMock()
+        c._containing_groups = AsyncMock(return_value=[])
+        refreshed = (MagicMock(), [])
+        c._group_with_members = AsyncMock(return_value=refreshed)
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_groups_delta_response = AsyncMock(return_value={
             "groups": [removed_group, updated_group],
@@ -1131,8 +1145,12 @@ class TestSharePointPerformDeltaSync:
         c.user_group_sync_point.update_sync_point = AsyncMock()
         await c._perform_delta_sync("https://delta/start", "sync-key")
         c._handle_delete_group.assert_awaited_once_with("g-del")
-        c._handle_group_create.assert_awaited_once()
-        assert c._process_member_change.await_count == 2
+        # members@delta is applied by reading the changed group's members again.
+        c._group_with_members.assert_awaited_once_with(updated_group)
+        dep.on_new_user_groups.assert_awaited_once_with([refreshed])
+        c.user_group_sync_point.update_sync_point.assert_awaited_once_with(
+            "sync-key", {"nextLink": None, "deltaLink": "https://delta/final"}
+        )
 
     @pytest.mark.asyncio
     async def test_delete_and_create_failures_logged(self):
@@ -1145,8 +1163,8 @@ class TestSharePointPerformDeltaSync:
         updated_group.display_name = "G2"
         updated_group.additional_data = {}
         c._handle_delete_group = AsyncMock(return_value=False)
-        c._handle_group_create = AsyncMock(return_value=False)
-        c._process_member_change = AsyncMock()
+        c._containing_groups = AsyncMock(return_value=[])
+        c._group_with_members = AsyncMock(side_effect=Exception("members unreadable"))
         c.msgraph_client = MagicMock()
         c.msgraph_client.get_groups_delta_response = AsyncMock(return_value={
             "groups": [removed_group, updated_group],
@@ -1156,7 +1174,10 @@ class TestSharePointPerformDeltaSync:
         c.user_group_sync_point.update_sync_point = AsyncMock()
         await c._perform_delta_sync("https://delta/start", "sync-key")
         c._handle_delete_group.assert_awaited_once()
-        c._handle_group_create.assert_awaited_once()
+        c._group_with_members.assert_awaited_once()
+        # A change that was not applied keeps the delta link where it was.
+        c.user_group_sync_point.update_sync_point.assert_not_awaited()
+        assert c._health.complete is False
 
 
 # ---------------------------------------------------------------------------
@@ -1214,12 +1235,11 @@ class TestSharePointGetSitePermissionsCustomGroupDedup:
             site_name="Test",
             is_root=False,
         )
-        c._get_sharepoint_access_token = AsyncMock(return_value="token")
-        c._get_sharepoint_group_users = AsyncMock(side_effect=[[], [], []])
-        c._get_custom_sharepoint_groups = AsyncMock(return_value=[
-            {"id": "99", "title": "Dup", "permission_level": PermissionType.READ},
-            {"id": "99", "title": "Dup Again", "permission_level": PermissionType.WRITE},
-        ])
+        c._site_groups_read = {"site-1"}
+        c._sharepoint_rest_pages = _rest_pages({"results": [
+            _role_assignment({"Id": 99, "Title": "Dup", "PrincipalType": 8}, "Read"),
+            _role_assignment({"Id": 99, "Title": "Dup Again", "PrincipalType": 8}, "Edit"),
+        ]})
         perms = await c._get_site_permissions("site-1")
         group_perms = [p for p in perms if getattr(p, "entity_type", None) == EntityType.GROUP]
         assert len(group_perms) == 1
@@ -1289,13 +1309,16 @@ class TestSharePointProcessSingleGroup:
         member = MagicMock()
         member.odata_type = "#microsoft.graph.user"
         member.id = "u1"
-        c.msgraph_client = MagicMock()
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[member])
-        app_user = MagicMock()
-        c._create_app_user_from_member = MagicMock(return_value=app_user)
+        member.mail = "u1@contoso.com"
+        member.display_name = "User 1"
+        c.client = MagicMock()
+        c.client.groups.by_group_id.return_value.transitive_members.get = AsyncMock(
+            return_value=MagicMock(value=[member], odata_next_link=None)
+        )
         result = await c._process_single_group(group)
         assert result is not None
         assert len(result[1]) == 1
+        assert result[1][0].email == "u1@contoso.com"
 
     @pytest.mark.asyncio
     async def test_nested_group_expansion(self):
@@ -1306,15 +1329,22 @@ class TestSharePointProcessSingleGroup:
         group.display_name = "Parent"
         group.description = None
         group.created_date_time = None
-        nested = MagicMock()
+        nested = MagicMock(spec=["odata_type", "id"])
         nested.odata_type = "#microsoft.graph.group"
         nested.id = "g2"
-        c.msgraph_client = MagicMock()
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[nested])
-        c._get_users_from_nested_group = AsyncMock(return_value=[MagicMock()])
+        # transitiveMembers lists the nested group's people flattened, next to the group itself.
+        nested_user = MagicMock()
+        nested_user.odata_type = "#microsoft.graph.user"
+        nested_user.id = "u2"
+        nested_user.mail = "u2@contoso.com"
+        nested_user.display_name = "User 2"
+        c.client = MagicMock()
+        c.client.groups.by_group_id.return_value.transitive_members.get = AsyncMock(
+            return_value=MagicMock(value=[nested, nested_user], odata_next_link=None)
+        )
         result = await c._process_single_group(group)
         assert result is not None
-        c._get_users_from_nested_group.assert_awaited_once()
+        assert [user.source_user_id for user in result[1]] == ["u2"]
 
     @pytest.mark.asyncio
     async def test_skips_unknown_member_type(self):
@@ -1325,11 +1355,13 @@ class TestSharePointProcessSingleGroup:
         group.display_name = "Team"
         group.description = None
         group.created_date_time = None
-        unknown = MagicMock()
+        unknown = MagicMock(spec=["odata_type", "id"])
         unknown.odata_type = "#microsoft.graph.device"
         unknown.id = "d1"
-        c.msgraph_client = MagicMock()
-        c.msgraph_client.get_group_members = AsyncMock(return_value=[unknown])
+        c.client = MagicMock()
+        c.client.groups.by_group_id.return_value.transitive_members.get = AsyncMock(
+            return_value=MagicMock(value=[unknown], odata_next_link=None)
+        )
         result = await c._process_single_group(group)
         assert result is not None
         assert result[1] == []
@@ -1480,7 +1512,7 @@ class TestSharePointCheckUpdatedRecordDispatch:
 
 class TestSharePointRunSyncMultiBatch:
     @pytest.mark.asyncio
-    async def test_sleep_between_site_batches(self):
+    async def test_no_sleep_between_sites(self):
         c, dep = _make_connector(return_dep=True)
         c.connector_name = Connectors.SHAREPOINT_ONLINE
         c.max_concurrent_batches = 1
@@ -1513,6 +1545,11 @@ class TestSharePointRunSyncMultiBatch:
         c._get_all_sites = AsyncMock(return_value=[_site("1"), _site("2")])
         c._get_site_permissions = AsyncMock(return_value=[])
         c._sync_site_content = AsyncMock()
+        c.user_sync_point = MagicMock()
+        c.user_sync_point.read_sync_point = AsyncMock(return_value=None)
+        c.drive_delta_sync_point = MagicMock()
+        c.drive_delta_sync_point.read_sync_point = AsyncMock(return_value=None)
+        c.drive_delta_sync_point.update_sync_point = AsyncMock()
 
         with patch(f"{MODULE}.load_connector_filters", new_callable=AsyncMock,
                    return_value=(FilterCollection(), FilterCollection())), \
@@ -1520,7 +1557,7 @@ class TestSharePointRunSyncMultiBatch:
              patch(f"{MODULE}.MSGraphClient"), \
              patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await c.run_sync()
-            mock_sleep.assert_awaited_once()
+            mock_sleep.assert_not_awaited()
         dep.on_new_record_groups.assert_awaited_once()
         assert c._sync_site_content.await_count == 2
 
@@ -1530,16 +1567,18 @@ class TestSharePointProcessSitePages:
     async def test_pages_not_accessible_returns_early(self):
         c = _make_connector()
         c.client = MagicMock()
-        c.page_sync_point = MagicMock()
-        c.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.page_sync_point.update_sync_point = AsyncMock()
-        c._safe_api_call = AsyncMock(
-            side_effect=Exception(f"{HttpStatusCode.FORBIDDEN.value} accessdenied")
-        )
+        forbidden = Exception(f"{HttpStatusCode.FORBIDDEN.value} accessdenied")
+        forbidden.response_status_code = HttpStatusCode.FORBIDDEN.value
+        pages = c.client.sites.by_site_id.return_value.pages
+        pages.get = AsyncMock(side_effect=forbidden)
         collected = []
         async for item in c._process_site_pages("site-1", "Site A"):
             collected.append(item)
+        # A listing that failed yields nothing, is reported, and removes no stored page.
         assert collected == []
+        pages.get.assert_awaited_once()
+        assert c._health.complete is False
+        c.data_entities_processor.get_records_in_record_group.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_skips_system_account_page(self):
@@ -1562,36 +1601,32 @@ class TestSharePointProcessSitePages:
         page.created_by = created_by
         pages_response = MagicMock()
         pages_response.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_response)
+        pages_response.odata_next_link = None
+        c.client.sites.by_site_id.return_value.pages.get = AsyncMock(return_value=pages_response)
         c._pass_page_date_filters = MagicMock(return_value=True)
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        c.data_store_provider.transaction.return_value = mock_tx
         collected = []
         async for item in c._process_site_pages("site-1", "Site A"):
             collected.append(item)
-        assert collected == []
-        c.page_sync_point.update_sync_point.assert_awaited()
+        assert collected == [DRIVE_CHECKPOINT]
+        c.data_entities_processor.get_record_by_external_id.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_non_access_error_swallowed_by_outer_handler(self):
         c = _make_connector()
         c.client = MagicMock()
-        c.page_sync_point = MagicMock()
-        c.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.page_sync_point.update_sync_point = AsyncMock()
-
-        async def exploding_safe(*_args, **_kwargs):
-            raise Exception("graph outage")
-
-        c._safe_api_call = exploding_safe
+        outage = Exception("graph outage")
+        outage.response_status_code = HTTPStatus.INTERNAL_SERVER_ERROR
+        pages = c.client.sites.by_site_id.return_value.pages
+        pages.get = AsyncMock(side_effect=outage)
         collected = []
-        async for item in c._process_site_pages("site-1", "Site A"):
-            collected.append(item)
+        with patch(f"{MODULE}.asyncio.sleep", new_callable=AsyncMock):
+            async for item in c._process_site_pages("site-1", "Site A"):
+                collected.append(item)
+        # A server error is tried again; when it persists the listing is reported and nothing is removed.
         assert collected == []
-        c.page_sync_point.update_sync_point.assert_not_awaited()
+        assert pages.get.await_count == 3
+        assert c._health.complete is False
+        c.data_entities_processor.get_records_in_record_group.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_yields_updated_existing_page(self):
@@ -1610,7 +1645,8 @@ class TestSharePointProcessSitePages:
         page.created_by = None
         pages_response = MagicMock()
         pages_response.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_response)
+        pages_response.odata_next_link = None
+        c.client.sites.by_site_id.return_value.pages.get = AsyncMock(return_value=pages_response)
         c._pass_page_date_filters = MagicMock(return_value=True)
         existing = MagicMock()
         existing.id = "rec-existing"
@@ -1623,7 +1659,8 @@ class TestSharePointProcessSitePages:
         collected = []
         async for item in c._process_site_pages("site-1", "Site A"):
             collected.append(item)
-        assert len(collected) == 1
+        assert len(collected) == 2
+        assert collected[1] is DRIVE_CHECKPOINT
         update = collected[0][2]
         assert update.is_updated is True
         assert update.content_changed is True
@@ -1634,7 +1671,7 @@ class TestSharePointProcessSitePages:
         )
 
     @pytest.mark.asyncio
-    async def test_yields_new_page_record(self):
+    async def test_new_page_with_unreadable_permissions_not_yielded(self):
         c = _make_connector()
         c.client = MagicMock()
         c.page_sync_point = MagicMock()
@@ -1650,55 +1687,66 @@ class TestSharePointProcessSitePages:
         page.created_by = None
         pages_response = MagicMock()
         pages_response.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_response)
+        pages_response.odata_next_link = None
+        c.client.sites.by_site_id.return_value.pages.get = AsyncMock(return_value=pages_response)
         c._pass_page_date_filters = MagicMock(return_value=True)
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        c.data_store_provider.transaction.return_value = mock_tx
         page_record = MagicMock()
         c._create_page_record = AsyncMock(return_value=page_record)
-        c._get_page_permissions = AsyncMock(return_value=[])
         collected = []
         async for item in c._process_site_pages("site-1", "Site A"):
             collected.append(item)
-        assert len(collected) == 1
-        assert c.stats["pages_processed"] >= 1
-        assert page_record.inherit_permissions is False
-        c.data_entities_processor.inheritance_when_unreadable.assert_awaited_once_with(
-            CollectionNames.RECORDS.value, None
-        )
+        # The site's page permissions can't be read (no site URL), so the new page waits for a later run.
+        assert collected == [DRIVE_CHECKPOINT]
+        assert c.stats["pages_processed"] == 0
+        c._create_page_record.assert_not_awaited()
+        c.data_entities_processor.inheritance_when_unreadable.assert_not_awaited()
+        assert c._health.complete is False
 
     @pytest.mark.asyncio
     async def test_page_processing_error_continues(self):
         c = _make_connector()
+        c.connector_name = Connectors.SHAREPOINT_ONLINE
         c.client = MagicMock()
-        c.page_sync_point = MagicMock()
-        c.page_sync_point.read_sync_point = AsyncMock(return_value=None)
-        c.page_sync_point.update_sync_point = AsyncMock()
         c.indexing_filters = MagicMock()
         c.indexing_filters.is_enabled = MagicMock(return_value=True)
-        page = MagicMock()
-        page.id = "page-1"
-        page.title = "Bad Page"
-        page.name = "bad"
-        page.e_tag = "e1"
-        page.created_by = None
+
+        def _page(page_id, title, created) -> MagicMock:
+            page = MagicMock()
+            page.id = page_id
+            page.title = title
+            page.name = title.lower()
+            page.e_tag = f"etag-{page_id}"
+            page.created_by = None
+            page.created_date_time = created
+            page.last_modified_date_time = created
+            page.page_layout = None
+            page.promotion_kind = None
+            page.web_url = f"https://contoso.sharepoint.com/sites/a/SitePages/{page_id}.aspx"
+            return page
+
+        # The bad page's timestamp can't be read, so building its record fails.
+        bad = _page("page-1", "Bad Page", "not-a-datetime")
+        good = _page("page-2", "Good Page", datetime(2024, 1, 1, tzinfo=timezone.utc))
         pages_response = MagicMock()
-        pages_response.value = [page]
-        c._safe_api_call = AsyncMock(return_value=pages_response)
+        pages_response.value = [bad, good]
+        pages_response.odata_next_link = None
+        c.client.sites.by_site_id.return_value.pages.get = AsyncMock(return_value=pages_response)
         c._pass_page_date_filters = MagicMock(return_value=True)
-        mock_tx = MagicMock()
-        mock_tx.get_record_by_external_id = AsyncMock(return_value=None)
-        mock_tx.__aenter__ = AsyncMock(return_value=mock_tx)
-        mock_tx.__aexit__ = AsyncMock(return_value=False)
-        c.data_store_provider.transaction.return_value = mock_tx
-        c._create_page_record = AsyncMock(side_effect=Exception("create fail"))
+        c._get_site_pages_scope = AsyncMock(return_value=ListPermissionScope(
+            web_url="https://contoso.sharepoint.com/sites/a",
+            list_url="https://contoso.sharepoint.com/sites/a/_api/web/lists/getbytitle('Site%20Pages')",
+            has_unique_role_assignments=False,
+            unique_items={},
+        ))
         collected = []
         async for item in c._process_site_pages("site-1", "Site A"):
             collected.append(item)
-        assert collected == []
+        # The failed page is reported and the next one is still processed.
+        records = [item for item in collected if item is not DRIVE_CHECKPOINT]
+        assert [record.external_record_id for record, _perms, _update in records] == ["page-2"]
+        assert collected[-1] is DRIVE_CHECKPOINT
+        assert c._health.complete is False
+        assert any("Bad Page" in problem for problem in c._health.problems)
 
 
 class TestSharePointSearchCursorDecode:
@@ -1797,14 +1845,23 @@ class TestSharePointGetAllSitesBranches:
         c.rate_limiter.__aexit__ = AsyncMock(return_value=None)
         c.enable_subsite_discovery = False
         c.filters = {}
+        site_id = f"contoso.sharepoint.com,{'a' * 36},{'c' * 36}"
+        listed = MagicMock()
+        listed.id = site_id
+        listed.display_name = "Team"
+        listed.name = "team"
+        listed.web_url = "https://contoso.sharepoint.com/sites/team"
+        listed.created_date_time = None
+        listed.last_modified_date_time = None
         search_result = MagicMock()
-        search_result.value = None
+        search_result.value = [listed]
         search_result.odata_next_link = None
-        c._safe_api_call = AsyncMock(
-            side_effect=[RuntimeError("root fetch blew up"), search_result]
-        )
+        c.client.sites.by_site_id.return_value.get = AsyncMock(side_effect=RuntimeError("root fetch blew up"))
+        c.client.sites.get = AsyncMock(return_value=search_result)
         sites = await c._get_all_sites()
-        assert isinstance(sites, list)
+        # The site listing still runs, and the discovery is reported as incomplete.
+        assert [site.id for site in sites] == [site_id]
+        assert c._health.complete is False
 
     @pytest.mark.asyncio
     async def test_skips_duplicate_search_site_id(self):
@@ -1832,7 +1889,8 @@ class TestSharePointGetAllSitesBranches:
         search_result = MagicMock()
         search_result.value = [dup]
         search_result.odata_next_link = None
-        c._safe_api_call = AsyncMock(side_effect=[root, search_result])
+        c.client.sites.by_site_id.return_value.get = AsyncMock(return_value=root)
+        c.client.sites.get = AsyncMock(return_value=search_result)
         sites = await c._get_all_sites()
         assert len(sites) == 1
 

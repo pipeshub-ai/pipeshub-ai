@@ -1615,10 +1615,18 @@ class TestEnsureSchemaNotConnected:
 
 class TestEnsureIndexes:
     @pytest.mark.asyncio
-    async def test_ensure_indexes_success(self, connected_provider):
+    async def test_every_index_names_a_collection_and_a_field_list(self, connected_provider) -> None:
+        """ArangoDB refuses a malformed definition and the client only logs it, so the
+        schema step still succeeds without the index; this is the only place it shows."""
         connected_provider.http_client.ensure_persistent_index = AsyncMock()
         await connected_provider._ensure_indexes()
-        assert connected_provider.http_client.ensure_persistent_index.call_count == 79
+        calls = connected_provider.http_client.ensure_persistent_index.await_args_list
+        assert calls
+        for call in calls:
+            collection, fields = call.args[:2]
+            assert isinstance(collection, str) and collection, call
+            assert isinstance(fields, (list, tuple)) and fields, call
+            assert all(isinstance(f, str) and f for f in fields), call
 
 
 # ---------------------------------------------------------------------------

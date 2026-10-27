@@ -13,6 +13,7 @@ import base64
 import itertools
 import json
 import re
+import socket
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -31,13 +32,17 @@ from app.services.graph_db.common.record_visibility import (
 if TYPE_CHECKING:
     from collections.abc import AsyncIterator, Awaitable, Callable
 
+    from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
     from app.models.entities import FileRecord, Record, RecordGroup
 
 WEBDAV_PREFIX = "/remote.php/dav/files/"
-ACTIVITY_PATH = "/ocs/v2.php/apps/activity/api/v2/activity/files"
+ACTIVITY_PATH = "/ocs/v2.php/apps/activity/api/v2/activity/all"
 SHARES_PATH = "/ocs/v2.php/apps/files_sharing/api/v1/shares"
 CAPABILITIES_PATH = "/ocs/v1.php/cloud/capabilities"
 USERS_PREFIX = "/ocs/v1.php/cloud/users/"
+CURRENT_USER_PATH = "/ocs/v1.php/cloud/user"
+WIPE_CHECK_PATH = "/index.php/core/wipe/check"
+WIPE_SUCCESS_PATH = "/index.php/core/wipe/success"
 
 HTTP_DATE = "%a, %d %b %Y %H:%M:%S GMT"
 
@@ -56,6 +61,8 @@ class Node:
     modified: datetime
     content: bytes = b""
     content_type: str = "application/octet-stream"
+    created: int = 0  # nc:creation_time: set only when the uploading client sent one
+    download: bool = True  # False: shared with "Allow download" unticked
 
     @property
     def name(self) -> str:
@@ -88,6 +95,11 @@ class FakeNextcloud:
 
     user: str = "alice"
     app_password: str = "Xk3p9-QmT7r-Ab2Cd-Ef4Gh-Ij5Kl"
+    # The name typed into the form, when it isn't the user id (an email or LDAP login).
+    login: str | None = None
+    # Set by marking the app password for remote wipe; every request then answers 401.
+    wipe_requested: bool = False
+    wipe_confirmed: bool = False
     email: Optional[str] = "alice@example.com"
     base_path: str = ""
     nodes: dict[str, Node] = field(default_factory=dict)
@@ -98,6 +110,18 @@ class FakeNextcloud:
     faults: list[Fault] = field(default_factory=list)
     trash: dict[str, list[Node]] = field(default_factory=dict)
     search_supported: bool = True
+    redirect_downloads_to: str | None = None
+    # False: the Activity app is disabled, and its endpoint answers 404 as Nextcloud does.
+    activity_enabled: bool = True
+    # False: the app password's "Allow filesystem access" is unticked. It still signs in, but the
+    # home lists as an empty folder with file id -1 and files answer 404 (seen live, Nextcloud 31).
+    filesystem_access: bool = True
+    # Mount points whose storage is unavailable (an offline external storage or federated share).
+    unavailable: set[str] = field(default_factory=set)
+    # Unavailable mounts their parent's listing leaves out, as the first one after the outage does (seen live).
+    left_out: set[str] = field(default_factory=set)
+    # What each host name resolves to: the client connects only to an address it checked.
+    dns: dict[str, str] = field(default_factory=lambda: {"cloud.example.com": "93.184.215.14"})
 
     def __post_init__(self) -> None:
         self._ids = itertools.count(100)
@@ -111,12 +135,12 @@ class FakeNextcloud:
         self._clock += timedelta(minutes=1)
         return self._clock
 
-    def _log(self, kind: str, subject: str, targets: dict[str, str]) -> int:
+    def _log(self, kind: str, subject: str, targets: dict[str, str], app: str = "files") -> int:
         activity_id = next(self._activity_ids)
         first_id, first_path = next(iter(targets.items()))
         self.activities.append({
             "activity_id": activity_id,
-            "app": "files",
+            "app": app,
             "type": kind,
             "subject": subject,
             "object_type": "files",
@@ -198,6 +222,35 @@ class FakeNextcloud:
         self._tick()
         self._log("file_restored", "restored_self", {node.file_id: f"/{node.path}"})
 
+    def copy(self, source: str, target: str) -> Node:
+        """A server-side copy: new ids for the whole subtree, but one activity for the top folder only (seen live)."""
+        for p in sorted(p for p in self.nodes if p == source or p.startswith(source + "/")):
+            old = self.nodes[p]
+            path = target + p[len(source):]
+            self.nodes[path] = Node(str(next(self._ids)), path, old.is_dir, f"e{next(self._ids)}", self._tick(),
+                                    old.content, old.content_type)
+        self._log("file_created", "created_self", {self.nodes[target].file_id: f"/{target}"})
+        return self.nodes[target]
+
+    def share_in(self, path: str, files: dict[str, bytes]) -> Node:
+        """Another user shares a folder with this one: it appears with what it holds, and the
+        only activity is one ``shared`` entry from files_sharing, outside the 'files' stream (seen live)."""
+        folder = Node(str(next(self._ids)), path, True, f"e{next(self._ids)}", self._tick())
+        self.nodes[path] = folder
+        for name, content in files.items():
+            node = Node(str(next(self._ids)), f"{path}/{name}", False, f"e{next(self._ids)}", self._tick(), content, "text/plain")
+            self.nodes[node.path] = node
+        self._log("shared", "shared_with_by", {folder.file_id: f"/{path}"}, app="files_sharing")
+        return folder
+
+    def unshare(self, path: str) -> None:
+        """The owner removes the share: the folder leaves this user's tree, logged like the share itself."""
+        folder = self.nodes[path]
+        for p in [p for p in self.nodes if p == path or p.startswith(path + "/")]:
+            del self.nodes[p]
+        self._tick()
+        self._log("shared", "unshared_by", {folder.file_id: f"/{path}"}, app="files_sharing")
+
     def fail(self, method: str, matches: Callable[[str], bool], *responses: httpx.Response | Exception) -> Fault:
         """Answer the next matching requests with ``responses`` (one each; an exception is raised), then behave normally."""
         fault = Fault(method.upper(), matches, list(responses))
@@ -220,8 +273,20 @@ class FakeNextcloud:
     # ---- serving requests ----
 
     def _authorised(self, request: httpx.Request) -> bool:
-        expected = base64.b64encode(f"{self.user}:{self.app_password}".encode()).decode()
+        if self.wipe_requested:
+            return False
+        expected = base64.b64encode(f"{self.login or self.user}:{self.app_password}".encode()).decode()
         return request.headers.get("authorization") == f"Basic {expected}"
+
+    def _wipe(self, request: httpx.Request, path: str) -> httpx.Response:
+        """Nextcloud's remote wipe calls: unauthenticated, keyed by the app password in a form body."""
+        token = dict(httpx.QueryParams(request.content.decode())).get("token")
+        if not self.wipe_requested or token != self.app_password:
+            return httpx.Response(404, content=b"[]")
+        if path == WIPE_SUCCESS_PATH:
+            self.wipe_confirmed = True
+            return httpx.Response(200, content=b"[]")
+        return httpx.Response(200, content=b'{"wipe":true}')
 
     def calls(self, method: str, path_prefix: str = "") -> list[httpx.Request]:
         return [r for r in self.requests if r.method == method.upper()
@@ -241,6 +306,8 @@ class FakeNextcloud:
                 if isinstance(answer, Exception):
                     raise answer
                 return answer
+        if request.method == "POST" and path[len(self.base_path):] in (WIPE_CHECK_PATH, WIPE_SUCCESS_PATH):
+            return self._wipe(request, path[len(self.base_path):])
         if not self._authorised(request):
             return httpx.Response(401, content=b'{"message":"Current user is not logged in"}')
         if not path.startswith(self.base_path):
@@ -251,15 +318,22 @@ class FakeNextcloud:
             if request.method == "PROPFIND":
                 return self._propfind(rel, request.headers.get("depth", "1"))
             if request.method == "GET":
+                if self.redirect_downloads_to:
+                    return httpx.Response(302, headers={"location": self.redirect_downloads_to})
                 node = self.nodes.get(rel)
-                if node is None or node.is_dir:
+                if node is None or node.is_dir or not self.filesystem_access:
                     return httpx.Response(404)
+                if self._blocked(rel) is not None:
+                    return httpx.Response(503)
+                if not node.download:
+                    return httpx.Response(403)
                 return httpx.Response(200, content=node.content, headers={"content-type": node.content_type})
         if request.method == "SEARCH" and path.rstrip("/") == "/remote.php/dav":
             return self._search(request.content.decode())
-        if request.method == "GET" and path == ACTIVITY_PATH:
+        # Every stream answers alike: the fake logs only what the user's view of the feed holds.
+        if request.method == "GET" and path.startswith(ACTIVITY_PATH.rsplit("/", 1)[0] + "/"):
             return self._activity(request.url.params)
-        if request.method == "GET" and path == USERS_PREFIX + self.user:
+        if request.method == "GET" and path in (USERS_PREFIX + self.user, CURRENT_USER_PATH):
             return ocs({"id": self.user, "email": self.email, "displayname": self.user.title()})
         if request.method == "GET" and path == CAPABILITIES_PATH:
             return ocs({"version": {"major": 30}, "capabilities": {}})
@@ -271,17 +345,31 @@ class FakeNextcloud:
         self.unrouted.append(f"{request.method} {request.url}")
         return httpx.Response(404)
 
+    def _blocked(self, path: str) -> str | None:
+        """The unavailable mount ``path`` is or lies below, if any."""
+        return next((m for m in self.unavailable if path == m or path.startswith(m + "/")), None)
+
     def _propfind(self, rel: str, depth_header: str) -> httpx.Response:
         root = self.nodes.get(rel)
         if root is None:
             return httpx.Response(404, content=b"<d:error xmlns:d='DAV:'/>")
+        mount = self._blocked(rel)
+        if mount is not None and rel != mount:
+            return httpx.Response(503, content=(
+                '<?xml version="1.0" encoding="utf-8"?><d:error xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns">'
+                "<s:exception>Sabre\\DAV\\Exception\\ServiceUnavailable</s:exception>"
+                "<s:message>Storage with mount id 4 is not available</s:message></d:error>"
+            ).encode())
         depth = 10**6 if depth_header == "infinity" else int(depth_header)
         prefix = f"{rel}/" if rel else ""
         below = sorted(
             (n for p, n in self.nodes.items()
-             if p and p.startswith(prefix) and p != rel and p[len(prefix):].count("/") < depth),
+             if p and p.startswith(prefix) and p != rel and p[len(prefix):].count("/") < depth
+             and (self._blocked(p) in (None, p)) and p not in self.left_out),
             key=lambda n: n.path,
         )
+        if not self.filesystem_access or mount is not None:
+            below = []
         body = "".join(self._response_xml(n) for n in [root, *below])
         xml = (
             '<?xml version="1.0"?><d:multistatus xmlns:d="DAV:" xmlns:s="http://sabredav.org/ns" '
@@ -316,13 +404,18 @@ class FakeNextcloud:
         href = quote(self.webdav_url_path(node.path))
         if node.is_dir and not href.endswith("/"):
             href += "/"
+        # What Nextcloud answers for a node it cannot open (seen live): id -1, no etag, size 0.
+        unopened = node.path in self.unavailable or (not self.filesystem_access and not node.path)
         found = [
             f"<d:getlastmodified>{node.modified.strftime(HTTP_DATE)}</d:getlastmodified>",
-            f"<d:getetag>&quot;{node.etag}&quot;</d:getetag>",
-            f"<oc:fileid>{node.file_id}</oc:fileid>",
-            "<oc:permissions>RGDNVW</oc:permissions>",
-            f"<oc:size>{self._size(node)}</oc:size>",
+            "<d:getetag>&quot;&quot;</d:getetag>" if unopened else f"<d:getetag>&quot;{node.etag}&quot;</d:getetag>",
+            f"<oc:fileid>{-1 if unopened else node.file_id}</oc:fileid>",
+            "<oc:permissions>MG</oc:permissions>" if unopened else "<oc:permissions>RGDNVW</oc:permissions>",
+            f"<oc:size>{0 if unopened else self._size(node)}</oc:size>",
             f"<d:displayname>{escape(node.name)}</d:displayname>",
+            f"<nc:creation_time>{node.created}</nc:creation_time>",
+            "<nc:share-attributes>{}</nc:share-attributes>".format(escape(json.dumps(
+                [] if node.download else [{"scope": "permissions", "key": "download", "value": False}]))),
             "<d:resourcetype><d:collection/></d:resourcetype>" if node.is_dir else "<d:resourcetype/>",
         ]
         missing = ["<nc:is-encrypted/>", "<oc:checksums/>"]
@@ -341,10 +434,13 @@ class FakeNextcloud:
         )
 
     def _activity(self, params: httpx.QueryParams) -> httpx.Response:
+        if not self.activity_enabled:
+            return ocs([], status=404)
         if not self.activities:
             return httpx.Response(204)
         since = int(params["since"]) if "since" in params else None
-        limit = int(params.get("limit", "50"))
+        # Nextcloud's Data::get caps every page at 200, whatever is asked for.
+        limit = min(200, int(params.get("limit", "50")))
         descending = params.get("sort", "desc") == "desc"
         items = sorted(self.activities, key=lambda a: a["activity_id"], reverse=descending)
         if since is not None:
@@ -360,6 +456,12 @@ class FakeNextcloud:
         response.headers.update(headers)
         return response
 
+    def getaddrinfo(self, host: str, port: object, *args: object, **kwargs: object) -> list[tuple]:
+        """A stand-in for ``socket.getaddrinfo`` that answers from ``dns``."""
+        if host not in self.dns:
+            raise socket.gaierror(socket.EAI_NONAME, f"{host} not known")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", (self.dns[host], port or 0))]
+
     def network(self) -> Callable[[httpx.AsyncHTTPTransport, httpx.Request], Awaitable[httpx.Response]]:
         """A stand-in for ``httpx.AsyncHTTPTransport.handle_async_request``.
 
@@ -369,7 +471,10 @@ class FakeNextcloud:
         """
         async def handle_async_request(_transport: httpx.AsyncHTTPTransport, request: httpx.Request) -> httpx.Response:
             await request.aread()
-            return self(request)
+            response = self(request)
+            # Nextcloud starts a session on every answer, as the live server does.
+            response.headers["set-cookie"] = "oc_sessionPassphrase=s3ss10n; path=/; HttpOnly"
+            return response
 
         return handle_async_request
 
@@ -405,9 +510,30 @@ class FakeRecordsDb:
         self.fail_record_scan = False
         self.messaging_producer: Any = None
         self.kept_records: list[str] = []
+        self.moves: list[str] = []
+        self.full_sync_run: Any = None
+        self.lookups = 0
+        self.edge_deletes = 0
 
     def note_kept_records(self, connector_id: str, record_ids: list[str]) -> None:
         self.kept_records.extend(record_ids)
+        self._seen("records", record_ids)
+
+    # ---- full-sync tracking, as the processor does it for run_sync_task ----
+
+    def begin_full_sync_run(self, connector_id: str) -> FullSyncSeen:
+        from app.connectors.core.sync.full_sync_coverage import FullSyncSeen
+
+        self.full_sync_run = FullSyncSeen()
+        return self.full_sync_run
+
+    def end_full_sync_run(self, connector_id: str, run: FullSyncSeen) -> None:
+        self.full_sync_run = None
+
+    def _seen(self, collection: str, node_ids: list[str]) -> None:
+        if self.full_sync_run is not None:
+            for node_id in node_ids:
+                self.full_sync_run.add(collection, node_id)
 
     def _by_id(self, record_id: str) -> Optional[FileRecord]:
         return next((r for r in self.records.values() if r.id == record_id), None)
@@ -442,6 +568,7 @@ class FakeRecordsDb:
         """A base Record, as both graph stores rebuild it: no ``is_file``, ``path`` or ``etag``."""
         from app.models.entities import Record
 
+        self.lookups += 1
         if external_record_id in self.fail_lookup_for:
             raise RuntimeError(f"database unavailable for {external_record_id}")
         found = self.records.get(external_record_id)
@@ -474,10 +601,20 @@ class FakeRecordsDb:
         self.batches.append([r.record_name for r, _ in records_with_permissions])
         for record, permissions in records_with_permissions:
             self._upsert(record)
+            self._seen("records", [record.id])
             kept = self.permissions.setdefault(record.external_record_id, [])
             for p in permissions:
                 if all((p.email, p.type) != (k.email, k.type) for k in kept):
                     kept.append(p)
+
+    async def on_records_moved(self, moves: list[tuple[str, Any, list[Any]]], **_: object) -> None:
+        """Saves each record in place under its id, re-pointing its parent link, as the processor does."""
+        for _old_external_id, record, _permissions in moves:
+            if record.record_name in self.fail_write_for:
+                raise RuntimeError(f"write failed for {record.record_name}")
+        self.moves.extend(record.record_name for _, record, _ in moves)
+        for _, record, _ in moves:
+            self._upsert(record)
 
     async def on_record_content_update(self, record: FileRecord) -> None:
         self.content_updates.append(record)
@@ -535,14 +672,25 @@ class FakeRecordsDb:
                 if r.parent_external_record_id == parent_external_record_id and is_live_record(r)]
 
     async def delete_parent_child_edge_to_record(self, record_id: str) -> int:
+        self.edge_deletes += 1
         return 1 if self.edges.pop(record_id, None) else 0
 
     async def on_new_app_users(self, users: list[Any]) -> None:
-        self.app_users.extend(users)
+        # One user-to-app edge per user, as in the graph.
+        for user in users:
+            self.app_users = [u for u in self.app_users if u.email != user.email] + [user]
+
+    async def get_all_app_users(self, connector_id: str, *, raise_on_error: bool = False) -> list[Any]:
+        return list(self.app_users)
+
+    async def withdraw_app_user_access(self, connector_id: str, users: list[Any]) -> None:
+        gone = {u.email for u in users}
+        self.app_users = [u for u in self.app_users if u.email not in gone]
 
     async def on_new_record_groups(self, groups: list[tuple[Any, list[Any]]]) -> None:
         for group, permissions in groups:
             self.record_groups[group.external_group_id] = group
+            self._seen("recordGroups", [group.id])
             self.record_group_permissions[group.external_group_id] = list(permissions)
 
     async def get_record_group_by_external_id(self, connector_id: str, external_id: str) -> Optional[RecordGroup]:
@@ -596,6 +744,8 @@ class FakeStore:
 
     def __init__(self, records: FakeRecordsDb | None = None) -> None:
         self.sync_points: dict[str, dict[str, Any]] = {}
+        # The PipesHub users by user id; "creator-user-1" created the connector in these tests.
+        self.users: dict[str, dict[str, Any]] = {"creator-user-1": {"_key": "u-creator", "email": "creator@pipeshub.test"}}
         self.fail_reads = 0
         self.records = records
         self.fail_path_lookups = False
@@ -605,6 +755,9 @@ class FakeStore:
             self.fail_reads -= 1
             raise RuntimeError("database unavailable")
         return self.sync_points.get(key)
+
+    async def get_user_by_user_id(self, user_id: str, **_: object) -> dict[str, Any] | None:
+        return self.users.get(user_id)
 
     async def update_sync_point(self, key: str, data: dict[str, Any]) -> None:
         """Merges into the stored document, as Arango's UPDATE and Neo4j's ``SET +=`` do.

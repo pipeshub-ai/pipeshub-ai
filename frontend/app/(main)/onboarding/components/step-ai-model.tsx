@@ -11,12 +11,10 @@ import { useAiModelsManager } from '@/app/(main)/workspace/ai-models/hooks/use-a
 const MODEL_ADDED_TOAST_DURATION_MS = 6000;
 
 interface StepAiModelProps {
-  systemStepIndex: number;
-  totalSystemSteps: number;
   nextGateRef?: React.MutableRefObject<(() => boolean) | null>;
 }
 
-export function StepAiModel({ systemStepIndex, totalSystemSteps, nextGateRef }: StepAiModelProps) {
+export function StepAiModel({ nextGateRef }: StepAiModelProps) {
   const { t } = useTranslation();
   const { markStepCompleted, unmarkStepCompleted } = useOnboardingStore();
   const [rolesAcknowledged, setRolesAcknowledged] = useState(false);
@@ -99,7 +97,7 @@ export function StepAiModel({ systemStepIndex, totalSystemSteps, nextGateRef }: 
             {t('onboarding.systemConfig')}
           </Text>
           <Text as="div" size="4" weight="bold" style={{ color: 'var(--gray-12)' }}>
-            {t('onboarding.stepHeading', { current: systemStepIndex, total: totalSystemSteps, name: t('onboarding.stepAiModel.stepName') })}
+            {t('onboarding.stepHeading', { name: t('onboarding.stepAiModel.stepName') })}
           </Text>
         </Box>
 

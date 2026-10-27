@@ -322,7 +322,9 @@ class TestS3RunSync:
         s3_connector._get_bucket_region = AsyncMock(return_value="us-east-1")
         s3_connector._create_record_groups_for_buckets = AsyncMock()
         s3_connector._sync_bucket = AsyncMock(side_effect=Exception("Sync failed"))
-        await s3_connector.run_sync()
+        # Records may not have been saved, so the run fails once every bucket was tried.
+        with pytest.raises(RuntimeError, match="sync failed"):
+            await s3_connector.run_sync()
 
 
 # ===========================================================================

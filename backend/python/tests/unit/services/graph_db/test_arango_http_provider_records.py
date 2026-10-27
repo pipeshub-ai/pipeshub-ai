@@ -3170,6 +3170,7 @@ class TestDeleteIsoftypeTargetsFromCollected:
             {"collection": "files", "key": "f2", "full_id": "files/f2"},
         ]
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(1, 0))
+        connected_provider.get_existing_keys = AsyncMock(return_value={"f2"})
         with pytest.raises(Exception, match="CRITICAL"):
             await connected_provider._delete_isoftype_targets_from_collected(
                 "txn1", targets, []
@@ -3516,6 +3517,7 @@ class TestDeleteConnectorInstance:
         connected_provider._delete_nodes_by_connector_id = AsyncMock(
             return_value=(0, True)
         )
+        connected_provider.delete_nodes_and_edges = AsyncMock()
         connected_provider.begin_transaction = AsyncMock(return_value="txn1")
         connected_provider.commit_transaction = AsyncMock()
         result = await connected_provider.delete_connector_instance("c1", "org1")
@@ -3565,6 +3567,7 @@ class TestDeleteConnectorInstance:
             return_value=(0, [])
         )
         connected_provider._delete_nodes_by_keys = AsyncMock(return_value=(0, 0))
+        connected_provider.get_existing_keys = AsyncMock(return_value={"r1"})
         connected_provider.begin_transaction = AsyncMock(return_value="txn1")
         connected_provider.rollback_transaction = AsyncMock()
         result = await connected_provider.delete_connector_instance("c1", "org1")
@@ -3594,6 +3597,7 @@ class TestDeleteConnectorInstance:
         connected_provider._delete_nodes_by_connector_id = AsyncMock(
             return_value=(0, True)
         )
+        connected_provider.delete_nodes_and_edges = AsyncMock()
         connected_provider.begin_transaction = AsyncMock()
         connected_provider.commit_transaction = AsyncMock()
         result = await connected_provider.delete_connector_instance(

@@ -1,5 +1,7 @@
 'use client';
 
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { sidePanelFrame } from '@/app/components/ui/responsive';
 import React, {
   createContext,
   startTransition,
@@ -179,6 +181,7 @@ export function WorkspaceRightPanel({
   style,
   secondaryVariant = 'outline',
 }: WorkspaceRightPanelProps) {
+  const isMobile = useIsMobile();
   const { t } = useTranslation();
   const primaryButtonTooltipText =
     primaryTooltip ??
@@ -263,18 +266,12 @@ export function WorkspaceRightPanel({
         aria-modal="true"
         aria-labelledby={titleId}
         style={{
-          position: 'fixed',
-          top: 10,
-          right: 10,
-          bottom: 10,
-          width: '37.5rem',
-          maxWidth: '100vw',
-          maxHeight: 'calc(100vh - 20px)',
+          ...sidePanelFrame(isMobile),
           padding: 0,
           margin: 0,
           background: 'var(--effects-translucent)',
           border: '1px solid var(--olive-3)',
-          borderRadius: 'var(--radius-2)',
+          borderRadius: isMobile ? 0 : 'var(--radius-2)',
           backdropFilter: 'blur(25px)',
           overflow: 'hidden',
           display: 'flex',
@@ -331,6 +328,7 @@ export function WorkspaceRightPanel({
               color="gray"
               size="2"
               onClick={handleClose}
+              aria-label={t('common.close')}
               style={{ cursor: 'pointer' }}
             >
               <MaterialIcon name="close" size={18} color="var(--slate-11)" />

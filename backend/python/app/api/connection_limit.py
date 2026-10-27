@@ -152,3 +152,145 @@ async def _only_the_collection_outside(
         if not node or node.get("connectorId") != str(kb_id):
             return False
     return True
+
+
+# A record document's parents, each with the source system's id for the same
+# parent: both name it, so both go when it lies outside the limit.
+_RECORD_PARENT_FIELDS = {
+    "recordGroupId": ("externalGroupId",),
+    "rootRecordGroupId": (),
+    "parentNodeId": ("externalParentId",),
+}
+
+
+# Neo4j stores no null property, so a record in no record group and under no
+# parent node comes back without those keys and is known by its source ids.
+_RECORD_DOC_KEYS = frozenset(
+    (*_RECORD_PARENT_FIELDS, *(key for keys in _RECORD_PARENT_FIELDS.values() for key in keys))
+)
+
+
+def _record_docs(value: object) -> Iterable[dict[str, Any]]:
+    """Every dict under ``value`` that carries a record's parent fields."""
+    if isinstance(value, dict):
+        if any(key in value for key in _RECORD_DOC_KEYS):
+            yield value
+        for child in value.values():
+            yield from _record_docs(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _record_docs(child)
+
+
+async def hide_record_parents_outside_connection(
+    request: Request, graph_provider: IGraphDBProvider, org_id: str, user_id: str, payload: object,
+    *, containers: Sequence[str] = (),
+) -> None:
+    """Clear, in every record document under ``payload``, each parent the
+    calling app's limit leaves out, with its source id: a file the limit names
+    does not name the folder above it. ``containers`` names keys of
+    ``payload`` that hold an ``{id, name}`` above the record, set to None the
+    same way. Nothing changes without a limit."""
+    if connection_limit(request.state.user) is None:
+        return
+    docs = list(_record_docs(payload))
+    parents = {doc[key] for doc in docs for key in _RECORD_PARENT_FIELDS if isinstance(doc.get(key), str) and doc[key]}
+    # A collection file's source parent is its folder's own id, so it is
+    # checked like a parent node; a connector's is the source's id, which no
+    # node has, so it comes back outside.
+    unplaced = {doc["externalParentId"] for doc in docs if _unplaced_source_parent(doc)}
+    holder = payload if isinstance(payload, dict) else {}
+    above = {key: holder[key].get("id") for key in containers if isinstance(holder.get(key), dict)}
+    outside = await ids_outside_connection(
+        request, graph_provider, org_id, user_id, [*parents, *unplaced, *(i for i in above.values() if i)],
+    )
+    for key, node_id in above.items():
+        if node_id in outside:
+            holder[key] = None
+    whole_apps = set((connection_limit(request.state.user) or {}).get("apps") or ())
+    for doc in docs:
+        for key, source_keys in _RECORD_PARENT_FIELDS.items():
+            if doc.get(key) in outside:
+                for field in (key, *source_keys):
+                    if field in doc:
+                        doc[field] = None
+        # A source parent with no parent node is inside when the limit covers
+        # the record's whole app, or shares that parent by its id.
+        if (
+            _unplaced_source_parent(doc)
+            and doc.get("connectorId") not in whole_apps
+            and doc["externalParentId"] in outside
+        ):
+            doc["externalParentId"] = None
+
+
+def _unplaced_source_parent(doc: dict[str, Any]) -> bool:
+    parent = doc.get("externalParentId")
+    return isinstance(parent, str) and bool(parent) and not doc.get("parentNodeId")
+
+
+def hide_record_parents_unchecked(request: Request, payload: object) -> None:
+    """For a limited caller when the limit check cannot run: clear every
+    parent and source path under ``payload``, inside the limit or not. Names
+    are lost, never shown unchecked. Nothing changes without a limit."""
+    if connection_limit(request.state.user) is None:
+        return
+    for doc in _record_docs(payload):
+        for key, source_keys in _RECORD_PARENT_FIELDS.items():
+            for field in (key, *source_keys):
+                if field in doc:
+                    doc[field] = None
+    _clear_source_paths(payload)
+
+
+#: A file's path in its source system, which names every folder above it.
+SOURCE_PATH_FIELDS = ("path", "filePath", "localFsRelativePath")
+
+
+def _clear_source_paths(value: object) -> None:
+    if isinstance(value, dict):
+        for key in SOURCE_PATH_FIELDS:
+            if isinstance(value.get(key), str):
+                value[key] = None
+        for child in value.values():
+            _clear_source_paths(child)
+    elif isinstance(value, list):
+        for child in value:
+            _clear_source_paths(child)
+
+
+def _docs_with_an_app(value: object) -> Iterable[dict[str, Any]]:
+    """Every dict under ``value`` that names its app (a record document)."""
+    if isinstance(value, dict):
+        if "connectorId" in value:
+            yield value
+        for child in value.values():
+            yield from _docs_with_an_app(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _docs_with_an_app(child)
+
+
+def hide_record_source_paths(request: Request, payload: object) -> None:
+    """``hide_source_paths`` for a payload of record documents from many apps
+    (a search response): each one keeps its source paths only when the limit
+    covers its own app whole. Nothing changes without a limit, and nothing is
+    asked of the graph."""
+    limit = connection_limit(request.state.user)
+    if limit is None:
+        return
+    whole_apps = set(limit.get("apps") or ())
+    for doc in list(_docs_with_an_app(payload)):
+        if doc.get("connectorId") not in whole_apps:
+            _clear_source_paths(doc)
+
+
+def hide_source_paths(request: Request, payload: object, app_id: str | None) -> None:
+    """Clear every source path under ``payload``, all of it in app ``app_id``,
+    unless the calling app's limit covers that app whole: a path names the
+    folders above a file, which a narrower limit leaves out. Nothing changes
+    without a limit, and nothing is asked of the graph."""
+    limit = connection_limit(request.state.user)
+    if limit is None or (app_id and app_id in (limit.get("apps") or ())):
+        return
+    _clear_source_paths(payload)
