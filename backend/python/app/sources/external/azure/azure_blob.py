@@ -2,6 +2,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 try:
+    from azure.core.exceptions import ClientAuthenticationError  # type: ignore
     from azure.storage.blob import (  # type: ignore
         AccountSasPermissions,
         BlobSasPermissions,
@@ -19,6 +20,7 @@ except ImportError:
     raise ImportError("azure-storage-blob is not installed. Please install it with `pip install azure-storage-blob`")
 
 from app.sources.client.azure.azure_blob import AzureBlobClient, AzureBlobResponse
+from app.sources.client.azure.connection_string import INVALID_ACCOUNT_KEY
 from app.utils.url_redaction import redact_urls_in_text
 
 _ERROR_TEXT_LIMIT = 300
@@ -31,6 +33,9 @@ def azure_error_text(error: BaseException) -> str:
     request's SharedKey signature and the string it signed, and it ends with the whole
     XML response body.
     """
+    # Matched by name: the SDK defines it in a private module of each storage package.
+    if isinstance(error, ClientAuthenticationError) and type(error).__name__ == "AzureSigningError":
+        return INVALID_ACCOUNT_KEY
     status = getattr(error, "status_code", None)
     code = getattr(error, "error_code", None)
     code = getattr(code, "value", code)

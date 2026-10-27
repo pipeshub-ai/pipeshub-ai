@@ -20,6 +20,7 @@ if TYPE_CHECKING:
 
 from azure.core.async_paging import AsyncItemPaged  # type: ignore[import-untyped]
 from azure.core.exceptions import AzureError  # type: ignore[import-untyped]
+from azure.storage.blob import BlobServiceClient  # type: ignore[import-untyped]
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
     Connectors,
@@ -91,6 +92,7 @@ from app.models.entities import (
 )
 from app.models.permission import Permission
 from app.sources.client.azure.azure_blob import AzureBlobClient
+from app.sources.client.azure.connection_string import account_key_problem
 from app.sources.external.azure.azure_blob import AzureBlobDataSource, azure_error_code, azure_error_text
 from app.connectors.core.base.error.stream_errors import (
     connector_not_ready,
@@ -592,6 +594,12 @@ class AzureBlobConnector(BaseConnector):
             )
             return False
 
+        problems = self.auth_config_problems(auth_config)
+        if problems:
+            self.logger.error(f"Azure Blob credentials refused: {problems[0]}")
+            await self._notify_error(NotificationType.CONNECTOR_AUTH_ERROR, "Credentials refused", problems[0])
+            raise ConnectorInitError(f"{self.display_name}: {problems[0]}")
+
         # Container name is no longer stored in config - it's determined at sync time
         self.container_name = None
 
@@ -631,6 +639,13 @@ class AzureBlobConnector(BaseConnector):
                 f"Failed to initialize the Azure Blob client: {e}",
             )
             return False
+
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        if auth_config.get("authType") == AuthType.ENTRA_ID:
+            return []
+        problem = account_key_problem(auth_config.get("azureBlobConnectionString") or "", BlobServiceClient)
+        return [problem] if problem else []
 
     def _generate_web_url(self, container_name: str, blob_name: str) -> str:
         """Generate the web URL for an Azure blob."""

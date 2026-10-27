@@ -25,6 +25,7 @@ from logging import Logger
 from typing import Any
 from urllib.parse import quote, urlparse
 
+from azure.storage.fileshare import ShareServiceClient  # type: ignore[import-untyped]
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -102,6 +103,7 @@ from app.models.permission import Permission
 from app.services.graph_db.common.record_visibility import is_live_record
 from app.services.notification.types import NotificationSeverity, NotificationType
 from app.sources.client.azure.azure_files import AzureFilesClient, AzureFilesResponse
+from app.sources.client.azure.connection_string import account_key_problem
 from app.sources.external.azure.azure_files import (
     CREDENTIALS_REJECTED,
     AzureFilesDataSource,
@@ -516,6 +518,12 @@ class AzureFilesConnector(BaseConnector):
                 "The Azure Files connection string is missing.",
             )
             return False
+
+        problems = self.auth_config_problems(auth_config)
+        if problems:
+            self.logger.error(f"Azure Files credentials refused: {problems[0]}")
+            await self._notify_problem(NotificationType.CONNECTOR_AUTH_ERROR, "Credentials refused", problems[0])
+            raise ConnectorInitError(f"{self.display_name}: {problems[0]}")
 
         # Load creator email if needed (for personal scope permission creation)
         await self._load_creator_email()
@@ -1721,6 +1729,13 @@ class AzureFilesConnector(BaseConnector):
         except Exception as e:
             self.logger.error(f"Error processing Azure Files item: {e}", exc_info=True)
             return None, []
+
+    @classmethod
+    def auth_config_problems(cls, auth_config: dict[str, Any]) -> list[str]:
+        if auth_config.get("authType") == AuthType.ENTRA_ID:
+            return []
+        problem = account_key_problem(auth_config.get("connectionString") or "", ShareServiceClient)
+        return [problem] if problem else []
 
     async def _create_azure_files_permissions(
         self, share_name: str, item_path: str
