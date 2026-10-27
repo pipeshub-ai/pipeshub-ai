@@ -690,6 +690,7 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         self._kh_scope_untrusted: set[str] = set()
         # The hinted indexes being read without, so each is logged once.
         self._hint_indexes_missing: set[str] = set()
+        self._unique_id_verified: set[str] = set()
 
 
     # ==================== Connection Management ====================
@@ -4571,8 +4572,11 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
         """See :meth:`IGraphDBProvider.create_node_if_absent`."""
         label = collection_to_label(collection)
         self.validator.validate_node_update(collection, node)
+        await self._require_unique_id(label)
         props = self._arango_to_neo4j_node({**node, "id": key}, collection)
         props.pop("_key", None)
+        # The conversion copies a `_key` in `node` into `id`; the requested key is the one created.
+        props["id"] = key
         try:
             rows = await self.client.execute_query(
                 f"""
@@ -4602,6 +4606,24 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     return False
             raise
         return bool(rows and rows[0].get("created"))
+
+    async def _require_unique_id(self, label: str) -> None:
+        """Refuse to create-if-absent on a label without its unique id constraint.
+
+        MERGE alone does not stop two concurrent creates of one key; the constraint does. ensure_schema
+        only logs a constraint it could not create, so it is checked here, once per label and process.
+        """
+        if label in self._unique_id_verified:
+            return
+        rows = await self.client.execute_query(
+            "SHOW CONSTRAINTS YIELD labelsOrTypes, properties, type "
+            "WHERE $label IN labelsOrTypes AND properties = ['id'] AND type CONTAINS 'UNIQUENESS' "
+            "RETURN count(*) AS found",
+            {"label": label},
+        )
+        if not rows or not rows[0]["found"]:
+            raise RuntimeError(f"the unique constraint on {label}.id is missing")
+        self._unique_id_verified.add(label)
 
     async def update_nodes_fields_if_match(
         self,
