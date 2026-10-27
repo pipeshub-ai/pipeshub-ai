@@ -93,24 +93,8 @@ class TestOpenCVLayoutAnalyzerAnalyzePage:
     def test_analyze_page_unclaimed_block_as_heading(self, mock_cv2):
         """analyze_page classifies unclaimed block as HEADING when font size is large."""
         analyzer = self._make_analyzer()
-
-        mock_page = MagicMock()
-        mock_page.rect.width = 612.0
-        mock_page.rect.height = 792.0
-        mock_pix = MagicMock()
-        mock_pix.height = 100
-        mock_pix.width = 80
-        mock_pix.samples = np.zeros(100 * 80 * 3, dtype=np.uint8).tobytes()
-        mock_page.get_pixmap.return_value = mock_pix
-
-        mock_cv2.cvtColor.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.adaptiveThreshold.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.morphologyEx.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.getStructuringElement.return_value = np.ones((1, 10), dtype=np.uint8)
-        mock_cv2.add.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.dilate.return_value = np.zeros((100, 80), dtype=np.uint8)
-        mock_cv2.findContours.return_value = ([], None)
-        mock_page.get_images.return_value = []
+        self._stub_cv2_without_contours(mock_cv2)
+        mock_page = self._make_blank_page()
 
         # Text dict with one block that has a large font size (heading)
         # median font size will be 24 (only one block), so threshold = 24*1.3 = 31.2
