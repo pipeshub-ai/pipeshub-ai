@@ -1,0 +1,570 @@
+# ruff: noqa: ANN401
+"""Loading an Excel workbook in a memory-limited worker, and the compact model it hands back.
+
+openpyxl builds one Python object per cell, merged cell, comment and image
+anchor, and what a small file expands to cannot be known from its XML (QA found
+inputs of a few KB that load to 4 GB). So nothing here estimates: the load runs
+in a worker process whose growth is capped (``load_workbook_model``), and a
+workbook that does not fit is refused, whatever it contains.
+
+The parent never builds openpyxl objects. The worker copies what the parser
+reads (cell values, data types, number formats, the few style fields written
+into blocks, merged ranges and sheet extents) into the model below and sends
+only that. The model is columnar: one sorted ``array`` of cell positions, one of
+style ids and one list of values per sheet, about 20 bytes plus the value per
+cell against ~430 bytes for an openpyxl cell. ``SheetModel`` answers the calls
+the parser makes of a worksheet (``cell``, ``iter_rows``, merged cells, the
+extent of the data), so table finding and its LLM steps run in the parent on it
+unchanged.
+
+Keep this module's imports to the standard library and openpyxl: the worker
+imports it by name and must not pay for the service's own modules.
+"""
+from __future__ import annotations
+
+import contextlib
+import gc
+import io
+import zipfile
+import zlib
+from array import array
+from bisect import bisect_left
+from typing import TYPE_CHECKING, Any
+
+from openpyxl import load_workbook
+from openpyxl.cell.cell import Cell, MergedCell
+from openpyxl.utils import column_index_from_string, get_column_letter
+from openpyxl.utils.cell import coordinate_from_string
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Iterator
+
+try:  # POSIX only
+    import resource
+except ImportError:  # pragma: no cover
+    resource = None  # type: ignore[assignment]
+
+__all__ = [
+    "ModelCell",
+    "ModelMergedCell",
+    "SheetModel",
+    "WorkbookModel",
+    "WorkbookRefused",
+    "get_cell_background_color",
+    "get_cell_font_color",
+    "load_workbook_model",
+]
+
+_CHUNK_BYTES = 1024 * 1024
+_COLUMN_BITS = 20  # a position is (row << 20) | column; columns stop at 18278
+_COLUMN_MASK = (1 << _COLUMN_BITS) - 1
+_TALL_MERGE_ROWS = 32  # taller merged ranges are searched, shorter ones are indexed by row
+_NEAR_LIMIT = 0.8  # an error with the worker this close to its cap is the cap
+
+
+class WorkbookRefused(Exception):
+    """The workbook was not loaded. ``reason`` is ``too_large`` or ``unreadable``."""
+
+    def __init__(self, reason: str, detail: str = "") -> None:
+        super().__init__(reason, detail)
+        self.reason = reason
+        self.detail = detail
+
+
+# ---------------------------------------------------------------------------
+# Colours (shared with the parser, which re-exports them)
+# ---------------------------------------------------------------------------
+
+
+def _color_to_str(color: object) -> str | None:
+    """Return a colour's ``rgb`` only when it is a real string.
+
+    Theme and indexed colours expose ``rgb`` as an error descriptor rather than
+    a string, so anything that is not a ``str`` is treated as "no colour".
+    """
+    rgb = getattr(color, "rgb", None)
+    return rgb if isinstance(rgb, str) else None
+
+
+def get_cell_background_color(cell: object) -> str | None:
+    """Background colour of a cell as a string, or None.
+
+    Handles ``PatternFill`` (foreground colour) and ``GradientFill`` (first
+    colour stop). Styling is decorative, so a failure reading it yields None
+    instead of failing the cell.
+    """
+    try:
+        # cell.fill is a StyleProxy, so isinstance() against the fill classes
+        # is always False; tell the two kinds apart by their attributes.
+        fill = getattr(cell, "fill", None)
+        if fill is None:
+            return None
+        start_color = getattr(fill, "start_color", None)
+        if start_color is not None:  # PatternFill
+            return _color_to_str(start_color)
+        stops = getattr(fill, "stop", None)  # GradientFill: colour stops
+        if not stops:
+            return None
+        first = stops[0]
+        return _color_to_str(getattr(first, "color", first))
+    except Exception:
+        return None
+
+
+def get_cell_font_color(cell: object) -> str | None:
+    """Font colour of a cell as a string, or None (theme/indexed give None)."""
+    try:
+        return _color_to_str(cell.font.color)
+    except Exception:
+        return None
+
+
+# ---------------------------------------------------------------------------
+# The model
+# ---------------------------------------------------------------------------
+
+
+class _Rgb:
+    """What ``_color_to_str`` reads of an openpyxl colour."""
+
+    __slots__ = ("rgb",)
+
+    def __init__(self, rgb: str | None) -> None:
+        self.rgb = rgb
+
+
+class _Font:
+    __slots__ = ("bold", "color", "italic", "size")
+
+    def __init__(self, bold: Any, italic: Any, size: Any, color: str | None) -> None:
+        self.bold = bold
+        self.italic = italic
+        self.size = size
+        self.color = _Rgb(color)
+
+
+class _Fill:
+    __slots__ = ("start_color",)
+
+    def __init__(self, background: str | None) -> None:
+        self.start_color = _Rgb(background)
+
+
+class _Alignment:
+    __slots__ = ("horizontal", "vertical")
+
+    def __init__(self, horizontal: Any, vertical: Any) -> None:
+        self.horizontal = horizontal
+        self.vertical = vertical
+
+
+# A style is (data_type, number_format, bold, italic, size, font colour,
+# background colour, horizontal, vertical), interned once per workbook.
+_DEFAULT_STYLE_ID = 0
+
+
+class ModelCell:
+    """A cell of a ``SheetModel``, read-only, with the attributes the parser reads of an openpyxl cell."""
+
+    __slots__ = ("column", "parent", "row", "_style", "value")
+
+    def __init__(self, parent: SheetModel, row: int, column: int, value: Any, style: tuple) -> None:
+        self.parent = parent
+        self.row = row
+        self.column = column
+        self.value = value
+        self._style = style
+
+    @property
+    def data_type(self) -> str:
+        return self._style[0]
+
+    @property
+    def number_format(self) -> str:
+        return self._style[1]
+
+    @property
+    def column_letter(self) -> str:
+        return get_column_letter(self.column)
+
+    @property
+    def coordinate(self) -> str:
+        return f"{get_column_letter(self.column)}{self.row}"
+
+    @property
+    def font(self) -> _Font:
+        s = self._style
+        return _Font(s[2], s[3], s[4], s[5])
+
+    @property
+    def fill(self) -> _Fill:
+        return _Fill(self._style[6])
+
+    @property
+    def alignment(self) -> _Alignment:
+        return _Alignment(self._style[7], self._style[8])
+
+
+class ModelMergedCell:
+    """A position inside a merged range other than its top-left cell (openpyxl's ``MergedCell``)."""
+
+    __slots__ = ("anchor", "column", "parent", "row")
+    value = None
+    data_type = "n"
+
+    def __init__(self, parent: SheetModel, row: int, column: int, anchor: tuple[int, int]) -> None:
+        self.parent = parent
+        self.row = row
+        self.column = column
+        self.anchor = anchor
+
+    @property
+    def column_letter(self) -> str:
+        return get_column_letter(self.column)
+
+    @property
+    def coordinate(self) -> str:
+        return f"{get_column_letter(self.column)}{self.row}"
+
+    def anchor_cell(self) -> ModelCell | ModelMergedCell:
+        return self.parent.cell(*self.anchor)
+
+
+class _ValuePositions:
+    """The positions that hold a value, as the set the parser's table scan needs."""
+
+    def __init__(self, sheet: SheetModel) -> None:
+        self._sheet = sheet
+        values = sheet.values
+        max_row = max_col = 0
+        count = 0
+        for key, value in zip(sheet.keys, values, strict=True):
+            if value is not None:
+                count += 1
+                row, col = key >> _COLUMN_BITS, key & _COLUMN_MASK
+                max_row = max(max_row, row)
+                max_col = max(max_col, col)
+        self.count = count
+        self.max_row = max_row
+        self.max_col = max_col
+
+    def __bool__(self) -> bool:
+        return self.count > 0
+
+    def __len__(self) -> int:
+        return self.count
+
+    def __contains__(self, position: object) -> bool:
+        row, col = position  # type: ignore[misc]
+        return self._sheet.raw_value(row, col) is not None
+
+
+class SheetModel:
+    """One worksheet: cell positions (sorted), their style ids and values, and the merged ranges."""
+
+    def __init__(
+        self,
+        title: str,
+        max_row: int,
+        max_column: int,
+        keys: array,
+        style_ids: array,
+        values: list,
+        styles: list[tuple],
+        merges: list[tuple[int, int, int, int]],
+    ) -> None:
+        self.title = title
+        self.max_row = max_row
+        self.max_column = max_column
+        self.keys = keys
+        self.style_ids = style_ids
+        self.values = values
+        self.styles = styles
+        self.merges = merges
+        self._merge_rows: dict[int, list[int]] | None = None
+        self._merge_tall: list[int] = []
+        self._positions: _ValuePositions | None = None
+
+    # -- lookups ---------------------------------------------------------
+
+    def _find(self, row: int, col: int) -> int:
+        key = (row << _COLUMN_BITS) | col
+        i = bisect_left(self.keys, key)
+        return i if i < len(self.keys) and self.keys[i] == key else -1
+
+    def raw_value(self, row: int, col: int) -> Any:
+        i = self._find(row, col)
+        return self.values[i] if i >= 0 else None
+
+    def _merge_anchor(self, row: int, col: int) -> tuple[int, int] | None:
+        """Top-left cell of the first merged range holding (row, col), when that is another cell."""
+        if not self.merges:
+            return None
+        if self._merge_rows is None:
+            index: dict[int, list[int]] = {}
+            tall: list[int] = []
+            for n, (min_row, _min_col, max_row, _max_col) in enumerate(self.merges):
+                if max_row - min_row < _TALL_MERGE_ROWS:
+                    for r in range(min_row, max_row + 1):
+                        index.setdefault(r, []).append(n)
+                else:
+                    tall.append(n)
+            self._merge_rows, self._merge_tall = index, tall
+        candidates = self._merge_rows.get(row, ())
+        best = -1
+        for n in (*candidates, *self._merge_tall):
+            min_row, min_col, max_row, max_col = self.merges[n]
+            if min_row <= row <= max_row and min_col <= col <= max_col and (best < 0 or n < best):
+                best = n
+        if best < 0:
+            return None
+        min_row, min_col, _, _ = self.merges[best]
+        return None if (row, col) == (min_row, min_col) else (min_row, min_col)
+
+    def cell(self, row: int, column: int) -> ModelCell | ModelMergedCell:
+        if row < 1 or column < 1:
+            raise ValueError("Row or column values must be at least 1")
+        if not 0 < row < 1048577:
+            raise ValueError(f"Row numbers must be between 1 and 1048576. Row number supplied was {row}")
+        anchor = self._merge_anchor(row, column)
+        if anchor is not None:
+            return ModelMergedCell(self, row, column, anchor)
+        i = self._find(row, column)
+        if i < 0:
+            return ModelCell(self, row, column, None, self.styles[_DEFAULT_STYLE_ID])
+        return ModelCell(self, row, column, self.values[i], self.styles[self.style_ids[i]])
+
+    def __getitem__(self, coordinate: str) -> ModelCell | ModelMergedCell:
+        letters, row = coordinate_from_string(coordinate)
+        return self.cell(row, column_index_from_string(letters))
+
+    def iter_rows(
+        self,
+        min_row: int | None = None,
+        max_row: int | None = None,
+        min_col: int | None = None,
+        max_col: int | None = None,
+        *,
+        values_only: bool = False,
+    ) -> Iterator[tuple]:
+        """Rows of cells between the bounds, every position included (as openpyxl yields)."""
+        min_col = min_col or 1
+        min_row = min_row or 1
+        max_col = max_col or self.max_column
+        max_row = max_row or self.max_row
+        for row in range(min_row, max_row + 1):
+            cells = tuple(self.cell(row, col) for col in range(min_col, max_col + 1))
+            yield tuple(c.value for c in cells) if values_only else cells
+
+    def value_positions(self) -> _ValuePositions:
+        if self._positions is None:
+            self._positions = _ValuePositions(self)
+        return self._positions
+
+    def __getstate__(self) -> dict[str, Any]:
+        state = dict(self.__dict__)
+        state.update(_merge_rows=None, _merge_tall=[], _positions=None)
+        return state
+
+
+class WorkbookModel:
+    """The sheets of a workbook, in order, with what the load cost the worker."""
+
+    def __init__(self, sheets: list[SheetModel], worker_peak_kb: int = 0) -> None:
+        self._sheets = {s.title: s for s in sheets}
+        self.sheetnames = [s.title for s in sheets]
+        self.worker_peak_kb = worker_peak_kb
+
+    def __getitem__(self, name: str) -> SheetModel:
+        return self._sheets[name]
+
+    def __contains__(self, name: object) -> bool:
+        return name in self._sheets
+
+    @property
+    def active(self) -> SheetModel:
+        return self._sheets[self.sheetnames[0]]
+
+    def close(self) -> None:
+        """Nothing to release: the model holds no file or openpyxl object."""
+
+
+# ---------------------------------------------------------------------------
+# The worker side
+# ---------------------------------------------------------------------------
+
+
+def _status_kb(field: str) -> int:
+    try:
+        with open("/proc/self/status", encoding="ascii") as status:
+            for line in status:
+                if line.startswith(field + ":"):
+                    return int(line.split()[1])
+    except (OSError, ValueError):
+        pass
+    return 0
+
+
+def _enforce_growth_limit(limit_bytes: int) -> tuple[Callable[[], None] | None, int | None]:
+    """Cap how much this process's data segment may grow, until the returned callable runs.
+
+    RLIMIT_DATA (Linux 4.7 and later) counts the private writable mappings a
+    Python process allocates from, so an allocation past the cap fails with
+    ``MemoryError`` instead of the kernel's OOM killer picking a victim. The cap
+    is the segment's size now plus ``limit_bytes``, so a long-lived pool worker
+    that earlier parsed something large still has the full allowance, and the
+    old limit is put back afterwards for the jobs that follow. Where the limit
+    cannot be set (not Linux) nothing is enforced here and the byte cap in
+    ``_precheck`` is the only bound; the container's own memory limit remains.
+    """
+    base_kb = _status_kb("VmData")
+    if resource is None or not base_kb or not hasattr(resource, "RLIMIT_DATA"):
+        return None, None
+    soft, hard = resource.getrlimit(resource.RLIMIT_DATA)
+    target = base_kb * 1024 + limit_bytes
+    if hard != resource.RLIM_INFINITY:
+        target = min(target, hard)
+    try:
+        resource.setrlimit(resource.RLIMIT_DATA, (target, hard))
+    except (ValueError, OSError):
+        return None, None
+
+    def restore() -> None:
+        with contextlib.suppress(ValueError, OSError):
+            resource.setrlimit(resource.RLIMIT_DATA, (soft, hard))
+
+    return restore, target
+
+
+def _reset_peak_rss() -> None:
+    """Start the process's peak-RSS watermark (VmHWM) from its current size, where Linux allows."""
+    with contextlib.suppress(OSError), open("/proc/self/clear_refs", "w", encoding="ascii") as handle:
+        handle.write("5")
+
+
+def _precheck(file_binary: bytes, max_xml_bytes: int) -> None:
+    """The exact, cheap refusals: a DOCTYPE or entity declaration anywhere, and a total of
+    decompressed bytes over the cap. Streams every entry in 1 MB chunks (constant memory),
+    skips an entry it cannot read (the loader reads only what it needs), and never trusts the
+    sizes the zip declares."""
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(file_binary))
+        entries = [info for info in archive.infolist() if not info.is_dir()]
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return  # not a zip: the loader reports it
+    total = 0
+    with archive:
+        for info in entries:
+            tail = b""
+            try:
+                with archive.open(info) as stream:
+                    while chunk := stream.read(_CHUNK_BYTES):
+                        total += len(chunk)
+                        if total > max_xml_bytes:
+                            raise WorkbookRefused("too_large", f"{total} decompressed bytes")
+                        window = tail + chunk
+                        if b"<!DOCTYPE" in window or b"<!ENTITY" in window:
+                            raise WorkbookRefused("unreadable", "DOCTYPE or entity declaration")
+                        tail = window[-16:]
+            except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
+                continue
+
+
+def _intern(table: list[tuple], index: dict[tuple, int], style: tuple) -> int:
+    found = index.get(style)
+    if found is None:
+        found = index[style] = len(table)
+        table.append(style)
+    return found
+
+
+def _style_of(cell: Cell) -> tuple:
+    font = cell.font
+    alignment = cell.alignment
+    return (
+        cell.data_type,
+        cell.number_format,
+        font.bold,
+        font.italic,
+        font.size,
+        get_cell_font_color(cell),
+        get_cell_background_color(cell),
+        alignment.horizontal,
+        alignment.vertical,
+    )
+
+
+def _extract_sheet(ws: Any, table: list[tuple], index: dict[tuple, int]) -> SheetModel:
+    raw = getattr(ws, "_cells", None)
+    if raw is None:
+        raw = {(c.row, c.column): c for row in ws.iter_rows() for c in row}
+    keys = array("Q")
+    style_ids = array("I")
+    values: list = []
+    for position in sorted(raw):
+        cell = raw[position]
+        if isinstance(cell, MergedCell):
+            continue  # derived from the merged ranges
+        keys.append((position[0] << _COLUMN_BITS) | position[1])
+        style_ids.append(_intern(table, index, _style_of(cell)))
+        values.append(cell.value)
+    merges = sorted(
+        (r.min_row, r.min_col, r.max_row, r.max_col) for r in ws.merged_cells.ranges
+    )
+    return SheetModel(ws.title, ws.max_row, ws.max_column, keys, style_ids, values, table, merges)
+
+
+def _extract(file_binary: bytes) -> WorkbookModel:
+    workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
+    try:
+        table: list[tuple] = []
+        index: dict[tuple, int] = {}
+        # Style 0 is what a position without a stored cell reads as (openpyxl creates it
+        # with the workbook's first style); it must be the first entry.
+        sheets_for_default = workbook.worksheets
+        probe = Cell(sheets_for_default[0], row=1, column=1) if sheets_for_default else None
+        _intern(table, index, _style_of(probe) if probe is not None else ("n", "General", None, None, None, None, None, None, None))
+        sheets = []
+        for ws in list(workbook.worksheets):
+            sheets.append(_extract_sheet(ws, table, index))
+            ws._cells = {}  # hand the sheet's objects back as we go
+        return WorkbookModel(sheets, _status_kb("VmHWM"))
+    finally:
+        workbook.close()
+
+
+def load_workbook_model(file_binary: bytes, limit_bytes: int, max_xml_bytes: int) -> WorkbookModel:
+    """Load a workbook and return its compact model, growing by at most *limit_bytes*.
+
+    Runs in a worker process (``parse_pool``). Raises ``WorkbookRefused``
+    (``too_large`` when the load needed more than the allowance, or the
+    decompressed bytes passed *max_xml_bytes*; ``unreadable`` for a DOCTYPE or
+    entity declaration). Anything else is the loader's own error for a file it
+    cannot read, as the caller would have seen it before.
+    """
+    restore, cap = _enforce_growth_limit(limit_bytes)
+    _reset_peak_rss()
+    start_rss_kb = _status_kb("VmRSS")
+    over = False
+    try:
+        _precheck(file_binary, max_xml_bytes)
+        return _extract(file_binary)
+    except MemoryError:
+        over = True
+    except WorkbookRefused:
+        raise
+    except Exception:
+        # openpyxl catches MemoryError in places and re-raises it as another error (a TypeError
+        # from a half-built range); a load whose peak came near the allowance died of the cap.
+        grew = (_status_kb("VmHWM") - start_rss_kb) * 1024
+        if cap is not None and grew >= limit_bytes * _NEAR_LIMIT:
+            over = True
+        else:
+            raise
+    finally:
+        if restore is not None:
+            restore()
+    if over:
+        gc.collect()
+        raise WorkbookRefused("too_large", f"the load needed more than {limit_bytes} bytes; worker peak {_status_kb('VmHWM')} kB")
+    raise AssertionError("unreachable")  # pragma: no cover

@@ -1,7 +1,9 @@
-"""Ways round 5 of the size guard still admits workbooks that openpyxl loads in full.
+"""Round-5 inputs: tiny files that expand to gigabytes when openpyxl builds objects for them.
 
-Limits are scaled down so a few KB stand in for the gigabytes. Measured at full
-size (default limits, openpyxl 3.1.5): see notes/qa/mem6-r5-report.md.
+Rewritten for the worker (see test_excel_size_guard_bypasses.py): each input is built at a
+size the 32 MB test allowance cannot hold (scaled from the full-size measurements in
+notes/qa/mem6-r5-report.md) and must be refused with EXCEL_TOO_LARGE, however small the file.
+The formula-heavy workbook the old guard refused although it loaded must load.
 """
 
 import io
@@ -9,118 +11,149 @@ import struct
 import zipfile
 import zlib
 
+import openpyxl
 import pytest
+from openpyxl.comments import Comment
+from openpyxl.drawing.image import Image
 
 from app.modules.parsers.excel import excel_parser as module
 from app.services.parsing.interface import ParseError
-
-_NS = 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"'
-_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
-
-
-def _zip(parts: dict[str, str | bytes]) -> bytes:
-    out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        for name, body in parts.items():
-            z.writestr(name, body)
-    return out.getvalue()
-
-
-def _sheet(body: str) -> str:
-    return f'<?xml version="1.0"?><worksheet {_NS}>{body}</worksheet>'
+from app.utils import user_errors
+from tests.support.excel_workbooks import (
+    MAIN_NS,
+    REL_NS,
+    empty_cells,
+    load,
+    workbook_zip,
+)
 
 
 @pytest.fixture(autouse=True)
-def small_limits(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 1_000)
-    monkeypatch.setattr(module, "EXCEL_MAX_SHEET_XML_BYTES", 10_000_000)
+def small_worker_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The worker may grow by 32 MB, so a few hundred thousand cells stand in for the gigabytes."""
+    monkeypatch.setattr(module, "EXCEL_LOAD_MAX_BYTES", 32 * 1024 * 1024)
+
+
+def assert_refused_as_too_large(data: bytes) -> None:
+    with pytest.raises(ParseError) as raised:
+        load(data)
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+
 
 
 @pytest.mark.parametrize("tag", ["mergeCell", "hyperlink"])
-def test_one_range_element_covering_many_cells_spends_the_budget(tag: str) -> None:
+def test_one_range_element_covering_many_cells_is_refused(tag: str) -> None:
     # openpyxl creates one cell object per cell of a merged (or hyperlinked) range:
     # <mergeCell ref="A1:J200000"/> (60 bytes) became 2 M objects, 585 MB, in 49 s.
-    ref = "A1:Z1000"  # 26 000 cells against a budget of 1 000
-    inner = f'<mergeCells><mergeCell ref="{ref}"/></mergeCells>' if tag == "mergeCell" else f'<hyperlinks><hyperlink ref="{ref}" location="S!A1"/></hyperlinks>'
-    with pytest.raises(ParseError):
-        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet("<sheetData/>" + inner)}))
-
-
-@pytest.mark.parametrize("tag", ["dataValidation", "conditionalFormatting"])
-def test_one_sqref_listing_many_ranges_spends_the_budget(tag: str) -> None:
-    # A 7-byte "A123 " becomes a CellRange object (about 360 bytes) in a MultiCellRange:
-    # 200 000 refs in one sqref, 1.4 MB of XML, load 72-85 MB; the 400 MB byte cap admits 20 GB.
-    refs = " ".join(f"A{i}" for i in range(1, 3001))
-    if tag == "dataValidation":
-        inner = f'<dataValidations count="1"><dataValidation type="whole" sqref="{refs}"><formula1>1</formula1></dataValidation></dataValidations>'
+    ref = "A1:Z20000"  # 520 000 cells
+    if tag == "mergeCell":
+        inner = f'<mergeCells><mergeCell ref="{ref}"/></mergeCells>'
     else:
-        inner = f'<conditionalFormatting sqref="{refs}"><cfRule type="cellIs" priority="1" operator="equal"><formula>1</formula></cfRule></conditionalFormatting>'
-    with pytest.raises(ParseError):
-        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet("<sheetData/>" + inner)}))
+        inner = f'<hyperlinks><hyperlink ref="{ref}" location="S!A1"/></hyperlinks>'
+    assert_refused_as_too_large(workbook_zip("<sheetData/>" + inner))
 
 
-def test_comments_cost_more_than_their_weight() -> None:
-    # Measured 200 000 comments: 446 MB, 2.2 KB each, against about 2 units (860 bytes).
-    # Scaled: the same budget must not admit more comments than the load can hold (about 1/2.6 of it).
-    comments = "".join(f'<comment ref="A{i}" authorId="0"><text><r><t>hi</t></r></text></comment>' for i in range(1, 451))
-    xml = f'<?xml version="1.0"?><comments {_NS}><authors><author>a</author></authors><commentList>{comments}</commentList></comments>'
-    with pytest.raises(ParseError):
-        module.check_workbook_size(_zip({"xl/comments1.xml": xml}))
+def test_one_sqref_listing_many_ranges_is_refused_or_cut_short() -> None:
+    # A 7-byte "A123 " becomes a CellRange object (about 360 bytes) in a MultiCellRange.
+    refs = " ".join(f"A{i}" for i in range(1, 300_001))
+    inner = f'<dataValidations count="1"><dataValidation type="whole" sqref="{refs}"><formula1>1</formula1></dataValidation></dataValidations>'
+    assert_refused_as_too_large(workbook_zip("<sheetData/>" + inner))
 
 
-def test_table_columns_cost_more_than_their_weight() -> None:
-    # Measured 200 000 tableColumn: 196 MB, 1 KB each, weight 1.0 (a cell is 430 bytes).
-    cols = "".join(f'<tableColumn id="{i}" name="c{i}"/>' for i in range(1, 451))
-    xml = f'<?xml version="1.0"?><table {_NS} id="1" name="T" displayName="T" ref="A1:B2"><tableColumns count="450">{cols}</tableColumns></table>'
-    with pytest.raises(ParseError):
-        module.check_workbook_size(_zip({"xl/tables/table1.xml": xml}))
+def test_a_conditional_format_over_many_ranges_stays_inside_the_allowance() -> None:
+    # openpyxl swallows the MemoryError while building this rule and drops it ("Failed to load a
+    # conditional formatting rule"), so the load may succeed without it. Either way the worker
+    # must not have grown past the allowance (its peak includes ~50 MB of imports).
+    refs = " ".join(f"A{i}" for i in range(1, 300_001))
+    inner = f'<conditionalFormatting sqref="{refs}"><cfRule type="cellIs" priority="1" operator="equal"><formula>1</formula></cfRule></conditionalFormatting>'
+    try:
+        parser = load(workbook_zip("<sheetData/>" + inner))
+    except ParseError as refused:
+        assert refused.message == user_errors.EXCEL_TOO_LARGE
+    else:
+        assert parser.workbook.worker_peak_kb < 120 * 1024  # unconstrained it needs about 115 MB more
 
 
-def _png() -> bytes:
+def _saved(wb: openpyxl.Workbook) -> bytes:
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()
+
+
+def test_comments_are_refused_when_they_do_not_fit() -> None:
+    # Measured 200 000 comments: 446 MB, 2.2 KB each.
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    for i in range(1, 25_001):
+        ws[f"A{i}"].comment = Comment("hi", "a")
+    assert_refused_as_too_large(_saved(wb))
+
+
+def test_table_columns_are_refused_when_they_do_not_fit() -> None:
+    # Measured 200 000 tableColumn: 196 MB, 1 KB each.
+    n = 60_000
+    cols = "".join(f'<tableColumn id="{i}" name="c{i}"/>' for i in range(1, n + 1))
+    table = (
+        f'<?xml version="1.0"?><table xmlns="{MAIN_NS}" id="1" name="T" displayName="T" ref="A1:B2">'
+        f'<tableColumns count="{n}">{cols}</tableColumns></table>'
+    )
+    rels = (
+        '<?xml version="1.0"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+        f'<Relationship Id="rId1" Type="{REL_NS}/table" Target="../tables/table1.xml"/></Relationships>'
+    )
+    data = workbook_zip(
+        '<sheetData><row r="1"><c r="A1"><v>1</v></c></row></sheetData><tableParts count="1"><tablePart r:id="rId1"/></tableParts>',
+        extra={"xl/tables/table1.xml": table},
+        sheet_rels=rels,
+    )
+    assert_refused_as_too_large(data)
+
+
+def _png(tail: int) -> bytes:
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data) & 0xFFFFFFFF)
 
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0)) + chunk(b"IDAT", zlib.compress(b"\x00\x00")) + chunk(b"IEND", b"")
+    head = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", 1, 1, 8, 0, 0, 0, 0))
+    return head + chunk(b"IDAT", zlib.compress(b"\x00\x00")) + chunk(b"IEND", b"") + b"\0" * tail
 
 
-def test_a_part_that_is_not_xml_is_counted_to_its_end(monkeypatch: pytest.MonkeyPatch) -> None:
-    # openpyxl reads a drawing's image whole (archive.read) and keeps it: the guard stops at
-    # the first chunk of a non-XML part, so a 1 MB chunk is all it ever counts of a
-    # picture that decompresses to hundreds of MB (a few hundred KB in the zip).
-    monkeypatch.setattr(module, "EXCEL_MAX_SHEET_XML_BYTES", 3_000_000)
-    data = _zip({"xl/worksheets/sheet1.xml": _sheet("<sheetData/>"), "xl/media/image1.png": _png() + b"\0" * 8_000_000})
-    with pytest.raises(ParseError):
-        module.check_workbook_size(data)
+def _with_image(png: bytes) -> bytes:
+    wb = openpyxl.Workbook()
+    wb.active.add_image(Image(io.BytesIO(png)), "A1")
+    return _saved(wb)
 
 
-def test_one_image_referenced_by_many_anchors_is_counted_each_time(monkeypatch: pytest.MonkeyPatch) -> None:
-    # openpyxl reads the image bytes again for every anchor that uses it and keeps each copy:
-    # 100 anchors on a 1 MB picture hold 100 MB. The guard counts the picture once, 1 MB.
-    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 10_000)
-    monkeypatch.setattr(module, "EXCEL_MAX_SHEET_XML_BYTES", 20_000_000)
-    anchors = "".join(
-        f'<xdr:oneCellAnchor><xdr:from><xdr:col>0</xdr:col><xdr:colOff>0</xdr:colOff><xdr:row>{i}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>'
-        f'<xdr:ext cx="1" cy="1"/><xdr:pic><xdr:nvPicPr><xdr:cNvPr id="{i + 2}" name="p"/><xdr:cNvPicPr/></xdr:nvPicPr>'
-        f'<xdr:blipFill><a:blip r:embed="rId1"/></xdr:blipFill><xdr:spPr/></xdr:pic><xdr:clientData/></xdr:oneCellAnchor>'
-        for i in range(400)
-    )
-    drawing = (
-        '<?xml version="1.0"?><xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" '
-        f'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:r="{_REL}">{anchors}</xdr:wsDr>'
-    )
-    data = _zip({"xl/worksheets/sheet1.xml": _sheet("<sheetData/>"), "xl/drawings/drawing1.xml": drawing, "xl/media/image1.png": _png() + b"\0" * 1_000_000})
-    # 400 anchors x 1 MB = 400 MB held; a limit of 20 MB decompressed XML-equivalent must refuse it.
-    with pytest.raises(ParseError):
-        module.check_workbook_size(data)
+def test_an_image_that_is_not_xml_is_counted_to_its_end() -> None:
+    # openpyxl reads a drawing's image whole and keeps it: a 50 MB picture compresses to a few KB.
+    data = _with_image(_png(50_000_000))
+    assert len(data) < 200_000
+    assert_refused_as_too_large(data)
 
 
-def _with_unreadable_first_entry(variant: str, sheet_cells: int) -> bytes:
-    # An entry openpyxl never opens (customXml/item1.xml) that the guard cannot read, listed first.
+def test_one_image_referenced_by_many_anchors_is_refused() -> None:
+    # openpyxl reads the image bytes again for every anchor that uses it and keeps each copy.
+    # 400 anchors on one 1 MB picture hold 400 MB; here the file is the single picture plus a few KB of XML.
+    base = _with_image(_png(1_000_000))
     out = io.BytesIO()
-    with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-        z.writestr(zipfile.ZipInfo("customXml/item1.xml"), b"<x>" + b"MARKERMARKER" * 20 + b"</x>", compress_type=zipfile.ZIP_STORED)
-        z.writestr("xl/worksheets/sheet1.xml", _sheet("<sheetData>" + "".join(f'<row r="{i}"><c r="A{i}"/></row>' for i in range(1, sheet_cells + 1)) + "</sheetData>"))
+    with zipfile.ZipFile(io.BytesIO(base)) as src, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as dst:
+        for info in src.infolist():
+            body = src.read(info.filename)
+            if info.filename == "xl/drawings/drawing1.xml":
+                text = body.decode()
+                start = text.index("<oneCellAnchor>")
+                end = text.index("</oneCellAnchor>") + len("</oneCellAnchor>")
+                text = text[:start] + text[start:end] * 100 + text[end:]
+                body = text.encode()
+            dst.writestr(info, body)
     data = out.getvalue()
+    assert len(data) < 200_000
+    assert_refused_as_too_large(data)
+
+
+def _with_unreadable_first_entry(variant: str, rows: int) -> bytes:
+    # An entry openpyxl never opens (customXml/item1.xml) that cannot be read, listed first.
+    junk = (zipfile.ZipInfo("customXml/item1.xml"), b"<x>" + b"MARKERMARKER" * 20 + b"</x>")
+    data = workbook_zip(f"<sheetData>{empty_cells(rows, 80)}</sheetData>", first=[junk])
     if variant == "bad_crc":
         return data.replace(b"MARKERMARKER", b"MARKERMARKEZ", 1)
     buf = bytearray(data)
@@ -135,19 +168,16 @@ def _with_unreadable_first_entry(variant: str, sheet_cells: int) -> bytes:
 
 
 @pytest.mark.parametrize("variant", ["bad_crc", "unknown_method", "encrypted_flag"])
-def test_an_entry_the_guard_cannot_read_does_not_end_the_count(variant: str) -> None:
-    # openpyxl does not open the junk entry and loads the 300 000-cell sheet behind it in full
-    # (checked with openpyxl 3.1.5); the guard gave up at the first unreadable entry and admitted.
-    # Full size: 8 M cells behind such an entry, default limits: ADMITTED in 0.0 s.
-    with pytest.raises(ParseError):
-        module.check_workbook_size(_with_unreadable_first_entry(variant, 3_000))
+def test_an_entry_that_cannot_be_read_does_not_hide_the_workbook_behind_it(variant: str) -> None:
+    # openpyxl does not open the junk entry and loads the sheet behind it in full.
+    assert_refused_as_too_large(_with_unreadable_first_entry(variant, 2000))
 
 
-def test_calc_chain_does_not_double_the_weight_of_formula_cells() -> None:
-    # False refusal. calcChain.xml is never loaded by openpyxl, yet each of its entries costs a
-    # cell. Measured at full size: 2 M formula cells (+ calcChain) = 4.5 M units, REFUSED, while
-    # the load takes 732 MB above the import floor (1 M formula cells: admitted, 368 MB).
-    n = 600
+def test_calc_chain_does_not_make_formula_workbooks_too_large() -> None:
+    # False refusal under the old guard: calcChain.xml (never loaded) cost a cell per formula,
+    # so 2 M formula cells (732 MB to load) were refused. Here 40 000 formula cells + calcChain load.
+    n = 40_000
     cells = "".join(f'<row r="{i}"><c r="A{i}"><f>B{i}*2</f><v>1</v></c></row>' for i in range(1, n + 1))
-    chain = f'<?xml version="1.0"?><calcChain {_NS}>' + "".join(f'<c r="A{i}" i="1"/>' for i in range(1, n + 1)) + "</calcChain>"
-    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(f"<sheetData>{cells}</sheetData>"), "xl/calcChain.xml": chain}))
+    chain = f'<?xml version="1.0"?><calcChain xmlns="{MAIN_NS}">' + "".join(f'<c r="A{i}" i="1"/>' for i in range(1, n + 1)) + "</calcChain>"
+    parser = load(workbook_zip(f"<sheetData>{cells}</sheetData>", extra={"xl/calcChain.xml": chain}))
+    assert parser.workbook["S"].cell(n, 1).value == 1

@@ -1,17 +1,12 @@
 import asyncio
-import io
 import json
 import logging
 import re
-import zipfile
-import zlib
 from datetime import datetime, time
 from typing import Any
-from xml.parsers import expat
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
-from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.worksheet import Worksheet
@@ -29,6 +24,7 @@ from app.models.blocks import (
     GroupType,
     TableMetadata,
 )
+from app.modules.parsers import parse_pool
 from app.modules.parsers.excel.prompt_template import (
     ExcelHeaderDetection,
     TableHeaders,
@@ -38,6 +34,14 @@ from app.modules.parsers.excel.prompt_template import (
     row_text_prompt_for_csv,
     sheet_summary_prompt,
     table_summary_prompt,
+)
+from app.modules.parsers.excel.workbook_model import (
+    ModelMergedCell,
+    SheetModel,
+    WorkbookRefused,
+    get_cell_background_color,
+    get_cell_font_color,
+    load_workbook_model,
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
 from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
@@ -54,48 +58,7 @@ from app.utils.streaming import (
 from app.utils.table_enrichment import fallback_table_summary
 from app.utils.user_errors import EXCEL_TOO_LARGE, UNREADABLE_FILE
 
-
-def _color_to_str(color: object) -> str | None:
-    """Return a colour's ``rgb`` only when it is a real string.
-
-    Theme and indexed colours expose ``rgb`` as an error descriptor rather than
-    a string, so anything that is not a ``str`` is treated as "no colour".
-    """
-    rgb = getattr(color, "rgb", None)
-    return rgb if isinstance(rgb, str) else None
-
-
-def get_cell_background_color(cell: object) -> str | None:
-    """Background colour of a cell as a string, or None.
-
-    Handles ``PatternFill`` (foreground colour) and ``GradientFill`` (first
-    colour stop). Styling is decorative, so a failure reading it yields None
-    instead of failing the cell.
-    """
-    try:
-        # cell.fill is a StyleProxy, so isinstance() against the fill classes
-        # is always False; tell the two kinds apart by their attributes.
-        fill = getattr(cell, "fill", None)
-        if fill is None:
-            return None
-        start_color = getattr(fill, "start_color", None)
-        if start_color is not None:  # PatternFill
-            return _color_to_str(start_color)
-        stops = getattr(fill, "stop", None)  # GradientFill: colour stops
-        if not stops:
-            return None
-        first = stops[0]
-        return _color_to_str(getattr(first, "color", first))
-    except Exception:
-        return None
-
-
-def get_cell_font_color(cell: object) -> str | None:
-    """Font colour of a cell as a string, or None (theme/indexed give None)."""
-    try:
-        return _color_to_str(cell.font.color)
-    except Exception:
-        return None
+__all__ = ["ExcelParser", "get_cell_background_color", "get_cell_font_color"]
 
 
 # Module-level constants for Excel processing (mirror CSV parser)
@@ -107,127 +70,29 @@ MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header co
 EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, env_int("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", 500))
 EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX", 20000)
 
-# openpyxl builds Python objects for what it reads, and the memory follows the
-# counts, not the file size. Every XML element in every part of the zip is
-# weighted by its local name, in cell-equivalents (1.0 = a cell, about 430
-# bytes), from load peaks measured above the ~0.74 GB the service modules take
-# on import (generated workbooks, openpyxl 3.1.5); the notes/qa handoff lists
-# the measurements. Nothing is classified by part name or root element, so
-# there is nothing to spoof.
-EXCEL_MAX_CELLS = env_positive_int("EXCEL_MAX_CELLS", 3_500_000)
-_DEFAULT_WEIGHT = 1.0  # an element not listed costs at least a cell
-_WEIGHTS = {
-    "c": 0.95,  # a cell (0.95 + its value 0.05 = the measured ~430 bytes)
-    "v": 0.05, "f": 0.3, "is": 0.2,  # what a cell holds (the cell's own cost includes its value)
-    "si": 0.35, "t": 0.05,  # a shared string: 0.4 together
-    "r": 0.03, "rPr": 0.03, "rPh": 0.03, "phoneticPr": 0.03, "rFont": 0.02, "sz": 0.02, "color": 0.02,
-    "b": 0.02, "i": 0.02, "u": 0.02, "family": 0.02, "charset": 0.02, "scheme": 0.02,
-    "vertAlign": 0.02, "strike": 0.02,  # rich-text runs, read as plain text (+71 MB for 1.5 M runs)
-    "xf": 4.0, "font": 4.0, "fill": 4.0, "border": 4.0, "numFmt": 4.0, "dxf": 4.0,  # style entries, ~1.7 KB
-    "hyperlink": 1.6, "mergeCell": 2.8, "dataValidation": 3.0,
-    "conditionalFormatting": 1.75, "cfRule": 1.75,
-    "row": 1.6,  # with attributes beyond r/spans; see _PLAIN_ROW_WEIGHT
-    "pt": 2.0,  # a chart point (pt + v) ~850 bytes
-}
-_PLAIN_ROW_WEIGHT = 0.1  # a <row> with only r/spans makes no row dimension in openpyxl
-_ROW_ATTRS = frozenset({"r", "spans"})
-# Legacy VML drawings (a dozen elements per comment) are not read into objects.
-_VML_NAMESPACE = "urn:schemas-microsoft-com:"
-_VML_WEIGHT = 0.1
-# Backstop on the XML actually decompressed, all parts together, for what the
-# counts do not see (a few very long strings).
+# The load runs in a worker process that may grow by this much (see
+# workbook_model.load_workbook_model); a workbook that needs more is refused.
+# 1536 MB holds the heaviest workbooks measured to load within the ~2.3 GB
+# per-process target (3.5 M cells at ~430 B, or 2 M formula cells at ~370 B),
+# and the parent only receives the compact model.
+EXCEL_LOAD_MAX_MB = env_positive_int("EXCEL_LOAD_MAX_MB", 1536)
+EXCEL_LOAD_MAX_BYTES = EXCEL_LOAD_MAX_MB * 1024 * 1024
+# Backstop on the XML decompressed, all parts together (checked in the worker).
 EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
 
-_CHUNK_BYTES = 1024 * 1024
 
-
-def _unreadable() -> ParseError:
-    return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
-
-
-class _PartCounter:
-    """Totals the weight of the elements of one XML part with a namespace-aware expat parser.
-
-    The parser handles prefixes, whitespace, comments and CDATA; no tree is
-    built and no text is kept. A DOCTYPE or entity declaration is how an XML
-    bomb is built and Excel never writes one, so it is refused outright.
-    """
-
-    def __init__(self) -> None:
-        self.units = 0.0
-        self.parser = expat.ParserCreate(namespace_separator=" ")
-        self.parser.buffer_text = False
-        self.parser.StartElementHandler = self._start
-        self.parser.StartDoctypeDeclHandler = self._refuse
-        self.parser.EntityDeclHandler = self._refuse
-
-    @staticmethod
-    def _refuse(*_args: object) -> None:
-        raise _unreadable()
-
-    def _start(self, name: str, attrs: dict[str, str]) -> None:
-        local = name.rpartition(" ")[2]
-        weight = _WEIGHTS.get(local)
-        if weight is None:
-            weight = _VML_WEIGHT if name.startswith(_VML_NAMESPACE) else _DEFAULT_WEIGHT
-        elif local == "row" and _ROW_ATTRS.issuperset(key.rpartition(" ")[2] for key in attrs):
-            weight = _PLAIN_ROW_WEIGHT
-        self.units += weight
-
-
-def _too_large(**details: float) -> ParseError:
+def _too_large(detail: str = "") -> ParseError:
     return ParseError(
         ParseErrorCode.INVALID_INPUT,
         EXCEL_TOO_LARGE,
-        details={**details, "max_cell_equivalents": EXCEL_MAX_CELLS, "max_xml_bytes": EXCEL_MAX_SHEET_XML_BYTES},
+        details={"max_load_mb": EXCEL_LOAD_MAX_MB, "reason": detail},
     )
 
 
-def check_workbook_size(file_binary: bytes) -> None:
-    """Refuse a workbook that is too large to load, without loading it.
-
-    Streams every part of the zip, whatever its name, in bounded chunks
-    through a real XML parser (constant memory, nothing kept) and totals the
-    weight of every element (see ``_WEIGHTS``) against ``EXCEL_MAX_CELLS``,
-    plus the decompressed bytes. Counts come from the data actually read,
-    never from the zip's declared sizes or a sheet's ``<dimension>``; reading
-    stops at the first limit passed. A part that is not XML (an image) is
-    dropped at its first chunk. A DOCTYPE or entity anywhere is refused as
-    unreadable. Not a workbook zip, or a part that cannot be read: left for
-    the loader to report. This is an estimate: a hard memory bound needs the
-    load itself in a memory-limited worker.
-    """
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(file_binary))
-        parts = [info for info in archive.infolist() if not info.is_dir()]
-    except (zipfile.BadZipFile, OSError, ValueError):
-        return
-    units = 0.0
-    total_bytes = 0
-    try:
-        with archive:
-            for info in parts:
-                counter = _PartCounter()
-                with archive.open(info) as stream:
-                    while True:
-                        chunk = stream.read(_CHUNK_BYTES)
-                        total_bytes += len(chunk)
-                        if total_bytes > EXCEL_MAX_SHEET_XML_BYTES:
-                            raise _too_large(xml_bytes=total_bytes)
-                        try:
-                            counter.parser.Parse(chunk, not chunk)
-                        except expat.ExpatError:
-                            break  # not XML (or broken): the loader reports it
-                        finally:
-                            if units + counter.units > EXCEL_MAX_CELLS:
-                                raise _too_large(cell_equivalents=units + counter.units)
-                        if not chunk:
-                            break
-                units += counter.units
-    except ParseError:
-        raise
-    except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
-        return
+def _refusal(refused: WorkbookRefused) -> ParseError:
+    if refused.reason == "too_large":
+        return _too_large(refused.detail)
+    return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
 
 
 # Built-in Excel date format codes mapping
@@ -572,13 +437,35 @@ class ExcelParser:
         """Load workbook from binary (no LLM calls).
 
         This is the first phase of Excel processing - pure parsing without LLM calls.
+        Blocks the calling thread (every caller runs it off the event loop). The
+        openpyxl load happens in a memory-limited worker process; ``self.workbook``
+        becomes the compact model it sends back, never an openpyxl workbook.
+        A workbook the worker cannot hold raises ``ParseError(EXCEL_TOO_LARGE)``.
         """
         self.logger.info("Loading workbook from binary data")
         self.file_binary = file_binary
-        if self.file_binary:
-            check_workbook_size(file_binary)
-            self.workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
-            self.logger.info(f"Workbook loaded successfully with {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
+        if not self.file_binary:
+            return
+        try:
+            model = parse_pool.run_blocking(
+                load_workbook_model,
+                file_binary,
+                EXCEL_LOAD_MAX_BYTES,
+                EXCEL_MAX_SHEET_XML_BYTES,
+                label="xlsx workbook",
+                size=len(file_binary),
+            )
+        except WorkbookRefused as refused:
+            raise _refusal(refused) from None
+        except parse_pool.ParseWorkerError as failed:
+            if failed.cause == "crashed":  # killed while loading: it needed more than it was allowed
+                raise _too_large() from None
+            raise
+        self.workbook = model
+        self.logger.info(
+            "Workbook loaded with %d sheets: %s (worker peak %d MB)",
+            len(model.sheetnames), model.sheetnames, model.worker_peak_kb // 1024,
+        )
 
     async def create_blocks(self, llm: BaseChatModel) -> BlocksContainer:
         """Create blocks from loaded workbook (involves LLM calls).
@@ -602,7 +489,7 @@ class ExcelParser:
         Produces a basic SHEET → TABLE → TABLE_ROW block hierarchy using
         ``generate_simple_row_text`` for row descriptions instead of LLM calls.
         """
-        self.load_workbook_from_binary(content)
+        await asyncio.to_thread(self.load_workbook_from_binary, content)
         try:
             return self._build_basic_block_container()
         finally:
@@ -766,7 +653,7 @@ class ExcelParser:
 
                 for col_idx, cell in enumerate(row, 1):
                     # Handle merged cells
-                    if isinstance(cell, MergedCell):
+                    if isinstance(cell, (MergedCell, ModelMergedCell)):
                         cell_data = {
                             "value": None,  # Merged cells don't contain values
                             "header": (
@@ -843,25 +730,31 @@ class ExcelParser:
             # openpyxl==3.1.5). It may change or be removed in future versions. The
             # getattr fallback below ensures graceful degradation to iter_rows() if the
             # attribute no longer exists.
-            _raw_cells = getattr(sheet, '_cells', None)
-            if _raw_cells is not None:
-                non_empty_positions: set[tuple[int, int]] = {
-                    (r, c) for (r, c), _cell in _raw_cells.items() if _cell.value is not None
-                }
+            if isinstance(sheet, SheetModel):
+                # Compact model: the extent is known without building a set of positions.
+                non_empty_positions = sheet.value_positions()
+                effective_max_row: int = non_empty_positions.max_row
+                effective_max_col: int = non_empty_positions.max_col
             else:
-                non_empty_positions = {
-                    (cell.row, cell.column)
-                    for _row in sheet.iter_rows()
-                    for cell in _row
-                    if cell.value is not None
-                }
+                _raw_cells = getattr(sheet, '_cells', None)
+                if _raw_cells is not None:
+                    non_empty_positions = {
+                        (r, c) for (r, c), _cell in _raw_cells.items() if _cell.value is not None
+                    }
+                else:
+                    non_empty_positions = {
+                        (cell.row, cell.column)
+                        for _row in sheet.iter_rows()
+                        for cell in _row
+                        if cell.value is not None
+                    }
+                if non_empty_positions:
+                    effective_max_row = max(r for r, _ in non_empty_positions)
+                    effective_max_col = max(c for _, c in non_empty_positions)
 
             if not non_empty_positions:
                 self.logger.info(f"Sheet '{sheet.title}' has no data, skipping")
                 return []
-
-            effective_max_row: int = max(r for r, _ in non_empty_positions)
-            effective_max_col: int = max(c for _, c in non_empty_positions)
 
             if effective_max_row < sheet.max_row or effective_max_col < sheet.max_column:
                 self.logger.info(
@@ -1088,21 +981,27 @@ class ExcelParser:
         """Process a single cell and return its data with denormalized merged cell values."""
         try:
             # Check if the cell is a merged cell
-            if isinstance(cell, MergedCell):
+            if isinstance(cell, (MergedCell, ModelMergedCell)):
                 # Look for the merged range that contains this cell.
                 merged_value = None
 
-                for merged_range in cell.parent.merged_cells.ranges:
-                    if cell.coordinate in merged_range:
-                        # Get the top-left cell of the merged range
-                        top_left_cell = cell.parent.cell(
-                            row=merged_range.min_row, column=merged_range.min_col
-                        )
-                        merged_value = top_left_cell.value
-                        # Apply datetime/time formatting if applicable
-                        if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
-                            merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
-                        break
+                if isinstance(cell, ModelMergedCell):
+                    top_left_cell = cell.anchor_cell()
+                    merged_value = top_left_cell.value
+                    if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
+                        merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
+                else:
+                    for merged_range in cell.parent.merged_cells.ranges:
+                        if cell.coordinate in merged_range:
+                            # Get the top-left cell of the merged range
+                            top_left_cell = cell.parent.cell(
+                                row=merged_range.min_row, column=merged_range.min_col
+                            )
+                            merged_value = top_left_cell.value
+                            # Apply datetime/time formatting if applicable
+                            if isinstance(merged_value, (datetime, time)) and hasattr(top_left_cell, 'number_format'):
+                                merged_value = format_excel_datetime(merged_value, top_left_cell.number_format)
+                            break
 
                 return {
                     "value": merged_value,  # Use the top-left cell's value (formatted if datetime)
