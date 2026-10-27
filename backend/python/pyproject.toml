@@ -347,7 +347,7 @@ dependencies = [
     "slack-sdk==3.45.0",
     "smbprotocol==1.17.0",
     "talon==1.4.4",
-    "tenacity==8.5.0",
+    "tenacity==9.2.1",
     "thrift>=0.16.0",
     # Parse inline style declarations without mistaking CSS comments or strings for declarations.
     "tinycss2>=1.4.0",
