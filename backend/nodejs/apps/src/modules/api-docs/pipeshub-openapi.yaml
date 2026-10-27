@@ -5079,8 +5079,11 @@ components:
         status:
           type: string
           nullable: true
-          enum: [DELETING]
-          description: '`DELETING` while the knowledge base is being deleted (writes are refused with 409); null otherwise.'
+          enum: [IDLE, QUEUED, SYNCING, FULL_SYNCING, DELETING]
+          description: |
+            The knowledge base's processing state. `DELETING` while it is being deleted (writes are
+            refused with 409). `IDLE`, `QUEUED`, `SYNCING` or `FULL_SYNCING` otherwise, or null on a
+            knowledge base that has not been processed yet.
         folders:
           type: array
           items:
@@ -5228,8 +5231,11 @@ components:
               status:
                 type: string
                 nullable: true
-                enum: [DELETING]
-                description: '`DELETING` while the knowledge base is being deleted (writes are refused with 409); null otherwise.'
+                enum: [IDLE, QUEUED, SYNCING, FULL_SYNCING, DELETING]
+                description: |
+                  The knowledge base's processing state. `DELETING` while it is being deleted (writes are
+                  refused with 409). `IDLE`, `QUEUED`, `SYNCING` or `FULL_SYNCING` otherwise, or null on a
+                  knowledge base that has not been processed yet.
               folders:
                 type: array
                 items:
@@ -5363,10 +5369,11 @@ components:
         status:
           type: string
           nullable: true
-          enum: [DELETING]
+          enum: [IDLE, QUEUED, SYNCING, FULL_SYNCING, DELETING]
           description: |
             `DELETING` while the knowledge base is being deleted: reads work, every write is refused with 409
-            (`error.code` `HTTP_KB_BEING_DELETED`), and deleting it again finishes the job. Null otherwise.
+            (`error.code` `HTTP_KB_BEING_DELETED`), and deleting it again finishes the job. Otherwise its
+            processing state (`IDLE`, `QUEUED`, `SYNCING`, `FULL_SYNCING`), or null before it is first processed.
         folders:
           type: array
           description: |
@@ -11597,7 +11604,7 @@ components:
             the user's own, such as an agent searching on their behalf: nothing is
             stored and the response has no `searchId`. A server older than this field
             ignores it and saves the search.
-          example: false
+          example: true
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -11866,29 +11873,12 @@ components:
           description: |
             Set only on a search with `timeline`: the index in `timeline.periods` of the period
             this hit's record is dated in.
-    SemanticSearchGraphRecord:
+    GraphRecordFields:
       type: object
       description: |
-        Graph record vertex returned in `records` and as values of `virtual_to_record_map`.
-        All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
-        usually include `_key`, `_id`, `_rev`, `orgId`, `recordName`, `externalRecordId`, `recordType`, `origin`,
-        `createdAtTimestamp`, and `connectorId`. Extend this schema when new stable fields appear on Record vertices.
-
-        For a connected app with a limit, a parent the limit leaves out is not named: `recordGroupId`
-        (with `externalGroupId`), `rootRecordGroupId` and `parentNodeId` (with `externalParentId`) are `null`
-        for it, and `location` keeps only the part of the trail inside the limit, or is left out.
-        `connectorInstanceName`, the source's or collection's own name, is left out unless the limit
-        covers that app whole; this applies to each hit's `metadata` too.
+        The fields of a record graph document that every graph backend returns. `id` is not
+        among them: a schema that names the record adds it.
       properties:
-        _key:
-          type: string
-          nullable: true
-        _id:
-          type: string
-          nullable: true
-        _rev:
-          type: string
-          nullable: true
         recordName:
           type: string
           nullable: true
@@ -12097,6 +12087,32 @@ components:
             connected app with a limit, only records inside it. Absent when there are none.
           items:
             $ref: '#/components/schemas/SemanticSearchLinkedRecord'
+    SemanticSearchGraphRecord:
+      type: object
+      description: |
+        Graph record vertex returned in `records` and as values of `virtual_to_record_map`.
+        All listed fields are optional in the schema so partial or evolving documents validate; typical Arango documents
+        usually include `_key`, `_id`, `_rev`, `orgId`, `recordName`, `externalRecordId`, `recordType`, `origin`,
+        `createdAtTimestamp`, and `connectorId`. Extend this schema when new stable fields appear on Record vertices.
+
+        For a connected app with a limit, a parent the limit leaves out is not named: `recordGroupId`
+        (with `externalGroupId`), `rootRecordGroupId` and `parentNodeId` (with `externalParentId`) are `null`
+        for it, and `location` keeps only the part of the trail inside the limit, or is left out.
+        `connectorInstanceName`, the source's or collection's own name, is left out unless the limit
+        covers that app whole; this applies to each hit's `metadata` too.
+      allOf:
+        - $ref: '#/components/schemas/GraphRecordFields'
+        - type: object
+          properties:
+            _key:
+              type: string
+              nullable: true
+            _id:
+              type: string
+              nullable: true
+            _rev:
+              type: string
+              nullable: true
     SemanticSearchLinkedRecord:
       type: object
       additionalProperties: false
@@ -22089,12 +22105,24 @@ components:
         record:
           description: The record's graph document as stored after the update.
           allOf:
-            - $ref: '#/components/schemas/SemanticSearchGraphRecord'
+            - $ref: '#/components/schemas/GraphRecordFields'
             - type: object
               properties:
                 id:
                   type: string
-                  description: Record ID (same value as `_key`).
+                  description: Record ID.
+                _key:
+                  type: string
+                  description: The record ID again. Present when the graph database is Neo4j.
+                _id:
+                  type: string
+                  x-speakeasy-name-override: graphDocumentId
+                  description: |
+                    The record's graph document handle, `records/<id>`. Not the record ID: use `id`.
+                    Named `graphDocumentId` in the SDKs, where `id` is the record ID.
+                _rev:
+                  type: string
+                  description: Revision of the graph document. Present when the graph database is ArangoDB.
                 isPlaceholder:
                   type: boolean
                   nullable: true
