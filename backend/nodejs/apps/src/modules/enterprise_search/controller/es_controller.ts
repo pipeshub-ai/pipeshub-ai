@@ -5681,7 +5681,8 @@ export const unshareSearch =
         (share) => !userIds.includes(idOf(share.userId)),
       );
 
-      // If no more shares exist, update isShared and remove shareLink
+      // With nobody left the search stops being shared and loses its link;
+      // the response reports the stored state after the change.
       const updatedSearch = await searches().unshare(
         searchId as string,
         updatedSharedWith,
