@@ -376,7 +376,7 @@ def _limited_graph(in_scope: set[str]) -> AsyncMock:
     return graph
 
 
-async def test_inside_a_selection_a_readable_value_hit_outside_it_is_dropped(tool_env):
+async def test_inside_a_selection_a_readable_value_hit_outside_it_is_dropped(tool_env: AsyncMock) -> None:
     tool_env.return_value = _limited_context("app-in-scope")
     graph = _limited_graph(in_scope={"r-in"})
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(
@@ -390,7 +390,7 @@ async def test_inside_a_selection_a_readable_value_hit_outside_it_is_dropped(too
     assert graph.check_access.await_args.kwargs["scopes"] == tool_env.return_value.row_scopes
 
 
-async def test_inside_a_selection_placeholders_stay_excluded(tool_env):
+async def test_inside_a_selection_placeholders_stay_excluded(tool_env: AsyncMock) -> None:
     """The selection gate admits a placeholder asked by id; the readable-record
     filter does not, and both must pass."""
     tool_env.return_value = _limited_context("app-in-scope")
@@ -405,7 +405,7 @@ async def test_inside_a_selection_placeholders_stay_excluded(tool_env):
     assert ok and json.loads(body)["records"] == [{"virtualRecordId": "v1", "recordId": "r-in"}]
 
 
-async def test_inside_a_selection_too_broad_is_counted_over_the_touched_apps_only(tool_env):
+async def test_inside_a_selection_too_broad_is_counted_over_the_touched_apps_only(tool_env: AsyncMock) -> None:
     """The readable-record count has no selection filter, so it stays on the
     apps the turn touches (never the user's whole org); rows are still gated."""
     tool_env.return_value = _limited_context("app-in-scope")
@@ -422,7 +422,7 @@ async def test_inside_a_selection_too_broad_is_counted_over_the_touched_apps_onl
     assert graph.get_accessible_virtual_record_ids.await_args.args[2] == {"apps": ["app-in-scope"]}
 
 
-async def test_nothing_inside_a_selection_says_only_the_selection_was_searched(tool_env):
+async def test_nothing_inside_a_selection_says_only_the_selection_was_searched(tool_env: AsyncMock) -> None:
     tool_env.return_value = _limited_context("app-in-scope")
     graph = _limited_graph(in_scope=set())
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r-out", "v2", "app-in-scope")))
@@ -435,7 +435,7 @@ async def test_nothing_inside_a_selection_says_only_the_selection_was_searched(t
     assert payload["scopeNote"] == LIMITED_SCOPE_NOTE
 
 
-async def test_nothing_found_without_a_selection_has_no_scope_note(tool_env):
+async def test_nothing_found_without_a_selection_has_no_scope_note(tool_env: AsyncMock) -> None:
     graph = AsyncMock()
     graph.get_records_for_named_entities = AsyncMock(return_value=_hits(("r1", "v1", "app-in-scope")))
     graph.filter_accessible_record_ids = AsyncMock(return_value=set())

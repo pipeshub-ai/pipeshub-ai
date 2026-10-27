@@ -291,7 +291,7 @@ class TestEntityToolsWorkInsideTheLimit:
     def captured(self, monkeypatch: pytest.MonkeyPatch) -> dict:
         seen: dict = {}
 
-        async def fake_context(state, graph, **kwargs):
+        async def fake_context(state: dict, graph: object, **kwargs: object) -> MagicMock:
             seen.update(kwargs)
             return MagicMock()
 
