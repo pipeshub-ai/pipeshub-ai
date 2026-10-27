@@ -130,7 +130,8 @@ export class MongoSemanticSearchRepository implements SemanticSearchRepository {
     const filter = visibleFilter(orgId, viewerId, q);
     const sort: Record<string, 1 | -1> = {
       [q.sort?.field ?? 'lastActivityAt']: q.sort?.direction ?? -1,
-      _id: -1,
+      // ties follow the sort's direction, as the PostgreSQL store orders them
+      _id: q.sort?.direction ?? -1,
     };
     const [docs, total] = await Promise.all([
       EnterpriseSemanticSearch.find(filter)

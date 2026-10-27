@@ -21,6 +21,7 @@ import type {
   IChatSessionDocument,
 } from '../../../modules/enterprise_search/types/conversation.interfaces';
 import type { Tx } from '../uow';
+import { withTiebreak } from '../sort';
 import type {
   AgentArchiveGroup,
   ArchivedSearchResult,
@@ -504,7 +505,7 @@ export class MongoConversationRepository implements ConversationRepository {
   async listSessions(q: SessionListQuery): Promise<SessionPage> {
     const filter = buildSessionFilter(q);
     let selection = ChatSession.find(filter)
-      .sort(q.sort)
+      .sort(withTiebreak(q.sort))
       .skip(q.skip)
       .limit(q.limit)
       .select('-__v');
@@ -528,7 +529,7 @@ export class MongoConversationRepository implements ConversationRepository {
   }): Promise<ChatSessionDto[]> {
     const filter = buildAgentSharedWithMeFilter(q);
     const rows = await ChatSession.find(filter)
-      .sort(q.sort)
+      .sort(withTiebreak(q.sort))
       .skip(q.skip)
       .limit(q.limit)
       .select('-__v')
@@ -592,7 +593,7 @@ export class MongoConversationRepository implements ConversationRepository {
             },
           },
         },
-        { $sort: { lastActivityAt: -1 } },
+        { $sort: { lastActivityAt: -1, _id: -1 } },
         { $skip: q.skip },
         { $limit: q.limit },
         { $project: { __v: 0, nextSeq: 0, sessionType: 0 } },
@@ -632,7 +633,7 @@ export class MongoConversationRepository implements ConversationRepository {
       ]),
       ChatSession.aggregate([
         { $match: filter },
-        { $sort: { lastActivityAt: -1 as const } },
+        { $sort: { lastActivityAt: -1 as const, _id: -1 as const } },
         { $project: { __v: 0, messages: 0, nextSeq: 0, sessionType: 0 } },
         {
           $group: {
@@ -642,7 +643,7 @@ export class MongoConversationRepository implements ConversationRepository {
             latestActivity: { $first: '$lastActivityAt' },
           },
         },
-        { $sort: { latestActivity: -1 as const } },
+        { $sort: { latestActivity: -1 as const, _id: 1 as const } },
         { $skip: q.agentSkip },
         { $limit: q.agentLimit },
         {

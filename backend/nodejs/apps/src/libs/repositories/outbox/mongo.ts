@@ -31,7 +31,7 @@ export class MongoOutboxRepository implements OutboxRepository {
 
     for (let skip = 0; skip < opts.maxScan; skip += opts.candidateBatch) {
       const candidates = await OutboxEvent.find(due)
-        .sort({ createdAt: 1 })
+        .sort({ createdAt: 1, _id: 1 })
         .skip(skip)
         .limit(opts.candidateBatch)
         .exec();

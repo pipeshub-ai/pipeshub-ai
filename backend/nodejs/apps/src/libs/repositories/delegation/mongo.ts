@@ -91,7 +91,7 @@ export class MongoDelegationRepository implements DelegationRepository {
       orgId: { $eq: orgId },
       serviceAccountId: { $eq: serviceAccountId },
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean()
       .exec();
     return rows.map(rowDto);
@@ -145,7 +145,7 @@ export class MongoDelegationRepository implements DelegationRepository {
       query.serviceAccountId = { $eq: serviceAccountId };
     }
     const events = await DelegationEvent.find(query)
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(limit)
       .lean()
       .exec();

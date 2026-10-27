@@ -167,6 +167,26 @@ export function describeSemanticSearchContract(fx: SemanticSearchFixture): void 
       expect(page.total).to.equal(4);
     });
 
+    it('rows with identical timestamps keep one order in either direction, and pages neither repeat nor skip one', async () => {
+      const t = new Date('2024-03-03T00:00:00Z');
+      const rows = [] as Array<{ _id: string }>;
+      for (let i = 0; i < 5; i++) {
+        const s = await make(org, alice);
+        await fx.setCreatedAt(s._id, t);
+        rows.push(s);
+      }
+      const sortedIds = rows.map((r) => r._id).sort();
+      for (const [direction, expected] of [[1, sortedIds], [-1, [...sortedIds].reverse()]] as const) {
+        const paged: string[] = [];
+        for (let skip = 0; skip < 5; skip += 2) {
+          const page = await repo.listVisible(org, alice, { skip, limit: 2, sort: { field: 'createdAt', direction } });
+          paged.push(...ids(page.rows));
+        }
+        expect(paged, `direction ${String(direction)}`).to.deep.equal(expected);
+        expect(new Set(paged).size).to.equal(5);
+      }
+    });
+
     it('honours the owned and shared switches', async () => {
       const mine = await make(org, alice);
       const theirs = await make(org, bob);
