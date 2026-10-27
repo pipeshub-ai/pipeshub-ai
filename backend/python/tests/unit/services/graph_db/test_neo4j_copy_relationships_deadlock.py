@@ -81,6 +81,10 @@ class TestEdgeOrder:
 
         rows = p.client.execute_query.await_args.kwargs["parameters"]["edges"]
         assert [row["to_key"] for row in rows] == ["t-a", "t-b", "t-c"]
+        query = p.client.execute_query.await_args.args[0]
+        assert query.index("ORDER BY edge.from_key, edge.to_key") < query.index("MERGE"), (
+            "the query itself fixes the order, before the MERGE takes the locks"
+        )
 
 
 class TestCopyRetries:

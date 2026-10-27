@@ -2530,6 +2530,8 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 UNWIND $edges AS edge
                 MATCH (from:{from_label} {{id: edge.from_key}})
                 MATCH (to:{to_label} {{id: edge.to_key}})
+                // Cypher keeps no row order unless asked; this is the lock order.
+                WITH edge, from, to ORDER BY edge.from_key, edge.to_key
                 {merge}
                 SET r = edge.props
                 {"WITH from, to, r" if refresh else ""}
