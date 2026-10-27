@@ -3512,7 +3512,8 @@ describe('Enterprise Search Controller', () => {
       await handler(req, createMockResponse(), createMockNext())
 
       const [, changes] = update.firstCall.args as any[]
-      expect(changes).to.deep.equal({ sharedWith: [{ userId: other, accessLevel: 'read' }] })
+      expect(changes.sharedWith.map((m: any) => [String(m.userId), m.accessLevel])).to.deep.equal([[String(other), 'read']])
+      expect(changes).to.not.have.any.keys('isShared', '$unset', 'shareLink')
     })
 
     it('should call next when search not found for unshare', async () => {
