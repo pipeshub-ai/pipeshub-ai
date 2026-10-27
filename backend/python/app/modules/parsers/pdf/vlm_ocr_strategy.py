@@ -270,14 +270,21 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
             page_images[page_number] = f"data:image/png;base64,{img_base64}"
         return page_images
 
-    async def _preload_page_images(self) -> None:
-        """Rasterise pages in batches to avoid OOM in the process-pool worker."""
-        total = len(self.doc.pages)
-        all_page_numbers = list(range(1, total + 1))
-        batch_size = self.PAGE_RENDER_BATCH_SIZE
+    async def _preload_page_images(self, page_numbers: Optional[list[int]] = None) -> None:
+        """Rasterise pages in batches to avoid OOM in the process-pool worker.
 
-        for start in range(0, len(all_page_numbers), batch_size):
-            batch = all_page_numbers[start : start + batch_size]
+        With *page_numbers* only those pages are rendered and they replace whatever
+        was held, so the caller keeps at most one batch of images alive. Without it
+        every page is rendered and kept (the original behaviour).
+        """
+        total = len(self.doc.pages)
+        wanted = page_numbers if page_numbers is not None else list(range(1, total + 1))
+        batch_size = self.PAGE_RENDER_BATCH_SIZE
+        if page_numbers is not None:
+            self._page_images = {}
+
+        for start in range(0, len(wanted), batch_size):
+            batch = wanted[start : start + batch_size]
             self.logger.debug(
                 "Rendering page batch %d–%d of %d", batch[0], batch[-1], total
             )
@@ -285,6 +292,7 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 self._render_page_batch_to_base64, batch
             )
             self._page_images.update(batch_images)
+            del batch_images
 
     _coerce_content_to_text = staticmethod(coerce_message_content_to_text)
 
@@ -417,8 +425,6 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
         pages = self.doc.pages
         self.logger.info(f"🚀 Processing {len(pages)} pages with VLM OCR (concurrency: {self.CONCURRENCY_LIMIT})")
 
-        await self._preload_page_images()
-
         semaphore = asyncio.Semaphore(self.CONCURRENCY_LIMIT)
         # Why each page that failed after every retry was indexed empty.
         unreadable: list[Exception] = []
@@ -429,7 +435,10 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                 last_error = None
                 for attempt in range(self.MAX_RETRY_ATTEMPTS + 1):
                     try:
-                        return await self.process_page(page, page_number)
+                        result = await self.process_page(page, page_number)
+                        # The page is done: free its image now, not when the batch ends.
+                        self._page_images.pop(page_number, None)
+                        return result
                     except (NonRetryableError, LLMUnavailableError):
                         # A provider that is down, or a call that must not be retried: blank pages
                         # would index an empty document, so the record fails as a whole.
@@ -455,20 +464,33 @@ Return ONLY the extracted markdown. No preamble, no explanations, no commentary.
                             }
                 raise AssertionError("unreachable: the last attempt returns")
 
-        tasks = [
-            asyncio.create_task(process_page_with_retry(page, page_num + 1))
-            for page_num, page in enumerate(pages)
-        ]
-
+        # Render and OCR one batch at a time so only PAGE_RENDER_BATCH_SIZE page images
+        # are alive at once; the next batch is rendered after the previous one's
+        # LLM calls have finished and its images were dropped.
+        pages_results: list[dict[str, Any]] = []
+        batch_size = max(1, self.PAGE_RENDER_BATCH_SIZE)
         try:
-            pages_results = await asyncio.gather(*tasks)
-        except Exception:
-            self.logger.error("❌ Cancelling all remaining tasks due to failure")
-            for task in tasks:
-                if not task.done():
-                    task.cancel()
-            await asyncio.gather(*tasks, return_exceptions=True)
-            raise
+            for start in range(0, len(pages), batch_size):
+                numbers = list(range(start + 1, min(start + batch_size, len(pages)) + 1))
+                await self._preload_page_images(numbers)
+                tasks = [
+                    asyncio.create_task(process_page_with_retry(pages[n - 1], n))
+                    for n in numbers
+                ]
+                try:
+                    pages_results.extend(await asyncio.gather(*tasks))
+                except Exception:
+                    self.logger.error("❌ Cancelling all remaining tasks due to failure")
+                    for task in tasks:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+                    raise
+                finally:
+                    del tasks
+                    self._page_images = {}
+        finally:
+            self._page_images = {}
 
         if pages and len(unreadable) == len(pages):
             # Every page failing alike (no rendered images, output always truncated) is
