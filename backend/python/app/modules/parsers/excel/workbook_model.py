@@ -62,6 +62,7 @@ _CHUNK_BYTES = 1024 * 1024
 _COLUMN_BITS = 20  # a position is (row << 20) | column; columns stop at 18278
 _COLUMN_MASK = (1 << _COLUMN_BITS) - 1
 _TALL_MERGE_ROWS = 32  # taller merged ranges are searched, shorter ones are indexed by row
+_MAX_NUMBER_FORMAT_CHARS = 255  # Excel's own limit; openpyxl does not enforce it
 _NEAR_LIMIT = 0.8  # an error with the worker this close to its cap is the cap
 
 
@@ -373,12 +374,13 @@ class SheetModel:
 class WorkbookModel:
     """The sheets of a workbook, in order, with what the load cost the worker."""
 
-    def __init__(self, sheets: list[SheetModel], worker_peak_kb: int = 0, text_chars: int = 0) -> None:
+    def __init__(self, sheets: list[SheetModel], worker_peak_kb: int = 0, text_bytes: int = 0) -> None:
         self._sheets = {s.title: s for s in sheets}
         self.sheetnames = [s.title for s in sheets]
         self.worker_peak_kb = worker_peak_kb
-        # characters the blocks would hold: every use of a shared string counts
-        self.text_chars = text_chars
+        # UTF-8 bytes of text the blocks would hold: every use of a shared string counts, and
+        # the first row (the headers) once for every other row it is written into
+        self.text_bytes = text_bytes
 
     def __getitem__(self, name: str) -> SheetModel:
         return self._sheets[name]
@@ -454,6 +456,7 @@ class _GrowthWatcher:
 
     def __init__(self) -> None:
         self._start_kb = _status_kb("VmData")
+        self._start_vm_peak_kb = _status_kb("VmPeak")
         self.peak_kb = 0
         self._stop = threading.Event()
         self._thread = threading.Thread(target=self._run, name="excel-growth-watch", daemon=True)
@@ -473,6 +476,16 @@ class _GrowthWatcher:
     def sample(self) -> int:
         self.peak_kb = max(self.peak_kb, _status_kb("VmData") - self._start_kb)
         return self.peak_kb
+
+    def peak_growth_kb(self) -> int:
+        """The most this load grew the data segment, sampled or not.
+
+        A peak allocated and freed between two samples is still in VmPeak (the kernel's
+        high-water mark of address space, readable by a non-dumpable process), but only when
+        it went past every earlier peak of this worker: a spike under an earlier, larger job
+        is not seen, which can only misname the file's own error, never admit more.
+        """
+        return max(self.sample(), _status_kb("VmPeak") - self._start_vm_peak_kb)
 
 
 def _precheck(file_binary: bytes, max_xml_bytes: int) -> None:
@@ -516,7 +529,7 @@ def _style_of(cell: Cell) -> tuple:
     alignment = cell.alignment
     return (
         cell.data_type,
-        cell.number_format,
+        cell.number_format[:_MAX_NUMBER_FORMAT_CHARS],
         font.bold,
         font.italic,
         font.size,
@@ -547,6 +560,31 @@ def _extract_sheet(ws: Any, table: list[tuple], index: dict[tuple, int]) -> Shee
     return SheetModel(ws.title, ws.max_row, ws.max_column, keys, style_ids, values, table, merges)
 
 
+def _utf8_len(text: str) -> int:
+    return len(text) if text.isascii() else len(text.encode("utf-8"))
+
+
+def _sheet_text_bytes(sheet: SheetModel) -> int:
+    """UTF-8 bytes the blocks built from *sheet* would hold: every string cell once per use,
+    plus the first row once for each further row (each row's text repeats its headers)."""
+    sizes: dict[int, int] = {}
+    total = first_row = rows = 0
+    current = 0
+    for key, value in zip(sheet.keys, sheet.values, strict=True):
+        row = key >> _COLUMN_BITS
+        if row != current:
+            current = row
+            rows += 1
+        if isinstance(value, str):
+            size = sizes.get(id(value))
+            if size is None:
+                size = sizes[id(value)] = _utf8_len(value)
+            total += size
+            if row == 1:
+                first_row += size
+    return total + first_row * max(0, rows - 1) + _utf8_len(sheet.title) * (2 + rows)
+
+
 def _extract(file_binary: bytes) -> WorkbookModel:
     workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
     try:
@@ -561,8 +599,7 @@ def _extract(file_binary: bytes) -> WorkbookModel:
         for ws in list(workbook.worksheets):
             sheets.append(_extract_sheet(ws, table, index))
             ws._cells = {}  # hand the sheet's objects back as we go
-        text_chars = sum(len(v) for sh in sheets for v in sh.values if isinstance(v, str))
-        return WorkbookModel(sheets, _status_kb("VmHWM"), text_chars)
+        return WorkbookModel(sheets, _status_kb("VmHWM"), sum(_sheet_text_bytes(sh) for sh in sheets))
     finally:
         workbook.close()
 
@@ -586,14 +623,14 @@ def _portable_failure(exc: Exception) -> Exception:
 
 
 def load_workbook_model(
-    file_binary: bytes, limit_bytes: int, max_xml_bytes: int, max_text_chars: int | None = None
+    file_binary: bytes, limit_bytes: int, max_xml_bytes: int, max_text_bytes: int | None = None
 ) -> WorkbookModel:
     """Load a workbook and return its compact model, growing by at most *limit_bytes*.
 
     Runs in a worker process (``parse_pool``). Raises ``WorkbookRefused``
     (``too_large`` when the load needed more than the allowance, the decompressed
     bytes passed *max_xml_bytes*, or the text the blocks would hold (every use of a
-    shared string counted) passed *max_text_chars*; ``unreadable`` for a DOCTYPE or
+    shared string counted, in UTF-8 bytes) passed *max_text_bytes*; ``unreadable`` for a DOCTYPE or
     entity declaration). Anything else is the loader's own error for a file it
     cannot read, as the caller would have seen it before.
     """
@@ -603,8 +640,8 @@ def load_workbook_model(
         try:
             _precheck(file_binary, max_xml_bytes)
             model = _extract(file_binary)
-            if max_text_chars is not None and model.text_chars > max_text_chars:
-                raise WorkbookRefused("too_large", f"{model.text_chars} characters of cell text")
+            if max_text_bytes is not None and model.text_bytes > max_text_bytes:
+                raise WorkbookRefused("too_large", f"{model.text_bytes} bytes of text in the blocks")
             return model
         except MemoryError:
             over = True
@@ -613,7 +650,7 @@ def load_workbook_model(
         except Exception as exc:
             # openpyxl catches MemoryError in places and re-raises it as another error (a
             # TypeError from a half-built range); a load that came near the allowance died of it.
-            if cap is not None and growth.sample() * 1024 >= limit_bytes * _NEAR_LIMIT:
+            if cap is not None and growth.peak_growth_kb() * 1024 >= limit_bytes * _NEAR_LIMIT:
                 over = True
             else:
                 raise _portable_failure(exc) from exc

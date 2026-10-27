@@ -461,13 +461,13 @@ def _repeated_strings(width: int, n: int = 20, uses: int = 20) -> bytes:
 
 
 def test_text_repeated_by_shared_strings_is_counted_per_use(monkeypatch: pytest.MonkeyPatch) -> None:
-    data = _repeated_strings(10_000)  # 20 strings x 20 uses x 10 000 characters = 4 M characters of block text
-    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 3_000_000)
+    data = _repeated_strings(10_000)  # 20 strings x 20 uses x 10 000 characters = 4 M bytes of block text, 8 M with the headers
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 6_000_000)
     with pytest.raises(ParseError) as raised:
         load(data)
     assert raised.value.message == user_errors.EXCEL_TOO_LARGE
-    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 5_000_000)
-    assert load(data).workbook.text_chars >= 4_000_000  # the same workbook loads under a larger allowance
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", 12_000_000)
+    assert load(data).workbook.text_bytes >= 4_000_000  # the same workbook loads under a larger allowance
 
 
 def test_a_corrupt_workbook_keeps_the_loaders_own_error() -> None:
@@ -480,3 +480,77 @@ def test_a_corrupt_workbook_keeps_the_loaders_own_error() -> None:
         load(out.getvalue())
     with pytest.raises(zipfile.BadZipFile):
         load(b"not a zip")
+
+
+# -- the running output budget: what the parent produces, charged as it is created ----------------------
+
+
+def _loaded_with_budget(data: bytes, budget: int) -> ExcelParser:
+    parser = load(data)  # the load-time estimate is not what these tests are about
+    parser._output = module._OutputBudget(budget)
+    return parser
+
+
+def test_the_basic_blocks_stop_at_the_output_budget() -> None:
+    parser = _loaded_with_budget(_small_xlsx_many_rows(300), 2_000)
+    with pytest.raises(ParseError) as raised:
+        parser._build_basic_block_container()
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+
+
+@pytest.mark.asyncio
+async def test_the_indexing_blocks_stop_at_the_output_budget() -> None:
+    parser = _loaded_with_budget(_small_xlsx_many_rows(300), 2_000)
+    _stub_llm(parser)
+    parser.get_table_summary = AsyncMock(return_value="summary")
+    parser.get_rows_text = AsyncMock(side_effect=lambda rows, _s: ["x" * 500 for _ in rows])  # LLM output is charged
+    with pytest.raises(ParseError) as raised:
+        await parser.get_blocks_from_workbook(MagicMock())
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+
+
+def test_a_long_sheet_name_is_charged_for_every_block_it_is_written_into() -> None:
+    # The name is stored once, but every block's data and the JSON of the container carry it.
+    wb = openpyxl.Workbook()
+    wb.active.title = "N" * 31  # Excel's limit; openpyxl's writer enforces it, the reader does not
+    wb.active.append(["h"])
+    for i in range(500):
+        wb.active.append([i])
+    out = io.BytesIO()
+    wb.save(out)
+    parser = _loaded_with_budget(out.getvalue(), 500 * 31 // 2)
+    with pytest.raises(ParseError):
+        parser._build_basic_block_container()
+
+
+def test_the_output_budget_is_per_loaded_document() -> None:
+    parser = load(_small_xlsx_many_rows(50))
+    parser._build_basic_block_container()
+    first_left = parser._output.left
+    parser.load_workbook_from_binary(_small_xlsx_many_rows(50))
+    assert parser._output.left > first_left  # a new load starts a new budget
+
+
+def test_a_number_format_is_clamped_to_excels_limit_when_rendered() -> None:
+    long_format = 'yyyy-mm-dd"' + "L" * 200_000 + '"'
+    rendered = module.format_excel_datetime(dt.datetime(2024, 1, 2), long_format)
+    assert len(rendered) < 1_000
+
+
+def test_the_model_keeps_a_clamped_number_format() -> None:
+    wb = openpyxl.Workbook()
+    wb.active["A1"] = dt.datetime(2024, 1, 1)
+    wb.active["A1"].number_format = 'yyyy-mm-dd"' + "L" * 5_000 + '"'
+    out = io.BytesIO()
+    wb.save(out)
+    assert len(load(out.getvalue()).workbook["Sheet"].cell(1, 1).number_format) <= 255
+
+
+def _small_xlsx_many_rows(n: int) -> bytes:
+    wb = openpyxl.Workbook()
+    wb.active.append(["name", "amount"])
+    for i in range(n):
+        wb.active.append([f"row {i}", i])
+    out = io.BytesIO()
+    wb.save(out)
+    return out.getvalue()

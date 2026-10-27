@@ -41,6 +41,7 @@ from app.modules.parsers.excel.workbook_model import (
     ModelMergedCell,
     SheetModel,
     WorkbookRefused,
+    _utf8_len,
     get_cell_background_color,
     get_cell_font_color,
     load_workbook_model,
@@ -81,9 +82,32 @@ EXCEL_LOAD_MAX_MB = env_positive_int("EXCEL_LOAD_MAX_MB", 1536)
 EXCEL_LOAD_MAX_BYTES = EXCEL_LOAD_MAX_MB * 1024 * 1024
 # Backstop on the XML decompressed, all parts together (checked in the worker).
 EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
-# Blocks hold a copy of a cell's text per use (a shared string used by N cells is N copies),
-# so the text they would hold is counted per use in the worker, and a workbook over this is refused.
-EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 768) * 1024 * 1024
+# What the parent builds from the model is bounded in UTF-8 bytes of text, in two places that share
+# this number (the name says characters for historical reasons). The worker refuses, before anything
+# is built, a workbook whose cells would put more than this into blocks (a shared string counted per
+# use, the header row once per row). That is an estimate from the input; the real bound is the
+# running ``_OutputBudget`` charged by every block-building path as each row text, header list and
+# name is created, which raises EXCEL_TOO_LARGE as soon as the text produced passes it. Sized from
+# measured parent peaks (about 1.9 bytes of parent memory per byte produced, plus the model's own
+# copy of distinct strings): 512 MB keeps the parent near 2.3 GB.
+EXCEL_MAX_TEXT_CHARS = env_positive_int("EXCEL_MAX_TEXT_MB", 512) * 1024 * 1024
+
+
+class _OutputBudget:
+    """Running total of the text a parser instance has produced, in UTF-8 bytes."""
+
+    __slots__ = ("left",)
+
+    def __init__(self, limit: int) -> None:
+        self.left = limit
+
+    def charge(self, nbytes: int) -> None:
+        self.left -= nbytes
+        if self.left < 0:
+            raise _too_large("the blocks would hold more text than the output budget")
+
+    def charge_text(self, *texts: object) -> None:
+        self.charge(sum(_utf8_len(t) for t in texts if isinstance(t, str)))
 
 
 def _too_large(detail: str = "") -> ParseError:
@@ -106,6 +130,8 @@ def _refusal(refused: WorkbookRefused) -> ParseError:
         return _too_large(refused.detail)
     return ParseError(ParseErrorCode.PARSE_FAILED, UNREADABLE_FILE)
 
+
+MAX_NUMBER_FORMAT_CHARS = 255
 
 # Built-in Excel date format codes mapping
 BUILTIN_DATE_FORMATS = {
@@ -377,6 +403,10 @@ def format_excel_datetime(dt_value: datetime | time | str | int | float | None, 
     if not number_format or number_format == "General":
         return dt_value.isoformat()
 
+    # Excel never writes a format longer than 255 characters; openpyxl does not enforce it, and a
+    # long quoted literal would be rendered into every date cell.
+    number_format = number_format[:MAX_NUMBER_FORMAT_CHARS]
+
     try:
         # Step 1: Resolve built-in format codes (14-22) to format strings
         format_str = _resolve_builtin_format(number_format)
@@ -407,6 +437,7 @@ class ExcelParser:
         self.config_service = config_service
         self.workbook = None
         self.file_binary = None
+        self._output = _OutputBudget(EXCEL_MAX_TEXT_CHARS)
 
         # Store prompts
         self.sheet_summary_prompt = sheet_summary_prompt
@@ -456,6 +487,7 @@ class ExcelParser:
         """
         self.logger.info("Loading workbook from binary data")
         self.file_binary = file_binary
+        self._output = _OutputBudget(EXCEL_MAX_TEXT_CHARS)
         if not self.file_binary:
             return
         try:
@@ -551,6 +583,8 @@ class ExcelParser:
                 str(h) if h is not None else f"col_{i}"
                 for i, h in enumerate(headers)
             ]
+            # the sheet name is written into the sheet group, the table group and every block
+            self._output.charge_text(sheet_name, sheet_name, *col_names)
 
             # SHEET group
             sg_idx = len(block_groups)
@@ -599,6 +633,8 @@ class ExcelParser:
                     for ci, cell in enumerate(row)
                 }
                 bi = len(blocks)
+                row_text = generate_simple_row_text(row_data)
+                self._output.charge_text(row_text, sheet_name)
                 row_num = row[0].get("row", ri + 2) if row else ri + 2
                 blocks.append(
                     Block(
@@ -606,7 +642,7 @@ class ExcelParser:
                         type=BlockType.TABLE_ROW,
                         format=DataFormat.JSON,
                         data={
-                            "row_natural_language_text": generate_simple_row_text(row_data),
+                            "row_natural_language_text": row_text,
                             "row_number": int(row_num),
                             "row_end_number": int(row_num),
                             "row_count": 1,
@@ -1030,6 +1066,7 @@ class ExcelParser:
             cell_value = cell.value
             if isinstance(cell_value, (datetime, time)) and hasattr(cell, 'number_format'):
                 cell_value = format_excel_datetime(cell_value, cell.number_format)
+                self._output.charge_text(cell_value)
 
             return {
                 "value": cell_value,  # Now contains formatted string for datetime values
@@ -1557,6 +1594,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
 
                     # Add processed rows to results
                     for row, row_text in zip(batch, row_texts):
+                        self._output.charge_text(row_text)
                         if row:
                             processed_rows.append(
                                 {
@@ -1572,6 +1610,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                     if row:
                         row_data = {cell["header"]: cell["value"] for cell in row}
                         row_text = generate_simple_row_text(row_data)
+                        self._output.charge_text(row_text)
                         processed_rows.append(
                             {
                                 "raw_data": row_data,
@@ -1580,6 +1619,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                             }
                         )
 
+            self._output.charge_text(table_summary, *table["headers"])
             processed_tables.append(
                 {
                     "headers": table["headers"],
@@ -1637,9 +1677,13 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
             )
             block_groups.append(sheet_group)
 
+            # the sheet name is written into the sheet group, every table group and every block
+            self._output.charge_text(sheet_name, sheet_name)
+
             # Add TABLE groups under this sheet
             for table in sheet_result["tables"]:
                 table_group_index = len(block_groups)
+                self._output.charge_text(sheet_name)
 
                 headers = table.get("headers", [])
                 rows = table.get("rows", [])
@@ -1675,6 +1719,7 @@ Respond with ONLY a JSON object with EXACTLY {column_count} headers:
                 # Create TABLE_ROW blocks under this table
                 for i, row in enumerate(rows):
                     block_index = len(blocks)
+                    self._output.charge_text(sheet_name)
                     blocks.append(
                         Block(
                             index=block_index,
