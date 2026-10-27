@@ -150,7 +150,7 @@ class TestStash:
             await p._stash_connector_delete_handles("c1", ["g1"], None)
 
 
-# ---- a delete that races a push, or a second deleter (T42u, T42g) ---------------------------------
+# ---- a delete that races a push, or a second deleter ---------------------------------
 
 
 

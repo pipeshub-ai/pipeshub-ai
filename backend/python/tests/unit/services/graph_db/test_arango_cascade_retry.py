@@ -1,4 +1,4 @@
-"""An Arango KB delete that loses to a concurrent push is run again (T42u), and measured by what remains (T42g)."""
+"""An Arango KB delete that loses to a concurrent push is run again, and measured by what remains."""
 
 from __future__ import annotations
 
