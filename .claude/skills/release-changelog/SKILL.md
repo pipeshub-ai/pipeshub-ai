@@ -280,7 +280,7 @@ Changes merged to `main` since the last release: [`<tag>...HEAD`](https://github
 
 **<H1 headline from the detailed file>** · <Channel> · [`<tag>`](https://github.com/pipeshub-ai/pipeshub-ai/releases/tag/<tag>) · [Full changelog](changelog/<version>.md)
 
-<One- or two-sentence narrative: scale ("~195 PRs since 0.5.0") and theme.>
+<Two sentences on what changed for users: the main features and fixes. No links, except the "Finalizes" link below. This paragraph is also the release's summary on the docs changelog page, with links removed.>
 
 ### Breaking changes & upgrade notes
 - <what an operator or client must do> ([#N](link))

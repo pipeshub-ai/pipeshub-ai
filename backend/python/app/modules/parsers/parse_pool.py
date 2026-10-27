@@ -109,9 +109,9 @@ class _State:
 def set_resource_governor(governor: ResourceGovernor | None) -> None:
     """Turn the pool on for this process, sized from *governor*.
 
-    Called from the lifespan of the services that parse under admission
-    control (indexing, parsing). A process that never calls it keeps parsing
-    in threads, which is what the query service and the tests want.
+    Called from the lifespan of the services that parse (indexing, parsing,
+    and query for chat attachments). A process that never calls it keeps
+    parsing in threads, which is what the tests want.
     """
     _State.governor = governor
 

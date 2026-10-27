@@ -282,8 +282,9 @@ def get_mime_type_from_record(record: Record) -> str:
 
 
 # File types that require conversion to PDF for streaming
-_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"ppt", "pptx", "epub"})
+_PDF_CONVERTIBLE_EXTENSIONS: frozenset[str] = frozenset({"doc", "ppt", "pptx", "epub"})
 _PDF_CONVERTIBLE_MIME_TYPES: frozenset[str] = frozenset({
+    MimeTypes.DOC.value,
     MimeTypes.PPT.value,
     MimeTypes.PPTX.value,
     MimeTypes.GOOGLE_SLIDES.value,
@@ -318,7 +319,9 @@ def get_pdf_conversion_info(
 
     resolved_mime = mime_type if mime_type else get_mime_type_from_record(record)
     if file_extension not in _PDF_CONVERTIBLE_EXTENSIONS:
-        if resolved_mime == MimeTypes.PPT.value:
+        if resolved_mime == MimeTypes.DOC.value:
+            file_extension = "doc"
+        elif resolved_mime == MimeTypes.PPT.value:
             file_extension = "ppt"
         elif resolved_mime in {MimeTypes.PPTX.value, MimeTypes.GOOGLE_SLIDES.value}:
             # Google Slides exports are returned as OOXML presentations by the

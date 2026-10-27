@@ -35,6 +35,7 @@ import type {
   NewMessage,
   NewSession,
   ContentMatches,
+  VisibleSummaryRow,
   RunReservation,
   RunStateChange,
   SessionActor,
@@ -685,12 +686,12 @@ export class MongoConversationRepository implements ConversationRepository {
     };
   }
 
-  async listVisibleTitles(
+  async listVisibleSummaries(
     orgId: string,
     userId: string,
     ids: string[],
     accessibleProjectIds: string[],
-  ): Promise<Array<{ _id: string; title?: string }>> {
+  ): Promise<VisibleSummaryRow[]> {
     const userObjectId = oid(userId);
     const sessions = await ChatSession.find(
       {
@@ -699,20 +700,41 @@ export class MongoConversationRepository implements ConversationRepository {
         isDeleted: { $ne: true },
         $or: [
           { userId: userObjectId },
-          { $and: [{ isShared: true }, { 'sharedWith.userId': userObjectId }] },
+          {
+            $and: [
+              { isShared: true },
+              { 'sharedWith.userId': userObjectId },
+              // Archiving an agent chat takes it away from the people it was shared with.
+              {
+                $or: [
+                  { sessionType: { $ne: 'agent' } },
+                  { isArchived: { $ne: true } },
+                ],
+              },
+            ],
+          },
           ...(accessibleProjectIds.length > 0
             ? [
                 {
                   projectId: { $in: oids(accessibleProjectIds) },
                   projectVisibility: 'project' as const,
+                  // Project members cannot open an archived chat.
+                  isArchived: { $ne: true },
                 },
               ]
             : []),
         ],
       },
-      { _id: 1, title: 1 },
+      {
+        _id: 1,
+        title: 1,
+        sessionType: 1,
+        agentKey: 1,
+        projectId: 1,
+        isArchived: 1,
+      },
     ).lean();
-    return toPlain<Array<{ _id: string; title?: string }>>(sessions);
+    return toPlain<VisibleSummaryRow[]>(sessions);
   }
 
   async listByProject(q: {

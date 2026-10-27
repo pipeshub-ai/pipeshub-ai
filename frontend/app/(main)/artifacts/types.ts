@@ -53,6 +53,12 @@ export interface ArtifactListItem {
   contentHash?: string | null;
   conversationId?: string | null;
   conversationTitle?: string;
+  /** The agent whose chat produced this artifact; absent for assistant chats. */
+  agentKey?: string;
+  /** The project the chat belongs to, when the viewer can open that project. */
+  projectId?: string;
+  /** The chat is archived, so it opens from the archived chats page. */
+  conversationArchived?: true;
   createdAt?: number | null;
   updatedAt?: number | null;
   /** The viewer's permission: OWNER for their own artifacts, READER for ones shared with them. */

@@ -21,7 +21,7 @@ from uuid import uuid4
 from bs4 import BeautifulSoup  # pyright: ignore[reportMissingModuleSource]
 from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
-from html_to_markdown import convert as html_to_markdown  # type: ignore[import-untyped]
+from app.utils.html_markdown import html_to_markdown_async
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -3138,7 +3138,7 @@ class ZammadConnector(BaseConnector):
                 )
 
             # Convert HTML to Markdown
-            description_body_md = html_to_markdown(description_body_html) if description_body_html else ""
+            description_body_md = await html_to_markdown_async(description_body_html) if description_body_html else ""
             description_data = f"# {ticket_title}\n\n{description_body_md}" if description_body_md else f"# {ticket_title}"
 
             description_block_group = BlockGroup(
@@ -3190,7 +3190,7 @@ class ZammadConnector(BaseConnector):
                     continue
 
                 # Convert HTML to Markdown
-                article_body_md = html_to_markdown(article_body_html)
+                article_body_md = await html_to_markdown_async(article_body_html)
                 # Get author name
                 author_name = article_from if article_from else "Unknown"
 
@@ -3497,7 +3497,7 @@ class ZammadConnector(BaseConnector):
             body = await self._convert_html_images_to_base64(body)
 
         # Convert HTML body to Markdown (same as ticket streaming)
-        body_md = html_to_markdown(body) if body else ""
+        body_md = await html_to_markdown_async(body) if body else ""
         block_content = f"# {title}\n\n{body_md}" if body_md else f"# {title}"
 
         # Build single BlockGroup for answer content

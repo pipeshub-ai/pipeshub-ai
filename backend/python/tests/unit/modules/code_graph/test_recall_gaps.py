@@ -197,6 +197,61 @@ async def test_a_call_on_a_union_alias_reaches_every_member(graph, index_file) -
     assert members <= _targets(graph, CALLS, "src/expr.ts")
 
 
+async def test_a_call_on_an_inline_union_reaches_every_member(graph, index_file) -> None:
+    await index_file("a", "src/a.ts",
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function f(e: A | B | undefined) { e!.go(); }\n", "typescript")
+    await _build(graph)
+    assert {"src/a.ts::method:A.go", "src/a.ts::method:B.go"} <= _targets(graph, CALLS, "src/a.ts")
+
+
+async def test_a_call_in_a_local_closure_is_also_the_enclosing_methods(graph, index_file) -> None:
+    # vscode: `const map = (r) => ... this.toRuntime(r)` inside `SessionStorageIdentity._record`.
+    await index_file("a", "src/a.ts",
+                     b"export class Id {\n  toRuntime(r: string): string { return r; }\n"
+                     b"  record(v: string): string {\n"
+                     b"    const map = (r: string) => this.toRuntime(r);\n"
+                     b"    const run = () => map(v);\n    return run();\n  }\n}\n",
+                     "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert ("method:Id.record", "method:Id.toRuntime") in callers
+    assert ("function:Id.record.map", "method:Id.toRuntime") in callers
+    # `run` calling its sibling `map` is not `record` calling it a second way.
+    assert ("function:Id.record.run", "function:Id.record.map") in callers
+    assert {t for f, t in callers if f == "method:Id.record"} == {
+        "method:Id.toRuntime", "function:Id.record.run"}
+
+
+async def test_a_generic_read_returns_the_type_argument(graph, index_file) -> None:
+    # vscode: `this.model.read(reader)` on a field typed `IObservable<Model | undefined>`.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(reader: unknown): T;\n}\n"
+                     b"export class Ghost {\n  render(): string { return ''; }\n}\n"
+                     b"export class Model {\n  readonly primary: IObservable<Ghost | undefined>;\n}\n"
+                     b"export class Part {\n  constructor(readonly model: IObservable<Model>) {}\n"
+                     b"  show(reader: unknown) {\n"
+                     b"    const g = this.model.read(reader)?.primary.read(reader);\n"
+                     b"    return g?.render();\n  }\n}\n", "typescript")
+    await _build(graph)
+    assert "src/o.ts::method:Ghost.render" in _targets(graph, CALLS, "src/o.ts")
+
+
+async def test_a_generic_read_uses_its_own_functions_type_argument(graph, index_file) -> None:
+    # Two functions in one file name `v` with different type arguments.
+    await index_file("o", "src/o.ts",
+                     b"export interface IObservable<T> {\n  read(): T;\n}\n"
+                     b"export class A {\n  go(): void {}\n}\nexport class B {\n  go(): void {}\n}\n"
+                     b"export function first(v: IObservable<A>) {\n  v.read().go();\n}\n"
+                     b"export function second(v: IObservable<B>) {\n  v.read().go();\n}\n", "typescript")
+    await _build(graph)
+    callers = {(graph.blocks[e["_from"].split("/", 1)[1]]["qualifiedName"],
+                graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]) for e in graph.code_edges(CALLS)}
+    assert {t for f, t in callers if f == "function:first" and t.endswith(".go")} == {"method:A.go"}
+    assert {t for f, t in callers if f == "function:second" and t.endswith(".go")} == {"method:B.go"}
+
+
 async def test_a_typescript_namespace_function_is_called_through_the_namespace(graph, index_file) -> None:
     # vscode: `Event.map(...)`, where `namespace Event` shares its name with an interface.
     await index_file("event", "src/event.ts",

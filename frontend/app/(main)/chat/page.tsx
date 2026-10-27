@@ -1110,11 +1110,12 @@ function ChatContent() {
     activeSlotIsOwner !== false &&
     !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
 
-  // Search mode: show results view when in search mode with results/in-progress search
+  // Search mode: show the results view once a query is submitted, so empty and failed
+  // searches show their state instead of falling back to the welcome screen.
   const mode = useChatStore((s) => s.settings.mode);
-  const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
+  const hasSearchQuery = useChatStore((s) => s.searchQuery !== '');
   const isSearching = useChatStore((s) => s.isSearching);
-  const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
+  const showSearchView = mode === 'search' && (hasSearchQuery || isSearching) && !conversationId;
 
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
   // Desktop only: on phones and tablets the two columns leave the document too narrow.

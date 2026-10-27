@@ -9,6 +9,7 @@ export const GALLERY_ARTIFACT_TYPES = [
   'PRESENTATION',
   'DATA_FILE',
   'CODE',
+  'OTHER',
 ] as const;
 
 export const GALLERY_SORT_FIELDS = [
