@@ -2,7 +2,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useRouter, usePathname } from 'next/navigation';
-import { Box, Button, DropdownMenu, Flex, Text } from '@radix-ui/themes';
+import { Box, Button, Callout, DropdownMenu, Flex, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -22,7 +22,7 @@ import { chatContentColumnStyle } from '@/chat/constants';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { toast } from '@/lib/store/toast-store';
-import { DeleteProjectDialog } from '@/chat/sidebar/dialogs';
+import { DeleteProjectDialog, EditProjectDialog, LeaveProjectDialog } from '@/chat/sidebar/dialogs';
 import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { useCanHover } from '@/lib/hooks/use-can-hover';
 import { touchTarget } from '@/app/components/ui/responsive';
@@ -33,6 +33,9 @@ import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-but
 import { ProjectSettingsPanel, type SetupSectionKey } from './settings-panel';
 import { ChatDefaultsCard } from './chat-defaults-card';
 import { AboutCard } from './about-card';
+import { ProjectSharingSettings } from './project-sharing-settings';
+import { createSerialSaver } from '../utils/serial-saver';
+import { hasDirectMembership } from '../utils/membership';
 
 interface ProjectWorkspaceRedesignedProps {
   projectId: string;
@@ -113,6 +116,15 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [shareOpen, setShareOpen] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
+  const [leaveOpen, setLeaveOpen] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+
+  // The tool list the user last asked for. Tool toggles can outrun the
+  // server, so every PATCH response is merged under this instead of
+  // replacing it (see `toolsSaver`).
+  const toolsRef = useRef<string[]>([]);
+  const confirmedToolsRef = useRef<string[]>([]);
 
   const load = useCallback(async () => {
     setIsLoading(true);
@@ -125,6 +137,8 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         ProjectApi.get(projectId),
         ProjectApi.listConversations(projectId, { page: 1, limit: 1 }),
       ]);
+      toolsRef.current = detail.tools ?? [];
+      confirmedToolsRef.current = detail.tools ?? [];
       setProject(detail);
       setInstructionsDraft(detail.instructions ?? '');
       setConversationTotal(conv.pagination.totalCount);
@@ -152,6 +166,18 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
 
   const canEdit = project?.role === 'owner' || project?.role === 'editor';
   const isOwner = project?.role === 'owner';
+  const isMember =
+    (project?.role === 'editor' || project?.role === 'viewer') &&
+    hasDirectMembership(project?.members, profile?.userId);
+  const isArchived = Boolean(project?.isArchived);
+
+  /** A PATCH response, minus a tool list that newer local toggles have already moved past. */
+  const applyServerProject = useCallback(
+    (updated: ProjectDetail) => {
+      setProject({ ...updated, tools: toolsRef.current });
+    },
+    [setProject],
+  );
   const shareAdapter = useMemo(
     () => (project && isOwner ? createProjectShareAdapter(project) : null),
     [project, isOwner],
@@ -164,7 +190,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       const updated = await ProjectApi.update(projectId, {
         instructions: instructionsDraft.trim(),
       });
-      setProject(updated);
+      applyServerProject(updated);
       setInstructionsDraft(updated.instructions ?? '');
       setIsEditingInstructions(false);
     } catch {
@@ -172,7 +198,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
     } finally {
       setIsSavingInstructions(false);
     }
-  }, [project, projectId, instructionsDraft, t]);
+  }, [project, projectId, instructionsDraft, applyServerProject, t]);
 
   const handleKbCreated = useCallback((kbId: string) => {
     setProject((prev) => (prev ? { ...prev, linkedKnowledgeBaseId: kbId } : prev));
@@ -186,7 +212,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       setProject({ ...project, knowledgeScope: patch.knowledgeScope, appliedFilters: patch.appliedFilters });
       try {
         const updated = await ProjectApi.update(projectId, patch);
-        setProject(updated);
+        applyServerProject(updated);
       } catch {
         setProject((prev) =>
           prev ? { ...prev, knowledgeScope: previousScope, appliedFilters: previousFilters } : prev,
@@ -194,23 +220,35 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         toast.error(t('chat.projects.workspace.updateConnectorsFailed'));
       }
     },
-    [project, projectId, t],
+    [project, projectId, applyServerProject, t],
+  );
+
+  const toolsSaver = useMemo(
+    () =>
+      createSerialSaver<string[], ProjectDetail>({
+        save: (tools) => ProjectApi.update(projectId, { tools }),
+        onSaved: (updated) => {
+          confirmedToolsRef.current = updated.tools ?? [];
+          toolsRef.current = updated.tools ?? [];
+          setProject(updated);
+        },
+        onError: () => {
+          toolsRef.current = confirmedToolsRef.current;
+          setProject((prev) => (prev ? { ...prev, tools: confirmedToolsRef.current } : prev));
+          toast.error(t('chat.projects.workspace.updateToolsFailed'));
+        },
+      }),
+    [projectId, setProject, t],
   );
 
   const handleToolsChange = useCallback(
-    async (tools: string[]) => {
-      if (!project) return;
-      const previous = project.tools;
-      setProject({ ...project, tools });
-      try {
-        const updated = await ProjectApi.update(projectId, { tools });
-        setProject(updated);
-      } catch {
-        setProject((prev) => (prev ? { ...prev, tools: previous } : prev));
-        toast.error(t('chat.projects.workspace.updateToolsFailed'));
-      }
+    (update: (previous: string[]) => string[]) => {
+      const next = update(toolsRef.current);
+      toolsRef.current = next;
+      setProject((prev) => (prev ? { ...prev, tools: next } : prev));
+      void toolsSaver.push(next);
     },
-    [project, projectId, t],
+    [setProject, toolsSaver],
   );
 
   const handleTogglePin = useCallback(async () => {
@@ -220,30 +258,65 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       const updated = project.isPinned
         ? await ProjectApi.unpin(projectId)
         : await ProjectApi.pin(projectId);
-      setProject(updated);
+      applyServerProject(updated);
       upsertProjectInList({ ...updated, conversationCount: conversationTotal });
     } catch {
       toast.error(t('chat.projects.workspace.updatePinFailed'));
     } finally {
       setIsMutating(false);
     }
-  }, [project, projectId, isMutating, conversationTotal, upsertProjectInList, t]);
+  }, [project, projectId, isMutating, conversationTotal, upsertProjectInList, applyServerProject, t]);
 
   const handleToggleArchive = useCallback(async () => {
     if (!project || isMutating) return;
     setIsMutating(true);
     try {
-      const updated = project.isArchived
+      const wasArchived = project.isArchived;
+      const updated = wasArchived
         ? await ProjectApi.unarchive(projectId)
         : await ProjectApi.archive(projectId);
-      setProject(updated);
+      applyServerProject(updated);
       bumpProjectsVersion();
+      toast.success(wasArchived ? t('chat.projects.restoreSuccess') : t('chat.projects.archiveSuccess'));
     } catch {
       toast.error(t('chat.projects.workspace.updateArchiveFailed'));
     } finally {
       setIsMutating(false);
     }
-  }, [project, projectId, isMutating, bumpProjectsVersion, t]);
+  }, [project, projectId, isMutating, bumpProjectsVersion, applyServerProject, t]);
+
+  const handleConfirmLeave = useCallback(async () => {
+    const myUserId = profile?.userId;
+    if (!myUserId) {
+      toast.error(t('chat.projects.leaveDialog.failed'));
+      return;
+    }
+    setIsLeaving(true);
+    try {
+      const { removed } = await ProjectApi.removeMember(projectId, myUserId);
+      if (!removed) {
+        setLeaveOpen(false);
+        toast.error(t('chat.projects.leaveDialog.inherited'));
+        return;
+      }
+      removeProjectFromList(projectId);
+      setLeaveOpen(false);
+      toast.success(t('chat.projects.leaveDialog.left'));
+      router.push('/projects/');
+    } catch {
+      toast.error(t('chat.projects.leaveDialog.failed'));
+    } finally {
+      setIsLeaving(false);
+    }
+  }, [profile?.userId, projectId, removeProjectFromList, router, t]);
+
+  const handleDetailsSaved = useCallback(
+    (updated: ProjectDetail) => {
+      applyServerProject(updated);
+      upsertProjectInList({ ...updated, tools: toolsRef.current, conversationCount: conversationTotal });
+    },
+    [applyServerProject, upsertProjectInList, conversationTotal],
+  );
 
   const handleConfirmDelete = useCallback(async () => {
     setIsDeleting(true);
@@ -262,16 +335,21 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
   const handleShareSuccess = useCallback(async () => {
     try {
       const refreshed = await ProjectApi.get(projectId);
-      setProject(refreshed);
+      applyServerProject(refreshed);
     } catch {
       toast.error(t('chat.projects.workspace.shareRefreshFailed'));
     }
-  }, [projectId, t]);
+  }, [projectId, applyServerProject, t]);
 
   // ── Composer: hands the message off to /chat via the pending-chat buffer ──
   const handleSend = useCallback(
     (message: string, attachments?: AttachmentRef[]) => {
       if (!message.trim() && (!attachments || attachments.length === 0)) return;
+      // The server refuses new chats in an archived project; keep the draft.
+      if (isArchived) {
+        toast.error(t('chat.projects.archivedNoNewChats'));
+        return false;
+      }
       usePendingChatStore.getState().setPending({
         message,
         attachments,
@@ -280,7 +358,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
       });
       router.push(buildChatHref({ projectId }));
     },
-    [projectId, pathname, router],
+    [projectId, pathname, router, isArchived, t],
   );
 
   const handleUploadFile = useCallback(async (file: File, signal: AbortSignal): Promise<AttachmentRef> => {
@@ -380,7 +458,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
         <Flex align="center" gap="2" style={{ flexShrink: 0 }}>
           {/* Phones move Share into the menu so the project name keeps room. */}
           {isOwner && !isMobile && (
-            <LoadingButton size="1" variant="soft" color="gray" onClick={() => setShareOpen(true)}>
+            <LoadingButton size="1" variant="soft" color="gray" className="touch-hit" onClick={() => setShareOpen(true)}>
               <Flex align="center" gap="1">
                 <MaterialIcon name="ios_share" size={14} />
                 {t('chat.projects.workspace.share')}
@@ -391,6 +469,7 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
             <DropdownMenu.Trigger>
               <button
                 type="button"
+                className="touch-hit"
                 aria-label={t('projects.actionsLabel')}
                 style={{
                   appearance: 'none',
@@ -425,14 +504,32 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
                   </Text>
                 </Flex>
               </DropdownMenu.Item>
+              {canEdit && !isArchived && (
+                <DropdownMenu.Item onClick={() => setEditOpen(true)}>
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="edit" size={16} />
+                    <Text size="2">{t('chat.projects.editDetails')}</Text>
+                  </Flex>
+                </DropdownMenu.Item>
+              )}
               {isOwner && (
                 <DropdownMenu.Item onClick={() => void handleToggleArchive()} disabled={isMutating}>
                   <Flex align="center" gap="2">
-                    <MaterialIcon name="archive" size={16} />
+                    <MaterialIcon name={project.isArchived ? 'unarchive' : 'archive'} size={16} />
                     <Text size="2">
                       {project.isArchived
                         ? t('chat.projects.unarchiveProject')
                         : t('chat.projects.archiveProject')}
+                    </Text>
+                  </Flex>
+                </DropdownMenu.Item>
+              )}
+              {isMember && (
+                <DropdownMenu.Item color="red" onClick={() => setLeaveOpen(true)}>
+                  <Flex align="center" gap="2">
+                    <MaterialIcon name="logout" size={16} color="var(--red-11)" />
+                    <Text size="2" style={{ color: 'var(--red-11)' }}>
+                      {t('chat.projects.leaveProject')}
                     </Text>
                   </Flex>
                 </DropdownMenu.Item>
@@ -499,6 +596,23 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               flexShrink: 0,
             }}
           >
+            {isArchived && (
+              <Callout.Root color="amber" variant="soft" size="1" role="status" style={{ marginBottom: 'var(--space-4)' }}>
+                <Callout.Icon>
+                  <MaterialIcon name="archive" size={16} />
+                </Callout.Icon>
+                <Flex align="center" justify="between" gap="3" wrap="wrap" style={{ width: '100%' }}>
+                  <Callout.Text size="2">
+                    {isOwner ? t('chat.projects.archivedBanner') : t('chat.projects.archivedBannerMember')}
+                  </Callout.Text>
+                  {isOwner && (
+                    <Button size="1" variant="soft" color="amber" disabled={isMutating} onClick={() => void handleToggleArchive()}>
+                      {t('chat.projects.unarchiveProject')}
+                    </Button>
+                  )}
+                </Flex>
+              </Callout.Root>
+            )}
             <Flex direction="column" gap="1" style={{ marginBottom: 'var(--space-5)' }}>
               <Text size="6" weight="bold" style={{ color: 'var(--slate-12)' }}>
                 {t('chat.projects.workspace.heroTitle', { defaultValue: 'What should we work on?' })}
@@ -508,15 +622,53 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
                   defaultValue: "Every chat you start here inherits this project's instructions, files and tools.",
                 })}
               </Text>
+              {project.description?.trim() ? (
+                <Text
+                  as="p"
+                  size="2"
+                  style={{
+                    color: 'var(--slate-12)',
+                    whiteSpace: 'pre-wrap',
+                    overflowWrap: 'anywhere',
+                    marginTop: 'var(--space-2)',
+                  }}
+                >
+                  {project.description.trim()}
+                </Text>
+              ) : (
+                canEdit && !isArchived && (
+                  <Button
+                    size="1"
+                    variant="ghost"
+                    color="gray"
+                    onClick={() => setEditOpen(true)}
+                    style={{ alignSelf: 'flex-start', margin: 'var(--space-2) 0 0' }}
+                  >
+                    <MaterialIcon name="add" size={14} />
+                    {t('chat.projects.workspace.addDescription')}
+                  </Button>
+                )
+              )}
             </Flex>
-            <ChatInput
-              variant="full"
-              onSend={handleSend}
-              onUploadFile={handleUploadFile}
-              onDeleteFile={handleDeleteFile}
-              prefill={composerPrefill}
-            />
-            <Flex gap="2" wrap="wrap" style={{ marginTop: 'var(--space-3)' }}>
+            <Box
+              inert={isArchived || undefined}
+              aria-disabled={isArchived || undefined}
+              style={isArchived ? { opacity: 0.5, pointerEvents: 'none' } : undefined}
+            >
+              <ChatInput
+                variant="full"
+                onSend={handleSend}
+                onUploadFile={handleUploadFile}
+                onDeleteFile={handleDeleteFile}
+                prefill={composerPrefill}
+              />
+            </Box>
+            <Flex
+              gap="2"
+              wrap="wrap"
+              inert={isArchived || undefined}
+              style={{ marginTop: 'var(--space-3)', ...(isArchived ? { opacity: 0.5 } : {}) }}
+            >
               <SuggestionPill
                 icon="description"
                 label={t('chat.projects.workspace.suggestSummariseDocument', {
@@ -529,13 +681,15 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
                 label={t('chat.projects.workspace.suggestPlanWork', { defaultValue: 'Plan a piece of work' })}
                 onClick={() => handleSuggestionClick('plan')}
               />
-              <SuggestionPill
-                icon="sync_alt"
-                label={t('chat.projects.workspace.suggestWriteInstructions', {
-                  defaultValue: 'Write the project instructions',
-                })}
-                onClick={() => handleSuggestionClick('instructions')}
-              />
+              {canEdit && (
+                <SuggestionPill
+                  icon="sync_alt"
+                  label={t('chat.projects.workspace.suggestWriteInstructions', {
+                    defaultValue: 'Write the project instructions',
+                  })}
+                  onClick={() => handleSuggestionClick('instructions')}
+                />
+              )}
             </Flex>
           </Box>
           {!stacked && <Box style={{ flex: 6, minHeight: 0 }} />}
@@ -571,11 +725,11 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
               onSaveInstructions={() => void handleSaveInstructions()}
               onKbCreated={handleKbCreated}
               onConnectorsChange={(patch) => void handleConnectorsChange(patch)}
-              onToolsChange={(tools) => void handleToolsChange(tools)}
+              onToolsChange={handleToolsChange}
               onOpenShare={() => setShareOpen(true)}
             />
             <ChatDefaultsCard />
-            <AboutCard project={project} isOwner={isOwner} />
+            <AboutCard project={project} isOwner={isOwner} onOpenShare={() => setShareOpen(true)} />
           </Flex>
         </Box>
       </Flex>
@@ -586,14 +740,26 @@ export function ProjectWorkspaceRedesigned({ projectId }: ProjectWorkspaceRedesi
           onOpenChange={setShareOpen}
           adapter={shareAdapter}
           onShareSuccess={() => void handleShareSuccess()}
+          headerContent={<ProjectSharingSettings project={project} onUpdated={handleDetailsSaved} />}
         />
       )}
+
+      <EditProjectDialog open={editOpen} onOpenChange={setEditOpen} project={project} onSaved={handleDetailsSaved} />
+
+      <LeaveProjectDialog
+        open={leaveOpen}
+        onOpenChange={setLeaveOpen}
+        projectName={project.name}
+        onConfirm={handleConfirmLeave}
+        isLeaving={isLeaving}
+      />
 
       <DeleteProjectDialog
         open={deleteDialogOpen}
         onOpenChange={setDeleteDialogOpen}
         onConfirm={handleConfirmDelete}
         isDeleting={isDeleting}
+        projectName={project.name}
       />
     </Flex>
   );

@@ -209,7 +209,7 @@ export function describeRemainingContract(
       await projects.upsertMembers(shared._id, [{ principalId: me, principalType: 'user', role: 'viewer' }], other);
       await projects.upsertMembers(viaTeam._id, [{ principalId: team, principalType: 'team', role: 'viewer' }], other);
       await projects.update(open._id, { visibility: 'org' });
-      await projects.update(mine._id, { isPinned: true });
+      await projects.setPinned(mine._id, me, true, false);
       const q = { includeArchived: false, teamIds: [team, 'not-an-id'], skip: 0, limit: 50 };
       const names = async (scope: 'mine' | 'shared' | 'all', extra: Record<string, unknown> = {}) =>
         (await projects.list(org, me, { ...q, scope, ...extra })).rows.map((r) => r.name);
@@ -253,6 +253,87 @@ export function describeRemainingContract(
       expect(await projects.update(p._id, { name: 'again' })).to.equal(null);
     });
 
+    it('pins per person: a pin moves the project only in the list of whoever pinned it', async () => {
+      const org = fx.newId();
+      const me = fx.newId();
+      const other = fx.newId();
+      const a = await projects.create(org, me, { ...base, name: 'A' });
+      const b = await projects.create(org, me, { ...base, name: 'B' });
+      const c = await projects.create(org, me, { ...base, name: 'C' });
+      await projects.touchActivity(a._id);
+      await projects.touchActivity(b._id);
+      await projects.touchActivity(c._id); // most recent activity first: C, B, A
+      for (const p of [a, b, c]) await projects.upsertMembers(p._id, [{ principalId: other, principalType: 'user', role: 'viewer' }], me);
+      const q = { scope: 'all' as const, includeArchived: false, teamIds: [], skip: 0, limit: 50 };
+      const order = async (who: string) => (await projects.list(org, who, q)).rows.map((r) => r.name);
+      expect(await order(me)).to.deep.equal(['C', 'B', 'A']);
+
+      const pinned = await projects.setPinned(a._id, other, true, false);
+      expect(pinned?.pinnedBy).to.deep.equal([other]);
+      expect(await order(other)).to.deep.equal(['A', 'C', 'B']);
+      expect(await order(me)).to.deep.equal(['C', 'B', 'A']);
+
+      await projects.setPinned(a._id, other, true, false); // pinning twice stores one pin
+      expect((await projects.getLive(a._id))?.pinnedBy).to.deep.equal([other]);
+      await projects.setPinned(a._id, me, true, false);
+      expect((await projects.getLive(a._id))?.pinnedBy).to.have.members([me, other]);
+
+      const unpinned = await projects.setPinned(a._id, other, false, false);
+      expect(unpinned?.pinnedBy).to.deep.equal([me]);
+      expect(await order(other)).to.deep.equal(['C', 'B', 'A']);
+      expect(await projects.setPinned(fx.newId(), me, true, false)).to.equal(null);
+      await projects.markDeleted(b._id, me);
+      expect(await projects.setPinned(b._id, me, true, false)).to.equal(null);
+    });
+
+    it('matches a team member by its graph id string, as stored', async () => {
+      const org = fx.newId();
+      const owner = fx.newId();
+      const person = fx.newId();
+      const teamId = '5d2a9c4e-1c0b-4a77-9d3e-0b1f6a2c7e11'; // a graph id is not an ObjectId
+      const allOrg = `all_${org}`;
+      const viaTeam = await projects.create(org, owner, { ...base, name: 'ViaTeam' });
+      const viaAll = await projects.create(org, owner, { ...base, name: 'ViaAllOrg' });
+      const unrelated = await projects.create(org, owner, { ...base, name: 'Unrelated' });
+      await projects.upsertMembers(viaTeam._id, [{ principalId: teamId, principalType: 'team', role: 'editor' }], owner);
+      await projects.upsertMembers(viaAll._id, [{ principalId: allOrg, principalType: 'team', role: 'viewer' }], owner);
+      expect((await projects.getLive(viaTeam._id))?.members.map((m) => [m.principalType, m.principalId])).to.deep.equal([['team', teamId]]);
+
+      const q = { scope: 'shared' as const, includeArchived: false, skip: 0, limit: 50 };
+      const names = async (teamIds: string[]) => (await projects.list(org, person, { ...q, teamIds })).rows.map((r) => r.name);
+      expect(await names([])).to.deep.equal([]);
+      expect(await names([teamId])).to.deep.equal(['ViaTeam']);
+      expect(await names([teamId, allOrg])).to.have.members(['ViaTeam', 'ViaAllOrg']);
+
+      expect(await projects.listAccessibleIds(org, person, [])).to.deep.equal([]);
+      expect((await projects.listAccessibleIds(org, person, [teamId, allOrg])).sort()).to.deep.equal([viaTeam._id, viaAll._id].sort());
+      expect(unrelated._id).to.be.a('string');
+
+      const removed = await projects.removeMember(viaTeam._id, teamId, 'team');
+      expect(removed?.members).to.deep.equal([]);
+    });
+
+    it('tells whether an organisation has a team among its project members, and whether a project has none', async () => {
+      const org = fx.newId();
+      const owner = fx.newId();
+      const withTeam = await projects.create(org, owner, { ...base, name: 'WithTeam' });
+      const plain = await projects.create(org, owner, { ...base, name: 'Plain' });
+      expect(await projects.orgHasTeamMembers(org)).to.equal(false);
+      expect(await projects.isLiveWithoutTeamMembers(plain._id)).to.equal(true);
+      await projects.upsertMembers(plain._id, [{ principalId: fx.newId(), principalType: 'user', role: 'viewer' }], owner);
+      expect(await projects.isLiveWithoutTeamMembers(plain._id)).to.equal(true);
+
+      await projects.upsertMembers(withTeam._id, [{ principalId: 'team-graph-id', principalType: 'team', role: 'viewer' }], owner);
+      expect(await projects.orgHasTeamMembers(org)).to.equal(true);
+      expect(await projects.orgHasTeamMembers(fx.newId())).to.equal(false);
+      expect(await projects.isLiveWithoutTeamMembers(withTeam._id)).to.equal(false);
+
+      await projects.markDeleted(withTeam._id, owner);
+      expect(await projects.orgHasTeamMembers(org)).to.equal(false);
+      expect(await projects.isLiveWithoutTeamMembers(withTeam._id)).to.equal(false);
+      expect(await projects.isLiveWithoutTeamMembers(fx.newId())).to.equal(false);
+    });
+
     it('adds members, changes roles, never stores the owner, and removes by type', async () => {
       const org = fx.newId();
       const owner = fx.newId();
@@ -292,11 +373,11 @@ export function describeRemainingContract(
       await projects.claimLinkedKb(linked._id, null, 'kb-1');
       const found = await projects.listWithLinkedKbForMember(org, u);
       expect(found.map((p) => p._id)).to.deep.equal([linked._id]);
-      expect((await projects.listAccessibleIds(org, u)).sort()).to.deep.equal([linked._id, plain._id].sort());
-      expect(await projects.listAccessibleIds(org, fx.newId())).to.deep.equal([]);
+      expect((await projects.listAccessibleIds(org, u, [])).sort()).to.deep.equal([linked._id, plain._id].sort());
+      expect(await projects.listAccessibleIds(org, fx.newId(), [])).to.deep.equal([]);
       await projects.removeUserFromAll(org, u);
       expect((await projects.getLive(linked._id))?.members).to.deep.equal([]);
-      expect(await projects.listAccessibleIds(org, u)).to.deep.equal([]);
+      expect(await projects.listAccessibleIds(org, u, [])).to.deep.equal([]);
     });
 
     it('links a collection for only one of several racing callers', async () => {

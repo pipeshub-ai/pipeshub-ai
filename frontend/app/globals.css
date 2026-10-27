@@ -1599,6 +1599,17 @@ th code {
   }
 }
 
+/* Grows the element itself to 44px on touch screens. For controls packed tightly in a row, where a
+   .touch-hit overlay would reach into the neighbour's tap area. Margin 0 undoes a ghost button's
+   negative margin, which would otherwise pull two grown boxes over each other. */
+@media (pointer: coarse) {
+  .touch-size {
+    min-width: 44px;
+    min-height: 44px;
+    margin: 0;
+  }
+}
+
 /* iOS Safari zooms into any focused field under 16px. !important beats the inline font sizes
    several fields set (the chat composer among them); the composer's backdrop and placeholder
    follow so the chips stay aligned with the text. */

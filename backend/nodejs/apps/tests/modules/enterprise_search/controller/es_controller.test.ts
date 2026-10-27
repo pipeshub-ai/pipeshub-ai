@@ -421,6 +421,9 @@ describe('Enterprise Search Controller', () => {
     if (!(ProjectService.getAccessibleProjectIds as any).restore) {
       sinon.stub(ProjectService, 'getAccessibleProjectIds').resolves([])
     }
+    if (!(ProjectService.orgHasTeamMembers as any).restore) {
+      sinon.stub(ProjectService, 'orgHasTeamMembers').resolves(false)
+    }
     // Scoped-token hydration resolves the sole org before looking the user up,
     // so every hydration path needs this or it buffers for 10s.
     if (!(Org.find as any).restore) {
@@ -695,6 +698,23 @@ describe('Enterprise Search Controller', () => {
       } catch (error: any) {
         expect(error.message).to.equal('Query is required')
       }
+    })
+
+    it('refuses a project the caller cannot use before opening the stream', async () => {
+      const handler = streamChat(createMockAppConfig())
+      sinon.stub(ProjectService, 'assertAccess').rejects(new NotFoundError('Project not found'))
+      const saveStub = sinon.stub(ChatSession.prototype, 'save')
+      const req = createMockRequest({
+        body: { query: 'hello', projectId: new mongoose.Types.ObjectId().toString() },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(res.writeHead.called).to.be.false
+      expect(saveStub.called).to.be.false
     })
 
     it('should set SSE headers and write connected event on happy path', async () => {
@@ -1124,6 +1144,23 @@ describe('Enterprise Search Controller', () => {
       }
     })
 
+    it('refuses a conversation the caller does not own before opening the stream', async () => {
+      const handler = addMessageStream(createMockAppConfig())
+      sinon.stub(ChatSession, 'findOne').resolves(null)
+      const req = createMockRequest({
+        params: { conversationId: new mongoose.Types.ObjectId().toString() },
+        body: { query: 'hello' },
+      })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await handler(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(res.writeHead.called).to.be.false
+      expect(res.write.called).to.be.false
+    })
+
     it('should pass the missing-query error to next when Express gives one', async () => {
       const handler = addMessageStream(createMockAppConfig())
       const next = sinon.stub()
@@ -1255,12 +1292,13 @@ describe('Enterprise Search Controller', () => {
       })
       const res = createMockResponse()
       res.flush = sinon.stub()
+      const next = createMockNext()
 
-      await handler(req, res)
+      await handler(req, res, next)
 
-      // Should write error event since conversation not found
-      const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      // Refused before the stream opens, not as an error event inside it.
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(res.writeHead.called).to.be.false
     })
   })
 
@@ -4362,11 +4400,12 @@ describe('Enterprise Search Controller', () => {
       })
       const res = createMockResponse()
       res.flush = sinon.stub()
+      const next = createMockNext()
 
-      await handler(req, res)
+      await handler(req, res, next)
 
-      const writeArgs = res.write.args.map((a: any) => a[0]).join('')
-      expect(writeArgs).to.include('error')
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(res.writeHead.called).to.be.false
     })
   })
 
@@ -9450,6 +9489,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       res.flush = sinon.stub()
 
+      sinon.stub(ChatSession, 'findOne').resolves({ _id: VALID_OID } as any)
       await addMessageStream(createMockAppConfig())(req, res)
 
       expectRefusedWithoutStartingARun(res, executeStream)
@@ -9473,6 +9513,7 @@ describe('Enterprise Search Controller', () => {
       const res = createMockResponse()
       res.flush = sinon.stub()
 
+      sinon.stub(ChatSession, 'findOne').resolves({ _id: VALID_OID } as any)
       await addMessageStreamToAgentConversation(createMockAppConfig())(req, res)
 
       expectRefusedWithoutStartingARun(res, executeStream)
@@ -10437,9 +10478,11 @@ describe('Enterprise Search Controller', () => {
     it('should not call writeHead when headersSent is true in catch block', async () => {
       const handler = addMessageStream(createMockAppConfig())
 
-      sinon.stub(ChatSession, 'findOne').returns({
+      const findOne = sinon.stub(ChatSession, 'findOne').returns({
         then: (_resolve: any, reject: any) => { throw new Error('DB crash') },
       } as any)
+      // The ownership check before the stream passes; the crash comes inside it.
+      findOne.onFirstCall().resolves({ _id: VALID_OID } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID },
@@ -10466,9 +10509,11 @@ describe('Enterprise Search Controller', () => {
     it('should not call writeHead when headersSent is true', async () => {
       const handler = addMessageStreamToAgentConversation(createMockAppConfig())
 
-      sinon.stub(ChatSession, 'findOne').returns({
+      const findOne = sinon.stub(ChatSession, 'findOne').returns({
         then: () => { throw new Error('DB crash') },
       } as any)
+      // The ownership check before the stream passes; the crash comes inside it.
+      findOne.onFirstCall().resolves({ _id: VALID_OID } as any)
 
       const req = createMockRequest({
         params: { conversationId: VALID_OID, agentKey: 'agent-1' },
@@ -12752,9 +12797,10 @@ describe('Enterprise Search Controller', () => {
 
       // Return null from findOne so existingConversation stays undefined and the
       // outer catch hits the !res.headersSent branch (line 6149-6151)
-      sinon.stub(ChatSession, 'findOne').returns({
+      const findOne = sinon.stub(ChatSession, 'findOne').returns({
         then: (resolve: any) => resolve(null),
       } as any)
+      findOne.onFirstCall().resolves({ _id: VALID_OID } as any)
       sinon.stub(AIServiceCommand.prototype, 'executeStream').rejects(new Error('early fail'))
 
       const req = createMockRequest({

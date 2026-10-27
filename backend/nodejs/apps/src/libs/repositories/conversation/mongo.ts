@@ -676,9 +676,13 @@ export class MongoConversationRepository implements ConversationRepository {
         },
       },
       { $group: { _id: '$sessionId' } },
-      { $limit: limit },
+      // One more than asked for tells whether the search was cut short.
+      { $limit: limit + 1 },
     ]);
-    return { ids: rows.map((r) => String(r._id)), truncated: false };
+    return {
+      ids: rows.slice(0, limit).map((r) => String(r._id)),
+      truncated: rows.length > limit,
+    };
   }
 
   async listVisibleTitles(
@@ -737,13 +741,24 @@ export class MongoConversationRepository implements ConversationRepository {
     return { rows: toPlain<ChatSessionDto[]>(rows), total };
   }
 
-  async countByProject(projectIds: string[]): Promise<Map<string, number>> {
+  async countByProject(
+    orgId: string,
+    userId: string,
+    projectIds: string[],
+  ): Promise<Map<string, number>> {
     if (projectIds.length === 0) return new Map();
     const counts = await ChatSession.aggregate<{
       _id: mongoose.Types.ObjectId;
       count: number;
     }>([
-      { $match: { projectId: { $in: oids(projectIds) }, isDeleted: false } },
+      {
+        $match: {
+          orgId: oid(orgId),
+          projectId: { $in: oids(projectIds) },
+          isDeleted: false,
+          $or: [{ userId: oid(userId) }, { projectVisibility: 'project' }],
+        },
+      },
       { $group: { _id: '$projectId', count: { $sum: 1 } } },
     ]);
     return new Map(counts.map((c) => [c._id.toString(), c.count]));
@@ -754,6 +769,17 @@ export class MongoConversationRepository implements ConversationRepository {
       { projectId: oid(projectId) },
       { $unset: { projectId: '', projectVisibility: '' } },
       opts(tx),
+    );
+  }
+
+  async unlinkFromProject(
+    orgId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<void> {
+    await ChatSession.updateOne(
+      { _id: oid(sessionId), orgId: oid(orgId), projectId: oid(projectId) },
+      { $unset: { projectId: '', projectVisibility: '' } },
     );
   }
 
@@ -827,7 +853,8 @@ export class MongoConversationRepository implements ConversationRepository {
     const updateObject: Record<string, unknown> = {};
     if (patch.isShared !== undefined) updateObject.isShared = patch.isShared;
     updateObject.sharedWith = patch.sharedWith;
-    if (patch.clearShareLink) updateObject.shareLink = undefined;
+    // An undefined value is dropped from an update, so the link is unset explicitly.
+    if (patch.clearShareLink) updateObject.$unset = { shareLink: 1 };
     const updated = await ChatSession.findOneAndUpdate(
       { _id: id, ...kindFilter(scope) },
       updateObject,

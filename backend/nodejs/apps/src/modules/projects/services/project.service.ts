@@ -1,5 +1,6 @@
 import { getConversationRepository } from '../../../libs/repositories/conversation';
 import { isValidId } from '../../../libs/repositories/ids';
+import { getUserRepository } from '../../../libs/repositories/user';
 import { createUnitOfWork } from '../../../libs/repositories/doc-store';
 import {
   getProjectRepository,
@@ -8,6 +9,7 @@ import {
 import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
+  ConflictError,
   ForbiddenError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -18,6 +20,7 @@ import {
   IProjectMember,
   ProjectAccess,
   ProjectContext,
+  ProjectMemberView,
   ProjectRole,
 } from '../types/project.interfaces';
 
@@ -27,8 +30,14 @@ type ProjectAccessFields = Pick<
   'orgId' | 'userId' | 'members' | 'visibility'
 >;
 
+type ProjectPinFields = Pick<IProject, 'userId' | 'isPinned' | 'pinnedBy'>;
+
+/** Refused while a project is archived: archive makes it read-only until the owner restores it. */
+export const ARCHIVED_PROJECT_MESSAGE =
+  'This project is archived. Unarchive it to make changes or start new chats in it.';
+
 /** A `.lean()`-read project row enriched with the list endpoint's computed fields. */
-export type ProjectListItem = IProject & {
+export type ProjectListItem = Omit<IProject, 'pinnedBy'> & {
   _id: string;
   role: ProjectRole;
   conversationCount: number;
@@ -129,6 +138,25 @@ export class ProjectService {
     return 'none';
   }
 
+  /**
+   * Whether `userId` pinned the project in their own list. A legacy
+   * project-wide `isPinned` counts only for the owner, who was the one
+   * pinning it in almost every case, so members' lists stop re-sorting.
+   */
+  static isPinnedFor(project: ProjectPinFields, userId: string): boolean {
+    if ((project.pinnedBy ?? []).some((id) => id === userId)) {
+      return true;
+    }
+    return project.isPinned && project.userId === userId;
+  }
+
+  /** Throws ConflictError when the project is archived, for the writes archive freezes. */
+  static assertNotArchived(project: Pick<IProject, 'isArchived'>): void {
+    if (project.isArchived) {
+      throw new ConflictError(ARCHIVED_PROJECT_MESSAGE);
+    }
+  }
+
   /** Loads a project and asserts the caller has at least `required` role: NotFoundError if they cannot see it, ForbiddenError if their role is too low (see class doc). */
   static async assertAccess(
     orgId: string,
@@ -215,12 +243,17 @@ export class ProjectService {
       });
 
     const projectIds = projects.map((p) => p._id);
+    // Counts only the chats this caller can open, the same rows
+    // GET /:projectId/conversations returns: their own, plus chats shared to
+    // the project. Counting every chat leaked how many private chats exist.
     const countByProject = await getConversationRepository().countByProject(
+      orgId,
+      userId,
       projectIds.map(String),
     );
 
     const enriched: ProjectListItem[] = projects.map((p) => ({
-      ...p,
+      ...this.toCallerView(p, userId),
       role: this.computeRole(p, userId, orgId, callerTeamIds),
       conversationCount: countByProject.get(p._id) ?? 0,
     }));
@@ -235,13 +268,15 @@ export class ProjectService {
     patch: UpdateProjectInput,
     callerTeamIds: string[] = [],
   ): Promise<ProjectDto> {
-    const { role } = await this.assertAccess(
+    const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'editor',
       callerTeamIds,
     );
+
+    this.assertNotArchived(project);
 
     if (
       (patch.visibility !== undefined || patch.chatSharing !== undefined) &&
@@ -289,6 +324,10 @@ export class ProjectService {
     return saved;
   }
 
+  /**
+   * Pins or unpins the project in the caller's own list. Anyone who can see
+   * the project may do it, and it never re-sorts anyone else's list.
+   */
   static async setPinned(
     orgId: string,
     userId: string,
@@ -296,10 +335,26 @@ export class ProjectService {
     isPinned: boolean,
     callerTeamIds: string[] = [],
   ): Promise<ProjectDto> {
-    await this.assertAccess(orgId, userId, projectId, 'editor', callerTeamIds);
-    return this.write(projectId, { isPinned });
+    const { role } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+      callerTeamIds,
+    );
+    const saved = await getProjectRepository().setPinned(
+      projectId,
+      userId,
+      isPinned,
+      !isPinned && role === 'owner',
+    );
+    if (!saved) {
+      throw new NotFoundError('Project not found');
+    }
+    return saved;
   }
 
+  /** Owner-only: archiving hides the project from every member's default list and freezes it. */
   static async setArchived(
     orgId: string,
     userId: string,
@@ -307,7 +362,18 @@ export class ProjectService {
     isArchived: boolean,
     callerTeamIds: string[] = [],
   ): Promise<ProjectDto> {
-    await this.assertAccess(orgId, userId, projectId, 'editor', callerTeamIds);
+    const { role } = await this.assertAccess(
+      orgId,
+      userId,
+      projectId,
+      'viewer',
+      callerTeamIds,
+    );
+    if (role !== 'owner') {
+      throw new ForbiddenError(
+        'Only the project owner can archive or restore this project',
+      );
+    }
     return this.write(projectId, {
       isArchived,
       archivedBy: isArchived ? userId : undefined,
@@ -386,7 +452,7 @@ export class ProjectService {
     userId: string,
     projectId: string,
     callerTeamIds: string[] = [],
-  ): Promise<IProjectMember[]> {
+  ): Promise<ProjectMemberView[]> {
     const { project } = await this.assertAccess(
       orgId,
       userId,
@@ -394,7 +460,52 @@ export class ProjectService {
       'viewer',
       callerTeamIds,
     );
-    return project.members;
+    return this.withMemberNames(orgId, project.members);
+  }
+
+  /**
+   * Adds each user member's name and email, read in one query, so a client
+   * does not resolve every id on its own. Team rows and users that no longer
+   * exist come back as stored.
+   */
+  static async withMemberNames(
+    orgId: string,
+    members: IProjectMember[],
+  ): Promise<ProjectMemberView[]> {
+    const userIds = members
+      .filter((m) => m.principalType === 'user')
+      .map((m) => m.principalId)
+      .filter((id) => isValidId(id));
+    const users = userIds.length
+      ? await getUserRepository().listLiveByIds(orgId, userIds)
+      : [];
+    const byId = new Map(users.map((u) => [u._id, u]));
+    return members.map((m) => {
+      const user =
+        m.principalType === 'user' ? byId.get(m.principalId) : undefined;
+      return user
+        ? {
+            ...m,
+            ...(user.fullName ? { name: user.fullName } : {}),
+            email: user.email,
+          }
+        : m;
+    });
+  }
+
+  /**
+   * The ids in `userIds` that name live users of this org. Read from the
+   * store rather than through the IAM API, so the check works with an OAuth
+   * token or PAT that carries no user:read scope.
+   */
+  static async findExistingUserIds(
+    orgId: string,
+    userIds: string[],
+  ): Promise<Set<string>> {
+    const valid = userIds.filter((id) => isValidId(id));
+    if (valid.length === 0) return new Set();
+    const users = await getUserRepository().listLiveByIds(orgId, valid);
+    return new Set(users.map((u) => u._id));
   }
 
   static async upsertMembers(
@@ -407,7 +518,7 @@ export class ProjectService {
       role: 'viewer' | 'editor';
     }>,
   ): Promise<ProjectDto> {
-    const { role } = await this.assertAccess(
+    const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
@@ -416,6 +527,7 @@ export class ProjectService {
     if (role !== 'owner') {
       throw new ForbiddenError('Only the project owner can manage members');
     }
+    this.assertNotArchived(project);
 
     const saved = await getProjectRepository().upsertMembers(
       projectId,
@@ -432,22 +544,45 @@ export class ProjectService {
     return saved;
   }
 
+  /**
+   * Owner removes anyone; a member may remove only their own user row, which
+   * is how they leave. `removed` is false when no row matched, so a client can
+   * tell a repeated or mistaken removal from a real one.
+   *
+   * `beforeSave` runs once a row matched and before the removal is stored: the
+   * caller revokes the member's access to the files collection there, so a
+   * failed revoke leaves the membership in place to retry instead of a former
+   * member who can still read the project's files.
+   */
   static async removeMember(
     orgId: string,
     userId: string,
     projectId: string,
     memberPrincipalId: string,
     principalType: 'user' | 'team' = 'user',
-  ): Promise<ProjectDto> {
-    const { role } = await this.assertAccess(
+    callerTeamIds: string[] = [],
+    beforeSave?: (project: ProjectDto) => Promise<void>,
+  ): Promise<{ project: ProjectDto; removed: boolean }> {
+    const { role, project } = await this.assertAccess(
       orgId,
       userId,
       projectId,
       'viewer',
+      callerTeamIds,
     );
-    if (role !== 'owner') {
+    const isLeaving = principalType === 'user' && memberPrincipalId === userId;
+    if (role !== 'owner' && !isLeaving) {
       throw new ForbiddenError('Only the project owner can manage members');
     }
+    const matched = project.members.some(
+      (m) =>
+        m.principalType === principalType &&
+        m.principalId === memberPrincipalId,
+    );
+    if (!matched) {
+      return { project, removed: false };
+    }
+    await beforeSave?.(project);
     const saved = await getProjectRepository().removeMember(
       projectId,
       memberPrincipalId,
@@ -456,7 +591,7 @@ export class ProjectService {
     if (!saved) {
       throw new NotFoundError('Project not found');
     }
-    return saved;
+    return { project: saved, removed: true };
   }
 
   /**
@@ -505,8 +640,30 @@ export class ProjectService {
   static async getAccessibleProjectIds(
     orgId: string,
     userId: string,
+    callerTeamIds: string[] = [],
   ): Promise<string[]> {
-    return getProjectRepository().listAccessibleIds(orgId, userId);
+    return getProjectRepository().listAccessibleIds(
+      orgId,
+      userId,
+      callerTeamIds,
+    );
+  }
+
+  /** True when some live project in the org has a team member row. */
+  static async orgHasTeamMembers(orgId: string): Promise<boolean> {
+    return getProjectRepository().orgHasTeamMembers(orgId);
+  }
+
+  /**
+   * A project as one caller should see it: `isPinned` is their own pin, and
+   * who else pinned it is not shown.
+   */
+  static toCallerView<T extends ProjectPinFields>(
+    project: T,
+    userId: string,
+  ): Omit<T, 'pinnedBy'> & { isPinned: boolean } {
+    const { pinnedBy: _pinnedBy, ...rest } = project;
+    return { ...rest, isPinned: this.isPinnedFor(project, userId) };
   }
 
   static async touchActivity(projectId: string): Promise<void> {

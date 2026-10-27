@@ -49,6 +49,11 @@ FLAG_CHECKING_HARD_DELETERS: set[str] = set()
 # Whole-collection delete: a hard delete by design, as in the soft-delete design (section 6).
 KB_DELETE = {"localKB/handlers/kb_service.py": {"delete_connector_instance"}}
 
+# A push whose create committed after the knowledge base was marked DELETING removes that
+# record itself, because the cascade may have collected before it: the record belongs to a
+# knowledge base being hard-deleted (as KB_DELETE above), and nobody was ever shown it.
+KB_DELETE_COMPENSATION = {"localKB/push/service.py": ("_undo_create_in_deleted_kb", "delete_nodes_and_edges")}
+
 
 def _called_names(path: Path) -> set[str]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -70,6 +75,63 @@ def _calls_by_module() -> dict[str, set[str]]:
     return calls
 
 
+def _raw_delete_references(tree: ast.AST, approved: str | None = None) -> set[str]:
+    """The raw hard deletes a module mentions outside the ``approved`` function.
+
+    A mention is a call through an attribute or a bare name, an import, an alias
+    (``drop = graph.delete_nodes_and_edges``) or the name as a string (``getattr``), so a call
+    that goes round the attribute check is still seen. The approved function's body is left out.
+    """
+    names: set[str] = set()
+
+    def visit(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if approved and isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)) and child.name == approved:
+                continue
+            if isinstance(child, ast.Attribute):
+                names.add(child.attr)
+            elif isinstance(child, ast.Name):
+                names.add(child.id)
+            elif isinstance(child, ast.alias):
+                names.add(child.name)
+            elif isinstance(child, ast.Constant) and isinstance(child.value, str):
+                names.add(child.value)
+            visit(child)
+
+    visit(tree)
+    return names & RAW_HARD_DELETES
+
+
+def _raw_deletes_by_module() -> dict[str, set[str]]:
+    result: dict[str, set[str]] = {}
+    for path in sorted(SOURCES.rglob("*.py")):
+        module = path.relative_to(SOURCES).as_posix()
+        approved = KB_DELETE_COMPENSATION.get(module, (None, None))[0]
+        result[module] = _raw_delete_references(ast.parse(path.read_text(encoding="utf-8")), approved)
+    return result
+
+
+def test_the_compensating_hard_delete_is_in_its_function() -> None:
+    for module, (function, call) in KB_DELETE_COMPENSATION.items():
+        tree = ast.parse((SOURCES / module).read_text(encoding="utf-8"))
+        (fn,) = [n for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == function]
+        # The exemption is the function's body, so it has to contain the call it exempts.
+        assert _raw_delete_references(fn) == {call}, (module, function)
+
+
+def test_the_scan_for_raw_deletes_sees_every_way_to_call_one() -> None:
+    for source in (
+        "async def other(g):\n    await g.delete_nodes_and_edges([1], 'records')\n",
+        "from x import delete_nodes_and_edges\nasync def other():\n    await delete_nodes_and_edges([1])\n",
+        "async def other(g):\n    drop = g.delete_nodes_and_edges\n    await drop([1])\n",
+        "async def other(g):\n    await getattr(g, 'delete_nodes_and_edges')([1])\n",
+    ):
+        tree = ast.parse(source + "async def approved(g):\n    await g.delete_nodes_and_edges([2])\n")
+        assert _raw_delete_references(tree, "approved") == {"delete_nodes_and_edges"}, source
+    only_approved = ast.parse("async def approved(g):\n    await g.delete_nodes_and_edges([2])\n")
+    assert _raw_delete_references(only_approved, "approved") == set()
+
+
 def test_the_scan_sees_the_connectors() -> None:
     calls = _calls_by_module()
     users = {module for module, names in calls.items() if names & TRASH_AWARE.keys()}
@@ -80,9 +142,9 @@ def test_the_scan_sees_the_connectors() -> None:
 
 def test_only_flag_checking_connectors_call_a_raw_hard_delete() -> None:
     offenders = {
-        module: sorted(names & RAW_HARD_DELETES)
-        for module, names in _calls_by_module().items()
-        if names & RAW_HARD_DELETES and module not in FLAG_CHECKING_HARD_DELETERS
+        module: sorted(names)
+        for module, names in _raw_deletes_by_module().items()
+        if names and module not in FLAG_CHECKING_HARD_DELETERS
     }
     assert offenders == {}, (
         "These connectors remove records without the trash. Use on_record_deleted, "

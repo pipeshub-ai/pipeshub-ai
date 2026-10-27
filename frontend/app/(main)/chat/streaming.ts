@@ -15,7 +15,7 @@
 
 import { ChatApi, type StreamMessageCallbacks } from './api';
 import { AgentsApi } from '@/app/(main)/agents/api';
-import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort } from './store';
+import { useChatStore, ctxKeyFromAgent, getEffectiveModel, isModelReasoningCapable, getAgentDefaultReasoningEffort, projectAgentCapabilities } from './store';
 import { fetchModelsForContext } from './utils/fetch-models-for-context';
 import { buildChatArtifact } from './utils/build-chat-artifact';
 import { appendResumeParts } from './utils/tool-display';
@@ -2036,6 +2036,10 @@ export async function streamRegenerateForSlot(
         isUniversalAgent && universalToolsSel !== null
           ? [...new Set([...universalToolsSel].map(stripInstancePrefix))]
           : undefined;
+      const regenProjectId = slot.projectId ?? useChatStore.getState().projectScope?.projectId ?? null;
+      const regenCaps = regenProjectId
+        ? projectAgentCapabilities(useChatStore.getState().scopedAgentCapabilities, regenProjectId)
+        : store.settings.agentCapabilities;
       // Left unset when the user chose nothing, so the backend applies the model's default.
       const assistantRegenReasoningEffort =
         useChatStore.getState().settings.reasoningEffort[regenCtxKey] ?? null;
@@ -2046,7 +2050,7 @@ export async function streamRegenerateForSlot(
         chatMode,
         filters: originalFilters ?? buildAssistantApiFilters(store.settings.filters),
         ...(regenStreamTools !== undefined ? { agentStreamTools: regenStreamTools } : {}),
-        ...(isUniversalAgent ? { agentCapabilities: store.settings.agentCapabilities } : {}),
+        ...(isUniversalAgent ? { agentCapabilities: regenCaps } : {}),
         ...(assistantRegenReasoningEffort ? { reasoningEffort: assistantRegenReasoningEffort } : {}),
         runId,
         ...(edit ? { query: edit.query } : {}),

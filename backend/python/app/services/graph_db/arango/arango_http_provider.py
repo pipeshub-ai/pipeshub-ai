@@ -244,6 +244,8 @@ from app.services.graph_db.interface.graph_db_provider import (
     requested_scope_ids,
 )
 from app.modules.named_entities.graph_ops import NamedEntityGraphMixin
+from app.services.graph_db.common.cascade_retry import CASCADE_ATTEMPTS
+from app.services.graph_db.common.cascade_retry import backoff as cascade_backoff
 from app.services.graph_db.push_claim import KB_DELETING_STATUS, PushClaim, PushExpect, PushSet
 from app.services.graph_db.taxonomy import (
     CATEGORY_HIERARCHY_PARENTS,
@@ -687,6 +689,8 @@ def _dated_rows(results: list[dict] | None) -> list[DatedRow]:
         for r in results or [] if r
     ]
 
+
+_EXISTING_KEYS_CHUNK = 20000
 
 class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
     """
@@ -3151,6 +3155,37 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         except Exception as e:
             self.logger.error("❌ Failed to check record existence: %s", str(e))
             return set()
+
+    async def get_existing_keys(
+        self,
+        collection: str,
+        keys: list[str],
+        transaction: str | None = None,
+    ) -> set[str]:
+        """The subset of ``keys`` that exist in ``collection``. Raises on a failed read:
+        a delete may only call a collection clear when the store said so."""
+        unique = [k for k in dict.fromkeys(keys) if isinstance(k, str) and k]
+        found: set[str] = set()
+        for i in range(0, len(unique), _EXISTING_KEYS_CHUNK):
+            rows = await self.http_client.execute_aql(
+                "FOR doc IN @@collection FILTER doc._key IN @keys RETURN doc._key",
+                {"@collection": collection, "keys": unique[i:i + _EXISTING_KEYS_CHUNK]},
+                transaction,
+            )
+            found.update(k for k in (rows or []) if isinstance(k, str))
+        return found
+
+    async def _assert_none_remain(self, transaction: str | None, collection: str, keys: list[str]) -> None:
+        """The success rule of a cascade step: none of the collected keys is left. A rival
+        deleter that removed some of them first does not make this step fail."""
+        if not keys:
+            return
+        left = await self.get_existing_keys(collection, keys, transaction)
+        if left:
+            raise Exception(
+                f"CRITICAL: {len(left)}/{len(keys)} {collection} documents remain after the delete. "
+                f"Transaction will be rolled back."
+            )
 
     async def reindex_single_record(
         self,
@@ -11537,30 +11572,24 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
         failed_collections = []
 
         for collection, keys in targets_by_collection.items():
-            expected_count = len(keys)
             deleted, failed_batches = await self._delete_nodes_by_keys(
                 transaction, keys, collection, raise_on_error=raise_on_error
             )
             total_deleted += deleted
 
-            # Check for failures: either failed batches OR incomplete deletion
             if failed_batches > 0:
                 failed_collections.append(f"{collection} (failed batches: {failed_batches})")
-            elif deleted < expected_count:
-                failed_collections.append(f"{collection} (deleted {deleted}/{expected_count})")
+                continue
+            # Success is "none of these keys remain": a rival deleter may have removed some.
+            left = await self.get_existing_keys(collection, keys, transaction)
+            if left:
+                failed_collections.append(f"{collection} ({len(left)}/{len(keys)} remain)")
 
         # If any collection failed, raise exception to trigger rollback
         if failed_collections:
             raise Exception(
                 f"CRITICAL: Failed to delete isOfType targets from {len(failed_collections)} collections: {failed_collections}. "
                 f"Expected {total_expected} but deleted {total_deleted}. Transaction will be rolled back."
-            )
-
-        # Validate total deletion count matches expected
-        if total_deleted < total_expected:
-            raise Exception(
-                f"CRITICAL: Partial deletion of isOfType targets. Expected {total_expected} but deleted {total_deleted}. "
-                f"Transaction will be rolled back."
             )
 
         self.logger.debug(f"✅ Deleted {total_deleted} isOfType target documents")
@@ -11985,279 +12014,234 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
 
             # Start transaction for node deletions only
             # Edge collections still included for isOfType target edge deletion
-            if transaction is None:
-                transaction = await self.begin_transaction(
-                    read=edge_collections + node_collections,
-                    write=edge_collections + node_collections
-                )
-                created_transaction = True
+            owns_transaction = transaction is None
+            cascade_retries = 0
+            for attempt in range(CASCADE_ATTEMPTS):
+                if owns_transaction:
+                    transaction = await self.begin_transaction(
+                        read=edge_collections + node_collections,
+                        write=edge_collections + node_collections
+                    )
+                    created_transaction = True
 
-            try:
+                try:
 
-                # Step 7: Delete isOfType target nodes (files, mails, etc.)
-                # This method will raise an exception if any failures occur
-                deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
-                    transaction,
-                    isoftype_targets,
-                    edge_collections
-                )
-                # Same-key type docs cover records whose isOfType edge was already gone.
-                deleted_isoftype += await self._delete_type_docs_matching_record_keys(
-                    transaction, collected["record_keys"]
-                )
-
-                # Step 8: Delete records (CRITICAL - must succeed completely)
-                deleted_records, failed_record_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_keys"],
-                    CollectionNames.RECORDS.value
-                )
-                if len(collected["record_keys"]) > 0:
-                    if deleted_records == 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete any records. Expected {len(collected['record_keys'])} but deleted 0. "
-                            f"Transaction will be rolled back."
-                        )
-                    elif deleted_records < len(collected["record_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_records}/{len(collected['record_keys'])} records. "
-                            f"Transaction will be rolled back to maintain data consistency."
-                        )
-                    if failed_record_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_record_batches} batch(es) of records. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 9: Delete record groups (CRITICAL - must succeed completely)
-                deleted_rg, failed_rg_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["record_group_keys"],
-                    CollectionNames.RECORD_GROUPS.value
-                )
-                if len(collected["record_group_keys"]) > 0:
-                    if deleted_rg < len(collected["record_group_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_rg}/{len(collected['record_group_keys'])} record groups. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_rg_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_rg_batches} batch(es) of record groups. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 10: Delete roles (CRITICAL - must succeed completely)
-                deleted_roles, failed_roles_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["role_keys"],
-                    CollectionNames.ROLES.value
-                )
-                if len(collected["role_keys"]) > 0:
-                    if deleted_roles < len(collected["role_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_roles}/{len(collected['role_keys'])} roles. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_roles_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_roles_batches} batch(es) of roles. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 11: Delete groups (CRITICAL - must succeed completely)
-                deleted_groups, failed_groups_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    collected["group_keys"],
-                    CollectionNames.GROUPS.value
-                )
-                if len(collected["group_keys"]) > 0:
-                    if deleted_groups < len(collected["group_keys"]):
-                        raise Exception(
-                            f"CRITICAL: Partial deletion failure. Only deleted {deleted_groups}/{len(collected['group_keys'])} groups. "
-                            f"Transaction will be rolled back."
-                        )
-                    if failed_groups_batches > 0:
-                        raise Exception(
-                            f"CRITICAL: Failed to delete {failed_groups_batches} batch(es) of groups. "
-                            f"Transaction will be rolled back."
-                        )
-
-                # Step 12: Delete syncPoints and blocks (CRITICAL - must succeed)
-                deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
-                    transaction,
-                    connector_id,
-                    CollectionNames.SYNC_POINTS.value
-                )
-                if not sync_success:
-                    raise Exception(
-                        "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                    # Step 7: Delete isOfType target nodes (files, mails, etc.)
+                    # This method will raise an exception if any failures occur
+                    deleted_isoftype, _ = await self._delete_isoftype_targets_from_collected(
+                        transaction,
+                        isoftype_targets,
+                        edge_collections,
+                        raise_on_error=True,
+                    )
+                    # Same-key type docs cover records whose isOfType edge was already gone.
+                    deleted_isoftype += await self._delete_type_docs_matching_record_keys(
+                        transaction, collected["record_keys"]
                     )
 
-                # Stage states hang off no edge, so nothing above reaches them.
-                _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
-                if not stages_success:
-                    raise Exception(
-                        "CRITICAL: Failed to delete pipeline stage states. Transaction will be rolled back."
-                    )
-
-                # Blocks join their record by field, and their structural and
-                # cross-file edges carry no connectorId, so neither the record
-                # sweep nor the connector-scoped edge sweep above reaches them.
-                if not blocks_deleted_up_front:
-                    deleted_blocks = await self.delete_blocks_by_connector_id(
-                        connector_id, transaction
-                    )
-
-                # An agent names its sources by connectorId, not by an edge, so the
-                # sweep above never reaches them; left behind they show as a raw id.
-                agent_knowledge_keys = await self.http_client.execute_aql(
-                    f"""
-                    FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
-                        FILTER k.connectorId == @connector_id
-                        RETURN k._key
-                    """,
-                    bind_vars={"connector_id": connector_id},
-                    txn_id=transaction,
-                )
-                await self.delete_nodes_and_edges(
-                    agent_knowledge_keys or [],
-                    CollectionNames.AGENT_KNOWLEDGE.value,
-                    transaction=transaction,
-                )
-
-                # Step 13: Delete the app itself (CRITICAL - must succeed completely)
-                deleted_app, failed_app_batches = await self._delete_nodes_by_keys(
-                    transaction,
-                    [connector_id],
-                    CollectionNames.APPS.value
-                )
-                if deleted_app == 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete the connector app itself. Connector {connector_id} may still exist. "
-                        f"Transaction will be rolled back."
-                    )
-                if failed_app_batches > 0:
-                    raise Exception(
-                        f"CRITICAL: Failed to delete app in {failed_app_batches} batch(es). "
-                        f"Transaction will be rolled back."
-                    )
-
-                # All operations succeeded completely - commit the transaction
-                if created_transaction:
-                    await self.commit_transaction(transaction)
-
-                # A sync that did not stop in time can commit a record after the
-                # collect above. One more pass removes those, then the sweeps.
-                # Only after this method committed: a caller-owned transaction
-                # has not committed, and a read outside it would see rows this
-                # delete is removing.
-                orphan_types = 0
-                orphan_labels = 0
-                if created_transaction:
-                    try:
-                        late_rows = await self.http_client.execute_aql(
-                            """
-                            FOR r IN @@records
-                                FILTER r.connectorId == @connector_id
-                                RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
-                            """,
-                            bind_vars={
-                                "@records": CollectionNames.RECORDS.value,
-                                "connector_id": connector_id,
-                            },
+                    # Steps 8-11: records, record groups, roles, groups. Each is measured as
+                    # "none of the collected keys remains", so a rival deleter (the finisher,
+                    # an owner's retry) that removed some first does not fail this one.
+                    deleted_records = deleted_rg = deleted_roles = deleted_groups = 0
+                    for collection, keys_key in (
+                        (CollectionNames.RECORDS.value, "record_keys"),
+                        (CollectionNames.RECORD_GROUPS.value, "record_group_keys"),
+                        (CollectionNames.ROLES.value, "role_keys"),
+                        (CollectionNames.GROUPS.value, "group_keys"),
+                    ):
+                        keys = collected[keys_key]
+                        removed, failed_batches = await self._delete_nodes_by_keys(
+                            transaction, keys, collection, raise_on_error=True
                         )
-                        late_keys = [
-                            row["key"] for row in late_rows or []
-                            if isinstance(row, dict) and row.get("key")
-                        ]
-                        if late_keys:
-                            self.logger.warning(
-                                f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
+                        if failed_batches:
+                            raise Exception(f"CRITICAL: Failed to delete {failed_batches} batch(es) of {collection}.")
+                        await self._assert_none_remain(transaction, collection, keys)
+                        if collection == CollectionNames.RECORDS.value:
+                            deleted_records = removed
+                        elif collection == CollectionNames.RECORD_GROUPS.value:
+                            deleted_rg = removed
+                        elif collection == CollectionNames.ROLES.value:
+                            deleted_roles = removed
+                        else:
+                            deleted_groups = removed
+
+                    # Step 12: Delete syncPoints and blocks (CRITICAL - must succeed)
+                    deleted_sync, sync_success = await self._delete_nodes_by_connector_id(
+                        transaction,
+                        connector_id,
+                        CollectionNames.SYNC_POINTS.value
+                    )
+                    if not sync_success:
+                        raise Exception(
+                            "CRITICAL: Failed to delete sync points. Transaction will be rolled back."
+                        )
+
+                    # Stage states hang off no edge, so nothing above reaches them.
+                    _, stages_success = await self._delete_stage_states_by_connector_id(transaction, connector_id)
+                    if not stages_success:
+                        raise Exception(
+                            "CRITICAL: Failed to delete pipeline stage states. Transaction will be rolled back."
+                        )
+
+                    # Blocks join their record by field, and their structural and
+                    # cross-file edges carry no connectorId, so neither the record
+                    # sweep nor the connector-scoped edge sweep above reaches them.
+                    if not blocks_deleted_up_front:
+                        deleted_blocks = await self.delete_blocks_by_connector_id(
+                            connector_id, transaction
+                        )
+
+                    # An agent names its sources by connectorId, not by an edge, so the
+                    # sweep above never reaches them; left behind they show as a raw id.
+                    agent_knowledge_keys = await self.http_client.execute_aql(
+                        f"""
+                        FOR k IN {CollectionNames.AGENT_KNOWLEDGE.value}
+                            FILTER k.connectorId == @connector_id
+                            RETURN k._key
+                        """,
+                        bind_vars={"connector_id": connector_id},
+                        txn_id=transaction,
+                    )
+                    await self.delete_nodes_and_edges(
+                        agent_knowledge_keys or [],
+                        CollectionNames.AGENT_KNOWLEDGE.value,
+                        transaction=transaction,
+                    )
+
+                    # Step 13: Delete the app itself. Gone is gone, whoever removed it.
+                    _, failed_app_batches = await self._delete_nodes_by_keys(
+                        transaction, [connector_id], CollectionNames.APPS.value, raise_on_error=True
+                    )
+                    if failed_app_batches:
+                        raise Exception(f"CRITICAL: Failed to delete the app in {failed_app_batches} batch(es).")
+                    await self._assert_none_remain(transaction, CollectionNames.APPS.value, [connector_id])
+
+                    # All operations succeeded completely - commit the transaction
+                    if created_transaction:
+                        await self.commit_transaction(transaction)
+
+                    # A sync that did not stop in time can commit a record after the
+                    # collect above. One more pass removes those, then the sweeps.
+                    # Only after this method committed: a caller-owned transaction
+                    # has not committed, and a read outside it would see rows this
+                    # delete is removing.
+                    orphan_types = 0
+                    orphan_labels = 0
+                    if created_transaction:
+                        try:
+                            late_rows = await self.http_client.execute_aql(
+                                """
+                                FOR r IN @@records
+                                    FILTER r.connectorId == @connector_id
+                                    RETURN { key: r._key, virtualRecordId: r.virtualRecordId }
+                                """,
+                                bind_vars={
+                                    "@records": CollectionNames.RECORDS.value,
+                                    "connector_id": connector_id,
+                                },
                             )
-                            await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
-                            deleted_records += len(late_keys)
-                            vrids = collected.get("virtual_record_ids")
-                            if needs_virtual_record_ids and isinstance(vrids, list):
-                                removed = set(late_keys)
-                                vrids.extend(
-                                    row["virtualRecordId"]
-                                    for row in late_rows or []
-                                    if isinstance(row, dict)
-                                    and row.get("key") in removed
-                                    and isinstance(row.get("virtualRecordId"), str)
-                                    and row["virtualRecordId"]
+                            late_keys = [
+                                row["key"] for row in late_rows or []
+                                if isinstance(row, dict) and row.get("key")
+                            ]
+                            if late_keys:
+                                self.logger.warning(
+                                    f"Connector {connector_id} gained {len(late_keys)} record(s) during delete; removing them"
                                 )
-                    except Exception as late_err:
-                        self.logger.warning(
-                            f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
-                        )
-                    try:
-                        orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
-                    except Exception as sweep_err:
-                        self.logger.warning(
-                            f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
-                        )
-                    try:
-                        if taxonomy_collect_success:
-                            orphan_labels = await self._delete_unlinked_taxonomy_nodes(
-                                org_id, taxonomy_targets
+                                await self.delete_nodes_and_edges(late_keys, CollectionNames.RECORDS.value)
+                                deleted_records += len(late_keys)
+                                vrids = collected.get("virtual_record_ids")
+                                if needs_virtual_record_ids and isinstance(vrids, list):
+                                    removed = set(late_keys)
+                                    vrids.extend(
+                                        row["virtualRecordId"]
+                                        for row in late_rows or []
+                                        if isinstance(row, dict)
+                                        and row.get("key") in removed
+                                        and isinstance(row.get("virtualRecordId"), str)
+                                        and row["virtualRecordId"]
+                                    )
+                        except Exception as late_err:
+                            self.logger.warning(
+                                f"⚠️ Could not remove records written during delete of {connector_id}: {late_err}"
                             )
-                    except Exception as sweep_err:
+                        try:
+                            orphan_types = await self._sweep_orphan_type_docs_for_org(org_id)
+                        except Exception as sweep_err:
+                            self.logger.warning(
+                                f"⚠️ Post-delete orphan type sweep failed for connector {connector_id} "
+                                f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                            )
+                        try:
+                            if taxonomy_collect_success:
+                                orphan_labels = await self._delete_unlinked_taxonomy_nodes(
+                                    org_id, taxonomy_targets
+                                )
+                        except Exception as sweep_err:
+                            self.logger.warning(
+                                f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
+                                f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                            )
+
+                    self.logger.debug(
+                        f"✅ Connector instance {connector_id} deleted successfully. "
+                        f"Records: {deleted_records}/{len(collected['record_keys'])}, "
+                        f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
+                        f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
+                        f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
+                        f"Edges: {deleted_edges}, "
+                        f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
+                        f"Blocks: {deleted_blocks}, "
+                        f"isOfType targets: {deleted_isoftype}"
+                    )
+
+                    return {
+                        "success": True,
+                        "deleted_records_count": deleted_records,
+                        "deleted_record_groups_count": deleted_rg,
+                        "deleted_roles_count": deleted_roles,
+                        "deleted_groups_count": deleted_groups,
+                        "deleted_edges_count": deleted_edges,
+                        "deleted_blocks_count": deleted_blocks,
+                        "deleted_isoftype_targets_count": deleted_isoftype,
+                        "cascade_retries": cascade_retries,
+                        "deleted_orphan_type_docs_count": orphan_types,
+                        "deleted_orphan_taxonomy_count": orphan_labels,
+                        "virtual_record_ids": collected["virtual_record_ids"],
+                        # The connector's own record groups went with it. A point
+                        # shared with a live connector survives the purge, so the
+                        # cleanup needs these to strip them from recordGroupIds.
+                        "record_group_ids": collected["record_group_keys"],
+                        "vector_membership_backfilled": bool(
+                            connector.get("vectorMembershipBackfilled", False)
+                        ),
+                        "vector_membership_backfill_exhausted": bool(
+                            connector.get("vectorMembershipBackfillExhausted", False)
+                        ),
+                        "connector_id": connector_id,
+                        "connector_name": connector.get("type"),
+                    }
+
+                except Exception as tx_error:
+                    if created_transaction:
+                        try:
+                            await self.rollback_transaction(transaction)
+                        except Exception as abort_error:
+                            self.logger.error(
+                                f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
+                                f"Original error: {tx_error}"
+                            )
+                    if owns_transaction and attempt + 1 < CASCADE_ATTEMPTS and self.is_write_conflict(tx_error):
+                        # A concurrent writer (a push into the KB being deleted) won this round;
+                        # the steps are idempotent, so run them again in a fresh transaction.
+                        cascade_retries += 1
                         self.logger.warning(
-                            f"⚠️ Post-delete orphan taxonomy sweep failed for connector {connector_id} "
-                            f"in org {org_id}: {sweep_err}. Connector delete already committed."
+                            "Connector %s delete lost to a concurrent write (attempt %d); retrying",
+                            connector_id, attempt + 1,
                         )
-
-                self.logger.debug(
-                    f"✅ Connector instance {connector_id} deleted successfully. "
-                    f"Records: {deleted_records}/{len(collected['record_keys'])}, "
-                    f"RecordGroups: {deleted_rg}/{len(collected['record_group_keys'])}, "
-                    f"Roles: {deleted_roles}/{len(collected['role_keys'])}, "
-                    f"Groups: {deleted_groups}/{len(collected['group_keys'])}, "
-                    f"Edges: {deleted_edges}, "
-                    f"Orphan type docs: {orphan_types}, orphan labels: {orphan_labels}, "
-                    f"Blocks: {deleted_blocks}, "
-                    f"isOfType targets: {deleted_isoftype}"
-                )
-
-                return {
-                    "success": True,
-                    "deleted_records_count": deleted_records,
-                    "deleted_record_groups_count": deleted_rg,
-                    "deleted_roles_count": deleted_roles,
-                    "deleted_groups_count": deleted_groups,
-                    "deleted_edges_count": deleted_edges,
-                    "deleted_blocks_count": deleted_blocks,
-                    "deleted_isoftype_targets_count": deleted_isoftype,
-                    "deleted_orphan_type_docs_count": orphan_types,
-                    "deleted_orphan_taxonomy_count": orphan_labels,
-                    "virtual_record_ids": collected["virtual_record_ids"],
-                    # The connector's own record groups went with it. A point
-                    # shared with a live connector survives the purge, so the
-                    # cleanup needs these to strip them from recordGroupIds.
-                    "record_group_ids": collected["record_group_keys"],
-                    "vector_membership_backfilled": bool(
-                        connector.get("vectorMembershipBackfilled", False)
-                    ),
-                    "vector_membership_backfill_exhausted": bool(
-                        connector.get("vectorMembershipBackfillExhausted", False)
-                    ),
-                    "connector_id": connector_id,
-                    "connector_name": connector.get("type"),
-                }
-
-            except Exception as tx_error:
-                if created_transaction:
-                    try:
-                        await self.rollback_transaction(transaction)
-                    except Exception as abort_error:
-                        self.logger.error(
-                            f"❌ Failed to abort transaction during connector deletion: {abort_error}. "
-                            f"Original error: {tx_error}"
-                        )
-                raise tx_error
+                        await cascade_backoff(attempt)
+                        continue
+                    raise tx_error
 
         except Exception as e:
             self.logger.error(f"❌ Failed to delete connector instance {connector_id}: {str(e)}", exc_info=True)
@@ -14337,6 +14321,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
                     userRole: kb_role.userRole,
+                    status: kb.status,
                     folders: folders
                 }}
             """
@@ -15263,6 +15248,7 @@ class ArangoHTTPProvider(NamedEntityGraphMixin, IGraphDBProvider):
                     updatedAtTimestamp: kb.updatedAtTimestamp,
                     createdBy: kb.createdBy,
                     userRole: user_role,
+                    status: kb.status,
                     folders: folders
                 }
             """

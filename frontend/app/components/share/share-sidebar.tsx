@@ -5,7 +5,7 @@ import { sidePanelFrame } from '@/app/components/ui/responsive';
 import { useTranslation } from 'react-i18next';
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
+import { AlertDialog, Dialog, Flex, Box, Text, Button, IconButton, VisuallyHidden } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { useAuthStore } from '@/config';
@@ -66,6 +66,7 @@ export function ShareSidebar({
   // Tracks whether any portaled role dropdown is open — used to suppress the
   // dialog's outside-click handler while the dropdown is active.
   const [isRoleDropdownOpen, setIsRoleDropdownOpen] = useState(false);
+  const [pendingRemoval, setPendingRemoval] = useState<SharedMember | null>(null);
 
   // Fetched data
   const [suggestedTeams, setSuggestedTeams] = useState<ShareTeam[]>([]);
@@ -310,17 +311,24 @@ export function ShareSidebar({
 
   // Remove member.
   // Note: the "at least one owner must remain" invariant is enforced server-side.
-  const handleRemoveMember = useCallback(
+  const removeMemberNow = useCallback(
     async (memberId: string, memberType: 'user' | 'team') => {
       const member = existingMembers.find((m) => m.id === memberId);
       // Users cannot remove themselves (use the leave/revoke own access flow instead)
       if (member?.isCurrentUser) return;
+      const name = member?.name ?? t('shareSidebar.member');
       try {
-        await adapter.removeMember(memberId, memberType);
+        const result = await adapter.removeMember(memberId, memberType);
         setExistingMembers((prev) => prev.filter((m) => m.id !== memberId));
-        toast.success(t('shareSidebar.accessRevoked'), {
-          description: t('shareSidebar.accessRevokedDescription', { name: member?.name ?? t('shareSidebar.member') }),
-        });
+        if (result && result.removed === false) {
+          toast.info(t('shareSidebar.alreadyRemoved'), {
+            description: t('shareSidebar.alreadyRemovedDescription', { name }),
+          });
+        } else {
+          toast.success(t('shareSidebar.accessRevoked'), {
+            description: t('shareSidebar.accessRevokedDescription', { name }),
+          });
+        }
         onShareSuccess?.();
       } catch (error) {
         // Error is already processed by apiClient interceptor
@@ -330,6 +338,18 @@ export function ShareSidebar({
       }
     },
     [adapter, existingMembers, onShareSuccess, t]
+  );
+
+  const handleRemoveMember = useCallback(
+    (memberId: string, memberType: 'user' | 'team') => {
+      if (!adapter.confirmBeforeRemove) {
+        void removeMemberNow(memberId, memberType);
+        return;
+      }
+      const member = existingMembers.find((m) => m.id === memberId && m.type === memberType);
+      if (member && !member.isCurrentUser) setPendingRemoval(member);
+    },
+    [adapter.confirmBeforeRemove, existingMembers, removeMemberNow]
   );
 
   // Team created callback
@@ -509,6 +529,8 @@ export function ShareSidebar({
                 searchQuery={searchQueryInput}
                 selectedRole={selectedRole}
                 supportsRoles={adapter.supportsRoles}
+                supportsTeams={adapter.supportsTeams}
+                teamsHaveRoles={adapter.teamsHaveRoles}
                 roleOptions={adapter.roleOptions}
                 onSearchChange={updateSearchQuery}
                 onRemoveSelection={handleRemoveSelection}
@@ -646,7 +668,7 @@ export function ShareSidebar({
                         })
                         .map((member) => (
                         <ShareableRow
-                          key={member.id}
+                          key={`${member.type}:${member.id}`}
                           type={member.type === 'user' ? 'member' : 'team'}
                           name={member.name}
                           subtitle={member.email}
@@ -656,6 +678,7 @@ export function ShareSidebar({
                           role={member.role}
                           showRoleDropdown={!member.isCurrentUser}
                           roleOptions={adapter.roleOptions}
+                          teamHasRoles={adapter.teamsHaveRoles}
                           noRolesInfo={
                             !adapter.supportsRoles && member.type === 'user'
                               ? { title: roleLabels[member.role]?.label ?? roleLabels.READER.label, description: roleLabels[member.role]?.description ?? '' }
@@ -745,6 +768,32 @@ export function ShareSidebar({
             </Flex>
           </Flex>
         )}
+        <AlertDialog.Root open={pendingRemoval !== null} onOpenChange={(next) => !next && setPendingRemoval(null)}>
+          <AlertDialog.Content style={{ maxWidth: '24rem' }}>
+            <AlertDialog.Title size="3">{t('shareSidebar.removeConfirmTitle')}</AlertDialog.Title>
+            <AlertDialog.Description size="2">
+              {t('shareSidebar.removeConfirmDescription', { name: pendingRemoval?.name ?? t('shareSidebar.member') })}
+            </AlertDialog.Description>
+            <Flex gap="2" justify="end" mt="4">
+              <AlertDialog.Cancel>
+                <Button variant="soft" color="gray">
+                  {t('action.cancel')}
+                </Button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action>
+                <Button
+                  color="red"
+                  onClick={() => {
+                    if (pendingRemoval) void removeMemberNow(pendingRemoval.id, pendingRemoval.type);
+                    setPendingRemoval(null);
+                  }}
+                >
+                  {t('action.remove')}
+                </Button>
+              </AlertDialog.Action>
+            </Flex>
+          </AlertDialog.Content>
+        </AlertDialog.Root>
       </Dialog.Content>
     </Dialog.Root>
   );

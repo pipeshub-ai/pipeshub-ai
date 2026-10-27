@@ -14,15 +14,15 @@ import (
 // Completing the flow needs a person to consent in a browser, so this stops at the consent URL.
 func TestHandwritten_ConnectorOAuthAuthorization(t *testing.T) {
 	ctx := context.Background()
-	s := newClient()
+	s := newAdminClient()
 	// OAuth app and connector names are unique in an org.
 	name := uniqueName(t, "sdk-test-jira")
 
 	config, err := s.OAuthConfiguration.CreateOAuthConfig(ctx, "Jira", components.CreateOAuthConfigRequest{
 		OauthInstanceName: name,
 		Config: components.CreateOAuthConfigRequestConfig{
-			ClientID:     "sdk-test-client-id",
-			ClientSecret: "sdk-test-client-secret",
+			ClientID:     pipeshub.Pointer("sdk-test-client-id"),
+			ClientSecret: pipeshub.Pointer("sdk-test-client-secret"),
 		},
 	})
 	require.NoError(t, err)
@@ -48,7 +48,7 @@ func TestHandwritten_ConnectorOAuthAuthorization(t *testing.T) {
 		assert.NoError(t, err)
 	}()
 
-	authorization, err := s.ConnectorOAuth.GetOAuthAuthorizationURL(ctx, connectorID)
+	authorization, err := s.ConnectorOAuth.GetOAuthAuthorizationURL(ctx, connectorID, nil)
 	require.NoError(t, err)
 	consent, err := url.Parse(authorization.Object.AuthorizationURL)
 	require.NoError(t, err)

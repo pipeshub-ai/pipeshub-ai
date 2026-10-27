@@ -124,11 +124,28 @@ async function callJson(handler: JsonHandler, req: never): Promise<JsonOutcome> 
   return { status: res.statusCode, body: res.jsonBody, error: next.firstCall?.args[0] as JsonOutcome['error'] }
 }
 
+/** A refusal sent to `next` before any stream opened, if there was one. */
+const refusals = new WeakMap<FakeSSEResponse, Error>()
+
 async function callStream(handler: StreamHandler, req: never): Promise<FakeSSEResponse> {
   const res = new FakeSSEResponse()
-  await handler(req, res as never)
+  const next = sinon.stub()
+  await (handler as (...args: unknown[]) => Promise<void>)(req, res, next)
   await settle()
+  if (next.called) refusals.set(res, next.firstCall.args[0] as Error)
   return res
+}
+
+/** The "not found" a caller gets: a 404 before streaming for a new message, a RUN_ERROR for a regenerate. */
+function notFoundMessage(res: FakeSSEResponse): string | undefined {
+  const refusal = refusals.get(res)
+  if (refusal) {
+    expect(res.eventsOf('RUN_ERROR'), 'no stream after a refusal').to.have.length(0)
+    return refusal.message
+  }
+  const errors = res.eventsOf('RUN_ERROR')
+  expect(errors, 'RUN_ERROR frames').to.have.length(1)
+  return errors[0]?.data.message as string | undefined
 }
 
 const agentParams = (s: Setup, extra: Record<string, string> = {}): Record<string, string> => ({
@@ -815,9 +832,7 @@ describe('es_controller agent-chat sharing: read-only for recipients, owner-only
 
         const res = await callStream(c.handler(), request(recipient, agentParams(s, { messageId: s.agentBotMessageId }), c.body))
 
-        const errors = res.eventsOf('RUN_ERROR')
-        expect(errors, 'RUN_ERROR frames').to.have.length(1)
-        expect(errors[0]?.data.message).to.match(/not found/i)
+        expect(notFoundMessage(res)).to.match(/not found/i)
         expect(s.ai.streamCalls).to.deep.equal([])
         expect(s.store.writes.filter((w) => w.startsWith('message.'))).to.deep.equal([])
         expect(s.store.messagesOf(s.agentChatId)).to.have.length(2)

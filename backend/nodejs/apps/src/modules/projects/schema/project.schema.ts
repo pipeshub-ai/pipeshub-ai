@@ -18,16 +18,18 @@ export interface IProjectDocument
     Document,
     Omit<
       IProject,
-      'orgId' | 'userId' | 'members' | 'archivedBy' | 'deletedBy'
+      'orgId' | 'userId' | 'members' | 'archivedBy' | 'deletedBy' | 'pinnedBy'
     > {
   orgId: Types.ObjectId;
   userId: Types.ObjectId;
   members: Array<
     Omit<IProjectMember, 'principalId' | 'addedBy'> & {
-      principalId: Types.ObjectId;
+      /** A user's id, or a team's graph id string. */
+      principalId: Types.ObjectId | string;
       addedBy: Types.ObjectId;
     }
   >;
+  pinnedBy?: Types.ObjectId[];
   archivedBy?: Types.ObjectId;
   deletedBy?: Types.ObjectId;
 }
@@ -47,7 +49,8 @@ const projectMemberSchema = new Schema(
       default: 'user',
       required: true,
     },
-    principalId: { type: Schema.Types.ObjectId, required: true },
+    // A user's ObjectId, or a team's graph id string (a UUID or `all_<orgId>`).
+    principalId: { type: Schema.Types.Mixed, required: true },
     role: {
       type: String,
       enum: PROJECT_MEMBER_ROLE_VALUES,
@@ -110,7 +113,9 @@ const projectSchema = new Schema<IProjectDocument>(
       default: DEFAULT_PROJECT_CHAT_SHARING,
     },
     members: { type: [projectMemberSchema], default: [] },
+    // Legacy project-wide pin, read as the owner's own pin. New pins go to pinnedBy.
     isPinned: { type: Boolean, default: false },
+    pinnedBy: { type: [Schema.Types.ObjectId], default: [] },
     isArchived: { type: Boolean, default: false },
     archivedBy: { type: Schema.Types.ObjectId },
     isDeleted: { type: Boolean, default: false },

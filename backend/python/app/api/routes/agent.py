@@ -58,6 +58,7 @@ from app.modules.agents.knowledge_scope import (
     NO_KB_SELECTED_FILTER,
     UnreadableSourceLimitError,
     admit_caller_project_collections,
+    project_files_knowledge,
     read_source_limit,
     resolve_agent_filters,
 )
@@ -4746,6 +4747,18 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                         protocol, CONNECTION_LIMIT_TOO_LARGE_MESSAGE, code="selection_too_large",
                     )
                     return
+                if chat_query.strictScope and caps.internal_search:
+                    agent_knowledge = [
+                        *agent_knowledge,
+                        *await project_files_knowledge(
+                            graph_provider,
+                            kb_ids=filters.get("kb") or [],
+                            known_ids=[
+                                k.get("connectorId") for k in agent_knowledge if isinstance(k, dict)
+                            ],
+                            logger=logger,
+                        ),
+                    ]
 
                 logger.info(f"Filters: {filters}")
 
@@ -4832,6 +4845,7 @@ async def chat_stream(request: Request, agent_id: str) -> StreamingResponse:
                     "instructions": agent.get("instructions"),
                     "custom_instructions": custom_instructions,
                     "projectInstructions": chat_query.projectInstructions,
+                    "projectToolsSelected": chat_query.strictScope and chat_query.tools is not None,
                     "timezone": chat_query.timezone,
                     "currentTime": chat_query.currentTime,
                     "toolsets": agent_toolsets,

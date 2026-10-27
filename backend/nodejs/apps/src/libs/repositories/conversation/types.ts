@@ -412,9 +412,23 @@ export interface ConversationRepository {
     skip: number;
     limit: number;
   }): Promise<SessionPage>;
-  countByProject(projectIds: string[]): Promise<Map<string, number>>;
+  /**
+   * Live chats per project that this person can open: their own, and the ones
+   * shared to the project. Another member's private chat is not counted.
+   */
+  countByProject(
+    orgId: string,
+    userId: string,
+    projectIds: string[],
+  ): Promise<Map<string, number>>;
   /** Clears the project link of every session of a project. */
   unlinkProject(projectId: string, tx?: Tx): Promise<void>;
+  /** Clears one session's project link, only while it still points at `projectId`. */
+  unlinkFromProject(
+    orgId: string,
+    sessionId: string,
+    projectId: string,
+  ): Promise<void>;
 
   // ---- sessions: change
   /** Applies a run's outcome to the session and returns it as saved; null when the session is gone. */

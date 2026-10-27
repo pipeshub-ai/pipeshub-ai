@@ -18,6 +18,32 @@ import type {
 const Types = mongoose.Types;
 const dto = (row: unknown): ProjectDto => toPlain<ProjectDto>(row);
 
+/**
+ * Filter clauses matching projects where the person is a member directly or
+ * through a team. `$elemMatch` keeps type and id on the same member row. Team
+ * ids are graph id strings and are matched as stored.
+ */
+function memberClauses(
+  userObjId: mongoose.Types.ObjectId,
+  teamIds: string[],
+): QueryFilter<IProjectDocument>[] {
+  const clauses: QueryFilter<IProjectDocument>[] = [
+    {
+      members: {
+        $elemMatch: { principalType: 'user', principalId: userObjId },
+      },
+    },
+  ];
+  if (teamIds.length > 0) {
+    clauses.push({
+      members: {
+        $elemMatch: { principalType: 'team', principalId: { $in: teamIds } },
+      },
+    });
+  }
+  return clauses;
+}
+
 export class MongoProjectRepository implements ProjectRepository {
   async getLive(id: string): Promise<ProjectDto | null> {
     const row = await Project.findOne({ _id: id, isDeleted: false });
@@ -59,25 +85,12 @@ export class MongoProjectRepository implements ProjectRepository {
   ): Promise<{ rows: ProjectDto[]; total: number }> {
     const orgObjId = new Types.ObjectId(orgId);
     const userObjId = new Types.ObjectId(userId);
-    const teamObjIds = q.teamIds
-      .filter((id) => Types.ObjectId.isValid(id))
-      .map((id) => new Types.ObjectId(id));
-
     const scopeOr: QueryFilter<IProjectDocument>[] = [];
     if (q.scope === 'mine' || q.scope === 'all') {
       scopeOr.push({ userId: userObjId });
     }
     if (q.scope === 'shared' || q.scope === 'all') {
-      scopeOr.push({
-        'members.principalType': 'user',
-        'members.principalId': userObjId,
-      });
-      if (teamObjIds.length > 0) {
-        scopeOr.push({
-          'members.principalType': 'team',
-          'members.principalId': { $in: teamObjIds },
-        });
-      }
+      scopeOr.push(...memberClauses(userObjId, q.teamIds));
     }
     if (q.scope === 'all') {
       scopeOr.push({ visibility: 'org' });
@@ -100,13 +113,30 @@ export class MongoProjectRepository implements ProjectRepository {
       filter.name = { $regex: escaped, $options: 'i' };
     }
 
+    // Pins are per person, so the sort key is computed for this caller.
     const [rows, total] = await Promise.all([
-      Project.find(filter)
-        .sort({ isPinned: -1, lastActivityAt: -1, _id: -1 })
-        .skip(q.skip)
-        .limit(q.limit)
-        .lean()
-        .exec(),
+      Project.aggregate<Record<string, unknown>>([
+        { $match: filter },
+        {
+          $addFields: {
+            callerPinned: {
+              $or: [
+                { $in: [userObjId, { $ifNull: ['$pinnedBy', []] }] },
+                {
+                  $and: [
+                    { $eq: ['$isPinned', true] },
+                    { $eq: ['$userId', userObjId] },
+                  ],
+                },
+              ],
+            },
+          },
+        },
+        { $sort: { callerPinned: -1, lastActivityAt: -1, _id: -1 } },
+        { $skip: q.skip },
+        { $limit: q.limit },
+        { $project: { callerPinned: 0 } },
+      ]),
       Project.countDocuments(filter),
     ]);
     return { rows: rows.map(dto), total };
@@ -117,6 +147,27 @@ export class MongoProjectRepository implements ProjectRepository {
     if (!project) return null;
     Object.assign(project, patch);
     return dto(await project.save());
+  }
+
+  async setPinned(
+    id: string,
+    userId: string,
+    pinned: boolean,
+    clearLegacyPin: boolean,
+  ): Promise<ProjectDto | null> {
+    const userObjId = new Types.ObjectId(userId);
+    const update = pinned
+      ? { $addToSet: { pinnedBy: userObjId } }
+      : {
+          $pull: { pinnedBy: userObjId },
+          ...(clearLegacyPin ? { $set: { isPinned: false } } : {}),
+        };
+    const row = await Project.findOneAndUpdate(
+      { _id: id, isDeleted: false },
+      update,
+      { returnDocument: 'after' },
+    );
+    return row ? dto(row) : null;
   }
 
   async markDeleted(
@@ -159,7 +210,10 @@ export class MongoProjectRepository implements ProjectRepository {
       } else {
         project.members.push({
           principalType: incoming.principalType,
-          principalId: new Types.ObjectId(incoming.principalId),
+          principalId:
+            incoming.principalType === 'team'
+              ? incoming.principalId
+              : new Types.ObjectId(incoming.principalId),
           role: incoming.role,
           addedBy: new Types.ObjectId(addedBy),
           addedAt: new Date(),
@@ -218,7 +272,11 @@ export class MongoProjectRepository implements ProjectRepository {
     );
   }
 
-  async listAccessibleIds(orgId: string, userId: string): Promise<string[]> {
+  async listAccessibleIds(
+    orgId: string,
+    userId: string,
+    teamIds: string[],
+  ): Promise<string[]> {
     const orgObjId = new Types.ObjectId(orgId);
     const userObjId = new Types.ObjectId(userId);
     const rows = await Project.find(
@@ -227,13 +285,31 @@ export class MongoProjectRepository implements ProjectRepository {
         isDeleted: false,
         $or: [
           { userId: userObjId },
-          { 'members.principalType': 'user', 'members.principalId': userObjId },
+          ...memberClauses(userObjId, teamIds),
           { visibility: 'org' },
         ],
       },
       { _id: 1 },
     ).lean();
     return rows.map((p) => String(p._id));
+  }
+
+  async orgHasTeamMembers(orgId: string): Promise<boolean> {
+    const found = await Project.exists({
+      orgId: new Types.ObjectId(orgId),
+      isDeleted: false,
+      'members.principalType': 'team',
+    });
+    return found !== null;
+  }
+
+  async isLiveWithoutTeamMembers(id: string): Promise<boolean> {
+    const found = await Project.exists({
+      _id: new Types.ObjectId(id),
+      isDeleted: false,
+      'members.principalType': { $ne: 'team' },
+    });
+    return found !== null;
   }
 
   async touchActivity(id: string): Promise<void> {
