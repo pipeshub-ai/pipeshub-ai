@@ -702,7 +702,9 @@ class DocumentExtraction(Transformer):
             dropped = len(document) - len(text_only)
             # One image the model cannot read fails the whole request, and every
             # retry would resend it; the text alone still classifies the record.
-            if not dropped or not _images_rejected(e):
+            # Without document text it would classify only the record's name.
+            has_text = any(part["type"] == "text" and part["text"].strip() for part in content)
+            if not dropped or not has_text or not _images_rejected(e):
                 raise
             self.logger.warning(
                 "⚠️ Model rejected the document with %d image(s); classifying its text alone: %s", dropped, e,

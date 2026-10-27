@@ -330,10 +330,11 @@ async def test_a_text_only_retry_that_also_fails_is_an_extraction_error() -> Non
                 "type": "budget_exceeded", "param": None, "code": "400",
             }),
         ),
+        (_multimodal_role, lambda: _blocks_with_image()[1:], lambda: _openai_error(400)),
     ],
     ids=[
         "no-images", "auth", "model-not-found", "unclassified",
-        "unsupported-parameter", "content-filter", "gateway-budget",
+        "unsupported-parameter", "content-filter", "gateway-budget", "images-only",
     ],
 )
 async def test_other_failures_are_not_retried_without_images(role, blocks, error) -> None:
