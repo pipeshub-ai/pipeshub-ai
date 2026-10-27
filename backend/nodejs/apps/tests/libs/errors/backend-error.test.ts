@@ -237,10 +237,11 @@ describe('handleBackendError', () => {
     let warn: sinon.SinonStub
     let error: sinon.SinonStub
 
+    // On the prototype: backend-error keeps the instance it got at load, which
+    // another test may since have replaced as the singleton.
     beforeEach(() => {
-      const logger = Logger.getInstance()
-      warn = sinon.stub(logger, 'warn')
-      error = sinon.stub(logger, 'error')
+      warn = sinon.stub(Logger.prototype, 'warn')
+      error = sinon.stub(Logger.prototype, 'error')
     })
 
     afterEach(() => sinon.restore())
