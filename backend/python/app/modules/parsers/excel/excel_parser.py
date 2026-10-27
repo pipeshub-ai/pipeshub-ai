@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import re
+import zipfile
 from datetime import datetime, time
 from typing import Any
 
@@ -12,6 +13,7 @@ from langchain_core.messages import AIMessage, HumanMessage
 from openpyxl import load_workbook
 from openpyxl.cell.cell import Cell, MergedCell
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.cell import range_boundaries
 from openpyxl.worksheet.worksheet import Worksheet
 
 from app.config.configuration_service import ConfigurationService
@@ -38,7 +40,7 @@ from app.modules.parsers.excel.prompt_template import (
     table_summary_prompt,
 )
 from app.services.llm_gateway.gateway import get_llm_gateway, provider_key
-from app.services.parsing.interface import ParseResult
+from app.services.parsing.interface import ParseError, ParseErrorCode, ParseResult
 from app.utils.aimodels import coerce_message_content_to_text
 from app.utils.concurrency import max_table_rows_for_llm
 from app.utils.indexing_helpers import format_rows_with_index, generate_simple_row_text
@@ -49,6 +51,7 @@ from app.utils.streaming import (
     invoke_with_structured_output_and_reflection,
 )
 from app.utils.table_enrichment import fallback_table_summary
+from app.utils.user_errors import EXCEL_TOO_LARGE
 
 
 def _color_to_str(color: object) -> str | None:
@@ -102,6 +105,61 @@ MIN_ROWS_FOR_HEADER_ANALYSIS = 1  # Minimum number of rows required for header a
 MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header count
 EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, int(os.getenv("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", "500")))
 EXCEL_MAX_TABLE_ROWS_TO_INDEX = max(1, int(os.getenv("EXCEL_MAX_TABLE_ROWS_TO_INDEX", "20000")))
+
+# openpyxl builds one object per cell, about 550-770 bytes each at peak (a 24.5 MB
+# workbook of 2.0 M cells peaked at 1.1 GB; a 16 MB one of 2.0 M cells at 1.6 GB), so a workbook's size in memory is
+# set by its cell count, not its file size. Workbooks over either limit are
+# refused before they are loaded. The defaults keep the peak near 2 GB.
+EXCEL_MAX_CELLS = max(1, int(os.getenv("EXCEL_MAX_CELLS", "3000000")))
+# The same bound read from the sheets' uncompressed XML (about 50 bytes per
+# cell, so 150 MB is about 3 M cells), which does not rely on the sheet's own <dimension> being present or right.
+EXCEL_MAX_SHEET_XML_BYTES = max(1, int(os.getenv("EXCEL_MAX_SHEET_XML_MB", "150"))) * 1024 * 1024
+_DIMENSION_RE = re.compile(rb'<dimension\s+ref="([^"]+)"')
+_DIMENSION_SEARCH_BYTES = 16 * 1024
+
+
+def check_workbook_size(file_binary: bytes) -> None:
+    """Refuse a workbook that is too large to load, without loading it.
+
+    Reads only the zip directory and the head of each sheet's XML. The
+    declared cell count (``<dimension>``) and the sheets' uncompressed size
+    are checked separately, so a missing or understated dimension cannot let
+    a huge sheet through. Not a workbook zip: left for the loader to report.
+    """
+    try:
+        archive = zipfile.ZipFile(io.BytesIO(file_binary))
+        sheets = [
+            info for info in archive.infolist()
+            if info.filename.startswith("xl/worksheets/") and info.filename.endswith(".xml")
+        ]
+    except (zipfile.BadZipFile, OSError, ValueError):
+        return
+    with archive:
+        xml_bytes = sum(info.file_size for info in sheets)
+        declared_cells = 0
+        for info in sheets:
+            with archive.open(info) as head:
+                match = _DIMENSION_RE.search(head.read(_DIMENSION_SEARCH_BYTES))
+            if match is None:
+                continue
+            try:
+                min_col, min_row, max_col, max_row = range_boundaries(match.group(1).decode("ascii"))
+            except (ValueError, TypeError, UnicodeDecodeError):
+                continue
+            if None in (min_col, min_row, max_col, max_row):
+                continue
+            declared_cells += (max_col - min_col + 1) * (max_row - min_row + 1)
+    if declared_cells > EXCEL_MAX_CELLS or xml_bytes > EXCEL_MAX_SHEET_XML_BYTES:
+        raise ParseError(
+            ParseErrorCode.INVALID_INPUT,
+            EXCEL_TOO_LARGE,
+            details={
+                "declared_cells": declared_cells,
+                "max_cells": EXCEL_MAX_CELLS,
+                "sheet_xml_bytes": xml_bytes,
+                "max_sheet_xml_bytes": EXCEL_MAX_SHEET_XML_BYTES,
+            },
+        )
 
 
 # Built-in Excel date format codes mapping
@@ -450,6 +508,7 @@ class ExcelParser:
         self.logger.info("Loading workbook from binary data")
         self.file_binary = file_binary
         if self.file_binary:
+            check_workbook_size(file_binary)
             self.workbook = load_workbook(io.BytesIO(file_binary), data_only=True)
             self.logger.info(f"Workbook loaded successfully with {len(self.workbook.sheetnames)} sheets: {self.workbook.sheetnames}")
 
