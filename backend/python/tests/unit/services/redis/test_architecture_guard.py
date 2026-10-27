@@ -202,3 +202,100 @@ class TestTheGuardItselfCatchesClientSubmodules:
             "    from redis.asyncio.client import Redis\n"
         )
         assert _find_restricted_imports(ast.parse(source)) == []
+
+
+# Constructors that open a Redis connection (or a pool of them). A client built
+# anywhere but the providers skips RESP_PROTOCOL and gets redis-py's default,
+# which since 6.x is RESP3: FT.* / XREADGROUP replies become maps and the
+# parsers written for arrays break.
+_CLIENT_CONSTRUCTORS = {
+    "Redis",
+    "RedisCluster",
+    "ConnectionPool",
+    "BlockingConnectionPool",
+    "from_url",
+    "Sentinel",
+}
+
+_ALLOWED_CLIENT_CONSTRUCTION_FILES = _ALLOWED_DIRECT_CLIENT_IMPORT_FILES | {
+    "services/redis/inprocess_provider.py",
+}
+
+
+def _find_client_constructions(tree: ast.Module) -> list[tuple[int, str]]:
+    """(lineno, name) for every call that builds a Redis client or pool.
+
+    Matches on the AST call target, so ``redis.asyncio.Redis(...)``,
+    ``aioredis.from_url(...)`` and ``Redis(...)`` are all found while
+    comments, docstrings and string literals are not.
+    """
+    found: list[tuple[int, str]] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else (
+            func.attr if isinstance(func, ast.Attribute) else None
+        )
+        if name in _CLIENT_CONSTRUCTORS:
+            found.append((node.lineno, name))
+    return found
+
+
+class TestNoRedisClientIsBuiltOutsideTheProviders:
+    def test_only_the_providers_construct_a_client_or_pool(self) -> None:
+        offenders: list[str] = []
+        for path in _iter_app_python_files():
+            rel = _relative_path(path)
+            if rel in _ALLOWED_CLIENT_CONSTRUCTION_FILES:
+                continue
+            source = path.read_text(encoding="utf-8")
+            if "redis" not in source.lower():
+                continue
+            try:
+                tree = ast.parse(source, filename=rel)
+            except SyntaxError:
+                continue
+            offenders.extend(
+                f"{rel}:{lineno} calls {name}(...)"
+                for lineno, name in _find_client_constructions(tree)
+            )
+
+        assert not offenders, (
+            "Redis clients must come from the connection provider, which pins "
+            "the wire protocol (RESP_PROTOCOL). A client built here would use "
+            "redis-py's default (RESP3) and get map-shaped replies:\n"
+            + "\n".join(offenders)
+        )
+
+    def test_the_providers_still_pin_the_protocol(self) -> None:
+        """The allow-list trusts these files, so check they use the constant."""
+        for rel in sorted(_ALLOWED_DIRECT_CLIENT_IMPORT_FILES):
+            source = (_APP_ROOT / rel).read_text(encoding="utf-8")
+            assert "RESP_PROTOCOL" in source, f"{rel} no longer pins the protocol"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "Redis(host='h')",
+            "redis.asyncio.Redis(host='h')",
+            "RedisCluster(startup_nodes=[])",
+            "aioredis.from_url('redis://h')",
+            "ConnectionPool(host='h')",
+            "BlockingConnectionPool(host='h')",
+            "Sentinel([('h', 1)])",
+        ],
+    )
+    def test_a_construction_is_flagged(self, source: str) -> None:
+        assert _find_client_constructions(ast.parse(source))
+
+    def test_comments_docstrings_and_look_alikes_are_not_flagged(self) -> None:
+        source = (
+            '"""Never Redis(...) or from_url(...) directly."""\n'
+            "# Redis(host='h')\n"
+            "msg = 'RedisCluster(x)'\n"
+            "client = FakeRedis()\n"
+            "pool_size = ConnectionPoolSettings()\n"
+            "def f(r: Redis) -> None: ...\n"
+        )
+        assert _find_client_constructions(ast.parse(source)) == []
