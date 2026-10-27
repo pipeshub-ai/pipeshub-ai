@@ -365,7 +365,7 @@ export function FilterDropdown({
       ) : hasSelection ? (
         <Flex align="center" style={{ flexShrink: 0 }}>
           <Popover.Trigger>
-            <div style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
+            <div className="touch-hit" style={{ display: 'inline-flex', alignItems: 'center', cursor: 'pointer' }}>
               <Flex
                 align="center"
                 gap="1"
@@ -456,6 +456,7 @@ export function FilterDropdown({
       ) : (
         <Popover.Trigger>
           <Button
+            className="touch-hit"
             variant="outline"
             size="1"
             radius="medium"

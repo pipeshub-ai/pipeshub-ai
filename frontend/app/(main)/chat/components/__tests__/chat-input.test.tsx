@@ -1377,6 +1377,16 @@ describe('ChatInput — compact widget', () => {
     expect(document.activeElement).toBe(composer());
   });
 
+  it('on a phone, expands when the tap lands in the row around the one-line field', () => {
+    device.isMobile = true;
+    renderInput({ variant: 'widget', expandable: true, widgetPlaceholder: 'Ask about this page' });
+    const row = screen.getByRole('button', { name: 'Expand composer' }).parentElement as HTMLElement;
+
+    fireEvent.click(row);
+
+    expect(document.activeElement).toBe(composer());
+  });
+
   it('sends a new question while a chat left on the chat page is still answering', () => {
     startStreamingSlot();
     const { onSend } = renderInput({ variant: 'widget' });
