@@ -3080,8 +3080,9 @@ describe('ConfigurationManager Controller', () => {
       })
 
       it('logs the refusal by its codes, never the server text, host or username', async () => {
-        const logger = Logger.getInstance()
-        const warn = sinon.stub(logger, 'warn')
+        // On the prototype: the controller keeps the instance it got at load,
+        // which another test may since have replaced as the singleton.
+        const warn = sinon.stub(Logger.prototype, 'warn')
         const handler = createSmtpConfig(createMockKeyValueStore(), 'http://comm-backend:3002', 'jwt-secret')
 
         await handler(createMockRequest({ body: body('wrong') }), createMockResponse(), createMockNext())
