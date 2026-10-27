@@ -39,11 +39,17 @@ export class MongoOutboxRepository implements OutboxRepository {
       if (candidates.length === 0) return null;
 
       for (const candidate of candidates) {
+        // Earlier in the sort's own order: older, or the same instant and a lower _id.
         const blocked = await OutboxEvent.exists({
           orderingKey: candidate.orderingKey,
-          createdAt: { $lt: candidate.createdAt },
           status: { $in: ['pending', 'publishing', 'failed'] },
-          _id: { $ne: candidate._id },
+          $or: [
+            {
+              createdAt: { $lt: candidate.createdAt },
+              _id: { $ne: candidate._id },
+            },
+            { createdAt: candidate.createdAt, _id: { $lt: candidate._id } },
+          ],
         });
         if (blocked) continue;
 
