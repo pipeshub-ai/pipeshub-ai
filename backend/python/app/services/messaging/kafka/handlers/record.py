@@ -2020,6 +2020,13 @@ class RecordEventHandler(BaseEventService):
 
 
 
+            known_size = doc.get("sizeInBytes")
+            if isinstance(known_size, int) and known_size > 0:
+                yield PipelineEvent(
+                    event=IndexingEvent.START_DOWNLOAD,
+                    data=PipelineEventData(record_id=record_id, size_bytes=known_size),
+                )
+
             # Try signed URL first if available, fallback to connector streaming if it fails
             signed_url_success = False
 
