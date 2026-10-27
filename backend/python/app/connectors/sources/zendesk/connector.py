@@ -20,7 +20,6 @@ from uuid import uuid4
 
 import httpx
 from fastapi.responses import StreamingResponse
-from app.utils.html_markdown import html_to_markdown
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import (
@@ -120,6 +119,7 @@ from app.sources.client.zendesk.zendesk import (
     redact_attachment_url,
 )
 from app.sources.external.zendesk.zendesk import ZendeskDataSource
+from app.utils.html_markdown import html_to_markdown
 from app.utils.streaming import create_stream_record_response
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
