@@ -63,7 +63,9 @@ export class ConversationTitleService {
           ...(session.projectId && accessibleProjects.has(session.projectId)
             ? { projectId: session.projectId }
             : {}),
-          ...(session.isArchived ? { conversationArchived: true as const } : {}),
+          ...(session.isArchived
+            ? { conversationArchived: true as const }
+            : {}),
         },
       ]),
     );
