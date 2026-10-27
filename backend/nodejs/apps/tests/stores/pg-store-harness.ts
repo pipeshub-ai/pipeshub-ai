@@ -33,25 +33,45 @@ export interface PgStack {
 export async function startPgStack(bin: string, db = 'conversation_stores', opts: { pool?: number; clientPool?: number; jobs?: boolean; importer?: boolean } = {}): Promise<PgStack> {
   const work = process.env.PG_TEST_WORK ?? tmpdir();
   const cluster = await startCluster(bin, work);
-  await createKernelDb(cluster, db);
-  // the import login is NOLOGIN until an operator enables it for a move; the tests do that
-  if (opts.importer) await cluster.admin((c) => c.query('ALTER ROLE pipeshub_import LOGIN'), db);
-  const bouncer = await startBouncer(cluster, db, work, { reset: true, pool: opts.pool ?? 4, maxPreparedStatements: 200 });
-  const pool = createPgPool({
-    connectionString: cluster.url(db, 'pipeshub_node_login', bouncer.port),
-    service: 'node',
-    version: 'test',
-    max: opts.clientPool ?? 12,
-  });
-  // the copy of an existing install writes with its own login, direct to PostgreSQL (the PgBouncer here lists no such login)
-  const jobsPool = opts.importer
-    ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_import'), service: 'import', version: 'test', max: 4 })
-    : opts.jobs
-    ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_jobs', bouncer.port), service: 'jobs', version: 'test', max: 4 })
-    : undefined;
-  const catalog = new QueryCatalog();
-  const rt = new PgRuntime({ pool, ...(jobsPool && { jobsPool }), defaultService: 'node', catalog, ...(!opts.importer && { fence: { fn: 'kernel.assert_store_epoch', epoch: 1 } }) });
-  configurePg(rt);
+  let bouncer: PgStack['bouncer'] | undefined;
+  let pool: Pool | undefined;
+  let jobsPool: Pool | undefined;
+  let rt: PgRuntime;
+  let catalog: QueryCatalog;
+  try {
+    await createKernelDb(cluster, db);
+    // the import login is NOLOGIN until an operator enables it for a move; the tests do that
+    if (opts.importer) await cluster.admin((c) => c.query('ALTER ROLE pipeshub_import LOGIN'), db);
+    bouncer = await startBouncer(cluster, db, work, { reset: true, pool: opts.pool ?? 4, maxPreparedStatements: 200 });
+    pool = createPgPool({
+      connectionString: cluster.url(db, 'pipeshub_node_login', bouncer.port),
+      service: 'node',
+      version: 'test',
+      max: opts.clientPool ?? 12,
+    });
+    // the copy of an existing install writes with its own login, direct to PostgreSQL (the PgBouncer here lists no such login)
+    jobsPool = opts.importer
+      ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_import'), service: 'import', version: 'test', max: 4 })
+      : opts.jobs
+      ? createPgPool({ connectionString: cluster.url(db, 'pipeshub_jobs', bouncer.port), service: 'jobs', version: 'test', max: 4 })
+      : undefined;
+    catalog = new QueryCatalog();
+    rt = new PgRuntime({ pool, ...(jobsPool && { jobsPool }), defaultService: 'node', catalog, ...(!opts.importer && { fence: { fn: 'kernel.assert_store_epoch', epoch: 1 } }) });
+    configurePg(rt);
+  } catch (e) {
+    // Nothing returned means nobody can call stop(): put back what already started, then report the real failure.
+    try {
+      await pool?.end().catch(() => undefined);
+      await jobsPool?.end().catch(() => undefined);
+    } finally {
+      try {
+        bouncer?.stop();
+      } finally {
+        cluster.stop();
+      }
+    }
+    throw e;
+  }
   return {
     cluster,
     bouncer,
@@ -62,10 +82,16 @@ export async function startPgStack(bin: string, db = 'conversation_stores', opts
     admin: (fn) => cluster.admin(fn, db),
     async stop() {
       configurePg(undefined);
-      await pool.end().catch(() => undefined);
-      await jobsPool?.end().catch(() => undefined);
-      bouncer.stop();
-      cluster.stop();
+      try {
+        await pool.end().catch(() => undefined);
+        await jobsPool?.end().catch(() => undefined);
+      } finally {
+        try {
+          bouncer.stop();
+        } finally {
+          cluster.stop();
+        }
+      }
     },
   };
 }
