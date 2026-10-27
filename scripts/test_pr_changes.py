@@ -20,6 +20,7 @@ import pr_changes as pc  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 WORKFLOWS = ROOT / ".github" / "workflows"
 MATRIX = {name for name in pc.NAMES if name.startswith("matrix_")}
+PYTHON_LEGS = MATRIX - {"matrix_storage"}
 PYTHON_CHECKS = {"python_unit", "codeql_python"}
 
 
@@ -63,17 +64,39 @@ class TestDecisions(unittest.TestCase):
         self.assertTrue(PYTHON_CHECKS <= checks)
         self.assertFalse(checks & {"node_unit", "node_build", "frontend", "codeql_javascript"})
 
-    def test_a_kafka_fix_runs_the_messaging_legs_only(self) -> None:
-        checks = runs("backend/python/app/services/messaging/kafka/consumer/consumer.py")
-        self.assertEqual(checks & MATRIX, {"matrix_messaging"})
-        self.assertIn("redis_cluster", checks)
+    def test_any_python_change_runs_every_matrix_leg(self) -> None:
+        # The suites' shared conftest loads most of app/, so none can be narrowed.
+        for path in (
+            "backend/python/app/services/messaging/kafka/handlers/record.py",
+            "backend/python/app/services/vector_db/qdrant/qdrant.py",
+            "backend/python/app/modules/transformers/blob_storage.py",
+            "backend/python/tests/integration/graph_db/test_new_e2e.py",
+            "backend/python/pyproject.toml",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & MATRIX, MATRIX)
+                if path.startswith("backend/python/app/"):
+                    self.assertIn("redis_cluster", runs(path))
 
-    def test_shared_backend_config_runs_every_matrix_leg(self) -> None:
-        self.assertEqual(runs("backend/python/pyproject.toml") & MATRIX, MATRIX)
+    def test_a_compose_file_the_graph_legs_start_runs_them(self) -> None:
+        for name in ("messaging", "vector-db", "graph-db"):
+            with self.subTest(name=name):
+                self.assertIn("matrix_graph", runs(f"deployment/docker-compose/docker-compose.integration.{name}.yml"))
 
     def test_node_storage_runs_the_storage_legs_only(self) -> None:
-        checks = runs("backend/nodejs/apps/src/modules/storage/storage.service.ts")
-        self.assertEqual(checks & MATRIX, {"matrix_storage"})
+        for path in (
+            "backend/nodejs/apps/src/modules/storage/storage.service.ts",
+            "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
+        ):
+            with self.subTest(path=path):
+                self.assertEqual(runs(path) & MATRIX, {"matrix_storage"})
+
+    def test_node_code_outside_storage_runs_no_matrix_leg(self) -> None:
+        self.assertEqual(runs("backend/nodejs/apps/src/modules/enterprise_search/controller/es_controller.ts") & MATRIX, set())
+
+    def test_the_node_cluster_test_runs_the_redis_cluster_job(self) -> None:
+        self.assertIn("redis_cluster", runs("backend/nodejs/apps/tests/libs/services/redis/clusterRedisProvider.integration.test.ts"))
+        self.assertIn("redis_cluster", runs("backend/nodejs/apps/src/libs/services/redis/clusterRedisProvider.ts"))
 
     def test_a_frontend_change_runs_the_frontend_checks_only(self) -> None:
         checks = runs("frontend/app/(main)/chat/page.tsx")
@@ -112,9 +135,14 @@ class TestNothingTheOldTriggersCoveredIsDropped(unittest.TestCase):
                 self.assertTrue(runs(_example(glob)) & {"node_unit", "python_unit", "redis_cluster"})
 
     def test_backend_matrix_triggers(self) -> None:
+        # Every old trigger still starts the storage job; every one outside Node
+        # still starts every Python leg, which run no Node.
         for glob in self._paths("backend-matrix.yml"):
             with self.subTest(glob=glob):
-                self.assertTrue(runs(_example(glob)) & MATRIX)
+                checks = runs(_example(glob))
+                self.assertIn("matrix_storage", checks)
+                if not glob.startswith("backend/nodejs/"):
+                    self.assertEqual(checks & PYTHON_LEGS, PYTHON_LEGS)
 
     def test_every_backend_matrix_suite_has_a_check(self) -> None:
         include = _workflow("backend-matrix.yml")["jobs"]["backend"]["strategy"]["matrix"]["include"]

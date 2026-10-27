@@ -3,8 +3,8 @@
 
 Each workflow asks this script (through .github/actions/pr-changes) and runs
 only the jobs whose code changed: a Node-only change skips the Python unit
-shards, a Kafka fix runs the messaging legs of the backend matrix and not the
-graph ones, and a Markdown-only change skips the browser smoke test.
+shards and the Python backend-matrix suites, and a Markdown-only change skips
+the browser smoke test.
 
 Every event other than a pull request (a push to main, the schedule, a manual
 run, a workflow_call from another workflow) runs everything, so whatever a
@@ -26,6 +26,9 @@ from collections.abc import Iterable
 
 # The pull request files API lists at most this many; a longer list is cut off.
 FILES_API_LIMIT = 3000
+
+PYTHON = "backend/python"
+INTEGRATION = f"{PYTHON}/tests/integration"
 
 # A change here runs every check.
 EVERYTHING = (
@@ -58,48 +61,17 @@ NODE_APP = (
 )
 
 PYTHON_APP = (
-    "backend/python/app/**",
-    "backend/python/tests/**",
-    "backend/python/pyproject.toml",
-    "backend/python/pytest.ini",
-    "backend/python/.coveragerc",
+    f"{PYTHON}/app/**",
+    f"{PYTHON}/tests/**",
+    f"{PYTHON}/pyproject.toml",
+    f"{PYTHON}/pytest.ini",
+    f"{PYTHON}/.coveragerc",
 )
 
-# Shared by every leg of backend-matrix.yml: what configures or starts any of them.
-MATRIX_SHARED = (
-    "backend/python/pyproject.toml",
-    "backend/python/app/config/**",
-    "backend/python/app/indexing_main.py",
-    "backend/python/tests/integration/*.py",
-    "backend/python/tests/integration/compose/**",
-    ".github/workflows/backend-matrix.yml",
-)
+PYTHON_PACKAGING = (f"{PYTHON}/pyproject.toml", f"{PYTHON}/pytest.ini")
+COMPOSE = "deployment/docker-compose"
 
-# The graph and storage legs discover their tests across tests/integration, so
-# everything those tests exercise belongs to both.
-GRAPH_AND_STORAGE = (
-    "backend/python/app/modules/artifacts/**",
-    "backend/python/app/modules/record_metadata/**",
-    "backend/python/app/models/**",
-    "backend/python/app/services/cache/**",
-    "backend/python/app/exceptions/storage_exceptions.py",
-    "backend/python/app/utils/jwt.py",
-    "backend/python/app/utils/storage_path.py",
-    "backend/python/app/utils/storage_move.py",
-    "backend/python/app/services/storage_documents.py",
-)
-
-GIT_HOSTS = (
-    "backend/python/tests/integration/github_teams/**",
-    "backend/python/app/connectors/sources/github_teams/**",
-    "backend/python/app/connectors/sources/github/**",
-    "backend/python/app/sources/external/github/**",
-    "backend/python/app/sources/client/github/**",
-    "backend/python/app/modules/parsers/code_parser/**",
-    "backend/python/app/connectors/core/base/sync_point/**",
-    "backend/python/app/connectors/core/registry/filters.py",
-)
-
+# Checks decided by path alone.
 CHECKS: dict[str, tuple[str, ...]] = {
     # unit-test.yml
     "node_unit": NODE_APP + (".github/workflows/unit-test.yml",),
@@ -107,26 +79,6 @@ CHECKS: dict[str, tuple[str, ...]] = {
     + (
         "scripts/unit_shards.py",
         "scripts/unit_shard_durations.json",
-        ".github/workflows/unit-test.yml",
-    ),
-    "redis_cluster": (
-        "backend/python/app/config/**",
-        "backend/python/app/containers/**",
-        "backend/python/app/core/**",
-        "backend/python/app/health/**",
-        "backend/python/app/services/**",
-        "backend/python/app/connectors/services/**",
-        "backend/python/app/modules/indexing/**",
-        "backend/python/app/modules/code_graph/**",
-        "backend/python/app/modules/transformers/**",
-        "backend/python/tests/integration/redis_cluster/**",
-        "backend/python/pyproject.toml",
-        "backend/nodejs/apps/src/libs/services/redis/**",
-        "backend/nodejs/apps/src/libs/keyValueStore/**",
-        "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
-        "backend/nodejs/apps/package.json",
-        "backend/nodejs/apps/package-lock.json",
-        "deployment/docker-compose/docker-compose.integration.redis-cluster.yml",
         ".github/workflows/unit-test.yml",
     ),
     # main.yml
@@ -146,75 +98,66 @@ CHECKS: dict[str, tuple[str, ...]] = {
         ".github/workflows/codeql.yml",
     ),
     "codeql_actions": (".github/workflows/**", ".github/actions/**"),
-    # backend-matrix.yml, one per suite
-    "matrix_messaging": MATRIX_SHARED
-    + (
-        "backend/python/app/services/messaging/**",
-        "backend/python/app/services/redis/**",
-        "backend/python/tests/integration/messaging/**",
-        "deployment/docker-compose/docker-compose.integration.messaging.yml",
-    ),
-    "matrix_vector": MATRIX_SHARED
-    + (
-        "backend/python/app/services/vector_db/**",
-        "backend/python/app/services/redis/**",
-        "backend/python/app/modules/transformers/**",
-        "backend/python/tests/integration/vector_db/**",
-        "deployment/docker-compose/docker-compose.integration.vector-db.yml",
-    ),
-    "matrix_kv": MATRIX_SHARED
-    + (
-        "backend/python/app/services/redis/**",
-        "backend/python/tests/integration/kv/**",
-        "backend/nodejs/apps/src/libs/keyValueStore/**",
-        "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
-        "deployment/docker-compose/docker-compose.integration.kv.yml",
-    ),
-    "matrix_graph": MATRIX_SHARED
-    + GRAPH_AND_STORAGE
-    + GIT_HOSTS
-    + (
-        "backend/python/app/services/graph_db/**",
-        "backend/python/app/connectors/core/base/data_processor/**",
-        "backend/python/app/connectors/core/base/data_store/**",
-        "backend/python/app/modules/transformers/**",
-        "backend/python/app/connectors/sources/localKB/**",
-        "backend/python/app/modules/indexing/record_republish.py",
-        "backend/python/app/connectors/sources/linear/**",
-        "backend/python/app/sources/client/linear/**",
-        "backend/python/app/sources/external/linear/**",
-        "backend/python/tests/integration/graph_db/**",
-        "deployment/docker-compose/docker-compose.integration.graph-db.yml",
-    ),
-    "matrix_gitlab": MATRIX_SHARED
-    + GIT_HOSTS
-    + (
-        "backend/python/app/services/graph_db/**",
-        "backend/python/app/connectors/core/base/data_processor/**",
-        "backend/python/app/connectors/core/base/data_store/**",
-        "backend/python/tests/integration/gitlab_simulated/**",
-        "backend/python/app/connectors/sources/gitlab/**",
-        "backend/python/app/connectors/sources/gitlab_personal/**",
-        "backend/python/app/sources/external/gitlab/**",
-        "backend/python/app/sources/client/gitlab/**",
-        "deployment/docker-compose/docker-compose.integration.graph-db.yml",
-    ),
-    "matrix_storage": MATRIX_SHARED
-    + GRAPH_AND_STORAGE
-    + (
-        "backend/nodejs/apps/src/modules/storage/**",
-        "backend/nodejs/apps/src/libs/middlewares/**",
-        "backend/nodejs/apps/src/libs/utils/**",
-        "backend/nodejs/apps/src/libs/services/authtoken.service.ts",
-        "backend/nodejs/apps/src/libs/services/logger.service.ts",
-        "backend/nodejs/apps/src/libs/services/mongo.service.ts",
-        "backend/nodejs/apps/tests/support/**",
-        "backend/nodejs/apps/package.json",
-        "backend/nodejs/apps/package-lock.json",
-        "backend/nodejs/apps/tsconfig.json",
-        "backend/nodejs/apps/tsconfig.test.json",
-    ),
 }
+
+# The Node code the storage job starts (tests/support/storage-it-server.ts and
+# what it requires) and the packages it installs.
+STORAGE_NODE = (
+    "backend/nodejs/apps/src/modules/storage/**",
+    "backend/nodejs/apps/src/libs/middlewares/**",
+    "backend/nodejs/apps/src/libs/utils/**",
+    "backend/nodejs/apps/src/libs/keyValueStore/**",
+    "backend/nodejs/apps/src/libs/services/authtoken.service.ts",
+    "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
+    "backend/nodejs/apps/src/libs/services/logger.service.ts",
+    "backend/nodejs/apps/src/libs/services/mongo.service.ts",
+    "backend/nodejs/apps/tests/support/**",
+    "backend/nodejs/apps/package.json",
+    "backend/nodejs/apps/package-lock.json",
+    "backend/nodejs/apps/tsconfig.json",
+    "backend/nodejs/apps/tsconfig.test.json",
+)
+
+
+# backend-matrix.yml's Python suites. Their tests import more than their own
+# directories: the shared tests/conftest.py loads the graph, messaging and vector
+# packages, and through them most of app/. So any Python change runs every
+# suite; only a change outside Python (Node, frontend, docs) skips them, since
+# none of them runs Node.
+MATRIX_PYTHON = (
+    f"{PYTHON}/app/**",
+    f"{INTEGRATION}/**",
+    f"{PYTHON}/tests/conftest.py",
+    f"{COMPOSE}/docker-compose.integration.messaging.yml",
+    f"{COMPOSE}/docker-compose.integration.vector-db.yml",
+    f"{COMPOSE}/docker-compose.integration.graph-db.yml",
+    f"{COMPOSE}/docker-compose.integration.kv.yml",
+    ".github/workflows/backend-matrix.yml",
+) + PYTHON_PACKAGING
+
+for _suite in ("messaging", "vector", "kv", "graph", "gitlab"):
+    CHECKS[f"matrix_{_suite}"] = MATRIX_PYTHON
+# The storage job runs the Python storage tests against the Node storage server.
+CHECKS["matrix_storage"] = MATRIX_PYTHON + STORAGE_NODE
+
+# unit-test.yml's Redis Cluster job: the Python cluster suite (which, like the
+# matrix suites, loads most of app/ through the shared conftest), then the Node
+# suite, where only the cluster provider's test reaches the cluster.
+CHECKS["redis_cluster"] = (
+    f"{PYTHON}/app/**",
+    f"{PYTHON}/tests/conftest.py",
+    f"{INTEGRATION}/conftest.py",
+    f"{INTEGRATION}/redis_cluster/**",
+    "backend/nodejs/apps/src/libs/services/redis/**",
+    "backend/nodejs/apps/src/libs/keyValueStore/**",
+    "backend/nodejs/apps/src/libs/services/keyValueStore.service.ts",
+    "backend/nodejs/apps/tests/libs/services/redis/**",
+    "backend/nodejs/apps/tests/helpers/*edis*",
+    "backend/nodejs/apps/package.json",
+    "backend/nodejs/apps/package-lock.json",
+    f"{COMPOSE}/docker-compose.integration.redis-cluster.yml",
+    ".github/workflows/unit-test.yml",
+) + PYTHON_PACKAGING
 
 # Checks that run for any change outside DOCS: they exercise the whole product.
 ANY_CODE = ("e2e_smoke",)
