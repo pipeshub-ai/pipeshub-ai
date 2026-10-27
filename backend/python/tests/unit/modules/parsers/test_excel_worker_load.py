@@ -17,8 +17,8 @@ import logging
 import os
 import sys
 import threading
-import zipfile
 import time
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
