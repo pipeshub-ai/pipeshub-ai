@@ -18,6 +18,7 @@ from app.exceptions.indexing_exceptions import (
     AISettingsUnavailableError,
     DocumentProcessingError,
     IndexingError,
+    MultimodalModelNotConfiguredError,
     RecordStatusUpdateError,
 )
 from app.models.blocks import (
@@ -486,7 +487,8 @@ class Processor:
                     provider = OCRProvider.VLM_OCR.value
                 else:
                     self.logger.warning("⚠️ Scanned PDF detected but no OCR provider (Azure DI or multimodal LLM) is configured")
-                    raise IndexingError(SCANNED_PDF_NO_OCR_MESSAGE, record_id=recordId)
+                    # Final on the first try: retrying cannot add a model.
+                    raise MultimodalModelNotConfiguredError(SCANNED_PDF_NO_OCR_MESSAGE, doc_id=recordId)
 
             # Process document
             self.logger.info("🔄 Processing document with OCR handler")
