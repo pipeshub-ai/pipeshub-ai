@@ -75,7 +75,7 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const uid = await acct(org);
       await credentials.savePassword(uid, org, 'hash-value', '1.1.1.1');
       for (let i = 1; i <= MAX; i++) {
-        await credentials.reserveAttempt(uid, org, MAX);
+        const a = await credentials.reserveAttempt(uid, org, MAX);
         expect(a!.wrongCredentialCount).to.equal(i);
       }
       expect(await credentials.reserveAttempt(uid, org, MAX)).to.equal(null);
