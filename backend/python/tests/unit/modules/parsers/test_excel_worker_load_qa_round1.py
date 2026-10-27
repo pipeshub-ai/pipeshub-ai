@@ -14,7 +14,7 @@ from app.modules.parsers import parse_pool
 from app.modules.parsers.excel import excel_parser as module
 from app.services.parsing.interface import ParseError
 from app.utils import user_errors
-from tests.support.excel_workbooks import load, workbook_zip
+from tests.support.excel_workbooks import MAIN_NS, column_letters, load, workbook_zip
 from tests.support.excel_worker_jobs import after_a_big_job_then_load
 
 MB = 1024 * 1024
@@ -57,3 +57,33 @@ def test_the_decompressed_bytes_cap_refuses_a_workbook_that_would_fit_the_allowa
     assert (
         load(data).workbook["S"].max_row == 99_999
     )  # the same workbook loads under the real cap
+
+
+def test_blocks_are_not_a_multiple_of_the_workbook_text_they_repeat() -> None:
+    # The worker bounds the load, not what the parent builds from the model: a shared string used by
+    # many cells is one object in the workbook and one copy per use in the blocks. 60 strings of
+    # 30 KB (1.8 MB of XML) used by 25 cells each (1.5 MB file after compression: tiny) become about
+    # 25x that in the parent; at the 400 MB decompressed cap the same shape needs more than 10 GB.
+    n, width, uses = 60, 30_000, 25
+    strings = "".join(
+        f"<si><t>{chr(97 + i % 26)}{i:04d}{'x' * width}</t></si>" for i in range(n)
+    )
+    sst = f'<?xml version="1.0"?><sst xmlns="{MAIN_NS}" count="{n * uses}" uniqueCount="{n}">{strings}</sst>'
+    rows = "".join(
+        f'<row r="{i + 1}">'
+        + "".join(
+            f'<c r="{column_letters(c + 1)}{i + 1}" t="s"><v>{(i + c) % n}</v></c>'
+            for c in range(uses)
+        )
+        + "</row>"
+        for i in range(n)
+    )
+    parser = load(
+        workbook_zip(
+            f"<sheetData>{rows}</sheetData>", extra={"xl/sharedStrings.xml": sst}
+        )
+    )
+    produced = len(parser._build_basic_block_container().model_dump_json())
+    assert produced < 4 * len(sst), (
+        f"{produced} bytes of blocks from {len(sst)} bytes of shared strings"
+    )
