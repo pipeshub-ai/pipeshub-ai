@@ -132,7 +132,7 @@ export const READ_METHODS: ReadonlySet<string> = new Set([
   'listSignInEligible',
   'listSummariesByIds',
   'listVisible',
-  'listVisibleTitles',
+  'listVisibleSummaries',
   'listWithGroups',
   'listWithLinkedKbForMember',
   'pageByConnector',
