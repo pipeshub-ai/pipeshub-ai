@@ -84,6 +84,7 @@ import {
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
 import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
 import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3076,6 +3077,20 @@ describe('ConfigurationManager Controller', () => {
           'The mail (SMTP) server rejected this username or password. Check them, then save again.',
         )
         expect(kvs.set.called).to.be.false
+      })
+
+      it('logs the refusal by its codes, never the server text, host or username', async () => {
+        const logger = Logger.getInstance()
+        const warn = sinon.stub(logger, 'warn')
+        const handler = createSmtpConfig(createMockKeyValueStore(), 'http://comm-backend:3002', 'jwt-secret')
+
+        await handler(createMockRequest({ body: body('wrong') }), createMockResponse(), createMockNext())
+
+        const call = warn.getCalls().find((c) => c.args[0] === 'SMTP settings refused by the mail server')
+        expect(call?.args[1]).to.deep.equal({ problem: 'auth', code: 'EAUTH', responseCode: 535 })
+        const logged = JSON.stringify(warn.getCalls().map((c) => c.args))
+        expect(logged).to.not.include('mailer')
+        expect(logged).to.not.include('127.0.0.1')
       })
 
       it('stores settings the server accepts', async () => {

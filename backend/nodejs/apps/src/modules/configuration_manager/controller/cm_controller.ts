@@ -516,15 +516,21 @@ export const createSmtpConfig =
 
       // Bad credentials would otherwise surface only when mail starts failing,
       // after invites and resets were already reported as sent.
+      // Codes only in the log: the host and username are secret
+      // (maskSmtpConfig), and a server's refusal text can repeat the username.
+      let refusal: { code?: unknown; responseCode?: unknown } = {};
       const problem = await smtpSettingsProblem(
         smtpConfig as unknown as SmtpConfig,
-        (error) =>
-          // The host is one of the SMTP fields kept secret (maskSmtpConfig).
-          logger.warn('SMTP settings refused by the mail server', {
-            error: error instanceof Error ? error.message : String(error),
-          }),
+        (error) => {
+          const { code, responseCode } = (error ?? {}) as typeof refusal;
+          refusal = { code, responseCode };
+        },
       );
       if (problem) {
+        logger.warn('SMTP settings refused by the mail server', {
+          problem,
+          ...refusal,
+        });
         throw new BadRequestError(SMTP_SETTINGS_PROBLEM_MESSAGES[problem]);
       }
 
