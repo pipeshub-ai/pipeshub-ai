@@ -4,7 +4,9 @@ Before, a crawl only followed links, so pages a site lists in its sitemap but li
 nowhere it reached (common on support and documentation sites) were never indexed.
 """
 
+import gzip
 import json
+import uuid
 from datetime import datetime, timezone
 
 from web_behaviour_fakes import (
@@ -92,8 +94,6 @@ async def test_without_a_sitemap_line_the_usual_address_is_tried(
 async def test_an_index_with_a_gzipped_child_sitemap(
     site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
 ) -> None:
-    import gzip
-
     _site(site)
     _xml(site, "http://site.test/sm.xml",
          b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
@@ -230,3 +230,80 @@ async def test_sitemap_only_fetches_a_page_stored_so_far_only_as_the_folder_of_i
     await (await make_connector(discovery="sitemap", max_pages=10)).run_sync()
 
     assert folder in db.pages(), "the folder's own write time is not the page's"
+
+
+
+def _store_as_an_older_build_did(db: FakeRecordsDb, url: str) -> str:
+    """Store ``url`` as a page, like builds before robots.txt and sitemaps were refused; returns its id."""
+    record = next(iter(db.pages().values())).model_copy(
+        update={"id": str(uuid.uuid4()), "external_record_id": url, "weburl": url, "record_name": url,
+                "storage_document_id": None},
+    )
+    db.records[url] = record
+    return record.id
+
+
+async def test_sitemap_files_are_read_for_pages_but_never_stored_as_pages(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    index, child = "http://site.test/sitemap_index.xml", "http://site.test/sitemap-pages.xml.gz"
+    _site(site, robots_sitemap=index)
+    _xml(site, index,
+         b'<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+         b"<sitemap><loc>http://site.test/sitemap-pages.xml.gz</loc></sitemap></sitemapindex>")
+    site.add(child, Page(body=gzip.compress(_urlset((ORPHAN, None), (ROBOTS, None), (index, None))),
+                         content_type="application/gzip"))
+
+    await (await make_connector()).run_sync()
+
+    assert ORPHAN in db.pages()
+    assert site.gets(child) == 1
+    assert not {ROBOTS, index, child} & set(db.pages())
+
+
+async def test_a_sitemap_robots_txt_names_is_not_stored_whatever_its_file_name(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    feed = "http://site.test/feeds/pages.xml"
+    _site(site, robots_sitemap=feed)
+    site.html(START_URL, "Home", "/feeds/pages.xml")
+    _xml(site, feed, _urlset((ORPHAN, None)))
+
+    await (await make_connector()).run_sync()
+
+    assert ORPHAN in db.pages()
+    assert feed not in db.pages()
+
+
+async def test_a_robots_txt_an_older_build_stored_is_removed_once_a_redirect_lands_on_it(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    _site(site, robots_sitemap=None)
+    connector = await make_connector()
+    await connector.run_sync()
+    old_id = _store_as_an_older_build_did(db, ROBOTS)
+    site.html(START_URL, "Home", "/crawlers")
+    site.redirect("http://site.test/crawlers", "/robots.txt", status=301)
+
+    await connector.run_sync()
+
+    assert ROBOTS not in db.pages()
+    assert db.deleted == [old_id]
+
+
+async def test_a_robots_txt_an_older_build_stored_is_removed_after_two_full_syncs(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    """Links to it are refused before it is fetched, so only pruning can find it gone."""
+    _site(site, robots_sitemap=None)
+    site.html(START_URL, "Home", "/robots.txt")
+    connector = await make_connector()
+    await connector.run_sync()
+    old_id = _store_as_an_older_build_did(db, ROBOTS)
+
+    await connector.run_sync()
+    assert ROBOTS in db.pages()
+    await connector.run_sync()
+
+    assert ROBOTS not in db.pages()
+    assert db.deleted == [old_id]
