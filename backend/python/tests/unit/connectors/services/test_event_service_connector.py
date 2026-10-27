@@ -21,11 +21,12 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.connectors.core.sync.task_manager import reindex_task_manager
-from app.connectors.services.event_service import EventService
+from app.connectors.services.event_service import EventService, evict_cached_connector
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
 from app.services.graph_db.interface.graph_db_provider import AccessCheck
+from tests.unit.connectors.services.local_run_stub import end_local_run, local_run
 from tests.unit.connectors.services.coordinator_stub import (
     at_capacity,
     current,
@@ -370,6 +371,72 @@ class TestStoreConnector:
             await service._store_connector("conn1", MagicMock())
 
         dispose.assert_not_awaited()
+
+
+class TestEvictCachedConnector:
+    @pytest.mark.asyncio
+    async def test_disposes_an_idle_connector(self) -> None:
+        connector = AsyncMock()
+        container = MagicMock(spec=[])
+        container.connectors_map = {"conn1": connector}
+
+        with local_run(running=False):
+            await evict_cached_connector(container, "conn1", MagicMock())
+
+        assert "conn1" not in container.connectors_map
+        connector.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_drops_a_busy_connector_and_disposes_it_after_the_run(self) -> None:
+        """The running sync keeps its own reference; cleanup() would close its client."""
+        connector = AsyncMock()
+        container = MagicMock(spec=[])
+        container.connectors_map = {"conn1": connector}
+
+        with local_run() as run:
+            await evict_cached_connector(container, "conn1", MagicMock())
+            await asyncio.sleep(0)
+
+            assert "conn1" not in container.connectors_map
+            connector.cleanup.assert_not_awaited()
+            await end_local_run(run)
+
+        connector.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_waits_for_a_reindex_too(self) -> None:
+        connector = AsyncMock()
+        container = MagicMock(spec=[])
+        container.connectors_map = {"conn1": connector}
+        reindexing = [True]
+
+        with local_run(running=False) as run, \
+             patch("app.connectors.services.event_service._reindexing_here",
+                   side_effect=lambda _cid: reindexing[0]):
+            await evict_cached_connector(container, "conn1", MagicMock())
+            await asyncio.sleep(0)
+            connector.cleanup.assert_not_awaited()
+
+            reindexing[0] = False
+            await end_local_run(run)
+
+        connector.cleanup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_a_cleanup_error_still_drops_the_connector(self) -> None:
+        connector = AsyncMock()
+        connector.cleanup.side_effect = RuntimeError("boom")
+        container = MagicMock(spec=[])
+        container.connectors_map = {"conn1": connector}
+
+        with local_run(running=False):
+            await evict_cached_connector(container, "conn1", MagicMock())
+
+        assert "conn1" not in container.connectors_map
+
+    @pytest.mark.asyncio
+    async def test_nothing_cached_is_a_no_op(self) -> None:
+        await evict_cached_connector(MagicMock(spec=[]), "conn1", MagicMock())
 
 
 # ===========================================================================

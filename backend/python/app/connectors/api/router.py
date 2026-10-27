@@ -140,6 +140,7 @@ from app.connectors.core.sync.sync_dispatcher import get_dispatcher
 from app.connectors.core.sync.sync_runner import write_app_status
 from app.connectors.core.registry.folder_scope import folder_path_problems
 from app.connectors.services.kafka_service import KafkaService
+from app.connectors.services.event_service import evict_cached_connector
 from app.connectors.services.vector_cleanup_events import (
     build_soft_delete_events,
     build_stored_document_cleanup_events,
@@ -5531,14 +5532,7 @@ async def update_connector_instance_auth_config(
 
         # Cleanup existing connector instance if it exists (auth config changed)
         # User will need to toggle/enable again to re-initialize with new auth config
-        if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
-            logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
-            existing_connector = container.connectors_map.pop(connector_id)
-            try:
-                await dispose_connector(existing_connector)
-                logger.info(f"Cleaned up existing connector instance {connector_id}")
-            except Exception as e:
-                logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
+        await evict_cached_connector(container, connector_id, logger)
 
         # Update instance status - mark as configured but not authenticated
         # Connector will be initialized and authenticated when user clicks Enable
@@ -6121,14 +6115,7 @@ async def update_connector_instance_config(
         if auth_credentials_changed:
             # Cleanup existing connector instance if it exists (auth config changed)
             # User will need to toggle/enable again to re-initialize with new auth config
-            if hasattr(container, 'connectors_map') and connector_id in container.connectors_map:
-                logger.info(f"Cleaning up existing instance for {connector_id} due to auth config update")
-                existing_connector = container.connectors_map.pop(connector_id)
-                try:
-                    await dispose_connector(existing_connector)
-                    logger.info(f"Cleaned up existing connector instance {connector_id}")
-                except Exception as e:
-                    logger.error(f"Error cleaning up existing connector {connector_id}: {e}")
+            await evict_cached_connector(container, connector_id, logger)
 
             # Update instance status - mark as configured but not authenticated
             # Connector will be initialized and authenticated when user clicks Enable
@@ -7958,23 +7945,6 @@ def _tag_instance_name(connector_obj: BaseConnector, name: str | None) -> None:
         connector_obj.instance_name = name
 
 
-async def _evict_cached_connector(
-    container: ConnectorAppContainer,
-    connector_id: str,
-    logger: logging.Logger,
-) -> None:
-    """Drop the in-memory connector so the next enable rebuilds it from scratch."""
-    if not hasattr(container, "connectors_map") or connector_id not in container.connectors_map:
-        return
-    logger.info(f"Removing connector {connector_id} from connectors_map")
-    existing_connector = container.connectors_map.pop(connector_id)
-    try:
-        await dispose_connector(existing_connector)
-        logger.info(f"Cleaned up connector instance {connector_id}")
-    except Exception as cleanup_err:
-        logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
-
-
 async def _revert_toggle(
     graph_provider: IGraphDBProvider,
     connector_id: str,
@@ -8497,12 +8467,13 @@ async def toggle_connector_instance(
                     logger=logger,
                 )
                 if reverted and target_status:
-                    await _evict_cached_connector(container, connector_id, logger)
+                    await evict_cached_connector(container, connector_id, logger)
                 raise
 
-            # When disabling sync, remove connector from map and cleanup so re-enable does full init
+            # Drop the instance now so a quick re-enable rebuilds it with init(); its
+            # cleanup waits for a sync still running here, which appDisabled stops.
             if not target_status:
-                await _evict_cached_connector(container, connector_id, logger)
+                await evict_cached_connector(container, connector_id, logger)
 
         return {
             "success": True,

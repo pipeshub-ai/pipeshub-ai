@@ -84,9 +84,9 @@ def _message_timestamp_ms(payload: dict[str, Any]) -> int | None:
 def _running_here(connector_id: str) -> bool:
     """Is a sync for this connector running in *this* process?
 
-    Deliberately the local question, and deliberately synchronous: both callers
+    Deliberately the local question, and deliberately synchronous: its callers
     are protecting an in-process object (a connector's HTTP sessions) from being
-    closed underneath a running sync, and one of them is a plain `def`. The
+    closed underneath a running sync, and some of them are plain `def`s. The
     question that reaches other processes costs a round trip and would answer
     something they are not asking.
     """
@@ -97,6 +97,43 @@ def _running_here(connector_id: str) -> bool:
 def _reindexing_here(connector_id: str) -> bool:
     prefix = f"reindex:{connector_id}:"
     return any(key.startswith(prefix) for key in reindex_task_manager.active_keys())
+
+
+async def _dispose_when_idle(connector_id: str, connector: object, logger: logging.Logger) -> None:
+    while _running_here(connector_id) or _reindexing_here(connector_id):  # noqa: ASYNC110 - no event marks a local sync or reindex ending
+        await asyncio.sleep(_DEFERRED_DISPOSE_POLL_SEC)
+    try:
+        await dispose_connector(connector)
+        logger.info(f"Cleaned up connector instance {connector_id}")
+    except Exception as cleanup_err:
+        logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+
+
+async def evict_cached_connector(
+    container: ConnectorAppContainer,
+    connector_id: str,
+    logger: logging.Logger,
+) -> None:
+    """Drop the in-memory connector so the next lookup rebuilds it from current config.
+
+    The entry always goes, but a sync or reindex in this process still holds
+    the instance, so its cleanup() waits until that task ends rather than
+    closing the client under it.
+    """
+    if connector_id not in getattr(container, "connectors_map", {}):
+        return
+    logger.info(f"Removing connector {connector_id} from connectors_map")
+    existing_connector = container.connectors_map.pop(connector_id)
+    if not (_running_here(connector_id) or _reindexing_here(connector_id)):
+        await _dispose_when_idle(connector_id, existing_connector, logger)
+        return
+    logger.info(f"Disposing connector {connector_id} once its running sync/reindex ends")
+    task = asyncio.create_task(
+        _dispose_when_idle(connector_id, existing_connector, logger),
+        name=f"dispose_connector_{connector_id}",
+    )
+    _evict_tasks.add(task)
+    task.add_done_callback(_evict_tasks.discard)
 
 
 def connector_cache_max() -> int:
@@ -110,6 +147,9 @@ def connector_cache_max() -> int:
 #: Eviction closes the connector's sessions on the loop; hold a reference so the
 #: task is not garbage collected mid-flight.
 _evict_tasks: set = set()
+
+#: How often a deferred dispose checks whether the sync/reindex using it has ended.
+_DEFERRED_DISPOSE_POLL_SEC = 1.0
 
 #: A release pages through all of a connector's storage; it runs off the sync
 #: consumer so one large delete does not hold up every other connector's events.

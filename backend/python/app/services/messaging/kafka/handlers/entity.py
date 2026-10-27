@@ -16,7 +16,6 @@ from app.config.constants.arangodb import (
 )
 from app.connectors.core.base.connector.connector_service import (
     connector_sync_lock,
-    dispose_connector,
 )
 from app.connectors.core.base.data_store.graph_data_store import (
     GraphDataStore,
@@ -27,6 +26,7 @@ from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
 from app.connectors.core.sync.sync_coordinator import get_coordinator, stop_wait_sec
 from app.connectors.core.sync.task_manager import reindex_task_manager
+from app.connectors.services.event_service import evict_cached_connector
 from app.containers.connector import (
     ConnectorAppContainer,
 )
@@ -745,16 +745,7 @@ class EntityEventService(BaseEventService):
                     f"connector {connector_id}: {sweep_err}"
                 )
 
-            if (
-                hasattr(self.app_container, "connectors_map")
-                and connector_id in self.app_container.connectors_map
-            ):
-                existing_connector = self.app_container.connectors_map.pop(connector_id)
-                try:
-                    await dispose_connector(existing_connector)
-                    self.logger.info(f"Cleaned up connector instance {connector_id}")
-                except Exception as cleanup_err:
-                    self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
+            await evict_cached_connector(self.app_container, connector_id, self.logger)
 
             self.logger.info(f"✅ Successfully disabled apps for org: {org_id}")
             return True
