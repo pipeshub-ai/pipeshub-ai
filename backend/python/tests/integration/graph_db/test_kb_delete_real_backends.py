@@ -280,12 +280,13 @@ async def test_push_vs_kb_delete_with_the_marker_off_lets_the_create_in(env, del
 
 # ---- T42 window: the push passed the pre-commit read, then the whole delete ran ----------------------------------
 
-@pytest.mark.parametrize("fallback", [True, False])
+@pytest.mark.parametrize(
+    "fallback",
+    [True, pytest.param(False, marks=pytest.mark.arango_only)],  # on Neo4j the delete waits for the KB lock the push holds, and its late pass removes the record
+)
 @pytest.mark.parametrize("seed,run", CASES)
 async def test_create_that_commits_after_the_cascade_collected_is_removed(env, deleting, seed, run, fallback) -> None:
     if not fallback:
-        if not arango(env):
-            pytest.skip("on Neo4j the delete waits for the KB lock the push holds, and its late pass removes the record")
         env.service._undo_create_in_deleted_kb = AsyncMock()
     IT.record_keys(env, "late-1")
     gate_in, gate_out = asyncio.Event(), asyncio.Event()
@@ -323,11 +324,10 @@ async def test_create_that_commits_after_the_cascade_collected_is_removed(env, d
     assert after_release(env) == set()
 
 
+@pytest.mark.arango_only  # on Neo4j the marker write waits for the KB lock the create holds
 @pytest.mark.parametrize("pre_commit_read", [True, False])
 async def test_the_pre_commit_read_stops_a_create_before_it_publishes(env, deleting, monkeypatch, pre_commit_read) -> None:
     """A push opened before the marker read the KB as live in its snapshot; the plain read before the commit sees it."""
-    if not arango(env):
-        pytest.skip("on Neo4j the marker write waits for the KB lock the create holds")
     IT.record_keys(env, "early-1")
     marked = {}
 
@@ -354,7 +354,7 @@ async def test_the_pre_commit_read_stops_a_create_before_it_publishes(env, delet
 
 # ---- T42u: an update push held open across the marker and the cascade ------------------------------------------
 
-async def _update_push_during_cascade(env, deleting, seed: int, run: int, *, hold_at: str, hold_seconds: float | None = None) -> dict:
+async def _update_push_during_cascade(env, deleting, seed: int, run: int, *, hold_at: str, lost_attempts: int | None = None) -> dict:
     IT.record_keys(env, "upd-1")
     await env.push(env.body(ext="upd-1", name="upd-1", version=1, text="old"))
     rng = random.Random(seed * 101 + run)
@@ -371,23 +371,30 @@ async def _update_push_during_cascade(env, deleting, seed: int, run: int, *, hol
         undo = wrap(env.graph, "claim_push_record", after=lambda result, **kw: hold())
     else:
         undo = wrap(env.processor, "_refuse_if_kb_not_live", before=hold)
-    at_records = asyncio.Event()
+    at_records, lost_enough = asyncio.Event(), asyncio.Event()
+    record_batches = {"n": 0}
 
     async def cascade_at_records(_tx: object, _keys: object, collection: str, *_a: object, **_kw: object) -> None:
         if collection == RECORDS:
+            record_batches["n"] += 1
             at_records.set()
+            if record_batches["n"] > (lost_attempts or 0):
+                lost_enough.set()
 
     undo_records = wrap(env.graph, "_delete_nodes_by_keys", before=cascade_at_records) if arango(env) else (lambda: None)
     push_task = asyncio.ensure_future(push_outcome(env, ext="upd-1", version=2, text="new"))
     try:
         await asyncio.wait_for(gate_in.wait(), 30)
         delete_task = asyncio.ensure_future(deleting.delete())
-        # the marker is committed and the cascade is at its first batch; a long hold outlasts the store's lock wait
-        if hold_seconds is not None:
-            # Hold the push's write until the cascade is writing the records and has waited on it for
-            # hold_seconds; a fixed sleep from the start of the delete can end before the cascade got there.
+        # the marker is committed and the cascade is at its first batch
+        if lost_attempts is not None:
+            # Hold the push's write on the record until the cascade has lost to it lost_attempts times and
+            # started the next attempt, or has given up (no retry left). The cascade's retries back off for a
+            # random 0.4 to 1.1 s in all, so a hold of fixed length can end before the retries do.
             await asyncio.wait_for(at_records.wait(), 30)
-            await asyncio.sleep(hold_seconds)
+            lost = asyncio.ensure_future(lost_enough.wait())
+            await asyncio.wait({lost, delete_task}, timeout=30, return_when=asyncio.FIRST_COMPLETED)
+            lost.cancel()
         else:
             await asyncio.sleep(0.3 + rng.random() * 0.4)
         gate_out.set()
@@ -419,24 +426,22 @@ async def test_update_push_during_cascade(env, deleting, seed, run, hold_at) -> 
     # push's; a deadlock between a batch and the push has either side as the victim, and both run again.
 
 
-@pytest.mark.parametrize("hold", [0.5, 0.7])
-async def test_update_push_held_past_the_lock_wait_makes_the_cascade_retry(env, deleting, hold) -> None:
+@pytest.mark.arango_only  # the lock wait is Arango's; Neo4j batches wait for the lock and are retried only on a deadlock
+@pytest.mark.parametrize("lost_attempts", [1, 2])
+async def test_update_push_held_past_the_lock_wait_makes_the_cascade_retry(env, deleting, lost_attempts) -> None:
     """Arango: the push holds its write on the record past the store's lock wait; the cascade loses, runs again, wins."""
-    if not arango(env):
-        pytest.skip("the lock wait is Arango's; Neo4j batches wait for the lock and are retried only on a deadlock")
-    out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", hold_seconds=hold)
+    out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", lost_attempts=lost_attempts)
     assert out["delete"]["success"] is True, out
     assert sum(r.get("cascade_retries", 0) for r in deleting.cascade_results) >= 1, out
     assert await kb_doc(env) is None and await survivors(env) == []
 
 
+@pytest.mark.arango_only  # the conflict is certain only on Arango (a write-write conflict); on Neo4j the batch waits for the lock
 async def test_update_push_during_cascade_without_the_cascade_retry_leaves_the_kb_deleting(env, deleting, monkeypatch) -> None:
     """Negative control (spike case M): without the retry, a conflict leaves the KB DELETING with its record."""
-    if not arango(env):
-        pytest.skip("the conflict is certain only on Arango (a write-write conflict); on Neo4j the batch waits for the lock")
     with monkeypatch.context() as m:
         m.setattr("app.services.graph_db.arango.arango_http_provider.CASCADE_ATTEMPTS", 1)
-        out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", hold_seconds=0.7)
+        out = await _update_push_during_cascade(env, deleting, 0, 0, hold_at="after_claim", lost_attempts=1)
     kb = await kb_doc(env)
     assert out["delete"]["success"] is False, out
     assert kb is not None and kb.get("status") == "DELETING" and len(await survivors(env)) == 1, (out, kb)
