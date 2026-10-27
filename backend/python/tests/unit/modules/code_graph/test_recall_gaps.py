@@ -184,10 +184,11 @@ async def test_a_call_on_a_union_alias_reaches_every_member(graph, index_file) -
                      b"export class NotExpr {\n  serialize(): string { return ''; }\n"
                      b"  constructor(private readonly _actual: Expr) {}\n"
                      b"  run() { return this._actual.serialize(); }\n}\n"
-                     b"export type Leaf = AndExpr | OrExpr;\n"
-                     b"export type Expr = (Leaf | NotExpr);\n", "typescript")
+                     b"export type Leaf = AndExpr | (OrExpr);\n"
+                     b"export type Expr = (Leaf | NotExpr);\n"
+                     b"export type Public = Expr;\n", "typescript")
     await index_file("app", "src/app.ts",
-                     b"import { Expr } from './expr';\nexport function show(e: Expr) { return e.serialize(); }\n",
+                     b"import { Public } from './expr';\nexport function show(e: Public) { return e.serialize(); }\n",
                      "typescript")
     await _build(graph)
     members = {"src/expr.ts::method:AndExpr.serialize", "src/expr.ts::method:OrExpr.serialize",

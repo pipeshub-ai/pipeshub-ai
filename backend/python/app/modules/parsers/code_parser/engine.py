@@ -648,18 +648,18 @@ def _collect_type_table_ts(root: Node, src: bytes, table: dict[str, str], cfg: L
     for node in _nodes_of_types(root, cfg, ("type_alias_declaration",)):
         # `type Expr = A | B | C`: a call on an `Expr` may run any member's method.
         name_node, value = _field(node, "name"), _field(node, "value")
-        while value is not None and value.type == "parenthesized_type" and value.named_children:
-            value = value.named_children[0]
-        if name_node is None or value is None or value.type != "union_type":
+        if name_node is None or value is None:
             continue
-        stack, members = [value], []
+        stack, members, is_union = [value], [], False
         while stack:
-            for c in stack.pop().named_children:
-                if c.type == "union_type":
-                    stack.append(c)
-                elif (member := _ts_named_type(c, src)) and not member.endswith("[]"):
-                    members.append(member)
-        if len(members) >= 2:
+            n = stack.pop()
+            if n.type in ("union_type", "parenthesized_type"):
+                is_union |= n.type == "union_type"
+                stack.extend(reversed(n.named_children))
+            elif (member := _ts_named_type(n, src)) and not member.endswith("[]"):
+                members.append(member)
+        # `type Public = Base` is kept too, so the builder can follow it to Base's members.
+        if len(members) >= 2 or (members and not is_union):
             table.setdefault(f"{_text(name_node, src)}|", "|".join(members))
     _collect_narrowings_ts(root, src, table, cfg)
 
