@@ -112,7 +112,9 @@ _MAX_SEARCH_RESULTS = 10000
 # every match. RediSearch's default ON_TIMEOUT is RETURN: a query past its
 # timeout (500 ms by default) answers with the rows it had, and a RESP2 reply
 # carries no flag saying so, so a delete or payload write would quietly miss
-# points. ``TIMEOUT 0`` lifts the limit for these page-bounded queries.
+# points. ``TIMEOUT 0`` lifts the limit for these page-bounded queries. Newer
+# servers cap a foreground (``search-workers 0``) query at 60 s, so operators who
+# want a hard guarantee can also set ``search-on-timeout FAIL``.
 _NO_TIMEOUT = ("TIMEOUT", "0")
 
 # Page size for paged deletes and aggregate-cursor reads.
