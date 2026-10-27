@@ -395,6 +395,7 @@ A record passes through these, in order. Each is a separate limiter with its own
 | 4 | Index gate (`INDEX_HEAVY` / `INDEX_LIGHT`) | `resource_governor/gate.py` | process | yes | records in flight per tier (permit held download → vector upsert) |
 | 5 | Distributed `indexing` lease | Redis | cluster | only with `INDEXING_SPLIT_LEASE_POOLS` | fleet-wide in-flight cap at the resolved ceiling for all worker processes together |
 | 6 | Per-record `record:<id>` lease + in-process claim | Redis / consumer | cluster | n/a | one delivery of a record at a time |
+| 6a | Record memory reservation (`MemoryBudget`) | `resource_governor/memory_budget.py` | process | no | bytes of free memory reserved by records too big for the count limits, taken at `START_PARSING` and held until the record is done (section 4.11) |
 | 7 | Parse gate (`HEAVY_PARSE` / `LIGHT_PARSE`) | `gate.py` | process | yes | concurrent parses; heavy also throttled by a `StartRateLimiter` (≥0.5 admits/s) and, with several worker processes, held to free memory by slots the container's workers share (`shared_slots.py`, section 4.3) |
 | 8 | Distributed `parsing` / `parsing:light` lease | Redis | cluster | yes | fleet-wide parse cap, sized like layer 5 |
 | 9 | Parse admission wait | `parse_admission_wait` | record | n/a | how long a record may queue for a parse slot (`RECORD_PROCESSING_TIMEOUT`) with its own clock paused |
@@ -402,7 +403,7 @@ A record passes through these, in order. Each is a separate limiter with its own
 | 11 | `CircuitBreaker` per HTTP client | `services/base_client.py` | process | no | fails fast for 30s after 5 consecutive failures to parsing/extraction/docling |
 | 12 | Record processing timeout | wrapper | record | n/a | 1800s of active processing (queue time excluded) |
 
-A pipeline-stage consumer (§2.3) has the same layers except the governor's: its `StageAdmission` permits and `stage:<name>` lease replace layers 3–5, and it has no parse layers (7–9). The `stage:<name>` lease is sized like layer 5, for every worker process: the stage limit × the number of worker processes.
+A pipeline-stage consumer (§2.3) has the same layers except the governor's: its `StageAdmission` permits and `stage:<name>` lease replace layers 3–5, and it has no parse layers (6a–9). The `stage:<name>` lease is sized like layer 5, for every worker process: the stage limit × the number of worker processes.
 
 `GateWaiterToken` is the counter behind layer 2, one bucket per tier (`GateWaiters`). It is incremented synchronously in `_start_processing_task`, in the tier `dispatch_tier` resolves from the envelope, and decremented either when `acquire_index_slot` returns (`admit()`) or when the task ends without ever being admitted (`release()`). Between those two points the task is parked in the index gate's FIFO. The dispatch phase asks `DispatchBudget.allows(tier)` per buffered entry and DRR skips a leaf whose tier is at its ceiling without charging it; reads pause only when `DispatchBudget.blocked` (no tier may spawn), the buffer is full, or both index gates are saturated. Counts are reset when the worker loop stops, so a restart never inherits phantom waiters.
 
@@ -611,6 +612,20 @@ A single step slower than `INDEXING_SLOW_STEP_SECONDS` (30) also logs a WARNING 
 
 **Slow I/O or a blocked loop?** Every in-flight record shares the worker event loop, so one step that holds the loop makes every other record's graph, vector and embedding calls look slow. The worker loop therefore runs a lag monitor (`app/utils/loop_lag_monitor.py`): a task that wakes every 0.5s and measures how late it woke. Lateness over `INDEXING_LOOP_LAG_WARN_SECONDS` (1.0) logs `⏱ Event loop indexing-worker lagged ...` at most every 10s, and `GET /health` reports it under `worker_loop_lag`. If the loop has not run for `INDEXING_LOOP_STALL_STACK_SECONDS` (5), a watchdog thread logs the loop thread's current stack once per stall, which names the code holding it. Slow steps with no lag warnings are slow downstream calls; slow steps together with lag warnings are the loop.
 
+### 4.11 Memory a record's images hold
+
+The governor's limits count records and assume each holds a typical working set (`INDEX_*_WORKING_SET_GB`). A page carrying many large photos was far past that: every parsing pass copied it whole, images were fetched all at once at full size, and the stored record was written from five or six copies of itself. One such page could hold gigabytes. What bounds it now:
+
+- **Images are kept at most 2000 px on the long edge and 5 MB** (`INDEX_IMAGE_LONG_EDGE_PX`, `INDEX_IMAGE_MAX_BYTES` in `app/utils/image_utils.py`), re-encoded by `downscale_to_limits`. Nothing downstream uses more: chat sends at most 1568 px and classification shrinks to 2000. A JPEG is decoded at a reduced scale (`Image.draft`), so a 48 MP photo is about 9 MB of pixels while it is shrunk, not 144.
+- **At most 50 MB of images per record** (`INDEX_RECORD_IMAGE_BYTES`, as data-URI characters). Past it, image blocks keep their text (alt, caption, metadata) and lose their pixels; they are not embedded as images.
+- **Inline images are shrunk before parsing.** `fit_inline_images` runs on an HTML page or Markdown document right after it is decoded (`Processor.process_html_document`, `process_md_document`), so the parser's passes copy the text, not the photos. Payloads wrapped across lines are left as they are.
+- **Fetched images**: `ImageParser.urls_to_base64` downloads 4 at a time, shrinks them one at a time as they arrive, and starts no download once the call's images reach the budget.
+- **The sink** shrinks every image block again before describing and storing the record (`_fit_images`; a no-op for images already within the limits), so images a connector or a document parser inlined are held to the same limits and the record-wide budget. The previous version, read to inherit image descriptions, is freed before the vision calls.
+- **The stored record is written in one pass** (`BlobStorage._upload_body`): the JSON is encoded once, only to decide on compression, and dropped before compressing; the base64 payload is spliced into the envelope instead of encoded with it; every upload path, cloud included, sends those bytes. About twice the record's size at the peak, from five or six.
+- **Big records reserve their memory** (layer 6a, section 4.2). At `START_PARSING` a record whose size × 4 (`RECORD_MEMORY_FACTOR`) is above its tier's assumed working set reserves that many bytes from `ResourceGovernor.memory_budget`, before its parse permit, until it is indexed. The budget is this worker's share of the memory free in the cgroup at the last sample. A record waits while the budget is spoken for; one bigger than all of it runs alone; a wait longer than the parse admission wait hands it back without counting an attempt (`ParseAdmissionTimeout`). `GET /health` shows it under `resource_governor.record_memory`. Images fetched while a page is parsed are not in its size; the per-record image budget bounds those instead.
+
+Measured with 12 photos of 12 MP (178 MB as data URIs), peak working set above what was held before: a page carrying them inline peaked at 9.7× its size and stored 177 MB; it now peaks at 2.5× and stores 24 MB. Fetching them kept all 178 MB; it now keeps 24 MB, peaking at 133 MB. Writing a record that carries all 178 MB took 666 MB; it takes 355 MB.
+
 ---
 
 ## 5. Root cause: throughput collapses to a few records after the first few hundred
@@ -753,6 +768,7 @@ If a deployment still stalls with `blocked` true and both gates full, the node i
 | PDF inspection, pdfium rewrite, layout parse in a worker | `backend/python/app/modules/parsers/pdf/untrusted_pdf.py`, `pdf_inspection.py`, `layout_pages.py` |
 | 429 backpressure, HTTP retry/circuit breaker | `messaging/backpressure.py`, `services/base_client.py` |
 | Tiers, gates, control law, probe, feedback | `backend/python/app/services/resource_governor/` |
+| Image limits for indexing, inline-image shrinking; big-record memory reservation | `backend/python/app/utils/image_utils.py`; `resource_governor/memory_budget.py` (section 4.11) |
 | Record handler, status writes, disposition sink | `backend/python/app/services/messaging/kafka/handlers/record.py` |
 | Settling turned-off and removed connectors' events at read time | `messaging/connector_off.py` (consumer side), `backend/python/app/modules/indexing/connector_off_events.py` (the shared rule and the graph-backed filter) |
 | Dedup, IN_PROGRESS, START_PARSING, format dispatch | `backend/python/app/events/events.py` |

@@ -2553,6 +2553,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         parse_lease_pool = "parsing"
         index_lease_pool = "indexing"
         parsing_admission: concurrency.Admission | None = None
+        memory_admission: concurrency.Admission | None = None
         index_admission: concurrency.Admission | None = None
         distributed_leases = concurrency.new_lease_set(self)
         lease_handle: Any | None = None
@@ -2727,7 +2728,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                 org_token = push_org(ctx_of(parsed_message))
 
                 async def consume_handler_events() -> None:
-                    nonlocal parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
+                    nonlocal memory_admission, parsing_held, indexing_held, success, shutting_down, parsing_admission, parse_lease_pool
                     event_gen = self.message_handler(parsed_message)
                     try:
                         async with asyncio.timeout(processing_timeout) as budget:
@@ -2752,10 +2753,14 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                     async with concurrency.parse_admission_wait(
                                         self, budget, message_id
                                     ) as wait:
+                                        size_bytes = event.data.size_bytes if event.data else None
+                                        memory_admission = await concurrency.reserve_record_memory(
+                                            self, parse_tier, size_bytes, timeout=wait.remaining(),
+                                        )
                                         parsing_admission = await concurrency.acquire_parsing_slot(
                                             self,
                                             parse_tier,
-                                            event.data.size_bytes if event.data else None,
+                                            size_bytes,
                                             timeout=wait.remaining(),
                                         )
                                         # Set before the lease attempt so the
@@ -2810,6 +2815,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
                                         index_lease_pool, lease_owner
                                     )
                                     concurrency.release_admission(index_admission)
+                                    concurrency.release_admission(memory_admission)
                                     indexing_held = False
                                     self.logger.debug(
                                         f"Released indexing gate for {message_id}"
@@ -2979,6 +2985,7 @@ class IndexingKafkaConsumer(IMessagingConsumer):
         finally:
             if suspect_held:
                 self._suspects.release()
+            concurrency.release_admission(memory_admission)
             try:
                 # Ensure semaphores are released even on error
                 if renewal_task is not None:

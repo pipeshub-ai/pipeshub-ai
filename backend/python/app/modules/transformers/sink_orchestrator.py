@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any, Optional
 
@@ -44,14 +45,39 @@ from app.services.graph_db.common.record_visibility import indexed_copy_fields
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.telemetry.modules.activity_metrics import record_service_activity
 from app.telemetry.modules.record_storage_metrics import record_artifact_write
+from app.utils.image_utils import INDEX_RECORD_IMAGE_BYTES, fit_image_for_index
 from app.utils.indexing_timing import stage
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
 if TYPE_CHECKING:
     from app.config.configuration_service import ConfigurationService
+    from app.models.blocks import Block
     from app.models.entities import EntityRecord, Record
     from app.modules.entity_resolution import EntityResolver
     from app.modules.named_entities.domain.models import NamedEntityExtraction
+
+
+def _fit_images(images: "list[Block]") -> int:
+    """Shrink every inline image to what indexing keeps, in block order. Once
+    the record's images reach ``INDEX_RECORD_IMAGE_BYTES`` the rest lose their
+    pixels and keep their text. Returns how many lost them.
+
+    Here as well as where images are fetched: an image inlined by a connector
+    or a document parser never passed through the fetch.
+    """
+    kept = dropped = 0
+    for block in images:
+        data = block.data
+        uri = data.get("uri") if isinstance(data, dict) else None
+        if not isinstance(uri, str) or not uri.startswith("data:"):
+            continue
+        if kept >= INDEX_RECORD_IMAGE_BYTES:
+            block.data = {key: value for key, value in data.items() if key != "uri"}
+            dropped += 1
+            continue
+        data["uri"] = fit_image_for_index(uri)
+        kept += len(data["uri"])
+    return dropped
 
 
 class SinkOrchestrator(Transformer):
@@ -472,29 +498,44 @@ class SinkOrchestrator(Transformer):
         containers = record.block_containers
         if not containers or not containers.blocks:
             return
-        image_count = sum(1 for b in containers.blocks if b.type == BlockType.IMAGE)
-        if not image_count:
+        images = [b for b in containers.blocks if b.type == BlockType.IMAGE]
+        if not images:
             return
+        dropped = await asyncio.to_thread(_fit_images, images)
+        if dropped:
+            self.logger.info(
+                "Record %s: image budget of %d MB reached; %d image(s) kept as text only",
+                record.id, INDEX_RECORD_IMAGE_BYTES // (1024 * 1024), dropped,
+            )
 
         inherited: dict[str, str] = {}
-        if image_count >= self._INHERIT_DESCRIPTIONS_THRESHOLD and record.virtual_record_id:
-            try:
-                previous = await self.blob_storage.get_record_from_storage(
-                    virtual_record_id=record.virtual_record_id, org_id=record.org_id,
-                )
-                inherited = harvest_descriptions(previous)
-            except Exception:
-                # A missing or unreadable previous version just means paying
-                # for the descriptions again, not failing the record.
-                self.logger.debug(
-                    "No previous version to inherit image descriptions from", exc_info=True,
-                )
+        if len(images) >= self._INHERIT_DESCRIPTIONS_THRESHOLD and record.virtual_record_id:
+            inherited = await self._previous_descriptions(record)
 
         await self.image_describer.annotate(
             containers,
             inherited=inherited,
             budget_s=ctx.settings.get(IMAGE_DESCRIPTION_BUDGET_S),
         )
+
+    async def _previous_descriptions(self, record: Record) -> dict[str, str]:
+        """The stored previous version's image descriptions, by image content.
+
+        A method of its own so the decoded previous version, every image in
+        it, is freed before the vision calls rather than held through them.
+        """
+        try:
+            previous = await self.blob_storage.get_record_from_storage(
+                virtual_record_id=record.virtual_record_id, org_id=record.org_id,
+            )
+            return harvest_descriptions(previous)
+        except Exception:
+            # A missing or unreadable previous version just means paying
+            # for the descriptions again, not failing the record.
+            self.logger.debug(
+                "No previous version to inherit image descriptions from", exc_info=True,
+            )
+            return {}
 
     async def _write_artifacts(
         self, ctx: TransformContext, record_doc: dict[str, Any]

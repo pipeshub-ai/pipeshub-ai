@@ -43,6 +43,7 @@ from app.services.messaging.distributed_concurrency import (
 )
 from app.services.messaging.redis_errors import report_redis_error
 from app.services.resource_governor import classify, gate_pool, index_pool, parse_cost
+from app.services.resource_governor.memory_budget import record_memory_cost
 from app.services.resource_governor.models import ParseTier, Pool
 from app.services.resource_governor.probe import memory_domain_id
 from app.utils.loop_bridge import run_on_loop
@@ -1170,6 +1171,32 @@ async def _wait_for_heavy_parse_slots(
             await asyncio.sleep(min(HEAVY_PARSE_SLOT_POLL_SECONDS, remaining))
         else:
             await asyncio.sleep(HEAVY_PARSE_SLOT_POLL_SECONDS)
+
+
+async def reserve_record_memory(
+    host: ConcurrencyHost,
+    tier: ParseTier | None,
+    size_bytes: int | None,
+    timeout: float | None = None,
+) -> "Admission | None":
+    """Reserve what a record too big for the governor's count limits is
+    expected to hold, until it finishes; ``None`` when it needs no reservation
+    or there is no governor.
+
+    Taken before the parse permit, so a record waiting for memory holds no
+    parse slot. With *timeout*, raises ``ParseAdmissionTimeout`` instead of
+    waiting on.
+    """
+    governor = host.governor
+    if governor is None:
+        return None
+    cost = record_memory_cost(tier if tier is not None else ParseTier.HEAVY, size_bytes)
+    if not cost:
+        return None
+    budget = governor.memory_budget
+    if not await budget.reserve(cost, timeout):
+        raise ParseAdmissionTimeout("record_memory", timeout or 0.0)
+    return Admission(tier=tier, cost=cost, _release=lambda: budget.release(cost))
 
 
 async def acquire_parsing_slot(

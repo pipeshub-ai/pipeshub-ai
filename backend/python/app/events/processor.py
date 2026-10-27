@@ -68,7 +68,7 @@ from app.services.messaging.config import (
 from app.utils.aimodels import is_multimodal_llm
 from app.utils.concurrency import MAX_CONCURRENT_PAGE_BUILDS
 from app.utils.cpu_offload import offload_if_large
-from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.image_utils import fit_inline_images, get_extension_from_mimetype
 from app.utils.llm import get_embedding_model_config, get_llm, get_llm_for_role
 from app.utils.table_enrichment import enhance_tables_with_llm
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
@@ -1608,6 +1608,7 @@ class Processor:
 
             # Use the unified HTML parser interface
             self.logger.debug("📄 Processing HTML content")
+            html_content = await asyncio.to_thread(fit_inline_images, html_content)
             html_parser = self.parsers[ExtensionTypes.HTML.value]
             html_content = html_parser.clean_html(html_content)
             html_content = html_parser.replace_relative_image_urls(html_content)
@@ -1635,6 +1636,8 @@ class Processor:
                 caption_map=caption_map if caption_map else None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the page.
+            del html_content, modified_html, images, caption_map
 
             # Signal parsing complete
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
@@ -1757,6 +1760,7 @@ class Processor:
 
             # Initialize Markdown parser
             self.logger.debug("📄 Processing Markdown content")
+            markdown = await asyncio.to_thread(fit_inline_images, markdown)
             parser = self.parsers[ExtensionTypes.MD.value]
 
             # Each regex pass over a large document is one C call that holds
@@ -1789,6 +1793,8 @@ class Processor:
                 caption_map=caption_map or None,
                 name=recordName,
             )
+            # Otherwise held through the whole sink, with every image in the document.
+            del md_content, markdown, modified_markdown, images, caption_map
 
             yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id=recordId))
 
