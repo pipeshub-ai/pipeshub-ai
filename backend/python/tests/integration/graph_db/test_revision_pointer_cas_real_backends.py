@@ -416,7 +416,7 @@ async def test_racing_switches_from_one_read_settle_on_one(graph: tuple[IGraphDB
 
 
 @pytest.mark.asyncio
-async def test_a_compare_and_set_on_the_retired_list_is_refused_on_neo4j(graph: tuple[IGraphDBProvider, str]) -> None:
+async def test_a_compare_and_set_on_the_retired_list_is_refused_where_it_is_stored_as_json(graph: tuple[IGraphDBProvider, str]) -> None:
     """Control: Neo4j stores ``retired`` as a JSON string, so a CAS that compared the list
     would refuse the second switch. The switch compares ``switchSeq`` instead."""
     provider, run = graph
