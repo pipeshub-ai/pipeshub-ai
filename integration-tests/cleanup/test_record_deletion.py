@@ -312,6 +312,8 @@ RACED_QUERY = "How is a jess fitted to the bird's leg?"
 TIMINGS = ("at_the_same_moment", "just_after_the_upload_returns", "as_the_copy_starts_indexing")
 PICKUP_POLL = 0.1
 PICKUP_TIMEOUT = 120
+# The states an upload leaves a record in before indexing touches it.
+UPLOAD_LEAVES = frozenset({"NOT_STARTED", "QUEUED"})
 
 
 @dataclass
@@ -339,8 +341,10 @@ def _upload_copy(kb_client, kb_id: str, name: str, body: bytes) -> str:
 
 
 async def _until_indexing_picks_up(kb_client, record_id: str) -> tuple[Any, Any]:
-    """Return the first state of the record that differs from what the upload left.
+    """Return the first state of the record that shows indexing has picked it up.
 
+    The upload leaves the record ``NOT_STARTED`` or, once its event is acked
+    (before the upload call returns), ``QUEUED``; neither means indexing began.
     The duplicate check writes ``md5Checksum`` just before it looks for the
     original, so a change there is the closest outside sign of that check.
     """
@@ -350,14 +354,13 @@ async def _until_indexing_picks_up(kb_client, record_id: str) -> tuple[Any, Any]
         return record.get("indexingStatus"), record.get("md5Checksum")
 
     first = await asyncio.to_thread(state)
-    if first[0] != "NOT_STARTED":
-        return first
     deadline = asyncio.get_event_loop().time() + PICKUP_TIMEOUT
+    now = first
     while asyncio.get_event_loop().time() < deadline:
-        now = await asyncio.to_thread(state)
-        if now != first:
+        if now[0] not in UPLOAD_LEAVES or now[1] != first[1]:
             return now
         await asyncio.sleep(PICKUP_POLL)
+        now = await asyncio.to_thread(state)
     raise AssertionError(f"Indexing never picked up the copy {record_id} within {PICKUP_TIMEOUT}s.")
 
 
