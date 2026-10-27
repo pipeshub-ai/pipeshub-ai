@@ -127,7 +127,7 @@ async def _post_token_request(
         error_code = oauth_error_code(body)
         if resp.status_code >= 400 or error_code:
             detail = _error_text(resp.status_code, body, text)
-            if is_permanent_grant_rejection(text, error_code, _PERMANENT_ERROR_CODES):
+            if is_permanent_grant_rejection(text, error_code, _PERMANENT_ERROR_CODES, status=resp.status_code):
                 raise MCPRefreshTokenInvalidError(
                     f"OAuth token request rejected ({resp.status_code}): {detail}", error_code=error_code,
                 )

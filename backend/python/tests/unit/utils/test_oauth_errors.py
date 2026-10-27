@@ -26,6 +26,14 @@ class TestIsPermanentGrantRejection:
     def test_a_caller_can_widen_the_permanent_codes(self) -> None:
         assert is_permanent_grant_rejection("", "invalid_scope", PERMANENT_GRANT_ERROR_CODES | {"invalid_scope"})
 
+    @pytest.mark.parametrize("status", [429, 500, 502, 503])
+    def test_an_overloaded_or_rate_limiting_answer_is_never_permanent(self, status: int) -> None:
+        assert not is_permanent_grant_rejection("invalid_grant", "invalid_grant", status=status)
+
+    @pytest.mark.parametrize("status", [200, 400, 401])
+    def test_a_refusal_with_a_4xx_or_200_status_stays_permanent(self, status: int) -> None:
+        assert is_permanent_grant_rejection("", "invalid_grant", status=status)
+
     def test_a_marker_in_the_text_is_permanent_without_a_code(self) -> None:
         assert is_permanent_grant_rejection("status 400. Response: The Refresh Token has expired", None)
 

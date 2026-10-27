@@ -67,10 +67,10 @@ def _is_servicenow_refresh_rejection(error: OAuthTokenRequestError, token_url: s
 
 
 def _is_permanent_refresh_rejection(error: OAuthTokenRequestError, token_url: str) -> bool:
-    # An overloaded or rate-limiting endpoint can answer with any code; only a 4xx refusal is final.
-    if error.status >= HttpStatusCode.INTERNAL_SERVER_ERROR.value or error.status == HttpStatusCode.TOO_MANY_REQUESTS.value:
-        return False
-    return is_permanent_grant_rejection(str(error), error.error_code) or _is_servicenow_refresh_rejection(error, token_url)
+    return (
+        is_permanent_grant_rejection(str(error), error.error_code, status=error.status)
+        or _is_servicenow_refresh_rejection(error, token_url)
+    )
 
 
 @dataclass

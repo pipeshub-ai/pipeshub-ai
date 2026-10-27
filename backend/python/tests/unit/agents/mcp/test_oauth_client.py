@@ -396,6 +396,9 @@ class TestErrorsInTheResponseBody:
     @pytest.mark.parametrize("resp", [
         _json_response(503, {"error": "temporarily_unavailable"}),
         _json_response(200, {"error": "server_error"}),
+        _json_response(503, {"error": "interaction_required"}),
+        _json_response(429, {"error": "invalid_grant"}),
+        _json_response(500, {"error": "login_required"}),
     ])
     async def test_a_provider_outage_can_be_retried(self, resp: MagicMock) -> None:
         with pytest.raises(MCPOAuthError) as exc_info:
