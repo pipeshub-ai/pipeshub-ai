@@ -25,10 +25,11 @@ _SPEC = (
     / "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml"
 )
 _HTTP_METHODS = {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
-# Values under these keys are data, not schemas. The schema-only ones are data only
-# inside a Schema Object: `responses.default` is a response, and is walked.
+# Values under these keys are not schemas. The schema-only ones are fields of a Schema
+# Object, so they are skipped only there: `responses.default` is a response, and is
+# walked. A discriminator mapping key is a value of the property, not a keyword.
 _DATA_KEYS = {"example", "examples"}
-_SCHEMA_DATA_KEYS = {"default", "enum", "const"}
+_SCHEMA_DATA_KEYS = {"default", "enum", "const", "discriminator", "xml", "externalDocs"}
 _SCHEMA_PREFIX = "#/components/schemas/"
 
 

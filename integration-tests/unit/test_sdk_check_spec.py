@@ -172,3 +172,26 @@ def test_a_path_level_parameter_the_operation_overrides_is_not_checked():
         {"name": "q", "in": "query", "schema": {"not": {"enum": ["x"]}}}
     ]
     assert violations(spec) == []
+
+
+def test_a_discriminator_mapping_named_not_is_not_a_schema():
+    spec = _spec(
+        {
+            "x-pipeshub-sdk": True,
+            "requestBody": {
+                "content": {
+                    "application/json": {
+                        "schema": {
+                            "oneOf": [{"$ref": "#/components/schemas/Thing"}],
+                            "discriminator": {
+                                "propertyName": "kind",
+                                "mapping": {"not": "#/components/schemas/Thing"},
+                            },
+                        }
+                    }
+                }
+            },
+        },
+        {"Thing": {"type": "object"}},
+    )
+    assert violations(spec) == []
