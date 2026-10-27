@@ -7,6 +7,7 @@ import {
   logError,
 } from '../../../src/libs/utils/error.middleware.utils'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { AxiosError } from 'axios'
 
 describe('error.middleware.utils', () => {
   afterEach(() => {
@@ -190,6 +191,11 @@ describe('error.middleware.utils', () => {
       ['an axios-style error', () => Object.assign(new Error('Request failed'), {
         response: { status: 404, statusText: 'Not Found', data: { detail: 'gone' } },
       })],
+      // A real one has its own toJSON, which ignores the argument and adds the stack.
+      ['a real AxiosError', () => new AxiosError(
+        'Request failed with status code 404', 'ERR_BAD_REQUEST', undefined, undefined,
+        { status: 404, statusText: 'Not Found', data: { detail: 'gone' }, headers: {}, config: {} } as never,
+      )],
     ] as const) {
       it(`logs ${name} at warn without its stack, and at error with it`, () => {
         const logger = { warn: sinon.stub(), error: sinon.stub() } as unknown as Logger

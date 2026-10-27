@@ -12,7 +12,11 @@ export const extractErrorData = (error: any, includeStack = true): any => {
       // For errors with a toJSON method (like BaseError)
       // Include stack trace for logging purposes only (not for client responses)
       if (typeof error.toJSON === 'function') {
-          return error.toJSON(includeStack);
+          const json = error.toJSON(includeStack);
+          // An AxiosError's toJSON ignores the argument and always adds the stack.
+          if (includeStack || !json || typeof json !== 'object') return json;
+          const { stack: _stack, ...withoutStack } = json;
+          return withoutStack;
       }
 
       // Handle Axios error response data
