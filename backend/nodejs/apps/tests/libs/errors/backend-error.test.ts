@@ -1,8 +1,11 @@
 import { expect } from 'chai'
+import sinon from 'sinon'
 import {
   handleBackendError,
   SERVICE_UNAVAILABLE_MESSAGE,
 } from '../../../src/libs/errors/backend-error'
+import { Logger } from '../../../src/libs/services/logger.service'
+import { logLevelFor } from '../../../src/libs/utils/error.middleware.utils'
 import {
   BadRequestError,
   ForbiddenError,
@@ -44,6 +47,50 @@ describe('handleBackendError', () => {
       expect(result).to.be.instanceOf(PaymentRequiredError)
       expect((result as PaymentRequiredError).statusCode).to.equal(402)
       expect(result.message).to.equal(message)
+    })
+
+    it('logs a 402 as a warning and marks it routine for the error middleware', () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
+      const error = sinon.stub(Logger.prototype, 'error')
+      try {
+        const result = handleBackendError(
+          {
+            response: {
+              status: 402,
+              data: { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment required by the upstream service' } },
+            },
+          },
+          'Chat Stream',
+        )
+        expect(logLevelFor(result)).to.equal('warn')
+        expect(warn.calledWith('Backend error during Chat Stream')).to.equal(true)
+        expect(error.called).to.equal(false)
+      } finally {
+        sinon.restore()
+      }
+    })
+
+    it('keeps the status of an answer whose message says "fetch failed"', () => {
+      const answered = Object.assign(new Error('Payment check: fetch failed'), {
+        response: { status: 402, data: { detail: { code: 'PAYMENT_REQUIRED', message: 'Payment check: fetch failed' } } },
+      })
+      const result = handleBackendError(answered, 'Chat Stream')
+      expect(result).to.be.instanceOf(PaymentRequiredError)
+      expect(result.message).to.equal('Payment check: fetch failed')
+    })
+
+    it('still logs any other 4xx as an error', () => {
+      const error = sinon.stub(Logger.prototype, 'error')
+      try {
+        const result = handleBackendError(
+          { statusCode: 400, data: { detail: 'Pick at least one folder to sync.' } },
+          'create connector',
+        )
+        expect(logLevelFor(result)).to.equal('error')
+        expect(error.calledWith('Backend error during create connector')).to.equal(true)
+      } finally {
+        sinon.restore()
+      }
     })
 
     it('reads an axios-shaped 404', () => {

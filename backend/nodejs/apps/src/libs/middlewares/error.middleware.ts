@@ -3,7 +3,11 @@ import { Logger } from '../services/logger.service';
 import { BaseError } from '../errors/base.error';
 import { HttpError } from '../errors/http.errors';
 import { isClientSafeError, isReaderWritten } from '../errors/reader-friendly';
-import { jsonResponse, logError } from '../utils/error.middleware.utils';
+import {
+  jsonResponse,
+  logError,
+  logLevelFor,
+} from '../utils/error.middleware.utils';
 import {
   redactHeadersForLog,
   redactQueryForLog,
@@ -87,17 +91,12 @@ export class ErrorMiddleware {
     req: Request,
     res: Response,
   ) {
-    // A thrower may mark an answer it expects (a 4xx) as routine; a 5xx is always an error.
-    const level =
-      error.statusCode < 500 && error.metadata?.logLevel === 'warn'
-        ? 'warn'
-        : 'error';
     logError(
       this.logger,
       'Application error',
       error,
       { request: this.getRequestContext(req) },
-      level,
+      logLevelFor(error),
     );
 
     // Never expose stack traces to clients - security best practice

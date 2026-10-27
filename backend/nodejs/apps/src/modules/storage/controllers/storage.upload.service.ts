@@ -14,6 +14,7 @@ import {
   BadRequestError,
   ConflictError,
   InternalServerError,
+  NotFoundError,
   ServiceUnavailableError,
 } from '../../../libs/errors/http.errors';
 import { StorageServiceAdapter } from '../adapter/base-storage.adapter';
@@ -557,6 +558,10 @@ export class UploadDocumentService {
       { pushVersions, holdLease: leaseToken },
     );
     if (!saved) {
+      // Without a lease nothing can have taken the upload over; the row was removed.
+      if (leaseToken === undefined) {
+        throw new NotFoundError('Document does not exist');
+      }
       throw new ConflictError(
         'A later attempt with the same Idempotency-Key took this upload over',
       );

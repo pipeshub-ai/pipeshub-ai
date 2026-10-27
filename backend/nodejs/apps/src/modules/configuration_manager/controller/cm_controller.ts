@@ -2585,6 +2585,25 @@ const MODEL_TYPES_WITHOUT_BULK_HEALTH_CHECK = [
   'decision',
 ] as const;
 
+/**
+ * Throws unless a bulk health check answered 200. A 400 means the settings are
+ * wrong (an empty or rejected key, an endpoint the deployment may not call), so
+ * its message, written for the admin, is passed on as a 400; anything else is
+ * ours and stays a 500.
+ */
+const throwUnlessHealthy = (
+  response: AIServiceResponse | undefined,
+  fallback: string,
+): void => {
+  if (response?.data && response.statusCode === 200) return;
+  if (response?.statusCode === 400) {
+    throw new BadRequestError(
+      healthCheckFailureMessage(response.data, fallback),
+    );
+  }
+  throw new InternalServerError(fallback, response?.data);
+};
+
 export const createAIModelsConfig =
   (
     keyValueStoreService: KeyValueStoreService,
@@ -2616,12 +2635,10 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of llm configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
+        throwUnlessHealthy(
+          aiResponseData,
+          'Failed to do health check of llm configuration, check credentials again',
+        );
       }
 
       // Handle embedding health check
@@ -2640,12 +2657,10 @@ export const createAIModelsConfig =
         const aiResponseData =
           (await aiServiceCommand.execute()) as AIServiceResponse;
 
-        if (!aiResponseData?.data || aiResponseData.statusCode !== 200) {
-          throw new InternalServerError(
-            'Failed to do health check of embedding configuration, check credentials again',
-            aiResponseData?.data,
-          );
-        }
+        throwUnlessHealthy(
+          aiResponseData,
+          'Failed to do health check of embedding configuration, check credentials again',
+        );
       }
 
       // The llm and embedding health checks above refuse an endpoint the
@@ -2661,15 +2676,10 @@ export const createAIModelsConfig =
           body: otherModels,
         }).execute()) as AIServiceResponse;
 
-        if (endpointCheck?.statusCode !== 200) {
-          const fallback = 'Failed to check the model endpoints, try again';
-          if (endpointCheck?.statusCode === 400) {
-            throw new BadRequestError(
-              healthCheckFailureMessage(endpointCheck.data, fallback),
-            );
-          }
-          throw new InternalServerError(fallback, endpointCheck?.data);
-        }
+        throwUnlessHealthy(
+          endpointCheck,
+          'Failed to check the model endpoints, try again',
+        );
       }
 
       if (aiConfig.llm.length > 0) {

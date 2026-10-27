@@ -4102,7 +4102,12 @@
         "title": "Heslo a zabezpečení",
         "accountPassword": "Heslo účtu",
         "followEmailDescription": "Dokončete nastavení hesla podle pokynů v e-mailu",
-        "changePassword": "Změnit heslo"
+        "changePassword": "Změnit heslo",
+        "setPassword": "Nastavit heslo",
+        "setPasswordDescription": "Zatím jste si nenastavili heslo. Pošleme vám e-mailem odkaz pro jeho nastavení; pokud to váš pracovní prostor povoluje, budete se pak moci přihlašovat také e-mailem a heslem.",
+        "setPasswordDialogTitle": "Nastavit heslo",
+        "setPasswordDialogMessage": "Odkaz pro nastavení hesla pošleme na vaši registrovanou e-mailovou adresu a odhlásíme vás z této relace.",
+        "setPasswordDialogConfirm": "Odeslat odkaz pro nastavení hesla"
       },
       "rolesPermissions": {
         "title": "Role a oprávnění",
@@ -4156,6 +4161,10 @@
         "saveErrorDescription": "Váš profil se nepodařilo aktualizovat",
         "passwordUpdated": "Heslo bylo aktualizováno",
         "passwordUpdatedDescription": "Odhlásíme vás. Přihlaste se prosím znovu...",
+        "passwordSetupEmailSent": "Odkaz pro nastavení hesla odeslán",
+        "passwordSetupEmailSentDescription": "Zkontrolujte e-mail a nastavte si heslo. Odhlašujeme vás z této relace…",
+        "passwordSetupEmailError": "E-mail se nepodařilo odeslat",
+        "passwordSetupEmailErrorDescription": "Zkuste to prosím znovu.",
         "emailVerificationSent": "Ověřovací odkaz byl odeslán e-mailem",
         "emailVerificationSentDescription": "Po ověření e-mailu budete odhlášeni",
         "discardSuccess": "Úpravy zahozeny",

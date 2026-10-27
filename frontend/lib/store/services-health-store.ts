@@ -50,10 +50,17 @@ type ServicesHealthStore = ServicesHealthState & ServicesHealthActions;
 // ========================================
 
 const POLL_INTERVAL = 10 * 60 * 1000;
+// After a failed check: services that are starting up are back within a minute,
+// and a page blocked by <ServiceGate> should open soon after, not 10 minutes on.
+const RECOVERY_POLL_INTERVAL = 10 * 1000;
 const CACHE_KEY = 'healthCheck';
 
 let pollTimer: ReturnType<typeof setInterval> | null = null;
-let bgPollTimer: ReturnType<typeof setInterval> | null = null;
+let bgPollTimer: ReturnType<typeof setTimeout> | null = null;
+// Bumped by every start and stop, so a check still in flight from an earlier
+// run does not schedule a second chain of checks.
+let bgPollRun = 0;
+let bgPolling = false;
 let isRetrying = false;
 
 // ========================================
@@ -160,14 +167,18 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
       },
 
       startBackgroundPolling: () => {
-        if (bgPollTimer) return;
+        if (bgPolling) return;
+        bgPolling = true;
+        const run = ++bgPollRun;
 
-        const runBackgroundCheck = async () => {
+        const runBackgroundCheck = async (): Promise<boolean> => {
           try {
             const [infraResp, servicesResp] = await Promise.allSettled([
               apiClient.get('/api/v1/health', { suppressErrorToast: true }),
               apiClient.get('/api/v1/health/services', { suppressErrorToast: true }),
             ]);
+            // Polling restarted while this check was out; a newer one owns the state.
+            if (run !== bgPollRun) return false;
 
             const infraData =
               infraResp.status === 'fulfilled' ? infraResp.value.data : null;
@@ -198,7 +209,9 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
                 localStorage.removeItem(CACHE_KEY);
               } catch {}
             }
+            return overallHealthy;
           } catch {
+            if (run !== bgPollRun) return false;
             set((state) => {
               state.loading = false;
               state.apiServerReachable = false;
@@ -208,16 +221,24 @@ export const useServicesHealthStore = create<ServicesHealthStore>()(
             try {
               localStorage.removeItem(CACHE_KEY);
             } catch {}
+            return false;
           }
         };
 
-        runBackgroundCheck();
-        bgPollTimer = setInterval(runBackgroundCheck, POLL_INTERVAL);
+        const poll = async () => {
+          const healthy = await runBackgroundCheck();
+          if (run !== bgPollRun) return;
+          bgPollTimer = setTimeout(poll, healthy ? POLL_INTERVAL : RECOVERY_POLL_INTERVAL);
+        };
+
+        void poll();
       },
 
       stopBackgroundPolling: () => {
+        bgPolling = false;
+        bgPollRun++;
         if (bgPollTimer) {
-          clearInterval(bgPollTimer);
+          clearTimeout(bgPollTimer);
           bgPollTimer = null;
         }
       },

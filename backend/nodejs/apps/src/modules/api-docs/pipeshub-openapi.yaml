@@ -27688,6 +27688,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /userAccount/password/status:
+    get:
+      tags:
+        - User Account
+      summary: Get password status
+      description: Returns whether the authenticated user has a password set. Users who signed in only through SSO do not.
+      operationId: getPasswordStatus
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Password status
+          content:
+            application/json:
+              schema:
+                type: object
+                required:
+                  - hasPassword
+                properties:
+                  hasPassword:
+                    type: boolean
+        '401':
+          description: Invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /userAccount/password/setup/email:
+    post:
+      tags:
+        - User Account
+      summary: Email a link to set a first password
+      description: |
+        Sends the authenticated user a single-use link, to the email on their account, for setting a first password.
+        For users who have no password yet, for example those who signed in with Google. Users who already have one change it with `POST /userAccount/password/reset`.
+      operationId: sendPasswordSetupEmail
+      x-pipeshub-sdk: true
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: The link was sent
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  data:
+                    type: string
+                    example: mail sent
+        '400':
+          description: The user already has a password
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '401':
+          description: Invalid or expired access token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '404':
+          description: The user no longer exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '429':
+          description: Too many requests
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /userAccount/password/reset:
     post:
       tags:

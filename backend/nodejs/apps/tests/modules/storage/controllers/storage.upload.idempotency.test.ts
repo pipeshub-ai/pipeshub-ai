@@ -6,6 +6,7 @@ import { UploadDocumentService } from '../../../../src/modules/storage/controlle
 import { StorageVendor } from '../../../../src/modules/storage/types/storage.service.types'
 import {
   ConflictError,
+  NotFoundError,
   ServiceUnavailableError,
   UnprocessableEntityError,
 } from '../../../../src/libs/errors/http.errors'
@@ -197,6 +198,21 @@ describe('UploadDocumentService.handleDocumentUpload with an Idempotency-Key', (
       expect.fail('expected a conflict')
     } catch (error) {
       expect(error).to.be.instanceOf(ConflictError)
+    }
+  })
+
+  it('answers not found, not a takeover conflict, when an upload without a key loses its row', async () => {
+    const doc = unfinished({
+      save: sinon.stub().rejects(new mongoose.Error.DocumentNotFoundError({}, 'Document', 0, {})),
+    })
+    current = doc
+    adapter.uploadDocumentToStorageService.resolves(stored)
+
+    try {
+      await service().handleDocumentUpload(request(null), response(), details)
+      expect.fail('expected not found')
+    } catch (error) {
+      expect(error).to.be.instanceOf(NotFoundError)
     }
   })
 
