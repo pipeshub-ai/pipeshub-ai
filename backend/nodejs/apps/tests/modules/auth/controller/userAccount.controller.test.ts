@@ -5,6 +5,7 @@ import sinon from 'sinon';
 import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import mongoose from 'mongoose';
+import nock from 'nock';
 import * as connectorUtils from '../../../../src/modules/tokens_manager/utils/connector.utils';
 import {
   UserAccountController,
@@ -19,7 +20,9 @@ import {
   ACCOUNT_NO_LONGER_ACTIVE,
   RESET_LINK_ALREADY_USED,
   RESET_LINK_NOT_CHECKED,
+  SESSION_NO_LONGER_VALID,
 } from '../../../../src/modules/auth/controller/userAccount.controller';
+import { IamService } from '../../../../src/modules/auth/services/iam.service';
 import { UsedPasswordResetLink } from '../../../../src/modules/auth/schema/usedPasswordResetLink.schema';
 import { SIGN_IN_METHOD_NOT_ALLOWED } from '../../../../src/modules/auth/utils/authMethodGuard';
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware';
@@ -2655,6 +2658,37 @@ describe('UserAccountController', () => {
       expect(rebuild.calledOnce).to.be.true;
       expect(next.called).to.be.false;
       expect(used.size).to.equal(1);
+    });
+
+    // Through the real IAM client: a deleted account comes back from IAM as an
+    // HTTP 404, which used to reach the error middleware as a raw axios error
+    // and be answered with a 500.
+    describe('when the account was deleted after the link was sent', () => {
+      beforeEach(() => {
+        const realIam = new IamService(mockConfig, mockLogger);
+        mockIamService.getUserById.callsFake((id: string, token: string) =>
+          realIam.getUserById(id, token),
+        );
+        nock(mockConfig.iamBackend)
+          .get('/api/v1/users/internal/u1')
+          .reply(404, { error: { message: 'User not found' } });
+      });
+
+      afterEach(() => {
+        nock.cleanAll();
+      });
+
+      it('answers that the link is no longer valid (404), changing nothing', async () => {
+        const used = fakeUsedResetLinks();
+
+        await controller.resetPasswordViaEmailLink(resetLinkRequest('FirstValid1!'), res, next);
+
+        const error = next.firstCall.args[0];
+        expect(error).to.be.instanceOf(NotFoundError);
+        expect(error.message).to.equal(SESSION_NO_LONGER_VALID);
+        expect((UserCredentials.prototype.save as sinon.SinonStub).called).to.be.false;
+        expect(used.size).to.equal(0, 'the link is handed back, as for any reset that changed nothing');
+      });
     });
 
     it('refuses a link that was already used', async () => {

@@ -1,4 +1,3 @@
-import axios from 'axios';
 import bcrypt from 'bcryptjs';
 import { randomBytes } from 'crypto';
 import jwt from 'jsonwebtoken';
@@ -1375,8 +1374,7 @@ export class UserAccountController {
 
   /**
    * The account a refresh token belongs to, refused when it has been deleted
-   * or disabled. The IAM lookup answers a deleted account with an HTTP 404,
-   * which arrives here as an axios error rather than as one of ours.
+   * or disabled. The IAM lookup answers a deleted account with statusCode 404.
    */
   protected async activeAccountForRefresh(
     userId: string,
@@ -1389,9 +1387,6 @@ export class UserAccountController {
         iamUserLookupJwtGenerator(userId, orgId, this.config.scopedJwtSecret),
       );
     } catch (error) {
-      if (axios.isAxiosError(error) && error.response?.status === 404) {
-        throw new UnauthorizedError(ACCOUNT_NO_LONGER_ACTIVE);
-      }
       if (error instanceof BaseError) {
         throw error;
       }
