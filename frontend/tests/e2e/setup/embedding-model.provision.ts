@@ -18,6 +18,9 @@ test('add the embedding model before anything is indexed', async ({ apiContext }
     const added = (await provisionAnsweringModels(apiContext, ['embedding'])) ?? [];
     fs.writeFileSync(ADDED_EMBEDDING_FILE, JSON.stringify(added));
   } catch (error) {
+    // Let Playwright retry a transient failure; the retry skips a model the
+    // failed attempt already added.
+    if (test.info().retry < test.info().project.retries) throw error;
     // Failing here would skip every UI test, most of which need no real
     // model; the ai-models step reports it and only the answering tests skip.
     const message = (error as Error).message;
