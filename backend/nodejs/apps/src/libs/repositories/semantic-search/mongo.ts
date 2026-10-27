@@ -1,6 +1,8 @@
-import mongoose from 'mongoose';
+import mongoose, { UpdateQuery } from 'mongoose';
 import Citation from '../../../modules/enterprise_search/schema/citation.schema';
-import EnterpriseSemanticSearch from '../../../modules/enterprise_search/schema/search.schema';
+import EnterpriseSemanticSearch, {
+  IEnterpriseSemanticSearch,
+} from '../../../modules/enterprise_search/schema/search.schema';
 import { BadRequestError } from '../../errors/http.errors';
 import { sessionOf } from '../mongo';
 import { toPlain } from '../plain';
@@ -154,6 +156,25 @@ export class MongoSemanticSearchRepository implements SemanticSearchRepository {
     if (sharing.shareLink !== undefined) update.shareLink = sharing.shareLink;
     const doc = await EnterpriseSemanticSearch.findByIdAndUpdate(id, update, {
       session: sessionOf(tx),
+    });
+    return doc ? dto(doc) : null;
+  }
+
+  async unshare(
+    id: string,
+    remaining: SearchSharing['sharedWith'],
+    tx?: Tx,
+  ): Promise<SemanticSearchDto | null> {
+    // An undefined value is dropped from an update, so the link is unset explicitly.
+    const update: UpdateQuery<IEnterpriseSemanticSearch> = {
+      sharedWith: remaining,
+      ...(remaining.length === 0
+        ? { isShared: false, $unset: { shareLink: 1 } }
+        : {}),
+    };
+    const doc = await EnterpriseSemanticSearch.findByIdAndUpdate(id, update, {
+      session: sessionOf(tx),
+      returnDocument: 'after',
     });
     return doc ? dto(doc) : null;
   }

@@ -108,6 +108,11 @@ import {
 } from '../utils/secretReveal';
 import { isUserOrgAdmin } from '../../user_management/services/user-admin.service';
 import {
+  SMTP_SETTINGS_PROBLEM_MESSAGES,
+  smtpSettingsProblem,
+} from '../../mail/utils/smtp-transport';
+import { SmtpConfig } from '../../mail/middlewares/types';
+import {
   buildS3HealthCheckErrorMessage,
   validateS3Capabilities,
 } from '../../storage/utils/s3-health-check.util';
@@ -507,6 +512,26 @@ export const createSmtpConfig =
           );
           smtpConfig = mergeSmtpConfigPlaceholders(smtpConfig, existing);
         }
+      }
+
+      // Bad credentials would otherwise surface only when mail starts failing,
+      // after invites and resets were already reported as sent.
+      // Codes only in the log: the host and username are secret
+      // (maskSmtpConfig), and a server's refusal text can repeat the username.
+      let refusal: { code?: unknown; responseCode?: unknown } = {};
+      const problem = await smtpSettingsProblem(
+        smtpConfig as unknown as SmtpConfig,
+        (error) => {
+          const { code, responseCode } = (error ?? {}) as typeof refusal;
+          refusal = { code, responseCode };
+        },
+      );
+      if (problem) {
+        logger.warn('SMTP settings refused by the mail server', {
+          problem,
+          ...refusal,
+        });
+        throw new BadRequestError(SMTP_SETTINGS_PROBLEM_MESSAGES[problem]);
       }
 
       const encryptedSmtpConfig = encryptionService.encrypt(

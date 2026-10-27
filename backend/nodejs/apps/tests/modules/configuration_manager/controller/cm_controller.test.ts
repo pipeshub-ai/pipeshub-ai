@@ -82,6 +82,9 @@ import {
   updateModelRoles,
 } from '../../../../src/modules/configuration_manager/controller/cm_controller'
 import { Org } from '../../../../src/modules/user_management/schema/org.schema'
+import { startFakeSmtpServer, FakeSmtpServer } from '../../../helpers/fake-smtp-server'
+import * as smtpTransportModule from '../../../../src/modules/mail/utils/smtp-transport'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3041,6 +3044,90 @@ describe('ConfigurationManager Controller', () => {
 
       expect(next.calledOnce).to.be.true
     })
+
+    // The settings are tried against the server before they are stored, so a
+    // rejected login is reported on the form rather than later, by each email
+    // that fails.
+    describe('checking the settings with the mail server', () => {
+      let server: FakeSmtpServer
+
+      beforeEach(async () => {
+        server = await startFakeSmtpServer({ user: 'mailer', pass: 'right' })
+      })
+
+      afterEach(async () => {
+        await server.close()
+        nock.cleanAll()
+      })
+
+      const body = (password: string) => ({
+        host: '127.0.0.1', port: server.port, fromEmail: 'noreply@example.com', username: 'mailer', password,
+      })
+
+      it('refuses settings the server rejects, with a 400 naming the problem, and stores nothing', async () => {
+        const kvs = createMockKeyValueStore()
+        const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body: body('wrong') }), createMockResponse(), next)
+
+        const error = next.firstCall.args[0]
+        expect(error.statusCode).to.equal(400)
+        expect(error.message).to.equal(
+          'The mail (SMTP) server rejected this username or password. Check them, then save again.',
+        )
+        expect(kvs.set.called).to.be.false
+      })
+
+      it('logs the refusal by its codes, never the server text, host or username', async () => {
+        // On the prototype: the controller keeps the instance it got at load,
+        // which another test may since have replaced as the singleton.
+        const warn = sinon.stub(Logger.prototype, 'warn')
+        const handler = createSmtpConfig(createMockKeyValueStore(), 'http://comm-backend:3002', 'jwt-secret')
+
+        await handler(createMockRequest({ body: body('wrong') }), createMockResponse(), createMockNext())
+
+        const call = warn.getCalls().find((c) => c.args[0] === 'SMTP settings refused by the mail server')
+        expect(call?.args[1]).to.deep.equal({ problem: 'auth', code: 'EAUTH', responseCode: 535 })
+        const logged = JSON.stringify(warn.getCalls().map((c) => c.args))
+        expect(logged).to.not.include('mailer')
+        expect(logged).to.not.include('127.0.0.1')
+      })
+
+      it('stores settings the server accepts', async () => {
+        sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('token')
+        nock('http://comm-backend:3002').post('/api/v1/mail/updateSmtpConfig').reply(200, {})
+        const kvs = createMockKeyValueStore()
+        const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+        const res = createMockResponse()
+        const next = createMockNext()
+
+        await handler(createMockRequest({ body: body('right') }), res, next)
+
+        expect(next.called).to.be.false
+        expect(kvs.set.calledOnce).to.be.true
+        expect(res.status.calledWith(200)).to.be.true
+        expect(server.logins).to.deep.equal(['mailer:right'])
+      })
+
+      it('checks the stored password when the form sends the placeholder for it', async () => {
+        const kvs = createMockKeyValueStore({
+          get: sinon.stub().resolves(`encrypted:${JSON.stringify(body('wrong'))}`),
+        })
+        const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
+        const next = createMockNext()
+
+        await handler(
+          createMockRequest({ body: { ...body(''), password: CONFIG_SECRET_PLACEHOLDER } }),
+          createMockResponse(),
+          next,
+        )
+
+        expect(next.firstCall.args[0].statusCode).to.equal(400)
+        expect(server.logins).to.deep.equal(['mailer:wrong'])
+        expect(kvs.set.called).to.be.false
+      })
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -4618,6 +4705,8 @@ describe('ConfigurationManager Controller', () => {
   // -----------------------------------------------------------------------
   describe('createSmtpConfig (happy path)', () => {
     it('should encrypt and store SMTP config before calling communication backend', async () => {
+      // smtp.test.com is not a real server; the check against it has its own tests.
+      sinon.stub(smtpTransportModule, 'smtpSettingsProblem').resolves(null)
       const kvs = createMockKeyValueStore()
 
       const handler = createSmtpConfig(kvs, 'http://comm-backend:3002', 'jwt-secret')
@@ -4656,7 +4745,11 @@ describe('ConfigurationManager Controller', () => {
       nock.cleanAll()
     })
 
+    let smtpCheck: sinon.SinonStub
+
     beforeEach(() => {
+      // The hosts here are not real servers; the check itself has its own tests.
+      smtpCheck = sinon.stub(smtpTransportModule, 'smtpSettingsProblem').resolves(null)
       sinon.stub(generateAuthTokenModule, 'generateFetchConfigAuthToken').resolves('test-token')
     })
 
@@ -4699,6 +4792,7 @@ describe('ConfigurationManager Controller', () => {
         password: 'real-pass',
         fromEmail: 'real@example.com',
       })
+      expect(smtpCheck.firstCall.args[0]).to.deep.equal(stored, 'the server is asked about what is stored')
     })
 
     it('does not look up the existing config when the body has no placeholders', async () => {
