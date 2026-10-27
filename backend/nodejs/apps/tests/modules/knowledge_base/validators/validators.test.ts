@@ -652,6 +652,20 @@ describe('knowledge_base/validators/validators', () => {
       expect(result.success).to.be.false;
     });
 
+    for (const search of ['50% off', 'Growth % sales', '100%done']) {
+      it(`should accept ordinary text with a percent sign "${search}"`, () => {
+        const result = listKnowledgeBasesSchema.safeParse({ query: { search } });
+        expect(result.success).to.be.true;
+      });
+    }
+
+    for (const search of ['report %s', '%n', '%1$s']) {
+      it(`should reject format specifier "${search}" in search`, () => {
+        const result = listKnowledgeBasesSchema.safeParse({ query: { search } });
+        expect(result.success).to.be.false;
+      });
+    }
+
     it('should accept valid sortBy', () => {
       const data = { query: { sortBy: 'name' } };
       const result = listKnowledgeBasesSchema.safeParse(data);

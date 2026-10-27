@@ -22,6 +22,32 @@ export function useProfilePage() {
   // ── Local state ──────────────────────────────────────────────
   const [userId, setUserId] = useState<string | null>(null);
   const [changePasswordOpen, setChangePasswordOpen] = useState(false);
+  const [hasPassword, setHasPassword] = useState<boolean | null>(null);
+  const [passwordStatusFailed, setPasswordStatusFailed] = useState(false);
+  const [settingPassword, setSettingPassword] = useState(false);
+  const [setPasswordDialogOpen, setSetPasswordDialogOpen] = useState(false);
+  const [passwordStatusAttempt, setPasswordStatusAttempt] = useState(0);
+
+  // Stays unknown on failure: guessing "has a password" would send a passwordless user
+  // into a form that asks for a current password they do not have.
+  useEffect(() => {
+    let cancelled = false;
+    setPasswordStatusFailed(false);
+    ProfileApi.getPasswordStatus()
+      .then((status) => {
+        if (!cancelled) setHasPassword(status.hasPassword);
+      })
+      .catch(() => {
+        if (!cancelled) setPasswordStatusFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [passwordStatusAttempt]);
+
+  const retryPasswordStatus = useCallback(() => {
+    setPasswordStatusAttempt((n) => n + 1);
+  }, []);
   const [changeEmailOpen, setChangeEmailOpen] = useState(false);
   const [email, setEmail] = useState<string>('');
   const [emailLoading, setEmailLoading] = useState(false);
@@ -149,6 +175,37 @@ export function useProfilePage() {
       logoutFromWorkspaceMenu();
     }, 1500);
   }, [addToast]);
+  const handleSetPasswordClick = useCallback(() => {
+    setSetPasswordDialogOpen(true);
+  }, []);
+
+  const handleSetPasswordConfirm = useCallback(async () => {
+    setSettingPassword(true);
+    try {
+      await ProfileApi.sendPasswordSetupEmail();
+      setSetPasswordDialogOpen(false);
+      addToast({
+        variant: 'success',
+        title: t('workspace.profile.toasts.passwordSetupEmailSent'),
+        description: t('workspace.profile.toasts.passwordSetupEmailSentDescription'),
+        duration: 4000,
+      });
+      // Log out only once the mail is on its way, so the user is never locked out without a link.
+      setTimeout(() => {
+        logoutFromWorkspaceMenu();
+      }, 1500);
+    } catch {
+      setSetPasswordDialogOpen(false);
+      addToast({
+        variant: 'error',
+        title: t('workspace.profile.toasts.passwordSetupEmailError'),
+        description: t('workspace.profile.toasts.passwordSetupEmailErrorDescription'),
+      });
+    } finally {
+      setSettingPassword(false);
+    }
+  }, [addToast, t]);
+
   // ── Email change ───────────────────────────────────────────
 
   const handleEmailVerificationSent = useCallback(() => {
@@ -251,6 +308,14 @@ export function useProfilePage() {
     // State
     userId,
     changePasswordOpen,
+    hasPassword,
+    passwordStatusFailed,
+    retryPasswordStatus,
+    settingPassword,
+    setPasswordDialogOpen,
+    setSetPasswordDialogOpen,
+    handleSetPasswordClick,
+    handleSetPasswordConfirm,
     setChangePasswordOpen,
     changeEmailOpen,
     setChangeEmailOpen,

@@ -3983,7 +3983,12 @@
         "title": "密码与安全",
         "accountPassword": "账户密码",
         "followEmailDescription": "请按照邮件中的说明完成密码设置",
-        "changePassword": "更改密码"
+        "changePassword": "更改密码",
+        "setPassword": "设置密码",
+        "setPasswordDescription": "您尚未设置密码。我们会通过邮件向您发送设置密码的链接；如果工作区允许，设置后也可以使用邮箱和密码登录。",
+        "setPasswordDialogTitle": "设置密码",
+        "setPasswordDialogMessage": "我们会将设置密码的链接发送到您的注册邮箱，并退出当前会话。",
+        "setPasswordDialogConfirm": "发送设置密码链接"
       },
       "rolesPermissions": {
         "title": "角色与权限",
@@ -4030,6 +4035,10 @@
         "saveErrorDescription": "无法更新您的个人资料",
         "passwordUpdated": "密码已更新",
         "passwordUpdatedDescription": "我们将为您注销，请重新登录...",
+        "passwordSetupEmailSent": "设置密码链接已发送",
+        "passwordSetupEmailSentDescription": "请查收邮件以设置密码。正在退出当前会话…",
+        "passwordSetupEmailError": "无法发送邮件",
+        "passwordSetupEmailErrorDescription": "请重试。",
         "emailVerificationSent": "邮箱验证链接已发送",
         "emailVerificationSentDescription": "验证邮箱后您将被注销",
         "discardSuccess": "已放弃修改",

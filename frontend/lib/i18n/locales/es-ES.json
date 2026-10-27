@@ -3729,7 +3729,12 @@
         "title": "Password & security",
         "accountPassword": "Account password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
-        "changePassword": "Change password"
+        "changePassword": "Change password",
+        "setPassword": "Establecer contraseña",
+        "setPasswordDescription": "Aún no has establecido una contraseña. Te enviaremos un enlace por correo para establecerla; así podrás iniciar sesión también con tu correo y contraseña, si tu espacio de trabajo lo permite.",
+        "setPasswordDialogTitle": "Establecer contraseña",
+        "setPasswordDialogMessage": "Enviaremos un enlace para establecer tu contraseña a tu dirección de correo registrada y cerraremos esta sesión.",
+        "setPasswordDialogConfirm": "Enviar enlace para establecer contraseña"
       },
       "rolesPermissions": {
         "title": "Roles & permissions",
@@ -3776,6 +3781,10 @@
         "saveErrorDescription": "Could not update your profile",
         "passwordUpdated": "Password has been updated",
         "passwordUpdatedDescription": "We'll log you out. Please login again...",
+        "passwordSetupEmailSent": "Enlace enviado",
+        "passwordSetupEmailSentDescription": "Revisa tu correo para establecer tu contraseña. Cerrando esta sesión…",
+        "passwordSetupEmailError": "No se pudo enviar el correo",
+        "passwordSetupEmailErrorDescription": "Inténtalo de nuevo.",
         "emailVerificationSent": "Email verification link sent",
         "emailVerificationSentDescription": "You will be logged out when you verify the email",
         "discardSuccess": "Discarded edits",

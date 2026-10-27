@@ -146,6 +146,38 @@ export function createUserAccountRouter(container: Container) {
     }),
   });
 
+  router.get(
+    '/password/status',
+    userValidator,
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
+        await userAccountController.getPasswordStatus(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
+  router.post(
+    '/password/setup/email',
+    authRateLimiter,
+    userValidator,
+    ValidationMiddleware.validate(z.object({ body: z.object({}).optional() })),
+    async (req: AuthSessionRequest, res: Response, next: NextFunction) => {
+      try {
+        const userAccountController = container.get<UserAccountController>(
+          'UserAccountController',
+        );
+        await userAccountController.sendPasswordSetupEmail(req, res, next);
+      } catch (error) {
+        next(error);
+      }
+    },
+  );
+
   router.post(
     '/password/reset',
     authRateLimiter,
