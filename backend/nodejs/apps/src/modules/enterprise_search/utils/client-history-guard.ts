@@ -73,7 +73,6 @@ export const rejectClientConversationHistory = (
   next(
     new BadRequestError(CLIENT_HISTORY_REJECTED_MESSAGE, {
       reason: CLIENT_HISTORY_REJECTED_REASON,
-      logLevel: 'warn',
     }),
   );
 };

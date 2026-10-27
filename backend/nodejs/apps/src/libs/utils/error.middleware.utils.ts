@@ -5,14 +5,14 @@ import { Logger } from '../services/logger.service';
  * Extract error data without circular references
  * Note: Stack traces are included here for logging purposes only, not for client responses
  */
-export const extractErrorData = (error: any): any => {
+export const extractErrorData = (error: any, includeStack = true): any => {
   if (!error) return null;
 
   try {
       // For errors with a toJSON method (like BaseError)
       // Include stack trace for logging purposes only (not for client responses)
       if (typeof error.toJSON === 'function') {
-          return error.toJSON(true); // Pass true to include stack for logging
+          return error.toJSON(includeStack);
       }
 
       // Handle Axios error response data
@@ -81,7 +81,8 @@ export const logError = (
   level: 'error' | 'warn' = 'error',
 ): void => {
   try {
-    const errorData = extractErrorData(error);
+    // A warning is an answer that went as intended; where it was thrown is noise.
+    const errorData = extractErrorData(error, level === 'error');
     logger[level](message, {
       error: errorData,
       context,

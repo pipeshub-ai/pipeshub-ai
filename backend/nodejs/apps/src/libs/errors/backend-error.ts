@@ -231,11 +231,12 @@ export const handleBackendError = (
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  logger.error(`Backend error during ${operation}`, {
-    statusCode,
-    errorDetail,
-    fullResponse: data,
-  });
+  // The service refusing the request (a 4xx) is answered to the caller as
+  // the same 4xx; only its own failures are errors here.
+  logger[statusCode >= 500 ? 'error' : 'warn'](
+    `Backend error during ${operation}`,
+    { statusCode, errorDetail, fullResponse: data },
+  );
 
   switch (statusCode) {
     case 400:

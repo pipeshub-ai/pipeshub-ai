@@ -121,7 +121,7 @@ async function getDocumentInfoFromDb(
     if (!document) {
       // Callers probe for documents that may be gone (deduplicated content
       // removed with another connector); that is not a server fault.
-      throw new NotFoundError('Document not found', { logLevel: 'warn' });
+      throw new NotFoundError('Document not found');
     }
     return { document };
   } catch (error) {

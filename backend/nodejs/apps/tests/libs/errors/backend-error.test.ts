@@ -1,4 +1,6 @@
 import { expect } from 'chai'
+import sinon from 'sinon'
+import { Logger } from '../../../src/libs/services/logger.service'
 import {
   handleBackendError,
   SERVICE_UNAVAILABLE_MESSAGE,
@@ -227,5 +229,39 @@ describe('handleBackendError', () => {
     const result = handleBackendError({ detail: 'Name is required' }, 'create agent')
     expect(result).to.be.instanceOf(BadRequestError)
     expect(result.message).to.equal('Name is required')
+  })
+
+  // A service refusing the request is answered to the caller as the same 4xx;
+  // logging each at error buried the real failures in the error log.
+  describe('log level', () => {
+    let warn: sinon.SinonStub
+    let error: sinon.SinonStub
+
+    beforeEach(() => {
+      const logger = Logger.getInstance()
+      warn = sinon.stub(logger, 'warn')
+      error = sinon.stub(logger, 'error')
+    })
+
+    afterEach(() => sinon.restore())
+
+    for (const statusCode of [400, 401, 403, 404, 409, 422]) {
+      it(`logs a ${String(statusCode)} from the service at warn`, () => {
+        handleBackendError({ statusCode, data: { detail: 'refused' } }, 'create connector')
+
+        expect(warn.calledOnce).to.be.true
+        expect(warn.firstCall.args[0]).to.equal('Backend error during create connector')
+        expect(error.called).to.be.false
+      })
+    }
+
+    for (const statusCode of [500, 502]) {
+      it(`logs a ${String(statusCode)} from the service at error`, () => {
+        handleBackendError({ statusCode, data: { detail: 'broke' } }, 'create connector')
+
+        expect(error.calledOnce).to.be.true
+        expect(warn.called).to.be.false
+      })
+    }
   })
 })

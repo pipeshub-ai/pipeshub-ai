@@ -398,7 +398,7 @@ describe('storage/utils/utils', () => {
   })
 
   describe('getDocumentInfo - a missing document', () => {
-    it('is a 404 marked to be logged at warn, not error', async () => {
+    it('is a 404, which the error middleware logs at warn', async () => {
       sinon.stub(DocumentModel, 'findOne').resolves(null)
       const next = sinon.stub()
       const req = {
@@ -414,10 +414,9 @@ describe('storage/utils/utils', () => {
 
       const error = next.firstCall.args[0]
       expect(error.statusCode).to.equal(404)
-      expect(error.metadata).to.deep.equal({ logLevel: 'warn' })
     })
 
-    it('leaves a failed lookup unmarked, so it is still logged at error', async () => {
+    it('answers a failed lookup with a 500, which is logged at error', async () => {
       sinon.stub(DocumentModel, 'findOne').rejects(new Error('mongo down'))
       const next = sinon.stub()
       const req = {
