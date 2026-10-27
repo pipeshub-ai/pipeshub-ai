@@ -35,6 +35,7 @@ from app.connectors.services.storage_release import GRACE_MS, StorageReleaseReco
 from app.connectors.sources.localKB.handlers import kb_service as kb_module
 from app.connectors.sources.localKB.push import contract as C
 from app.connectors.sources.localKB.push.contract import PushRefusal
+from tests.integration import real_graph as RG
 from tests.integration.graph_db import test_kb_push_real_backends as IT
 from tests.integration.graph_db.test_kb_push_concurrency_real_backends import (
     soft_delete_on,
@@ -741,6 +742,35 @@ async def test_a_rename_waits_out_a_writer_holding_the_kb_document(env, hold) ->
 
     assert result.get("success") is True, result
     assert (await kb_doc(env))["name"] == "renamed under a held write"
+
+
+async def test_connecting_a_second_test_worker_does_not_stall_an_open_transaction(env, monkeypatch) -> None:
+    """Regression for the stall that failed the race gate on a shared store.
+
+    A second worker's connect ran the schema DDL (CREATE ... IF NOT EXISTS / collection properties),
+    which takes the schema lock even when it creates nothing. Queued behind this worker's open
+    transaction, it held back every later read or new transaction of this worker, among them the push's
+    own pre-commit read: a wait until the store's transaction timeout (120 s Neo4j, 60 s Arango). The
+    connect now reads the schema first and runs the DDL only against a store that lacks it.
+    """
+    logger = IT.logger
+    tx = await env.graph.begin_transaction(read=[APPS], write=[APPS])
+    second = None
+    try:
+        assert await env.graph.update_knowledge_base(kb_id=env.kb_id, updates={"description": "open"}, transaction=tx)
+        connecting = asyncio.ensure_future(
+            RG.connect_arango(logger, IT.ARANGO_DB) if arango(env) else RG.connect_neo4j(logger, monkeypatch)
+        )
+        await asyncio.sleep(1.0)
+        # what the pushing worker does next: a read outside the transaction, and a new transaction
+        assert await asyncio.wait_for(env.graph.get_document(env.kb_id, APPS), 10) is not None
+        other = await asyncio.wait_for(env.graph.begin_transaction(read=[RECORDS], write=[RECORDS]), 10)
+        await env.graph.rollback_transaction(other)
+        second = await asyncio.wait_for(connecting, 30)
+    finally:
+        await env.graph.commit_transaction(tx)
+        if second is not None:
+            await second.disconnect()
 
 
 # ---- the marker itself, on a real store ---------------------------------------------------------------------------
