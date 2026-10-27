@@ -1029,7 +1029,7 @@ export class PgDocumentRepository implements DocumentRepository {
             : { documentPath: r.document_path }),
         };
       if (page.length < 500) return;
-      after = page.at(-1)?.id ?? after;
+      after = page[page.length - 1]?.id ?? after;
     }
   }
 
