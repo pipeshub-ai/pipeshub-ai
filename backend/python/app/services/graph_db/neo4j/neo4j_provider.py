@@ -4586,9 +4586,20 @@ class Neo4jProvider(NamedEntityGraphMixin, IGraphDBProvider):
                 txn_id=transaction,
             )
         except Exception as exc:
-            # The id constraint refuses the second of two racing creates.
+            # The id constraint refuses the second of two racing creates. Another unique constraint
+            # (an email, say) refuses with the same words, and that is a failure of this create, not
+            # a node that exists: "not created" is answered only once the requested key is seen.
             if "already exists" in str(exc) or "ConstraintValidation" in str(exc):
-                return False
+                try:
+                    found = await self.client.execute_query(
+                        f"MATCH (n:{label} {{id: $key}}) RETURN 1 AS found LIMIT 1",
+                        parameters={"key": key},
+                        txn_id=transaction,
+                    )
+                except Exception:
+                    found = None
+                if found:
+                    return False
             raise
         return bool(rows and rows[0].get("created"))
 

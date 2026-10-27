@@ -112,6 +112,8 @@ describe('StorageController retire mark', () => {
         await controller.retireDocumentById(request(id), res, next)
         expect(next.calledOnce, id).to.be.true
         expect(next.firstCall.args[0].statusCode).to.equal(404)
+        // The Python client tells a missing document from a missing route by this code.
+        expect(next.firstCall.args[0].code, id).to.equal('HTTP_NOT_FOUND')
         expect(res.statusCode).to.equal(0)
       }
       expect(foreign.retiredAt).to.equal(null)
