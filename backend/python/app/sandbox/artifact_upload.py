@@ -43,7 +43,18 @@ MIME_TO_ARTIFACT_TYPE: dict[str, ArtifactType] = {
 }
 
 
-def infer_artifact_type(mime_type: str) -> ArtifactType:
+# Source files go by extension: their MIME guesses are unreliable
+# (`mimetypes` reads ".ts" as an MPEG stream or a Qt translation file).
+CODE_FILE_EXTENSIONS = frozenset({
+    ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".java", ".go", ".rs", ".rb",
+    ".php", ".c", ".h", ".cpp", ".cc", ".hpp", ".cs", ".kt", ".swift", ".scala",
+    ".sh", ".sql", ".r",
+})
+
+
+def infer_artifact_type(mime_type: str, file_name: str = "") -> ArtifactType:
+    if os.path.splitext(file_name)[1].lower() in CODE_FILE_EXTENSIONS:
+        return ArtifactType.CODE
     return MIME_TO_ARTIFACT_TYPE.get(mime_type, ArtifactType.OTHER)
 
 
@@ -81,7 +92,7 @@ async def create_artifact_record(
         actor=actor,
         document_id=document_id,
         name=file_name,
-        artifact_type=infer_artifact_type(mime_type),
+        artifact_type=infer_artifact_type(mime_type, file_name),
         mime_type=mime_type,
         size_bytes=size_bytes,
         conversation_id=conversation_id,
@@ -233,7 +244,7 @@ async def upload_bytes_artifact(
             metadata, version = await registry.register_output(
                 actor=actor,
                 name=file_name,
-                artifact_type=infer_artifact_type(mime_type),
+                artifact_type=infer_artifact_type(mime_type, file_name),
                 mime_type=mime_type,
                 content=file_bytes,
                 conversation_id=conversation_id,
@@ -321,7 +332,7 @@ async def upload_artifacts_to_blob(
                 **upload_info,
                 "mimeType": artifact.mime_type,
                 "sizeBytes": artifact.size_bytes,
-                "artifactType": infer_artifact_type(artifact.mime_type).value,
+                "artifactType": infer_artifact_type(artifact.mime_type, artifact.file_name).value,
             }
 
             if user_id and graph_provider:

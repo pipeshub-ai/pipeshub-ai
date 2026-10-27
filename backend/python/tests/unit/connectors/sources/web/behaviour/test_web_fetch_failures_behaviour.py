@@ -20,6 +20,7 @@ from web_behaviour_fakes import (
 )
 
 from app.config.constants.arangodb import ProgressStatus
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.web.politeness import shared_fetch_slots, shared_host_gate
 
 PAGE = "http://site.test/page"
@@ -169,8 +170,11 @@ async def test_the_connection_check_reports_an_unreachable_site(
     site.add(START_URL, Page(status=404, body=b"missing"))
     connector = await make_connector()
 
-    assert await connector.test_connection_and_access() is False
-    assert (await notifications.delivered())[-1]["message"] == f"Website {START_URL} returned status 404"
+    with pytest.raises(ConnectorInitError, match="HTTP status 404"):
+        await connector.test_connection_and_access()
+    assert (await notifications.delivered())[-1]["message"] == (
+        f"Website {START_URL} is not accessible: it returned HTTP status 404."
+    )
 
 
 async def test_the_connection_check_passes_for_a_reachable_site(

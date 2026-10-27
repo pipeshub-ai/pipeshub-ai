@@ -36278,12 +36278,12 @@ paths:
           in: query
           description: |
             Comma-separated gallery artifact types, upper case: `CODE_OUTPUT`, `CHART`,
-            `DOCUMENT`, `IMAGE`, `SPREADSHEET`, `PRESENTATION`, `DATA_FILE`, `CODE`
-            (not `TOOL_RESULT` or `OTHER`). Whitespace around an item and empty items are ignored.
+            `DOCUMENT`, `IMAGE`, `SPREADSHEET`, `PRESENTATION`, `DATA_FILE`, `CODE`, `OTHER`
+            (not `TOOL_RESULT`). Whitespace around an item and empty items are ignored.
           schema:
             type: string
             maxLength: 200
-            pattern: ^\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE)?\s*(?:,\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE)?\s*)*$
+            pattern: ^\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE|OTHER)?\s*(?:,\s*(?:CODE_OUTPUT|CHART|DOCUMENT|IMAGE|SPREADSHEET|PRESENTATION|DATA_FILE|CODE|OTHER)?\s*)*$
         - name: conversationId
           in: query
           schema:

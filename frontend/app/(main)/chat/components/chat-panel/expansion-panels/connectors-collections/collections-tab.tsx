@@ -147,6 +147,9 @@ export function CollectionsTab({
   const { t } = useTranslation();
   const mainChatConnectorDefaultHint = useMainChatConnectorDefaultHint();
 
+  // Page over only the roots this tab shows: a mixed first page can hold no collection at all.
+  const origins = filterMode === 'collections' ? 'COLLECTION' : filterMode === 'connectors' ? 'CONNECTOR' : undefined;
+
   const fetchCollections = useCallback(async () => {
     try {
       setIsLoading(true);
@@ -169,7 +172,7 @@ export function CollectionsTab({
         let pagesFetched = 0;
         while (hasMore && pagesFetched < MAX_ROOT_PAGES_RESTRICT_MODE) {
           pagesFetched += 1;
-          const res = await ChatApi.listCollectionsForChat({ cursor, limit: ROOT_APPS_PAGE_LIMIT });
+          const res = await ChatApi.listCollectionsForChat({ cursor, limit: ROOT_APPS_PAGE_LIMIT, origins });
           const batch = transformToCollectionItems(res.knowledgeBases);
           for (const c of batch) {
             if (seen.has(c.id)) continue;
@@ -199,7 +202,7 @@ export function CollectionsTab({
         setCollectionNamesCache(nameMap);
         setCollectionMetaCache(metaMap);
       } else {
-        const res = await ChatApi.listCollectionsForChat({ limit: ROOT_APPS_PAGE_LIMIT });
+        const res = await ChatApi.listCollectionsForChat({ limit: ROOT_APPS_PAGE_LIMIT, origins });
         const items = transformToCollectionItems(res.knowledgeBases);
         setCollections(items);
         setRootsListMeta(mergeRootsListMeta(res, res.knowledgeBases.length, null));
@@ -218,7 +221,7 @@ export function CollectionsTab({
     } finally {
       setIsLoading(false);
     }
-  }, [restrictToKbIds, setCollectionNamesCache, setCollectionMetaCache]);
+  }, [restrictToKbIds, origins, setCollectionNamesCache, setCollectionMetaCache]);
 
   const loadMoreApps = useCallback(async () => {
     if (!rootsListMeta?.hasMore || loadingMoreApps) return;
@@ -227,6 +230,7 @@ export function CollectionsTab({
       const res = await ChatApi.listCollectionsForChat({
         cursor: rootsListMeta.nextCursor,
         limit: ROOT_APPS_PAGE_LIMIT,
+        origins,
       });
       const newItems = transformToCollectionItems(res.knowledgeBases);
       setCollections((prev) => {
@@ -257,7 +261,7 @@ export function CollectionsTab({
     } finally {
       setLoadingMoreApps(false);
     }
-  }, [rootsListMeta, loadingMoreApps, setCollectionNamesCache, setCollectionMetaCache]);
+  }, [rootsListMeta, loadingMoreApps, origins, setCollectionNamesCache, setCollectionMetaCache]);
 
   useEffect(() => {
     fetchCollections();

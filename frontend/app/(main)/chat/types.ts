@@ -1276,6 +1276,8 @@ export interface SearchResultMetadata {
   previewRenderable?: boolean;
   hideWeburl?: boolean;
   kbId?: string | null;
+  /** ISO time the record last synced. */
+  updatedAt?: string;
   blockIndex?: number;
   isBlock?: boolean;
   isBlockGroup?: boolean;

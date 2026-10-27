@@ -441,3 +441,15 @@ describe('Picker tree — searching below the roots', () => {
     expect(api.searchNodes).not.toHaveBeenCalled();
   });
 });
+
+describe('Picker tree — collections and connectors tabs', () => {
+  it('pages over the roots of the tab it shows, not every app', async () => {
+    // The server answers with collections only, though connectors were updated more recently.
+    api.listCollectionsForChat.mockResolvedValue({ knowledgeBases: [root('alpha', 'GS-Alpha', true)], nextCursor: null });
+
+    render(<Host filterMode="collections" />);
+
+    expect(await screen.findByText('GS-Alpha')).toBeTruthy();
+    expect(api.listCollectionsForChat).toHaveBeenCalledWith(expect.objectContaining({ origins: 'COLLECTION' }));
+  });
+});

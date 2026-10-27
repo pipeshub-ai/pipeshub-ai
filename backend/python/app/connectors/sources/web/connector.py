@@ -35,7 +35,10 @@ from app.config.constants.arangodb import (
 )
 from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.service import DefaultEndpoints, config_node_constants
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -101,6 +104,7 @@ from app.connectors.sources.web.fetch_strategy import (
     FetchResponse,
     build_crawler_headers,
     fetch_url_with_fallback,
+    refusal_reason,
     too_many_redirects_response,
     unsafe_address_response,
 )
@@ -849,7 +853,10 @@ class WebConnector(BaseConnector):
             raise
 
     async def test_connection_and_access(self) -> bool:  # type: ignore[override]
-        """Test if the website is accessible using the multi-strategy fallback."""
+        """Test if the website is accessible using the multi-strategy fallback.
+
+        Raises ConnectorInitError with the reason when the site can't be fetched, so the
+        user sees that instead of the generic "verify your credentials" message."""
         if not self.url or not self.session:
             return False
 
@@ -861,34 +868,26 @@ class WebConnector(BaseConnector):
                 logger=self.logger,
                 max_retries_per_strategy=1,  # keep it fast for a connection test
             )
-
-            if result is None:
-                self.logger.warning(f"⚠️ Website not accessible: {self.url}")
-                await self.notify(
-                    type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
-                    severity=NotificationSeverity.ERROR,
-                    title=f"Website not accessible",
-                    message=f"Website {self.url} is not accessible.",
-                )
-                return False
-
-            if result.status_code < HttpStatusCode.BAD_REQUEST.value:
-                return True
-            else:
-                self.logger.warning(
-                    f"⚠️ Website returned status {result.status_code}: {self.url}"
-                )
-                await self.notify(
-                    type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
-                    severity=NotificationSeverity.ERROR,
-                    title=f"Website not accessible",
-                    message=f"Website {self.url} returned status {result.status_code}",
-                )
-                return False
-
         except Exception as e:
             self.logger.error(f"❌ Failed to access website: {e}")
-            return False
+            raise ConnectorInitError(f"Website {self.url} is not accessible: it could not be reached.") from e
+
+        if result is not None and result.status_code < HttpStatusCode.BAD_REQUEST.value:
+            return True
+
+        if result is None:
+            reason = "it could not be reached"
+        else:
+            reason = refusal_reason(result) or f"it returned HTTP status {result.status_code}"
+        message = f"Website {self.url} is not accessible: {reason}."
+        self.logger.warning(f"⚠️ {message}")
+        await self.notify(
+            type=NotificationType.CONNECTOR_NOT_ACCESSIBLE,
+            severity=NotificationSeverity.ERROR,
+            title="Website not accessible",
+            message=message,
+        )
+        raise ConnectorInitError(message)
 
     def get_app_users(self, users: List[User]) -> List[AppUser]:
         """Convert User objects to AppUser objects."""
