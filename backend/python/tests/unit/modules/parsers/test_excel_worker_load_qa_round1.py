@@ -59,11 +59,13 @@ def test_the_decompressed_bytes_cap_refuses_a_workbook_that_would_fit_the_allowa
     )  # the same workbook loads under the real cap
 
 
-def test_blocks_are_not_a_multiple_of_the_workbook_text_they_repeat() -> None:
+def test_blocks_are_not_a_multiple_of_the_workbook_text_they_repeat(monkeypatch: pytest.MonkeyPatch) -> None:
     # The worker bounds the load, not what the parent builds from the model: a shared string used by
     # many cells is one object in the workbook and one copy per use in the blocks. 60 strings of
     # 30 KB (1.8 MB of XML) used by 25 cells each (1.5 MB file after compression: tiny) become about
     # 25x that in the parent; at the 400 MB decompressed cap the same shape needs more than 10 GB.
+    # The text the blocks would hold (a shared string counted per use) is bounded before any block
+    # is built: over EXCEL_MAX_TEXT_CHARS the workbook is refused.
     n, width, uses = 60, 30_000, 25
     strings = "".join(
         f"<si><t>{chr(97 + i % 26)}{i:04d}{'x' * width}</t></si>" for i in range(n)
@@ -78,12 +80,14 @@ def test_blocks_are_not_a_multiple_of_the_workbook_text_they_repeat() -> None:
         + "</row>"
         for i in range(n)
     )
-    parser = load(
-        workbook_zip(
-            f"<sheetData>{rows}</sheetData>", extra={"xl/sharedStrings.xml": sst}
-        )
-    )
-    produced = len(parser._build_basic_block_container().model_dump_json())
-    assert produced < 4 * len(sst), (
-        f"{produced} bytes of blocks from {len(sst)} bytes of shared strings"
-    )
+    data = workbook_zip(f"<sheetData>{rows}</sheetData>", extra={"xl/sharedStrings.xml": sst})
+    text = n * uses * width  # what the blocks would hold, about 25x the shared-string XML
+
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", text // 2)
+    with pytest.raises(ParseError) as raised:
+        load(data)
+    assert raised.value.message == user_errors.EXCEL_TOO_LARGE
+
+    monkeypatch.setattr(module, "EXCEL_MAX_TEXT_CHARS", text * 2)
+    produced = len(load(data)._build_basic_block_container().model_dump_json())
+    assert produced < 4 * text, f"{produced} bytes of blocks for {text} characters of cell text"
