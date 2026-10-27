@@ -1454,7 +1454,9 @@
       "retry": "重試",
       "files_one": "{{count}} 個檔案",
       "files_other": "{{count}} 個檔案",
-      "full": "最多可排隊 {{count}} 則訊息。請等待一則送出，或移除一則。"
+      "full": "最多可排隊 {{count}} 則訊息。請等待一則送出，或移除一則。",
+      "collapse": "隱藏排隊的訊息",
+      "expand": "顯示排隊的訊息"
     }
   },
   "workspaceMenu": {

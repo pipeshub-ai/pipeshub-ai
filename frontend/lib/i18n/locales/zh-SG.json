@@ -1454,7 +1454,9 @@
       "retry": "重试",
       "files_one": "{{count}} 个文件",
       "files_other": "{{count}} 个文件",
-      "full": "最多可排队 {{count}} 条消息。请等待一条发送完毕，或移除一条。"
+      "full": "最多可排队 {{count}} 条消息。请等待一条发送完毕，或移除一条。",
+      "collapse": "隐藏排队的消息",
+      "expand": "显示排队的消息"
     }
   },
   "workspaceMenu": {

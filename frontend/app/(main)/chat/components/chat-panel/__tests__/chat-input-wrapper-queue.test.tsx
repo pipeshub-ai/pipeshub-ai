@@ -134,6 +134,29 @@ describe('ChatInputWrapper: the questions queue', () => {
     expect(useToastStore.getState().toasts).toHaveLength(1);
   });
 
+  it('takes five at most', () => {
+    expect(MAX_QUEUED_SENDS).toBe(5);
+  });
+
+  it('folds down to its title and opens again, keeping what waits', () => {
+    const slotId = streamingChat();
+    ['first', 'second'].forEach((query) => queueSend(slotId, { query }));
+    mount();
+    const toggle = screen.getByTestId('queue-toggle');
+    expect(toggle.getAttribute('aria-expanded')).toBe('true');
+    expect(screen.getAllByTestId('queued-row')).toHaveLength(2);
+
+    fireEvent.click(toggle);
+    expect(toggle.getAttribute('aria-expanded')).toBe('false');
+    expect(toggle.getAttribute('aria-label')).toBe('Show queued messages');
+    expect(screen.getByRole('list', { hidden: true }).hidden).toBe(true);
+    expect(screen.getByTestId('queue-list').textContent).toContain('Queued · 2');
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole('list').hidden).toBe(false);
+    expect(queueOf(slot(slotId)).map((q) => q.query)).toEqual(['first', 'second']);
+  });
+
   it('edits one back into an empty box, removes one, and clears them all', () => {
     const slotId = streamingChat();
     ['first', 'second', 'third'].forEach((query) => queueSend(slotId, { query }));

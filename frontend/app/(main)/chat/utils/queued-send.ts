@@ -12,7 +12,7 @@ import { toast } from '@/lib/store/toast-store';
  */
 
 /** At most this many questions wait per chat, the paired slot's included. */
-export const MAX_QUEUED_SENDS = 10;
+export const MAX_QUEUED_SENDS = 5;
 
 /** What a send hands the queue; the queue adds its id and time. */
 export type QueuedMessage = Omit<QueuedSend, 'clientMessageId' | 'queuedAt' | 'failed'>;

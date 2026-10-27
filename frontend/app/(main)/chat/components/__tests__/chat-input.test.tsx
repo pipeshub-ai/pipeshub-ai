@@ -1188,7 +1188,9 @@ describe('ChatInput — @ in agent and project chats', () => {
     toolCatalogFullNames: [],
   });
 
-  it('offers @ in a project chat, with the project’s own sources first where their names are known', () => {
+  // @ is off in both: their sources can't be searched in one request. The scope's sources are still worked out for a
+  // field that offers @ there.
+  it('offers no @ in a project chat; the project’s own sources come first where their names are known', () => {
     useChatStore.setState({
       projectScope: projectScope({ apps: ['app-1'], kb: ['kb-1'] }),
       collectionNamesCache: { 'app-1': 'Jira' },
@@ -1196,18 +1198,18 @@ describe('ChatInput — @ in agent and project chats', () => {
     });
     renderInput();
     const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
-    expect(off).toBeFalsy();
+    expect(off).toBe(true);
     expect(context?.preferredSources).toEqual([expect.objectContaining({ id: 'app-1', name: 'Jira', nodeType: 'app' })]);
   });
 
-  it('offers @ in an agent chat, with the agent’s knowledge first', () => {
+  it('offers no @ in an agent chat; the agent’s knowledge comes first', () => {
     useChatStore.setState({
       agentKnowledgeDefaults: { apps: [], kb: ['kb-9'] },
       collectionNamesCache: { 'kb-9': 'Handbook' },
     });
     renderInput({ isAgentChat: true, agentId: 'agent-1' });
     const [off, context] = mentionField.rendered.mock.calls.at(-1) ?? [];
-    expect(off).toBeFalsy();
+    expect(off).toBe(true);
     expect(context?.preferredSources).toEqual([expect.objectContaining({ id: 'kb-9', name: 'Handbook' })]);
   });
 

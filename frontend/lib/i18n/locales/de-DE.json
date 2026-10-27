@@ -1371,7 +1371,9 @@
       "retry": "Erneut versuchen",
       "files_one": "{{count}} Datei",
       "files_other": "{{count}} Dateien",
-      "full": "Sie können bis zu {{count}} Nachrichten in die Warteschlange stellen. Warten Sie, bis eine gesendet ist, oder entfernen Sie eine."
+      "full": "Sie können bis zu {{count}} Nachrichten in die Warteschlange stellen. Warten Sie, bis eine gesendet ist, oder entfernen Sie eine.",
+      "collapse": "Warteschlange einklappen",
+      "expand": "Warteschlange ausklappen"
     }
   },
   "workspaceMenu": {

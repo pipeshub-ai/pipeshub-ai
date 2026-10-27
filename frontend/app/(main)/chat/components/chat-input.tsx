@@ -445,8 +445,9 @@ export function ChatInput({
   const setProjectKnowledgeScope = useChatStore((s) => s.setProjectKnowledgeScope);
   const projectStreamToolsSel = useChatStore((s) => s.projectStreamTools);
   const isProjectChat = !isAgentChat && projectScope !== null;
-  // Editing or regenerating re-asks with the filters the question was first sent with, so @ offers nothing then.
-  const mentionsOff = isActionMode;
+  // An agent's or project's sources can't be searched in one request, so @ offers nothing there.
+  // Editing or regenerating re-asks with the filters the question was first sent with.
+  const mentionsOff = isAgentChat || isProjectChat || isActionMode;
   /**
    * The composer shows the scoped Connectors·Collections·Actions·MCP panel (agent or project
    * allow-list) instead of the org-wide pickers. Web search has no knowledge scope.

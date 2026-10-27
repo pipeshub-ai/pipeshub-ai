@@ -1391,7 +1391,9 @@
       "files_one": "{{count}} archivo",
       "files_many": "{{count}} archivos",
       "files_other": "{{count}} archivos",
-      "full": "Puedes poner en cola hasta {{count}} mensajes. Espera a que se envíe uno o quita uno."
+      "full": "Puedes poner en cola hasta {{count}} mensajes. Espera a que se envíe uno o quita uno.",
+      "collapse": "Ocultar mensajes en cola",
+      "expand": "Mostrar mensajes en cola"
     }
   },
   "workspaceMenu": {

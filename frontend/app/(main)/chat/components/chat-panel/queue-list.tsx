@@ -1,5 +1,6 @@
 'use client';
 
+import { useId, useState } from 'react';
 import { Button, Flex, IconButton, Text } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -11,7 +12,8 @@ import { clearQueue, editQueued, queueOf, removeQueued, retryQueued } from '../.
 
 /**
  * The questions waiting their turn, above the box: the slot's, then its paired slot's, each in the order they go.
- * Each can be edited back into an empty box, removed, or tried again once refused.
+ * Each can be edited back into an empty box, removed, or tried again once refused. The list folds down to its title, so
+ * a long queue never hides the chat.
  */
 export function QueueList({ slotId }: { slotId: string | null }) {
   const { t } = useTranslation();
@@ -20,6 +22,8 @@ export function QueueList({ slotId }: { slotId: string | null }) {
   const pairedQueue = useChatStore((s) => (pairedId ? s.slots[pairedId]?.queue : undefined));
   const boxHasText = useChatStore((s) => (slotId ? s.slots[slotId]?.composerHasText === true : false));
   const view = chatSlots.useQueueList({ slotId, pairedSlotId: pairedId });
+  const [open, setOpen] = useState(true);
+  const listId = useId();
 
   const rows = [
     ...(slotId ? queueOf({ queue: ownQueue }).map((item) => ({ slotId, item, paired: false })) : []),
@@ -45,11 +49,27 @@ export function QueueList({ slotId }: { slotId: string | null }) {
         <Text size="1" style={{ color: 'var(--slate-11)', flex: '1 1 8rem', minWidth: 0 }}>
           {view.hint ?? t('chat.queue.hint')}
         </Text>
-        <Button size="1" variant="ghost" color="gray" onClick={clearAll} data-testid="queue-clear" style={{ ...FLUSH, marginLeft: 'auto' }}>
-          {t('chat.queue.clearAll')}
-        </Button>
+        <Flex align="center" gap="2" style={{ marginLeft: 'auto' }}>
+          <Button size="1" variant="ghost" color="gray" onClick={clearAll} data-testid="queue-clear" style={FLUSH}>
+            {t('chat.queue.clearAll')}
+          </Button>
+          <IconButton
+            size="1"
+            variant="ghost"
+            color="gray"
+            aria-expanded={open}
+            aria-controls={listId}
+            aria-label={open ? t('chat.queue.collapse') : t('chat.queue.expand')}
+            title={open ? t('chat.queue.collapse') : t('chat.queue.expand')}
+            onClick={() => setOpen((was) => !was)}
+            data-testid="queue-toggle"
+            style={FLUSH}
+          >
+            <MaterialIcon name={open ? 'expand_more' : 'expand_less'} size={16} />
+          </IconButton>
+        </Flex>
       </Flex>
-      <ul aria-label={t('chat.queue.listLabel')} style={LIST}>
+      <ul id={listId} hidden={!open} aria-label={t('chat.queue.listLabel')} style={LIST}>
         {rows.map(({ slotId: rowSlotId, item, paired }) => (
           <QueueRow
             key={item.clientMessageId}
@@ -151,7 +171,7 @@ const BOX = {
   borderRadius: 'var(--radius-3) var(--radius-3) 0 0',
 } as const;
 
-// Ten rows at most (the cap); past about five the list scrolls, so the chat stays in view.
+// Five rows at most (the cap), so the list rarely scrolls; folded, only its title stays.
 const LIST = { listStyle: 'none', margin: 0, padding: 0, maxHeight: '11rem', overflowY: 'auto' } as const;
 const ROW = { display: 'flex', flexDirection: 'column', gap: 2, padding: '2px 0' } as const;
 // Two lines at most, so a phone shows most of a question (no hover there for the title); a long word breaks.
