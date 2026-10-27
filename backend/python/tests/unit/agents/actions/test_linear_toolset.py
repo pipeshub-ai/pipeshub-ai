@@ -16,8 +16,14 @@ def _tool() -> Linear:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("bad", ["", "{not json", "[1, 2]", '"text"', "42", "null", "   ", '"{\\"state\\": 1}"'])
-async def test_get_issues_rejects_unparsable_filter(bad: str) -> None:
+@pytest.mark.parametrize("bad", [
+    "", "{not json", "[1, 2]", '"text"', "42", "null", "   ", '"{\\"state\\": 1}"',
+    "true", "1.5", "NaN", '{"a": 1} x', '[{"a": 1}]', "\ufeff{}",
+    pytest.param("[" * 200_000, id="deeply-nested"),
+    pytest.param(42, id="int-not-a-string"),
+    pytest.param({"state": {"name": {"eq": "Done"}}}, id="dict-not-a-string"),
+])
+async def test_get_issues_rejects_unparsable_filter(bad: object) -> None:
     tool = _tool()
     ok, out = await tool.get_issues(filter=bad)
     assert ok is False
@@ -41,3 +47,11 @@ async def test_get_issues_without_filter_queries_unfiltered() -> None:
     ok, _ = await tool.get_issues()
     assert ok is True
     tool.client.issues.assert_awaited_once_with(first=None, after=None, filter=None)
+
+
+@pytest.mark.asyncio
+async def test_get_issues_passes_an_empty_filter_object_through() -> None:
+    tool = _tool()
+    ok, _ = await tool.get_issues(filter="{}")
+    assert ok is True
+    tool.client.issues.assert_awaited_once_with(first=None, after=None, filter={})

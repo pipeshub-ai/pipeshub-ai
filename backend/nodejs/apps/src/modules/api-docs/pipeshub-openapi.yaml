@@ -8638,27 +8638,37 @@ components:
         apps:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied app/connector filter nodes
         kb:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied knowledge-base filter nodes
         recordGroups:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record-group filter nodes
         records:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied folder and record filter nodes (each with everything under it)
         recordsExact:
           type: array
           items:
-            $ref: '#/components/schemas/AppliedFilterNode'
+            anyOf:
+              - $ref: '#/components/schemas/AppliedFilterNode'
+              - $ref: '#/components/schemas/RedactedSource'
           description: Applied record filter nodes selected alone
     ChatAttachmentRef:
       type: object
@@ -9894,6 +9904,7 @@ components:
             anyOf:
               - $ref: '#/components/schemas/CitationReference'
               - $ref: '#/components/schemas/PopulatedCitationReference'
+              - $ref: '#/components/schemas/RedactedSource'
           description: |
             References to source documents used in the response. Routes that
             return the saved conversation after a turn (create, add message)
@@ -9942,33 +9953,35 @@ components:
             Reference identifiers extracted from tool responses, used to scope
             follow-up queries (for example Jira project keys or record IDs).
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -9997,6 +10010,26 @@ components:
         updatedAt:
           type: string
           format: date-time
+    RedactedSource:
+      type: object
+      additionalProperties: false
+      description: |
+        Stands in for a source the viewer of a shared chat or search cannot read:
+        a citation, reference, filter node or search hit with no id, name, link or
+        text. Only the owner of a conversation or search sees every source.
+      required:
+        - redacted
+        - reason
+      properties:
+        redacted:
+          type: boolean
+          enum: [true]
+        reason:
+          type: string
+          enum: [no_access]
+        name:
+          type: string
+          description: A neutral label (`Restricted source`).
     CitationReference:
       type: object
       additionalProperties: false
@@ -11481,6 +11514,16 @@ components:
             is always a plain ranked search. A server whose `TIMELINE_SUMMARIES` setting is
             `false` ignores the field and never runs a timeline.
           example: created
+        saveHistory:
+          type: boolean
+          default: true
+          description: |
+            Whether the search is saved to the caller's search history (`GET /search`)
+            with a citation for each match. Set it to `false` for searches that are not
+            the user's own, such as an agent searching on their behalf: nothing is
+            stored and the response has no `searchId`. A server older than this field
+            ignores it and saves the search.
+          example: false
     SemanticSearchBoundingBox:
       type: object
       additionalProperties: false
@@ -12186,16 +12229,17 @@ components:
       additionalProperties: false
       description: |
         Immediate POST `/search` response: persisted search id plus the raw retrieval payload.
+        `searchId` is absent when the request set `saveHistory` to `false`.
         SDK-oriented modeling: named fields only at this level; dynamic-key maps inside `searchResponse` use
         `additionalProperties` with a `$ref` (e.g. `virtual_to_record_map`) rather than boolean `additionalProperties: true`,
         so generated clients retain typed values where possible.
       required:
-        - searchId
         - searchResponse
       properties:
         searchId:
           type: string
           format: objectId
+          description: The saved search, for `GET /search/{searchId}`. Absent when `saveHistory` is `false`.
         searchResponse:
           $ref: '#/components/schemas/SemanticSearchAiResponse'
     PersistedSemanticSearchBoundingBox:
@@ -12427,8 +12471,13 @@ components:
           format: objectId
         citationIds:
           type: array
+          description: |
+            For a search shared with the viewer, a hit the viewer cannot read is a
+            `RedactedSource`.
           items:
-            $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+            anyOf:
+              - $ref: '#/components/schemas/PersistedSemanticSearchCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         records:
           type: object
           description: |
@@ -12519,6 +12568,9 @@ components:
           items:
             type: string
             format: objectId
+          description: |
+            Hit ids. For a search shared with the viewer the ids are not returned
+            (they cannot be checked against the viewer's access), so the array is empty.
         records:
           type: object
           description: |
@@ -15263,7 +15315,9 @@ components:
         citations:
           type: array
           items:
-            $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+            anyOf:
+              - $ref: '#/components/schemas/AgentConversationDetailMessageCitation'
+              - $ref: '#/components/schemas/RedactedSource'
         confidence:
           type: string
           enum: ['Very High', 'High', 'Medium', 'Low', 'Unknown']
@@ -15287,33 +15341,35 @@ components:
             Reference identifiers surfaced from tool responses, used to scope
             follow-up queries.
           items:
-            type: object
-            additionalProperties: false
-            properties:
-              name:
-                type: string
-                description: Display name shown to the user.
-              id:
-                type: string
-                description: Technical identifier (numeric ID, UUID, etc.).
-              type:
-                type: string
-                description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
-              app:
-                type: string
-                description: |
-                  Source application (e.g. `jira`, `confluence`, `sharepoint`,
-                  `slack`, `drive`, `gmail`).
-              webUrl:
-                type: string
-                description: URL to open the item in a browser.
-              metadata:
-                type: object
-                additionalProperties:
-                  type: string
-                description: |
-                  App-specific fields keyed by name (e.g. `key` for a Jira project,
-                  `siteId` for a SharePoint document).
+            anyOf:
+              - type: object
+                additionalProperties: false
+                properties:
+                  name:
+                    type: string
+                    description: Display name shown to the user.
+                  id:
+                    type: string
+                    description: Technical identifier (numeric ID, UUID, etc.).
+                  type:
+                    type: string
+                    description: Item type (e.g. `project`, `issue`, `file`, `notebook`, `page`).
+                  app:
+                    type: string
+                    description: |
+                      Source application (e.g. `jira`, `confluence`, `sharepoint`,
+                      `slack`, `drive`, `gmail`).
+                  webUrl:
+                    type: string
+                    description: URL to open the item in a browser.
+                  metadata:
+                    type: object
+                    additionalProperties:
+                      type: string
+                    description: |
+                      App-specific fields keyed by name (e.g. `key` for a Jira project,
+                      `siteId` for a SharePoint document).
+              - $ref: '#/components/schemas/RedactedSource'
         attachments:
           type: array
           description: |
@@ -47301,7 +47357,8 @@ paths:
         The response returns a `searchId` for the persisted search along
         with ranked matches, each carrying a relevance score and the
         source document's metadata. Past searches can be retrieved via
-        `GET /search`.
+        `GET /search`. With `saveHistory: false` nothing is saved and
+        there is no `searchId`.
 
         **Scopes:** an OAuth token needs `semantic:write`. The gateway also lets a token holding
         only `semantic:read` through, but the search service then refuses it with the same `403`

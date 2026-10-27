@@ -37,6 +37,7 @@ from app.connectors.services.vector_cleanup_events import (
     log_cleanup_publish_failure,
 )
 from app.connectors.core.base.data_processor.data_source_entities_processor import RestoreRefused
+from app.connectors.sources.localKB.push.contract import is_pushed_revision
 from app.models.entities import FileRecord, RecordType
 from app.models.source_dates import (
     UPLOAD_SOURCE_CREATED_FIELD,
@@ -1439,6 +1440,18 @@ class KnowledgeBaseService:
             record = await self.graph_provider.get_file_record_by_id(record_id)
             if not record:
                 return {"success": False, "code": 404, "reason": "Record not found"}
+
+            if file_metadata is not None and is_pushed_revision(record.external_revision_id):
+                # A pushed record's bytes come only from a push: a replaced file would leave its
+                # revision naming content the storage document no longer holds.
+                return {
+                    "success": False,
+                    "code": 409,
+                    "reason": (
+                        "RECORD_IS_PUSHED: this record was pushed through the API. "
+                        "Push a new version of it instead of replacing its file."
+                    ),
+                }
 
             timestamp = get_epoch_timestamp_in_ms()
             if "recordName" in updates:

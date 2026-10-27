@@ -67,8 +67,8 @@ ARG BUNDLE_BGE_EMBEDDING=1
 # Verified against the ML stack pinned in backend/python/pyproject.toml (transformers,
 # sentence-transformers, docling).
 # Bump both together when upgrading ML deps in backend/python/pyproject.toml.
-ARG TORCH_VERSION=2.12.0
-ARG TORCHVISION_VERSION=0.27.0
+ARG TORCH_VERSION=2.13.0
+ARG TORCHVISION_VERSION=0.28.0
 
 # Base for the python-deps stage.  Default builds from scratch using the local
 # build-base stage.  Override with the previously-published image for incremental

@@ -31,7 +31,10 @@ from app.api.middlewares.auth import (
     service_token_org,
 )
 from app.config.constants.service import TokenScopes
-from app.exceptions.indexing_exceptions import PasswordProtectedError
+from app.exceptions.indexing_exceptions import (
+    MultimodalModelNotConfiguredError,
+    PasswordProtectedError,
+)
 from app.modules.parsers.encryption import raise_if_password_protected_office
 from app.services.model_identity.propagation import scope_from_claims
 from app.services.model_identity.workload import Workload
@@ -54,6 +57,7 @@ from app.services.resource_governor.memory_domain import (
 from app.services.resource_governor.org_share import OrgShare, max_org_share
 from app.utils.request_context import current_display_id
 from app.utils.semaphore_logger import SemaphoreLogger
+from app.utils.user_errors import SCANNED_DOCUMENT_NEEDS_OCR
 
 logger = logging.getLogger(__name__)
 
@@ -255,6 +259,23 @@ async def parse_file(
                     "success": False,
                     "error": ParseError(
                         ParseErrorCode.PASSWORD_REQUIRED, exc.message, exc.details
+                    ).to_dict(),
+                },
+            )
+        except MultimodalModelNotConfiguredError as exc:
+            logger.warning(
+                "Parse refused: record='%s' provider=%s: %s",
+                record_name, provider_enum.value, exc.message,
+            )
+            # A fact about the org's AI settings, not an outage: as a 500 the
+            # indexer retried it as transient and then told the person of a
+            # "temporary problem". The message is the reason the record stores.
+            return JSONResponse(
+                status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+                content={
+                    "success": False,
+                    "error": ParseError(
+                        ParseErrorCode.PARSE_FAILED, SCANNED_DOCUMENT_NEEDS_OCR, exc.details
                     ).to_dict(),
                 },
             )

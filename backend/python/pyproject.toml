@@ -321,6 +321,9 @@ dependencies = [
     "PyJWT==2.15.1",
     "pyyaml>=6.0",
     "redshift_connector==2.2.0",
+    # A runtime dependency of redshift_connector and torch that neither bounds; 84.1.0 fixes
+    # GHSA-h35f-9h28-mq5c and GHSA-xmj3-9gf7-h52w.
+    "setuptools>=84.1.0",
     "regex>=2024.11.6",
     # PDF generation libs for the coding sandbox. Pure-Python, no native deps.
     # Pre-shipping these means offline sandbox hosts don't have to hit PyPI

@@ -48,6 +48,10 @@ on:
       - 'backend/python/app/connectors/core/base/data_processor/**'
       - 'backend/python/app/connectors/core/base/data_store/**'
       - 'backend/python/app/modules/transformers/**'
+      # Knowledge-base push: its real-graph tests (graph_db/test_kb_push_*) drive the push service itself.
+      - 'backend/python/app/connectors/sources/localKB/**'
+      - 'backend/python/app/services/storage_documents.py'
+      - 'backend/python/app/modules/indexing/record_republish.py'
       # Connectors whose real-graph tests drive the connector itself (graph_db/test_<name>_*).
       - 'backend/python/app/connectors/sources/linear/**'
       - 'backend/python/app/sources/client/linear/**'

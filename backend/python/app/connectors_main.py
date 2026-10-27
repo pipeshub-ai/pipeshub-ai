@@ -63,7 +63,7 @@ from app.connectors.core.sync.task_manager import (
 )
 from app.connectors.core.thread_pool import get_shared_connector_thread_pool
 from app.connectors.api.artifacts_router import artifacts_router
-from app.connectors.sources.localKB.api.kb_router import kb_router
+from app.connectors.sources.localKB.api.kb_router import install_push_routes, kb_router
 from app.connectors.sources.localKB.api.knowledge_hub_router import (
     get_knowledge_hub_service,
     knowledge_hub_router,
@@ -1622,6 +1622,7 @@ app.include_router(toolsets_router)
 app.include_router(mcp_servers_router)
 app.include_router(api_toolsets_router)
 app.include_router(kb_router)
+install_push_routes(app)  # the push routes and the ENABLE_KB_PUSH gate (off by default)
 app.include_router(knowledge_hub_router)
 app.include_router(demo_data_router)
 app.include_router(connector_router)
