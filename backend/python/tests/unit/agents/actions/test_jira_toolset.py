@@ -608,6 +608,37 @@ class TestNormalizeIssuesInResponse:
         assert "sp" not in out["fields"]
 
 
+    @pytest.mark.asyncio
+    async def test_custom_field_appears_once_under_readable_name(self):
+        field_schema = {"customfield_10063": {"name": "Story Points", "normalized": "story_points"}}
+        data = {"issues": [{"fields": {"customfield_10063": 5}}]}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert out["issues"][0]["fields"] == {"story_points": 5}
+
+    @pytest.mark.asyncio
+    async def test_single_issue_custom_field_id_is_not_repeated(self):
+        field_schema = {"customfield_10063": {"name": "Story Points", "normalized": "story_points"}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_10063": 3}}, field_schema)
+        assert out["fields"] == {"story_points": 3}
+
+    @pytest.mark.asyncio
+    async def test_custom_field_keeps_id_when_readable_name_is_taken(self):
+        field_schema = {
+            "customfield_1": {"name": "Sprint", "normalized": "sprint"},
+            "customfield_2": {"name": "Sprint", "normalized": "sprint"},
+        }
+        data = {"fields": {"customfield_1": "A", "customfield_2": "B"}}
+        out = await _build_jira()._normalize_issues_in_response(data, field_schema)
+        assert sorted(map(str, out["fields"].values())) == ["A", "B"]
+        assert len(out["fields"]) == 2
+
+    @pytest.mark.asyncio
+    async def test_custom_field_keeps_id_when_readable_name_is_empty(self):
+        field_schema = {"customfield_1": {"name": "???", "normalized": ""}}
+        out = await _build_jira()._normalize_issues_in_response({"fields": {"customfield_1": 1}}, field_schema)
+        assert out["fields"] == {"customfield_1": 1}
+
+
 # ===========================================================================
 # _add_urls_to_issue_references
 # ===========================================================================
