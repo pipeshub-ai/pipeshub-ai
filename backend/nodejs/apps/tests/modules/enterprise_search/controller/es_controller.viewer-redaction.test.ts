@@ -273,6 +273,12 @@ describe('shared chats: per-viewer citations', () => {
     expect(readable.urls.size).to.equal(0)
   })
 
+  it('an access reply whose list holds a non-string entry admits nothing', async () => {
+    sinon.stub(AIServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: { accessible: [['rec-no'], 'rec-ok'], accessibleUrls: [] } } as any)
+    const readable = await readableRecordIds(appConfig, { userId: VIEWER, orgId: ORG }, ['rec-no', 'rec-ok'])
+    expect(readable.ids.size).to.equal(0)
+  })
+
   it('access checks are batched at 500 ids per call and ids are checked once', async () => {
     const asked = stubAccess([])
     const ids = Array.from({ length: 1203 }, (_, i) => `r${i % 1100}`)
