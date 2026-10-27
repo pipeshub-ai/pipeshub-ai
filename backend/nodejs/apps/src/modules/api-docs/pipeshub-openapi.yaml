@@ -32195,14 +32195,15 @@ paths:
           description: |
             The team service could not be reached (for example, it is still
             starting), or the caller's account could not be read because the
-            database was unreachable. Safe to retry; when the service sent
-            `Retry-After`, wait that many seconds first.
+            database was unreachable. Safe to retry; when the response carries
+            `Retry-After`, wait until it says first (a number of seconds or an
+            HTTP date).
           headers:
             Retry-After:
-              description: Seconds to wait before retrying.
+              description: Seconds to wait before retrying, or the HTTP date to retry after.
               schema:
-                type: integer
-                example: 5
+                type: string
+                example: '5'
           content:
             application/json:
               schema:
