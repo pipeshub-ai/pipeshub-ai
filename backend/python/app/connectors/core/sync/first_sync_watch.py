@@ -104,7 +104,7 @@ async def _mark_ready(
         return True
     name = app.get("name") or app.get("type") or "Your connector"
     connector_type = app.get("type") or ""
-    await notification_service.publish_notification(
+    sent = await notification_service.publish_notification(
         org_id=org_id,
         origin=NotificationOrigin.CONNECTOR,
         type=NotificationType.CONNECTOR_SUCCESS,
@@ -122,4 +122,13 @@ async def _mark_ready(
         ),
         recipient_user_ids=recipients,
     )
+    if not sent:
+        # Give the claim back so the next pass tries again; the chat note keys off it too.
+        await graph_provider.update_node_fields_if_match(
+            connector_id,
+            CollectionNames.APPS.value,
+            {ConnectorStateKeys.AWAITING_FIRST_SYNC: True, ConnectorStateKeys.READY_AT: None},
+            {ConnectorStateKeys.AWAITING_FIRST_SYNC: False},
+        )
+        return False
     return True

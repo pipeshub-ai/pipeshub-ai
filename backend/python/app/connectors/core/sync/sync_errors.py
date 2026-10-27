@@ -41,19 +41,31 @@ _CHAIN_LIMIT = 6
 
 # Checked in this order: a class named for what went wrong beats a status code
 # on some inner response, and a status code beats a phrase in a message.
+# Each needle is one or more whole CamelCase words run together, so ``auth``
+# matches ``OAuthError`` and ``ZendeskAuthError`` but not ``AuthorNotFound``.
 _NAME_RULES: tuple[tuple[tuple[str, ...], SyncErrorCode], ...] = (
     (("incomplete",), SyncErrorCode.INCOMPLETE),
-    (("quota", "ratelimit", "throttl"), SyncErrorCode.RATE_LIMIT),
-    (("auth", "credential", "passwordrejected", "tokeninvalid", "serviceaccountkey"), SyncErrorCode.AUTH),
-    (("permission", "accessdenied", "forbidden", "delegation", "nofilesystemaccess"), SyncErrorCode.PERMISSION),
+    (("quota", "ratelimit", "ratelimited", "throttle", "throttled", "throttling"), SyncErrorCode.RATE_LIMIT),
+    (
+        (
+            "auth", "authentication", "unauthorized", "unauthenticated", "credential", "credentials",
+            "passwordrejected", "tokeninvalid", "serviceaccountkey",
+        ),
+        SyncErrorCode.AUTH,
+    ),
+    (
+        ("permission", "permissions", "accessdenied", "forbidden", "delegation", "nofilesystemaccess"),
+        SyncErrorCode.PERMISSION,
+    ),
     (("notfound",), SyncErrorCode.NOT_FOUND),
-    (("config", "addressnotallowed", "unsafeaddress"), SyncErrorCode.CONFIG),
-    (("offline", "unreachable", "rootunavailable", "unavailable"), SyncErrorCode.SOURCE_UNAVAILABLE),
-    (("timeout", "connection", "connecterror", "readerror", "network"), SyncErrorCode.NETWORK),
+    (("config", "configuration", "notconfigured", "addressnotallowed", "unsafeaddress"), SyncErrorCode.CONFIG),
+    (("offline", "unreachable", "unavailable"), SyncErrorCode.SOURCE_UNAVAILABLE),
+    (("timeout", "connection", "connect", "network"), SyncErrorCode.NETWORK),
 )
+_CAMEL_WORD = re.compile(r"[A-Z]+(?=[A-Z][a-z])|[A-Z]?[a-z]+|[A-Z]+|\d+")
 
 _MESSAGE_RULES: tuple[tuple[re.Pattern[str], SyncErrorCode], ...] = (
-    (re.compile(r"rate.?limit|too many requests|quota|throttl|\b429\b", re.I), SyncErrorCode.RATE_LIMIT),
+    (re.compile(r"\brate.?limit|too many requests|\bquota|\bthrottl|\b429\b", re.I), SyncErrorCode.RATE_LIMIT),
     (
         re.compile(
             r"invalid_grant|invalid_client|unauthori[sz]ed|token (has )?expired|expired token|"
@@ -63,13 +75,13 @@ _MESSAGE_RULES: tuple[tuple[re.Pattern[str], SyncErrorCode], ...] = (
         SyncErrorCode.AUTH,
     ),
     (
-        re.compile(r"permission|forbidden|access denied|insufficient.*scope|not authori[sz]ed to|\b403\b", re.I),
+        re.compile(r"\bpermission|\bforbidden\b|access denied|insufficient.*scope|not authori[sz]ed to|\b403\b", re.I),
         SyncErrorCode.PERMISSION,
     ),
     (
         re.compile(
             r"timed? ?out|connection (refused|reset|aborted|error)|name or service not known|"
-            r"temporary failure in name resolution|getaddrinfo|network is unreachable|ssl",
+            r"temporary failure in name resolution|getaddrinfo|network is unreachable|\bssl\b",
             re.I,
         ),
         SyncErrorCode.NETWORK,
@@ -80,7 +92,8 @@ _MESSAGE_RULES: tuple[tuple[re.Pattern[str], SyncErrorCode], ...] = (
 _TOKENISH = re.compile(r"[A-Za-z0-9_\-+/=.]{32,}")
 _QUERY = re.compile(r"(https?://[^\s?#'\"]+)\?[^\s'\"]*")
 _SECRET_PAIR = re.compile(
-    r"(?i)\b(access_token|refresh_token|token|secret|password|api[_-]?key|authorization|bearer)\b([\"']?\s*[:=]\s*|\s+)[^\s,;\"'&]+"
+    r"(?i)\b(access_token|refresh_token|token|secret|password|api[_-]?key|authorization|bearer)\b"
+    r"([\"']?\s*[:=]\s*|\s+)(?:(?:bearer|basic|token)\s+)?[^\s,;\"'&]+"
 )
 
 
@@ -114,11 +127,22 @@ def _by_name(chain: list[BaseException]) -> SyncErrorCode | None:
             return SyncErrorCode.NETWORK
         if isinstance(exc, PermissionError):
             return SyncErrorCode.PERMISSION
-        names = " ".join(cls.__name__.lower() for cls in type(exc).__mro__[:-2])
+        runs = _word_runs(type(exc).__mro__[:-2])
         for needles, code in _NAME_RULES:
-            if any(needle in names for needle in needles):
+            if not runs.isdisjoint(needles):
                 return code
     return None
+
+
+def _word_runs(classes: tuple[type, ...]) -> set[str]:
+    """Every run of consecutive CamelCase words in the class names, lowercased and joined."""
+    runs: set[str] = set()
+    for cls in classes:
+        words = [w.lower() for w in _CAMEL_WORD.findall(cls.__name__)]
+        for i in range(len(words)):
+            for j in range(i + 1, min(i + 4, len(words)) + 1):
+                runs.add("".join(words[i:j]))
+    return runs
 
 
 def _status_of(exc: BaseException) -> int | None:

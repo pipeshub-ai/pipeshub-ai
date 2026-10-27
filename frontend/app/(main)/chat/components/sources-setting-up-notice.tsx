@@ -40,7 +40,8 @@ export function SourcesSettingUpNotice({ style }: { style?: React.CSSProperties 
       const found = await sourcesSettingUp();
       if (cancelled) return;
       setNames(found);
-      if (found.length) timeoutId = window.setTimeout(() => void check(), RECHECK_MS);
+      // Also after an empty answer: a source added, or a failed read, shows on the next check.
+      timeoutId = window.setTimeout(() => void check(), RECHECK_MS);
     };
     void check();
     return () => {

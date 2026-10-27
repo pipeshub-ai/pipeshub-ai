@@ -53,5 +53,6 @@ export function useConnectorProgress(
     };
   }, [connectorId, detail, refreshKey]);
 
-  return view;
+  // Never another connector's answer while this one's first read is pending or failed.
+  return view && view.connectorId === connectorId ? view : null;
 }

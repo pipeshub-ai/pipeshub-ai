@@ -157,6 +157,7 @@ from app.connectors.services.vector_store_rebuild import (
     start_vector_store_reindex,
 )
 from app.edition_containers import ConnectorAppContainer
+from app.core import org_context
 from app.core.signed_url import SIGNED_URL_PURPOSE, SignedUrlHandler
 from app.models.entities import ArtifactRecord, Record, RecordType
 from app.modules.demo_data.access import is_hidden_demo_record
@@ -2744,7 +2745,7 @@ async def get_connector_progress_endpoint(
     """What a connector or collection is doing: the running sync, its last runs, and indexing."""
     logger = request.app.container.logger()
     try:
-        org_id = request.state.user.get("orgId")
+        org_id = org_context.current_org_id()
         await authorize_connector_stats(
             request, graph_provider, request.app.state.connector_registry, connector_id, org_id
         )

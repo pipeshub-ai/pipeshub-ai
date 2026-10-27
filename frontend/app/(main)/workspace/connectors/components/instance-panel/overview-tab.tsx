@@ -195,6 +195,13 @@ export function OverviewTab({
     }
   }, [instance._key, addToast]);
 
+  // The records are re-queued a moment after the request returns, and the progress
+  // view is cached for 10s, so look again once both have passed.
+  const refreshProgressAfterQueueing = useCallback(() => {
+    bumpPanelRefresh();
+    window.setTimeout(bumpPanelRefresh, 15_000);
+  }, []);
+
   const handleReindexFailed = useCallback(async () => {
     const connectorId = instance._key;
     if (!connectorId || !instance.isActive || isReindexFailedBusy) return;
@@ -203,6 +210,7 @@ export function OverviewTab({
       await ConnectorsApi.reindexConnector(connectorId, ['FAILED']);
       addToast({ variant: 'success', title: 'Reindexing failed records…' });
       await fetchInstanceStats(connectorId, { force: true });
+      refreshProgressAfterQueueing();
     } catch (error) {
       console.error('Failed to reindex failed records', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to reindex failed records' });
@@ -219,6 +227,7 @@ export function OverviewTab({
       await ConnectorsApi.reindexConnector(connectorId, ['AUTO_INDEX_OFF']);
       addToast({ variant: 'success', title: 'Indexing manual-indexing records…' });
       await fetchInstanceStats(connectorId, { force: true });
+      refreshProgressAfterQueueing();
     } catch (error) {
       console.error('Failed to start manual indexing', { connectorId, error });
       addToast({ variant: 'error', title: 'Failed to start manual indexing' });

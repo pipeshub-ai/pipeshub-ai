@@ -1156,12 +1156,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             )
             logger.info("✅ Code edge build reconciler started")
 
-        from app.connectors.core.sync.first_sync_watch import watch_first_syncs_forever
+        try:
+            from app.connectors.core.sync.first_sync_watch import (
+                watch_first_syncs_forever,
+            )
 
-        app.state.first_sync_watch_task = asyncio.create_task(
-            watch_first_syncs_forever(graph_provider, app_container.connector_notification_service(), logger),
-            name="first_sync_watch",
-        )
+            app.state.first_sync_watch_task = spawn_detached(
+                watch_first_syncs_forever(graph_provider, app_container.connector_notification_service(), logger),
+                name="first_sync_watch",
+            )
+        except Exception as e:
+            # Only the "is ready" notice depends on it; the steps below must still run.
+            logger.error(f"❌ Failed to start the first-sync watch: {e}", exc_info=True)
 
         try:
             await start_reconciler()

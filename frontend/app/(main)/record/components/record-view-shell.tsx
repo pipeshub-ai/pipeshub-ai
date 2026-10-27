@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useCallback, useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useReducer, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { AlertDialog, Box, Flex, Text, IconButton, Button, Tooltip } from '@radix-ui/themes';
 import { useThemeAppearance } from '@/app/components/theme-provider';
@@ -374,6 +374,8 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
 
   const indexingStatus = recordDetails?.record?.indexingStatus;
 
+  const [statusPollRetries, retryStatusPoll] = useReducer((n: number) => n + 1, 0);
+
   // Until the record is searchable, keep its status current without re-streaming the file.
   useEffect(() => {
     if (!recordId || !indexingStatus || !STILL_INDEXING.has(indexingStatus)) return;
@@ -383,14 +385,15 @@ export function RecordViewShell({ recordId }: RecordViewShellProps) {
         const updated = await KnowledgeBaseApi.getRecordDetails(recordId);
         if (!cancelled) setRecordDetails(updated);
       } catch {
-        // The next status change or a reload shows it; a failed refresh is not worth an error.
+        // Not worth an error; try again on the next tick.
+        if (!cancelled) retryStatusPoll();
       }
     }, RECORD_STATUS_POLL_MS);
     return () => {
       cancelled = true;
       window.clearTimeout(timeoutId);
     };
-  }, [recordId, indexingStatus, recordDetails]);
+  }, [recordId, indexingStatus, recordDetails, statusPollRetries]);
 
   const getReindexButtonLabel = (status: string | undefined): string => {
     switch (status) {

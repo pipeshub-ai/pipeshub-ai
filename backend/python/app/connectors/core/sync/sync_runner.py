@@ -36,6 +36,7 @@ from app.connectors.core.sync.sync_progress import (
     set_current_sync_progress,
 )
 from app.connectors.core.sync.sync_coordinator import SyncCoordinator, SyncLease, _now_ms
+from app.core.org_context import spawn_in_request
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
 
@@ -713,18 +714,25 @@ _PROGRESS_WRITE_INTERVAL_S = 5.0
 _PROGRESS_WRITER_STOP_TIMEOUT_S = 5.0
 
 
+# get_document answers None for a failed read as well as a missing doc.
+HISTORY_UNREAD = object()
+
+
 async def _write_progress_while_running(
     graph_provider: IGraphDBProvider,
     logger: logging.Logger,
     connector_id: str,
     progress: SyncProgress,
     lease: SyncLease | None,
+    run_status: str,
 ) -> None:
     """Keep ``syncProgress`` on the app doc current until cancelled.
 
     An update, never an upsert, so it cannot resurrect a connector deleted
-    mid-run. Failures are logged and retried on the next tick: progress is for
-    people to look at, and must never fail the sync.
+    mid-run, and only while the doc still says this run's status: a write that
+    outlives the finalizer's cancel wait lands on an IDLE doc and is dropped.
+    Failures are logged and retried on the next tick: progress is for people to
+    look at, and must never fail the sync.
     """
     written = -1
     while True:
@@ -734,10 +742,11 @@ async def _write_progress_while_running(
         version = progress.version
         if version != written:
             try:
-                await graph_provider.update_node(
+                await graph_provider.update_node_fields_if_match(
                     connector_id,
                     CollectionNames.APPS.value,
                     {ConnectorStateKeys.SYNC_PROGRESS: json.dumps(progress.snapshot(), default=str)},
+                    {"status": run_status},
                 )
                 written = version
             except Exception as e:
@@ -754,7 +763,11 @@ def _run_record(
     skip_code: str | None,
     started_by: str | None,
 ) -> dict[str, object]:
-    """The app-doc fields that close a run: history, the failure reason, and no live snapshot."""
+    """The app-doc fields that close a run: history, the failure reason, and no live snapshot.
+
+    History is left alone when it could not be read at the start of the run:
+    writing this run alone would replace the stored runs.
+    """
     entry = progress.run_entry(
         outcome=outcome.value,
         finished_at=get_epoch_timestamp_in_ms(),
@@ -770,7 +783,11 @@ def _run_record(
     )
     return {
         ConnectorStateKeys.SYNC_PROGRESS: None,
-        ConnectorStateKeys.SYNC_RUNS: merged_run_history(stored_runs, entry),
+        **(
+            {ConnectorStateKeys.SYNC_RUNS: merged_run_history(stored_runs, entry)}
+            if stored_runs is not HISTORY_UNREAD
+            else {}
+        ),
         # A stopped or skipped run says nothing about whether the source works,
         # so only a success clears the last failure.
         **(
@@ -846,7 +863,7 @@ async def run_sync_task(
     full_sync = start_status == AppStatus.FULL_SYNCING.value
     processor, seen = None, None
     scope_generation: int | None = None
-    stored_runs: object = None
+    stored_runs: object = HISTORY_UNREAD
     progress_writer: asyncio.Task | None = None
     # One id per run, stamped on every record-event this sync publishes so
     # downstream processing can be correlated back to the run.
@@ -890,12 +907,13 @@ async def run_sync_task(
                     CollectionNames.APPS.value,
                     {ConnectorStateKeys.PENDING_RESYNC: False},
                 )
-            stored_runs = (doc or {}).get(ConnectorStateKeys.SYNC_RUNS)
+            if doc is not None:
+                stored_runs = doc.get(ConnectorStateKeys.SYNC_RUNS)
             await _mark_first_sync(graph_provider, logger, connector_id, doc)
         except Exception as e:
             logger.warning(f"Could not clear pendingResync for {connector_id}: {e}")
-        progress_writer = asyncio.get_running_loop().create_task(
-            _write_progress_while_running(graph_provider, logger, connector_id, progress, lease),
+        progress_writer = spawn_in_request(
+            _write_progress_while_running(graph_provider, logger, connector_id, progress, lease, start_status),
             name=f"sync_progress_{connector_id}",
         )
         if lease is None:

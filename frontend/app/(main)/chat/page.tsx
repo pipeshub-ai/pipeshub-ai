@@ -1221,7 +1221,10 @@ function ChatContent() {
       }}
     >
       {!isInputCentered && showChatInput && <ChatInputWrapper />}
-      {!isInputCentered && showChatInput && !conversationId && <SourcesSettingUpNotice style={{ marginTop: 'var(--space-2)' }} />}
+      {/* Follow-up answers are just as incomplete, but a phone keeps the room for the conversation. */}
+      {!isInputCentered && showChatInput && !(isMobile && conversationId) && (
+        <SourcesSettingUpNotice style={{ marginTop: 'var(--space-2)' }} />
+      )}
       {/* On a phone the links only take room from an open conversation. */}
       {!(isMobile && conversationId) && <ChatFooterLinks />}
     </Box>

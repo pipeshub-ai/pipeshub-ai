@@ -64,6 +64,9 @@ async def _cached(key: tuple[str, str], load):  # noqa: ANN001, ANN202
                 _locks.pop(stale, None)
             if len(_cache) >= _CACHE_MAX:
                 _cache.clear()
+                # Keep only locks someone holds; a dropped one is just made again.
+                for idle in [k for k, held in _locks.items() if not held.locked()]:
+                    del _locks[idle]
         _cache[key] = (time.monotonic() + _CACHE_TTL_S, value)
         return value
 

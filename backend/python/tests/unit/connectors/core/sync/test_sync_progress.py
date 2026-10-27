@@ -6,6 +6,7 @@ folds its live snapshot into history in the same write as IDLE; and a failure
 keeps a reason someone can act on.
 """
 
+import asyncio
 import contextlib
 import json
 import logging
@@ -134,6 +135,10 @@ class ZendeskAuthError(Exception):
     pass
 
 
+def _named(name: str) -> Exception:
+    return type(name, (Exception,), {})("boom")
+
+
 @pytest.mark.parametrize(
     "exc, code",
     [
@@ -146,6 +151,10 @@ class ZendeskAuthError(Exception):
         (TimeoutError(), "network"),
         (RuntimeError("invalid_grant: token has been expired or revoked"), "auth"),
         (RuntimeError("something odd"), "unknown"),
+        # Whole words only: "Author" is not "Auth", and "ThreadError" holds no "ReadError".
+        (_named("AuthorNotFoundError"), "not_found"),
+        (_named("MailThreadError"), "unknown"),
+        (RuntimeError("could not parse the sslcert option"), "unknown"),
     ],
 )
 def test_failures_are_classified(exc: BaseException, code: str) -> None:
@@ -172,6 +181,11 @@ def test_the_stored_detail_carries_no_secrets() -> None:
     assert "s3cr3t" not in detail
     assert "abcd1234" not in detail
     assert "eyJhbGciOiJIUzI1NiJ9" not in detail
+
+
+def test_a_short_bearer_token_is_scrubbed_too() -> None:
+    detail = classify_sync_error(RuntimeError("Authorization: Bearer abc123def456 was refused"))["detail"]
+    assert "abc123def456" not in detail
 
 
 # ---- reading it back ------------------------------------------------------
@@ -313,6 +327,33 @@ def test_a_restart_with_no_snapshot_only_clears_it() -> None:
     assert interrupted_run_record({}, 99) == {Keys.SYNC_PROGRESS: None}
 
 
+async def test_history_that_could_not_be_read_is_not_overwritten() -> None:
+    gp = _graph_provider()
+    stored = {"id": "c1", "status": "SYNCING", Keys.SYNC_RUNS: json.dumps([{"runId": "older"}])}
+    reads = iter([None])
+    gp.get_document = AsyncMock(side_effect=lambda **_: next(reads, stored))
+
+    async def run_sync() -> None:
+        return None
+
+    await run_sync_task(_connector(run_sync), "c1", gp, _LOG)
+    idle = _idle_write(gp)
+    assert Keys.SYNC_RUNS not in idle
+    assert idle[Keys.SYNC_PROGRESS] is None
+
+
+async def test_live_progress_is_written_only_while_the_run_holds_the_status() -> None:
+    gp = _graph_provider()
+
+    async def run_sync() -> None:
+        current_sync_progress("c1").note_record("a", ChangeKind.NEW)
+        await asyncio.sleep(0.05)
+
+    await run_sync_task(_connector(run_sync), "c1", gp, _LOG)
+    writes = [c for c in gp.update_node_fields_if_match.await_args_list if Keys.SYNC_PROGRESS in c.args[2]]
+    assert writes and all(c.args[3] == {"status": AppStatus.SYNCING.value} for c in writes)
+
+
 # ---- first sync ready -----------------------------------------------------
 
 
@@ -342,6 +383,18 @@ async def test_a_first_sync_is_announced_once_everything_is_searchable() -> None
     sent = notifications.publish_notification.await_args.kwargs
     assert sent["recipient_user_ids"] == ["u1", "u2"]
     assert "1,200" in sent["message"]
+
+
+async def test_a_notice_the_broker_refused_is_tried_again() -> None:
+    from app.connectors.core.sync.first_sync_watch import check_first_syncs
+
+    gp = _watch_provider(_ready_app(), {})
+    notifications = AsyncMock()
+    notifications.publish_notification = AsyncMock(return_value=False)
+    assert await check_first_syncs(gp, notifications, _LOG) == []
+    claim, give_back = gp.update_node_fields_if_match.await_args_list
+    assert give_back.args[2] == {Keys.AWAITING_FIRST_SYNC: True, Keys.READY_AT: None}
+    assert give_back.args[3] == {Keys.AWAITING_FIRST_SYNC: False}
 
 
 @pytest.mark.parametrize(
