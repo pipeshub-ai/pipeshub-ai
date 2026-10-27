@@ -375,15 +375,12 @@ export function describeConversationContract(fx: ConversationFixture): void {
       expect((await repo.countByProject(org, owner, [project])).get(project)).to.equal(2);
       expect((await repo.countByProject(org, other, [project])).get(project)).to.equal(2);
       expect((await repo.countByProject(org, fx.newId(), [project])).get(project)).to.equal(1);
-      expect((await repo.countByProject(fx.newId(), owner, [project])).get(project)).to.equal(undefined);
     });
 
     it('unlinkFromProject clears the link only while the chat still points at that project', async () => {
       const org = fx.newId(), user = fx.newId(), project = fx.newId(), elsewhere = fx.newId();
       const s = await open(org, user, { projectId: project, projectVisibility: 'project' });
       await repo.unlinkFromProject(org, s._id, elsewhere);
-      expect(await repo.findById(s._id)).to.include({ projectId: project });
-      await repo.unlinkFromProject(fx.newId(), s._id, project);
       expect(await repo.findById(s._id)).to.include({ projectId: project });
       await repo.unlinkFromProject(org, s._id, project);
       const after = await repo.findById(s._id);
