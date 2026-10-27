@@ -113,3 +113,62 @@ def test_a_recursive_schema_is_walked_once():
 
 def test_the_spec_has_no_sdk_operation_speakeasy_would_leave_out(capsys):
     assert main([str(_SPEC)]) == 0, capsys.readouterr().out
+
+
+def test_a_not_in_a_default_response_is_found():
+    spec = _spec(
+        {
+            "x-pipeshub-sdk": True,
+            "responses": {
+                "default": {
+                    "content": {
+                        "application/json": {"schema": {"not": {"type": "null"}}}
+                    }
+                }
+            },
+        }
+    )
+    assert violations(spec) == [
+        (
+            "createThing",
+            "#/paths/~1things/post/responses/default/content/application~1json/schema/not",
+        )
+    ]
+
+
+def test_a_schema_default_value_is_data():
+    spec = _spec(
+        {
+            "x-pipeshub-sdk": True,
+            "parameters": [
+                {
+                    "name": "q",
+                    "in": "query",
+                    "schema": {"type": "object", "default": {"not": {}}},
+                }
+            ],
+        }
+    )
+    assert violations(spec) == []
+
+
+def test_a_not_in_a_path_level_parameter_is_found():
+    spec = _spec({"x-pipeshub-sdk": True})
+    spec["paths"]["/things"]["parameters"] = [{"$ref": "#/components/parameters/Q"}]
+    spec["components"]["parameters"] = {
+        "Q": {"name": "q", "in": "query", "schema": {"not": {"enum": ["x"]}}}
+    }
+    assert violations(spec) == [("createThing", "#/components/parameters/Q/schema/not")]
+
+
+def test_a_path_level_parameter_the_operation_overrides_is_not_checked():
+    spec = _spec(
+        {
+            "x-pipeshub-sdk": True,
+            "parameters": [{"name": "q", "in": "query", "schema": {"type": "string"}}],
+        }
+    )
+    spec["paths"]["/things"]["parameters"] = [
+        {"name": "q", "in": "query", "schema": {"not": {"enum": ["x"]}}}
+    ]
+    assert violations(spec) == []

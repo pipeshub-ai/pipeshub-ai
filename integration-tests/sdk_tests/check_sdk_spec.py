@@ -25,8 +25,15 @@ _SPEC = (
     / "backend/nodejs/apps/src/modules/api-docs/pipeshub-openapi.yaml"
 )
 _HTTP_METHODS = {"get", "put", "post", "delete", "patch", "head", "options", "trace"}
-# Values under these keys are data, not schemas.
-_DATA_KEYS = {"example", "examples", "default", "enum", "const"}
+# Values under these keys are data, not schemas. The schema-only ones are data only
+# inside a Schema Object: `responses.default` is a response, and is walked.
+_DATA_KEYS = {"example", "examples"}
+_SCHEMA_DATA_KEYS = {"default", "enum", "const"}
+_SCHEMA_PREFIX = "#/components/schemas/"
+
+
+def _escape(key: Any) -> str:
+    return str(key).replace("~", "~0").replace("/", "~1")
 
 
 def _resolve(spec: dict, ref: str) -> Any:
@@ -37,29 +44,63 @@ def _resolve(spec: dict, ref: str) -> Any:
 
 
 def _not_schemas(
-    spec: dict, node: Any, path: str, refs: frozenset[str]
+    spec: dict, node: Any, path: str, refs: frozenset[str], in_schema: bool = False
 ) -> Iterator[str]:
     if isinstance(node, list):
         for index, item in enumerate(node):
-            yield from _not_schemas(spec, item, f"{path}/{index}", refs)
+            yield from _not_schemas(spec, item, f"{path}/{index}", refs, in_schema)
         return
     if not isinstance(node, dict) or node.get("x-speakeasy-ignore") is True:
         return
     ref = node.get("$ref")
-    if isinstance(ref, str) and ref.startswith("#/"):
-        # A cycle is checked once: the schemas on it are reached on the first pass.
-        if ref not in refs:
-            yield from _not_schemas(spec, _resolve(spec, ref), ref, refs | {ref})
+    # A cycle is checked once: the schemas on it are reached on the first pass.
+    if isinstance(ref, str) and ref.startswith("#/") and ref not in refs:
+        yield from _not_schemas(
+            spec,
+            _resolve(spec, ref),
+            ref,
+            refs | {ref},
+            in_schema or ref.startswith(_SCHEMA_PREFIX),
+        )
     for key, value in node.items():
         if key in _DATA_KEYS or key.startswith("x-"):
             continue
-        if key == "properties" and isinstance(value, dict):
-            for name, schema in value.items():
-                yield from _not_schemas(spec, schema, f"{path}/properties/{name}", refs)
+        if in_schema and key in _SCHEMA_DATA_KEYS:
             continue
-        if key == "not":
+        if in_schema and key == "properties" and isinstance(value, dict):
+            for name, schema in value.items():
+                yield from _not_schemas(
+                    spec, schema, f"{path}/properties/{_escape(name)}", refs, True
+                )
+            continue
+        if in_schema and key == "not":
             yield f"{path}/not"
-        yield from _not_schemas(spec, value, f"{path}/{key}", refs)
+        yield from _not_schemas(
+            spec, value, f"{path}/{_escape(key)}", refs, in_schema or key == "schema"
+        )
+
+
+def _parameter_key(spec: dict, parameter: Any) -> tuple[Any, Any]:
+    if isinstance(parameter, dict) and isinstance(parameter.get("$ref"), str):
+        parameter = _resolve(spec, parameter["$ref"])
+    if not isinstance(parameter, dict):
+        return (None, None)
+    return (parameter.get("name"), parameter.get("in"))
+
+
+def _inherited_parameters(
+    spec: dict, path_item: dict, operation: dict
+) -> list[tuple[int, Any]]:
+    """Path-level parameters the operation does not override, with their indexes."""
+    overridden = {
+        _parameter_key(spec, parameter)
+        for parameter in operation.get("parameters") or []
+    }
+    return [
+        (index, parameter)
+        for index, parameter in enumerate(path_item.get("parameters") or [])
+        if _parameter_key(spec, parameter) not in overridden
+    ]
 
 
 def violations(spec: dict) -> list[tuple[str, str]]:
@@ -71,10 +112,20 @@ def violations(spec: dict) -> list[tuple[str, str]]:
                 continue
             if operation.get("x-pipeshub-sdk") is not True:
                 continue
-            where = f"#/paths/{route.replace('~', '~0').replace('/', '~1')}/{method}"
-            for pointer in dict.fromkeys(
-                _not_schemas(spec, operation, where, frozenset())
-            ):
+            route_pointer = f"#/paths/{_escape(route)}"
+            pointers = list(
+                _not_schemas(spec, operation, f"{route_pointer}/{method}", frozenset())
+            )
+            for index, parameter in _inherited_parameters(spec, path_item, operation):
+                pointers.extend(
+                    _not_schemas(
+                        spec,
+                        parameter,
+                        f"{route_pointer}/parameters/{index}",
+                        frozenset(),
+                    )
+                )
+            for pointer in dict.fromkeys(pointers):
                 found.append(
                     (operation.get("operationId", f"{method} {route}"), pointer)
                 )
