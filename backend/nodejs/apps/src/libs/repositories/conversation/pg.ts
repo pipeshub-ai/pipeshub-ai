@@ -59,6 +59,7 @@ import type {
   NewMessage,
   NewSession,
   ContentMatches,
+  VisibleSummaryRow,
   RunReservation,
   RunStateChange,
   SessionActor,
@@ -854,28 +855,41 @@ export class PgConversationRepository implements ConversationRepository {
     });
   }
 
-  async listVisibleTitles(
+  async listVisibleSummaries(
     orgId: string,
     userId: string,
     ids: string[],
     accessibleProjectIds: string[],
-  ): Promise<Array<{ _id: string; title?: string }>> {
+  ): Promise<VisibleSummaryRow[]> {
     const want = oidsOf(ids);
     if (!want.length) return [];
     return inUnit(undefined, { write: false }, async (k) => {
       assertOrg(k, orgId);
-      const { rows } = await k.query<{ id: string; title: string | null }>(
-        `/* pipeshub:conversation.visible_titles */ SELECT s.id, s.title FROM conversation.chat_sessions s
+      const { rows } = await k.query<{
+        id: string;
+        title: string | null;
+        session_type: 'chat' | 'agent';
+        agent_key: string | null;
+        project_id: string | null;
+        is_archived: boolean;
+      }>(
+        `/* pipeshub:conversation.visible_summaries */ SELECT s.id, s.title, s.session_type, s.agent_key, s.project_id, s.is_archived FROM conversation.chat_sessions s
           WHERE s.org_id = $1 AND s.id = ANY($2::text[]) AND NOT s.is_deleted
             AND (s.user_id = $3::text
-              OR (s.is_shared AND EXISTS (SELECT 1 FROM conversation.chat_session_members w WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $3::text))
-              OR (s.project_id = ANY($4::text[]) AND s.project_visibility = 'project'))
+              OR (s.is_shared AND (s.session_type <> 'agent' OR NOT s.is_archived)
+                  AND EXISTS (SELECT 1 FROM conversation.chat_session_members w WHERE w.org_id = $1 AND w.session_id = s.id AND w.user_id = $3::text))
+              OR (s.project_id = ANY($4::text[]) AND s.project_visibility = 'project' AND NOT s.is_archived))
           ORDER BY s.id`,
         [k.orgId, want, userId, oidsOf(accessibleProjectIds)],
       );
-      return rows.map((r) =>
-        r.title === null ? { _id: r.id } : { _id: r.id, title: r.title },
-      );
+      return rows.map((r) => ({
+        _id: r.id,
+        ...(r.title === null ? {} : { title: r.title }),
+        sessionType: r.session_type,
+        ...(r.agent_key === null ? {} : { agentKey: r.agent_key }),
+        ...(r.project_id === null ? {} : { projectId: r.project_id }),
+        isArchived: r.is_archived,
+      }));
     });
   }
 
