@@ -116,6 +116,18 @@ export function describeOutboxContract(fx: OutboxFixture): void {
       expect((await repo.claimNext(OPTS))?._id).to.equal(blocked._id);
     });
 
+    it('events of one entity created at the same instant are delivered in id order: the second waits for the first', async () => {
+      const [first, second] = await appendAll([ev({ key: 'one', orderingKey: 'user-t' }), ev({ key: 'two', orderingKey: 'user-t' })]);
+      const same = new Date(Date.now() - 100_000);
+      await fx.setCreatedAt(first._id, same);
+      await fx.setCreatedAt(second._id, same);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(first._id);
+      // the first is still publishing, so the second must not be handed to another dispatcher
+      expect(await repo.claimNext(OPTS)).to.equal(null);
+      await repo.markPublished(first._id);
+      expect((await repo.claimNext(OPTS))?._id).to.equal(second._id);
+    });
+
     it('walks past a full batch of blocked rows to reach an unblocked one', async () => {
       const rows = await appendAll([
         ev({ key: 'stuck', orderingKey: 'u1', nextAttemptAt: new Date(Date.now() + 3600_000) }),
