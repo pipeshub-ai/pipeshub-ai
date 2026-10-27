@@ -935,12 +935,22 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const gone = await users.create(org, { email: email(), fullName: `${tag} gone` });
       await users.markDeleted(org, gone._id);
       const ids = [a._id, b._id, gone._id];
-      const all = await users.listMembersPage(ids, { skip: 0, limit: 10 });
+      const all = await users.listMembersPage(org, ids, { skip: 0, limit: 10 });
       expect(all.total).to.equal(2);
       expect(all.rows.map((r) => r._id).sort()).to.deep.equal([a._id, b._id].sort());
-      expect((await users.listMembersPage(ids, { skip: 0, limit: 10, search: `${tag} ONE` })).rows.map((r) => r._id)).to.deep.equal([a._id]);
-      expect((await users.listMembersPage(ids, { skip: 1, limit: 1 })).rows).to.have.length(1);
-      expect((await users.listMembersPage([], { skip: 0, limit: 10 })).total).to.equal(0);
+      expect((await users.listMembersPage(org, ids, { skip: 0, limit: 10, search: `${tag} ONE` })).rows.map((r) => r._id)).to.deep.equal([a._id]);
+      expect((await users.listMembersPage(org, ids, { skip: 1, limit: 1 })).rows).to.have.length(1);
+      expect((await users.listMembersPage(org, [], { skip: 0, limit: 10 })).total).to.equal(0);
+    });
+
+    it('listMembersPage lists only accounts of the organisation, even when a group holds an id from another', async () => {
+      const org = await fx.newOrg();
+      const other = await fx.newOrg();
+      const mine = await users.create(org, { email: email(), fullName: 'Mem mine' });
+      const theirs = await users.create(other, { email: email(), fullName: 'Mem theirs' });
+      const page = await users.listMembersPage(org, [mine._id, theirs._id], { skip: 0, limit: 10 });
+      expect(page.rows.map((r) => r._id)).to.deep.equal([mine._id]);
+      expect(page.total).to.equal(1);
     });
 
     it('service accounts stay out of listWithGroups and listMembersPage unless asked for, and serviceAccountIdsAmong names them', async () => {
@@ -956,12 +966,12 @@ export function describeIdentityContract(fx: IdentityFixture): void {
       const admin = await users.listWithGroups(org, { includeServiceAccounts: true });
       expect(admin.map((r) => r._id).sort()).to.deep.equal([p._id, s._id].sort());
 
-      const page = await users.listMembersPage(ids, { skip: 0, limit: 10 });
+      const page = await users.listMembersPage(org, ids, { skip: 0, limit: 10 });
       expect(page.rows.map((r) => r._id)).to.deep.equal([p._id]);
       expect(page.total).to.equal(1); // the count agrees with the page
-      const adminPage = await users.listMembersPage(ids, { skip: 0, limit: 10, includeServiceAccounts: true });
+      const adminPage = await users.listMembersPage(org, ids, { skip: 0, limit: 10, includeServiceAccounts: true });
       expect(adminPage.total).to.equal(2);
-      expect((await users.listMembersPage(ids, { skip: 0, limit: 10, search: `${tag} bot` })).total).to.equal(0);
+      expect((await users.listMembersPage(org, ids, { skip: 0, limit: 10, search: `${tag} bot` })).total).to.equal(0);
 
       expect(await users.serviceAccountIdsAmong(org, ids)).to.deep.equal([s._id]);
       expect(await users.serviceAccountIdsAmong(org, [p._id])).to.deep.equal([]);

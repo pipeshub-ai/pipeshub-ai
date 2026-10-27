@@ -11,6 +11,7 @@ import * as storageUtils from '../../../../src/modules/storage/utils/utils'
 import { AuthenticatedServiceRequest } from '../../../../src/libs/middlewares/types'
 import * as mimetypeModule from '../../../../src/modules/storage/mimetypes/mimetypes'
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { NotFoundError } from '../../../../src/libs/errors/http.errors'
 
 function makeOrgId() {
   return new mongoose.Types.ObjectId().toString()
@@ -624,6 +625,33 @@ describe('StorageController', () => {
       await controller.deleteDocumentById(req, res, next)
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args[0].message).to.include('does not exist')
+    })
+
+    it('answers not found when the row is removed between the read and the soft delete', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').onFirstCall().resolves(doc).onSecondCall().resolves(null)
+
+      const req = makeReq({ params: { documentId: doc._id.toString() } })
+      const res = makeRes()
+      const next = sinon.stub()
+
+      await controller.deleteDocumentById(req, res, next)
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(NotFoundError)
+      expect(doc.save.called).to.be.false
+    })
+
+    it('saveDocument answers not found, not a server error, when the row is gone', async () => {
+      const doc = makeDocument()
+      sinon.stub(DocumentModel, 'findOne').resolves(null)
+
+      let thrown: unknown
+      try {
+        await (controller as any).saveDocument(doc, { documentName: 'renamed' })
+      } catch (error) {
+        thrown = error
+      }
+      expect(thrown).to.be.instanceOf(NotFoundError)
     })
 
     it('should set deletedByUserId when userId present', async () => {

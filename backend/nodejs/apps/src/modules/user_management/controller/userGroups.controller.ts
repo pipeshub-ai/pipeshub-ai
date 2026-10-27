@@ -370,7 +370,7 @@ export class UserGroupController {
       req.user?.userId !== undefined &&
       (await isUserOrgAdmin(String(req.user.userId), orgId));
     const { rows: userDocs, total: totalCount } =
-      await getUserRepository().listMembersPage(allUserIds, {
+      await getUserRepository().listMembersPage(orgId, allUserIds, {
         search,
         skip,
         limit,
