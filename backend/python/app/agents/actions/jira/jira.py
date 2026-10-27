@@ -1273,8 +1273,8 @@ class Jira:
         """Rename custom fields in a response containing issues to their readable names.
 
         Each custom field appears once, under its normalized name (the customfield_ id is
-        dropped). Only fields with values (not None) are touched. If the name is empty or
-        already taken, the id is kept so no value is lost.
+        dropped). Only fields with values (not None) are touched. If the name is empty,
+        already taken, or a system field's key or alias, the id is kept so no value is lost.
 
         Args:
             response_data: Response data (may contain "issues" list or single issue)
@@ -1294,6 +1294,13 @@ class Jira:
         else:
             issues = [normalized]
 
+        # A custom field may not take a system field's key or alias (Jira allows a custom
+        # field named "Issue Type" or "Description"); get_issue also writes "description" back.
+        reserved = {"description"}
+        for field_id, field_info in field_schema.items():
+            if not field_id.startswith("customfield_"):
+                reserved.update((field_id, field_info["normalized"]))
+
         for issue in issues:
             fields = issue.get("fields") if isinstance(issue, dict) else None
             if not isinstance(fields, dict):
@@ -1303,7 +1310,7 @@ class Jira:
                     name = field_info["normalized"]
                     if not field_id.startswith("customfield_"):
                         fields[name] = fields[field_id]
-                    elif name and name not in fields:
+                    elif name and name not in reserved and name not in fields:
                         # Rename, don't copy: one key per custom field saves LLM tokens.
                         # Writers get ids from get_create_issue_fields, not from this output.
                         fields[name] = fields.pop(field_id)
