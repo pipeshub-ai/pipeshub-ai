@@ -948,8 +948,10 @@ describe('LocalStorageAdapter - branch coverage', () => {
 
       await adapter.uploadDocumentToStorageService(payload())
 
-      const mount = path.join(home, '.local', 'PipesHub')
-      expect((await fs.stat(mount)).mode & 0o777).to.equal(0o700)
+      const mount = (adapter as any).mountPath as string // the folder differs by platform
+      expect((await fs.stat(mount)).isDirectory()).to.equal(true)
+      // Windows has no Unix permission bits.
+      if (process.platform !== 'win32') expect((await fs.stat(mount)).mode & 0o777).to.equal(0o700)
     })
 
     it('does not touch the disk in the constructor', async () => {
