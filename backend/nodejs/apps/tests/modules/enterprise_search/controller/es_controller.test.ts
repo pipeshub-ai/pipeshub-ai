@@ -3480,6 +3480,59 @@ describe('Enterprise Search Controller', () => {
       }
     })
 
+    // Mongoose drops an undefined value from an update, so the link has to be unset explicitly.
+    it('unsets the share link and returns the stored state when the last recipient is removed', async () => {
+      const handler = unshareSearch(createMockAppConfig())
+      sinon.stub(EnterpriseSemanticSearch, 'findOne').resolves({
+        _id: VALID_OID,
+        sharedWith: [{ userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' }],
+      } as any)
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      const update = sinon.stub(EnterpriseSemanticSearch, 'findByIdAndUpdate').resolves({
+        _id: VALID_OID,
+        isShared: false,
+        sharedWith: [],
+      } as any)
+      const req = createMockRequest({
+        params: { searchId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+      const res = createMockResponse()
+
+      await handler(req, res, createMockNext())
+
+      const [, changes, options] = update.firstCall.args as any[]
+      expect(changes).to.deep.equal({ sharedWith: [], isShared: false, $unset: { shareLink: 1 } })
+      expect(options).to.deep.include({ returnDocument: 'after' })
+      expect(res.status.calledWith(200)).to.be.true
+    })
+
+    it('keeps the share link while a recipient remains', async () => {
+      const handler = unshareSearch(createMockAppConfig())
+      const other = new mongoose.Types.ObjectId()
+      sinon.stub(EnterpriseSemanticSearch, 'findOne').resolves({
+        _id: VALID_OID,
+        sharedWith: [
+          { userId: new mongoose.Types.ObjectId(VALID_OID3), accessLevel: 'read' },
+          { userId: other, accessLevel: 'read' },
+        ],
+      } as any)
+      sinon.stub(IAMServiceCommand.prototype, 'execute').resolves({ statusCode: 200, data: {} })
+      const update = sinon.stub(EnterpriseSemanticSearch, 'findByIdAndUpdate').resolves({ _id: VALID_OID, sharedWith: [] } as any)
+      const req = createMockRequest({
+        params: { searchId: VALID_OID },
+        body: { userIds: [VALID_OID3] },
+        user: { userId: VALID_OID, orgId: VALID_OID2 },
+      })
+
+      await handler(req, createMockResponse(), createMockNext())
+
+      const [, changes] = update.firstCall.args as any[]
+      expect(changes.sharedWith.map((m: any) => [String(m.userId), m.accessLevel])).to.deep.equal([[String(other), 'read']])
+      expect(changes).to.not.have.any.keys('isShared', '$unset', 'shareLink')
+    })
+
     it('should call next when search not found for unshare', async () => {
       const handler = unshareSearch(createMockAppConfig())
 

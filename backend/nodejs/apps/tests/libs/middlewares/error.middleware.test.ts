@@ -111,32 +111,38 @@ describe('ErrorMiddleware', () => {
   // Log level of an expected answer
   // -----------------------------------------------------------------------
   describe('log level', () => {
-    it('logs a not-found the thrower marked as expected at warn, and still answers 404', () => {
-      const res = createMockResponse()
+    // A 4xx is the caller's mistake answered as intended; logging each at error
+    // buried the real failures (half of one session's errors were these).
+    for (const error of [
+      new BadRequestError('A connector with this name already exists'),
+      new UnauthorizedError('Wrong email or password'),
+      new NotFoundError('Document not found'),
+    ]) {
+      it(`logs a ${String(error.statusCode)} at warn, without a stack, and still answers it`, () => {
+        const res = createMockResponse()
 
-      handler(new NotFoundError('Document not found', { logLevel: 'warn' }), createMockRequest(), res, createMockNext())
+        handler(error, createMockRequest(), res, createMockNext())
 
-      expect(loggerWarnStub.calledOnce).to.be.true
-      expect(loggerErrorStub.called).to.be.false
-      expect(res.status.calledWith(404)).to.be.true
-      expect(res.json.firstCall.args[0].error.message).to.equal('Document not found')
-    })
+        expect(loggerWarnStub.calledOnce).to.be.true
+        expect(loggerErrorStub.called).to.be.false
+        expect(loggerWarnStub.firstCall.args[1].error).to.not.have.property('stack')
+        expect(res.status.calledWith(error.statusCode)).to.be.true
+        expect(res.json.firstCall.args[0].error.message).to.equal(error.message)
+      })
+    }
 
-    it('keeps logging an unmarked not-found at error', () => {
-      handler(new NotFoundError('Document not found'), createMockRequest(), createMockResponse(), createMockNext())
+    it('logs a server error at error, with its stack', () => {
+      handler(new InternalServerError('Error fetching document information'), createMockRequest(), createMockResponse(), createMockNext())
 
       expect(loggerErrorStub.calledOnce).to.be.true
       expect(loggerWarnStub.called).to.be.false
+      expect(loggerErrorStub.firstCall.args[1].error).to.have.property('stack')
     })
 
-    it('never lowers a server error, whatever it is marked', () => {
-      handler(
-        new InternalServerError('Error fetching document information', { logLevel: 'warn' }),
-        createMockRequest(), createMockResponse(), createMockNext(),
-      )
+    it('logs an error that is not ours at error', () => {
+      handler(new Error('boom'), createMockRequest(), createMockResponse(), createMockNext())
 
       expect(loggerErrorStub.calledOnce).to.be.true
-      expect(loggerWarnStub.called).to.be.false
     })
   })
 
@@ -581,8 +587,8 @@ describe('ErrorMiddleware', () => {
 
       handler(error, req, res, next)
 
-      expect(loggerErrorStub.called).to.be.true
-      const logged = JSON.stringify(loggerErrorStub.firstCall.args)
+      expect(loggerWarnStub.called).to.be.true
+      const logged = JSON.stringify(loggerWarnStub.firstCall.args)
       expect(logged).to.not.contain('secret-token')
       expect(logged).to.not.contain('session=abc')
       expect(logged).to.contain('application/json')

@@ -49,7 +49,7 @@ describe('handleBackendError', () => {
       expect(result.message).to.equal(message)
     })
 
-    it('logs a 402 as a warning and marks it routine for the error middleware', () => {
+    it('logs a 402 as a warning, and the error middleware does too', () => {
       const warn = sinon.stub(Logger.prototype, 'warn')
       const error = sinon.stub(Logger.prototype, 'error')
       try {
@@ -79,15 +79,17 @@ describe('handleBackendError', () => {
       expect(result.message).to.equal('Payment check: fetch failed')
     })
 
-    it('still logs any other 4xx as an error', () => {
+    it('logs any other 4xx it passes on as a warning too', () => {
+      const warn = sinon.stub(Logger.prototype, 'warn')
       const error = sinon.stub(Logger.prototype, 'error')
       try {
         const result = handleBackendError(
           { statusCode: 400, data: { detail: 'Pick at least one folder to sync.' } },
           'create connector',
         )
-        expect(logLevelFor(result)).to.equal('error')
-        expect(error.calledWith('Backend error during create connector')).to.equal(true)
+        expect(logLevelFor(result)).to.equal('warn')
+        expect(warn.calledWith('Backend error during create connector')).to.equal(true)
+        expect(error.called).to.equal(false)
       } finally {
         sinon.restore()
       }
@@ -274,5 +276,57 @@ describe('handleBackendError', () => {
     const result = handleBackendError({ detail: 'Name is required' }, 'create agent')
     expect(result).to.be.instanceOf(BadRequestError)
     expect(result.message).to.equal('Name is required')
+  })
+
+  // A service refusing the request is answered to the caller as the same 4xx;
+  // logging each at error buried the real failures in the error log.
+  describe('log level', () => {
+    let warn: sinon.SinonStub
+    let error: sinon.SinonStub
+
+    // On the prototype: backend-error keeps the instance it got at load, which
+    // another test may since have replaced as the singleton.
+    beforeEach(() => {
+      warn = sinon.stub(Logger.prototype, 'warn')
+      error = sinon.stub(Logger.prototype, 'error')
+    })
+
+    afterEach(() => sinon.restore())
+
+    for (const statusCode of [400, 401, 403, 404, 409, 422]) {
+      it(`logs a ${String(statusCode)} from the service at warn`, () => {
+        handleBackendError({ statusCode, data: { detail: 'refused' } }, 'create connector')
+
+        expect(warn.calledOnce).to.be.true
+        expect(warn.firstCall.args[0]).to.equal('Backend error during create connector')
+        expect(error.called).to.be.false
+      })
+    }
+
+    // Answered to the caller as a 500, so it is ours to look into.
+    it('logs a 4xx it does not pass on (405) at error, with the service detail', () => {
+      const result = handleBackendError({ statusCode: 405, data: { detail: 'Method Not Allowed' } }, 'create connector')
+
+      expect(result).to.be.instanceOf(InternalServerError)
+      expect(error.calledOnce).to.be.true
+      expect(error.firstCall.args[1]).to.include({ statusCode: 405, errorDetail: 'Method Not Allowed' })
+      expect(warn.called).to.be.false
+    })
+
+    it('logs a 429 it passes on as a 429 at warn', () => {
+      handleBackendError({ statusCode: 429, data: { detail: 'slow down' } }, 'create connector')
+
+      expect(warn.calledOnce).to.be.true
+      expect(error.called).to.be.false
+    })
+
+    for (const statusCode of [500, 502]) {
+      it(`logs a ${String(statusCode)} from the service at error`, () => {
+        handleBackendError({ statusCode, data: { detail: 'broke' } }, 'create connector')
+
+        expect(error.calledOnce).to.be.true
+        expect(warn.called).to.be.false
+      })
+    }
   })
 })

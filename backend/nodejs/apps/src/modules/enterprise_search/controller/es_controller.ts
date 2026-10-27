@@ -5682,12 +5682,10 @@ export const unshareSearch =
       );
 
       // If no more shares exist, update isShared and remove shareLink
-      const updatedSearch = await searches().setSharing(searchId as string, {
-        sharedWith: updatedSharedWith,
-        ...(updatedSharedWith.length === 0
-          ? { isShared: false, shareLink: undefined }
-          : {}),
-      });
+      const updatedSearch = await searches().unshare(
+        searchId as string,
+        updatedSharedWith,
+      );
 
       if (!updatedSearch) {
         throw new InternalServerError(
