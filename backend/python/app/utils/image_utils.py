@@ -1,5 +1,6 @@
 import asyncio
 import base64
+import math
 import os
 import re
 from urllib.parse import unquote, urlparse
@@ -230,6 +231,12 @@ def downscale_to_limits(
         from PIL import Image
 
         with Image.open(io.BytesIO(base64.b64decode(b64))) as source:
+            # A JPEG decodes at a fraction of its size when asked, as long as
+            # the result still covers the size asked for in both directions:
+            # a 48 MP photo is then 9 MB of pixels, not 144.
+            ratio = max_long_edge_px / max(source.size)
+            if ratio < 1:
+                source.draft(source.mode, (math.ceil(source.width * ratio), math.ceil(source.height * ratio)))
             if source.mode in ("RGBA", "LA", "PA") or "transparency" in source.info:
                 # JPEG has no alpha, and dropping it shows the colour stored
                 # under each transparent pixel, usually black: lay it on white.
@@ -259,6 +266,51 @@ def downscale_to_limits(
         # the original rather than paying more bytes for fewer pixels.
         return image_uri
     return f"data:image/jpeg;base64,{encoded}"
+
+
+# What indexing keeps of an image. Nothing downstream uses more (chat sends at
+# most 1568 px, classification shrinks to 2000), and a page of full-size photos
+# held several copies of each at once.
+INDEX_IMAGE_LONG_EDGE_PX = 2000
+INDEX_IMAGE_MAX_BYTES = 5 * 1024 * 1024
+# Images one record keeps, as data-URI characters; the pixels of the rest are not kept.
+INDEX_RECORD_IMAGE_BYTES = 50 * 1024 * 1024
+
+
+def fit_image_for_index(image_uri: str) -> str:
+    """``image_uri`` within what indexing keeps; CPU-bound, so callers on an event loop run it in a thread."""
+    return downscale_to_limits(
+        image_uri, max_long_edge_px=INDEX_IMAGE_LONG_EDGE_PX, max_bytes=INDEX_IMAGE_MAX_BYTES,
+    )
+
+
+# Unwrapped base64 only: a payload broken into lines is left as it is.
+_INLINE_IMAGE_RE = re.compile(r"data:image/[A-Za-z0-9.+-]+;base64,[A-Za-z0-9+/]{1024,}={0,2}")
+
+
+def fit_inline_images(text: str) -> str:
+    """*text* (an HTML page, a Markdown document) with every inline base64
+    image shrunk to what indexing keeps, and those past
+    ``INDEX_RECORD_IMAGE_BYTES`` taken out. The parsers then drop such an
+    image, its alt text included, as they drop one whose download failed; a
+    caption written in the page stays.
+
+    Every parsing pass copies the whole document, so a page carrying its
+    photos inline (a crawled page, an exported document) was copied with all
+    of them: about nine times its size at the peak. Shrunk first, those copies
+    are of little more than the text. CPU-bound: run it in a thread.
+    """
+    kept = 0
+
+    def fit(match: re.Match[str]) -> str:
+        nonlocal kept
+        if kept >= INDEX_RECORD_IMAGE_BYTES:
+            return ""
+        uri = fit_image_for_index(match.group(0))
+        kept += len(uri)
+        return uri
+
+    return _INLINE_IMAGE_RE.sub(fit, text)
 
 
 # The formats OpenAI, Azure OpenAI and Anthropic all accept. Anything else in

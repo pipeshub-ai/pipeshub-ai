@@ -1771,6 +1771,7 @@ export const budgetedReadParams = (
     ['startBlock', 'start_block'],
     ['startRecord', 'start_record'],
     ['maxChars', 'max_chars'],
+    ['extract', 'extract'],
   ];
   const params = new URLSearchParams();
   for (const [from, to] of names) {

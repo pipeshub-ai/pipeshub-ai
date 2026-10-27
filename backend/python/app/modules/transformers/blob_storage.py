@@ -184,16 +184,16 @@ def _plain_envelope_bytes(
     )
 
 
-def _cloud_envelope_size(encoded: _RecordJson, virtual_record_id: str | None) -> int:
-    """``len(json.dumps(envelope).encode())`` for the uncompressed cloud upload.
-
-    aiohttp's ``json=`` writes ASCII escapes, so this is the size it sends.
-    """
-    return (
-        len('{"record": , "isCompressed": false, "virtualRecordId": }')
-        + encoded.ascii_size
-        + len(json.dumps(virtual_record_id))
-    )
+def _compressed_envelope_bytes(payload: bytes, virtual_record_id: str | None) -> bytes:
+    """``_json_utf8_bytes`` of the compressed envelope, built around *payload*
+    (base64, so ASCII) instead of encoding it a second time."""
+    return b"".join((
+        b'{"isCompressed": true, "record": "',
+        payload,
+        b'", "virtualRecordId": ',
+        _json_utf8_bytes(virtual_record_id),
+        b"}",
+    ))
 
 
 def clean_top_level_empty_values(obj: dict[str, Any]) -> dict[str, Any]:
@@ -913,46 +913,45 @@ class BlobStorage(Transformer):
             or DefaultEndpoints.FRONTEND_ENDPOINT.value
         )
 
-    def _maybe_compress_record(
-        self, record: dict, *, label: str = "record", encoded: _RecordJson | None = None,
-    ) -> tuple[str | None, bool]:
-        """Decide whether a record is worth compressing, and compress it if so.
-
-        Returns ``(compressed_base64_or_None, is_compressed)``. Pass *encoded*
-        (from ``_encode_record_json``) to size the record without encoding it again.
+    def _upload_body(
+        self, record: dict, virtual_record_id: str | None, *, label: str = "record",
+    ) -> tuple[bytes, bool]:
+        """The stored-record envelope of *record* as the bytes to upload, and whether it is compressed.
 
         Compression is not free on the read side: the blob is base64'd into a
         JSON envelope, so every reader parses megabytes of base64 before it can
         even start the zstd+msgpack decode. Below the threshold that costs more
-        than the bytes it saves, so small records are stored as plain JSON —
+        than the bytes it saves, so small records are stored as plain JSON,
         a shape ``_process_downloaded_record`` already accepts.
+
+        Built so that besides the record no more than two copies of it exist at
+        once: the JSON, needed only for its size, is dropped before compressing,
+        and the base64 payload is spliced into the envelope instead of encoded
+        again with it. A record carrying a page of photos was held five times
+        over: JSON text and bytes, msgpack, zstd output, base64 bytes and text,
+        and the envelope's text and bytes.
         """
-        try:
-            serialized_size = (
-                encoded.ascii_size if encoded is not None
-                else len(json.dumps(record).encode("utf-8"))
-            )
-        except (TypeError, ValueError) as e:
-            # Not JSON-serializable, so the uncompressed envelope would fail to
-            # build. msgpack accepts more types — compress regardless of size.
-            self.logger.debug("%s is not JSON-serializable (%s); compressing", label, str(e))
-            serialized_size = None
-
-        if serialized_size is not None and (
-            not self.compression_enabled or serialized_size <= compression_threshold_bytes()
+        encoded = _encode_record_json(record)
+        if encoded is not None and (
+            not self.compression_enabled or encoded.ascii_size <= compression_threshold_bytes()
         ):
-            return None, False
-
+            return _plain_envelope_bytes(record, encoded, virtual_record_id), False
+        if encoded is None:
+            # Not JSON-serializable, so the uncompressed envelope would fail to
+            # build. msgpack accepts more types: compress regardless of size.
+            self.logger.debug("%s is not JSON-serializable; compressing", label)
+        del encoded
         try:
-            return self._compress_record(record), True
+            payload = self._compress_record(record)
         except Exception as e:
             self.logger.warning("⚠️ Compression failed, uploading uncompressed: %s", str(e))
-            return None, False
+            return _plain_envelope_bytes(record, None, virtual_record_id), False
+        return _compressed_envelope_bytes(payload, virtual_record_id), True
 
-    def _compress_record(self, record: dict) -> str:
+    def _compress_record(self, record: dict) -> bytes:
         """
         Compress record data using msgspec (C-based) + zstd.
-        Returns: base64_encoded_compressed_data
+        Returns: the base64 of the compressed data, as ASCII bytes
         """
         # Serialize directly to bytes using msgspec (high-performance msgpack encoder)
         msgpack_bytes = msgspec.msgpack.encode(record)
@@ -965,13 +964,14 @@ class BlobStorage(Transformer):
         # One-shot compress() writes the content size the reader's decode guard needs.
         # A compressor per call: they are not thread-safe.
         compressed = zstd.ZstdCompressor(compression_params=params).compress(msgpack_bytes)
+        del msgpack_bytes
 
         compressed_size = len(compressed)
         ratio = (1 - compressed_size / original_size) * 100
         self.logger.debug("📦 Compressed record (msgspec): %d -> %d bytes (%.1f%% reduction)",
                         original_size, compressed_size, ratio)
 
-        return base64.b64encode(compressed).decode('utf-8')
+        return base64.b64encode(compressed)
 
 
 
@@ -1286,19 +1286,7 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, _ = await self._get_auth_and_config(org_id)
 
-            encoded = _encode_record_json(record_dict)
-            compressed_record, use_compression = self._maybe_compress_record(
-                record_dict, encoded=encoded
-            )
-
-            if use_compression:
-                json_bytes = _json_utf8_bytes({
-                    "isCompressed": True,
-                    "record": compressed_record,
-                    "virtualRecordId": virtual_record_id,
-                })
-            else:
-                json_bytes = _plain_envelope_bytes(record_dict, encoded, virtual_record_id)
+            json_bytes, _ = self._upload_body(record_dict, virtual_record_id)
             file_size_bytes = len(json_bytes)
 
             buffer_url = f"{nodejs_endpoint}{Routes.STORAGE_BUFFER.value.format(documentId=document_id)}"
@@ -1781,13 +1769,13 @@ class BlobStorage(Transformer):
     #         self.logger.error("❌ Unexpected error uploading raw content: %s", str(e))
     #         raise aiohttp.ClientError(f"Unexpected error: {str(e)}")
 
-    async def _upload_to_signed_url(self, session, signed_url, data) -> int | None:
-        """PUT JSON to a signed URL; transient failures are retried (same
-        key, so a repeat is harmless)."""
+    async def _upload_to_signed_url(self, session, signed_url, body: bytes) -> int | None:
+        """PUT an encoded JSON envelope to a signed URL; transient failures are
+        retried (same key, so a repeat is harmless)."""
         async def _attempt() -> int:
             async with session.put(
                 URL(signed_url, encoded=True),
-                json=data,
+                data=body,
                 headers=_signed_upload_headers(signed_url),
                 skip_auto_headers={'Content-Type'}
             ) as response:
@@ -1892,21 +1880,10 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            encoded = _encode_record_json(record)
-            compressed_record, use_compression = self._maybe_compress_record(
-                record, encoded=encoded
-            )
+            json_data, use_compression = self._upload_body(record, virtual_record_id)
+            file_size_bytes = len(json_data)
 
             if storage_type == "local":
-                if use_compression:
-                    json_data = _json_utf8_bytes({
-                        "isCompressed": True,
-                        "record": compressed_record,
-                        "virtualRecordId": virtual_record_id,
-                    })
-                else:
-                    json_data = _plain_envelope_bytes(record, encoded, virtual_record_id)
-                file_size_bytes = len(json_data)
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
 
@@ -1994,29 +1971,7 @@ class BlobStorage(Transformer):
                             self.logger.error("❌ No signed URL in response for document: %s", document_id)
                             raise Exception("No signed URL in response for document")
 
-                        # Upload with isCompressed flag format
-                        if compressed_record:
-                            # Compressed format
-                            upload_data = {
-                                "isCompressed": True,
-                                "record": compressed_record,
-                                "virtualRecordId": virtual_record_id,
-                            }
-                        else:
-                            # Uncompressed fallback format
-                            upload_data = {
-                                "record": record,
-                                "isCompressed": False,
-                                "virtualRecordId": virtual_record_id,
-                            }
-
-                        file_size_bytes = (
-                            _cloud_envelope_size(encoded, virtual_record_id)
-                            if encoded is not None and not compressed_record
-                            else len(json.dumps(upload_data).encode('utf-8'))
-                        )
-
-                        await self._upload_to_signed_url(session, signed_url, upload_data)
+                        await self._upload_to_signed_url(session, signed_url, json_data)
 
                         self.logger.info("✅ Successfully completed record storage process for document: %s", document_id)
                         return document_id, file_size_bytes
@@ -2812,19 +2767,7 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            compressed_record, use_compression = self._maybe_compress_record(record)
-
-            upload_data = {
-                "isCompressed": use_compression,
-                "record": compressed_record if use_compression else record,
-                "virtualRecordId": virtual_record_id
-            }
-            # Cloud uploads send `json=upload_data`, which ASCII-escapes; size what is sent.
-            json_data = (
-                _json_utf8_bytes(upload_data)
-                if storage_type == "local"
-                else json.dumps(upload_data).encode("utf-8")
-            )
+            json_data, _ = self._upload_body(record, virtual_record_id)
             file_size_bytes = len(json_data)
 
             if storage_type == "local":
@@ -2873,7 +2816,7 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL in response for next version upload")
 
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    await self._upload_to_signed_url(session, signed_url, json_data)
 
                     self.logger.debug("✅ Successfully uploaded next version for document: %s", document_id)
                     return document_id, file_size_bytes
@@ -3055,24 +2998,12 @@ class BlobStorage(Transformer):
         try:
             headers, nodejs_endpoint, storage_type = await self._get_auth_and_config(org_id)
 
-            encoded = _encode_record_json(metadata_dict)
-            compressed_metadata, use_compression = self._maybe_compress_record(
-                metadata_dict, label="metadata", encoded=encoded
+            json_data, use_compression = self._upload_body(
+                metadata_dict, virtual_record_id, label="metadata"
             )
-
             effective_path = document_path or f"records/{virtual_record_id}"
-            upload_data = {
-                "isCompressed": use_compression,
-                "record": compressed_metadata if use_compression else metadata_dict,
-                "virtualRecordId": virtual_record_id,
-            }
 
             if storage_type == "local":
-                json_data = (
-                    _json_utf8_bytes(upload_data)
-                    if use_compression
-                    else _plain_envelope_bytes(metadata_dict, encoded, virtual_record_id)
-                )
                 upload_url = f"{nodejs_endpoint}{Routes.STORAGE_UPLOAD.value}"
                 create_headers = _with_idempotency_key(headers)
 
@@ -3141,7 +3072,7 @@ class BlobStorage(Transformer):
                     if not signed_url:
                         raise Exception("No signed URL in response for metadata document")
 
-                    await self._upload_to_signed_url(session, signed_url, upload_data)
+                    await self._upload_to_signed_url(session, signed_url, json_data)
 
                     self.logger.debug("✅ Created metadata document: %s", document_id)
                     return document_id
