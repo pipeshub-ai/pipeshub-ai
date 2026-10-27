@@ -582,9 +582,8 @@ export const getSmtpConfig =
 /**
  * GET /smtpConfig/status — boolean-only, no secrets. Unlike `getSmtpConfig`
  * this is intentionally open to any authenticated org member (not just
- * admins): non-admins can invite users (`USER_INVITE` scope) and need to know
- * whether that will succeed without being able to read/manage the SMTP
- * credentials themselves. Mirrors the gate `smtpConfigCheck`
+ * admins): the Users page needs to know whether an invite can be sent without
+ * reading the SMTP credentials themselves. Mirrors the gate `smtpConfigCheck`
  * (user_management) actually enforces before sending invite emails.
  */
 export const getSmtpConfigStatus =

@@ -305,6 +305,11 @@ function UsersPageContent() {
   }, [isInvitePanelOpen, isProfilePanelOpen, searchParams, router]);
 
   // ── URL-based panel navigation helpers ──
+  // A member who opens a `?panel=invite` link gets no invite panel.
+  useEffect(() => {
+    if (isAdmin === false && isInvitePanelOpen) closeInvitePanel();
+  }, [isAdmin, isInvitePanelOpen, closeInvitePanel]);
+
   const navigateToInvitePanel = useCallback(() => {
     router.push('/workspace/users/?panel=invite');
   }, [router]);
@@ -589,6 +594,11 @@ function UsersPageContent() {
   );
 
   const bulkActions = useMemo<BulkAction[]>(() => {
+    // Inviting, resending and cancelling invites, and removing users are admin-only.
+    if (!isAdmin) {
+      return [];
+    }
+
     if (allSelectedArePending) {
       const actions: BulkAction[] = [
         {
@@ -599,26 +609,20 @@ function UsersPageContent() {
           onClick: handleBulkResendInvite,
         },
       ];
-      if (isAdmin) {
-        actions.push({
-          key: 'cancel-invite',
-          label: hasAdminSelected
-            ? t(
-                'workspace.users.bulk.adminInviteCantBeCancelled',
-                'Admin invites cannot be cancelled'
-              )
-            : t('workspace.users.bulk.cancelInvite'),
-          icon: hasAdminSelected ? 'block' : 'cancel_schedule_send',
-          variant: 'danger',
-          disabled: hasAdminSelected,
-          onClick: handleBulkCancelInvite,
-        });
-      }
+      actions.push({
+        key: 'cancel-invite',
+        label: hasAdminSelected
+          ? t(
+              'workspace.users.bulk.adminInviteCantBeCancelled',
+              'Admin invites cannot be cancelled'
+            )
+          : t('workspace.users.bulk.cancelInvite'),
+        icon: hasAdminSelected ? 'block' : 'cancel_schedule_send',
+        variant: 'danger',
+        disabled: hasAdminSelected,
+        onClick: handleBulkCancelInvite,
+      });
       return actions;
-    }
-
-    if (!isAdmin) {
-      return [];
     }
 
     // Mixed set or all active users
@@ -958,9 +962,9 @@ function UsersPageContent() {
           },
         ];
       } else if (isPending) {
-        // Pending invite — members can resend; edit/cancel stay admin-only
+        // Pending invite — every invite action is admin-only
         actions = [
-          {
+          isAdmin && {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
@@ -990,7 +994,7 @@ function UsersPageContent() {
         ];
       } else if (isPendingExpired) {
         actions = [
-          {
+          isAdmin && {
             icon: 'send',
             label: t('workspace.users.actions.resendInvite'),
             onClick: () => handleResendInvite(user),
@@ -1120,7 +1124,7 @@ function UsersPageContent() {
         searchPlaceholder={t('workspace.users.searchPlaceholder')}
         searchValue={searchQuery}
         onSearchChange={setSearchQuery}
-        ctaLabel={t('workspace.users.inviteButton')}
+        ctaLabel={isAdmin ? t('workspace.users.inviteButton') : undefined}
         ctaIcon="person_add_alt"
         onCtaClick={navigateToInvitePanel}
         ctaDisabled={smtpBlocksInvite}
@@ -1208,7 +1212,9 @@ function UsersPageContent() {
       </Flex>
 
       {/* Invite Users Sidebar */}
-      <InviteUsersSidebar onInviteSuccess={fetchUsers} isSmtpConfigured={isSmtpConfigured === true} />
+      {isAdmin && (
+        <InviteUsersSidebar onInviteSuccess={fetchUsers} isSmtpConfigured={isSmtpConfigured === true} />
+      )}
 
       {/* User Profile Sidebar */}
       <UserProfileSidebar />

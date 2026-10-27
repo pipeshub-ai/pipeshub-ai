@@ -26,6 +26,8 @@ import { UserActivities } from '../../../../src/modules/auth/schema/userActiviti
 import { UserDisplayPicture } from '../../../../src/modules/user_management/schema/userDp.schema';
 import { userActivitiesType } from '../../../../src/libs/utils/userActivities.utils';
 import * as appConfigModule from '../../../../src/modules/tokens_manager/config/config';
+import { ConfigurationManagerServiceCommand } from '../../../../src/libs/commands/configuration_manager/cm.service.command';
+import type { OAuthTokenService } from '../../../../src/modules/oauth_provider/services/oauth_token.service';
 
 // Serves the real user router over HTTP with its real middleware chain
 // (AuthMiddleware, userAdminCheck, userAdminOrSelfCheck, userExists) and the
@@ -154,19 +156,31 @@ describe('User routes: who may do what', () => {
     );
   }
 
+  // A personal access token or OAuth token that speaks for `userId` with only `scope`.
+  const oauthGrants = new Map<string, { userId: string; orgId: string; scope: string }>();
+  function tokenFor(userId: string, scope: string) {
+    const token = jwt.sign(
+      { tokenType: 'oauth', client_id: 'client-1', iss: 'pipeshub', jti: `${userId}-${scope}` },
+      'unused',
+    );
+    oauthGrants.set(token, { userId, orgId: String(users.get(userId)!.orgId), scope });
+    return token;
+  }
+
   async function call(
     method: string,
     path: string,
     token: string | null,
     body?: unknown,
   ): Promise<{ status: number; body: unknown }> {
+    const isForm = body instanceof FormData;
     const response = await fetch(`${baseUrl}/users${path}`, {
       method,
       headers: {
-        'content-type': 'application/json',
+        ...(isForm ? {} : { 'content-type': 'application/json' }),
         ...(token ? { authorization: `Bearer ${token}` } : {}),
       },
-      body: body === undefined ? undefined : JSON.stringify(body),
+      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
     });
     const text = await response.text();
     let parsed: unknown = text;
@@ -244,7 +258,17 @@ describe('User routes: who may do what', () => {
     container.bind('AppConfig').toConstantValue(config);
     container
       .bind('AuthMiddleware')
-      .toConstantValue(new AuthMiddleware(logger, new AuthTokenService(JWT_SECRET, SCOPED_SECRET)));
+      .toConstantValue(
+        new AuthMiddleware(logger, new AuthTokenService(JWT_SECRET, SCOPED_SECRET), () =>
+          ({
+            verifyAccessToken: async (token: string) => {
+              const grant = oauthGrants.get(token);
+              if (!grant) throw new Error('unknown oauth token');
+              return { ...grant, client_id: 'client-1', fullName: 'Token Caller', accountType: 'business' };
+            },
+          }) as unknown as OAuthTokenService,
+        ),
+      );
     mail = { sendMail: sinon.stub().resolves({ statusCode: 200 }) };
     container.bind('MailService').toConstantValue(mail);
     container.bind('AuthService').toConstantValue({});
@@ -445,6 +469,82 @@ describe('User routes: who may do what', () => {
       expect(res.status).to.equal(200);
       expect((res.body as Row[]).map((u) => u._id)).to.deep.equal([ids.otherMemberA]);
     });
+  });
+
+  describe('inviting users', () => {
+    // Every path that invites or creates a user. The controller is stubbed so the
+    // test shows whether the request got that far; the middleware chain is real.
+    const csv = () => {
+      const form = new FormData();
+      form.append('file', new Blob(['email\nnew@a.test\n'], { type: 'text/csv' }), 'new.csv');
+      return form;
+    };
+    const invitePaths = (target: string) => [
+      { name: 'POST /', method: 'POST', path: '/', body: () => ({ fullName: 'New', email: 'new@a.test' }), handler: 'createUser' as const },
+      { name: 'POST /bulk/invite', method: 'POST', path: '/bulk/invite', body: () => ({ emails: ['new@a.test'] }), handler: 'addManyUsers' as const },
+      { name: 'POST /bulk/invite/upload', method: 'POST', path: '/bulk/invite/upload', body: csv, handler: 'addManyUsersFromFile' as const },
+      { name: 'POST /:id/resend-invite', method: 'POST', path: `/${target}/resend-invite`, body: () => undefined, handler: 'resendInvite' as const },
+    ];
+    let reached: Record<'createUser' | 'addManyUsers' | 'addManyUsersFromFile' | 'resendInvite', sinon.SinonStub>;
+
+    beforeEach(() => {
+      const reply = (_req: unknown, res: express.Response) => {
+        res.status(200).json({ ok: true });
+      };
+      reached = {
+        createUser: sinon.stub(UserController.prototype, 'createUser').callsFake(reply as never),
+        addManyUsers: sinon.stub(UserController.prototype, 'addManyUsers').callsFake(reply as never),
+        addManyUsersFromFile: sinon.stub(UserController.prototype, 'addManyUsersFromFile').callsFake(reply as never),
+        resendInvite: sinon.stub(UserController.prototype, 'resendInvite').callsFake(reply as never),
+      };
+      sinon
+        .stub(ConfigurationManagerServiceCommand.prototype, 'execute')
+        .resolves({ statusCode: 200, data: { host: 'smtp', port: 25, fromEmail: 'a@a.test' } } as never);
+    });
+
+    for (const name of invitePaths('').map((r) => r.name)) {
+      const route = { name };
+      it(`stops a member from calling ${route.name}`, async () => {
+        const r = invitePaths(ids.otherMemberA).find((x) => x.name === route.name)!;
+        const res = await call(r.method, r.path, sessionFor(ids.memberA), r.body());
+
+        expect(res.status).to.equal(403);
+        expect(errorMessage(res)).to.match(/admin access/);
+        expect(reached[r.handler].called).to.be.false;
+      });
+
+      it(`lets an admin call ${route.name}`, async () => {
+        const r = invitePaths(ids.otherMemberA).find((x) => x.name === route.name)!;
+        const res = await call(r.method, r.path, sessionFor(ids.adminA), r.body());
+
+        expect(res.status).to.equal(200);
+        expect(reached[r.handler].calledOnce).to.be.true;
+      });
+
+      it(`stops a member's access token from calling ${route.name}`, async () => {
+        const r = invitePaths(ids.otherMemberA).find((x) => x.name === route.name)!;
+        const res = await call(r.method, r.path, tokenFor(ids.memberA, 'user:invite'), r.body());
+
+        expect(res.status).to.equal(403);
+        expect(reached[r.handler].called).to.be.false;
+      });
+
+      it(`lets an admin's access token with user:invite call ${route.name}`, async () => {
+        const r = invitePaths(ids.otherMemberA).find((x) => x.name === route.name)!;
+        const res = await call(r.method, r.path, tokenFor(ids.adminA, 'user:invite'), r.body());
+
+        expect(res.status).to.equal(200);
+        expect(reached[r.handler].calledOnce).to.be.true;
+      });
+
+      it(`stops an admin's access token without user:invite from calling ${route.name}`, async () => {
+        const r = invitePaths(ids.otherMemberA).find((x) => x.name === route.name)!;
+        const res = await call(r.method, r.path, tokenFor(ids.adminA, 'user:read'), r.body());
+
+        expect(res.status).to.equal(403);
+        expect(reached[r.handler].called).to.be.false;
+      });
+    }
   });
 
   describe('removing and unblocking users', () => {

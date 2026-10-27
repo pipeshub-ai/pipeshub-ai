@@ -819,6 +819,7 @@ export function createUserRouter(container: Container) {
     '/bulk/invite',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
+    userAdminCheck,
     smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
     ValidationMiddleware.validate(bulkInviteValidationSchema),
@@ -841,6 +842,7 @@ export function createUserRouter(container: Container) {
     '/bulk/invite/upload',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
+    userAdminCheck,
     smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,
     ...FileProcessorFactory.createBufferUploadProcessor({
@@ -876,6 +878,7 @@ export function createUserRouter(container: Container) {
     '/:id/resend-invite',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.USER_INVITE),
+    userAdminCheck,
     ValidationMiddleware.validate(UserIdValidationSchema),
     smtpConfigCheck(config.cmBackend, config.scopedJwtSecret),
     accountTypeCheck,

@@ -379,9 +379,8 @@ export function createConfigurationManagerRouter(container: Container): Router {
   /**
    * GET /smtpConfig/status
    * Boolean-only SMTP status, no secrets or host/port details — safe for any
-   * authenticated org member. Non-admins can invite users but cannot read
-   * `/smtpConfig` (admin-gated), so the Users page uses this to decide
-   * whether to disable Invite instead of hitting a 403 on the full config.
+   * authenticated org member. The Users page uses this to decide whether to
+   * disable Invite instead of hitting a 403 on the full `/smtpConfig`.
    */
   router.get(
     '/smtpConfig/status',

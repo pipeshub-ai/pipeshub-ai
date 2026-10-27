@@ -1952,8 +1952,8 @@ export class UserController {
   }
 
   /**
-   * Members may invite only as member and may not attach groupIds.
-   * Admin role / group assignment stay org-admin only.
+   * Backstop only: the invite routes already require an org admin. Should a
+   * non-admin ever reach here, they still cannot grant the admin role or groups.
    */
   protected async assertMemberInviteConstraints(
     actorUserId: string | undefined,

@@ -29741,9 +29741,9 @@ paths:
 
         - `smtpConfigCheck` — verifies SMTP host/port/fromEmail are configured; throws `404` if
           missing fields, `500` if config fetch fails.
-        - No admin check on the route: any member of the organization may invite.
-          Members may invite only as `member` and without `groupIds`; inviting as `admin` or
-          assigning groups needs an org admin, and a member asking for either gets `403`.
+        - `userAdminCheck` — only an org admin may invite. A member gets `403`, whatever the
+          body asks for. An access token is checked as the person it speaks for, so a member's
+          token is refused even when it carries `user:invite`.
         - `accountTypeCheck` — rejects `individual` account type; throws `400`.
 
         If all provided emails already have active accounts, returns `200` with
@@ -29798,7 +29798,7 @@ paths:
                 role:
                   type: string
                   enum: [admin, member]
-                  description: Organization role for invited users. Only org admins may invite as admin.
+                  description: Organization role for invited users.
                   example: member
       responses:
         '200':
@@ -29849,8 +29849,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            A member (not an org admin) asked to invite as `admin` (`Members can only invite users as member`)
-            or to assign `groupIds` (`Members cannot assign groups when inviting`).
+            The caller is not an admin of this organization (`You need admin access to do this...`).
 
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
@@ -29913,8 +29912,8 @@ paths:
         Optional `groupIds` (a JSON-encoded array of 24-hex-character ObjectIds) adds new/restored
         users to the specified groups. A value that is not JSON, or JSON that is not an array, is
         ignored as if it were absent. Same middleware chain as `POST /users/bulk/invite`
-        (`smtpConfigCheck`, `accountTypeCheck`), and the same rule on who may invite: any member,
-        but only an org admin may invite as `admin` or assign `groupIds` (`403` otherwise).
+        (`userAdminCheck`, `smtpConfigCheck`, `accountTypeCheck`), and the same rule on who may
+        invite: only an org admin (`403` otherwise).
       operationId: bulkInviteUsersFromFile
       security:
         - bearerAuth: []
@@ -29979,8 +29978,7 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            A member (not an org admin) asked to invite as `admin` (`Members can only invite users as member`)
-            or to assign `groupIds` (`Members cannot assign groups when inviting`).
+            The caller is not an admin of this organization (`You need admin access to do this...`).
 
             An OAuth access token without the `user:invite` scope is also refused with `403`
             (`Insufficient scope. Required: user:invite`), before the request is validated.
@@ -30019,10 +30017,9 @@ paths:
 
         **Middleware chain:**
 
+        - `userAdminCheck` — only an org admin may resend an invite. A member gets `403`.
         - `smtpConfigCheck` — verifies SMTP is configured; throws `404` if fields missing,
           `500` if config fetch fails.
-        - No admin check on the route: any member of the organization may resend an invite to a
-          pending user in the same organization, as any member may invite.
         - `accountTypeCheck` — rejects individual account type; throws `400`.
 
         **Controller behavior:**
@@ -30097,9 +30094,11 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         '403':
           description: |
-            An OAuth access token without the `user:invite` scope (`Insufficient scope. Required: user:invite`).
-            Checked right after authentication, before the request is validated. Session tokens are
-            never scope-restricted.
+            The caller is not an admin of this organization (`You need admin access to do this...`).
+
+            An OAuth access token without the `user:invite` scope is also refused
+            (`Insufficient scope. Required: user:invite`). Checked right after authentication,
+            before the request is validated. Session tokens are never scope-restricted.
           content:
             application/json:
               schema:
