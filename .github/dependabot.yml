@@ -9,6 +9,11 @@ updates:
     groups:
       node-api-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # bullmq 5 pins ioredis 5.11.1, so ioredis 6 installs a second copy whose types the queue
+      # code cannot pass to bullmq. bullmq 6 takes ioredis as a peer but drops repeatable jobs.
+      - dependency-name: "ioredis"
+        versions: [">=6"]
 
   - package-ecosystem: npm
     directory: /frontend
@@ -17,6 +22,19 @@ updates:
     groups:
       frontend-minor-and-patch:
         update-types: [minor, patch]
+    ignore:
+      # 16.4 enables react-hooks rules (use-memo, immutability, purity) that fail next build in
+      # 14 places, each a change to component behaviour rather than a lint fix.
+      - dependency-name: "eslint-config-next"
+        versions: [">=16.4"]
+      # i18next and typescript-eslint require TypeScript 5, and next 15 type-checks through the
+      # JavaScript compiler API that TypeScript 7 no longer ships.
+      - dependency-name: "typescript"
+        versions: [">=7"]
+      # react-pdf-highlighter 7 brings its own pdfjs-dist 4. The worker this app loads has to
+      # be the same release as that copy, so pdfjs-dist moves when the highlighter does.
+      - dependency-name: "pdfjs-dist"
+        versions: [">=5"]
 
   - package-ecosystem: pip
     directory: /backend/python

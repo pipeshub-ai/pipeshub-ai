@@ -25,6 +25,8 @@ SECURITY_FLOORS = {
     "redshift-connector": Version("2.1.14"),
     # GHSA-vfmq-68hx-4jfw
     "lxml": Version("6.1.0"),
+    # GHSA-h35f-9h28-mq5c, GHSA-xmj3-9gf7-h52w
+    "setuptools": Version("84.1.0"),
 }
 
 

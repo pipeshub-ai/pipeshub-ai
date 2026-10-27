@@ -45,7 +45,11 @@ from app.modules.indexing.named_entity_persist_retry import (
 from app.modules.indexing.named_entity_sweep import run_named_entity_sweep_loop
 from app.modules.indexing.rate_limit_deferral import deferral_due
 from app.modules.indexing.record_label_repair import run_record_label_repair_loop
-from app.modules.indexing.record_republish import is_parked_duplicate, record_event
+from app.modules.indexing.record_republish import (
+    is_parked_duplicate,
+    record_event,
+    republish_eligible,
+)
 from app.modules.indexing.recovery_budget import (
     ExhaustedRecordSink,
     record_handback,
@@ -66,7 +70,6 @@ from app.services.graph_db.common.record_visibility import (
     RecordVisibility,
     is_live_record,
 )
-from app.services.graph_db.common.utils import RESTORED_AT_FIELD
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.backpressure import (
@@ -1541,16 +1544,13 @@ async def _republish_stranded_records(
                     continue
                 # Uploads are otherwise left alone: a new one waits on its file
                 # reaching storage. A restored file's content is already there,
-                # and its restore was the only thing that would have queued it.
-                restored_upload = (
-                    status_value == ProgressStatus.NOT_STARTED.value
-                    and bool(record.get(RESTORED_AT_FIELD))
-                    and is_live_record(record)
-                )
+                # and its restore was the only thing that would have queued it;
+                # so is a pushed record's (see republish_eligible).
+                eligible, restored_upload = republish_eligible(record, status_value)
                 if (
                     not record_key
                     or not connector_id
-                    or (record.get("origin") != OriginTypes.CONNECTOR.value and not restored_upload)
+                    or not eligible
                     # A stub for an ancestor that was never synced: nothing to
                     # index, and the connector refuses to stream it.
                     or record.get("isPlaceholder")

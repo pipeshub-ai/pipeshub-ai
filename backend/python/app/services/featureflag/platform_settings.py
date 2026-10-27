@@ -155,6 +155,16 @@ async def is_artifact_write_enabled(config_service: ConfigurationService | None 
     )
 
 
+async def is_kb_push_enabled(config_service: ConfigurationService | None = None) -> bool:
+    """Whether the knowledge-base push routes exist. Read on every request, through the
+    config cache. Defaults to DISABLED (experimental)."""
+    if config_service is None:
+        return False
+    return await read_platform_feature_flag(
+        CONFIG.ENABLE_KB_PUSH, config_service, default=False, use_cache=True,
+    )
+
+
 ArtifactReadMode = Literal["legacy", "shadow", "artifact"]
 
 
