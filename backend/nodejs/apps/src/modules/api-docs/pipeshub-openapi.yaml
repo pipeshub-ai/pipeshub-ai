@@ -6484,11 +6484,12 @@ components:
               description: >-
                 Lines of `content` with words not found in the text the reader was given, as
                 written: a paraphrase, or a misreading. Check them with a plain read. Every
-                fragment with a letter or digit is checked, and a match may not continue a
-                word or a number (`$1,250` is not found in `$1,250,000`). Text in square
-                brackets is the reader's own note (where a passage sits) and is not checked,
-                so 0 means every quoted fragment was found, not that `content` is complete or
-                that it quotes the right passage.
+                fragment with a letter or digit is checked, and a match may not run into a
+                longer word or number (`$1,250` is not found in `$1,250,000`, nor `$1,250.` in
+                `$1,250.99`). A note the reader adds in square brackets beside a quote (where
+                a passage sits) is not checked; a markdown link's label, and a line that is
+                only a bracketed note, are. 0 means every quoted fragment was found, not that
+                `content` is complete or that it quotes the right passage.
             sourceChars:
               type: integer
               description: Characters of the record the reader was given.
@@ -6496,9 +6497,9 @@ components:
               type: boolean
               description: >-
                 True when the reader was given the whole record. False when the record was
-                longer than the reader's 120,000 characters and it was given part of it: the
-                blocks most relevant to `query`, or the start of the record when the relevance
-                search found nothing or failed.
+                longer than the reader's 120,000 characters, or had more than 5,000 blocks,
+                and it was given part of it: the blocks most relevant to `query`, or the start
+                of the record when the relevance search found nothing or failed.
             inputTokens:
               type: integer
             outputTokens:

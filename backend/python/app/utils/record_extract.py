@@ -72,32 +72,51 @@ def _normal(text: str) -> str:
     return " ".join(text.split())
 
 
+def _edge(char: str, *, start: bool) -> str:
+    """The guard that keeps a match at this end of a fragment from running into a longer word or number."""
+    if char.isdigit():
+        # Not `1,250` inside `$1,250,000`, nor `250` inside `1,250`.
+        return r"(?<!\w)(?<!\d[.,])" if start else r"(?!\w)(?![.,]\d)"
+    if char.isalnum():
+        return r"(?<!\w)" if start else r"(?!\w)"
+    if char in ".,":
+        # Not `Airflow 2.` inside `2.10.4`, nor `.10.4` after `2`.
+        return r"(?<!\d)" if start else r"(?!\d)"
+    return ""
+
+
 def _found(fragment: str, haystack: str) -> bool:
     """Whether `fragment` is in `haystack` as written, not as part of a longer word or number.
 
-    `$1,250` is not found in `$1,250,000`, nor `sponsor` in `sponsors`: a match must not
-    continue a word or number at either end (a letter or digit, or `,`/`.` and a digit).
+    `$1,250` is not found in `$1,250,000`, `$1,250.` not in `$1,250.99`, nor `sponsor` in
+    `sponsors`. A separator followed by a space still matches (`September 3,` in
+    `September 3, 2024`).
     """
-    head = r"(?<![\w])(?<![\d][.,])" if fragment[0].isalnum() else ""
-    tail = r"(?![\w])(?![.,]\d)" if fragment[-1].isalnum() else ""
-    return re.search(head + re.escape(fragment) + tail, haystack) is not None
+    pattern = _edge(fragment[0], start=True) + re.escape(fragment) + _edge(fragment[-1], start=False)
+    return re.search(pattern, haystack) is not None
 
 
 def _unverified_lines(reply: str, source: str) -> int:
     """Lines of the reply with a fragment that is not in `source` as written.
 
-    Text in square brackets is the reader's own words by the prompt's rule (where a
-    passage sits) and is not checked; the brackets and the reader's "…" skips split a
-    line into fragments, each checked on its own. Bullet and emphasis marks the model
-    may add are set aside. Every other fragment with a letter or digit is checked,
-    list numbers included.
+    A note in square brackets is the reader's own words by the prompt's rule (where a
+    passage sits) and is not checked when the line quotes something beside it; such
+    notes and the reader's "…" skips split a line into fragments, each checked on its
+    own. A markdown link's `[label](` is the record's text and stays in the quote, and
+    a line that is nothing but a bracketed note is checked as if it were a quote.
+    Bullet and emphasis marks the model may add are set aside. Every fragment with a
+    letter or digit is checked, list numbers included.
     """
     haystack = _normal(source)
     unverified = 0
     for line in reply.splitlines():
-        quoted = re.sub(r"\[[^\]]*\]", "…", line)
-        quoted = re.sub(r"^\s*[-*>]\s+", "", quoted).replace("**", "").replace("__", "")
+        text = re.sub(r"^\s*[-*>]\s+", "", line).replace("**", "").replace("__", "")
+        # A bracket not followed by "(" is a note; a link's label is the record's text.
+        quoted = re.sub(r"\[[^\]]*\](?!\()", "…", text)
         fragments = [_normal(f) for f in re.split(r"…|\.\.\.", quoted)]
+        if not any(re.search(r"\w", f) for f in fragments):
+            # Nothing but notes: their words are all the line says, so they are checked.
+            fragments = [_normal(f) for f in re.split(r"…|\.\.\.|[\[\]]", text)]
         if any(re.search(r"\w", f) and not _found(f, haystack) for f in fragments):
             unverified += 1
     return unverified

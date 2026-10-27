@@ -113,6 +113,20 @@ class TestExtract:
         ("1. Acme Corporation paid $10,000.", "1. Acme Corporation paid $10,000.", 0),
         # The reader's own note, in brackets, is not checked; the quote beside it is.
         ("The vote passed on 29 September.", "[dev@ thread, 2026-09-29] The vote passed on 29 September.", 0),
+        # A line that is only a note is checked, and so is a link's label.
+        ("The ASF had 65 sponsors in FY25.", "[The ASF had 85 sponsors in FY25]", 1),
+        ("Read [the release notes](https://airflow.apache.org/notes) first.",
+         "Read [85 sponsors](https://airflow.apache.org/notes) first.", 1),
+        # A separator at either end may not run into a longer number.
+        ("Apache Airflow 2.10.4 was released in March.", "Apache Airflow 2. … released in March.", 1),
+        ("The contract value is $1,250.99 a year.", "The contract value is $1,250.", 1),
+        ("Revenue was $1,250,000 in all.", "Revenue was $1,250,", 1),
+        ("Apache Airflow 2.10.4 was released.", ".10.4 was released.", 1),
+        # ... but one followed by a space still matches.
+        ("The ASF had 65 sponsors. It grew.", "The ASF had 65 sponsors.", 0),
+        ("Signed on September 3, 2024 in Wilmington.", "Signed on September 3,", 0),
+        # A word after a number and a period is still a word.
+        ("3.Executive summary approved by the board.", "Executive summary approved by the board.", 0),
     ])
     async def test_what_counts_as_a_line_from_the_record(self, record_text: str, reply: str, unverified: int) -> None:
         result = await _extract(_record(record_text), _llm(reply))
