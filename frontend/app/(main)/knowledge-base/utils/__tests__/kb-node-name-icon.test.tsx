@@ -18,6 +18,17 @@ describe('KbNodeNameIcon file types', () => {
     expect(container.textContent).not.toContain('description');
   });
 
+  it.each(['application/x-yaml', 'text/x-yaml', 'application/yaml', 'text/yaml'])(
+    'a record with no extension shows the YAML icon from its %s type',
+    (mimeType) => {
+      const { container } = render(
+        <KbNodeNameIcon isKnowledgeHub nodeType="record" extension={null} mimeType={mimeType} name="api-action-sample" />,
+      );
+
+      expect(container.querySelector('clipPath#yaml_c0')).not.toBeNull();
+    },
+  );
+
   it('a collection shows the YAML icon too', () => {
     const { container } = render(
       <KbNodeNameIcon isKnowledgeHub={false} legacyType="file" legacyFileType="yml" name="api-action-sample" />,

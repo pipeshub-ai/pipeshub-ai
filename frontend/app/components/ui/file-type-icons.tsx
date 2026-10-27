@@ -598,6 +598,8 @@ export const FILE_TYPE_ICON_MAP: Record<string, React.FC<FileTypeIconProps>> = {
   xlsx: XlsIcon,
   yaml: YamlIcon,
   yml: YamlIcon,
+  // MIME subtype of application/x-yaml: All records falls back to it when a record has no extension.
+  'x-yaml': YamlIcon,
   zip: ZipIcon,
 };
 
