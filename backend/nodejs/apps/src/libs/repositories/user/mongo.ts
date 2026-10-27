@@ -228,7 +228,7 @@ export class MongoUserRepository implements UserRepository {
       orgId,
       isDeleted: { $ne: true },
     })
-      .sort({ createdAt: 1 })
+      .sort({ createdAt: 1, _id: 1 })
       .select('_id')
       .lean();
     return row?._id ? String(row._id) : null;
@@ -384,7 +384,7 @@ export class MongoUserRepository implements UserRepository {
 
     const [rows, total] = await Promise.all([
       Users.find(filter)
-        .sort({ fullName: 1 })
+        .sort({ fullName: 1, _id: 1 })
         .skip(q.skip)
         .limit(q.limit)
         .lean()
@@ -533,7 +533,7 @@ export class MongoUserRepository implements UserRepository {
       kind: 'service',
       isDeleted: false,
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .exec();
     return rows.map(dto);
   }

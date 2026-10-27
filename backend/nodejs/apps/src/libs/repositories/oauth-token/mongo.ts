@@ -288,11 +288,11 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
   ): Promise<{ access: AccessTokenDto[]; refresh: RefreshTokenDto[] }> {
     const [access, refresh] = await Promise.all([
       OAuthAccessToken.find({ clientId: { $eq: clientId }, ...liveSince() })
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
         .limit(limit)
         .exec(),
       OAuthRefreshToken.find({ clientId: { $eq: clientId }, ...liveSince() })
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
         .limit(limit)
         .exec(),
     ]);
@@ -312,7 +312,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
       userId: { $eq: oid(userId) },
       ...liveSince(),
     })
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .limit(limit)
       .exec();
     return tokens.map((t) => toPlain<AccessTokenDto>(t));
@@ -334,7 +334,7 @@ export class MongoOAuthTokenRepository implements OAuthTokenRepository {
     const filter = { clientId: { $eq: clientId }, ...liveSince() };
     const [tokens, total] = await Promise.all([
       OAuthAccessToken.find(filter)
-        .sort({ createdAt: -1 })
+        .sort({ createdAt: -1, _id: -1 })
         .skip((page - 1) * limit)
         .limit(limit)
         .exec(),

@@ -480,6 +480,29 @@ export function describeDocumentContract(fx: DocumentFixture): void {
       });
     });
 
+    it('rows with identical timestamps keep one order: envelopes newest first with ids descending, revisions oldest first with ids ascending', async () => {
+      const org = fx.newId();
+      const t = 5000;
+      const envelopes = [] as string[];
+      for (let i = 0; i < 4; i++) {
+        envelopes.push((await repo.create(mk(org, { documentName: 'record_tie', documentPath: `${org}/PipesHub/p${i}`, createdAt: t })))._id);
+      }
+      expect((await repo.listEnvelopes(org, 'tie')).map((r) => r._id)).to.deep.equal([...envelopes].sort().reverse());
+      const revisions = [] as string[];
+      for (let i = 0; i < 4; i++) {
+        const r = await repo.createArtifactSetOnce(
+          mk(org, {
+            documentName: `revision_t${i}`,
+            createdAt: t,
+            artifactSet: { virtualRecordId: 'tie', rev: `t${i}`, root: `${org}/PipesHub/record-revisions/tie/t${i}` },
+          }),
+          fence(Date.now()),
+        );
+        revisions.push(r._id);
+      }
+      expect((await repo.listArtifactSets(org, 'tie')).map((r) => r._id)).to.deep.equal([...revisions].sort());
+    });
+
     it('listEnvelopes answers the live record_ and metadata_ rows, newest first', async () => {
       const org = fx.newId();
       const old = await repo.create(mk(org, { documentName: 'record_v1', documentPath: `${org}/PipesHub/a`, createdAt: 1000 }));

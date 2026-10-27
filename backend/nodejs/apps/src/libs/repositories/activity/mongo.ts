@@ -28,7 +28,7 @@ export class MongoActivityRepository implements ActivityRepository {
       isDeleted: false,
       activityType: { $in: [...SESSION_INVALIDATING_ACTIVITIES] },
     })
-      .sort({ createdAt: -1 }) // sort by most recent first
+      .sort({ createdAt: -1, _id: -1 }) // sort by most recent first
       .lean()
       .exec();
     return row ? toPlain<ActivityDto>(row) : null;
@@ -45,7 +45,7 @@ export class MongoActivityRepository implements ActivityRepository {
       createdAt: { $gte: since },
     })
       .select('userId orgId activityType createdAt')
-      .sort({ createdAt: -1 })
+      .sort({ createdAt: -1, _id: -1 })
       .lean()
       .exec();
     return rows.map((r) => toPlain<ActivityDto>(r));
@@ -61,7 +61,7 @@ export class MongoActivityRepository implements ActivityRepository {
       isDeleted: false,
       activityType: userActivitiesType.PASSWORD_CHANGED,
     })
-      .sort({ createdAt: -1 }) // sort by most recent first
+      .sort({ createdAt: -1, _id: -1 }) // sort by most recent first
       .lean()
       .exec();
     return row ? toPlain<ActivityDto>(row) : null;
