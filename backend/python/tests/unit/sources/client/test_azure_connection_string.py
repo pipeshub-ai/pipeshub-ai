@@ -52,8 +52,8 @@ def test_development_storage_passes_for_blob() -> None:
 @CLIENTS
 @pytest.mark.parametrize(
     "key",
-    ["abc", "not-a-real-key", GOOD_KEY[:-1], ""],
-    ids=["too-short", "not-base64", "lost-padding", "empty"],
+    ["abc", "not-a-real-key", GOOD_KEY[:-1], "", "abcé" + GOOD_KEY],
+    ids=["too-short", "not-base64", "lost-padding", "empty", "non-ascii"],
 )
 def test_a_key_the_sdk_cannot_sign_with_is_refused(client_cls: type, key: str) -> None:
     assert account_key_problem(_account(key), client_cls) == INVALID_ACCOUNT_KEY

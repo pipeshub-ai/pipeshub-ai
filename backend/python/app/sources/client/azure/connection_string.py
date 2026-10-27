@@ -1,5 +1,4 @@
 import base64
-import binascii
 
 INVALID_ACCOUNT_KEY = (
     "The AccountKey in the connection string is not a valid storage account key. Copy the connection "
@@ -25,5 +24,6 @@ def account_key_problem(connection_string: str, client_cls: type) -> str | None:
     try:
         # Not validate=True: the SDK decodes leniently, so a key it can sign with must pass here.
         return None if base64.b64decode(key) else INVALID_ACCOUNT_KEY
-    except binascii.Error:
+    except ValueError:
+        # binascii.Error for bad base64, a plain ValueError for a non-ASCII key.
         return INVALID_ACCOUNT_KEY
