@@ -3762,10 +3762,32 @@ class TestInitSetupErrors:
         assert not isinstance(error, ConnectorInitError)
         assert isinstance(error, ValueError)
 
+    @pytest.mark.asyncio
+    async def test_an_unknown_graph_resource_does_not_blame_the_sharepoint_domain(self) -> None:
+        error, _ = await self._init_with(_SECRET_AUTH, ClientAuthenticationError(message=(
+            "AADSTS500011: The resource principal named https://graph.microsoft.com was not found in the "
+            "tenant named Contoso.")))
+
+        assert isinstance(error, ConnectorInitError)
+        assert "Microsoft sign-in failed (AADSTS500011)" in str(error)
+        assert "SharePoint domain" not in str(error)
+        assert "grant admin consent" in str(error)
+
+    def test_an_unknown_resource_names_the_setting_the_caller_requested(self) -> None:
+        from app.connectors.sources.microsoft.common.sign_in_errors import (
+            known_sign_in_problem,
+        )
+
+        problem = known_sign_in_problem("AADSTS500011: not found.", resource_setting="SharePoint domain")
+
+        assert "Check the SharePoint domain in the connector's settings" in problem
+        assert "grant admin consent" not in problem
+
     @pytest.mark.parametrize(("code", "hint"), [
         ("AADSTS700027", "Upload the public certificate"),
+        ("AADSTS700027", "does not match the private key"),
         ("AADSTS700024", "server's clock"),
-        ("AADSTS500011", "Check the SharePoint domain"),
+        ("AADSTS500011", "grant admin consent"),
     ])
     def test_certificate_sign_in_codes_say_what_to_fix(self, code: str, hint: str) -> None:
         from app.connectors.sources.microsoft.common.sign_in_errors import (

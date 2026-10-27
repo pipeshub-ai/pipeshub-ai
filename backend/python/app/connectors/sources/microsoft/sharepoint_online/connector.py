@@ -922,7 +922,7 @@ class SharePointConnector(BaseConnector):
         except Exception as token_error:
             sanitized_error = sanitize_azure_error(token_error)
             self.logger.error(f"❌ Failed to obtain SharePoint access token during initialization: {sanitized_error}")
-            problem = known_sign_in_problem(token_error)
+            problem = known_sign_in_problem(token_error, resource_setting="SharePoint domain")
             if problem:
                 raise ConnectorInitError(
                     f"Could not get a SharePoint access token for {self.sharepoint_domain}. {problem}"
