@@ -3146,6 +3146,7 @@
         "lastFailed": "Last sync failed: {{reason}}",
         "skipped": "Last sync was skipped: the desktop app wasn't connected",
         "stopped": "Last sync was stopped before it finished",
+        "stoppedAfterFailure": "Last sync was stopped. The one before it failed: {{reason}}",
         "approximate": "This sync is very large, so some items may be counted more than once.",
         "viewRecords": "View records",
         "run": {

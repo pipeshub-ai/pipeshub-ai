@@ -1497,11 +1497,15 @@ class EventService:
 
             # Someone asked for these, so syncs may retry them again if they fail again.
             # Every id, not just those with a count in memory: most typed loaders don't read it.
+            # Best effort: the records are NOT_STARTED already, and must still reach the connector.
             if record_ids_to_update:
-                await self.graph_provider.batch_update_nodes(
-                    [{"id": rid, "autoRetryCount": 0} for rid in record_ids_to_update],
-                    CollectionNames.RECORDS.value,
-                )
+                try:
+                    await self.graph_provider.batch_update_nodes(
+                        [{"id": rid, "autoRetryCount": 0} for rid in record_ids_to_update],
+                        CollectionNames.RECORDS.value,
+                    )
+                except Exception as e:
+                    self.logger.warning(f"Could not reset sync retries for {len(record_ids_to_update)} record(s): {e}")
 
             # Connectors that publish via on_new_records drop AUTO_INDEX_OFF records;
             # reindex is an explicit user action, so clear that in memory too.

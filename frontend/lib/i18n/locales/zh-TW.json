@@ -3292,6 +3292,7 @@
         "lastFailed": "上次同步失敗：{{reason}}",
         "skipped": "已略過上次同步：桌面應用程式未連線",
         "stopped": "上次同步在完成前已停止",
+        "stoppedAfterFailure": "上次同步已停止。再上一次同步失敗：{{reason}}",
         "approximate": "此次同步規模很大，部分項目可能會被重複計算。",
         "viewRecords": "檢視記錄",
         "run": {

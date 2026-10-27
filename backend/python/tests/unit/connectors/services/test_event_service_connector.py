@@ -1290,6 +1290,23 @@ class TestHandleReindex:
         assert mock_conn.reindex_records.await_args.args[0][0].auto_retry_count == 0
 
     @pytest.mark.asyncio
+    async def test_run_reindex_still_reaches_the_connector_when_the_retry_reset_fails(self, service) -> None:
+        """The records are NOT_STARTED by then; stopping here would strand them."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+        loaded = [MagicMock(id="file-1", is_placeholder=False, auto_retry_count=None)]
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[loaded, []])
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+        service.graph_provider.batch_update_nodes = AsyncMock(side_effect=RuntimeError("write conflict"))
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="drive", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None, status_filters=["FAILED"],
+        )
+
+        mock_conn.reindex_records.assert_awaited_once()
+
+    @pytest.mark.asyncio
     async def test_run_reindex_stops_as_a_failure_when_a_page_cannot_be_read(self, service):
         """A failed page must not look like "reached the end".
 

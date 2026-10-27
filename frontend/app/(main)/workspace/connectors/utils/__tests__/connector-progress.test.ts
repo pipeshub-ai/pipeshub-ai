@@ -77,6 +77,7 @@ describe('describeConnectorProgress', () => {
       view({ lastRun: run({ outcome: 'stopped', finishedAt: NOW }), lastError: { code: 'auth' } }),
     );
     expect(afterFailure.tone).toBe('error');
+    expect(afterFailure.text).toContain('stoppedAfterFailure');
     expect(afterFailure.text).toContain('error.auth.title');
   });
 

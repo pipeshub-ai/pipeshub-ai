@@ -3182,6 +3182,7 @@
         "lastFailed": "La última sincronización falló: {{reason}}",
         "skipped": "Se omitió la última sincronización: la aplicación de escritorio no estaba conectada",
         "stopped": "La última sincronización se detuvo antes de terminar",
+        "stoppedAfterFailure": "La última sincronización se detuvo. La anterior falló: {{reason}}",
         "approximate": "Esta sincronización es muy grande, así que algunos elementos podrían contarse más de una vez.",
         "viewRecords": "Ver registros",
         "run": {

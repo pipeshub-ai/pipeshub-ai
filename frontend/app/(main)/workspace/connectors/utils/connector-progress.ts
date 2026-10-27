@@ -210,11 +210,18 @@ export function describeConnectorProgress(
   const { indexing, lastRun } = view;
   const backlog = indexing.waiting + indexing.inProgress;
   // A stop proves nothing about the source, so a failure from before it still stands.
-  const stoppedAfterFailure = lastRun?.outcome === 'stopped' && view.lastError != null;
-  if (lastRun?.outcome === 'failed' || stoppedAfterFailure) {
+  if (lastRun?.outcome === 'stopped' && view.lastError != null) {
     return {
       tone: 'error',
-      text: t(`${K}.lastFailed`, { reason: errorTitle(t, (lastRun?.error ?? view.lastError)?.code, source) }),
+      text: t(`${K}.stoppedAfterFailure`, { reason: errorTitle(t, view.lastError.code, source) }),
+      percent: null,
+      moving: false,
+    };
+  }
+  if (lastRun?.outcome === 'failed') {
+    return {
+      tone: 'error',
+      text: t(`${K}.lastFailed`, { reason: errorTitle(t, (lastRun.error ?? view.lastError)?.code, source) }),
       percent: null,
       moving: false,
     };
