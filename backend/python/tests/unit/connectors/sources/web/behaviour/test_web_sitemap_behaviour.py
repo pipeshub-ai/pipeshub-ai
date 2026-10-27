@@ -307,3 +307,91 @@ async def test_a_robots_txt_an_older_build_stored_is_removed_after_two_full_sync
 
     assert ROBOTS not in db.pages()
     assert db.deleted == [old_id]
+
+
+async def test_a_failed_redirect_landing_on_robots_txt_is_not_stored_as_a_failed_page(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    """Without a browser disguise a 403 is final, and a final failure used to be filed as a failed page."""
+    site.add(ROBOTS, Page(status=403, body=b"blocked"))
+    site.html(START_URL, "Home", "/crawlers")
+    site.redirect("http://site.test/crawlers", "/robots.txt", status=301)
+
+    await (await make_connector(browser_like_identity=False)).run_sync()
+
+    assert {r.external_record_id for r in db.records.values()} == {START_URL}
+
+
+async def test_a_single_page_crawl_of_a_sitemap_does_not_store_it(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    sitemap = "http://site.test/sitemap.xml"
+    _site(site, robots_sitemap=None)
+    _xml(site, sitemap, _urlset((ORPHAN, None)))
+
+    await (await make_connector(sitemap, crawl_type="single")).run_sync()
+
+    assert sitemap not in db.records
+
+
+async def test_a_malformed_sitemap_line_does_not_fail_a_links_only_crawl(
+    site: FakeWeb, db: FakeRecordsDb, checkpoints: FakeCheckpointStore, make_connector: MakeConnector,
+) -> None:
+    feed = "http://site.test/feeds/pages.xml"
+    _site(site, robots_sitemap=None)
+    site.add(ROBOTS, Page(body=b"User-agent: *\nAllow: /\nSitemap: https://[bad\nSitemap: /feeds/pages.xml\n",
+                          content_type="text/plain"))
+    site.html(START_URL, "Home", "/kb/linked.html", "/feeds/pages.xml")
+    _xml(site, feed, _urlset((ORPHAN, None)))
+
+    await (await make_connector(discovery="links")).run_sync()
+
+    assert LINKED in db.pages()
+    assert feed not in db.pages()
+    assert json.loads(next(iter(checkpoints.sync_points.values()))["lastRun"])["outcome"] == "completed"
+
+
+async def test_a_sitemap_robots_txt_names_on_another_site_is_known_as_that_sites_sitemap(
+    site: FakeWeb, make_connector: MakeConnector,
+) -> None:
+    cdn_sitemap = "http://cdn.test/pages.xml"
+    _site(site, robots_sitemap=cdn_sitemap)
+    connector = await make_connector()
+
+    await connector.run_sync()
+
+    assert connector._is_crawler_url(cdn_sitemap)
+    assert not connector._is_crawler_url("http://site.test/pages.xml")
+
+
+async def test_removing_a_stored_robots_txt_frees_its_place_under_max_pages(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    _site(site, robots_sitemap=None)
+    site.html(START_URL, "Home", "/crawlers")
+    site.redirect("http://site.test/crawlers", "/robots.txt", status=301)
+    connector = await make_connector()
+    await connector.run_sync()
+    _store_as_an_older_build_did(db, ROBOTS)
+
+    await connector.run_sync()
+
+    assert connector.last_sync_summary["pagesStored"] == 1
+
+
+async def test_robots_txt_and_sitemaps_an_older_build_stored_do_not_stop_pruning_a_small_site(
+    site: FakeWeb, db: FakeRecordsDb, make_connector: MakeConnector,
+) -> None:
+    """One page and two such leftovers: counted as misses, they made every crawl "miss most of the site"."""
+    sitemap = "http://site.test/sitemap.xml"
+    site.add(ROBOTS, Page(body=b"User-agent: *\nAllow: /\n", content_type="text/plain"))
+    site.html(START_URL, "Home", "/robots.txt", "/sitemap.xml")
+    connector = await make_connector(discovery="links")
+    await connector.run_sync()
+    old_ids = {_store_as_an_older_build_did(db, ROBOTS), _store_as_an_older_build_did(db, sitemap)}
+
+    await connector.run_sync()
+    await connector.run_sync()
+
+    assert not {ROBOTS, sitemap} & set(db.pages())
+    assert set(db.deleted) == old_ids
