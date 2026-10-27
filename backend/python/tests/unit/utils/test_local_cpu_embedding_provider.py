@@ -1,5 +1,5 @@
 import pytest
-from backend.python.app.utils.aimodels import is_local_cpu_embedding_provider
+from app.utils.aimodels import is_local_cpu_embedding_provider
 
 
 def test_none_provider_is_local() -> None:
