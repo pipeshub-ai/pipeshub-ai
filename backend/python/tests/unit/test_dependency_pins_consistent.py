@@ -89,12 +89,11 @@ def _python_ignores() -> list[tuple[str, SpecifierSet]]:
     ]
     assert len(entries) == 1
     # Dependabot writes ranges as ">= 1.1.1, < 2"; a bare ">=1.13" is the same grammar.
-    ignores = [
+    return [
         (ignore["dependency-name"], SpecifierSet(re.sub(r"\s+", "", versions)))
         for ignore in entries[0].get("ignore", [])
         for versions in ignore.get("versions", [])
     ]
-    return ignores
 
 
 def test_python_ignores_are_found() -> None:
