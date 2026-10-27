@@ -8,7 +8,9 @@ implicit `this` and typed receivers. guava: a package copied into two source tre
 import pytest
 
 from app.config.constants.arangodb import RecordRelations
+from app.modules.code_graph.edge_builder import build_code_graph_edges
 
+from .conftest import GROUP_ID, ORG_ID
 from .test_import_binding import _build, _package, _targets
 
 CALLS = RecordRelations.CALLS.value
@@ -309,7 +311,7 @@ async def test_a_call_through_a_function_typed_property_is_tagged(graph, index_f
     await index_file("a", "src/a.ts",
                      b"export interface Opts {\n  onPick?: (x: number) => void;\n  run(): void;\n}\n"
                      b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
-                     b"  static make = (n: number) => n;\n"
+                     b"  static make = ((n: number) => n) as (n: number) => number;\n"
                      b"  pick() {\n    this.opts.onPick?.(1);\n    this.opts.run();\n    Box.make(1);\n  }\n}\n",
                      "typescript")
     await _build(graph)
@@ -318,4 +320,34 @@ async def test_a_call_through_a_function_typed_property_is_tagged(graph, index_f
     assert resolution["field:Opts.onPick"] == "callback-property"
     assert resolution["method:Opts.run"] != "callback-property"
     # A field holding an arrow function is a definition, not a slot.
+    assert resolution["field:Box.make"] != "callback-property"
+
+
+async def test_an_incremental_build_tags_calls_into_an_unchanged_file(graph, index_file) -> None:
+    # The caller changes; the file defining the field and the slot does not, so
+    # its type table is not among the re-resolved files' facts.
+    await index_file("rec-def", "src/def.ts",
+                     b"export interface Opts {\n  onPick?: (x: number) => void;\n}\n"
+                     b"export class Kit {\n  static make = (n: number) => n;\n}\n", "typescript")
+    caller = (b"import { Opts, Kit } from './def';\n"
+              b"export class Box {\n  constructor(private readonly opts: Opts) {}\n"
+              b"  pick() {\n    this.opts.onPick?.(1);\n    Kit.make(1);\n  }\n}\n")
+    await index_file("rec-use", "src/use.ts", caller, "typescript")
+    await _build(graph)
+    await index_file("rec-use", "src/use.ts", caller + b"// edited\n", "typescript")
+    await build_code_graph_edges(graph_provider=graph, org_id=ORG_ID, record_group_id=GROUP_ID,
+                                 touched_record_ids={"rec-use"}, facts_source=graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
+    assert resolution["field:Opts.onPick"] == "callback-property"
+    assert resolution["field:Kit.make"] != "callback-property"
+
+
+async def test_a_javascript_field_holding_a_function_is_not_tagged(graph, index_file) -> None:
+    await index_file("a", "src/a.js",
+                     b"export class Box {\n  static make = (n) => n;\n  pick() {\n    return Box.make(1);\n  }\n}\n",
+                     "javascript")
+    await _build(graph)
+    resolution = {graph.blocks[e["_to"].split("/", 1)[1]]["qualifiedName"]: e["resolution"]
+                  for e in graph.code_edges(CALLS)}
     assert resolution["field:Box.make"] != "callback-property"
