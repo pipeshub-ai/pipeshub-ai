@@ -155,6 +155,15 @@ const NETWORK_CAUSE_CODES = new Set([
   'UND_ERR_SOCKET',
 ]);
 
+// What axios reports for a request that never got an answer, besides the
+// network codes above: its own timeout and its generic network failure.
+const AXIOS_UNANSWERED_CODES = new Set(['ECONNABORTED', 'ERR_NETWORK']);
+
+const isUnansweredAxiosCode = (code: string | undefined): boolean =>
+  code === undefined ||
+  NETWORK_CAUSE_CODES.has(code) ||
+  AXIOS_UNANSWERED_CODES.has(code);
+
 const isConnectionRefused = (error: Indexed): boolean => {
   const causeCode = asText(asRecord(error.cause)?.code);
   if (causeCode) return NETWORK_CAUSE_CODES.has(causeCode);
@@ -190,7 +199,8 @@ export const unansweredCallError = (
   const noResponse =
     source.request !== undefined &&
     source.request !== null &&
-    (source.detail === undefined || source.detail === null);
+    (source.detail === undefined || source.detail === null) &&
+    isUnansweredAxiosCode(asText(source.code));
   if (!isConnectionRefused(source) && !noResponse) return null;
   logger.error(`Could not reach the service during ${operation}`, {
     cause:

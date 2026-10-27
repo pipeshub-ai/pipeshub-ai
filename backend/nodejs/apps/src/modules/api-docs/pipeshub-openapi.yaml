@@ -32213,6 +32213,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        '504':
+          description: The team service did not answer in time. Safe to retry.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /teams/{teamId}:
     get:
       tags:
@@ -41674,7 +41680,8 @@ paths:
         '504':
           description: |
             The AI service did not answer in time. The conversation is kept
-            with status `Failed`.
+            with status `Failed`. The AI service may have started the turn, so
+            sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -44043,7 +44050,8 @@ paths:
         '504':
           description: |
             The AI service did not answer in time. The conversation is kept
-            with status `Failed`.
+            with status `Failed`. The AI service may have started the turn, so
+            sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -50273,7 +50281,8 @@ paths:
         '504':
           description: |
             The AI service did not answer in time. The conversation is kept
-            with status `Failed`.
+            with status `Failed`. The AI service may have started the turn, so
+            sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'
@@ -51463,7 +51472,8 @@ paths:
         '504':
           description: |
             The AI service did not answer in time. The conversation is kept
-            with status `Failed`.
+            with status `Failed`. The AI service may have started the turn, so
+            sending the message again may repeat work it had started.
           headers:
             X-Conversation-Id:
               $ref: '#/components/headers/X-Conversation-Id'

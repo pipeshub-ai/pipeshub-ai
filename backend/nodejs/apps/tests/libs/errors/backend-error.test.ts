@@ -384,6 +384,16 @@ describe('unansweredCallError', () => {
     expect(result).to.be.instanceOf(ServiceUnavailableError)
   })
 
+  it("is a 503 for axios's own timeout and network failure codes", () => {
+    expect(unansweredCallError({ code: 'ECONNABORTED', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+    expect(unansweredCallError({ code: 'ERR_NETWORK', request: {} }, 'Get user')).to.be.instanceOf(ServiceUnavailableError)
+  })
+
+  it('is null for an axios request that failed on a certificate', () => {
+    expect(unansweredCallError({ code: 'ERR_TLS_CERT_ALTNAME_INVALID', request: {} }, 'Get user')).to.equal(null)
+    expect(unansweredCallError({ code: 'CERT_HAS_EXPIRED', request: {} }, 'Get user')).to.equal(null)
+  })
+
   it('is a 504 for a timed-out call', () => {
     const result = unansweredCallError(new DOMException('timed out', 'TimeoutError'), 'Search')
     expect(result).to.be.instanceOf(GatewayTimeoutError)
