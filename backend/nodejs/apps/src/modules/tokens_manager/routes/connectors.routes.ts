@@ -400,6 +400,8 @@ const getRecordContentSchema = z.object({
         z.number().check(integerCheck()).min(2000).max(140000),
       )
       .optional(),
+    // With `query`: only the passages that answer it, picked out by a model.
+    extract: z.enum(['true', 'false']).optional(),
   }),
 });
 

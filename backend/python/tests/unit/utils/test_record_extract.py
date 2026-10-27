@@ -1,0 +1,119 @@
+"""The passages of a record that answer a question, picked out by the reader model.
+
+These pin what the reader model is given (the question and the record's text),
+what the caller gets back (the model's text, bounded, with its token use), and
+that a model which cannot answer leaves the caller with the plain read.
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock, patch
+
+from app.models.blocks import BlockType
+from app.utils import record_extract as extract_module
+from app.utils.record_extract import (
+    EXTRACT_MAX_CHARS,
+    NOTHING_RELEVANT,
+    READER_ROLE,
+    extract_record,
+)
+
+
+def _record(*texts: str) -> dict:
+    return {
+        "id": "r-1",
+        "virtual_record_id": "v-r-1",
+        "context_metadata": "Record ID: r-1\nName: FY2025 Annual Report",
+        "block_containers": {
+            "blocks": [
+                {"index": i, "type": BlockType.TEXT.value, "parent_index": None, "data": t}
+                for i, t in enumerate(texts)
+            ],
+            "block_groups": [],
+        },
+    }
+
+
+def _llm(reply: str = "65 sponsors", *, error: Exception | None = None) -> MagicMock:
+    llm = MagicMock()
+    message = SimpleNamespace(content=reply, usage_metadata={"input_tokens": 1200, "output_tokens": 30})
+    llm.ainvoke = AsyncMock(side_effect=error) if error else AsyncMock(return_value=message)
+    return llm
+
+
+async def _extract(record: dict, llm: MagicMock, **kwargs: object) -> dict:
+    config = {"provider": "azureOpenAI", "configuration": {"model": "small-model"}}
+    with patch.object(extract_module, "get_llm_for_role", AsyncMock(return_value=(llm, config))) as role:
+        result = await extract_record(
+            record, query="How many sponsors?", config_service=MagicMock(), fallback_chars=40_000, **kwargs,
+        )
+    assert role.await_args.args[1] == READER_ROLE
+    return result
+
+
+class TestExtract:
+    async def test_the_reader_sees_the_question_and_the_record_and_its_reply_is_returned(self) -> None:
+        llm = _llm()
+        result = await _extract(_record("The ASF had 65 sponsors.", "Other text."), llm)
+
+        prompt = llm.ainvoke.await_args.args[0][1].content
+        assert "How many sponsors?" in prompt
+        assert "The ASF had 65 sponsors." in prompt
+        assert result["content"] == "65 sponsors"
+        assert result["order"] == "extract"
+        assert result["chars"] == len("65 sponsors")
+        assert result["extract"] == {
+            "model": "small-model",
+            "provider": "azureOpenAI",
+            "nothingRelevant": False,
+            "sourceChars": result["extract"]["sourceChars"],
+            "sourceComplete": True,
+            "inputTokens": 1200,
+            "outputTokens": 30,
+        }
+        assert result["extract"]["sourceChars"] > 0
+
+    async def test_a_reply_that_finds_nothing_says_so(self) -> None:
+        result = await _extract(_record("Unrelated."), _llm(NOTHING_RELEVANT))
+
+        assert result["extract"]["nothingRelevant"] is True
+
+    async def test_a_reply_that_runs_on_is_bounded(self) -> None:
+        result = await _extract(_record("text"), _llm("y" * (EXTRACT_MAX_CHARS * 2)))
+
+        assert result["chars"] == EXTRACT_MAX_CHARS
+
+    async def test_a_reply_in_parts_is_joined(self) -> None:
+        llm = _llm()
+        llm.ainvoke.return_value.content = [{"type": "text", "text": "65 "}, {"type": "text", "text": "sponsors"}]
+
+        result = await _extract(_record("text"), llm)
+
+        assert result["content"] == "65 sponsors"
+
+
+class TestFallback:
+    async def test_a_model_that_fails_leaves_the_plain_read_and_says_why(self) -> None:
+        result = await _extract(_record("The ASF had 65 sponsors."), _llm(error=TimeoutError()))
+
+        assert "65 sponsors" in result["content"]
+        assert result["order"] == "in_order"
+        assert result["extract"] == {"error": "TimeoutError"}
+
+    async def test_no_model_configured_leaves_the_plain_read(self) -> None:
+        with patch.object(extract_module, "get_llm_for_role", AsyncMock(side_effect=ValueError("No LLM found"))):
+            result = await extract_record(
+                _record("The ASF had 65 sponsors."), query="sponsors", config_service=MagicMock(), fallback_chars=40_000,
+            )
+
+        assert "65 sponsors" in result["content"]
+        assert result["extract"] == {"error": "ValueError"}
+
+    async def test_the_plain_read_keeps_the_callers_budget(self) -> None:
+        record = _record(*[f"block {i} " + "x" * 400 for i in range(400)])
+        with patch.object(extract_module, "get_llm_for_role", AsyncMock(side_effect=ValueError("No LLM found"))):
+            result = await extract_record(record, query="sponsors", config_service=MagicMock(), fallback_chars=4_000)
+
+        assert result["chars"] <= 4_000
+        assert result["maxChars"] == 4_000

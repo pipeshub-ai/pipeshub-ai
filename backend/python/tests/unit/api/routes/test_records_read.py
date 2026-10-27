@@ -62,7 +62,9 @@ def _request(*, access: bool = True) -> tuple[SimpleNamespace, MagicMock, MagicM
 
 
 async def _read(request: SimpleNamespace, record_id: str = "r-1", **params: object) -> dict:
-    defaults = {"mode": "record", "query": None, "start_block": None, "start_record": 0, "max_chars": 40_000}
+    defaults = {
+        "mode": "record", "query": None, "start_block": None, "start_record": 0, "max_chars": 40_000, "extract": False,
+    }
     return await route.read_record_content(record_id, request, **{**defaults, **params})
 
 
@@ -133,6 +135,35 @@ class TestRecordMode:
         assert body["order"] == "relevance"
         assert "block 150 " in body["content"]
         assert retrieval.search_with_filters.await_args.kwargs["virtual_record_ids_from_tool"] == ["v-r-1"]
+
+    async def test_extract_hands_the_record_and_query_to_the_reader(self) -> None:
+        request, _, _ = _request()
+        record = _record("r-1", "The ASF had 65 sponsors.")
+        extract = AsyncMock(return_value={"content": "65 sponsors", "order": "extract"})
+
+        with patch.object(route, "_fetch_multiple_records_impl",
+                          AsyncMock(return_value={"ok": True, "records": [record]})), \
+                patch.object(route, "extract_record", extract):
+            body = await _read(request, query=" sponsors ", extract=True, max_chars=5_000)
+
+        assert body == {"content": "65 sponsors", "order": "extract"}
+        assert extract.await_args.args[0] is record
+        assert extract.await_args.kwargs["query"] == "sponsors"
+        assert extract.await_args.kwargs["fallback_chars"] == 5_000
+        assert extract.await_args.kwargs["user_id"] == "u-1"
+
+    @pytest.mark.parametrize("params", [
+        {"query": None},
+        {"query": "  "},
+        {"query": "sponsors", "start_block": 3},
+        {"query": "sponsors", "mode": "thread"},
+    ])
+    async def test_extract_without_one_record_and_a_query_is_a_422(self, params: dict) -> None:
+        request, graph, _ = _request()
+        with pytest.raises(HTTPException) as err:
+            await _read(request, extract=True, **params)
+        assert err.value.status_code == 422
+        graph.check_access.assert_not_awaited()
 
     async def test_a_record_without_indexed_content_is_described(self) -> None:
         request, _, _ = _request()
