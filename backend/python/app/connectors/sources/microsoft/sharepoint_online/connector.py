@@ -917,13 +917,17 @@ class SharePointConnector(BaseConnector):
                 f"Failed to initialize SharePoint credential: {sanitized_error}"
             )
         
-        sharepoint_token = await self._get_sharepoint_access_token()
-        if not sharepoint_token:
-            self.logger.error("❌ Failed to obtain SharePoint access token during initialization")
-            raise ConnectorInitError(
-                f"Could not get a SharePoint access token for {self.sharepoint_domain}. Check the SharePoint "
-                "domain in the connector's settings; if it is right, try again in a few minutes."
-            )
+        try:
+            await self._get_sharepoint_access_token(raise_errors=True)
+        except Exception as token_error:
+            sanitized_error = sanitize_azure_error(token_error)
+            self.logger.error(f"❌ Failed to obtain SharePoint access token during initialization: {sanitized_error}")
+            problem = known_sign_in_problem(token_error)
+            if problem:
+                raise ConnectorInitError(
+                    f"Could not get a SharePoint access token for {self.sharepoint_domain}. {problem}"
+                ) from token_error
+            raise ValueError(f"Unable to acquire a SharePoint access token: {sanitized_error}") from token_error
 
         # Initialize Graph Client
         self.client = GraphServiceClient(
@@ -2554,15 +2558,20 @@ class SharePointConnector(BaseConnector):
 
         return modified_after, modified_before, created_after, created_before
 
-    async def _get_sharepoint_access_token(self, resource_host: str = None) -> Optional[str]:
+    async def _get_sharepoint_access_token(
+        self, resource_host: str = None, *, raise_errors: bool = False
+    ) -> Optional[str]:
         """An app-only token for SharePoint REST on a host (default: the tenant's SharePoint domain).
 
         The connector's credential keeps its tokens until they are close to expiring, so this asks the
-        token endpoint once per host per hour instead of once per SharePoint call.
+        token endpoint once per host per hour instead of once per SharePoint call. A failure returns None,
+        or with ``raise_errors`` is raised as it came, so the caller can tell its cause.
         """
         parsed = urllib.parse.urlparse(resource_host or self.sharepoint_domain or "")
         host = parsed.hostname or (self.sharepoint_domain or "").replace('https://', '').replace('http://', '').strip('/')
         resource = f"https://{host}"
+        if raise_errors:
+            return (await self.credential.get_token(f"{resource}/.default")).token
         try:
             token = await self.credential.get_token(f"{resource}/.default")
             return token.token

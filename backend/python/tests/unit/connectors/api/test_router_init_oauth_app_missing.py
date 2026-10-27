@@ -7,6 +7,7 @@ complete sign-in, because the sign-in flow falls back to those credentials, but 
 "Failed to initialize connector" and leave the caller guessing.
 """
 
+import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -165,7 +166,12 @@ async def test_an_init_failure_with_a_reason_answers_400_and_releases_the_connec
 
 
 @pytest.mark.asyncio
-async def test_gmail_workspace_without_delegation_answers_400_naming_delegation() -> None:
+@pytest.mark.parametrize("auth", [
+    {"adminEmail": "admin@example.com", "serviceAccountJson": json.dumps({"type": "service_account",
+                                                                           "client_id": "1234"})},
+    {"adminEmail": "admin@example.com", "type": "service_account", "client_id": "1234"},
+], ids=["uploaded key", "legacy flattened key"])
+async def test_gmail_workspace_without_delegation_answers_400_naming_delegation(auth: dict) -> None:
     with patch("app.connectors.sources.google.gmail.team.connector.SyncPoint"):
         connector = GoogleGmailTeamConnector(
             logger=logging.getLogger("test_router_init_oauth_app_missing"),
@@ -178,7 +184,7 @@ async def test_gmail_workspace_without_delegation_answers_400_naming_delegation(
         )
     connector.init = AsyncMock(return_value=True)
     connector.cleanup = AsyncMock()
-    connector.config = {"credentials": {"auth": {"adminEmail": "admin@example.com", "client_id": "1234"}}}
+    connector.config = {"credentials": {"auth": auth}}
     connector.admin_client, connector.gmail_client = MagicMock(), MagicMock()
     connector.gmail_data_source = AsyncMock()
     connector.admin_data_source = AsyncMock()

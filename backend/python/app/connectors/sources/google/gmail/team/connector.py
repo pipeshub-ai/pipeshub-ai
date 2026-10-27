@@ -1,6 +1,7 @@
 import asyncio
 import functools
 import io
+import json
 import logging
 import os
 import re
@@ -149,6 +150,16 @@ def parse_drive_attachment_record_id(external_id: str | None) -> tuple[str, str]
     if not sep or not user_id or not file_id:
         return None
     return user_id, file_id
+
+
+
+def _service_account_client_id(auth: dict) -> str | None:
+    """The service account's client ID, from the uploaded key (serviceAccountJson) or the legacy flattened fields."""
+    try:
+        key = json.loads(auth.get("serviceAccountJson") or "{}")
+    except (TypeError, ValueError):
+        key = None
+    return (key.get("client_id") if isinstance(key, dict) else None) or auth.get("client_id")
 
 
 @ConnectorBuilder("Gmail Workspace")\
@@ -377,7 +388,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     f"❌ Failed to initialize Google Admin client: {e}",
                     exc_info=True
                 )
-                self._raise_setup_problem(e, admin_email, credentials_json.get("client_id"))
+                self._raise_setup_problem(e, credentials_json)
                 raise ValueError(f"Failed to initialize Google Admin client: {e}") from e
 
             # Initialize Google Gmail Client using build_from_services
@@ -407,7 +418,7 @@ class GoogleGmailTeamConnector(BaseConnector):
                     f"❌ Failed to initialize Google Gmail client: {e}",
                     exc_info=True
                 )
-                self._raise_setup_problem(e, admin_email, credentials_json.get("client_id"))
+                self._raise_setup_problem(e, credentials_json)
                 raise ValueError(f"Failed to initialize Google Gmail client: {e}") from e
 
             self.logger.info("✅ Google Gmail workspace connector initialized successfully")
@@ -418,11 +429,11 @@ class GoogleGmailTeamConnector(BaseConnector):
             raise
 
     @staticmethod
-    def _raise_setup_problem(error: Exception, admin_email: str | None, client_id: str | None) -> None:
+    def _raise_setup_problem(error: Exception, auth: dict) -> None:
         """Raise what an admin must fix (such as a key that is not a key file) in words they can act on."""
         message = setup_problem_message(classify_access_problem(error, personal=False),
-                                        apis="Gmail API and the Admin SDK API", admin_email=admin_email,
-                                        client_id=client_id)
+                                        apis="Gmail API and the Admin SDK API", admin_email=auth.get("adminEmail"),
+                                        client_id=_service_account_client_id(auth))
         if message:
             raise ConnectorInitError(message) from error
 
@@ -1863,7 +1874,7 @@ class GoogleGmailTeamConnector(BaseConnector):
             return True
         except Exception as e:
             self.logger.error(f"❌ Gmail Workspace connection test failed ({classify(e).value}): {e}")
-            self._raise_setup_problem(e, admin_email, auth.get("client_id"))
+            self._raise_setup_problem(e, auth)
             return False
 
     def get_signed_url(self, record: Record) -> Optional[str]:

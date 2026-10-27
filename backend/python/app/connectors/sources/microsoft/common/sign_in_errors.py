@@ -16,6 +16,9 @@ _SIGN_IN_PROBLEMS: tuple[tuple[str, str], ...] = (
                      "or .crt) under Certificates & secrets in the app registration."),
     ("AADSTS700024", "the client assertion is outside its valid time window. Check that the certificate has not "
                      "expired, and ask your PipesHub administrator to check the server's clock."),
+    ("AADSTS500011", "the resource the connector asked for was not found in this directory. Check the "
+                     "SharePoint domain in the connector's settings (for example https://contoso.sharepoint.com) "
+                     "and the Directory (Tenant) ID."),
     ("AADSTS65001", "an admin has not granted consent to the app. Grant admin consent for its API "
                     "permissions in the app registration."),
     ("AADSTS700082", "the sign-in has expired. Sign in again on the connector's Authorize tab."),
