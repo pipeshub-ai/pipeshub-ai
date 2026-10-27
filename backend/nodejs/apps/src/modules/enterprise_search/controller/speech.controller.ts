@@ -16,6 +16,7 @@ import {
   UnauthorizedError,
   UnprocessableEntityError,
 } from '../../../libs/errors/http.errors';
+import { serverFailureMessage } from '../../../libs/errors/reader-friendly';
 import { AppConfig } from '../../tokens_manager/config/config';
 
 const logger = Logger.getInstance({ service: 'Chat Speech Proxy' });
@@ -62,13 +63,6 @@ function buildForwardHeaders(
  */
 const SERVICE_UNAVAILABLE_MESSAGE =
   'PipesHub is having trouble reaching one of its services. Try again in a minute; if it continues, ask your admin to check the services page.';
-
-/**
- * What a reader is told when a service answered 5xx. Its own words describe
- * the machine that broke, so they go to the log and this goes to the person.
- */
-const serverFailureMessage = (action: string): string =>
-  `Something went wrong while PipesHub tried to ${action}. Please try again in a moment; if it keeps happening, ask your admin to check the services page.`;
 
 // The status the speech service chose, kept rather than flattened to one code.
 const CLIENT_ERRORS = {

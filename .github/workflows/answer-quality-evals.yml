@@ -56,7 +56,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -72,12 +72,12 @@ jobs:
           fi
 
       - name: Set up Python 3.12
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
 
       - name: Install backend dependencies
         working-directory: backend/python
@@ -92,8 +92,22 @@ jobs:
       - name: Run the golden cases
         working-directory: backend/python
         env:
-          TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
           TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
+          # Azure OpenAI is where the credits are. The helper prefers it over
+          # OpenAI when its credentials are present, and TEST_AI_MODEL_PROVIDER
+          # stops a failure here quietly falling back to a key we no longer fund.
+          TEST_AI_MODEL_PROVIDER: azureOpenAI
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          # Without its own value this falls back to the LLM deployment, which
+          # would send embedding requests to a chat model.
+          TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+          # The evals build their own chat model rather than going through the
+          # product's provider setup, so they need telling separately.
+          EVAL_PROVIDER: azure_openai
           EVAL_MODEL: ${{ github.event.inputs.model || '' }}
         run: |
           source .venv/bin/activate
@@ -103,6 +117,24 @@ jobs:
             --summary reports/evals/summary.md \
             --baseline "tests/evals/baselines/$CASE_SET_INPUT.json" \
             --fail-on-regression
+
+      # The demo acceptance test's answer judge, checked against hand-labelled
+      # hard cases (tests/evals/answer_judge_calibration.yaml). Its own step so
+      # a judge that drifts fails here, not as unexplained demo failures.
+      - name: Calibrate the demo answer judge
+        if: ${{ !cancelled() }}
+        working-directory: backend/python
+        env:
+          TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+          TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+          TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+          TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+          EVAL_PROVIDER: azure_openai
+        run: |
+          source .venv/bin/activate
+          python -m tests.evals.run_judge_calibration \
+            --output reports/evals/judge-calibration.json \
+            --summary reports/evals/summary.md
 
       - name: Write job summary
         if: ${{ !cancelled() }}
@@ -116,7 +148,7 @@ jobs:
 
       - name: Upload eval result
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: answer-quality-${{ github.run_id }}
           path: backend/python/reports/evals/

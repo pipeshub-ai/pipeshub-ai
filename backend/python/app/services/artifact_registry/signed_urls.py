@@ -61,7 +61,7 @@ class SignedUrlBroker:
 
     async def get_download_url(
         self, *, org_id: str, document_id: str, version: int | None = None, ttl_s: int = DEFAULT_DOWNLOAD_TTL_S,
-    ) -> str:
+    ) -> str | None:
         """Best-effort TTL: the underlying Node.js signed-URL lifetime is
         controlled server-side by the storage adapter, not by `ttl_s` — see
         that route's own default. Accepted as a parameter here so callers
@@ -70,7 +70,9 @@ class SignedUrlBroker:
 
         `version` is a storage-layer index, already resolved by the caller
         (`ArtifactRegistryService._resolve_storage_version`) — this broker
-        never does registry-to-storage version mapping itself."""
+        never does registry-to-storage version mapping itself.
+
+        ``None`` when storage cannot sign (local storage)."""
         return await self._blob_store.get_download_url(org_id, document_id, version=version)
 
     async def get_upload_grant(

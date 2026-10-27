@@ -28,11 +28,13 @@ function normalizedUrlForValidation(trimmed: string): string {
   return `https://${trimmed}`;
 }
 
+export type UrlValidationError = 'urlProtocol' | 'url';
+
 /**
- * Returns an error message if the value is non-empty but not a valid http(s) URL after
+ * Returns an error code if the value is non-empty but not a valid http(s) URL after
  * the same normalization as blur. Empty/whitespace-only → null (required checks elsewhere).
  */
-export function getUrlValidationError(displayName: string, raw: string): string | null {
+export function getUrlValidationError(raw: string): UrlValidationError | null {
   const trimmed = raw.trim();
   if (trimmed === '') return null;
 
@@ -40,10 +42,10 @@ export function getUrlValidationError(displayName: string, raw: string): string 
   try {
     const u = new URL(normalized);
     if (u.protocol !== 'http:' && u.protocol !== 'https:') {
-      return `${displayName} must use http or https`;
+      return 'urlProtocol';
     }
   } catch {
-    return `${displayName} must be a valid URL`;
+    return 'url';
   }
   return null;
 }

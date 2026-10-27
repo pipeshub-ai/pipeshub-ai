@@ -6,28 +6,33 @@ import type { ConnectorConfig, ConnectorInstance } from '../../types';
 export type InstanceSetupStatusKey =
   | 'not_configured'
   | 'needs_authentication'
+  | 'action_needed'
   | 'desktop_offline'
   | 'ready';
 
 /** Transient sync job from backend `status` (IDLE → no badge). */
-export type InstanceSyncOperationKey = 'syncing' | 'full_syncing' | 'deleting';
+export type InstanceSyncOperationKey =
+  | 'syncing'
+  | 'full_syncing'
+  | 'queued'
+  | 'deleting';
 
 export type InstanceSetupStatusView = {
   key: InstanceSetupStatusKey;
-  badgeColor: 'gray' | 'amber' | 'green';
+  badgeColor: 'gray' | 'amber' | 'red' | 'green';
   icon: string;
 };
 
 export type InstanceSyncOperationView = {
   key: InstanceSyncOperationKey;
-  badgeColor: 'blue' | 'red';
+  badgeColor: 'blue' | 'amber' | 'red';
   icon: string;
 };
 
 export function deriveInstanceSetupStatus(
   instance: Pick<
     ConnectorInstance,
-    'isConfigured' | 'isAuthenticated' | 'authType' | 'type' | 'scope' | 'isActive' | 'desktopOnline'
+    'isConfigured' | 'isAuthenticated' | 'authType' | 'type' | 'scope' | 'isActive' | 'desktopOnline' | 'actionItems'
   >,
   config?: ConnectorConfig,
 ): InstanceSetupStatusView {
@@ -36,6 +41,11 @@ export function deriveInstanceSetupStatus(
   }
   if (isConnectorInstanceOAuthAuthIncompleteForSyncUi(config, instance)) {
     return { key: 'needs_authentication', badgeColor: 'amber', icon: 'vpn_key' };
+  }
+  const actionItems = instance.actionItems ?? [];
+  if (actionItems.length > 0) {
+    const anError = actionItems.some((item) => item.severity === 'error');
+    return { key: 'action_needed', badgeColor: anError ? 'red' : 'amber', icon: 'priority_high' };
   }
   // Local FS: live socket presence stamped by Node on the row. Absent means
   // unknown (other connector types, or the gateway was not ready), not offline.
@@ -61,6 +71,9 @@ export function deriveInstanceSyncOperation(
   }
   if (normalized === CONNECTOR_INSTANCE_STATUS.SYNCING) {
     return { key: 'syncing', badgeColor: 'blue', icon: 'sync' };
+  }
+  if (normalized === CONNECTOR_INSTANCE_STATUS.QUEUED) {
+    return { key: 'queued', badgeColor: 'amber', icon: 'schedule' };
   }
 
   return null;

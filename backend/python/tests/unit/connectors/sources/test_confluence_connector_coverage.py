@@ -11,6 +11,7 @@ from typing import Any, Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from app.connectors.sources.atlassian.confluence_cloud.connector import GoneAtSource
 from fastapi import HTTPException
 
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
@@ -811,22 +812,18 @@ class TestFetchGroupMembers:
         assert account_ids == []
 
     @pytest.mark.asyncio
-    async def test_api_failure(self):
+    async def test_api_failure_returns_none(self):
         c = _conn()
         mock_ds = MagicMock()
         mock_ds.get_group_members = AsyncMock(return_value=_resp(500))
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
-        emails, account_ids = await c._fetch_group_members("g1", "G")
-        assert emails == []
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "G") is None
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_returns_none(self):
         c = _conn()
         c._get_fresh_datasource = AsyncMock(side_effect=Exception("fail"))
-        emails, account_ids = await c._fetch_group_members("g1", "G")
-        assert emails == []
-        assert account_ids == []
+        assert await c._fetch_group_members("g1", "G") is None
 
 
 # ===========================================================================
@@ -853,11 +850,11 @@ class TestGetAppUsersByEmails:
         assert result[0].email == "a@t.com"
 
     @pytest.mark.asyncio
-    async def test_exception_returns_empty(self):
+    async def test_exception_propagates(self):
         c = _conn()
         c.data_entities_processor.get_all_app_users = AsyncMock(side_effect=Exception("fail"))
-        result = await c._get_app_users_by_emails(["a@t.com"])
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await c._get_app_users_by_emails(["a@t.com"])
 
 
 # ===========================================================================
@@ -1313,8 +1310,8 @@ class TestCheckAndFetchUpdatedPage:
         c._get_fresh_datasource = AsyncMock(return_value=mock_ds)
         record = MagicMock()
         record.external_record_id = "p1"
-        result = await c._check_and_fetch_updated_page("org1", record)
-        assert result is None
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_page("org1", record)
 
     @pytest.mark.asyncio
     async def test_no_version_change(self):
@@ -1375,8 +1372,8 @@ class TestCheckAndFetchUpdatedAttachment:
         record = MagicMock()
         record.external_record_id = "att-1"
         record.parent_external_record_id = "p1"
-        result = await c._check_and_fetch_updated_attachment("org1", record)
-        assert result is None
+        with pytest.raises(GoneAtSource):
+            await c._check_and_fetch_updated_attachment("org1", record)
 
     @pytest.mark.asyncio
     async def test_version_unchanged(self):
@@ -1527,7 +1524,9 @@ class TestRunSync:
         space.name = "Test Space"
         c._sync_spaces = AsyncMock(return_value=[space])
         c._sync_folders = AsyncMock()
-        c._sync_content = AsyncMock()
+        c._sync_content = AsyncMock(return_value=MagicMock(checkpoint_time=None))
+        c._remove_content_gone_from_source = AsyncMock(return_value=True)
+        c._remove_spaces_out_of_scope = AsyncMock()
         c._sync_permission_changes_from_audit_log = AsyncMock()
 
         await c.run_sync()

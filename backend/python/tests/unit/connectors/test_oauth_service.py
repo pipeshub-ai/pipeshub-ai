@@ -7,12 +7,16 @@ from urllib.parse import parse_qs, urlparse
 
 import pytest
 
+from app.connectors.core.base.token_service import oauth_service
 from app.connectors.core.base.token_service.oauth_service import (
     OAuthConfig,
     OAuthProvider,
     OAuthToken,
     RefreshTokenInvalidError,
 )
+from app.utils.oauth_config import get_oauth_config
+from tests.support.slack_oauth import TOKEN_URL as SLACK_TOKEN_URL
+from tests.support.slack_oauth import FakeSlackOAuth
 
 # ---------------------------------------------------------------------------
 # OAuthToken.is_expired
@@ -129,8 +133,15 @@ class TestOAuthTokenSerialization:
             "uid",
             "account_id",
             "team_id",
+            "id",
         }
         assert set(d.keys()) == expected_keys
+
+    def test_salesforce_identity_url_survives_storage(self) -> None:
+        """Salesforce names the authenticated user only through the token's identity URL."""
+        url = "https://login.salesforce.com/id/00Dx0000000BV7zEAG/005x00000012Q9PAAU"
+        token = OAuthToken.from_dict({"access_token": "tok", "id": url})
+        assert OAuthToken.from_dict(token.to_dict()).id == url
 
     def test_to_dict_created_at_is_iso_string(self):
         token = OAuthToken(
@@ -446,6 +457,25 @@ class TestOAuthProviderSession:
         assert not session2.closed
         await session2.close()
 
+    async def test_session_reads_a_header_longer_than_aiohttps_default(self, oauth_provider, monkeypatch) -> None:
+        """GitHub's token endpoint sends a ~9 KB Content-Security-Policy header."""
+        from aiohttp import web
+        from aiohttp.test_utils import TestServer
+
+        # The test server is on loopback, which the address guard refuses.
+        monkeypatch.setattr(oauth_service, "guarded_session_kwargs", lambda **_: {})
+
+        async def token(_request: web.Request) -> web.Response:
+            return web.json_response({"access_token": "t"}, headers={"Content-Security-Policy": "a" * 9243})
+
+        app = web.Application()
+        app.router.add_post("/token", token)
+        async with TestServer(app) as server:
+            session = await oauth_provider.session
+            async with session.post(server.make_url("/token")) as response:
+                assert (await response.json())["access_token"] == "t"
+            await session.close()
+
 
 # ---------------------------------------------------------------------------
 # OAuthProvider.close()
@@ -554,6 +584,40 @@ class TestGetAuthorizationUrl:
         url = provider._get_authorization_url(state="s")
         params = parse_qs(urlparse(url).query)
         assert params["token_access_type"] == ["offline"]
+
+    def test_token_access_type_left_out_when_unset(self, oauth_provider) -> None:
+        """Only Dropbox-style providers take token_access_type; the rest must not get "None"."""
+        url = oauth_provider._get_authorization_url(state="s")
+        params = parse_qs(urlparse(url).query)
+        assert "token_access_type" not in params, params
+
+    def test_unset_extra_params_are_left_out(self, mock_config_service) -> None:
+        config = _make_oauth_config(additional_params={"prompt": None, "access_type": "offline"})
+        provider = OAuthProvider(config, mock_config_service, "/path")
+        url = provider._get_authorization_url(state="s", login_hint=None)
+        params = parse_qs(urlparse(url).query)
+        assert "prompt" not in params, params
+        assert "login_hint" not in params, params
+        assert params["access_type"] == ["offline"]
+
+    @pytest.mark.asyncio
+    async def test_jira_authorize_url_carries_no_none_values(self, mock_config_service) -> None:
+        """The connector authorize route builds Jira's URL this way; the nightly saw token_access_type=None."""
+        config = get_oauth_config({
+            "clientId": "jira-client",
+            "clientSecret": "jira-secret",
+            "redirectUri": "http://localhost:3000/connectors/oauth/callback/Jira",
+            "authorizeUrl": "https://auth.atlassian.com/authorize",
+            "tokenUrl": "https://auth.atlassian.com/oauth/token",
+            "scopes": ["read:jira-work", "offline_access"],
+            "additionalParams": {"audience": "api.atlassian.com", "prompt": "consent"},
+        })
+        provider = OAuthProvider(config, mock_config_service, "/path")
+        url = await provider.start_authorization()
+        params = parse_qs(urlparse(url).query)
+        assert "token_access_type" not in params, params
+        assert [key for key, values in params.items() if "None" in values] == [], params
+        assert params["audience"] == ["api.atlassian.com"]
 
 
 # ---------------------------------------------------------------------------
@@ -1469,3 +1533,39 @@ class TestHandleCallback:
 
         with pytest.raises(ValueError, match="Invalid or expired state"):
             await oauth_provider.handle_callback(code="code", state="state")
+
+
+class TestSlackTokenEndpoint:
+    """Slack reports token-endpoint failures as HTTP 200 with ok=false."""
+
+    @staticmethod
+    def _provider(mock_config_service) -> OAuthProvider:
+        config = _make_oauth_config(token_url=SLACK_TOKEN_URL, token_response_path="authed_user")
+        return OAuthProvider(config, mock_config_service, "/services/connectors/c1/config")
+
+    @pytest.mark.asyncio
+    async def test_a_revoked_refresh_token_is_reported_as_permanent(self, mock_config_service, monkeypatch) -> None:
+        slack = FakeSlackOAuth("xoxe-1-live")
+        monkeypatch.setattr(oauth_service, "ClientSession", slack.client_session)
+
+        with pytest.raises(RefreshTokenInvalidError) as err:
+            await self._provider(mock_config_service).refresh_access_token("xoxe-1-revoked")
+
+        assert "invalid_refresh_token" in str(err.value)
+        assert "xoxe-1-revoked" not in str(err.value)
+        mock_config_service.set_config.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_refresh_saves_the_new_access_and_refresh_token_in_one_write(
+        self, mock_config_service, monkeypatch,
+    ) -> None:
+        slack = FakeSlackOAuth("xoxe-1-live")
+        monkeypatch.setattr(oauth_service, "ClientSession", slack.client_session)
+
+        token = await self._provider(mock_config_service).refresh_access_token("xoxe-1-live")
+
+        new_access, new_refresh = slack.issued[0]
+        assert (token.access_token, token.refresh_token) == (new_access, new_refresh)
+        mock_config_service.set_config.assert_awaited_once()
+        saved = mock_config_service.set_config.await_args.args[1]["credentials"]
+        assert (saved["access_token"], saved["refresh_token"], saved["expires_in"]) == (new_access, new_refresh, 43200)

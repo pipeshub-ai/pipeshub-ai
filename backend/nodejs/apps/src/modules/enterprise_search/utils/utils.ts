@@ -1,7 +1,7 @@
 import {
   AIServiceResponse,
   IAIModel,
-  IAppliedFilterNode,
+  IAppliedFilters,
   IChatAttachmentRef,
   IChatSessionDocument,
   IChatSessionMessageDocument,
@@ -11,10 +11,12 @@ import {
   IMessagePart,
 } from '../types/conversation.interfaces';
 import { IAIResponse } from '../types/conversation.interfaces';
-import mongoose, { ClientSession, FilterQuery } from 'mongoose';
+import { randomUUID } from 'crypto';
+import mongoose, { ClientSession, QueryFilter } from 'mongoose';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import {
   BadRequestError,
+  ConflictError,
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
@@ -40,7 +42,11 @@ import {
   SSEProtocol,
 } from './agui';
 import { StreamedContentAccumulator } from './stream-lifecycle';
-import { CHAT_ERROR_MESSAGES, userFacingChatError } from './chat-error-messages';
+import {
+  CHAT_ERROR_MESSAGES,
+  userFacingChatError,
+} from './chat-error-messages';
+import { stripModelAuthoredMarkers } from './answer-markers';
 
 const logger = new Logger({
   service: 'enterprise-search',
@@ -85,7 +91,7 @@ export const extractModelInfo = (
 
 export const buildUserQueryMessage = (
   query: string,
-  appliedFilters?: { apps?: IAppliedFilterNode[]; kb?: IAppliedFilterNode[] },
+  appliedFilters?: IAppliedFilters,
   chatMode?: string,
   attachments?: IChatAttachmentRef[],
 ): IMessage => ({
@@ -206,7 +212,7 @@ export const allocateSeq = async (
     { _id: sessionId },
     { $inc: { nextSeq: n } },
     {
-      new: true,
+      returnDocument: 'after',
       projection: { nextSeq: 1 }, // overrides the schema's `select: false` for this one read
       session: mongoSession || undefined,
     },
@@ -247,7 +253,7 @@ export const appendMessages = async (
   return ChatSessionMessage.insertMany(toInsert, {
     ordered: true,
     session: mongoSession || undefined,
-  }) as unknown as Promise<IChatSessionMessageDocument[]>;
+  });
 };
 
 /**
@@ -260,37 +266,124 @@ export const appendMessages = async (
  */
 export const updateMessageById = async (
   messageId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
   newContent: IMessage,
   mongoSession?: ClientSession | null,
 ): Promise<IChatSessionMessageDocument | null> => {
-  const existing = await ChatSessionMessage.findById(messageId, undefined, {
-    session: mongoSession || undefined,
-  });
+  const existing = await ChatSessionMessage.findOne(
+    { _id: messageId, orgId },
+    undefined,
+    { session: mongoSession || undefined },
+  );
   if (!existing) {
     return null;
   }
   return ChatSessionMessage.findOneAndReplace(
-    { _id: messageId },
+    { _id: messageId, orgId },
     {
       ...newContent,
       sessionId: existing.sessionId,
       orgId: existing.orgId,
       seq: existing.seq,
     },
-    { new: true, session: mongoSession || undefined, runValidators: true },
+    {
+      returnDocument: 'after',
+      session: mongoSession || undefined,
+      runValidators: true,
+    },
   );
+};
+
+/**
+ * Rewrite a stored `user_query` row, used when the user edits the last
+ * question and regenerates its answer. Only `content` changes, and
+ * `attachments` when the edit replaced them (omitted keeps the stored files);
+ * mentions and seq stay as they were. Scoped to the conversation, so an id
+ * from anywhere else matches nothing.
+ */
+export const updateUserQueryContent = async (
+  messageId: mongoose.Types.ObjectId | string,
+  content: string,
+  sessionId: mongoose.Types.ObjectId | string,
+  mongoSession?: ClientSession | null,
+  attachments?: IChatAttachmentRef[],
+): Promise<IChatSessionMessageDocument | null> =>
+  ChatSessionMessage.findOneAndUpdate(
+    { _id: messageId, sessionId, messageType: 'user_query' },
+    { $set: { content, ...(attachments ? { attachments } : {}) } },
+    { returnDocument: 'after', session: mongoSession || undefined },
+  );
+
+export const hasAskUserQuestionTool = (msg: IMessage | undefined): boolean =>
+  Boolean(msg?.tools?.some((tool) => tool.toolName?.includes('ask_user_question')));
+
+/**
+ * The `ask_user_question` `tool_call` rows sitting either side of one bot turn,
+ * which a regeneration of that turn makes stale.
+ *
+ * `updateMessageById` replaces the answer in place, but those rows are separate
+ * documents and `appendMessages` can only add more (a fresh `seq` each time).
+ * Left alone, every regeneration of a card turn keeps the discarded run's
+ * questions, so `formatPreviousConversations` replays them to the model and a
+ * reload restores a card the current answer never asked. The replacement answer
+ * carries the payload itself — see `attachAskUserQuestionToMessage`.
+ *
+ * @param messages chronological (`seq`-ascending) window containing the turn
+ */
+export const staleAskUserQuestionToolCallIds = (
+  messages: Array<IMessage & { _id?: mongoose.Types.ObjectId }>,
+  botMessageId: mongoose.Types.ObjectId | string,
+): mongoose.Types.ObjectId[] => {
+  const botIndex = messages.findIndex(
+    (msg) => msg._id?.toString() === botMessageId.toString(),
+  );
+  if (botIndex < 0) {
+    return [];
+  }
+  const stale: mongoose.Types.ObjectId[] = [];
+  const collect = (from: number, step: number): void => {
+    for (let i = from; i >= 0 && i < messages.length; i += step) {
+      const row = messages[i];
+      if (row?.messageType !== 'tool_call') break;
+      if (row._id && hasAskUserQuestionTool(row)) stale.push(row._id);
+    }
+  };
+  collect(botIndex - 1, -1);
+  collect(botIndex + 1, 1);
+  return stale;
+};
+
+export const deleteMessagesById = async (
+  messageIds: mongoose.Types.ObjectId[],
+  orgId: mongoose.Types.ObjectId | string,
+  mongoSession?: ClientSession | null,
+  sessionId?: mongoose.Types.ObjectId | string,
+): Promise<number> => {
+  if (messageIds.length === 0) {
+    return 0;
+  }
+  const result = await ChatSessionMessage.deleteMany(
+    { _id: { $in: messageIds }, orgId, ...(sessionId ? { sessionId } : {}) },
+    mongoSession ? { session: mongoSession } : undefined,
+  );
+  return result.deletedCount ?? 0;
 };
 
 /** Append a feedback entry to one message's `feedback` array. */
 export const appendMessageFeedback = async (
   messageId: mongoose.Types.ObjectId | string,
+  orgId: mongoose.Types.ObjectId | string,
   feedbackEntry: unknown,
   mongoSession?: ClientSession | null,
 ): Promise<IChatSessionMessageDocument | null> => {
   return ChatSessionMessage.findOneAndUpdate(
-    { _id: messageId },
+    { _id: messageId, orgId },
     { $push: { feedback: feedbackEntry } },
-    { new: true, session: mongoSession || undefined, runValidators: true },
+    {
+      returnDocument: 'after',
+      session: mongoSession || undefined,
+      runValidators: true,
+    },
   );
 };
 
@@ -304,18 +397,25 @@ export const appendMessageFeedback = async (
 export const getMessages = async (
   sessionId: mongoose.Types.ObjectId | string,
   options: {
+    orgId: mongoose.Types.ObjectId | string;
     skip?: number;
     limit?: number;
     populateCitations?: boolean;
     sort?: 1 | -1;
-  } = {},
+  },
   mongoSession?: ClientSession | null,
 ): Promise<any[]> => {
-  const { skip = 0, limit, populateCitations = false, sort = 1 } = options;
+  const {
+    orgId,
+    skip = 0,
+    limit,
+    populateCitations = false,
+    sort = 1,
+  } = options;
   if (limit !== undefined && limit <= 0) {
     return [];
   }
-  let query = ChatSessionMessage.find({ sessionId }).sort({ seq: sort });
+  let query = ChatSessionMessage.find({ sessionId, orgId }).sort({ seq: sort });
   if (skip) {
     query = query.skip(skip);
   }
@@ -342,12 +442,52 @@ export const getMessages = async (
  * `.toObject()` results that never passed through a query projection:
  * strips `nextSeq`/`sessionType` from the session and `sessionId`/`orgId`/
  * `seq` from each message, neither of which is part of any documented
- * response shape.
+ * response shape, and (via `withoutErrorStacks`) the server stack trace from
+ * each `conversationErrors` entry.
  */
+const withoutStack = (entry: unknown): unknown => {
+  if (entry === null || typeof entry !== 'object') return entry;
+  const { stack: _stack, ...rest } = entry as Record<string, unknown>;
+  return rest;
+};
+
+/**
+ * A copy of a conversation fit to send to the browser: each saved
+ * `conversationErrors` entry keeps its message but loses the server stack
+ * trace, which stays in the database for the logs and admins. Every
+ * response that carries a whole conversation goes through this.
+ */
+export const withoutErrorStacks = <T extends object>(conversation: T): T => {
+  const conversationErrors: unknown = (
+    conversation as { conversationErrors?: unknown }
+  ).conversationErrors;
+  if (!Array.isArray(conversationErrors)) return conversation;
+  return {
+    ...conversation,
+    conversationErrors: conversationErrors.map(withoutStack),
+  };
+};
+
+/**
+ * Error text, the failure reason and the compacted summary are written from the
+ * owner's runs and can quote what they read; other people listing the chat get none.
+ */
+export const withoutOwnerOnlyFields = <T extends object>(
+  conversation: T,
+): T => {
+  const {
+    conversationErrors: _errors,
+    failReason: _reason,
+    compactedSummary: _summary,
+    ...visible
+  } = conversation as Record<string, unknown>;
+  return visible as T;
+};
+
 export const attachMessages = (session: any, messages: any[]): any => {
   const { nextSeq, sessionType, ...cleanSession } = session ?? {};
   return {
-    ...cleanSession,
+    ...withoutErrorStacks(cleanSession as object),
     messages: (messages || []).map((message: any) => {
       const { sessionId, orgId, seq, ...rest } = message;
       return rest;
@@ -402,7 +542,10 @@ export const attachPopulatedCitations = async (
     try {
       messages = await getMessages(
         sessionId,
-        { populateCitations: true },
+        {
+          orgId: (session as { orgId: string }).orgId,
+          populateCitations: true,
+        },
         mongoSession,
       );
     } catch (err: any) {
@@ -500,36 +643,40 @@ export const buildAIResponseMessage = (
   citations: ICitation[] = [],
   modelInfo?: IAIModel,
 ): IMessage => {
+  const data = aiResponse?.data;
   // A `stopped` run may have been cancelled before any tokens streamed —
-  // an empty answer is valid there (see AnswerFinalizer's cancelled branch),
-  // unlike a normal completion, which should never legitimately have none.
-  if (!aiResponse?.data?.answer && aiResponse?.data?.status !== 'stopped') {
+  // an empty answer is valid there (see AnswerFinalizer's cancelled branch).
+  // `waiting_input` is the ask_user_question pause: the card is the turn,
+  // not a prose answer.
+  const allowsEmptyAnswer =
+    data?.status === 'stopped' || data?.status === 'waiting_input';
+  if (!data || (!data.answer && !allowsEmptyAnswer)) {
     throw new InternalServerError('AI response must include an answer');
   }
 
   const message: IMessage = {
-    messageType: isClassifiedFailureAnswer(aiResponse.data)
+    messageType: isClassifiedFailureAnswer(data)
       ? 'error'
       : 'bot_response',
     createdAt: new Date(),
     updatedAt: new Date(),
-    content: aiResponse.data?.answer ?? '',
+    content: data.answer ?? '',
     contentFormat: 'MARKDOWN',
     citations: citations.map((citation) => ({
       citationId: citation._id as mongoose.Types.ObjectId,
     })),
-    confidence: aiResponse.data.confidence,
+    confidence: data.confidence,
     followUpQuestions:
-      aiResponse.data.followUpQuestions?.map((q) => ({
+      data.followUpQuestions?.map((q) => ({
         question: q.question,
         confidence: q.confidence,
         reasoning: q.reasoning,
       })) || [],
     metadata: {
-      processingTimeMs: aiResponse.data.metadata?.processingTimeMs,
-      modelVersion: aiResponse.data.metadata?.modelVersion,
-      aiTransactionId: aiResponse.data.metadata?.aiTransactionId,
-      reason: aiResponse.data?.reason,
+      processingTimeMs: data.metadata?.processingTimeMs,
+      modelVersion: data.metadata?.modelVersion,
+      aiTransactionId: data.metadata?.aiTransactionId,
+      reason: data.reason,
     },
     modelInfo: modelInfo,
   };
@@ -538,10 +685,10 @@ export const buildAIResponseMessage = (
   // This stores technical IDs that were in the response for later reference
   // Filter out invalid items (must have name and at least key or id)
   if (
-    aiResponse.data.referenceData &&
-    Array.isArray(aiResponse.data.referenceData)
+    data.referenceData &&
+    Array.isArray(data.referenceData)
   ) {
-    message.referenceData = aiResponse.data.referenceData.filter((item) => {
+    message.referenceData = data.referenceData.filter((item) => {
       // Ensure item has name and at least one of key or id (id can be optional)
       return item?.name;
     });
@@ -550,11 +697,11 @@ export const buildAIResponseMessage = (
   // Present only when PIPESHUB_PERSIST_REASONING=true on the Python side
   // (see reasoning_persistence.py) — absent for every existing client/run.
   if (
-    aiResponse.data.reasoning &&
-    Array.isArray(aiResponse.data.reasoning) &&
-    aiResponse.data.reasoning.length > 0
+    data.reasoning &&
+    Array.isArray(data.reasoning) &&
+    data.reasoning.length > 0
   ) {
-    message.reasoning = aiResponse.data.reasoning;
+    message.reasoning = data.reasoning;
   }
 
   // Ordered agent-activity transcript (`agui` protocol only — see
@@ -564,17 +711,40 @@ export const buildAIResponseMessage = (
   // reasoning) before this reaches Node, so no full external tool result
   // ever lands in Mongo via this path.
   if (
-    aiResponse.data.parts &&
-    Array.isArray(aiResponse.data.parts) &&
-    aiResponse.data.parts.length > 0
+    data.parts &&
+    Array.isArray(data.parts) &&
+    data.parts.length > 0
   ) {
-    message.parts = aiResponse.data.parts;
+    message.parts = data.parts;
   }
 
-  if (aiResponse.data.status === 'stopped') {
+  if (data.status === 'stopped') {
     message.status = 'stopped';
   }
 
+  return message;
+};
+
+/**
+ * Stamp the questions payload onto the regenerated bot row itself.
+ *
+ * Regeneration replaces the bot message wholesale (see updateMessageById), so
+ * the `tool_call` row saved alongside it is the only other copy — carrying it
+ * here as well means a reload restores the card even if that sibling row is
+ * missing (older conversations, a failed append).
+ */
+export const attachAskUserQuestionToMessage = (
+  message: IMessage,
+  payload: unknown,
+): IMessage => {
+  if (!payload || typeof payload !== 'object') {
+    return message;
+  }
+  const existingTools = message.tools ?? [];
+  message.tools = [
+    ...existingTools.filter((tool) => !tool.toolName?.includes('ask_user_question')),
+    { toolName: 'ask_user_question', toolResult: payload },
+  ];
   return message;
 };
 
@@ -624,40 +794,148 @@ const toolResultsFromParts = (
         ...(args && { args }),
         result: part.resultSummary || part.resultPreview || '',
         ...(part.resultSummary && { result_summary: part.resultSummary }),
-        status: part.status === 'failed' ? ('error' as const) : ('success' as const),
+        // A blocked call, or one still waiting for approval, never ran: replaying it as a
+        // success would tell the next turn it had.
+        status:
+          part.status === 'failed' ||
+          part.status === 'blocked' ||
+          part.status === 'awaiting_approval'
+            ? ('error' as const)
+            : ('success' as const),
         ...(part.artifactId && { artifact_id: part.artifactId }),
       };
     });
 };
 
+type PreviousToolResult = ReturnType<typeof toolResultsFromParts>[number];
+
+const askToolResults = (
+  msg: IMessage | undefined,
+): PreviousToolResult[] => {
+  if (!msg?.tools?.length) {
+    return [];
+  }
+  return msg.tools
+    .filter((tool) => tool.toolName.includes('ask_user_question') && tool.toolResult)
+    .map((tool) => ({
+      tool_id: 'ask_user_question',
+      tool_name: tool.toolName.includes('internaltools')
+        ? tool.toolName
+        : 'internaltools__ask_user_question',
+      result:
+        typeof tool.toolResult === 'string'
+          ? tool.toolResult
+          : JSON.stringify(tool.toolResult),
+      status: 'success' as const,
+    }));
+};
+
+/**
+ * The questions one bot turn asked, from whichever copy is newest.
+ *
+ * Regeneration stamps the payload on the answer itself; the live path saves it
+ * as a `tool_call` row just before the answer. Trailing `tool_call` rows are
+ * what regenerations appended before `staleAskUserQuestionToolCallIds` —
+ * only the last of those is the turn's current question, the rest belong to
+ * discarded runs.
+ */
+const askResultsForTurn = (
+  messages: IMessage[],
+  botIndex: number,
+): PreviousToolResult[] => {
+  const own = askToolResults(messages[botIndex]);
+  if (own.length) return own;
+  let trailing: PreviousToolResult[] = [];
+  for (let j = botIndex + 1; j < messages.length; j++) {
+    if (messages[j]?.messageType !== 'tool_call') break;
+    const rows = askToolResults(messages[j]);
+    if (rows.length) trailing = rows;
+  }
+  if (trailing.length) return trailing;
+  return messages[botIndex - 1]?.messageType === 'tool_call'
+    ? askToolResults(messages[botIndex - 1])
+    : [];
+};
+
+const withTurnAskToolResults = (
+  messages: IMessage[],
+  botIndex: number,
+  existing: PreviousToolResult[],
+): PreviousToolResult[] => {
+  if (existing.some((row) => row.tool_name?.includes('ask_user_question'))) {
+    return existing;
+  }
+  const extra = askResultsForTurn(messages, botIndex);
+  return extra.length ? [...existing, ...extra] : existing;
+};
+
+/** Whether the turn at `index` still gets an answer before the next question. */
+const answerFollows = (messages: IMessage[], index: number): boolean => {
+  for (let j = index + 1; j < messages.length; j++) {
+    const type = messages[j]?.messageType;
+    if (type === 'bot_response') return true;
+    if (type === 'user_query') return false;
+  }
+  return false;
+};
+
+/**
+ * Prior turns for the AI service, oldest first.
+ *
+ * A turn that failed before an answer leaves an `error` row in place of one.
+ * It is sent as an answer with `status: 'failed'`: dropped, its question
+ * replayed as still open, and providers that merge consecutive user turns
+ * joined it to the current question. An answer the user stopped carries
+ * `status: 'stopped'`. The AI service renders both as short markers.
+ */
 export const formatPreviousConversations = (messages: IMessage[]) => {
-  return messages
-    .filter(
-      (msg) => msg.messageType !== 'error' && msg.messageType !== 'tool_call',
-    )
-    .map((msg) => {
-      const toolResults =
-        msg.messageType === 'bot_response'
-          ? toolResultsFromParts(msg.parts)
-          : [];
-      return {
-        content: msg.content,
-        role: msg.messageType,
-        ...(msg.attachments &&
-          msg.attachments.length > 0 && {
-            attachments: msg.attachments,
-          }),
-        // Include referenceData for follow-up queries (IDs from tool responses)
-        ...(msg.referenceData &&
-          msg.referenceData.length > 0 && {
-            referenceData: msg.referenceData,
-          }),
-        // Prior tool calls/results for this turn — lets the rebuilt agent
-        // see HOW a past answer was produced instead of text-only history
-        // (see `_convert_conversation_turn`, factory.py).
-        ...(toolResults.length > 0 && { tool_results: toolResults }),
-      };
+  const result: Array<Record<string, unknown>> = [];
+  // Tracked, not read off the last entry: a fork keeps stored `system` rows,
+  // which can sit between a question and its error.
+  let questionOpen = false;
+  for (let i = 0; i < messages.length; i++) {
+    const msg = messages[i];
+    if (!msg || msg.messageType === 'tool_call') {
+      continue;
+    }
+    if (msg.messageType === 'error') {
+      if (questionOpen && !answerFollows(messages, i)) {
+        result.push({ role: 'bot_response', content: '', status: 'failed' });
+        questionOpen = false;
+      }
+      continue;
+    }
+    if (msg.messageType === 'user_query') questionOpen = true;
+    if (msg.messageType === 'bot_response') questionOpen = false;
+    let toolResults: PreviousToolResult[] =
+      msg.messageType === 'bot_response' ? toolResultsFromParts(msg.parts) : [];
+    if (msg.messageType === 'bot_response') {
+      // The questions row is a sibling of the answer, not part of its `parts`;
+      // a resume needs it on this turn.
+      toolResults = withTurnAskToolResults(messages, i, toolResults);
+    }
+    result.push({
+      content: msg.content,
+      role: msg.messageType,
+      ...(msg.attachments &&
+        msg.attachments.length > 0 && {
+          attachments: msg.attachments,
+        }),
+      // Include referenceData for follow-up queries (IDs from tool responses)
+      ...(msg.referenceData &&
+        msg.referenceData.length > 0 && {
+          referenceData: msg.referenceData,
+        }),
+      // Prior tool calls/results for this turn — lets the rebuilt agent
+      // see HOW a past answer was produced instead of text-only history
+      // (see `_convert_conversation_turn`, factory.py).
+      ...(toolResults.length > 0 && { tool_results: toolResults }),
+      // A reply the user stopped did not finish its card's work, so the card can be answered again.
+      ...(msg.messageType === 'bot_response' &&
+        msg.status === 'stopped' && { status: 'stopped' }),
     });
+  }
+  return result;
 };
 
 export const getPaginationParams = (req: AuthenticatedUserRequest) => {
@@ -684,13 +962,19 @@ export const getPaginationParams = (req: AuthenticatedUserRequest) => {
   }
 };
 
-export const buildSortOptions = (req: AuthenticatedUserRequest) => {
+export const buildSortOptions = (
+  req: AuthenticatedUserRequest,
+  { pinnedFirst = false }: { pinnedFirst?: boolean } = {},
+) => {
   const allowedSortFields = ['createdAt', 'lastActivityAt', 'title'];
   const sortField = allowedSortFields.includes(req.query?.sortBy as string)
     ? (req.query?.sortBy as string)
     : 'lastActivityAt';
 
   return {
+    // Before the page is cut, so every pinned chat is on page 1 and the
+    // sidebar's Pinned group is never split across pages.
+    ...(pinnedFirst ? { isPinned: -1 } : {}),
     [sortField]: req.query.sortOrder === 'asc' ? 1 : -1,
     _id: -1, // Secondary sort for consistency
   };
@@ -706,7 +990,7 @@ export const addComputedFields = <
   userId: string,
 ) => {
   return {
-    ...conversation,
+    ...withoutErrorStacks(conversation),
     isOwner: conversation.initiator.toString() === userId,
     accessLevel:
       conversation.sharedWith?.find(
@@ -808,6 +1092,25 @@ export const attachSharedBy = async <
   });
 };
 
+/**
+ * Which of `ids` (ObjectId strings) are active users of the organisation. One
+ * query, so a caller can check a whole list before it opens a transaction.
+ */
+export const findOrgUserIds = async (
+  orgId: string,
+  ids: string[],
+): Promise<Set<string>> => {
+  const users = await Users.find({
+    orgId: new mongoose.Types.ObjectId(orgId),
+    isDeleted: false,
+    _id: { $in: ids.map((id) => new mongoose.Types.ObjectId(id)) },
+  })
+    .select('_id')
+    .lean()
+    .exec();
+  return new Set(users.map((user) => user._id.toString()));
+};
+
 export const attachSharedByIfRecipient = async <
   T extends {
     initiator?: { toString(): string };
@@ -852,7 +1155,7 @@ export const PROJECT_ID_UNASSIGNED_QUERY_VALUE = 'unassigned';
  * `require`d id param.
  */
 export const applyProjectIdQueryFilter = (
-  filter: FilterQuery<IChatSessionDocument>,
+  filter: Record<string, unknown>,
   req: AuthenticatedUserRequest,
 ): void => {
   const projectIdRaw = req.query?.projectId;
@@ -877,11 +1180,11 @@ export const buildFilter = (
   shared: boolean = true,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
-) => {
+): Record<string, unknown> => {
   if (!owned && !shared) {
     throw new BadRequestError('Either owned or shared must be true');
   }
-  const filter: any = {
+  const filter: Record<string, unknown> = {
     orgId: new mongoose.Types.ObjectId(orgId),
     isDeleted: false,
     isArchived: false,
@@ -937,20 +1240,21 @@ export const buildFilter = (
 
   // Handle date range
   if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
+    const createdAt: { $gte?: Date; $lte?: Date } = {};
+    filter.createdAt = createdAt;
     if (req.query.startDate) {
       const startDate = new Date(req.query.startDate as string);
       if (isNaN(startDate.getTime())) {
         throw new BadRequestError('Invalid start date format');
       }
-      filter.createdAt.$gte = startDate;
+      createdAt.$gte = startDate;
     }
     if (req.query.endDate) {
       const endDate = new Date(req.query.endDate as string);
       if (isNaN(endDate.getTime())) {
         throw new BadRequestError('Invalid end date format');
       }
-      filter.createdAt.$lte = endDate;
+      createdAt.$lte = endDate;
     }
   }
 
@@ -965,7 +1269,7 @@ export const buildFilter = (
     }
   }
 
-  return filter;
+  return filter as Record<string, unknown>;
 };
 
 export const buildPaginationMetadata = (
@@ -980,6 +1284,22 @@ export const buildPaginationMetadata = (
   hasNextPage: page * limit < totalCount,
   hasPrevPage: page > 1,
 });
+
+/**
+ * The `skip`/`limit` window for page `page` of a conversation's messages,
+ * where page 1 is the newest `limit` messages and each later page steps
+ * further back. The oldest page is short rather than overlapping the page
+ * before it, and a page past the start is empty.
+ */
+export const olderMessagesWindow = (
+  totalMessages: number,
+  page: number,
+  limit: number,
+): { skip: number; limit: number } => {
+  const end = Math.max(0, totalMessages - (page - 1) * limit);
+  const skip = Math.max(0, end - limit);
+  return { skip, limit: end - skip };
+};
 
 export const buildFiltersMetadata = (
   appliedFilters: any,
@@ -1427,6 +1747,159 @@ export const addErrorToConversation = (
   });
 };
 
+/**
+ * A run is only believed live this long after its last heartbeat, so a crashed
+ * Node frees the thread soon. Well above the heartbeat so a few missed beats
+ * never hand a live run's thread to a second writer.
+ */
+const ACTIVE_RUN_WINDOW_MS = 10 * 60 * 1000;
+const RUN_HEARTBEAT_MS = 60 * 1000;
+/** Covers Stop followed straight by a new message: the old run is still winding down after the cancel. */
+const ACTIVE_RUN_SETTLE_MS = 15_000;
+const ACTIVE_RUN_POLL_MS = 250;
+
+export interface RunReservation {
+  sessionId: mongoose.Types.ObjectId;
+  /** Set on the thread while this run owns it; release and heartbeat only act on a match. */
+  runId: string;
+  /** What the thread was before the run, for `releaseRun` to put back. */
+  previousStatus: string;
+}
+
+/**
+ * Claims the thread for a new run in one atomic update, so two requests that
+ * arrive together cannot both start one: a leftover run from before a refresh
+ * would otherwise be joined by a second writer of the same session, and the
+ * older one could overwrite the newer one's status.
+ *
+ * Waits briefly when a run is going so a quick Stop-then-send isn't refused
+ * while the cancelled run finishes saving, then refuses with a conflict.
+ * Returns null when no session matches `filter`, leaving the caller's own
+ * lookup to report that. A status older than the run cap counts as idle, so a
+ * crashed server can't lock a thread. Reads and writes without a session on
+ * purpose: inside a transaction snapshot the status would never change.
+ */
+export const reserveRun = async (
+  filter: QueryFilter<IChatSessionDocument>,
+  settleMs: number = ACTIVE_RUN_SETTLE_MS,
+): Promise<RunReservation | null> => {
+  const deadline = Date.now() + settleMs;
+  const runId = randomUUID();
+  for (;;) {
+    const now = Date.now();
+    const previous = await ChatSession.findOneAndUpdate(
+      {
+        $and: [
+          filter,
+          {
+            $or: [
+              { status: { $ne: CONVERSATION_STATUS.INPROGRESS } },
+              { lastActivityAt: null },
+              { lastActivityAt: { $lte: now - ACTIVE_RUN_WINDOW_MS } },
+            ],
+          },
+        ],
+      },
+      {
+        $set: {
+          status: CONVERSATION_STATUS.INPROGRESS,
+          lastActivityAt: now,
+          activeRunId: runId,
+        },
+      },
+      { returnDocument: 'before' },
+    )
+      .select('status')
+      .lean();
+    if (previous) {
+      const was = String(previous.status ?? CONVERSATION_STATUS.COMPLETE);
+      return {
+        sessionId: previous._id,
+        runId,
+        previousStatus:
+          was === CONVERSATION_STATUS.INPROGRESS
+            ? CONVERSATION_STATUS.FAILED
+            : was,
+      };
+    }
+    const exists = await ChatSession.findOne(filter).select('_id').lean();
+    if (!exists) return null;
+    if (Date.now() >= deadline) {
+      throw new ConflictError(
+        'A response is still being generated for this conversation. Wait for it to finish, or stop it, then send your message again.',
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, ACTIVE_RUN_POLL_MS));
+  }
+};
+
+/**
+ * Gives the thread back when a run that was reserved never got going, or as a
+ * safety net once one has finished. Only touches a session still marked in
+ * progress by this very reservation, so neither a status the run itself saved
+ * nor a newer request's run is ever overwritten. Best
+ * effort: it must not mask the error being handled, and the activity window
+ * frees a thread this misses.
+ */
+export const releaseRun = async (
+  reservation: RunReservation | null,
+): Promise<void> => {
+  if (!reservation) return;
+  try {
+    await ChatSession.findOneAndUpdate(
+      {
+        _id: reservation.sessionId,
+        status: CONVERSATION_STATUS.INPROGRESS,
+        activeRunId: reservation.runId,
+      },
+      { $set: { status: reservation.previousStatus } },
+    ).lean();
+  } catch (error: unknown) {
+    logger.warn('Failed to release the run reservation', {
+      sessionId: String(reservation.sessionId),
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+};
+
+/**
+ * Keeps `lastActivityAt` fresh while a run's AI stream is open, so a long
+ * answer, or a run whose browser left, is never mistaken for a crashed one by
+ * `reserveRun`. Stops by itself when the stream closes, however it ends. Pass
+ * the reservation's `runId` where there is one so a superseded run's beats
+ * cannot touch the thread.
+ */
+export const keepRunAlive = (
+  stream: { once(event: 'close', listener: () => void): unknown },
+  sessionId: mongoose.Types.ObjectId,
+  runId?: string,
+): void => {
+  const timer = setInterval(() => {
+    void (async () => {
+      try {
+        await ChatSession.updateOne(
+          {
+            _id: sessionId,
+            status: CONVERSATION_STATUS.INPROGRESS,
+            ...(runId ? { activeRunId: runId } : {}),
+          },
+          { $set: { lastActivityAt: Date.now() } },
+          { timestamps: false },
+        );
+      } catch (error: unknown) {
+        logger.warn('Failed to record run activity', {
+          sessionId: String(sessionId),
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    })();
+  }, RUN_HEARTBEAT_MS);
+  timer.unref();
+  stream.once('close', () => {
+    clearInterval(timer);
+  });
+};
+
 export const markConversationFailed = async (
   conversation: IChatSessionDocument,
   failReason: string,
@@ -1485,26 +1958,29 @@ export const markConversationFailed = async (
 };
 
 /**
- * Persists whatever the user had already seen when the connection dropped
- * before Python could send a terminal `RUN_FINISHED` — the passive-disconnect
- * counterpart to `saveCompleteConversation`/`saveCompleteAgentConversation`.
- * Must be called from the stream's `close`/`onDisconnect` path, never `end`
- * (which does not fire once `attachUpstreamAbort` has destroyed the
- * Readable). `replaceMessageId` is set for the regenerate path, which
- * replaces the original message instead of appending a new one.
+ * Persists the partial answer of a run Node gave up on: its browser went away
+ * and it outlived the detached-run cap (see `attachUpstreamAbort`), so Python
+ * never sent a terminal `RUN_FINISHED`. Must be called from the `onAbandon`
+ * path, never `end` (which does not fire once the Readable is destroyed).
+ * `replaceMessageId` is set for the regenerate path, which replaces the
+ * original message instead of appending a new one.
  */
 export const savePartialConversation = async (
   conversation: IChatSessionDocument,
   partialText: string,
   session?: ClientSession | null,
-  options?: { replaceMessageId?: mongoose.Types.ObjectId | string },
+  options?: {
+    replaceMessageId?: mongoose.Types.ObjectId | string;
+    parts?: IMessagePart[];
+  },
 ): Promise<void> => {
   try {
     const partialMessage: IMessage = {
       messageType: 'bot_response',
-      content: partialText,
+      content: stripModelAuthoredMarkers(partialText),
       contentFormat: 'MARKDOWN',
       status: 'stopped',
+      ...(options?.parts?.length ? { parts: options.parts } : {}),
       createdAt: new Date(),
       updatedAt: new Date(),
     };
@@ -1512,6 +1988,7 @@ export const savePartialConversation = async (
     if (options?.replaceMessageId) {
       const updated = await updateMessageById(
         options.replaceMessageId,
+        conversation.orgId,
         partialMessage,
         session,
       );
@@ -1588,6 +2065,7 @@ export const replaceMessageWithError = async (
     const failedMessage = buildAIFailureResponseMessage(errorMessage);
     const updatedMessage = await updateMessageById(
       messageId,
+      conversation.orgId,
       failedMessage,
       session,
     );
@@ -1776,6 +2254,10 @@ export const markAgentConversationFailed = async (
  * Build filter for agent conversations. `ONLY_AGENT` is applied here (in
  * addition to always requiring a concrete `agentKey`) as defense-in-depth
  * now that agent and plain-chat sessions share one collection.
+ *
+ * `includeShared` adds the read-only "shared with me" branch. It is off by
+ * default so owner-only actions built on this filter (fork, cancel, archive
+ * list) never widen to a recipient; only the read paths opt in.
  */
 export const buildAgentConversationFilter = (
   req: any,
@@ -1785,18 +2267,32 @@ export const buildAgentConversationFilter = (
   conversationId?: string,
   contentMatchIds?: mongoose.Types.ObjectId[],
   accessibleProjectIds?: mongoose.Types.ObjectId[],
+  includeShared: boolean = false,
 ) => {
-  const filter: any = {
+  const filter: Record<string, unknown> = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
     $or: [
       { userId: new mongoose.Types.ObjectId(userId) },
+      ...(includeShared
+        ? [
+            {
+              $and: [
+                { isShared: true },
+                { 'sharedWith.userId': new mongoose.Types.ObjectId(userId) },
+              ],
+              // The owner archiving a chat takes it away from the people it was shared with.
+              isArchived: { $ne: true },
+            },
+          ]
+        : []),
       ...(accessibleProjectIds && accessibleProjectIds.length > 0
         ? [
             {
               projectId: { $in: accessibleProjectIds },
               projectVisibility: 'project',
+              isArchived: { $ne: true },
             },
           ]
         : []),
@@ -1830,20 +2326,21 @@ export const buildAgentConversationFilter = (
 
   // Handle date range
   if (req.query.startDate || req.query.endDate) {
-    filter.createdAt = {};
+    const createdAt: { $gte?: Date; $lte?: Date } = {};
+    filter.createdAt = createdAt;
     if (req.query.startDate) {
       const startDate = new Date(req.query.startDate as string);
       if (isNaN(startDate.getTime())) {
         throw new BadRequestError('Invalid start date format');
       }
-      filter.createdAt.$gte = startDate;
+      createdAt.$gte = startDate;
     }
     if (req.query.endDate) {
       const endDate = new Date(req.query.endDate as string);
       if (isNaN(endDate.getTime())) {
         throw new BadRequestError('Invalid end date format');
       }
-      filter.createdAt.$lte = endDate;
+      createdAt.$lte = endDate;
     }
   }
 
@@ -1869,8 +2366,8 @@ export const buildAgentSharedWithMeFilter = (
   orgId: string,
   userId: string,
   agentKey: string,
-) => {
-  const filter: any = {
+): Record<string, unknown> => {
+  const filter: Record<string, unknown> = {
     ...ONLY_AGENT,
     agentKey,
     orgId: new mongoose.Types.ObjectId(orgId),
@@ -1924,8 +2421,14 @@ export const validateAgentConversationAccess = async (
         { userId }, // Owner
         {
           isShared: true,
-          'sharedWith.userId': userId,
-          ...(accessLevel === 'write' && { 'sharedWith.accessLevel': 'write' }),
+          isArchived: { $ne: true },
+          // One entry must carry both the user and the level (separate dotted paths match across entries).
+          sharedWith: {
+            $elemMatch: {
+              userId,
+              ...(accessLevel === 'write' && { accessLevel: 'write' }),
+            },
+          },
         },
       ],
     });
@@ -1939,7 +2442,11 @@ export const validateAgentConversationAccess = async (
       accessLevel,
       error: error.message,
     });
-    return null;
+    // A malformed id can match nothing; any other failure is not "not found".
+    if (error instanceof mongoose.Error.CastError) {
+      return null;
+    }
+    throw error;
   }
 };
 
@@ -1951,6 +2458,8 @@ export const deleteAgentConversation = async (
   agentKey: string,
   userId: string,
   orgId: string,
+  // Runs once access is confirmed and before the delete; a throw keeps the conversation.
+  beforeDelete?: () => Promise<void>,
 ): Promise<IChatSessionDocument | null> => {
   try {
     const conversation = await validateAgentConversationAccess(
@@ -1964,6 +2473,8 @@ export const deleteAgentConversation = async (
     if (!conversation) {
       return null;
     }
+
+    await beforeDelete?.();
 
     conversation.isDeleted = true;
     conversation.deletedBy = userId as any;
@@ -1997,7 +2508,7 @@ export const initializeSSEResponse = (
   protocol?: SSEProtocol,
 ): void => {
   res.writeHead(200, {
-    'Content-Type': 'text/event-stream',
+    'Content-Type': 'text/event-stream; charset=utf-8',
     'Cache-Control': 'no-cache',
     Connection: 'keep-alive',
     'Access-Control-Allow-Origin': '*',
@@ -2095,9 +2606,10 @@ export const handleRegenerationStreamData = (
   requestId: string,
   res: Response,
   onCompleteData: (data: IAIResponse) => void,
-  isAgentSession: boolean,
   protocol?: SSEProtocol,
   accumulator?: StreamedContentAccumulator,
+  onUpstreamError?: () => void,
+  onAskUserQuestion?: (payload: unknown) => void,
 ): string => {
   const chunkStr = chunk.toString();
   let newBuffer = buffer + chunkStr;
@@ -2119,6 +2631,9 @@ export const handleRegenerationStreamData = (
         .filter((line) => line.startsWith('data:'))
         .map((line) => line.replace(/^data: ?/, ''));
       const dataLine = dataLines.join('\n');
+      if (agui && eventType === AGUIEventType.TOOL_CALL_START && dataLine) {
+        accumulator?.feedToolCallStart(dataLine);
+      }
 
       if (agui && eventType === AGUIEventType.RUN_FINISHED && dataLine) {
         // Mirrors the legacy `complete` branch below — `result` on
@@ -2147,6 +2662,7 @@ export const handleRegenerationStreamData = (
       } else if (agui && eventType === AGUIEventType.RUN_ERROR && dataLine) {
         try {
           const errorData = JSON.parse(dataLine);
+          onUpstreamError?.();
           if (existingConversation && messageId) {
             const errorMessage = errorData.message || CHAT_ERROR_MESSAGES.failed;
             replaceMessageWithError(
@@ -2181,34 +2697,8 @@ export const handleRegenerationStreamData = (
         try {
           const eventData = JSON.parse(dataLine);
           if (eventData?.name === 'ask_user_question' && eventData.value) {
-            const toolCallMessage = {
-              messageType: 'tool_call' as const,
-              content: '',
-              tools: [
-                {
-                  toolName: 'ask_user_question',
-                  toolResult: eventData.value.toolData ?? eventData.value,
-                },
-              ],
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            };
-            if (isAgentSession) {
-              void appendMessages(
-                existingConversation._id as mongoose.Types.ObjectId,
-                existingConversation.orgId,
-                [toolCallMessage],
-              ).catch((saveErr: any) => {
-                logger.error(
-                  'Failed to persist ask_user_question tool_call message during regenerate',
-                  {
-                    requestId,
-                    conversationId: existingConversation._id,
-                    error: saveErr?.message,
-                  },
-                );
-              });
-            }
+            const payload = eventData.value.toolData ?? eventData.value;
+            onAskUserQuestion?.(payload);
           }
         } catch (parseErr: any) {
           logger.warn('Failed to parse CUSTOM event data during regenerate', {
@@ -2242,6 +2732,7 @@ export const handleRegenerationStreamData = (
         }
         filteredChunk += event + '\n\n';
       } else if (!agui && eventType === 'error' && dataLine) {
+        onUpstreamError?.();
         try {
           const errorData = JSON.parse(dataLine);
           if (existingConversation && messageId) {
@@ -2301,34 +2792,8 @@ export const handleRegenerationStreamData = (
             typeof eventData === 'object' &&
             eventData.status === 'success'
           ) {
-            const toolCallMessage = {
-              messageType: 'tool_call' as const,
-              content: '',
-              tools: [
-                {
-                  toolName: 'ask_user_question',
-                  toolResult: eventData.toolData ?? eventData,
-                },
-              ],
-              createdAt: new Date(),
-              updatedAt: new Date(),
-            };
-            if (isAgentSession) {
-              void appendMessages(
-                existingConversation._id as mongoose.Types.ObjectId,
-                existingConversation.orgId,
-                [toolCallMessage],
-              ).catch((saveErr: any) => {
-                logger.error(
-                  'Failed to persist ask_user_question tool_call message during regenerate',
-                  {
-                    requestId,
-                    conversationId: existingConversation._id,
-                    error: saveErr?.message,
-                  },
-                );
-              });
-            }
+            const payload = eventData.toolData ?? eventData;
+            onAskUserQuestion?.(payload);
           }
         } catch (parseErr: any) {
           logger.warn(
@@ -2364,6 +2829,8 @@ export const handleRegenerationSuccess = async (
   orgId: string,
   session: ClientSession | null,
   modelInfo?: IAIModel,
+  askUserQuestionPayload?: unknown,
+  staleAskToolCallIds?: mongoose.Types.ObjectId[],
 ): Promise<{
   conversation: any;
   savedCitations: ICitation[];
@@ -2391,9 +2858,13 @@ export const handleRegenerationSuccess = async (
     savedCitations,
     modelInfo,
   );
+  if (askUserQuestionPayload) {
+    attachAskUserQuestionToMessage(aiResponseMessage, askUserQuestionPayload);
+  }
 
   const updatedMessage = await updateMessageById(
     messageId,
+    existingConversation.orgId,
     aiResponseMessage,
     session,
   );
@@ -2401,6 +2872,26 @@ export const handleRegenerationSuccess = async (
     throw new InternalServerError(
       'Failed to update conversation with regenerated response: message not found',
     );
+  }
+
+  // The replacement answer carries its own questions payload, so the rows the
+  // discarded run left beside it are stale. Non-fatal: an answer the user can
+  // already see must not fail on transcript housekeeping.
+  if (staleAskToolCallIds?.length) {
+    try {
+      await deleteMessagesById(
+        staleAskToolCallIds,
+        existingConversation.orgId,
+        session,
+        existingConversation._id,
+      );
+    } catch (cleanupErr: any) {
+      logger.warn('Failed to drop stale rows after regenerate', {
+        conversationId: existingConversation._id,
+        messageId,
+        error: cleanupErr?.message,
+      });
+    }
   }
 
   if (modelInfo) {
@@ -2482,7 +2973,7 @@ export const handleRegenerationError = async (
       if (updatedConversation) {
         const messages = await getMessages(
           updatedConversation._id as mongoose.Types.ObjectId,
-          {},
+          { orgId: updatedConversation.orgId },
           session,
         );
         const plainConversation = attachMessages(

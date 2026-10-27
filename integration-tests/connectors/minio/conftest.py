@@ -46,6 +46,24 @@ def _unavailable(reason: str) -> None:
         pytest.fail(reason)
     pytest.skip(reason)
 
+def minio_bucket() -> str:
+    return _bucket()
+
+
+def minio_connector_config() -> dict[str, Any]:
+    """The connector runs inside the compose network, so it reaches MinIO by
+    service name; the test process reaches it on the published port."""
+    return {
+        "auth": {
+            "endpointUrl": os.getenv("MINIO_CONNECTOR_ENDPOINT", "http://minio:9000"),
+            "accessKey": os.getenv("MINIO_ROOT_USER", DEFAULT_ACCESS_KEY),
+            "secretKey": os.getenv("MINIO_ROOT_PASSWORD", DEFAULT_SECRET_KEY),
+            "useSsl": False,
+            "verifySsl": False,
+        }
+    }
+
+
 @pytest.fixture(scope="session")
 def minio_storage() -> MinioStorageHelper:
     helper = MinioStorageHelper(
@@ -70,18 +88,7 @@ async def minio_connector(
     graph_provider: GraphProviderProtocol,
     sample_data_root,
 ) -> AsyncGenerator[dict[str, Any], None]:
-    # The connector runs inside the compose network, so it reaches MinIO by
-    # service name; the test process reaches it on the published port.
-    config = {
-        "auth": {
-            "endpointUrl": os.getenv("MINIO_CONNECTOR_ENDPOINT", "http://minio:9000"),
-            "accessKey": os.getenv("MINIO_ROOT_USER", DEFAULT_ACCESS_KEY),
-            "secretKey": os.getenv("MINIO_ROOT_PASSWORD", DEFAULT_SECRET_KEY),
-            "useSsl": False,
-            "verifySsl": False,
-        }
-    }
-
+    config = minio_connector_config()
     state = await constructor(
         minio_storage,
         pipeshub_client,

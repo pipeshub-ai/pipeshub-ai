@@ -8,6 +8,8 @@ import {
   BaseSyncEvent,
   ReindexEventPayload,
 } from '../../../../src/modules/knowledge_base/services/sync_events.service'
+import { IMessageProducer, StreamMessage } from '../../../../src/libs/types/messaging.types'
+import { Logger } from '../../../../src/libs/services/logger.service'
 
 describe('SyncEventProducer', () => {
   afterEach(() => {
@@ -190,6 +192,24 @@ describe('SyncEventProducer - coverage', () => {
   })
 
   describe('publishEvent', () => {
+    it('rejects when the broker refuses the event, so the caller knows nothing was queued', async () => {
+      const instance = Object.create(SyncEventProducer.prototype)
+      ;(instance as any).syncTopic = 'sync-events'
+      const brokerDown = new Error('broker unreachable')
+      ;(instance as any).producer = { publish: sinon.stub().rejects(brokerDown) }
+      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+
+      let thrown: unknown
+      await instance
+        .publishEvent({ eventType: 'googledrive.resync', timestamp: 1, payload: { orgId: 'org-1' } })
+        .catch((e: unknown) => {
+          thrown = e
+        })
+
+      expect(thrown).to.equal(brokerDown)
+      expect(instance.logger.error.calledOnce).to.be.true
+    })
+
     it('should publish event to sync-events topic', async () => {
       const instance = Object.create(SyncEventProducer.prototype)
       ;(instance as any).syncTopic = 'sync-events'
@@ -223,37 +243,12 @@ describe('SyncEventProducer - coverage', () => {
       expect(mockProducer.publish.calledOnce).to.be.true
       const [topic, message] = mockProducer.publish.firstCall.args
       expect(topic).to.equal('sync-events')
-      expect(message.key).to.equal('connectorSync')
+      // Keyed by connectorId, not eventType: keying by type puts every
+      // connector of one kind on a single partition.
+      expect(message.key).to.equal('conn-1')
       expect(JSON.parse(message.value)).to.deep.include({ eventType: 'connectorSync' })
       expect(message.headers.eventType).to.equal('connectorSync')
       expect(instance.logger.info.calledOnce).to.be.true
-    })
-
-    it('should log error when publish fails', async () => {
-      const instance = Object.create(SyncEventProducer.prototype)
-      ;(instance as any).syncTopic = 'sync-events'
-      const mockProducer = {
-        isConnected: sinon.stub().returns(true),
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        publish: sinon.stub().rejects(new Error('Kafka down')),
-        publishBatch: sinon.stub().resolves(),
-        healthCheck: sinon.stub().resolves(true),
-      }
-      ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
-
-      const event: Event = {
-        eventType: 'reindex',
-        timestamp: Date.now(),
-        payload: {
-          orgId: 'org-1',
-          statusFilters: ['pending'],
-        } as ReindexEventPayload,
-      }
-
-      await instance.publishEvent(event)
-      expect(instance.logger.error.calledOnce).to.be.true
     })
 
     it('should include timestamp header as string', async () => {
@@ -281,6 +276,89 @@ describe('SyncEventProducer - coverage', () => {
 
       const message = mockProducer.publish.firstCall.args[1]
       expect(message.headers.timestamp).to.equal('9876543210')
+    })
+  })
+
+  describe('partitioning', () => {
+    /**
+     * Kafka hashes the message key to choose a partition and hands each
+     * partition to exactly one consumer in the group. Keying by eventType put
+     * every connector of a given kind on one partition, and therefore on one
+     * sync executor — so adding workers bought nothing. Redis Streams is a
+     * shared queue and hides this entirely, which is why it went unnoticed.
+     */
+    const producerDouble = (publish: sinon.SinonStub): IMessageProducer => ({
+      connect: sinon.stub().resolves(),
+      disconnect: sinon.stub().resolves(),
+      isConnected: sinon.stub().returns(true),
+      publish,
+      publishBatch: sinon.stub().resolves(),
+      healthCheck: sinon.stub().resolves(true),
+    })
+    const loggerDouble = () => ({ info: sinon.stub(), error: sinon.stub() })
+
+    const publish = async (event: Event): Promise<[string, StreamMessage<string>]> => {
+      const publishStub = sinon.stub().resolves()
+      const svc = new SyncEventProducer(
+        producerDouble(publishStub),
+        loggerDouble() as unknown as Logger,
+      )
+      await svc.publishEvent(event)
+      expect(publishStub.calledOnce).to.be.true
+      return publishStub.firstCall.args as [string, StreamMessage<string>]
+    }
+
+    it('keys by connector so connectors spread across partitions', async () => {
+      const [topic, message] = await publish({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'conn-abc', orgId: 'o1' },
+      })
+      expect(topic).to.equal('sync-events')
+      expect(message.key).to.equal('conn-abc')
+    })
+
+    it('gives two connectors of the same kind different keys', async () => {
+      const [, a] = await publish({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'conn-1' },
+      })
+      const [, b] = await publish({
+        eventType: 'confluence.resync',
+        timestamp: 1,
+        payload: { connectorId: 'conn-2' },
+      })
+      expect(a.key).to.not.equal(b.key)
+    })
+
+    it('falls back to the event type when there is no connector', async () => {
+      const [, message] = await publish({
+        eventType: 'sync.all',
+        timestamp: 1,
+        payload: {},
+      })
+      expect(message.key).to.equal('sync.all')
+    })
+
+    it('logs a publish failure and passes it to the caller', async () => {
+      const logger = loggerDouble()
+      const svc = new SyncEventProducer(
+        producerDouble(sinon.stub().rejects(new Error('broker down'))),
+        logger as unknown as Logger,
+      )
+      let caught: unknown
+      try {
+        await svc.publishEvent({
+          eventType: 'confluence.resync',
+          timestamp: 1,
+          payload: { connectorId: 'c1' },
+        })
+      } catch (error) {
+        caught = error
+      }
+      expect((caught as Error)?.message).to.equal('broker down')
+      expect(logger.error.called).to.be.true
     })
   })
 })

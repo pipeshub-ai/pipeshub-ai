@@ -12,7 +12,7 @@ import {
   type Edge,
   type Node,
 } from '@xyflow/react';
-import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden } from '@radix-ui/themes';
+import { Box, Flex, Text, Button, Dialog, Callout, VisuallyHidden, IconButton } from '@radix-ui/themes';
 import { AgentsApi } from '../api';
 import { extractAgentConfigFromFlow } from './extract-agent-config';
 import { useAgentBuilderData } from './hooks/use-agent-builder-data';
@@ -27,6 +27,7 @@ import { ServiceAccountConfirmDialog } from './components/service-account-confir
 import { AgentToolsetCredentialsDialog } from './components/agent-toolset-credentials-dialog';
 import type { BuilderSidebarToolset } from '@/app/(main)/toolsets/api';
 import type { AgentWebSearchAttachment, FlowNodeData } from './types';
+import type { AgentDetail } from '../types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
 import { normalizeDisplayName } from './display-utils';
 import { FLOW_EDGE } from './flow-theme';
@@ -37,24 +38,24 @@ import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { getAgentBuilderPermissions } from './agent-builder-permissions';
 import { useUserPermission } from '@/config';
 import { toast } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import {
   collectActiveToolsetTypeKeysFromNodes,
   type ToolsetTypeKeyFlowNode,
 } from './sidebar-toolset-utils';
-import type { McpInstanceIdFlowNode } from './sidebar-mcp-utils';
+import { findMcpServersWithoutTools, type McpInstanceIdFlowNode } from './sidebar-mcp-utils';
+import { McpLiveServersContext } from './mcp-live-servers';
+import { apiToolsetSidebarRow, isApiToolsetNode } from './api-toolset-attachments';
+import { ErrorBoundary, ErrorFallback } from '@/app/components/ui/error-boundary';
+import { PaletteTapAddContext } from './components/sidebar-draggable-row';
+import { MobileBottomSheet } from '@/app/components/ui/mobile-bottom-sheet';
+import { touchTarget } from '@/app/components/ui/responsive';
+import { useIsBelowDesktop, useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 /** Palette width: comfortable for labels; chrome matches `SecondaryPanel` / chat sidebars. */
 const AGENT_BUILDER_SIDEBAR_WIDTH = 332;
 
 const SVC_ACCT_TOOLSET_BLOCK_TOAST_MS = 9000;
-
-/** Extract a human-readable message from an unknown API error. */
-function extractErrorMessage(e: unknown, fallback: string): string {
-  const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (typeof detail === 'string' && detail.trim()) return detail.trim();
-  if (e instanceof Error && e.message) return e.message;
-  return fallback;
-}
 
 // ── Dirty-tracking helpers ───────────────────────────────────────────────────
 type CleanSnapshot = {
@@ -62,6 +63,7 @@ type CleanSnapshot = {
   edgesJson: string;
   agentName: string;
   shareWithOrg: boolean;
+  serviceAccountUserId: string | null;
 };
 
 function serializeNodes(nodes: Node[]): string {
@@ -86,6 +88,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const router = useRouter();
   const { t } = useTranslation();
   const editingKey = agentKey;
+  const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
 
   const {
     availableTools,
@@ -95,9 +99,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     activeAgentConnectors,
     configuredConnectors,
     toolsets,
+    apiToolsets,
     mcpServers,
+    mcpServersLoaded,
     loading,
     loadedAgent,
+    retryLoad,
     error,
     setError,
     refreshToolsets,
@@ -124,9 +131,40 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     setDeleting,
     success,
     setSuccess,
-  } = useAgentBuilderState(loadedAgent?.name || '');
+  } = useAgentBuilderState(loadedAgent?.name || '', !isMobile);
 
   const [shareWithOrg, setShareWithOrg] = useState(false);
+
+  /**
+
+   * The service account this agent searches knowledge as, by `userId`;
+
+   * null means it searches as its creator, which is the older behaviour
+
+   * and still the default.
+
+   */
+
+  const [serviceAccountUserId, setServiceAccountUserId] = useState<string | null>(null);
+  /**
+   * What to send for the binding: the new value when it moved, and nothing at
+   * all when it did not.
+   *
+   * Re-sending an unchanged id is not harmless. The server re-resolves any id
+   * it is given and refuses an account that has been switched off or removed,
+   * so a rename of an agent bound to a disabled account would be rejected —
+   * and told it could not find the account, which is not what the edit was
+   * about. Saying nothing leaves the binding in place to resume if the
+   * account comes back, while chat still refuses it meanwhile.
+   */
+  const bindingToSend = useCallback(
+    (current: AgentDetail | null | undefined): string | null | undefined => {
+      const stored = current?.serviceAccountUserId ?? null;
+      if (serviceAccountUserId === stored) return undefined;
+      return serviceAccountUserId;
+    },
+    [serviceAccountUserId],
+  );
   const [banner, setBanner] = useState<string | null>(null);
   const [showPostUpdateDialog, setShowPostUpdateDialog] = useState(false);
 
@@ -148,6 +186,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   const agentNameInputRef = useRef<HTMLInputElement>(null);
 
   const effectiveAgentKey = loadedAgent?._key ?? editingKey ?? null;
+  /** An existing agent is still on its way: the header must not read as a new agent meanwhile. */
+  const agentLoading = Boolean(editingKey) && !loadedAgent && loading;
+  /** The agent could not be fetched: nothing may be saved, or an empty graph would overwrite it. */
+  const agentLoadFailed = Boolean(editingKey) && !loadedAgent && !loading;
 
   const { nodeTemplates } = useAgentBuilderNodeTemplates(
     availableTools,
@@ -173,6 +215,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       ? t('agentBuilder.paletteActionBlockedViewOnly')
       : t('agentBuilder.viewerPaletteDragBlocked');
   }, [isAgentStructureLocked, isServiceAccountToolsetOrgLocked, t]);
+
+  useEffect(() => {
+    if (!loadedAgent?.mcpServersUnavailable) return;
+    toast.warning(t('agentBuilder.mcpServersUnavailable'), {
+      description: t('agentBuilder.mcpServersUnavailableHint'),
+    });
+  }, [loadedAgent?._key, loadedAgent?.mcpServersUnavailable, t]);
 
   type DeprecatedToolEntry = { fullName: string; toolName: string; toolsetLabel: string };
 
@@ -214,6 +263,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
 
   const showDeprecatedBanner = deprecatedToolsInGraph.length > 0;
   const saveBlockedByDeprecatedTools = showDeprecatedBanner;
+
+  const mcpServersWithoutTools = useMemo(() => findMcpServersWithoutTools(nodes, edges), [nodes, edges]);
+  const saveBlockedByEmptyMcpServers = mcpServersWithoutTools.length > 0;
 
   const handleRemoveDeprecatedTools = useCallback(() => {
     const deprecatedFullNames = new Set(deprecatedToolsFromAgent.map((d) => d.fullName));
@@ -266,6 +318,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   useEffect(() => {
     if (loadedAgent) {
       setShareWithOrg(isServiceAccount ? true : Boolean(loadedAgent.shareWithOrg));
+      setServiceAccountUserId(loadedAgent.serviceAccountUserId ?? null);
     }
   }, [loadedAgent, isServiceAccount]);
 
@@ -302,6 +355,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [editingKey, loading, setNodes, setEdges]);
 
   const initOnce = useRef(false);
+  // Declared before first use (the reset effect below) so the ref is never read ahead of its declaration.
+  const historyGuardActive = useRef(false);
   useEffect(() => {
     initOnce.current = false;
     historyGuardActive.current = false;
@@ -313,6 +368,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     // A new agent may start with no LLM node connected — it will use the
     // organization's default model at chat time until one is explicitly added.
     if (loading || nodes.length > 0 || initOnce.current) return;
+    // A failed edit load must not start the new-agent graph; a retry fills the canvas instead.
+    if (editingKey && !loadedAgent) return;
 
     const agentSrc = loadedAgent || undefined;
     if (agentSrc) {
@@ -320,7 +377,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         { ...agentSrc, knowledge: (agentSrc.knowledge as unknown[]) || [] },
         availableModels,
         availableTools,
-        availableKnowledgeBases
+        availableKnowledgeBases,
+        apiToolsets
       );
       setNodes(n);
       setEdges(e);
@@ -329,6 +387,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
         edgesJson: serializeEdges(e),
         agentName: agentSrc.name || '',
         shareWithOrg: Boolean(agentSrc.shareWithOrg),
+        serviceAccountUserId: agentSrc.serviceAccountUserId ?? null,
       });
       initOnce.current = true;
       return;
@@ -424,9 +483,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     initOnce.current = true;
   }, [
     loading,
+    editingKey,
     availableModels,
     availableKnowledgeBases,
     availableTools,
+    apiToolsets,
     loadedAgent,
     nodes.length,
     reconstructFlowFromAgent,
@@ -469,8 +530,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     [isAgentStructureLocked, setEdgeDeleteDialogOpen, setEdgeToDelete]
   );
 
+  // API toolsets don't block a service account: the backend checks they use a shared credential.
   const hasToolsets = useMemo(
-    () => nodes.some((n) => String(n.data?.type ?? '').startsWith('toolset-')),
+    () =>
+      nodes.some(
+        (n) => String(n.data?.type ?? '').startsWith('toolset-') && !isApiToolsetNode(n.data?.config)
+      ),
     [nodes]
   );
 
@@ -480,7 +545,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     const q = new URLSearchParams(window.location.search);
     if (q.get('sa') !== '1') return;
     saWelcomeShownRef.current = true;
-    setSuccess(t('agentBuilder.serviceAccountCreated'));
+    setSuccess(t('agentBuilder.serviceAgentCreated'));
     q.delete('sa');
     const path = window.location.pathname;
     const rest = q.toString();
@@ -496,9 +561,10 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       serializeNodes(nodes) !== cleanSnapshot.nodesJson ||
       serializeEdges(edges) !== cleanSnapshot.edgesJson ||
       agentName.trim() !== cleanSnapshot.agentName ||
-      shareWithOrg !== cleanSnapshot.shareWithOrg
+      shareWithOrg !== cleanSnapshot.shareWithOrg ||
+      serviceAccountUserId !== cleanSnapshot.serviceAccountUserId
     );
-  }, [nodes, edges, agentName, shareWithOrg, cleanSnapshot]);
+  }, [nodes, edges, agentName, shareWithOrg, serviceAccountUserId, cleanSnapshot]);
 
   // beforeunload guard: browser tab close / refresh / address-bar navigation.
   useEffect(() => {
@@ -513,7 +579,6 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   // popstate guard: browser back/forward button.
   // When dirty, push a guard entry so the first back press hits it (same URL)
   // and fires popstate without actually leaving the page.
-  const historyGuardActive = useRef(false);
   useEffect(() => {
     if (!isDirty) return;
 
@@ -574,6 +639,11 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     };
   }, [webSearchNode]);
 
+  const sidebarToolsets = useMemo(
+    () => [...toolsets, ...apiToolsets.map(apiToolsetSidebarRow)],
+    [toolsets, apiToolsets]
+  );
+
   const saveRef = useRef(false);
 
   const focusAgentNameInput = useCallback(() => {
@@ -614,8 +684,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
   }, [agentName, hasToolsets, notifyServiceAccountToolsetBlocked, showInlineAgentNameRequired, t]);
 
   const handleSave = useCallback(async () => {
-    if (!canPersist) return;
-    if (saveBlockedByDeprecatedTools) return;
+    if (!canPersist || agentLoadFailed) return;
+    if (saveBlockedByDeprecatedTools || saveBlockedByEmptyMcpServers) return;
     if (saveRef.current) return;
     if (!agentName.trim()) {
       showInlineAgentNameRequired();
@@ -634,7 +704,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edges as Parameters<typeof extractAgentConfigFromFlow>[2],
           loadedAgent,
           shareWithOrg,
-          isServiceAccount
+          isServiceAccount,
+          bindingToSend(loadedAgent)
         ),
       };
 
@@ -649,6 +720,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg,
+          serviceAccountUserId,
         });
         setShowPostUpdateDialog(true);
       } else {
@@ -659,21 +731,26 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg,
+          serviceAccountUserId,
         });
         setSuccess(t('agentBuilder.agentCreated'));
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}`);
       }
     } catch (e: unknown) {
-      setError(extractErrorMessage(e, t('agentBuilder.saveFailed')));
+      setError(getUserFacingErrorMessage(e, t('agentBuilder.saveFailed')));
     } finally {
       setSaving(false);
       saveRef.current = false;
     }
   }, [
     agentName,
+    bindingToSend,
     edges,
+    serviceAccountUserId,
     canPersist,
+    agentLoadFailed,
     saveBlockedByDeprecatedTools,
+    saveBlockedByEmptyMcpServers,
     showInlineAgentNameRequired,
     isServiceAccount,
     loadedAgent,
@@ -715,7 +792,8 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edges as Parameters<typeof extractAgentConfigFromFlow>[2],
           currentAgent ?? null,
           true,
-          true
+          true,
+          bindingToSend(currentAgent)
         ),
       };
 
@@ -729,8 +807,9 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg: true,
+          serviceAccountUserId,
         });
-        setSuccess(t('agentBuilder.serviceAccountConverted'));
+        setSuccess(t('agentBuilder.serviceAgentConverted'));
       } else {
         const created = await AgentsApi.createAgent(agentConfig);
         invalidateModelsForContext(created._key);
@@ -740,18 +819,21 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           edgesJson: serializeEdges(edges),
           agentName: agentName.trim(),
           shareWithOrg: true,
+          serviceAccountUserId,
         });
         router.replace(`/agents/edit?agentKey=${encodeURIComponent(created._key)}&sa=1`);
       }
     } catch (e: unknown) {
-      setServiceAccountError(extractErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
+      setServiceAccountError(getUserFacingErrorMessage(e, t('agentBuilder.svcAcctEnableFailed')));
     } finally {
       setServiceAccountCreating(false);
     }
   }, [
     agentName,
+    bindingToSend,
     canPersist,
     edges,
+    serviceAccountUserId,
     hasToolsets,
     loadedAgent,
     nodes,
@@ -790,7 +872,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
       setAgentDeleteDialogOpen(false);
       router.replace('/chat/');
     } catch (e: unknown) {
-      setError(extractErrorMessage(e, t('agentBuilder.deleteAgentFailed')));
+      setError(getUserFacingErrorMessage(e, t('agentBuilder.deleteAgentFailed')));
     } finally {
       setIsDeletingAgent(false);
     }
@@ -803,6 +885,16 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     return (node?.data?.label as string) || null;
   }, [nodeToDelete, nodes]);
 
+  const tapAddRef = useRef<((data: Record<string, string>) => void) | null>(null);
+  const handleTapAdd = useCallback(
+    (data: Record<string, string>) => {
+      tapAddRef.current?.(data);
+      // The sheet covers the canvas on phones; close it so the new node is in view.
+      if (isMobile) setSidebarOpen(false);
+    },
+    [isMobile, setSidebarOpen]
+  );
+
   const handleGoBack = useCallback(() => {
     if (isDirty) {
       const confirmed = window.confirm(t('agentBuilder.unsavedChangesConfirm'));
@@ -810,6 +902,68 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
     }
     router.push('/chat');
   }, [isDirty, router, t]);
+
+  const palette = (
+    <AgentBuilderSidebar
+      open={isMobile || sidebarOpen}
+      inSheet={isMobile}
+      width={isBelowDesktop ? '100%' : AGENT_BUILDER_SIDEBAR_WIDTH}
+      loading={loading}
+      nodeTemplates={nodeTemplates}
+      availableSkills={availableSkills}
+      configuredConnectors={configuredConnectors}
+      toolsets={toolsets}
+      activeToolsetTypeKeys={activeToolsetTypeKeys}
+      toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
+      refreshToolsets={refreshToolsets}
+      mcpServers={mcpServers}
+      mcpMergeCheckNodes={nodes as McpInstanceIdFlowNode[]}
+      refreshMcpServers={() => refreshMcpServers(effectiveAgentKey, isServiceAccount)}
+      onNotify={setBanner}
+      agentKey={effectiveAgentKey}
+      isServiceAccount={isServiceAccount}
+      shareWithOrg={shareWithOrg}
+      paletteStructureLocked={isAgentStructureLocked}
+      paletteDragBlockedMessage={paletteDragBlockedMessage}
+      toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
+      webSearchAttached={webSearchAttached}
+      onManageAgentToolsetCredentials={
+        isServiceAccountToolsetOrgLocked
+          ? undefined
+          : (ts) => {
+              if (!effectiveAgentKey) {
+                setBanner(t('agentBuilder.saveAsServiceAgentFirst'));
+                return;
+              }
+              if (!ts.instanceId) return;
+              setAgentToolsetDialog({ toolset: ts, instanceId: ts.instanceId });
+            }
+      }
+    />
+  );
+  // Phones: a bottom sheet. Tablets: floats over the canvas instead of squeezing it.
+  const paletteSlot = isMobile ? (
+    <MobileBottomSheet open={sidebarOpen} onOpenChange={setSidebarOpen} title={t('agentBuilder.palette')}>
+      {palette}
+    </MobileBottomSheet>
+  ) : !isBelowDesktop ? (
+    palette
+  ) : sidebarOpen ? (
+    <Box
+      style={{
+        position: 'absolute',
+        top: 0,
+        bottom: 0,
+        left: 0,
+        zIndex: 10,
+        width: `min(${AGENT_BUILDER_SIDEBAR_WIDTH}px, 85vw)`,
+        display: 'flex',
+        boxShadow: 'var(--shadow-4)',
+      }}
+    >
+      {palette}
+    </Box>
+  ) : null;
 
   return (
     <ReactFlowProvider>
@@ -828,8 +982,12 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           isFlowStructureLocked={isAgentStructureLocked}
           canPersist={canPersist}
           saveBlockedByDeprecatedTools={saveBlockedByDeprecatedTools}
+          saveBlockedReason={saveBlockedByEmptyMcpServers ? t('agentBuilder.mcpServerNeedsToolsTooltip') : undefined}
           isServiceAccount={isServiceAccount}
-          editing={Boolean(loadedAgent)}
+          serviceAccountUserId={serviceAccountUserId}
+          onServiceAccountUserIdChange={canPersist ? setServiceAccountUserId : undefined}
+          editing={Boolean(loadedAgent || editingKey)}
+          loading={agentLoading || agentLoadFailed}
           onEnableServiceAccount={canPersist ? handleRequestServiceAccount : undefined}
           canDeleteAgent={Boolean(loadedAgent?.can_delete)}
           onRequestDeleteAgent={() => setAgentDeleteDialogOpen(true)}
@@ -839,7 +997,7 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           createdBy={loadedAgent?.createdBy ?? null}
         />
 
-        {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner) && (
+        {((loadedAgent && !canPersist) || error || banner || success || showDeprecatedBanner || saveBlockedByEmptyMcpServers) && (
           <Flex
             direction="column"
             gap="2"
@@ -938,6 +1096,13 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
                 );
               })()
             ) : null}
+            {saveBlockedByEmptyMcpServers ? (
+              <Callout.Root color="amber" variant="surface" size="1">
+                <Callout.Text>
+                  {t('agentBuilder.mcpServerNeedsToolsBanner', { names: mcpServersWithoutTools.join(', ') })}
+                </Callout.Text>
+              </Callout.Root>
+            ) : null}
             {success ? (
               <Callout.Root color="green" variant="surface" size="1">
                 <Flex align="start" justify="between" gap="3" wrap="wrap">
@@ -951,97 +1116,135 @@ export function AgentBuilder({ agentKey }: { agentKey: string | null }) {
           </Flex>
         )}
 
-        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0 }}>
-          <AgentBuilderSidebar
-            open={sidebarOpen}
-            width={AGENT_BUILDER_SIDEBAR_WIDTH}
-            loading={loading}
-            nodeTemplates={nodeTemplates}
-            availableSkills={availableSkills}
-            configuredConnectors={configuredConnectors}
-            toolsets={toolsets}
-            activeToolsetTypeKeys={activeToolsetTypeKeys}
-            toolsetMergeCheckNodes={nodes as ToolsetTypeKeyFlowNode[]}
-            refreshToolsets={refreshToolsets}
-            mcpServers={mcpServers}
-            mcpMergeCheckNodes={nodes as McpInstanceIdFlowNode[]}
-            refreshMcpServers={() => refreshMcpServers(effectiveAgentKey, isServiceAccount)}
-            onNotify={setBanner}
-            agentKey={effectiveAgentKey}
-            isServiceAccount={isServiceAccount}
-            paletteStructureLocked={isAgentStructureLocked}
-            paletteDragBlockedMessage={paletteDragBlockedMessage}
-            toolsetsOrgCredentialLocked={isServiceAccountToolsetOrgLocked}
-            webSearchAttached={webSearchAttached}
-            onManageAgentToolsetCredentials={
-              isServiceAccountToolsetOrgLocked
-                ? undefined
-                : (ts) => {
-                    if (!effectiveAgentKey) {
-                      setBanner(t('agentBuilder.saveAsServiceAccountFirst'));
-                      return;
-                    }
-                    if (!ts.instanceId) return;
-                    setAgentToolsetDialog({ toolset: ts, instanceId: ts.instanceId });
-                  }
-            }
-          />
-          <AgentBuilderCanvas
-            sidebarOpen={sidebarOpen}
-            sidebarWidth={AGENT_BUILDER_SIDEBAR_WIDTH}
-            nodes={nodes}
-            edges={edges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onEdgeClick={onEdgeClick}
-            setNodes={setNodes}
-            setEdges={setEdges}
-            nodeTemplates={nodeTemplates}
-            configuredConnectors={configuredConnectors}
-            activeAgentConnectors={activeAgentConnectors}
-            onNodeDelete={(id) => {
-              setNodeToDelete(id);
-              setDeleteDialogOpen(true);
-            }}
-            onError={(m) => setBanner(m)}
-            readOnly={isAgentStructureLocked}
-          />
-        </Flex>
-
-        <Flex
-          align="center"
-          justify="between"
-          px="4"
-          py="3"
-          gap="3"
-          wrap="wrap"
-          style={{
-            borderTop: '1px solid var(--olive-3)',
-            flexShrink: 0,
-            background: 'var(--olive-1)',
-            fontFamily: 'Manrope, sans-serif',
-          }}
-        >
-          <Button variant="soft" color="gray" onClick={() => setSidebarOpen((s) => !s)}>
-            <Flex align="center" gap="2">
-              <MaterialIcon
-                name={sidebarOpen ? 'arrow_back' : 'arrow_forward'}
-                size={18}
-                color="var(--slate-11)"
+        <Flex style={{ flex: 1, minHeight: 0, minWidth: 0, position: 'relative' }}>
+          <PaletteTapAddContext.Provider value={isAgentStructureLocked ? null : handleTapAdd}>
+            {paletteSlot}
+          </PaletteTapAddContext.Provider>
+          <McpLiveServersContext.Provider value={mcpServersLoaded && !loading ? mcpServers : null}>
+            <ErrorBoundary
+              resetKeys={[agentKey]}
+              fallback={(error, reset) => <ErrorFallback error={error} reset={reset} nested />}
+            >
+              <AgentBuilderCanvas
+                sidebarOpen={sidebarOpen}
+                sidebarWidth={AGENT_BUILDER_SIDEBAR_WIDTH}
+                nodes={nodes}
+                edges={edges}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onEdgeClick={onEdgeClick}
+                setNodes={setNodes}
+                setEdges={setEdges}
+                nodeTemplates={nodeTemplates}
+                configuredConnectors={configuredConnectors}
+                activeAgentConnectors={activeAgentConnectors}
+                onNodeDelete={(id) => {
+                  setNodeToDelete(id);
+                  setDeleteDialogOpen(true);
+                }}
+                onError={(m) => setBanner(m)}
+                readOnly={isAgentStructureLocked}
+                tapAddRef={tapAddRef}
+                loadingLabel={agentLoading ? t('agentBuilder.loadingAgent') : undefined}
+                mcpDropBlockedMessage={
+                  loadedAgent?.mcpServersUnavailable ? t('agentBuilder.mcpServersUnavailableNoDrop') : undefined
+                }
               />
-              {sidebarOpen ? t('agentBuilder.hidePalette') : t('agentBuilder.showPalette')}
-            </Flex>
-          </Button>
-          {loadedAgent ? (
-            <Button variant="soft" color="green" onClick={() => router.push(buildChatHref({ agentId: loadedAgent._key }))}>
-              <Flex align="center" gap="2">
-                <MaterialIcon name="chat" size={18} />
-                {t('agentBuilder.openInChat')}
+            </ErrorBoundary>
+          </McpLiveServersContext.Provider>
+          {agentLoadFailed ? (
+            <Flex
+              role="alert"
+              direction="column"
+              align="center"
+              justify="center"
+              gap="3"
+              p="4"
+              style={{
+                position: 'absolute',
+                inset: 0,
+                zIndex: 11,
+                textAlign: 'center',
+                background: 'var(--agent-flow-canvas-bg)',
+              }}
+            >
+              <MaterialIcon name="error_outline" size={32} color="var(--red-9)" />
+              <Text size="3" weight="medium" style={{ color: 'var(--olive-12)' }}>
+                {t('agentBuilder.agentLoadFailedTitle')}
+              </Text>
+              <Text size="2" style={{ color: 'var(--olive-11)', maxWidth: 360 }}>
+                {t('agentBuilder.agentLoadFailedDescription')}
+              </Text>
+              <Flex gap="2" wrap="wrap" justify="center">
+                <Button variant="soft" color="gray" onClick={() => router.push('/chat')} style={touchTarget(isMobile)}>
+                  {t('chat.backToChat')}
+                </Button>
+                <Button onClick={retryLoad} style={touchTarget(isMobile)}>
+                  {t('agentBuilder.agentLoadRetry')}
+                </Button>
               </Flex>
-            </Button>
+            </Flex>
+          ) : null}
+          {isMobile && !sidebarOpen ? (
+            <IconButton
+              type="button"
+              size="3"
+              radius="full"
+              // A viewer who cannot edit still opens the palette to authenticate toolsets.
+              aria-label={isAgentStructureLocked ? t('agentBuilder.palette') : t('agentBuilder.addToCanvas')}
+              onClick={() => setSidebarOpen(true)}
+              style={{
+                ...touchTarget(true),
+                position: 'absolute',
+                right: 'calc(var(--space-4) + env(safe-area-inset-right))',
+                bottom: 'calc(var(--space-4) + env(safe-area-inset-bottom))',
+                zIndex: 10,
+                boxShadow: 'var(--shadow-4)',
+              }}
+            >
+              <MaterialIcon name={isAgentStructureLocked ? 'account_tree' : 'add'} size={24} />
+            </IconButton>
           ) : null}
         </Flex>
+
+        {!isMobile || loadedAgent ? (
+          <Flex
+            align="center"
+            justify="between"
+            px="4"
+            py="3"
+            gap="3"
+            wrap="wrap"
+            style={{
+              borderTop: '1px solid var(--olive-3)',
+              flexShrink: 0,
+              background: 'var(--olive-1)',
+              fontFamily: 'Manrope, sans-serif',
+            }}
+          >
+            {isMobile ? null : (
+              <Button variant="soft" color="gray" onClick={() => setSidebarOpen((s) => !s)}>
+                <Flex align="center" gap="2">
+                  <MaterialIcon
+                    name={sidebarOpen ? 'arrow_back' : 'arrow_forward'}
+                    size={18}
+                    color="var(--slate-11)"
+                  />
+                  {sidebarOpen ? t('agentBuilder.hidePalette') : t('agentBuilder.showPalette')}
+                </Flex>
+              </Button>
+            )}
+            {loadedAgent ? (
+              <Button variant="soft" color="green" onClick={() => router.push(buildChatHref({ agentId: loadedAgent._key }))}>
+                <Flex align="center" gap="2">
+                  <MaterialIcon name="chat" size={18} />
+                  {t('agentBuilder.openInChat')}
+                </Flex>
+              </Button>
+            ) : null}
+          </Flex>
+        ) : null}
       </Flex>
 
       {/* ── Delete node dialog ── */}

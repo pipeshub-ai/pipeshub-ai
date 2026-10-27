@@ -1,0 +1,116 @@
+# Kind cannot meet the EKS preset's CPU, taints, or zonal rules.
+# Layered on values-eks.yaml by kind_smoke.sh only.
+global:
+  storageClass: standard
+
+replicaCount: 1
+autoscaling:
+  enabled: false
+
+nodeSelector: null
+tolerations: null
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 512Mi
+  limits:
+    cpu: 1
+    memory: 2Gi
+
+persistence:
+  enabled: false
+
+ingress:
+  enabled: false
+
+config:
+  frontendPublicUrl: http://localhost:3001
+  allowedOrigins: http://localhost:3001
+
+sandbox:
+  dind:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 1
+        memory: 1Gi
+    storage:
+      sizeLimit: 8Gi
+
+mongodb:
+  builtin:
+    cacheSizeGB: 0.25
+    resources:
+      requests:
+        cpu: 100m
+        memory: 256Mi
+      limits:
+        cpu: 500m
+        memory: 1Gi
+    nodeSelector: null
+    tolerations: null
+    topologySpreadConstraints: null
+  persistence:
+    size: 1Gi
+    storageClass: standard
+
+redis:
+  builtin:
+    maxmemory: 64mb
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        cpu: 250m
+        memory: 256Mi
+    persistence:
+      size: 1Gi
+    nodeSelector: null
+    tolerations: null
+    topologySpreadConstraints: null
+  persistence:
+    storageClass: standard
+
+qdrant:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  persistence:
+    size: 1Gi
+    storageClass: standard
+  affinity: null
+  topologySpreadConstraints: null
+  nodeSelector: null
+  tolerations: null
+
+neo4j:
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      cpu: 1
+      memory: 2Gi
+  persistence:
+    size: 1Gi
+    logsSize: 1Gi
+    storageClass: standard
+  env:
+    NEO4J_PLUGINS: '["apoc"]'
+    NEO4J_dbms_security_procedures_unrestricted: "apoc.*"
+    NEO4J_dbms_memory_heap_initial__size: 256m
+    NEO4J_dbms_memory_heap_max__size: 512m
+    NEO4J_dbms_memory_pagecache_size: 256m
+  nodeSelector: null
+  tolerations: null
+
+networkPolicy:
+  enabled: false

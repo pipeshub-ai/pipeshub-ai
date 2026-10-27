@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton, SegmentedControl } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 
@@ -15,6 +15,7 @@ import { usePdfZoom } from './use-pdf-zoom';
 import { downloadPreviewFile, shouldShowPagination, resolvePreviewIconExtension } from './utils';
 import { resolveWebUrl } from './resolve-web-url';
 import { useOrgHref } from '@/lib/navigation';
+import { useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import {
   PDF_ZOOM_MAX,
   PDF_ZOOM_MIN,
@@ -36,6 +37,8 @@ export function FilePreviewFullscreen({
   citations,
   initialCitationId,
   showDownload,
+  onDownload,
+  onChat,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -48,6 +51,13 @@ export function FilePreviewFullscreen({
   const externalWebUrl = resolveWebUrl(_recordDetails?.record, file.webUrl);
   const linkedWebUrl = useOrgHref(externalWebUrl ?? undefined);
   const { citationsWidthPx, beginCitationsSplitResize } = useCitationsColumnResize();
+  // Below desktop a citations column leaves the document too narrow; show one at a time.
+  const belowDesktop = useIsBelowDesktop();
+  const stackCitations = belowDesktop && !!hasCitations;
+  // The 24px header buttons keep their look but get a 44px tap area on touch screens.
+  const headerButtonClass = belowDesktop ? 'touch-hit' : undefined;
+  const [stackedView, setStackedView] = useState<'document' | 'citations'>('document');
+  const showDocument = !stackCitations || stackedView === 'document';
   const [currentPage, setCurrentPage] = useState(initialPage ?? 1);
   const [totalPages, setTotalPages] = useState<number | null>(null);
   const { pdfScale, setPdfScale, handlePdfZoomIn, handlePdfZoomOut, isZoomLocked, toggleZoomLock } =
@@ -169,8 +179,8 @@ export function FilePreviewFullscreen({
               href={linkedWebUrl}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label={`Open ${file.name} in source`}
-              title="Open in source"
+              aria-label={t('filePreview.openNamedInSource', { name: file.name })}
+              title={t('filePreview.openInSource')}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -194,6 +204,12 @@ export function FilePreviewFullscreen({
         </Flex>
 
         <Flex align="center" gap="1" style={{ flexShrink: 0 }}>
+          {onChat && (
+            <Button size="1" variant="surface" onClick={onChat}>
+              <MaterialIcon name="assistant" size={16} />
+              {t('kb.chatWithSelection')}
+            </Button>
+          )}
           {canDownload && (
             <IconButton
               variant="ghost"
@@ -204,9 +220,11 @@ export function FilePreviewFullscreen({
                   name: file.name,
                   url: file.url,
                   blob: file.blob,
+                  onDownload,
                 })
               }
-              title="Download"
+              className={headerButtonClass}
+              title={t('action.download')}
             >
               <MaterialIcon name="download" size={ICON_SIZES.HEADER} />
             </IconButton>
@@ -217,7 +235,8 @@ export function FilePreviewFullscreen({
               color="gray"
               size="1"
               onClick={onExitFullscreen}
-              title="Exit full screen"
+              className={headerButtonClass}
+              title={t('recordView.exitFullscreen')}
             >
               <MaterialIcon name="close_fullscreen" size={ICON_SIZES.HEADER} />
             </IconButton>
@@ -227,12 +246,26 @@ export function FilePreviewFullscreen({
             color="gray"
             size="1"
             onClick={onClose}
-            title="Close"
+            className={headerButtonClass}
+            title={t('common.close')}
           >
             <MaterialIcon name="close" size={ICON_SIZES.HEADER} />
           </IconButton>
         </Flex>
       </Flex>
+
+      {stackCitations && (
+        <Box style={{ padding: 'var(--space-2) var(--space-3)', borderBottom: '1px solid var(--slate-6)' }}>
+          <SegmentedControl.Root
+            value={stackedView}
+            onValueChange={(value) => setStackedView(value === 'citations' ? 'citations' : 'document')}
+            style={{ width: '100%' }}
+          >
+            <SegmentedControl.Item value="document">{t('filePreview.preview')}</SegmentedControl.Item>
+            <SegmentedControl.Item value="citations">{t('chat.citations')}</SegmentedControl.Item>
+          </SegmentedControl.Root>
+        </Box>
+      )}
 
       {/* Main Content Area */}
       <Flex style={{ flex: 1, overflow: 'hidden', minHeight: 0, minWidth: 0, alignItems: 'stretch' }}>
@@ -243,7 +276,7 @@ export function FilePreviewFullscreen({
             minWidth: 0,
             minHeight: 0,
             position: 'relative',
-            display: 'flex',
+            display: showDocument ? 'flex' : 'none',
             flexDirection: 'column',
             alignItems: 'stretch',
             justifyContent: 'flex-start',
@@ -332,7 +365,7 @@ export function FilePreviewFullscreen({
                   height: '24px',
                   padding: 0,
                 }}
-                aria-label="Zoom out"
+                aria-label={t('chat.zoomOut')}
               >
                 <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
               </IconButton>
@@ -362,7 +395,7 @@ export function FilePreviewFullscreen({
                   height: '24px',
                   padding: 0,
                 }}
-                aria-label="Zoom in"
+                aria-label={t('chat.zoomIn')}
               >
                 <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
               </IconButton>
@@ -444,13 +477,35 @@ export function FilePreviewFullscreen({
           )}
         </Box>
 
+        {/* Citations — full-width view below desktop */}
+        {stackCitations && (
+          <Box
+            style={{
+              flex: 1,
+              minWidth: 0,
+              minHeight: 0,
+              display: showDocument ? 'none' : 'flex',
+              flexDirection: 'column',
+            }}
+          >
+            <CitationsPanel
+              citations={citations}
+              activeCitationId={activeCitationId}
+              onCitationClick={(citation) => {
+                handleCitationClick(citation);
+                setStackedView('document');
+              }}
+            />
+          </Box>
+        )}
+
         {/* Citations — resizable column */}
-        {hasCitations && (
+        {hasCitations && !stackCitations && (
           <>
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize citations panel"
+              aria-label={t('filePreview.resizeCitations')}
               onPointerDown={beginCitationsSplitResize}
               style={{
                 width: '6px',

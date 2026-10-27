@@ -21,6 +21,44 @@ class DocumentProcessingError(IndexingError):
         self.doc_id = doc_id
 
 
+class PasswordProtectedError(DocumentProcessingError):
+    """The file is encrypted and needs a password to open.
+
+    Raised only on positive evidence from the file itself (a PDF library's
+    password error, an Office encryption container), never from the wording of
+    another error. Terminal like every ``DocumentProcessingError``: a retry
+    reads the same bytes, so the record ends ``PASSWORD_PROTECTED`` instead of
+    ``FAILED``.
+    """
+
+    def __init__(
+        self,
+        message: str = "The file is password-protected",
+        doc_id: str = None,
+        details: dict = None,
+    ) -> None:
+        super().__init__(message, doc_id, details)
+
+
+class MultimodalModelNotConfiguredError(DocumentProcessingError):
+    """No AI model that can read images is set up, so OCR cannot read the file.
+
+    A fact about the workspace's AI settings, not an outage: a retry fails the
+    same way until an admin adds such a model, so it is terminal like every
+    ``DocumentProcessingError``. Failing to *read* the settings is not this
+    error; that is ``AISettingsUnavailableError``.
+    """
+
+
+class AISettingsUnavailableError(IndexingError):
+    """The workspace's AI settings could not be read (the store did not answer).
+
+    An outage, not a fact about the file, so it is retried: deliberately not a
+    ``DocumentProcessingError``, which the message classifier treats as final.
+    Raised from the store's own error, which stays the cause.
+    """
+
+
 class RecordStatusUpdateError(IndexingError):
     """Raised when persisting a record's status fields to the graph DB fails.
 
@@ -56,6 +94,18 @@ class EmbeddingNotConfiguredError(EmbeddingModelUnavailableError):
 
 class VectorStoreError(IndexingError):
     """Raised when there's an error interacting with the vector store"""
+
+    pass
+
+
+class EntityLookupUnavailableError(IndexingError):
+    """An entity-resolution lookup (vector or graph) could not run.
+
+    Never the same as "no match": answering it with a new node is how
+    duplicates are minted. Always retryable, whatever the underlying cause,
+    since the record's content is fine; the record's resolution runs again on
+    redelivery.
+    """
 
     pass
 

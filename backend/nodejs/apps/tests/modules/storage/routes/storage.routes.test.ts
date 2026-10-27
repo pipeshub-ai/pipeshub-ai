@@ -3,7 +3,9 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import { Container } from 'inversify'
 import { createStorageRouter } from '../../../../src/modules/storage/routes/storage.routes'
+import { PurgeConversationParams } from '../../../../src/modules/storage/validators/validators'
 import { AuthMiddleware } from '../../../../src/libs/middlewares/auth.middleware'
+import { ErrorMiddleware } from '../../../../src/libs/middlewares/error.middleware'
 import express, { Request, Response } from 'express'
 import { AddressInfo } from 'net'
 
@@ -36,6 +38,11 @@ describe('Storage Routes', () => {
       uploadDirectDocument: sinon.stub().resolves(),
       abortDirectUpload: sinon.stub().resolves(),
       documentDiffChecker: sinon.stub().resolves(),
+      moveTree: sinon.stub().resolves(),
+      relocateVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
+      listConnectorVirtualRecords: sinon.stub().callsFake((_req: any, res: any) => res.status(200).json({ ok: true })),
+      findMissingDocuments: sinon.stub().resolves(),
+      purgeConversationDocuments: sinon.stub().resolves(),
       watchStorageType: sinon.stub(),
     }
 
@@ -79,18 +86,6 @@ describe('Storage Routes', () => {
   })
 
   describe('upload routes', () => {
-    it('should register POST /upload route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const uploadRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/upload' &&
-          layer.route.methods.post,
-      )
-      expect(uploadRoute).to.not.be.undefined
-    })
 
     it('should register POST /internal/upload route', () => {
       const router = createStorageRouter(container)
@@ -107,18 +102,6 @@ describe('Storage Routes', () => {
   })
 
   describe('placeholder routes', () => {
-    it('should register POST /placeholder route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const placeholderRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/placeholder' &&
-          layer.route.methods.post,
-      )
-      expect(placeholderRoute).to.not.be.undefined
-    })
 
     it('should register POST /internal/placeholder route', () => {
       const router = createStorageRouter(container)
@@ -135,18 +118,6 @@ describe('Storage Routes', () => {
   })
 
   describe('document CRUD routes', () => {
-    it('should register GET /:documentId route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const getRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId' &&
-          layer.route.methods.get,
-      )
-      expect(getRoute).to.not.be.undefined
-    })
 
     it('should register GET /internal/:documentId route', () => {
       const router = createStorageRouter(container)
@@ -161,18 +132,6 @@ describe('Storage Routes', () => {
       expect(internalGetRoute).to.not.be.undefined
     })
 
-    it('should register DELETE /:documentId/ route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const deleteRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/' &&
-          layer.route.methods.delete,
-      )
-      expect(deleteRoute).to.not.be.undefined
-    })
 
     it('should register DELETE /internal/:documentId/ route', () => {
       const router = createStorageRouter(container)
@@ -189,18 +148,6 @@ describe('Storage Routes', () => {
   })
 
   describe('download routes', () => {
-    it('should register GET /:documentId/download route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const downloadRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/download' &&
-          layer.route.methods.get,
-      )
-      expect(downloadRoute).to.not.be.undefined
-    })
 
     it('should register GET /internal/:documentId/download route', () => {
       const router = createStorageRouter(container)
@@ -217,18 +164,6 @@ describe('Storage Routes', () => {
   })
 
   describe('buffer routes', () => {
-    it('should register GET /:documentId/buffer route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const bufferRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/buffer' &&
-          layer.route.methods.get,
-      )
-      expect(bufferRoute).to.not.be.undefined
-    })
 
     it('should register GET /internal/:documentId/buffer route', () => {
       const router = createStorageRouter(container)
@@ -243,18 +178,6 @@ describe('Storage Routes', () => {
       expect(internalBufferRoute).to.not.be.undefined
     })
 
-    it('should register PUT /:documentId/buffer route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const putBufferRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/buffer' &&
-          layer.route.methods.put,
-      )
-      expect(putBufferRoute).to.not.be.undefined
-    })
 
     it('should register PUT /internal/:documentId/buffer route', () => {
       const router = createStorageRouter(container)
@@ -271,18 +194,6 @@ describe('Storage Routes', () => {
   })
 
   describe('version control routes', () => {
-    it('should register POST /:documentId/uploadNextVersion route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const nextVersionRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/uploadNextVersion' &&
-          layer.route.methods.post,
-      )
-      expect(nextVersionRoute).to.not.be.undefined
-    })
 
     it('should register POST /internal/:documentId/uploadNextVersion route', () => {
       const router = createStorageRouter(container)
@@ -297,18 +208,6 @@ describe('Storage Routes', () => {
       expect(internalNextVersionRoute).to.not.be.undefined
     })
 
-    it('should register POST /:documentId/rollBack route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const rollBackRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/rollBack' &&
-          layer.route.methods.post,
-      )
-      expect(rollBackRoute).to.not.be.undefined
-    })
 
     it('should register POST /internal/:documentId/rollBack route', () => {
       const router = createStorageRouter(container)
@@ -325,18 +224,6 @@ describe('Storage Routes', () => {
   })
 
   describe('direct upload routes', () => {
-    it('should register POST /:documentId/directUpload route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const directUploadRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/directUpload' &&
-          layer.route.methods.post,
-      )
-      expect(directUploadRoute).to.not.be.undefined
-    })
 
     it('should register POST /internal/:documentId/directUpload route', () => {
       const router = createStorageRouter(container)
@@ -353,18 +240,6 @@ describe('Storage Routes', () => {
   })
 
   describe('isModified routes', () => {
-    it('should register GET /:documentId/isModified route', () => {
-      const router = createStorageRouter(container)
-      const routes = (router as any).stack
-
-      const isModifiedRoute = routes.find(
-        (layer: any) =>
-          layer.route &&
-          layer.route.path === '/:documentId/isModified' &&
-          layer.route.methods.get,
-      )
-      expect(isModifiedRoute).to.not.be.undefined
-    })
 
     it('should register GET /internal/:documentId/isModified route', () => {
       const router = createStorageRouter(container)
@@ -377,6 +252,146 @@ describe('Storage Routes', () => {
           layer.route.methods.get,
       )
       expect(internalIsModifiedRoute).to.not.be.undefined
+    })
+  })
+
+  describe('move-tree route', () => {
+    it('should register POST /internal/move-tree route', () => {
+      const router = createStorageRouter(container)
+      const routes = (router as any).stack
+
+      const moveTreeRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/move-tree' &&
+          layer.route.methods.post,
+      )
+      expect(moveTreeRoute).to.not.be.undefined
+    })
+  })
+
+  describe('missing-documents route', () => {
+    it('registers POST /internal/missing behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route && layer.route.path === '/internal/missing' && layer.route.methods.post,
+      )
+      expect(route).to.not.be.undefined
+      expect(mockAuthMiddleware.scopedTokenValidator.calledWith('storage:token')).to.be.true
+      const handles = route.route.stack.map((h: any) => h.handle)
+      expect(handles[0]).to.equal(mockAuthMiddleware.scopedTokenValidator.returnValues[0])
+    })
+  })
+
+  describe('conversation purge route', () => {
+    it('registers DELETE /internal/conversations/:conversationId/purge behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const route = (router as any).stack.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/conversations/:conversationId/purge' &&
+          layer.route.methods.delete,
+      )
+      expect(route).to.not.be.undefined
+      const handles = route.route.stack.map((h: any) => h.handle)
+      const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+        .getCalls()
+        .filter((call: any) => call.args[0] === 'storage:token')
+        .map((call: any) => call.returnValue)
+      expect(storageTokenChecks).to.include(handles[0])
+    })
+
+    it('is documented in the OpenAPI spec as a scoped-token route', () => {
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      const yaml = require('js-yaml')
+      const spec = yaml.load(
+        require('fs').readFileSync(
+          require('path').join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+          'utf8',
+        ),
+      )
+      const op = spec.paths['/document/internal/conversations/{conversationId}/purge']?.delete
+      expect(op?.operationId).to.equal('internalPurgeConversationDocuments')
+      expect(op?.security).to.deep.equal([{ scopedToken: [] }])
+    })
+
+    it('accepts only a conversation id, so no path can reach the purge query', () => {
+      const ok = PurgeConversationParams.safeParse({ params: { conversationId: '507f1f77bcf86cd799439011' } })
+      expect(ok.success).to.be.true
+      for (const bad of ['..', '507f1f77bcf86cd79943901', 'abc/def', '507f1f77bcf86cd799439011/x', '']) {
+        expect(PurgeConversationParams.safeParse({ params: { conversationId: bad } }).success, bad).to.be.false
+      }
+    })
+  })
+
+  describe('virtual-record documents route', () => {
+    it('should register GET /internal/records/:virtualRecordId/documents behind the storage token', () => {
+      const router = createStorageRouter(container)
+      const routes = (router as any).stack
+
+      const listRoute = routes.find(
+        (layer: any) =>
+          layer.route &&
+          layer.route.path === '/internal/records/:virtualRecordId/documents' &&
+          layer.route.methods.get,
+      )
+      expect(listRoute).to.not.be.undefined
+      const handles = listRoute.route.stack.map((h: any) => h.handle)
+      const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+        .getCalls()
+        .filter((call: any) => call.args[0] === 'storage:token')
+        .map((call: any) => call.returnValue)
+      expect(storageTokenChecks).to.include(handles[0])
+    })
+  })
+
+  describe('artifact set routes', () => {
+    const artifactRoutes: Array<[string, string, string]> = [
+      ['post', '/internal/artifacts/presign', 'internalPresignArtifactSet'],
+      ['get', '/internal/artifacts', 'internalListArtifactSets'],
+      ['post', '/internal/artifacts/:documentId/read-urls', 'internalGetArtifactReadUrls'],
+      ['put', '/internal/artifacts/:documentId/files/*', 'internalPutArtifactFile'],
+      ['get', '/internal/artifacts/:documentId/files/*', 'internalGetArtifactFile'],
+      ['delete', '/internal/artifacts/:documentId', 'internalPurgeArtifactSet'],
+    ]
+    const specPath = (route: string) =>
+      `/document${route.replace(':documentId', '{documentId}').replace(/\*/g, '{path}')}`
+
+    for (const [method, route, operationId] of artifactRoutes) {
+      it(`registers ${method.toUpperCase()} ${route} behind the storage token, documented as ${operationId}`, () => {
+        const router = createStorageRouter(container)
+        const layer = (router as any).stack.find(
+          (l: any) => l.route && l.route.path === route && l.route.methods[method],
+        )
+        expect(layer, route).to.not.be.undefined
+        const storageTokenChecks = mockAuthMiddleware.scopedTokenValidator
+          .getCalls()
+          .filter((call: any) => call.args[0] === 'storage:token')
+          .map((call: any) => call.returnValue)
+        expect(storageTokenChecks).to.include(layer.route.stack[0].handle)
+
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        const yaml = require('js-yaml')
+        const spec = yaml.load(
+          require('fs').readFileSync(
+            require('path').join(__dirname, '..', '..', '..', '..', 'src', 'modules', 'api-docs', 'pipeshub-openapi.yaml'),
+            'utf8',
+          ),
+        )
+        const op = spec.paths[specPath(route)]?.[method]
+        expect(op?.operationId).to.equal(operationId)
+        expect(op?.security).to.deep.equal([{ scopedToken: [] }])
+      })
+    }
+
+    it('registers them ahead of /internal/:documentId, which would take "artifacts" for an id', () => {
+      const router = createStorageRouter(container)
+      const paths: string[] = (router as any).stack.filter((l: any) => l.route).map((l: any) => l.route.path)
+      const firstById = paths.indexOf('/internal/:documentId')
+      for (const [, route] of artifactRoutes) {
+        expect(paths.indexOf(route), route).to.be.lessThan(firstById)
+      }
     })
   })
 
@@ -400,9 +415,79 @@ describe('Storage Routes', () => {
       const router = createStorageRouter(container)
       const routes = (router as any).stack.filter((layer: any) => layer.route)
 
-      // Each operation has public + internal variants, plus updateAppConfig
-      // upload(2) + placeholder(2) + get(2) + delete(2) + download(2) + buffer_get(2) + buffer_put(2) + nextVersion(2) + rollBack(2) + directUpload(2) + isModified(2) + updateConfig(1) = 23
-      expect(routes.length).to.be.greaterThanOrEqual(20)
+// 28 service-token /internal routes (incl. move-tree, connector delete, its
+// handover pair, missing, the three purges, the virtual-record document listing,
+// the flat-layout listing and the six artifact-set routes) + updateAppConfig
+      expect(routes.length).to.equal(29)
+    })
+  })
+
+  describe('user-token exposure', () => {
+    // Storage checks org, not record ACLs: a user session reaching any handler
+    // here can read or overwrite any file in the org.
+    it('registers no route guarded by a user session', () => {
+      const router = createStorageRouter(container)
+      const routes = (router as any).stack.filter((layer: any) => layer.route)
+
+      for (const layer of routes) {
+        const handles = layer.route.stack.map((h: any) => h.handle)
+        expect(handles, layer.route.path).to.not.include(mockAuthMiddleware.authenticate)
+      }
+    })
+
+    it('exposes only /internal/* routes besides updateAppConfig', () => {
+      const router = createStorageRouter(container)
+      const paths = (router as any).stack
+        .filter((layer: any) => layer.route)
+        .map((layer: any) => layer.route.path)
+
+      expect(paths.filter((p: string) => !p.startsWith('/internal/'))).to.deep.equal(['/updateAppConfig'])
+    })
+
+    it('answers 404 for every removed user route, even ahead of an SPA fallback', async () => {
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(container))
+      // Production mounts a catch-all that serves the dashboard for unknown GETs.
+      app.get('*', (_req: Request, res: Response) => {
+        res.status(200).send('<html>shell</html>')
+      })
+      app.use(ErrorMiddleware.handleError())
+      const server = app.listen(0)
+      const id = '65f000000000000000000001'
+      const removed: Array<[string, string]> = [
+        ['POST', '/upload'],
+        ['POST', '/placeholder'],
+        ['GET', `/${id}`],
+        ['DELETE', `/${id}/`],
+        ['GET', `/${id}/download`],
+        ['GET', `/${id}/buffer`],
+        ['PUT', `/${id}/buffer`],
+        ['POST', `/${id}/uploadNextVersion`],
+        ['POST', `/${id}/rollBack`],
+        ['POST', `/${id}/directUpload`],
+        ['GET', `/${id}/isModified`],
+      ]
+      try {
+        const port = (server.address() as AddressInfo).port
+        for (const [method, path] of removed) {
+          const response = await fetch(`http://127.0.0.1:${port}/api/v1/document${path}`, {
+            method,
+            headers: { authorization: 'Bearer user-token', 'content-type': 'application/json' },
+            body: method === 'GET' ? undefined : '{}',
+          })
+          expect(response.status, `${method} ${path}`).to.equal(404)
+          expect(await response.text(), `${method} ${path}`).to.not.include('shell')
+        }
+        expect(mockAuthMiddleware.authenticate.called).to.be.false
+        for (const handler of Object.values(mockStorageController)) {
+          if (handler !== mockStorageController.watchStorageType) {
+            expect((handler as sinon.SinonStub).called).to.be.false
+          }
+        }
+      } finally {
+        server.close()
+      }
     })
   })
 
@@ -446,21 +531,11 @@ describe('Storage Routes', () => {
       return { mockReq, mockRes, mockNext }
     }
 
-    it('POST /upload handler should call storageController.uploadDocument', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/upload', 'post')
-      expect(handler).to.not.be.undefined
 
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.uploadDocument.calledOnce).to.be.true
-    })
-
-    it('POST /upload handler should call next on error', async () => {
+    it('POST /internal/upload handler should call next on error', async () => {
       mockStorageController.uploadDocument.rejects(new Error('Upload failed'))
       const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/upload', 'post')
+      const handler = findRouteHandler(router, '/internal/upload', 'post')
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
@@ -479,16 +554,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.uploadDocument.calledOnce).to.be.true
     })
 
-    it('POST /placeholder handler should call storageController.createPlaceholderDocument', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/placeholder', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.createPlaceholderDocument.calledOnce).to.be.true
-    })
 
     it('POST /internal/placeholder handler should call storageController.createPlaceholderDocument', async () => {
       const router = createStorageRouter(container)
@@ -501,16 +566,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.createPlaceholderDocument.calledOnce).to.be.true
     })
 
-    it('GET /:documentId handler should call storageController.getDocumentById', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId', 'get')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.getDocumentById.calledOnce).to.be.true
-    })
 
     it('GET /internal/:documentId handler should call storageController.getDocumentById', async () => {
       const router = createStorageRouter(container)
@@ -523,16 +578,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.getDocumentById.calledOnce).to.be.true
     })
 
-    it('DELETE /:documentId/ handler should call storageController.deleteDocumentById', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/', 'delete')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.deleteDocumentById.calledOnce).to.be.true
-    })
 
     it('DELETE /internal/:documentId/ handler should call storageController.deleteDocumentById', async () => {
       const router = createStorageRouter(container)
@@ -545,16 +590,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.deleteDocumentById.calledOnce).to.be.true
     })
 
-    it('GET /:documentId/download handler should call storageController.downloadDocument', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/download', 'get')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.downloadDocument.calledOnce).to.be.true
-    })
 
     it('GET /internal/:documentId/download handler should call storageController.downloadDocument', async () => {
       const router = createStorageRouter(container)
@@ -567,16 +602,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.downloadDocument.calledOnce).to.be.true
     })
 
-    it('GET /:documentId/buffer handler should call storageController.getDocumentBuffer', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/buffer', 'get')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.getDocumentBuffer.calledOnce).to.be.true
-    })
 
     it('GET /internal/:documentId/buffer handler should call storageController.getDocumentBuffer', async () => {
       const router = createStorageRouter(container)
@@ -589,21 +614,11 @@ describe('Storage Routes', () => {
       expect(mockStorageController.getDocumentBuffer.calledOnce).to.be.true
     })
 
-    it('PUT /:documentId/buffer handler should call storageController.createDocumentBuffer', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/buffer', 'put')
-      expect(handler).to.not.be.undefined
 
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.createDocumentBuffer.calledOnce).to.be.true
-    })
-
-    it('PUT /:documentId/buffer handler should call next on error', async () => {
+    it('PUT /internal/:documentId/buffer handler should call next on error', async () => {
       mockStorageController.createDocumentBuffer.rejects(new Error('Upload failed'))
       const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/buffer', 'put')
+      const handler = findRouteHandler(router, '/internal/:documentId/buffer', 'put')
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
@@ -622,16 +637,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.createDocumentBuffer.calledOnce).to.be.true
     })
 
-    it('POST /:documentId/uploadNextVersion handler should call storageController.uploadNextVersionDocument', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/uploadNextVersion', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.uploadNextVersionDocument.calledOnce).to.be.true
-    })
 
     it('POST /internal/:documentId/uploadNextVersion handler should call storageController.uploadNextVersionDocument', async () => {
       const router = createStorageRouter(container)
@@ -644,16 +649,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.uploadNextVersionDocument.calledOnce).to.be.true
     })
 
-    it('POST /:documentId/rollBack handler should call storageController.rollBackToPreviousVersion', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/rollBack', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.rollBackToPreviousVersion.calledOnce).to.be.true
-    })
 
     it('POST /internal/:documentId/rollBack handler should call storageController.rollBackToPreviousVersion', async () => {
       const router = createStorageRouter(container)
@@ -666,16 +661,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.rollBackToPreviousVersion.calledOnce).to.be.true
     })
 
-    it('POST /:documentId/directUpload handler should call storageController.uploadDirectDocument', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/directUpload', 'post')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.uploadDirectDocument.calledOnce).to.be.true
-    })
 
     it('POST /internal/:documentId/directUpload handler should call storageController.uploadDirectDocument', async () => {
       const router = createStorageRouter(container)
@@ -696,7 +681,7 @@ describe('Storage Routes', () => {
         awaitingDirectUpload: boolean
       }
       const rows: PlaceholderRow[] = [
-        { _id: 'doc-1', orgId: 'org-1', awaitingDirectUpload: true },
+        { _id: '64d000000000000000000b01', orgId: 'org-1', awaitingDirectUpload: true },
       ]
       const controller = {
         watchStorageType: sinon.stub(),
@@ -726,7 +711,7 @@ describe('Storage Routes', () => {
       try {
         const port = (server.address() as AddressInfo).port
         const response = await fetch(
-          `http://127.0.0.1:${port}/api/v1/document/internal/doc-1/abortDirectUpload`,
+          `http://127.0.0.1:${port}/api/v1/document/internal/64d000000000000000000b01/abortDirectUpload`,
           {
             method: 'POST',
             headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
@@ -736,6 +721,46 @@ describe('Storage Routes', () => {
         expect(response.status, await response.clone().text()).to.equal(200)
         expect(await response.json()).to.deep.equal({ deleted: true })
         expect(rows).to.have.length(0)
+      } finally {
+        server.close()
+      }
+    })
+
+    it('answers 400 with a next step, not 500, for a malformed document id', async () => {
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(container))
+      app.use(ErrorMiddleware.handleError())
+      const server = app.listen(0)
+      const routes: Array<[string, string]> = [
+        ['GET', '/internal/not-an-id'],
+        ['DELETE', '/internal/not-an-id/'],
+        ['GET', '/internal/not-an-id/download'],
+        ['GET', '/internal/not-an-id/buffer'],
+        ['POST', '/internal/not-an-id/rollBack'],
+        ['POST', '/internal/not-an-id/abortDirectUpload'],
+        ['POST', '/internal/not-an-id/directUpload'],
+        ['GET', '/internal/not-an-id/isModified'],
+      ]
+      try {
+        const port = (server.address() as AddressInfo).port
+        for (const [method, path] of routes) {
+          const response = await fetch(`http://127.0.0.1:${port}/api/v1/document${path}`, {
+            method,
+            headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
+            body: method === 'GET' || method === 'DELETE' ? undefined : JSON.stringify({ note: 'n' }),
+          })
+          const body = (await response.json()) as { error: { message: string } }
+          expect(response.status, `${method} ${path}`).to.equal(400)
+          expect(body.error.message, `${method} ${path}`).to.contain(
+            'Use the 24-character id PipesHub returned when the document was uploaded or created',
+          )
+        }
+        for (const handler of Object.values(mockStorageController)) {
+          if (handler !== mockStorageController.watchStorageType) {
+            expect((handler as sinon.SinonStub).called).to.be.false
+          }
+        }
       } finally {
         server.close()
       }
@@ -760,16 +785,6 @@ describe('Storage Routes', () => {
       expect(mockStorageController.abortDirectUpload.calledOnce).to.be.true
     })
 
-    it('GET /:documentId/isModified handler should call storageController.documentDiffChecker', async () => {
-      const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/isModified', 'get')
-      expect(handler).to.not.be.undefined
-
-      const { mockReq, mockRes, mockNext } = createMockReqRes()
-      await handler(mockReq, mockRes, mockNext)
-
-      expect(mockStorageController.documentDiffChecker.calledOnce).to.be.true
-    })
 
     it('GET /internal/:documentId/isModified handler should call storageController.documentDiffChecker', async () => {
       const router = createStorageRouter(container)
@@ -786,8 +801,11 @@ describe('Storage Routes', () => {
       const loadAppConfigModule = await import('../../../../src/modules/tokens_manager/config/config')
       const loadStub = sinon.stub(loadAppConfigModule, 'loadAppConfig').resolves({
         storage: { provider: 'local', basePath: '/tmp' },
+        jwtSecret: 'reloaded-jwt-secret',
+        scopedJwtSecret: 'reloaded-scoped-secret',
       } as any)
 
+      container.bind('StorageConfig').toConstantValue({})
       const router = createStorageRouter(container)
       const handler = findRouteHandler(router, '/updateAppConfig', 'post')
       expect(handler).to.not.be.undefined
@@ -795,9 +813,12 @@ describe('Storage Routes', () => {
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
 
-      // Should either respond 200 or call next (depending on loadAppConfig mock)
-      const responded = mockRes.status.calledWith(200) || mockNext.called
-      expect(responded).to.be.true
+      expect(mockNext.called, String(mockNext.firstCall?.args[0])).to.be.false
+      expect(mockRes.status.calledWith(200)).to.be.true
+      // The reloaded config holds every service secret; it must not be echoed back.
+      expect(mockRes.json.firstCall.args[0]).to.deep.equal({
+        message: 'Storage configuration updated successfully',
+      })
 
       loadStub.restore()
     })
@@ -817,10 +838,10 @@ describe('Storage Routes', () => {
       loadStub.restore()
     })
 
-    it('POST /placeholder handler should call next on error', async () => {
+    it('POST /internal/placeholder handler should call next on error', async () => {
       mockStorageController.createPlaceholderDocument.rejects(new Error('Create failed'))
       const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/placeholder', 'post')
+      const handler = findRouteHandler(router, '/internal/placeholder', 'post')
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
@@ -828,10 +849,10 @@ describe('Storage Routes', () => {
       expect(mockNext.calledOnce).to.be.true
     })
 
-    it('GET /:documentId handler should call next on error', async () => {
+    it('GET /internal/:documentId handler should call next on error', async () => {
       mockStorageController.getDocumentById.rejects(new Error('Not found'))
       const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId', 'get')
+      const handler = findRouteHandler(router, '/internal/:documentId', 'get')
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
@@ -839,15 +860,109 @@ describe('Storage Routes', () => {
       expect(mockNext.calledOnce).to.be.true
     })
 
-    it('GET /:documentId/download handler should call next on error', async () => {
+    it('GET /internal/:documentId/download handler should call next on error', async () => {
       mockStorageController.downloadDocument.rejects(new Error('Download failed'))
       const router = createStorageRouter(container)
-      const handler = findRouteHandler(router, '/:documentId/download', 'get')
+      const handler = findRouteHandler(router, '/internal/:documentId/download', 'get')
 
       const { mockReq, mockRes, mockNext } = createMockReqRes()
       await handler(mockReq, mockRes, mockNext)
 
       expect(mockNext.calledOnce).to.be.true
+    })
+
+    it('POST /internal/move-tree handler should call storageController.moveTree', async () => {
+      const router = createStorageRouter(container)
+      const handler = findRouteHandler(router, '/internal/move-tree', 'post')
+      expect(handler).to.not.be.undefined
+
+      const { mockReq, mockRes, mockNext } = createMockReqRes()
+      mockReq.body = { oldPath: 'records/conn1/p1', newPath: 'records/conn1/p2' }
+      await handler(mockReq, mockRes, mockNext)
+
+      expect(mockStorageController.moveTree.calledOnce).to.be.true
+    })
+
+    it('POST /internal/move-tree handler should call next on error', async () => {
+      mockStorageController.moveTree.rejects(new Error('Move failed'))
+      const router = createStorageRouter(container)
+      const handler = findRouteHandler(router, '/internal/move-tree', 'post')
+
+      const { mockReq, mockRes, mockNext } = createMockReqRes()
+      mockReq.body = { oldPath: 'records/conn1/p1', newPath: 'records/conn1/p2' }
+      await handler(mockReq, mockRes, mockNext)
+
+      expect(mockNext.calledOnce).to.be.true
+    })
+  })
+
+  describe('shared-content handover routes', () => {
+    const serve = async (fn: (port: number) => Promise<void>) => {
+      const app = express()
+      app.use(express.json())
+      app.use('/api/v1/document', createStorageRouter(container))
+      app.use(ErrorMiddleware.handleError())
+      const server = app.listen(0)
+      try {
+        await fn((server.address() as AddressInfo).port)
+      } finally {
+        server.close()
+      }
+    }
+    const relocate = (port: number, body: unknown) =>
+      fetch(`http://127.0.0.1:${port}/api/v1/document/internal/records/relocate`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer service-token', 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+    const move = { virtualRecordId: 'v1', newPath: 'records/conn-b/Drive', connectorId: 'conn-b' }
+
+    it('guards both routes with the storage service token', () => {
+      const router = createStorageRouter(container)
+      for (const [path, method] of [
+        ['/internal/records/relocate', 'post'],
+        ['/internal/connector/:connectorId/virtual-records', 'get'],
+      ] as const) {
+        const index = (router as any).stack
+          .filter((l: any) => l.route)
+          .findIndex((l: any) => l.route.path === path && l.route.methods[method])
+        expect(index, path).to.be.greaterThan(-1)
+        const layer = (router as any).stack.filter((l: any) => l.route)[index]
+        expect(layer.route.stack[0].handle).to.equal(
+          mockAuthMiddleware.scopedTokenValidator.getCall(index).returnValue,
+        )
+        expect(mockAuthMiddleware.scopedTokenValidator.getCall(index).args[0]).to.equal('storage:token')
+      }
+    })
+
+    it('accepts a valid relocate batch and refuses unsafe or oversized ones', async () => {
+      await serve(async (port) => {
+        expect((await relocate(port, { fromConnectorId: 'conn-a', moves: [move] })).status).to.equal(200)
+        const refused = [
+          { fromConnectorId: 'conn-a', moves: [] },
+          { fromConnectorId: 'conn-a', moves: Array(101).fill(move) },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, newPath: 'records/../x' }] },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, newPath: 'attachments/r1' }] },
+          { fromConnectorId: 'conn-a', moves: [{ ...move, virtualRecordId: 'v1/../x' }] },
+          { moves: [move] },
+        ]
+        for (const body of refused) {
+          expect((await relocate(port, body)).status, JSON.stringify(body).slice(0, 80)).to.equal(400)
+        }
+        expect(mockStorageController.relocateVirtualRecords.calledOnce).to.be.true
+      })
+    })
+
+    it('routes the virtual-record listing and validates its paging', async () => {
+      await serve(async (port) => {
+        const url = `http://127.0.0.1:${port}/api/v1/document/internal/connector/conn-a/virtual-records`
+        const headers = { authorization: 'Bearer service-token' }
+        expect((await fetch(`${url}?limit=10&after=65f000000000000000000001`, { headers })).status).to.equal(200)
+        expect((await fetch(`${url}?limit=5000`, { headers })).status).to.equal(400)
+        expect((await fetch(`${url}?after=nope`, { headers })).status).to.equal(400)
+        expect(mockStorageController.listConnectorVirtualRecords.calledOnce).to.be.true
+        expect(mockStorageController.getDocumentById.called).to.be.false
+      })
     })
   })
 })

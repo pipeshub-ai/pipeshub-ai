@@ -18,13 +18,13 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '20'
           cache: 'npm'
@@ -35,17 +35,15 @@ jobs:
           cd backend/nodejs/apps
           npm install
 
+      # Fails only on ESLint errors this pull request adds; the ruff-lint-pr job explains why.
       - name: Lint backend (changed files)
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          CHANGED_FILES=$(git diff --name-only $MERGE_BASE -- 'backend/nodejs/apps/src/**/*.ts' || true)
-          if [ -n "$CHANGED_FILES" ]; then
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/nodejs/apps/src/**/*.ts' ':(glob)backend/nodejs/apps/tests/**/*.ts' || true)
+          if ((${#CHANGED_FILES[@]})); then
             echo "Linting changed TypeScript files:"
-            echo "$CHANGED_FILES"
-            RELATIVE_FILES=$(echo "$CHANGED_FILES" | sed 's|^backend/nodejs/apps/||')
-            cd backend/nodejs/apps
-            echo "$RELATIVE_FILES" | xargs npx eslint || echo "::warning::ESLint found linting issues (non-fatal)"
+            printf '%s\n' "${CHANGED_FILES[@]}"
+            python3 .github/scripts/new_lint_findings.py eslint "$MERGE_BASE" "${CHANGED_FILES[@]}"
           else
             echo "No TypeScript files changed in backend, skipping ESLint."
           fi
@@ -64,12 +62,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '20'
           cache: 'npm'
@@ -80,21 +78,33 @@ jobs:
           cd frontend
           npm install
 
-      # frontend/package.json defines test:unit (vitest) and 380 tests exist
-      # across 27 files, but no workflow ran them. They need no browser and no
-      # services and finish in about twenty seconds.
-      - name: Run frontend unit tests
+      - name: Typecheck frontend
+        working-directory: frontend
+        run: npm run typecheck
+
+      # Parity keeps every locale in step with en-US; the key check catches an
+      # en-US key that was deleted while code still asks for it, which parity
+      # alone cannot see because it compares the catalogues to each other.
+      - name: Check locale parity and translation keys
+        working-directory: frontend
+        run: npm run i18n:check && npm run i18n:keys && npm run test:i18n
+
+      # The coverage run, not plain test:unit: the minimum lives in
+      # frontend/vitest.config.ts (coverage.thresholds) and is checked only when
+      # coverage is on. A run below it fails here with "Coverage for <metric>
+      # does not meet global threshold".
+      - name: Run frontend unit tests with coverage
         run: |
           cd frontend
-          npm run test:unit
+          npm run test:unit:coverage
 
       # The Electron local-sync tests drive a real file watcher against a real
       # temporary directory, so they are slower than the vitest suite (~45s) and
-      # must run one file at a time — see the note on test:electron:local-sync.
-      - name: Run Electron local-sync tests
+      # must run one file at a time — see the note on test:electron.
+      - name: Run Electron main-process tests
         run: |
           cd frontend
-          npm run test:electron:local-sync
+          npm run test:electron
 
       - name: Build frontend
         run: |
@@ -106,46 +116,61 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
       - name: Install ruff
         run: pip install ruff
 
-      - name: Run all ruff rules on changed Python files
+      # Runs every rule on the changed files, but fails only on findings this pull
+      # request adds. Findings already on main are reported, not blocking, so a
+      # small fix to a large file is not held up by that file's backlog.
+      - name: Fail on new ruff findings in changed Python files
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/**/*.py' | sed 's|^backend/python/||' || true)
-          if [ -n "$CHANGED_FILES" ]; then
+          mapfile -d '' -t CHANGED_FILES < <(git diff --diff-filter=d --name-only -z "$MERGE_BASE" -- ':(glob)backend/python/**/*.py' || true)
+          if ((${#CHANGED_FILES[@]})); then
             echo "Linting changed Python files with full ruleset:"
-            echo "$CHANGED_FILES"
+            printf '%s\n' "${CHANGED_FILES[@]}"
             echo "---"
-            cd backend/python
-            echo "$CHANGED_FILES" | xargs ruff check || echo "::warning::Ruff found linting issues (non-fatal)"
+            python3 .github/scripts/new_lint_findings.py ruff "$MERGE_BASE" "${CHANGED_FILES[@]}"
           else
             echo "No Python files changed, skipping ruff."
           fi
+
+      # A class or function defined twice in one test module replaces the
+      # first, and pytest never runs it. This fails on any F811 in a changed
+      # test file, including one already on main.
+      - name: Fail on shadowed tests (F811) in changed test files
+        run: |
+          MERGE_BASE=$(git merge-base origin/main HEAD)
+          CHANGED_TESTS=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/tests/*.py' | sed 's|^backend/python/||' || true)
+          if [ -z "$CHANGED_TESTS" ]; then
+            echo "No Python test files changed, skipping the F811 check."
+            exit 0
+          fi
+          cd backend/python
+          echo "$CHANGED_TESTS" | xargs ruff check --select F811 --output-format=concise
 
   pyright-type-check-pr:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
 
@@ -165,9 +190,8 @@ jobs:
 
       - name: Run pyright on changed Python files
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
-          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- 'backend/python/**/*.py' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
+          CHANGED_FILES=$(git diff --diff-filter=d --name-only $MERGE_BASE -- ':(glob)backend/python/**/*.py' | grep -v 'code-generator/' | grep -v 'example\.py$' | sed 's|^backend/python/||' || true)
           if [ -n "$CHANGED_FILES" ]; then
             echo "Type-checking changed Python files:"
             echo "$CHANGED_FILES"
@@ -183,7 +207,7 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 0
@@ -191,10 +215,11 @@ jobs:
       - name: Check changed deployment files
         id: changes
         run: |
-          git fetch origin main
           MERGE_BASE=$(git merge-base origin/main HEAD)
           CHANGED_FILES=$(git diff --diff-filter=d --name-only "$MERGE_BASE" -- \
             'deployment/docker-compose/**' \
+            'deployment/docker-entrypoint.sh' \
+            'deployment/process_monitor.sh' \
             '.github/workflows/main.yml' || true)
 
           if [ -n "$CHANGED_FILES" ]; then
@@ -221,12 +246,16 @@ jobs:
         if: steps.changes.outputs.changed == 'true'
         run: bash deployment/docker-compose/tests/release_tooling_test.sh
 
+      - name: Entrypoint ownership pass tests
+        if: steps.changes.outputs.changed == 'true'
+        run: bash deployment/docker-compose/tests/entrypoint_ownership_test.sh
+
   workflow-lint:
     name: Lint GitHub Actions workflows
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -264,14 +293,18 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: '3.12'
+
+      # The workflow trust check parses YAML; this is the version integration-tests/uv.lock pins.
+      - name: Install the scripts' test dependency
+        run: python3 -m pip install pyyaml==6.0.3
 
       - name: Test the coverage script
         run: python3 -m unittest discover -s scripts -p 'test_*.py'

@@ -50,12 +50,14 @@ class TestIsAuthError:
     def test_failed_response_with_auth_marker_is_auth_error(self) -> None:
         res = MagicMock()
         res.success = False
+        res.status_code = None  # no status known: the error text decides
         res.error = "401 unauthorized"
         assert RuntimeHelper._is_auth_error(res) is True
 
     def test_failed_response_with_authentication_marker(self) -> None:
         res = MagicMock()
         res.success = False
+        res.status_code = None  # no status known: the error text decides
         res.error = "authentication failure"
         assert RuntimeHelper._is_auth_error(res) is True
 

@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import AISettingsUnavailableError, DocumentProcessingError
 
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
 
@@ -359,8 +359,8 @@ class TestPreprocessDocumentCancellation:
     """Cover task cancellation path in _preprocess_document (line 329)."""
 
     @pytest.mark.asyncio
-    async def test_cancel_remaining_tasks_on_failure(self):
-        """When one page fails after all retries, remaining tasks are cancelled."""
+    async def test_one_failing_page_does_not_cost_the_document(self) -> None:
+        """A page that fails every attempt is indexed empty; the other pages are kept."""
         logger = logging.getLogger("test")
         config = MagicMock()
         strategy = VLMOCRStrategy(logger, config)
@@ -377,8 +377,7 @@ class TestPreprocessDocumentCancellation:
             call_count += 1
             if page_number == 1:
                 raise Exception("Page 1 always fails")
-            # Page 2 would succeed but may be cancelled
-            await asyncio.sleep(10)
+            await asyncio.sleep(0)
             return {
                 "page_number": 2,
                 "markdown": "# Page 2",
@@ -389,8 +388,8 @@ class TestPreprocessDocumentCancellation:
         with patch.object(
             strategy, "_preload_page_images", new_callable=AsyncMock
         ), patch.object(strategy, "process_page", side_effect=failing_process):
-            with pytest.raises(Exception, match="Page 1 always fails"):
-                await strategy._preprocess_document()
+            result = await strategy._preprocess_document()
+        assert [p["markdown"] for p in result["pages"]] == ["", "# Page 2"]
 
 
 # ============================================================================
@@ -459,15 +458,16 @@ class TestGetMultimodalLLMEdgeCases:
 
     @pytest.mark.asyncio
     async def test_config_get_raises_exception(self):
-        """Exception from config.get_config is wrapped in ValueError."""
+        """A settings store that is down is an outage: retried, with its error as the cause."""
         logger = logging.getLogger("test")
         config = AsyncMock()
         config.get_config = AsyncMock(side_effect=RuntimeError("Config service down"))
 
         strategy = VLMOCRStrategy(logger, config)
 
-        with pytest.raises(DocumentProcessingError, match="Failed to get multimodal LLM"):
+        with pytest.raises(AISettingsUnavailableError, match="Could not read the workspace's AI settings") as exc_info:
             await strategy._get_multimodal_llm()
+        assert isinstance(exc_info.value.__cause__, RuntimeError)
 
 
 # ============================================================================

@@ -2,17 +2,21 @@
 
 import React, { useEffect, useCallback, useLayoutEffect, useRef, useMemo, useState, Suspense } from 'react';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { AssistantRuntimeProvider, useExternalStoreRuntime, useThreadRuntime } from '@assistant-ui/react';
-import { SuggestionChip, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { AssistantRuntimeProvider, useExternalStoreRuntime, useAui } from '@assistant-ui/react';
+import { DemoSuggestions, MessageList, ChatInputWrapper, SearchResultsView } from './components';
+import { useDemoDataActive, useDemoDataStatus } from '@/app/(main)/workspace/connectors/demo-data/use-demo-data';
+import { DemoDataRemovalNotice } from '@/app/(main)/workspace/connectors/demo-data/components';
 import { AgentChatHeader } from '@/config';
 import { getAgentSidebarRowMenuAccess } from './sidebar/agent-sidebar-row-access';
+import { ConversationHeaderOverlay } from '@/config';
 import { useChatStore, ctxKeyFromAgent } from '@/chat/store';
 import {
   applyConversationModelInfoToStore,
   findModelInfoInConversationLists,
   pickModelInfoFromConversationBundle,
 } from '@/chat/utils/apply-conversation-model-info';
-import { ChatSuggestion } from '@/chat/types';
+import { ChatSuggestion, type AppliedFilters } from '@/chat/types';
+import { appliedFiltersFromNodes, restoreAppliedFilters } from '@/chat/utils/restore-applied-filters';
 import { ChatApi } from '@/chat/api';
 import { buildChatHref } from '@/chat/build-chat-url';
 import {
@@ -31,10 +35,11 @@ import { useNotificationStore } from '@/app/(main)/notifications/store';
 import { usePendingChatStore } from '@/lib/store/pending-chat-store';
 import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
 import { SidebarExpandButton } from '@/app/components/sidebar/sidebar-expand-button';
-import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { useIsMobile, useIsBelowDesktop } from '@/lib/hooks/use-is-mobile';
 import { Flex, Box, Text, Avatar, Tooltip } from '@radix-ui/themes';
 import { useTranslation } from 'react-i18next';
 import { FilePreviewInlinePanel, FilePreviewFullscreen } from '@/app/components/file-preview';
+import { FilePreviewMobile } from '@/app/components/file-preview/file-preview-mobile';
 import { ShareSidebar, ShareHeaderGroup } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createChatShareAdapter } from './share-adapter';
@@ -42,21 +47,28 @@ import { ChatSearch } from './components/search';
 import { isCommandKey } from '@/lib/utils/platform';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
 import { useGitHubStars } from '@/app/components/workspace-menu/hooks/use-github-stars';
-import { EXTERNAL_LINKS } from '@/lib/constants/external-links';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
-import { useUserStore } from '@/lib/store/user-store';
+import { useUserStore, selectIsAdmin } from '@/lib/store/user-store';
 import { toast } from '@/lib/store/toast-store';
+import { isProcessedError } from '@/lib/api/api-error';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { useServicesHealthStore } from '@/lib/store/services-health-store';
-import {
-  SIDEBAR_CONVERSATIONS_PAGE_SIZE,
-  chatContentColumnStyle,
-} from './constants';
+import { useBrand } from '@/lib/branding';
+import { chatContentColumnStyle, clampSplitWidth } from './constants';
+import { useSplitWidth } from '@/chat/hooks/use-split-width';
 import { UsersApi } from '@/app/(main)/workspace/users/api';
-import { useFeatureFlagsStore, selectProjectsEnabled } from '@/lib/store/feature-flags-store';
+import {
+  useFeatureFlagsStore,
+  selectProjectsEnabled,
+  selectApiToolsetsEnabled,
+} from '@/lib/store/feature-flags-store';
+import { ApiToolsetsApi } from '@/app/(main)/workspace/api-toolsets/api';
+import { buildApiActionGroups } from '@/chat/tool-groups';
 import { ProjectApi } from '@/chat/project-api';
 import type { ProjectDetail } from '@/chat/project-types';
 import { useProjectScopeHydration } from '@/chat/hooks/use-project-scope-hydration';
+import { useRemoteRunPoll } from '@/chat/hooks/use-remote-run-poll';
+import { useHydrateUnreadConversations } from '@/chat/hooks/use-hydrate-unread-conversations';
 
 const footerLinkStyle: React.CSSProperties = {
   display: 'inline-flex',
@@ -68,7 +80,13 @@ const footerLinkStyle: React.CSSProperties = {
 };
 
 function ChatFooterLinks() {
+  const { t } = useTranslation();
   const stars = useGitHubStars();
+  const brand = useBrand();
+  const githubUrl = brand.githubUrl;
+  const docsUrl = brand.docsHref('introduction');
+
+  if (!githubUrl && !docsUrl) return null;
 
   return (
     <Flex
@@ -77,8 +95,9 @@ function ChatFooterLinks() {
       gap="3"
       style={{ marginTop: 'var(--space-1)', paddingBottom: 0 }}
     >
+      {githubUrl ? (
       <a
-        href={EXTERNAL_LINKS.github}
+        href={githubUrl}
         target="_blank"
         rel="noopener noreferrer"
         style={footerLinkStyle}
@@ -110,11 +129,15 @@ function ChatFooterLinks() {
           </>
         )}
       </a>
+      ) : null}
 
+      {githubUrl && docsUrl ? (
       <Text style={{ color: 'var(--olive-6)', fontSize: 12 }}>·</Text>
+      ) : null}
 
+      {docsUrl ? (
       <a
-        href="https://docs.pipeshub.com/introduction"
+        href={docsUrl}
         target="_blank"
         rel="noopener noreferrer"
         style={footerLinkStyle}
@@ -129,9 +152,10 @@ function ChatFooterLinks() {
           style={{ flexShrink: 0 }}
         />
         <span style={{ fontSize: 12, color: 'var(--olive-9)', whiteSpace: 'nowrap' }}>
-          Docs
+          {t('common.docs')}
         </span>
       </a>
+      ) : null}
     </Flex>
   );
 }
@@ -152,11 +176,6 @@ const CHAT_PANEL_LS_KEY = 'chat-split-panel-width-px';
 const CHAT_PANEL_MIN_PX = 280;
 const CHAT_PANEL_DEFAULT_PX = 420;
 
-/** Clamp n between min and max (inclusive). */
-function clamp(n: number, min: number, max: number): number {
-  return Math.max(min, Math.min(max, n));
-}
-
 function ChatContent() {
   const searchParams = useSearchParams();
   const router = useRouter();
@@ -165,25 +184,21 @@ function ChatContent() {
   const rawAgentParam = searchParams.get('agentId');
   const agentId = rawAgentParam?.trim() ? rawAgentParam : null;
   const projectsEnabled = useFeatureFlagsStore(selectProjectsEnabled);
+  const apiActionsEnabled = useFeatureFlagsStore(selectApiToolsetsEnabled);
   // A thread can't be scoped to both an agent and a project — agentId wins.
   // When the feature flag is off, projectId is always null so the UI degrades
   // to a normal chat without project context.
   const rawProjectParam = searchParams.get('projectId');
   const projectId = !agentId && projectsEnabled && rawProjectParam?.trim() ? rawProjectParam : null;
 
-  const threadRuntime = useThreadRuntime();
+  const aui = useAui();
+  useHydrateUnreadConversations();
 
   // ── Narrow selectors: only re-render when the selected value changes ──
   // Actions are stable refs in Zustand — selecting them individually
   // prevents this component from re-rendering on background slot updates.
   const previewFile = useChatStore((s) => s.previewFile);
   const previewMode = useChatStore((s) => s.previewMode);
-  const setConversations = useChatStore((s) => s.setConversations);
-  const setSharedConversations = useChatStore((s) => s.setSharedConversations);
-  const setIsConversationsLoading = useChatStore((s) => s.setIsConversationsLoading);
-  const setConversationsError = useChatStore((s) => s.setConversationsError);
-  const setPagination = useChatStore((s) => s.setPagination);
-  const setSharedPagination = useChatStore((s) => s.setSharedPagination);
   const setPreviewMode = useChatStore((s) => s.setPreviewMode);
   const clearPreview = useChatStore((s) => s.clearPreview);
 
@@ -210,6 +225,9 @@ function ChatContent() {
   );
   const activeSlotConvId = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.convId ?? null : null
+  );
+  const activeSlotRemoteRunInProgress = useChatStore((s) =>
+    s.activeSlotId ? s.slots[s.activeSlotId]?.remoteRunInProgress ?? false : false
   );
   const activeSlotMsgCount = useChatStore((s) =>
     s.activeSlotId ? s.slots[s.activeSlotId]?.messages.length ?? 0 : 0
@@ -329,43 +347,6 @@ function ChatContent() {
     };
   }, [router]);
 
-  // Fetch conversations from API
-  const loadConversations = useCallback(async () => {
-    setIsConversationsLoading(true);
-    setConversationsError(null);
-
-    try {
-      const [owned, shared] = await Promise.all([
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'owned' }),
-        ChatApi.fetchConversations(1, SIDEBAR_CONVERSATIONS_PAGE_SIZE, { source: 'shared' }),
-      ]);
-      setConversations(owned.conversations);
-      setSharedConversations(shared.conversations);
-      setPagination(owned.pagination);
-      setSharedPagination(shared.pagination);
-    } catch (error) {
-      if (useServicesHealthStore.getState().apiServerReachable) {
-        console.error('Failed to fetch conversations:', error);
-        setConversationsError(error instanceof Error ? error.message : 'Failed to fetch conversations');
-      }
-    } finally {
-      setIsConversationsLoading(false);
-    }
-  }, [setConversations, setSharedConversations, setIsConversationsLoading, setConversationsError, setPagination, setSharedPagination]);
-
-  // Fetch conversations on mount
-  useEffect(() => {
-    loadConversations();
-  }, [loadConversations]);
-
-  // Re-fetch conversations when a mutation bumps the version counter
-  const conversationsVersion = useChatStore((s) => s.conversationsVersion);
-  useEffect(() => {
-    if (conversationsVersion > 0) {
-      loadConversations();
-    }
-  }, [conversationsVersion, loadConversations]);
-
   // Populate agent side-effects (tools, display name) and kick off the model
   // fetch for the current context. The shared `fetchModelsForContext` handles
   // caching, default resolution, and stale-selection invalidation per ctxKey.
@@ -378,27 +359,36 @@ function ChatContent() {
 
       if (agentId?.trim()) {
         try {
-          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId);
+          // Opening an existing chat: a chat shared with the user may belong to an agent they cannot
+          // open, and the chat itself loads without it, so that is not worth an error toast.
+          const { agent, toolFullNames } = await AgentsApi.getAgent(agentId, { quiet: Boolean(conversationId) });
           if (cancelled) return;
           const knowledgeDefaults = extractAgentKnowledgeDefaults(agent);
           const collectionRows = extractAgentKnowledgeCollectionRows(agent);
+          const wholeCollections = collectionRows.filter((r) => !r.nodeType);
           const kbIds =
-            collectionRows.length > 0
-              ? collectionRows.map((r) => r.id)
+            wholeCollections.length > 0
+              ? wholeCollections.map((r) => r.id)
               : knowledgeDefaults.kb;
           const knowledgeDefaultsForStore = {
-            apps: knowledgeDefaults.apps,
+            ...knowledgeDefaults,
             kb: kbIds,
           };
           const connectors = extractAgentKnowledgeConnectors(agent);
-          const toolGroups = buildAgentChatToolGroups(agent);
+          const attachedApiTools = apiActionsEnabled ? (agent?.apiToolsetTools ?? []) : [];
+          // Without the list there is nothing to name the operations by: treat it as no API actions.
+          const apiActionGroups = attachedApiTools.length
+            ? buildApiActionGroups(await ApiToolsetsApi.listInstances().catch(() => []), attachedApiTools)
+            : [];
+          if (cancelled) return;
+          const toolGroups = [...buildAgentChatToolGroups(agent), ...apiActionGroups];
           const mcpGroups = buildAgentChatMcpGroups(agent);
           const deprecatedToolNames = (agent?.toolsets ?? [])
             .flatMap((ts) => ts.tools ?? [])
             .filter((tool) => tool.deprecated === true)
             .map((tool) => tool.name);
           store.hydrateAgentChatResources({
-            toolCatalogFullNames: toolFullNames,
+            toolCatalogFullNames: [...toolFullNames, ...apiActionGroups.flatMap((g) => g.fullNames)],
             toolGroups,
             mcpGroups,
             connectors,
@@ -446,20 +436,9 @@ function ChatContent() {
                   custom?: { appliedFilters?: import('./types').AppliedFilters };
                 }
               )?.custom?.appliedFilters;
-              if (af) {
-                freshStore.setAgentKnowledgeScope({
-                  apps: af.apps.map((n) => n.id),
-                  kb: af.kb.map((n) => n.id),
-                });
-                const namesCache: Record<string, string> = {};
-                const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-                for (const node of [...af.apps, ...af.kb]) {
-                  namesCache[node.id] = node.name;
-                  metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
-                }
-                freshStore.setCollectionNamesCache(namesCache);
-                freshStore.setCollectionMetaCache(metaCache);
-              }
+              // Every bucket, not only apps and collections: a folder or record
+              // the agent chat was narrowed to stays in its scope.
+              if (af) restoreAppliedFilters(af, true);
             }
           }
         } catch (error) {
@@ -498,7 +477,7 @@ function ChatContent() {
     return () => {
       cancelled = true;
     };
-  }, [agentId, router, t]);
+  }, [agentId, apiActionsEnabled, router, t]);
 
   // Keep the store's `activeProjectId` (read by ProjectsSection /
   // ProjectConversationsSidebar to highlight the open project) in sync with the URL.
@@ -535,6 +514,8 @@ function ChatContent() {
       } else if (store.activeSlotId && activeSlot?.threadAgentId) {
         debugLog.flush('chat-switch', { from: store.activeSlotId, to: null, reason: 'leave-agent-for-main-home' });
         useChatStore.setState({ activeSlotId: null });
+        // The main assistant starts unscoped, not with what was picked before the agent.
+        store.setFilters({ apps: [], kb: [] });
         store.bumpConversationsVersion();
       } else if (
         store.activeSlotId &&
@@ -578,41 +559,19 @@ function ChatContent() {
             .find(
               (msg) =>
                 msg.role === 'user' &&
-                (msg.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
-                  ?.custom?.appliedFilters != null
+                (msg.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)?.custom
+                  ?.appliedFilters != null
             );
-          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: { apps: { id: string; name: string; nodeType: string; connector: string }[]; kb: { id: string; name: string; nodeType: string; connector: string }[] } } } | undefined)
+          const af = (lastWithFilters?.metadata as { custom?: { appliedFilters?: AppliedFilters } } | undefined)
             ?.custom?.appliedFilters;
           if (af) {
-            // Legacy chats stored the KB/Collections root ID in apps. With the new
-            // behavior, KB roots are never added to apps — drop them for compat.
-            const legacyFilteredApps = af.apps.filter(
-              (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
-            );
-            if (urlAgentId) {
-              store.setAgentKnowledgeScope({
-                apps: legacyFilteredApps.map((n) => n.id),
-                kb: af.kb.map((n) => n.id),
-              });
-            } else {
-              store.setFilters({
-                apps: legacyFilteredApps.map((n) => n.id),
-                kb: af.kb.map((n) => n.id),
-              });
-            }
-            const namesCache: Record<string, string> = {};
-            const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-            for (const node of [...legacyFilteredApps, ...af.kb]) {
-              namesCache[node.id] = node.name;
-              metaCache[node.id] = { name: node.name, nodeType: node.nodeType, connector: node.connector };
-            }
-            store.setCollectionNamesCache(namesCache);
-            store.setCollectionMetaCache(metaCache);
+            restoreAppliedFilters(af, Boolean(urlAgentId), projectId);
           } else {
             if (urlAgentId) {
               store.setAgentKnowledgeScope(null);
             } else {
               store.setFilters({ apps: [], kb: [] });
+              if (projectId) store.setProjectKnowledgeScope(null);
             }
           }
         } else {
@@ -709,13 +668,32 @@ function ChatContent() {
     if (!convId) return;
 
     let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+    const generationOf = () => useChatStore.getState().slots[activeSlotId]?.refreshGeneration ?? 0;
+    // A notification can invalidate the conversation while this request is in flight; a response
+    // fetched before that is stale. Refetch at once a few times; past that, back off and start over,
+    // so a stale response (or error) never marks the slot initialized.
+    const MAX_REFETCHES = 3;
+    const RETRY_DELAY_MS = 500;
 
-    const loadHistory = async () => {
+    const retryStale = (attempt: number): Promise<void> | undefined => {
+      if (attempt < MAX_REFETCHES) return loadHistory(attempt + 1);
+      retryTimer = setTimeout(() => {
+        if (!cancelled) void loadHistory(0);
+      }, RETRY_DELAY_MS);
+      return undefined;
+    };
+
+    const loadHistory = async (attempt = 0): Promise<void> => {
+      const generation = generationOf();
       try {
         const detail = historyAndShareAgentId
           ? await AgentsApi.fetchAgentConversation(historyAndShareAgentId, convId)
           : await ChatApi.fetchConversation(convId);
         if (cancelled) return;
+        if (generationOf() !== generation) {
+          return retryStale(attempt);
+        }
 
         const messages = detail.messages;
         const isOwner = detail.conversation.access?.isOwner ?? false;
@@ -728,6 +706,7 @@ function ChatContent() {
         // Always reset filters so pills from a previously viewed conversation
         // don't persist if this conversation carries no filter history.
         useChatStore.getState().setFilters({ apps: [], kb: [] });
+        if (projectId) useChatStore.getState().setProjectKnowledgeScope(null);
 
         // Restore filter state from the most recent user message that carried filters.
         // This brings back the selected connectors/collections after a hard refresh.
@@ -736,46 +715,16 @@ function ChatContent() {
           .find((msg) => msg.messageType === 'user_query' && msg.appliedFilters);
 
         if (lastFiltered?.appliedFilters) {
-          const af = lastFiltered.appliedFilters;
-          const store = useChatStore.getState();
-
-          // Legacy chats stored the KB/Collections root ID in apps. With the new
-          // behavior, KB roots are never added to apps — drop them for compat.
-          const legacyFilteredApps = af.apps.filter(
-            (n) => (n.connector ?? '').trim().toUpperCase() !== 'KB'
-          );
-
-          if (historyAndShareAgentId) {
-            store.setAgentKnowledgeScope({
-              apps: legacyFilteredApps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
-          } else {
-            store.setFilters({
-              apps: legacyFilteredApps.map((n) => n.id),
-              kb: af.kb.map((n) => n.id),
-            });
-          }
-
-          const namesCache: Record<string, string> = {};
-          const metaCache: Record<string, { name: string; nodeType: string; connector: string }> = {};
-          for (const node of [...legacyFilteredApps, ...af.kb]) {
-            namesCache[node.id] = node.name;
-            metaCache[node.id] = {
-              name: node.name,
-              nodeType: node.nodeType,
-              connector: node.connector,
-            };
-          }
-          store.setCollectionNamesCache(namesCache);
-          store.setCollectionMetaCache(metaCache);
+          restoreAppliedFilters(lastFiltered.appliedFilters, Boolean(historyAndShareAgentId), projectId);
         }
 
         const { messages: formattedMessages, unansweredAskUserQuestion } = loadHistoricalMessages(messages);
         useChatStore.getState().updateSlot(activeSlotId, {
           messages: formattedMessages,
+          rawMessages: messages,
           isInitialized: true,
           hasLoaded: true,
+          remoteRunInProgress: detail.conversation.status === 'Inprogress',
           isOwner,
           messagePagination: {
             currentPage: apiPagination.page,
@@ -783,11 +732,12 @@ function ChatContent() {
             isLoadingOlder: false,
           },
           ...(modelInfo ? { conversationModelInfo: modelInfo } : {}),
-          ...(unansweredAskUserQuestion
-            ? { pendingAskUserQuestion: unansweredAskUserQuestion }
-            : {}),
+          pendingAskUserQuestion: unansweredAskUserQuestion,
         });
       } catch (error) {
+        if (!cancelled && generationOf() !== generation) {
+          return retryStale(attempt);
+        }
         console.error('Failed to load conversation history:', error);
         if (!cancelled) {
           // Mark as initialized to avoid infinite retries, but leave isOwner
@@ -796,6 +746,10 @@ function ChatContent() {
           useChatStore.getState().updateSlot(activeSlotId, {
             isInitialized: true,
           });
+          // The API client already explains HTTP failures in its own toast.
+          if (!isProcessedError(error) && useServicesHealthStore.getState().apiServerReachable) {
+            toast.error(t('chat.toasts.loadConversationFailed'));
+          }
         }
       }
     };
@@ -804,8 +758,17 @@ function ChatContent() {
 
     return () => {
       cancelled = true;
+      if (retryTimer !== undefined) clearTimeout(retryTimer);
     };
-  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId]);
+  }, [activeSlotId, hasActiveSlot, activeSlotIsInitialized, activeSlotIsTemp, activeSlotConvId, historyAndShareAgentId, projectId, t]);
+
+  // A run that outlived a refresh finishes on the server; reload once it has.
+  useRemoteRunPoll(
+    activeSlotId,
+    activeSlotConvId,
+    historyAndShareAgentId,
+    activeSlotRemoteRunInProgress && activeSlotIsInitialized && !activeSlotIsStreaming,
+  );
 
   // When sidebar/list rows arrive after the URL+slot are ready, backfill
   // `modelInfo` from GET /conversations (before history fetch completes)
@@ -865,7 +828,7 @@ function ChatContent() {
       }
     }
 
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: suggestion.text }],
       startRun: true,
@@ -911,9 +874,11 @@ function ChatContent() {
 
     const store = useChatStore.getState();
 
-    // Ensure we have a slot for the new chat
+    // A fresh slot unless the active one is an idle, empty new chat: reusing a
+    // running or finished thread would show its Stop button and append there.
     let slotId = store.activeSlotId;
-    if (!slotId) {
+    const activeSlot = slotId ? store.slots[slotId] : undefined;
+    if (!slotId || !activeSlot || activeSlot.isStreaming || activeSlot.stopping || activeSlot.messages.length > 0) {
       slotId = store.createSlot(null);
       store.setActiveSlot(slotId);
     }
@@ -928,14 +893,15 @@ function ChatContent() {
     }
 
     // 1. Set collection filters so they scope the AI query
+    // The handed-over scope replaces whatever an earlier chat left in the
+    // filters; with no scope the question searches everything.
     const collections = pending.pageContext.collections ?? [];
+    const selectedNodes = pending.pageContext.selectedNodes ?? [];
+    if (collections.length === 0 && selectedNodes.length === 0) {
+      store.setFilters({ apps: [], kb: [] });
+    }
     if (collections.length > 0) {
-      const rootIds = collections.map((c) => c.id);
-      store.setFilters({
-        ...store.settings.filters,
-        apps: [...new Set([...(store.settings.filters.apps ?? []), ...rootIds])],
-        kb: [],
-      });
+      store.setFilters({ apps: [...new Set(collections.map((c) => c.id))], kb: [] });
 
       const cache = { ...store.collectionNamesCache };
       collections.forEach((c) => {
@@ -953,6 +919,10 @@ function ChatContent() {
       });
     }
 
+    if (selectedNodes.length > 0) {
+      restoreAppliedFilters(appliedFiltersFromNodes(selectedNodes), false);
+    }
+
     // 2. Apply any settings overrides from the widget
     if (pending.settings) {
       if (pending.settings.mode) store.setMode(pending.settings.mode);
@@ -960,11 +930,13 @@ function ChatContent() {
       if (pending.settings.agentStrategy) store.setAgentStrategy(pending.settings.agentStrategy);
     }
 
+    if (!pending.message.trim() && !pending.attachments?.length) return;
+
     // 3. Auto-send the message through the runtime. Attachments arrive
     // pre-uploaded (the widget triggered the upload at attach-time), so we
     // forward the refs verbatim — same shape as a regular send from the
     // main composer.
-    threadRuntime.append({
+    aui.thread().append({
       role: 'user',
       content: [{ type: 'text', text: pending.message }],
       metadata: {
@@ -978,9 +950,10 @@ function ChatContent() {
       },
       startRun: true,
     });
-  }, [conversationId, threadRuntime, activeSlotId, agentId, projectId]);
+  }, [conversationId, aui, activeSlotId, agentId, projectId]);
 
   const isMobile = useIsMobile();
+  const isBelowDesktop = useIsBelowDesktop();
   const agentContextDisplayName = useChatStore((s) => s.agentContextDisplayName);
   const agentContextCreatedBy = useChatStore((s) => s.agentContextCreatedBy);
   const [agentCreatorName, setAgentCreatorName] = useState<string | null>(null);
@@ -1017,6 +990,10 @@ function ChatContent() {
   // Render decisions
   /** Profile from GET /api/v1/users/:id — auth-store `user` is often null (not persisted with tokens). */
   const profile = useUserStore((s) => s.profile);
+  const isAdmin = useUserStore(selectIsAdmin);
+  const demoDataActive = useDemoDataActive();
+  // Unknown reads as shown, as before the switch existed.
+  const demoHidden = useDemoDataStatus()?.include === false;
   const greetingName = useMemo(() => {
     if (!profile) return '';
     const full = profile.fullName?.trim();
@@ -1031,13 +1008,6 @@ function ChatContent() {
     return '';
   }, [profile]);
 
-  const defaultSuggestionsMap = t('chat.defaultSuggestions', { returnObjects: true }) as Record<string, { text: string; icons: ChatSuggestion['icons'] }>;
-  const defaultSuggestions: ChatSuggestion[] = Object.entries(defaultSuggestionsMap).map(([id, item]) => ({
-    id,
-    text: item.text,
-    icons: item.icons,
-  }));
-
   // Share state
   const [isShareSidebarOpen, setIsShareSidebarOpen] = useState(false);
   const [sharedMembers, setSharedMembers] = useState<SharedAvatarMember[]>([]);
@@ -1050,15 +1020,11 @@ function ChatContent() {
     );
   }, [conversationId, historyAndShareAgentId]);
 
-  // Agent threads are not shareable by anyone (including the owner), so gate on
-  // historyAndShareAgentId (slot-scoped, set for both URL and restored agent threads).
-  const showConversationShare =
-    Boolean(
-      conversationId &&
-        chatShareAdapter &&
-        activeSlotIsOwner === true &&
-        !historyAndShareAgentId
-    );
+  // Only the owner sees the Share button, for plain and agent chats alike. Agent chats are shared
+  // read-only: the backend refuses `write`, and a recipient gets no composer (see showChatInput).
+  const showConversationShare = Boolean(
+    conversationId && chatShareAdapter && activeSlotIsOwner === true
+  );
 
   useEffect(() => {
     if (!showConversationShare && isShareSidebarOpen) {
@@ -1104,10 +1070,6 @@ function ChatContent() {
     };
   }, [conversationId, chatShareAdapter, showConversationShare]);
 
-  // Hide chat input when viewing a shared conversation the user does not own.
-  // `null` means "not yet known" (loading) — keep input visible to avoid flash.
-  const showChatInput = activeSlotIsOwner !== false;
-
   // Show new chat view when no active slot, or slot is new with no messages
   const showNewChatView = !activeSlotId || (
     hasActiveSlot &&
@@ -1130,6 +1092,14 @@ function ChatContent() {
   const showInitialLoading =
     conversationId != null && (!activeSlotId || !activeSlotIsInitialized);
 
+  // Hide chat input when viewing a shared conversation the user does not own.
+  // `null` means "not yet known": an existing chat that is still loading must not show the
+  // composer, or a recipient sees it until the chat arrives. Otherwise (a new chat, or a chat
+  // whose ownership could not be read) it stays visible.
+  const showChatInput =
+    activeSlotIsOwner !== false &&
+    !(activeSlotIsOwner === null && (showInitialLoading || showLoading));
+
   // Search mode: show results view when in search mode with results/in-progress search
   const mode = useChatStore((s) => s.settings.mode);
   const hasSearchResults = useChatStore((s) => s.searchResults.length > 0);
@@ -1137,8 +1107,8 @@ function ChatContent() {
   const showSearchView = mode === 'search' && (hasSearchResults || isSearching) && !conversationId;
 
   // ── Split-pane layout: chat left | drag handle | preview right ────────────
-  // Active on desktop when a file preview is open in 'sidebar' mode.
-  const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isMobile;
+  // Desktop only: on phones and tablets the two columns leave the document too narrow.
+  const showSplitPane = !!previewFile && previewMode === 'sidebar' && !isBelowDesktop;
 
   // ── Auto-close preview when the active conversation changes ──────────────
   // Tracks the previous conversationId so we only clear on actual changes,
@@ -1191,7 +1161,8 @@ function ChatContent() {
   }, [isNavCollapsed, showSplitPane]);
   // ─────────────────────────────────────────────────────────────────────────
 
-  const [chatPanelWidthPx, setChatPanelWidthPx] = useState<number>(() => {
+  // A smaller window (or a width saved on a bigger screen) must still leave the preview room.
+  const [chatPanelWidthPx, setChatPanelWidthPx] = useSplitWidth(() => {
     if (typeof window === 'undefined') return CHAT_PANEL_DEFAULT_PX;
     const saved = parseInt(localStorage.getItem(CHAT_PANEL_LS_KEY) ?? '', 10);
     return Number.isFinite(saved) && saved >= CHAT_PANEL_MIN_PX ? saved : CHAT_PANEL_DEFAULT_PX;
@@ -1213,7 +1184,7 @@ function ChatContent() {
     document.body.style.userSelect = 'none';
     let finalW = startW;
     const move = (ev: PointerEvent) => {
-      finalW = clamp(startW + (ev.clientX - startX), CHAT_PANEL_MIN_PX, window.innerWidth * 0.7);
+      finalW = clampSplitWidth(Math.max(CHAT_PANEL_MIN_PX, startW + (ev.clientX - startX)), window.innerWidth);
       setChatPanelWidthPx(finalW);
     };
     const cleanup = () => {
@@ -1237,6 +1208,23 @@ function ChatContent() {
   useEffect(() => () => { splitResizeCleanupRef.current?.(); }, []);
   // ─────────────────────────────────────────────────────────────────────────
 
+  const showMessageList = !(showInitialLoading || showLoading) && !showSearchView && !showNewChatView;
+  const composerColumn = (
+    <Box
+      style={{
+        ...chatContentColumnStyle(),
+        paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
+        paddingBottom: 'var(--space-4)',
+        // MessageList's composer dock passes clicks through its gutters.
+        pointerEvents: 'auto',
+      }}
+    >
+      {!isInputCentered && showChatInput && <ChatInputWrapper />}
+      {/* On a phone the links only take room from an open conversation. */}
+      {!(isMobile && conversationId) && <ChatFooterLinks />}
+    </Box>
+  );
+
   // ── Chat column body (shared between split-pane and full-width modes) ──────
   const chatColumnBody = (
     <>
@@ -1250,61 +1238,58 @@ function ChatContent() {
           displayName={agentContextDisplayName}
           isMobile={isMobile}
           hasExpandButton={!isMobile && isNavCollapsed}
+          readOnly={activeSlotIsOwner === false}
+          creatorName={agentCreatorName}
+          hasShareGroup={!!showConversationShare}
         />
       )}
 
-      {/* Agent creator chip */}
-      {historyAndShareAgentId && agentCreatorName && (
-        <Box
-          style={{
-            position: 'absolute',
-            top: 10,
-            right: showConversationShare ? 200 : 16,
-            zIndex: 19,
-          }}
-        >
-          <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
-            <Flex
-              align="center"
-              gap="2"
-              px="2"
-              py="1"
-              style={{
-                background: 'var(--color-panel)',
-                borderRadius: 'var(--radius-2)',
-                maxWidth: isMobile ? 140 : 220,
-                cursor: 'default',
-              }}
-            >
-              <Avatar
-                size="1"
-                fallback={agentCreatorName.charAt(0).toUpperCase()}
-                src={agentCreatorAvatarUrl}
-                radius="full"
-                style={{ flexShrink: 0 }}
-              />
-              <Text
-                size="2"
+      {/* Agent creator chip and share group, top-right. */}
+      <ConversationHeaderOverlay
+        conversationId={conversationId}
+        agentChip={
+          historyAndShareAgentId && agentCreatorName ? (
+            <Tooltip content={`${t('agentBuilder.createdBy')}: ${agentCreatorName}`}>
+              <Flex
+                align="center"
+                gap="2"
+                px="2"
+                py="1"
                 style={{
-                  color: 'var(--gray-12)',
-                  overflow: 'hidden',
-                  textOverflow: 'ellipsis',
-                  whiteSpace: 'nowrap',
+                  background: 'var(--color-panel)',
+                  borderRadius: 'var(--radius-2)',
+                  maxWidth: isMobile ? 140 : 220,
+                  cursor: 'default',
                 }}
               >
-                {agentCreatorName}
-              </Text>
-            </Flex>
-          </Tooltip>
-        </Box>
-      )}
-
-      {/* Share header group — owners only */}
-      {showConversationShare && (
-        <Box style={{ position: 'absolute', top: 12, right: 16, zIndex: 20 }}>
-          <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
-        </Box>
-      )}
+                <Avatar
+                  size="1"
+                  fallback={agentCreatorName.charAt(0).toUpperCase()}
+                  src={agentCreatorAvatarUrl}
+                  radius="full"
+                  style={{ flexShrink: 0 }}
+                />
+                <Text
+                  size="2"
+                  style={{
+                    color: 'var(--gray-12)',
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {agentCreatorName}
+                </Text>
+              </Flex>
+            </Tooltip>
+          ) : null
+        }
+        shareGroup={
+          showConversationShare ? (
+            <ShareHeaderGroup members={sharedMembers} onShareClick={handleShareClick} />
+          ) : null
+        }
+      />
 
       {/* Full-width pane: message list scrolls here (scrollbar on the pane edge).
           Message content + composer share chatContentColumnStyle so widths match. */}
@@ -1343,7 +1328,7 @@ function ChatContent() {
             align="center"
             style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden' }}
           >
-            <Box style={{ ...chatContentColumnStyle(isMobile), flex: 1, minHeight: 0, display: 'flex' }}>
+            <Box style={{ ...chatContentColumnStyle(), flex: 1, minHeight: 0, display: 'flex' }}>
               <SearchResultsView />
             </Box>
           </Flex>
@@ -1358,7 +1343,7 @@ function ChatContent() {
               marginTop: isMobile ? '0' : '-40px',
             }}
           >
-            <Box style={{ ...chatContentColumnStyle(isMobile) }}>
+            <Box style={{ ...chatContentColumnStyle() }}>
               <Flex direction="column" align="center" style={{ width: '100%' }}>
                 {projectId ? (
                   <>
@@ -1378,11 +1363,6 @@ function ChatContent() {
                       </Text>
                       <MaterialIcon name="settings" size={16} color="var(--slate-9)" />
                     </Flex>
-                    <Box style={{ textAlign: 'center', marginBottom: isMobile ? 'var(--space-5)' : 'var(--space-6)', fontFamily: 'Manrope, sans-serif' }}>
-                      <Text size="3" style={{ color: 'var(--slate-10)' }}>
-                        {t('chat.projects.newChatInProject')}
-                      </Text>
-                    </Box>
                   </>
                 ) : (
                   <>
@@ -1418,40 +1398,71 @@ function ChatContent() {
                     <ChatInputWrapper />
                   </Box>
                 )}
+                {showChatInput && (
+                  // Shows itself only when it applies, including for a disabled demo
+                  // whose records are still searchable. Not tied to this admin's own
+                  // switch: others may still show it, and its sample accounts can sign in.
+                  <DemoDataRemovalNotice isAdmin={isAdmin} style={{ marginTop: 'var(--space-5)' }} />
+                )}
+                {demoDataActive && showChatInput && !demoHidden && (
+                  <DemoSuggestions isAdmin={isAdmin} isMobile={isMobile} onPick={handleSuggestionClick} />
+                )}
               </Flex>
             </Box>
           </Flex>
         ) : (
           <Box style={{ flex: 1, minHeight: 0, width: '100%', overflow: 'hidden', display: 'flex' }}>
-            <MessageList />
+            <MessageList composer={composerColumn} />
           </Box>
         )}
 
-        <Flex
-          direction="column"
-          align="center"
-          className="chat-composer-row"
-          style={{
-            width: '100%',
-            flexShrink: 0,
-            paddingBottom: isMobile ? 'var(--space-2)' : 0,
-          }}
-        >
-          <Box
+        {!showMessageList && (
+          <Flex
+            direction="column"
+            align="center"
+            className="chat-composer-row"
             style={{
-              ...chatContentColumnStyle(isMobile),
-              paddingTop: !isInputCentered && showChatInput ? 'var(--space-3)' : undefined,
-              paddingBottom: isMobile ? 'var(--space-4)' : 'var(--space-4)',
+              width: '100%',
+              flexShrink: 0,
+              paddingBottom: isMobile ? 'max(var(--space-2), env(safe-area-inset-bottom, 0px))' : 0,
             }}
           >
-            {!isInputCentered && showChatInput && <ChatInputWrapper />}
-            <ChatFooterLinks />
-          </Box>
-        </Flex>
+            {composerColumn}
+          </Flex>
+        )}
       </Flex>
     </>
   );
   // ─────────────────────────────────────────────────────────────────────────
+
+  // Props for the full-screen / phone preview overlay.
+  const previewProps = previewFile ? {
+    source: 'chat' as const,
+    file: {
+      id: previewFile.id,
+      name: previewFile.name,
+      url: previewFile.url,
+      blob: previewFile.blob,
+      type: previewFile.type,
+      size: previewFile.size,
+      webUrl: previewFile.webUrl,
+      previewRenderable: previewFile.previewRenderable,
+      version: previewFile.version,
+    },
+    isLoading: previewFile.isLoading,
+    error: previewFile.error,
+    recordDetails: previewFile.recordDetails,
+    initialPage: previewFile.initialPage,
+    highlightBox: previewFile.highlightBox,
+    citations: previewFile.citations,
+    initialCitationId: previewFile.initialCitationId,
+    hideFileDetails: previewFile.hideFileDetails,
+    showDownload: previewFile.showDownload,
+    latestVersion: previewFile.latestVersion,
+    onVersionChange: previewFile.onVersionChange,
+    isSwitchingVersion: previewFile.isSwitchingVersion,
+    defaultTab: 'preview' as const,
+  } : null;
 
   return (
     <Flex
@@ -1489,14 +1500,18 @@ function ChatContent() {
         {/* Drag handle + preview panel — appear when split-pane is active */}
         {showSplitPane && (
           <>
-            {/* Drag handle — 8 px hit-area */}
+            {/* Drag handle — 8px visible bar inside a 16px hit area */}
             <Box
               role="separator"
               aria-orientation="vertical"
-              aria-label="Resize chat and preview panels"
+              aria-label={t('chat.resizePanels')}
               onPointerDown={beginSplitResize}
               style={{
-                width: '8px',
+                width: '16px',
+                margin: '0 -4px',
+                padding: '0 4px',
+                boxSizing: 'border-box',
+                backgroundClip: 'content-box',
                 flexShrink: 0,
                 alignSelf: 'stretch',
                 cursor: 'col-resize',
@@ -1562,41 +1577,25 @@ function ChatContent() {
         )}
       </Flex>
 
-      {/* File Preview - Fullscreen overlay.
-          Shown in two cases:
-          1. Desktop: user explicitly entered fullscreen mode.
-          2. Mobile: the split-pane is unavailable, so the sidebar-mode preview
-             falls back to this full-screen overlay automatically. */}
-      {previewFile && (previewMode === 'fullscreen' || (isMobile && previewMode === 'sidebar')) && (
-        <FilePreviewFullscreen
-          source="chat"
-          file={{
-            id: previewFile.id,
-            name: previewFile.name,
-            url: previewFile.url,
-            blob: previewFile.blob,
-            type: previewFile.type,
-            size: previewFile.size,
-            webUrl: previewFile.webUrl,
-            previewRenderable: previewFile.previewRenderable,
-            version: previewFile.version,
-          }}
-          isLoading={previewFile.isLoading}
-          error={previewFile.error}
-          recordDetails={previewFile.recordDetails}
-          initialPage={previewFile.initialPage}
-          highlightBox={previewFile.highlightBox}
-          citations={previewFile.citations}
-          initialCitationId={previewFile.initialCitationId}
-          hideFileDetails={previewFile.hideFileDetails}
-          showDownload={previewFile.showDownload}
-          latestVersion={previewFile.latestVersion}
-          onVersionChange={previewFile.onVersionChange}
-          isSwitchingVersion={previewFile.isSwitchingVersion}
-          defaultTab="preview"
-          onExitFullscreen={isMobile ? undefined : () => setPreviewMode('sidebar')}
-          onClose={() => clearPreview()}
-        />
+      {/* File Preview - full-screen overlay.
+          Shown when the user entered fullscreen, and below desktop in place of
+          the split pane. Phones get the mobile layout (citations in a sheet). */}
+      {previewProps && (previewMode === 'fullscreen' || (isBelowDesktop && previewMode === 'sidebar')) && (
+        isMobile ? (
+          <FilePreviewMobile
+            {...previewProps}
+            open
+            onOpenChange={(open) => {
+              if (!open) clearPreview();
+            }}
+          />
+        ) : (
+          <FilePreviewFullscreen
+            {...previewProps}
+            onExitFullscreen={isBelowDesktop ? undefined : () => setPreviewMode('sidebar')}
+            onClose={() => clearPreview()}
+          />
+        )
       )}
 
       {/* Share Sidebar */}

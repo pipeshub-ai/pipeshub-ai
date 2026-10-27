@@ -17,13 +17,34 @@ import {
   type WebSearchProviderMeta,
 } from '../../../workspace/web-search/types';
 import { SidebarCategoryRow } from './sidebar-category-row';
-import { useWebSearchConfig } from '../hooks/use-web-search-config';
+import { TapAddButton, usePaletteTapAdd } from './sidebar-draggable-row';
+import type { UseWebSearchConfigResult } from '../hooks/use-web-search-config';
 import type { AgentWebSearchAttachment } from '../types';
+import { filterPaletteGroup } from '../sidebar-utils';
+import { useSearchAwareExpanded } from '../sidebar-expand-utils';
 
 export interface AgentBuilderWebSearchSectionProps {
   attached: AgentWebSearchAttachment | null;
   onNotify: (message: string) => void;
   structureLocked?: boolean;
+  /** Palette search query: matches the group label and provider names/descriptions. */
+  search?: string;
+  /** Web search config, loaded once by the sidebar so its match check sees the same providers. */
+  config: UseWebSearchConfigResult;
+}
+
+/**
+ * Providers an agent can attach that this user may see: searching providers only (Crawl4AI just
+ * reads pages), and for non-admins only those that need no setup or are already configured.
+ */
+export function visibleWebSearchProviders(
+  isAdmin: boolean,
+  configuredProviders: ConfiguredWebSearchProvider[],
+): WebSearchProviderMeta[] {
+  const searchers = WEB_SEARCH_PROVIDER_META.filter((meta) => meta.searches);
+  if (isAdmin) return searchers;
+  const configured = new Set(configuredProviders.map((p) => p.provider));
+  return searchers.filter((meta) => !meta.configurable || configured.has(meta.type));
 }
 
 function buildWebSearchDragData(
@@ -43,16 +64,19 @@ export function AgentBuilderWebSearchSection({
   attached,
   onNotify,
   structureLocked = false,
+  search = '',
+  config,
 }: AgentBuilderWebSearchSectionProps) {
   const { t } = useTranslation();
-  const [expanded, setExpanded] = useState(true);
+  const { isOpen, toggle } = useSearchAwareExpanded(search.trim() !== '');
+  const expanded = isOpen('web-search', true);
   const [configurePanel, setConfigurePanel] = useState<{
     provider: ConfigurableProvider;
     meta: WebSearchProviderMeta;
   } | null>(null);
 
   const isAdmin = useUserStore(selectIsAdmin);
-  const { configuredProviders, loading, reload } = useWebSearchConfig(true);
+  const { configuredProviders, loading, reload } = config;
 
   const providerMap = useMemo(() => {
     const map = new Map<string, ConfiguredWebSearchProvider>();
@@ -60,16 +84,18 @@ export function AgentBuilderWebSearchSection({
     return map;
   }, [configuredProviders]);
 
-  const visibleProviders = useMemo(() => {
-    if (isAdmin) return WEB_SEARCH_PROVIDER_META;
-    return WEB_SEARCH_PROVIDER_META.filter(
-      (meta) => !meta.configurable || providerMap.has(meta.type),
-    );
-  }, [isAdmin, providerMap]);
+  const visibleProviders = useMemo(
+    () => visibleWebSearchProviders(Boolean(isAdmin), configuredProviders),
+    [isAdmin, configuredProviders]
+  );
 
-  const handleToggle = useCallback(() => {
-    setExpanded((prev) => !prev);
-  }, []);
+  const groupLabel = t('agentBuilder.webSearch');
+  const shownProviders = filterPaletteGroup(search, [groupLabel], visibleProviders, (meta) => [
+    meta.label,
+    meta.description,
+  ]);
+
+  const handleToggle = useCallback(() => toggle('web-search', true), [toggle]);
 
   const handleConfigureClick = useCallback(
     (meta: WebSearchProviderMeta) => {
@@ -108,11 +134,12 @@ export function AgentBuilderWebSearchSection({
 
   return (
     <>
+      {shownProviders === null ? null : (
       <SidebarCategoryRow
-        groupLabel={t('Web Search')}
+        groupLabel={groupLabel}
         groupMaterialIcon="public"
         groupMaterialIconColor="var(--blue-9)"
-        itemCount={visibleProviders.length}
+        itemCount={shownProviders.length}
         isExpanded={expanded}
         onToggle={handleToggle}
         toolsetStatus={parentStatus}
@@ -129,7 +156,7 @@ export function AgentBuilderWebSearchSection({
             {t('agentBuilder.webSearchLoading')}
           </Text>
         ) : (
-          visibleProviders.map((meta) => {
+          shownProviders.map((meta) => {
             const configured = providerMap.get(meta.type) ?? null;
             const isAttached = attached?.provider === meta.type;
             const isConfigured = !meta.configurable || Boolean(configured);
@@ -156,7 +183,7 @@ export function AgentBuilderWebSearchSection({
                       }),
                     );
                   } else if (attached) {
-                    onNotify(t('Only One Web Search Provider Allowed'));
+                    onNotify(t('agentBuilder.webSearchOnlyOne'));
                   }
                 }}
                 isAdmin={Boolean(isAdmin)}
@@ -166,6 +193,7 @@ export function AgentBuilderWebSearchSection({
           })
         )}
       </SidebarCategoryRow>
+      )}
 
       {isAdmin && (
         <ConfigurePanel
@@ -207,6 +235,7 @@ function ProviderRow({
 }) {
   const { t } = useTranslation();
   const dimmed = (dragBlocked && !isAttached) || (anotherAttached && !isAttached);
+  const tapAdd = usePaletteTapAdd(buildWebSearchDragData(meta, configured), dragBlocked);
 
   return (
     <Box mb="1">
@@ -276,7 +305,7 @@ function ProviderRow({
         </Text>
 
         {isAttached ? (
-          <Tooltip content={t('Attached')}>
+          <Tooltip content={t('agentBuilder.attached')}>
             <span
               style={{
                 display: 'inline-flex',
@@ -292,7 +321,7 @@ function ProviderRow({
             </span>
           </Tooltip>
         ) : isConfigured ? (
-          <Tooltip content={t('Configured')}>
+          <Tooltip content={t('workspace.webSearch.badges.configured')}>
             <span
               style={{
                 display: 'inline-flex',
@@ -309,6 +338,8 @@ function ProviderRow({
           </Tooltip>
         ) : null}
 
+        <TapAddButton onTap={tapAdd} />
+
         {meta.configurable && isAdmin ? (
           <Box
             onClick={(e) => e.stopPropagation()}
@@ -322,8 +353,8 @@ function ProviderRow({
             <Tooltip
               content={
                 isConfigured
-                  ? t('Edit')
-                  : t('Configure')
+                  ? t('action.edit')
+                  : t('agentBuilder.configureShort')
               }
             >
               <IconButton

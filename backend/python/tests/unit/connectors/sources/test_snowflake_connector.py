@@ -41,7 +41,10 @@ def _make_connector() -> SnowflakeConnector:
     connector.data_entities_processor.get_user_by_user_id = AsyncMock()
     connector.data_entities_processor.on_new_app_users = AsyncMock()
     connector.data_store_provider = MagicMock()
-    connector._run_full_sync_internal = AsyncMock()
+    connector._sync_objects = AsyncMock()
+    connector._sync_state_key = "snowflake_sync_state"
+    connector.record_sync_point = MagicMock()
+    connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.sync_filters = {}
     connector.indexing_filters = {}
     connector.data_fetcher = object()
@@ -277,7 +280,7 @@ async def test_run_sync_raises_when_data_fetcher_missing() -> None:
 
 
 @pytest.mark.asyncio
-async def test_run_sync_loads_filters_and_runs_full_sync() -> None:
+async def test_run_sync_without_saved_state_runs_full_sync() -> None:
     connector = _make_connector()
     connector.config_service = MagicMock()
 
@@ -291,7 +294,7 @@ async def test_run_sync_loads_filters_and_runs_full_sync() -> None:
     ):
         await connector.run_sync()
 
-    connector._run_full_sync_internal.assert_awaited_once()
+    connector._sync_objects.assert_awaited_once_with(None)
     assert connector.sync_filters == {"k": "v"}
     assert connector.indexing_filters == {"ik": "iv"}
     stats_instance.log_summary.assert_called_once_with(connector.logger)
@@ -300,7 +303,7 @@ async def test_run_sync_loads_filters_and_runs_full_sync() -> None:
 @pytest.mark.asyncio
 async def test_run_sync_reraises_on_internal_failure() -> None:
     connector = _make_connector()
-    connector._run_full_sync_internal = AsyncMock(side_effect=RuntimeError("boom"))
+    connector._sync_objects = AsyncMock(side_effect=RuntimeError("boom"))
 
     with patch(
         "app.connectors.sources.snowflake.connector.load_connector_filters",

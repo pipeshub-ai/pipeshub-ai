@@ -7,9 +7,14 @@ import { Users } from '../schema/users.schema';
 import { UserGroups } from '../schema/userGroup.schema';
 import { AuthenticatedUserRequest } from '../../../libs/middlewares/types';
 import { OrgLogos } from '../schema/orgLogo.schema';
-import sharp from 'sharp';
+import {
+  detectRasterImageFormat,
+  readImageUpload,
+  sharp,
+} from '../../../libs/utils/image.utils';
 import { inject, injectable } from 'inversify';
 import { MailService } from '../services/mail.service';
+import { getBrandConfig } from '../../../libs/branding';
 import {
   AuthMethodType,
   OrgAuthConfig,
@@ -22,6 +27,10 @@ import {
   InternalServerError,
   NotFoundError,
 } from '../../../libs/errors/http.errors';
+import {
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { Logger } from '../../../libs/services/logger.service';
 import { ContainerRequest } from '../../auth/middlewares/types';
 import {
@@ -36,8 +45,19 @@ import {
 import { mailJwtGenerator } from '../../../libs/utils/createJwt';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { recordEvent } from '../../../libs/services/telemetry/event-buffer';
-import { domainFromEmail } from '../../../libs/services/telemetry/identity';
+import {
+  domainFromEmail,
+  signupSource,
+} from '../../../libs/services/telemetry/identity';
 import { ORG_CREATED_EVENT } from '../constants/constants';
+
+const ADDRESS_FIELDS = [
+  'addressLine1',
+  'city',
+  'state',
+  'country',
+  'postCode',
+] as const;
 
 @injectable()
 export class OrgController {
@@ -168,7 +188,7 @@ export class OrgController {
 
       if (!passwordValidator(password)) {
         throw new BadRequestError(
-          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character',
+          'Password should have minimum 8 characters with at least one uppercase, one lowercase, one number and one special character, and be no longer than 72 bytes',
         );
       }
 
@@ -183,10 +203,15 @@ export class OrgController {
         );
       }
 
+      const source = signupSource(
+        req.body as { ref?: unknown; referrerDomain?: unknown },
+      );
       const org = new Org({
         ...req.body,
         domain,
         onBoardingStatus: 'notConfigured', // Set default onboarding status when org is created
+        signupChannel: source.channel,
+        signupReferrerDomain: source.referrerDomain,
       });
 
       const adminUser = new Users({
@@ -237,6 +262,31 @@ export class OrgController {
         ],
       });
 
+      // Built before the save so the transactional branch can store them with
+      // the same commit. An organisation that exists without the events that
+      // announce it is invisible to the permission graph, which is the pair
+      // this transaction is here to keep together.
+      const orgCreatedEvent: Event = {
+        eventType: EventType.OrgCreatedEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: org._id.toString(),
+          accountType: org.accountType,
+          registeredName: org.registeredName,
+        } as OrgAddedEvent,
+      };
+      const adminUserEvent: Event = {
+        eventType: EventType.NewUserEvent,
+        timestamp: Date.now(),
+        payload: {
+          orgId: adminUser.orgId.toString(),
+          userId: adminUser._id.toString(),
+          fullName: adminUser.fullName,
+          email: adminUser.email,
+          syncAction: 'none',
+        } as UserAddedEvent,
+      };
+
       const rsAvailable = this.config.rsAvailable === 'true';
       if (rsAvailable) {
         session = await mongoose.startSession();
@@ -248,6 +298,10 @@ export class OrgController {
         await adminUser.save({ session });
         await adminUserCredentials.save({ session });
         await org.save({ session });
+        // Inside the transaction: either the organisation and the events that
+        // describe it both land, or neither does.
+        await this.eventService.publishEvent(orgCreatedEvent, session);
+        await this.eventService.publishEvent(adminUserEvent, session);
         await session.commitTransaction();
       } else {
         await orgAuthConfig.save();
@@ -256,6 +310,11 @@ export class OrgController {
         await adminUser.save();
         await adminUserCredentials.save();
         await org.save();
+        // No replica set, so no transaction to join. The events are still
+        // recorded durably and delivered with retries; only the atomicity is
+        // unavailable here.
+        await this.eventService.publishEvent(orgCreatedEvent);
+        await this.eventService.publishEvent(adminUserEvent);
       }
 
       recordEvent(ORG_CREATED_EVENT, {
@@ -264,6 +323,10 @@ export class OrgController {
         email: contactEmail,
         domain: domainFromEmail(contactEmail),
         fullName: adminFullName,
+        channel: source.channel,
+        ...(source.referrerDomain !== undefined
+          ? { referrer_domain: source.referrerDomain }
+          : {}),
       });
 
       if (sendEmail) {
@@ -279,7 +342,7 @@ export class OrgController {
           usersMails: [contactEmail],
           subject: 'New Org Account Creation',
           templateData: {
-            invitee: 'PipesHub',
+            invitee: getBrandConfig().productName,
             name: 'User',
             orgName: org.registeredName,
             link: `${this.config.frontendUrl}`,
@@ -287,39 +350,14 @@ export class OrgController {
         });
       }
 
-      await this.eventService.start();
-      let event: Event = {
-        eventType: EventType.OrgCreatedEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: org._id,
-          accountType: org.accountType,
-          registeredName: org.registeredName,
-        } as OrgAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      event = {
-        eventType: EventType.NewUserEvent,
-        timestamp: Date.now(),
-        payload: {
-          orgId: adminUser.orgId.toString(),
-          userId: adminUser._id,
-          fullName: adminUser.fullName,
-          email: adminUser.email,
-          syncAction: 'none',
-        } as UserAddedEvent,
-      };
-      await this.eventService.publishEvent(event);
-
-      await this.eventService.stop();
       res.status(200).json(org);
     } catch (error) {
       if (error instanceof BadRequestError || error instanceof NotFoundError) {
         throw error;
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Error retrieving users',
+      this.logger.error('Creating the organisation failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('create the organisation')),
       );
     } finally {
       if (session) {
@@ -348,20 +386,66 @@ export class OrgController {
     }
   }
 
+  /** A request-body field that, when present, must be a string. */
+  private optionalString(field: string, value: unknown): string | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'string') {
+      throw new BadRequestError(`${field} must be a string`);
+    }
+    return value;
+  }
+
+  /**
+   * The address fields of a request body, each a string. Anything else (an
+   * operator object, an array, a number) is refused rather than stored.
+   */
+  private pickAddress(value: unknown): Record<string, string> | undefined {
+    if (value === undefined || value === null) return undefined;
+    if (typeof value !== 'object' || Array.isArray(value)) {
+      throw new BadRequestError('permanentAddress must be an object');
+    }
+    const address: Record<string, string> = {};
+    for (const field of ADDRESS_FIELDS) {
+      const part = (value as Record<string, unknown>)[field];
+      if (part === undefined) continue;
+      if (typeof part !== 'string') {
+        throw new BadRequestError(`permanentAddress.${field} must be a string`);
+      }
+      address[field] = part;
+    }
+    return address;
+  }
+
+  private savedAddress(org: unknown): Record<string, string> {
+    const doc = org as { toObject?: () => Record<string, unknown> };
+    const plain = doc.toObject?.() ?? (org as Record<string, unknown>);
+    const stored = plain.permanentAddress;
+    const saved: Record<string, string> = {};
+    if (stored === null || typeof stored !== 'object') return saved;
+    for (const field of ADDRESS_FIELDS) {
+      const part = (stored as Record<string, unknown>)[field];
+      if (typeof part === 'string') saved[field] = part;
+    }
+    return saved;
+  }
+
   async updateOrganizationDetails(
     req: AuthenticatedUserRequest,
     res: Response,
     next: NextFunction,
   ): Promise<void> {
     const { contactEmail, registeredName, shortName, permanentAddress } =
-      req.body as {
-        contactEmail?: string;
-        registeredName?: string;
-        shortName?: string;
-        permanentAddress?: string;
-      };
+      req.body as Record<string, unknown>;
 
     try {
+      // The route schema already forces these shapes. Checked again here so a
+      // query operator ({ "$ne": null }, { "$where": ... }) can never be spread
+      // into the update, whatever route reaches this method.
+      const email = this.optionalString('contactEmail', contactEmail);
+      const regName = this.optionalString('registeredName', registeredName);
+      const short = this.optionalString('shortName', shortName);
+      const address = this.pickAddress(permanentAddress);
+
       const orgId = req.user?.orgId;
 
       const org = await Org.findOne({ _id: new mongoose.Types.ObjectId(orgId), isDeleted: false });
@@ -371,21 +455,22 @@ export class OrgController {
       }
 
       // Update only the fields that are provided in the request body
-      const updateData: Partial<{
-        contactEmail: string;
-        registeredName: string;
-        shortName: string;
-        permanentAddress: string;
-      }> = {};
+      const updateData: Record<string, string | Record<string, string>> = {};
 
-      if (contactEmail) updateData.contactEmail = contactEmail;
-      if (registeredName) updateData.registeredName = registeredName;
-      if (shortName) updateData.shortName = shortName;
-      if (permanentAddress) updateData.permanentAddress = permanentAddress;
+      if (email) updateData.contactEmail = email;
+      if (regName) updateData.registeredName = regName;
+      if (short) updateData.shortName = short;
+      // Merge the supplied fields into the saved address so a partial address
+      // keeps the fields it omits. A whole-object $set also works when the
+      // stored value is null, where a dotted path would fail.
+      if (address && Object.keys(address).length > 0) {
+        const saved = this.savedAddress(org);
+        updateData.permanentAddress = { ...saved, ...address };
+      }
 
       // Perform the update
       const updatedOrg = await Org.findByIdAndUpdate(orgId, updateData, {
-        new: true,
+        returnDocument: 'after',
       });
 
       await this.eventService.start();
@@ -393,7 +478,7 @@ export class OrgController {
         eventType: EventType.OrgUpdatedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
           registeredName: org.registeredName,
         } as OrgUpdatedEvent,
       };
@@ -433,7 +518,7 @@ export class OrgController {
         eventType: EventType.OrgDeletedEvent,
         timestamp: Date.now(),
         payload: {
-          orgId: org._id,
+          orgId: org._id.toString(),
         } as OrgDeletedEvent,
       };
       await this.eventService.publishEvent(event);
@@ -456,26 +541,20 @@ export class OrgController {
     next: NextFunction,
   ): Promise<void> {
     try {
-      const logoFile = req.body.fileBuffer;
+      const upload = readImageUpload(req.body as unknown);
       const orgId = req.user?.orgId;
-      if (!logoFile) {
+      if (upload === undefined) {
         throw new BadRequestError('Organisation logo file is required');
       }
 
-      const isSvg = logoFile.mimetype === 'image/svg+xml';
+      const logoBuffer = upload.buffer;
+      // The declared MIME type is client-controlled. Raster vs SVG is decided
+      // from the bytes, so an SVG labelled image/png is never decoded.
+      const rasterFormat = detectRasterImageFormat(logoBuffer);
       let processedBuffer: Buffer;
       let mimeType: string;
 
-      if (isSvg) {
-        // For SVG files, validate for dangerous content and reject if found
-        // This preserves the original buffer without corruption
-        this.validateSVG(logoFile.buffer);
-        // Use original buffer if validation passes - no modification
-        processedBuffer = logoFile.buffer;
-        // Always set mimeType to a safe, hardcoded value (not user-controlled)
-        mimeType = 'image/svg+xml';
-      } else {
-        // For raster images (PNG, JPEG, etc.), convert to JPEG for compression
+      if (rasterFormat !== null) {
         const MAX_LOGO_SIZE_BYTES = 2 * 1024 * 1024;
         const INITIAL_JPEG_QUALITY = 100;
         const MIN_JPEG_QUALITY = 10;
@@ -485,12 +564,24 @@ export class OrgController {
 
         do {
           quality -= JPEG_QUALITY_STEP;
-          processedBuffer = await sharp(logoFile.buffer)
+          processedBuffer = await sharp(logoBuffer)
             .jpeg({ quality })
             .toBuffer();
-        } while (processedBuffer.length > MAX_LOGO_SIZE_BYTES && quality > MIN_JPEG_QUALITY);
+        } while (
+          processedBuffer.length > MAX_LOGO_SIZE_BYTES &&
+          quality > MIN_JPEG_QUALITY
+        );
 
         mimeType = 'image/jpeg';
+      } else if (upload.mimetype === 'image/svg+xml') {
+        // SVG is stored as text after a string check. It is not decoded.
+        this.validateSVG(logoBuffer);
+        processedBuffer = logoBuffer;
+        mimeType = 'image/svg+xml';
+      } else {
+        throw new BadRequestError(
+          'Organisation logo must be a PNG, JPEG, WebP, GIF or SVG image',
+        );
       }
 
       const base64Logo = processedBuffer.toString('base64');
@@ -499,7 +590,7 @@ export class OrgController {
           orgId,
         },
         { orgId, logo: base64Logo, mimeType },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
 
       // Return JSON response instead of raw buffer - prevents XSS vulnerability

@@ -70,6 +70,9 @@ class AzureBlobStorageHelper:
     def move_object(self, container: str, old_key: str, new_key: str) -> None:
         self.rename_object(container, old_key, new_key)
 
+    def delete_blob(self, container: str, key: str) -> None:
+        self._service.get_container_client(container).get_blob_client(key).delete_blob()
+
     def clear_objects(self, container: str, prefix: str) -> None:
         """Delete everything under this run's folder, and nothing else."""
         prefix = require_run_folder(prefix)

@@ -3,6 +3,7 @@ import {
   isOauthClientMissing,
   isOauthClientRequired,
   resolveDcrSupport,
+  resolveMcpOAuthCallbackUrl,
   type DcrProbeState,
 } from '../oauth-dcr-requirement';
 import type { McpOAuthDiscoveryResult } from '../types';
@@ -98,5 +99,35 @@ describe('isOauthClientMissing', () => {
 
   it('treats whitespace-only input as empty', () => {
     expect(isOauthClientMissing(true, false, '   ', '   ')).toBe(true);
+  });
+});
+
+describe('resolveMcpOAuthCallbackUrl', () => {
+  const serverUri = 'https://corp.example.com/pipeshub/mcp-servers/oauth/callback/';
+
+  it("shows the server's redirect URI from the probe, sub-path included", () => {
+    const probe: DcrProbeState = { status: 'done', result: discoveryResult({ redirectUri: serverUri }) };
+    expect(resolveMcpOAuthCallbackUrl(probe, null, 'https://browser.example.com')).toBe(serverUri);
+  });
+
+  it("falls back to the saved OAuth app's answer while the probe hasn't one", () => {
+    expect(resolveMcpOAuthCallbackUrl({ status: 'loading' }, { redirectUri: serverUri }, 'https://browser.example.com')).toBe(serverUri);
+  });
+
+  it("uses the page's own origin only until the server has answered", () => {
+    expect(resolveMcpOAuthCallbackUrl({ status: 'idle' }, null, 'https://browser.example.com/')).toBe(
+      'https://browser.example.com/mcp-servers/oauth/callback/'
+    );
+  });
+
+  it('a server too old to answer leaves the origin in place', () => {
+    const probe: DcrProbeState = { status: 'done', result: discoveryResult() };
+    expect(resolveMcpOAuthCallbackUrl(probe, {}, 'https://browser.example.com')).toBe(
+      'https://browser.example.com/mcp-servers/oauth/callback/'
+    );
+  });
+
+  it('has nothing to show without a window or an answer', () => {
+    expect(resolveMcpOAuthCallbackUrl({ status: 'error' }, null, null)).toBeNull();
   });
 });

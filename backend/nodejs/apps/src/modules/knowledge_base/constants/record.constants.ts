@@ -39,6 +39,8 @@ export const INDEXING_STATUS = {
   EMPTY: 'EMPTY',
   ENABLE_MULTIMODAL_MODELS: 'ENABLE_MULTIMODAL_MODELS',
   QUEUED: 'QUEUED',
+  SKIPPED: 'SKIPPED',
+  PASSWORD_PROTECTED: 'PASSWORD_PROTECTED',
 } as const;
 
 export const ENTITY_TYPE = {
@@ -56,7 +58,7 @@ export const COLLECTIONS = {
   PERMISSIONS_TO_KNOWLEDGE_BASE: 'permissionsToKnowledgeBase',
 
   // Edge collections
-  RECORD_TO_RECORD: 'recordRelations',
+  RECORD_TO_RECORD: 'nodeRelations',
   IS_OF_TYPE: 'isOfType',
   PERMISSIONS: 'permissions',
   BELONGS_TO: 'belongsTo',

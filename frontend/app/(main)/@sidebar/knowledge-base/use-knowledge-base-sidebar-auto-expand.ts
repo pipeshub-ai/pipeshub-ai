@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { ReadonlyURLSearchParams } from 'next/navigation';
 import { useKnowledgeBaseStore } from '../../knowledge-base/store';
+import { kbSessionToken } from '../../knowledge-base/utils/kb-session';
 import { treeHasNodeWithId, findAncestorChainIds } from '../../knowledge-base/utils/tree-builder';
 import {
   fetchAppDirectChildren,
@@ -153,7 +154,8 @@ export function useKnowledgeBaseSidebarAutoExpand({
     const attemptGeneration = ++expansionAttemptGenerationRef.current;
 
     async function doExpansion() {
-      const isStale = () => attemptGeneration !== expansionAttemptGenerationRef.current;
+      const stillSignedIn = kbSessionToken();
+      const isStale = () => attemptGeneration !== expansionAttemptGenerationRef.current || !stillSignedIn();
 
       setIsAutoExpanding(true);
       try {

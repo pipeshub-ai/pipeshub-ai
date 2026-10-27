@@ -1,4 +1,5 @@
 import { test as setup, expect } from '../fixtures/base.fixture';
+import { reachPasswordStep } from '../helpers/login.helper';
 
 const AUTH_FILE = '.auth/user.json';
 
@@ -19,7 +20,7 @@ setup('authenticate @smoke', async ({ page }) => {
   // Wait for the login form to render (it depends on an initAuth API call)
   await page.waitForSelector('#email-field', { timeout: 15_000 });
 
-  await page.fill('#email-field', email);
+  await reachPasswordStep(page, email);
   await page.fill('#password-field', password);
   await page.click('button[type="submit"]');
 

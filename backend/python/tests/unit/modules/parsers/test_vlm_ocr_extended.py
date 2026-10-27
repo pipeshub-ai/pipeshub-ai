@@ -15,8 +15,18 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.exceptions.indexing_exceptions import DocumentProcessingError
+from app.exceptions.indexing_exceptions import (
+    AISettingsUnavailableError,
+    DocumentProcessingError,
+    MultimodalModelNotConfiguredError,
+)
+from app.exceptions.non_retryable import NonRetryableError
 from app.modules.parsers.pdf.vlm_ocr_strategy import VLMOCRStrategy
+from app.services.messaging.error_classifier import (
+    MessageErrorClassifier,
+    MessageErrorType,
+)
+from app.utils.opik import get_llm_invoke_config
 
 # ============================================================================
 # __init__
@@ -105,7 +115,7 @@ class TestGetMultimodalLLM:
         })
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No multimodal LLM found"):
+        with pytest.raises(MultimodalModelNotConfiguredError, match="No multimodal LLM found"):
             await strategy._get_multimodal_llm()
 
     @pytest.mark.asyncio
@@ -115,8 +125,26 @@ class TestGetMultimodalLLM:
         config.get_config = AsyncMock(return_value={"llm": []})
 
         strategy = VLMOCRStrategy(logger, config)
-        with pytest.raises(DocumentProcessingError, match="No LLM configurations found"):
+        # Settings read and holding no model at all: the same fact as no multimodal one.
+        with pytest.raises(MultimodalModelNotConfiguredError, match="No LLM configurations found"):
             await strategy._get_multimodal_llm()
+        # Read strictly, so an empty list cannot be a store that failed to answer.
+        assert any(c.kwargs.get("raise_on_error") is True for c in config.get_config.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_settings_store_that_cannot_be_read_stays_retryable(self) -> None:
+        logger = logging.getLogger("test")
+        config = AsyncMock()
+        config.get_config = AsyncMock(side_effect=ConnectionError("etcd unreachable"))
+
+        strategy = VLMOCRStrategy(logger, config)
+        with pytest.raises(AISettingsUnavailableError) as exc_info:
+            await strategy._get_multimodal_llm()
+        # Not a DocumentProcessingError, which the classifier treats as final;
+        # the store's own error stays the cause.
+        assert not isinstance(exc_info.value, DocumentProcessingError)
+        assert isinstance(exc_info.value.__cause__, ConnectionError)
+        assert MessageErrorClassifier.classify_by_exception(exc_info.value) == MessageErrorType.TRANSIENT
 
 
 # ============================================================================
@@ -171,6 +199,7 @@ class TestCallLLMForMarkdown:
 
         _, kwargs = strategy.llm.ainvoke.await_args
         assert kwargs == {
+            "config": get_llm_invoke_config(strategy.llm),
             "max_tokens": 4096,
             "temperature": 0,
             "extra_body": {
@@ -195,7 +224,11 @@ class TestCallLLMForMarkdown:
         await strategy._call_llm_for_markdown("data:image/png;base64,abc", 1)
 
         _, kwargs = strategy.llm.ainvoke.await_args
-        assert kwargs == {"max_tokens": 4096, "temperature": 0}
+        assert kwargs == {
+            "config": get_llm_invoke_config(strategy.llm),
+            "max_tokens": 4096,
+            "temperature": 0,
+        }
 
     @pytest.mark.asyncio
     async def test_truncated_response_is_rejected(self):
@@ -338,24 +371,81 @@ class TestPreprocessDocument:
             assert call_count == 2  # 1 failure + 1 success
 
     @pytest.mark.asyncio
-    async def test_all_retries_fail(self):
-        """Test all retries failing."""
-        logger = logging.getLogger("test")
-        config = MagicMock()
-        strategy = VLMOCRStrategy(logger, config)
-
-        mock_page = MagicMock()
+    async def test_a_page_that_keeps_failing_is_indexed_empty(self) -> None:
+        """One page the model cannot read does not cost the document."""
+        strategy = VLMOCRStrategy(logging.getLogger("test"), MagicMock())
         strategy.doc = MagicMock()
-        strategy.doc.pages = [mock_page]
+        strategy.doc.pages = [MagicMock(), MagicMock()]
 
-        async def mock_process_page(page, page_number=None):
-            raise Exception("Persistent failure")
+        async def mock_process_page(page: object, page_number: int | None = None) -> dict[str, object]:
+            if page_number == 2:
+                raise Exception("Persistent failure")
+            return {"page_number": page_number, "markdown": "# Page 1", "width": 100, "height": 200}
 
         with patch.object(
             strategy, "_preload_page_images", new_callable=AsyncMock
         ), patch.object(strategy, "process_page", side_effect=mock_process_page):
-            with pytest.raises(Exception, match="Persistent failure"):
+            result = await strategy._preprocess_document()
+        assert result["total_pages"] == 2
+        assert [page["markdown"] for page in result["pages"]] == ["# Page 1", ""]
+
+    @pytest.mark.asyncio
+    async def test_a_document_no_page_of_which_can_be_read_fails(self) -> None:
+        """Every page failing alike is systemic, not one bad page: the record fails and is retried."""
+        strategy = VLMOCRStrategy(logging.getLogger("test"), MagicMock())
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [MagicMock(), MagicMock()]
+
+        async def broken(page: object, page_number: int | None = None) -> dict[str, object]:
+            raise ValueError("no rendered image for the page")
+
+        with patch.object(strategy, "_preload_page_images", new_callable=AsyncMock), patch.object(
+            strategy, "process_page", side_effect=broken
+        ):
+            with pytest.raises(ValueError, match="no rendered image"):
                 await strategy._preprocess_document()
+
+    @pytest.mark.asyncio
+    async def test_a_final_error_is_not_retried(self) -> None:
+        logger = logging.getLogger("test")
+        strategy = VLMOCRStrategy(logger, MagicMock())
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [MagicMock()]
+
+        mock_process = AsyncMock(
+            side_effect=NonRetryableError("capped")
+        )
+
+        with patch.object(
+            strategy, "_preload_page_images", new_callable=AsyncMock
+        ), patch.object(strategy, "process_page", mock_process):
+            with pytest.raises(NonRetryableError):
+                await strategy._preprocess_document()
+
+        assert mock_process.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_a_provider_outage_fails_the_document_to_retry_it_whole(self) -> None:
+        """Blank pages would index an empty document; the record fails and is retried."""
+        from app.services.llm_gateway.gateway import ProviderUnavailableError
+        from app.utils.llm import LLMUnavailableError
+
+        strategy = VLMOCRStrategy(logging.getLogger("test"), MagicMock())
+        strategy.doc = MagicMock()
+        strategy.doc.pages = [MagicMock()]
+        calls = 0
+
+        async def down(page: object, page_number: int | None = None) -> None:
+            nonlocal calls
+            calls += 1
+            raise ProviderUnavailableError("provider down", provider="p")
+
+        with patch.object(strategy, "_preload_page_images", new_callable=AsyncMock), patch.object(
+            strategy, "process_page", side_effect=down
+        ):
+            with pytest.raises(LLMUnavailableError):
+                await strategy._preprocess_document()
+        assert calls == 1
 
 
 # ============================================================================
@@ -419,3 +509,16 @@ class TestLoadDocument:
         ):
             with pytest.raises(Exception, match="PDF parse error"):
                 await strategy.load_document(b"fake_pdf_content")
+
+
+class TestUnsavedAiSettings:
+    @pytest.mark.asyncio
+    async def test_an_org_that_never_saved_ai_settings_gets_a_readable_error(self) -> None:
+        """get_config returns None until settings are saved; that must not surface as an AttributeError."""
+        strategy = VLMOCRStrategy(logging.getLogger("test"), MagicMock())
+        strategy.config.get_config = AsyncMock(return_value=None)
+        with patch(
+            "app.modules.parsers.pdf.vlm_ocr_strategy.get_llm_for_role", AsyncMock(side_effect=ValueError("no llm"))
+        ):
+            with pytest.raises(DocumentProcessingError, match="No LLM configurations found"):
+                await strategy._get_multimodal_llm()

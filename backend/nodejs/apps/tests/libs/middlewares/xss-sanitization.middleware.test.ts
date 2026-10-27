@@ -4,6 +4,10 @@ import sinon from 'sinon'
 import { xssSanitizationMiddleware } from '../../../src/libs/middlewares/xss-sanitization.middleware'
 import { BadRequestError } from '../../../src/libs/errors/http.errors'
 import { Logger } from '../../../src/libs/services/logger.service'
+import { ErrorMiddleware } from '../../../src/libs/middlewares/error.middleware'
+import express from 'express'
+import http from 'http'
+import type { AddressInfo } from 'net'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -350,6 +354,23 @@ describe('XSS Sanitization Middleware', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+    })
+
+    it('passes an API toolset spec and credentials through unchanged', () => {
+      const spec = 'info:\n  description: >\n    Tickets & <b>comments</b>\n'
+      const res = createMockResponse()
+      for (const [method, path, body] of [
+        ['POST', '/api/v1/api-toolsets/validate', { spec }],
+        ['POST', '/api/v1/api-toolsets/instances', { name: 'Acme', spec }],
+        ['PUT', '/api/v1/api-toolsets/instances/abc', { name: 'Acme', spec }],
+        ['PUT', '/api/v1/api-toolsets/instances/abc/credentials', { apiKey: 'k<&>y' }],
+      ] as const) {
+        const req = createMockRequest({ path, method, body: { ...body } })
+        const next = createMockNext()
+        xssSanitizationMiddleware(req, res, next)
+        expect(next.firstCall.args, `${method} ${path}`).to.have.length(0)
+        expect(req.body, `${method} ${path}`).to.deep.equal(body)
+      }
     })
 
     it('should skip validation for POST to /api/v1/skills/import/finalize', () => {
@@ -782,6 +803,336 @@ describe('XSS Sanitization Middleware', () => {
       expect(next.calledOnce).to.be.true
       const error = next.firstCall.args[0]
       expect(error).to.be.instanceOf(BadRequestError)
+    })
+  })
+  // -----------------------------------------------------------------------
+  // The rejection says which field was refused and why, so a caller whose
+  // text merely contains something like `<id>` can tell what to change.
+  // -----------------------------------------------------------------------
+  describe('Rejection message', () => {
+    let server: http.Server
+    let baseUrl: string
+
+    before(async () => {
+      const app = express()
+      app.use(express.json())
+      app.use(xssSanitizationMiddleware)
+      app.all('*', (_req, res) => {
+        res.status(200).json({ ok: true })
+      })
+      app.use(ErrorMiddleware.handleError())
+      server = await new Promise<http.Server>((resolve) => {
+        const s = app.listen(0, '127.0.0.1', () => resolve(s))
+      })
+      baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    const post = async (path: string, body: unknown) => {
+      const resp = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return { status: resp.status, body: (await resp.json()) as any }
+    }
+
+    it('names the body field and explains that <id> counts as a tag', async () => {
+      const { status, body } = await post('/api/v1/knowledgeBase', {
+        name: 'cite [Summary of <id>]',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"name"')
+      expect(body.error.message).to.include('such as <id>')
+    })
+
+    it('names the nested field of an MCP tool call', async () => {
+      const { status, body } = await post('/mcp', {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: {
+          name: 'pipeshub_chat',
+          arguments: { query: 'Any bugs?', conversationId: '<id>' },
+        },
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params.arguments.conversationId"')
+    })
+
+    it('names a query-string parameter as one', async () => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/users?search=${encodeURIComponent('<b>x</b>')}`,
+      )
+      const body = (await resp.json()) as any
+
+      expect(resp.status).to.equal(400)
+      expect(body.error.message).to.include('query parameter "search"')
+    })
+
+    it('names a route parameter as a URL parameter', () => {
+      const req = createMockRequest({ params: { id: '<svg onload=alert(1)>' } })
+      const next = createMockNext()
+
+      xssSanitizationMiddleware(req, createMockResponse(), next)
+
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(BadRequestError)
+      expect(error.message).to.include('URL parameter "id"')
+    })
+
+    it('names the field but gives no <id> hint when nothing is tag-shaped', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        url: 'javascript:alert(1)',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"url"')
+      expect(body.error.message).not.to.include('<id>')
+      expect(body.error.message).to.include('javascript:')
+    })
+
+    it('gives no <id> hint for an event handler without a tag', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        note: 'click onclick=alert(1)',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"note"')
+      expect(body.error.message).not.to.include('<id>')
+    })
+
+    it('names an encoded script tag rather than tags or javascript: links', async () => {
+      const { status, body } = await post('/api/v1/knowledgeBase', {
+        name: '&lt;script&gt;alert(1)&lt;/script&gt;',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"name"')
+      expect(body.error.message).to.include('&lt;script')
+      expect(body.error.message).not.to.include('<id>')
+      expect(body.error.message).not.to.include('javascript:')
+    })
+
+    it('says an over-long value is too long rather than that it holds HTML', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        text: 'a'.repeat(100001),
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"text"')
+      expect(body.error.message).to.include('too long')
+      expect(body.error.message).not.to.include('<id>')
+    })
+
+    it('does not repeat a field name that is itself markup', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        '<img src=x onerror=alert(1)>': '<b>bold</b>',
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).not.to.include('<img')
+      expect(body.error.message).not.to.include('onerror')
+    })
+  })
+
+  // -----------------------------------------------------------------------
+  // Chat and search questions: free text, passed through unchanged
+  // -----------------------------------------------------------------------
+  describe('Chat and search questions', () => {
+    let server: http.Server
+    let baseUrl: string
+
+    before(async () => {
+      const app = express()
+      // Same body limit as the app (src/app.ts), so long questions reach the middleware.
+      app.use(express.json({ limit: '10mb' }))
+      app.use(xssSanitizationMiddleware)
+      // Echo the body as the route handler would receive it.
+      app.all('*', (req, res) => {
+        res.status(200).json({ received: req.body })
+      })
+      app.use(ErrorMiddleware.handleError())
+      server = await new Promise<http.Server>((resolve) => {
+        const s = app.listen(0, '127.0.0.1', () => resolve(s))
+      })
+      baseUrl = `http://127.0.0.1:${(server.address() as AddressInfo).port}`
+    })
+
+    after(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    })
+
+    const post = async (path: string, body: unknown) => {
+      const resp = await fetch(`${baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      })
+      return { status: resp.status, body: (await resp.json()) as any }
+    }
+
+    const toolCall = (name: string, args: Record<string, unknown>) => ({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/call',
+      params: { name, arguments: args },
+    })
+
+    const question = 'cite [Summary of <id>] and List<String>'
+
+    it('accepts <id> in the question of an MCP pipeshub_chat call, unchanged', async () => {
+      const { status, body } = await post('/mcp', toolCall('pipeshub_chat', { query: question }))
+
+      expect(status).to.equal(200)
+      expect(body.received.params.arguments.query).to.equal(question)
+    })
+
+    it('accepts <id> in the question of an MCP pipeshub_search call, unchanged', async () => {
+      const { status, body } = await post('/mcp', toolCall('pipeshub_search', { query: question, limit: 5 }))
+
+      expect(status).to.equal(200)
+      expect(body.received.params.arguments.query).to.equal(question)
+    })
+
+    it('accepts <id> in the query of POST /api/v1/search, which MCP search calls, unchanged', async () => {
+      const { status, body } = await post('/api/v1/search', { query: question, limit: 5 })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+    })
+
+    it('accepts <id> in the query of POST /api/v1/retrieve, unchanged', async () => {
+      const { status, body } = await post('/api/v1/retrieve', { query: question, limit: 5 })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+    })
+
+    it('still refuses a script tag in the filters of POST /api/v1/retrieve', async () => {
+      const { status } = await post('/api/v1/retrieve', {
+        query: question,
+        filters: { apps: ['<script>alert(1)</script>'] },
+      })
+
+      expect(status).to.equal(400)
+    })
+
+    it('still refuses a script tag in another argument of an MCP chat call', async () => {
+      const { status, body } = await post(
+        '/mcp',
+        toolCall('pipeshub_chat', {
+          query: question,
+          filters: { apps: ['<script>alert(1)</script>'] },
+        }),
+      )
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params.arguments.filters.apps[0]"')
+    })
+
+    it('still refuses a script tag in another field of POST /api/v1/search', async () => {
+      const { status, body } = await post('/api/v1/search', {
+        query: question,
+        filters: { kb: ['<script>alert(1)</script>'] },
+      })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"filters.kb[0]"')
+    })
+
+    it('still refuses a script tag elsewhere in the MCP request', async () => {
+      const call = toolCall('pipeshub_chat', { query: question }) as any
+      call.params._meta = { note: '<script>alert(1)</script>' }
+
+      const { status, body } = await post('/mcp', call)
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params._meta.note"')
+    })
+
+    it('still refuses a question over 100,000 characters as too long', async () => {
+      const tooLong = 'a'.repeat(100001)
+      const cases = [
+        ['/mcp', toolCall('pipeshub_chat', { query: tooLong }), '"params.arguments.query"'],
+        ['/mcp', toolCall('pipeshub_search', { query: tooLong }), '"params.arguments.query"'],
+        ['/api/v1/search', { query: tooLong }, '"query"'],
+      ] as const
+
+      for (const [path, payload, field] of cases) {
+        const { status, body } = await post(path, payload)
+
+        expect(status).to.equal(400)
+        expect(body.error.message).to.include(field)
+        expect(body.error.message).to.include('longer than 100,000 characters')
+      }
+    })
+
+    it('accepts a question of exactly 100,000 characters', async () => {
+      const longest = 'a'.repeat(99995) + ' <id>'
+      const { status, body } = await post('/mcp', toolCall('pipeshub_chat', { query: longest }))
+
+      expect(status).to.equal(200)
+      expect(body.received.params.arguments.query).to.equal(longest)
+    })
+
+    it('still checks the query of any other MCP tool', async () => {
+      const { status, body } = await post(
+        '/mcp',
+        toolCall('pipeshub_get_record_content', { query: '<id>' }),
+      )
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"params.arguments.query"')
+    })
+
+    it('still checks a query that is not a string', async () => {
+      const { status } = await post(
+        '/mcp',
+        toolCall('pipeshub_chat', { query: { text: '<script>alert(1)</script>' } }),
+      )
+
+      expect(status).to.equal(400)
+    })
+
+    it('does not pass through a top-level key that only looks like the question path', async () => {
+      const call = toolCall('pipeshub_chat', { query: question }) as any
+      call['params.arguments.query'] = '<script>alert(1)</script>'
+
+      const { status } = await post('/mcp', call)
+
+      expect(status).to.equal(400)
+    })
+
+    it('still checks a field named query on other routes', async () => {
+      const { status, body } = await post('/api/v1/knowledgeBase', { query: '<id>' })
+
+      expect(status).to.equal(400)
+      expect(body.error.message).to.include('"query"')
+    })
+
+    it('still checks a search query sent as a URL query parameter', async () => {
+      const resp = await fetch(
+        `${baseUrl}/api/v1/search?query=${encodeURIComponent('<id>')}`,
+      )
+
+      expect(resp.status).to.equal(400)
+    })
+
+    it('leaves the web chat route as it was: skipped entirely', async () => {
+      const { status, body } = await post('/api/v1/conversations/stream', {
+        query: question,
+        note: '<b>kept</b>',
+      })
+
+      expect(status).to.equal(200)
+      expect(body.received.query).to.equal(question)
+      expect(body.received.note).to.equal('<b>kept</b>')
     })
   })
 })

@@ -63,7 +63,7 @@ describe('smtpConfigCheck Middleware', () => {
 
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
-    expect(error.message).to.equal('Error getting smtp config');
+    expect(error.message).to.contain('PipesHub tried to check the email settings');
   });
 
   it('should call next with InternalServerError when response statusCode is not 200', async () => {
@@ -78,7 +78,7 @@ describe('smtpConfigCheck Middleware', () => {
     expect(next.calledOnce).to.be.true;
     const error = next.firstCall.args[0];
     expect(error).to.be.an('error');
-    expect(error.message).to.equal('Error getting smtp config');
+    expect(error.message).to.contain('PipesHub tried to check the email settings');
   });
 
   it('should call next with NotFoundError when credentials data is null', async () => {

@@ -819,7 +819,9 @@
         "decorators": null,
         "qualified_name": null,
         "start_line": null,
-        "end_line": null
+        "end_line": null,
+        "pending_edges": null,
+        "type_table": null
       },
       "media_metadata": null,
       "file_metadata": null,
@@ -1593,7 +1595,7 @@
       "source_id": null,
       "source_name": null,
       "source_type": null,
-      "data": "[2] Hohpe, G., &amp; Woolf, B. (2003). *Enterprise Integration Patterns*. Addison-Wesley.",
+      "data": "[2] Hohpe, G., & Woolf, B. (2003). *Enterprise Integration Patterns*. Addison-Wesley.",
       "links": null,
       "weburl": null,
       "public_data_link": null,

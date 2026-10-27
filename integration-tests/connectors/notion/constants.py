@@ -91,8 +91,8 @@ SAMPLE_FILE_FIXTURES: tuple[tuple[str, str, str], ...] = (
     ("sets/1/report.pdf", "application/pdf", "pdf"),
 )
 
-# Comment attachment source. The same file is attached twice to one comment, which exercises
-# the connector's normalized-filename dedup.
+# Comment attachment source. The same file is attached twice to one comment: two files of one
+# name, which must stay two records.
 COMMENT_ATTACHMENT_SAMPLE_PATH = "sets/1/report.pdf"
 COMMENT_ATTACHMENT_FILENAME = "report.pdf"
 
@@ -100,3 +100,6 @@ COMMENT_ATTACHMENT_FILENAME = "report.pdf"
 ENV_TOKEN = "NOTION_TEST_API_TOKEN"
 ENV_ROOT_PAGE_ID = "NOTION_TEST_ROOT_PAGE_ID"
 ENV_ROOT_DATABASE_ID = "NOTION_TEST_ROOT_DATABASE_ID"
+# A manifest of a fixture tree that already exists (fixtures/notion_sim_seed.json for the Notion simulator's
+# content pack): the suite reads it instead of seeding, and leaves the tree in place at teardown.
+ENV_SEED_MANIFEST = "NOTION_TEST_SEED_MANIFEST"

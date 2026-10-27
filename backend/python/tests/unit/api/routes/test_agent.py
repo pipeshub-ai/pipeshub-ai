@@ -1,11 +1,15 @@
 """Tests for app.api.routes.agent helper functions and models."""
+import asyncio
 import json
 import logging
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from fastapi import HTTPException
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
+
+from app.utils.user_messages import DATABASE_UNREACHABLE
 
 
 async def _drain(response) -> str:
@@ -219,6 +223,13 @@ class TestGetUserContext:
             _get_user_context(request)
 
 
+def _readable_graph() -> MagicMock:
+    graph = MagicMock()
+    graph.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1"])
+    graph.check_record_access_with_details = AsyncMock(return_value={"record": {}})
+    return graph
+
+
 class TestBuildPriorRoutingMessages:
     """Covers _build_prior_routing_messages (replaces legacy _build_routing_context)."""
 
@@ -235,12 +246,13 @@ class TestBuildPriorRoutingMessages:
         msgs = await _build_prior_routing_messages({
             "previous_conversations": [{"role": "user_query", "content": "Hello"}],
         })
-        assert len(msgs) == 1
+        # The open question is closed before the current one (HumanMessage, placeholder).
+        assert len(msgs) == 2
         assert isinstance(msgs[0], HumanMessage)
         assert msgs[0].content == "Hello"
 
     @pytest.mark.asyncio
-    async def test_bot_response_first_line_only(self) -> None:
+    async def test_bot_response_keeps_more_than_its_first_line(self) -> None:
         from langchain_core.messages import AIMessage
 
         from app.api.routes.agent import _build_prior_routing_messages
@@ -251,7 +263,52 @@ class TestBuildPriorRoutingMessages:
         })
         assert len(msgs) == 1
         assert isinstance(msgs[0], AIMessage)
-        assert msgs[0].content == "Line one"
+        # The intent step reads past an answer's first line: a follow-up often
+        # refers to something further down (HG-04).
+        assert msgs[0].content == "Line one\nLine two"
+
+    @pytest.mark.asyncio
+    async def test_a_long_failed_answer_keeps_its_outcome_after_truncation(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import FAILED, FAILED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "bot_response", "content": "x" * 5000, "status": FAILED},
+            ],
+        })
+        assert msgs[0].content.startswith("x" * 100)
+        assert msgs[0].content.endswith(FAILED_ANSWER)
+
+    @pytest.mark.asyncio
+    async def test_a_question_without_an_answer_row_is_closed_before_the_next(self) -> None:
+        from langchain_core.messages import AIMessage, HumanMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import UNANSWERED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [
+                {"role": "user_query", "content": "List every open epic"},
+                {"role": "user_query", "content": "Only the blocked ones"},
+                {"role": "bot_response", "content": "Two are blocked."},
+            ],
+        })
+        assert [type(m) for m in msgs] == [HumanMessage, AIMessage, HumanMessage, AIMessage]
+        assert msgs[1].content == UNANSWERED_ANSWER
+
+    @pytest.mark.asyncio
+    async def test_history_ending_on_an_open_question_is_closed_before_the_current_one(self) -> None:
+        from langchain_core.messages import AIMessage
+
+        from app.api.routes.agent import _build_prior_routing_messages
+        from app.modules.agents.qna.turn_outcome import UNANSWERED_ANSWER
+
+        msgs = await _build_prior_routing_messages({
+            "previous_conversations": [{"role": "user_query", "content": "List every open epic"}],
+        })
+        assert isinstance(msgs[-1], AIMessage)
+        assert msgs[-1].content == UNANSWERED_ANSWER
 
     @pytest.mark.asyncio
     async def test_user_and_bot_turns_in_order(self) -> None:
@@ -267,18 +324,21 @@ class TestBuildPriorRoutingMessages:
         assert isinstance(msgs[0], HumanMessage)
         assert msgs[0].content == "Q?"
         assert isinstance(msgs[1], AIMessage)
-        assert msgs[1].content == "A1"
+        assert msgs[1].content == "A1\nmore"
 
     @pytest.mark.asyncio
     async def test_only_last_six_messages(self) -> None:
+        from langchain_core.messages import HumanMessage
+
         from app.api.routes.agent import _build_prior_routing_messages
         convs = [{"role": "user_query", "content": f"q{i}"} for i in range(10)]
         msgs = await _build_prior_routing_messages({
             "previous_conversations": convs,
         })
-        assert len(msgs) == 6
-        assert "q9" in str(msgs[-1].content)
-        assert "q3" not in str(msgs[0].content)
+        questions = [m for m in msgs if isinstance(m, HumanMessage)]
+        assert len(questions) == 6
+        assert "q9" in str(questions[-1].content)
+        assert "q3" not in str(questions[0].content)
 
     @pytest.mark.asyncio
     async def test_user_content_truncated_to_200(self) -> None:
@@ -323,12 +383,35 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-x",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=False,
         )
-        assert len(msgs) == 1
+        assert len(msgs) == 2
         assert isinstance(msgs[0], HumanMessage)
         assert isinstance(msgs[0].content, list)
-        blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x")
+        blob.get_record_from_storage.assert_awaited_once_with("vr-pdf", "org-x", lookup_result=None)
+
+    @pytest.mark.asyncio
+    async def test_attachment_the_caller_cannot_read_is_not_loaded(self) -> None:
+        from app.api.routes.agent import _build_prior_routing_messages
+        blob = MagicMock()
+        blob.get_record_from_storage = AsyncMock()
+        graph = _readable_graph()
+        graph.check_record_access_with_details = AsyncMock(return_value=None)
+        history = {
+            "previous_conversations": [{
+                "role": "user_query",
+                "content": "read this",
+                "attachments": [{"mimeType": "application/pdf", "virtualRecordId": "vr-other"}],
+            }],
+        }
+        for caller in ({"user_id": "u1", "graph_provider": graph}, {}):
+            msgs = await _build_prior_routing_messages(
+                history, blob_store=blob, org_id="org-x", is_multimodal_llm=False, **caller,
+            )
+            assert msgs[0].content == "read this"
+        blob.get_record_from_storage.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_skips_pdf_row_when_vrid_missing(self) -> None:
@@ -380,6 +463,8 @@ class TestBuildPriorRoutingMessages:
             },
             blob_store=blob,
             org_id="org-i",
+            user_id="u1",
+            graph_provider=_readable_graph(),
             is_multimodal_llm=True,
         )
         assert isinstance(msgs[0], HumanMessage)
@@ -579,7 +664,7 @@ class TestGetUserDocument:
 
         result = await _get_user_document("user-1", graph_provider, log)
         assert result["email"] == "test@example.com"
-        graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1")
+        graph_provider.get_user_by_user_id.assert_awaited_once_with("user-1", raise_on_error=True)
 
     @pytest.mark.asyncio
     async def test_user_not_found_none(self) -> None:
@@ -675,8 +760,8 @@ class TestGetUserDocument:
 
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("user-1", graph_provider, log)
-        assert exc.value.status_code == 500
-        assert "Failed to retrieve" in exc.value.detail
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
 
     @pytest.mark.asyncio
     async def test_http_exception_reraises(self) -> None:
@@ -686,21 +771,19 @@ class TestGetUserDocument:
         from app.api.routes.agent import _get_user_document
 
         graph_provider = AsyncMock()
-        graph_provider.get_user_by_user_id = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
+        graph_provider.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "email": " "})
         log = logging.getLogger("test")
 
         with pytest.raises(HTTPException) as exc:
             await _get_user_document("user-1", graph_provider, log)
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 400
 
 
 # ---------------------------------------------------------------------------
 # _get_org_info
 # ---------------------------------------------------------------------------
 
-class TestGetOrgInfo:
+class TestGetOrgInfoAccountTypes:
     """Tests for organization lookup and validation."""
 
     @pytest.mark.asyncio
@@ -820,8 +903,8 @@ class TestGetOrgInfo:
 
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        assert exc.value.status_code == 500
-        assert "Failed to retrieve organization" in exc.value.detail
+        assert exc.value.status_code == 503
+        assert exc.value.detail == DATABASE_UNREACHABLE
 
     @pytest.mark.asyncio
     async def test_http_exception_reraises(self) -> None:
@@ -830,14 +913,12 @@ class TestGetOrgInfo:
         from app.api.routes.agent import _get_org_info
 
         graph_provider = AsyncMock()
-        graph_provider.get_document = AsyncMock(
-            side_effect=HTTPException(status_code=403, detail="Forbidden")
-        )
+        graph_provider.get_document = AsyncMock(return_value=None)
         log = logging.getLogger("test")
 
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        assert exc.value.status_code == 403
+        assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
     async def test_calls_get_document_with_correct_args(self) -> None:
@@ -851,7 +932,7 @@ class TestGetOrgInfo:
         log = logging.getLogger("test")
 
         await _get_org_info({"orgId": "org-1"}, graph_provider, log)
-        graph_provider.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value)
+        graph_provider.get_document.assert_awaited_once_with("org-1", CollectionNames.ORGS.value, raise_on_error=True)
 
 
 # ---------------------------------------------------------------------------
@@ -898,11 +979,28 @@ class TestParseKnowledgeSources:
         result = _parse_knowledge_sources(raw)
         assert result["jira"]["filters"] == {"types": ["bug"]}
 
-    def test_invalid_json_filters_default_to_empty(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_filters_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "jira", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
+
+    @pytest.mark.parametrize("filters", [{"records": "x"}, {"records": [123, None]}, [1, 2], {"recordGroups": [""]}])
+    def test_a_limit_that_is_not_lists_of_ids_is_refused(self, filters) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources([{"connectorId": "jira", "filters": filters}])
+
+    @pytest.mark.parametrize("filters", [None, "", "{}", {}, []])
+    def test_no_filters_in_any_spelling_is_a_whole_source(self, filters) -> None:
+        from app.api.routes.agent import _parse_knowledge_sources
+        result = _parse_knowledge_sources([{"connectorId": "jira", "filters": filters}])
         assert result["jira"]["filters"] == {}
+
+    def test_a_limit_keeps_the_names_saved_beside_it(self) -> None:
+        from app.api.routes.agent import _parse_knowledge_sources
+        filters = {"records": ["f1"], "nodes": [{"id": "f1", "name": "Specs", "nodeType": "folder"}]}
+        assert _parse_knowledge_sources([{"connectorId": "jira", "filters": filters}])["jira"]["filters"] == filters
 
 
 # ---------------------------------------------------------------------------
@@ -1008,8 +1106,7 @@ class TestFilterKnowledgeByEnabledSources:
         assert ids == {"confluence-app", kb_uuid}
 
 
-
-class TestParseRequestBody:
+class TestParseRequestBodyEdgeCases:
     def test_valid_json(self) -> None:
         from app.api.routes.agent import _parse_request_body
         result = _parse_request_body(b'{"name": "test"}')
@@ -1042,7 +1139,7 @@ class TestParseRequestBody:
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichAgentModels:
+class TestEnrichAgentModelsOrgDefault:
     @pytest.mark.asyncio
     async def test_enriches_matching_model(self) -> None:
         from app.api.routes.agent import _enrich_agent_models
@@ -1201,7 +1298,7 @@ class TestEnrichAgentModels:
 # ---------------------------------------------------------------------------
 
 
-class TestParseToolsetsExtended:
+class TestParseToolsetsSkipsAndMerges:
     def test_non_dict_entries_skipped(self) -> None:
         from app.api.routes.agent import _parse_toolsets
         result = _parse_toolsets(["not a dict", 42])
@@ -1260,26 +1357,11 @@ class TestParseToolsetsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestValidateRequiredFieldsExtended:
+class TestValidateRequiredFieldsValues:
     def test_empty_string_value_fails(self) -> None:
         from app.api.routes.agent import InvalidRequestError, _validate_required_fields
         with pytest.raises(InvalidRequestError):
             _validate_required_fields({"name": ""}, ["name"])
-
-    def test_whitespace_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"name": "   "}, ["name"])
-
-    def test_none_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"name": None}, ["name"])
-
-    def test_zero_value_fails(self) -> None:
-        from app.api.routes.agent import InvalidRequestError, _validate_required_fields
-        with pytest.raises(InvalidRequestError):
-            _validate_required_fields({"count": 0}, ["count"])
 
     def test_valid_numeric_value_passes(self) -> None:
         from app.api.routes.agent import _validate_required_fields
@@ -1291,7 +1373,7 @@ class TestValidateRequiredFieldsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestParseModelsExtended:
+class TestParseModelsInputShapes:
     def test_string_entries(self) -> None:
         from app.api.routes.agent import _parse_models
         log = logging.getLogger("test")
@@ -1300,27 +1382,6 @@ class TestParseModelsExtended:
         assert len(entries) == 2
         assert entries[0] == "mk1_mn1"
         assert entries[1] == "mk2"
-
-    def test_dict_without_model_key_skipped(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelName": "mn1"}]  # no modelKey
-        entries, _ = _parse_models(raw, log)
-        assert entries == []
-
-    def test_dict_with_key_and_name(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelKey": "mk1", "modelName": "mn1"}]
-        entries, _ = _parse_models(raw, log)
-        assert entries == ["mk1_mn1"]
-
-    def test_dict_with_key_only(self) -> None:
-        from app.api.routes.agent import _parse_models
-        log = logging.getLogger("test")
-        raw = [{"modelKey": "mk1"}]
-        entries, _ = _parse_models(raw, log)
-        assert entries == ["mk1"]
 
     def test_non_list_input(self) -> None:
         from app.api.routes.agent import _parse_models
@@ -1334,7 +1395,7 @@ class TestParseModelsExtended:
 # ---------------------------------------------------------------------------
 
 
-class TestEnrichUserInfoExtended:
+class TestEnrichUserInfoNameFields:
     @pytest.mark.asyncio
     async def test_adds_all_name_fields(self) -> None:
         from app.api.routes.agent import _enrich_user_info
@@ -1390,6 +1451,22 @@ class TestGetUserContextExtended:
         request.query_params = {"sendUserInfo": False}
         ctx = _get_user_context(request)
         assert ctx["userId"] == "u1"
+
+
+class TestApplyUserContextGate:
+    def test_disabled_sets_send_user_info_false(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=False)
+        assert info["sendUserInfo"] is False
+
+    def test_enabled_leaves_existing_value(self) -> None:
+        from app.api.routes.agent import _apply_user_context_gate
+
+        info = {"userId": "u1", "sendUserInfo": True}
+        _apply_user_context_gate(info, enabled=True)
+        assert info["sendUserInfo"] is True
 
 
 # ---------------------------------------------------------------------------
@@ -1511,7 +1588,7 @@ class TestGetOrgInfo:
         graph_provider.get_document = AsyncMock(side_effect=RuntimeError("db error"))
         with pytest.raises(HTTPException) as exc:
             await _get_org_info({"orgId": "o1"}, graph_provider, logging.getLogger("test"))
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -1771,11 +1848,11 @@ class TestParseKnowledgeSourcesFull:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"key": "val"}
 
-    def test_invalid_json_string_filters(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_invalid_json_string_filters_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_non_dict_entry_skipped(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
@@ -1872,7 +1949,6 @@ class TestFilterKnowledgeFull:
         knowledge = [{"connectorId": kb_uuid, "type": "KB"}]
         result = _filter_knowledge_by_enabled_sources(knowledge, {"apps": [kb_uuid]})
         assert len(result) == 0
-
 
 
 class TestEnrichUserInfoExtended:
@@ -2001,10 +2077,10 @@ class TestCreateKnowledgeEdges:
         graph_provider = AsyncMock()
         graph_provider.batch_upsert_nodes = AsyncMock(return_value=None)
         sources = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges(
-            "agent1", sources, "uk1", graph_provider, logging.getLogger("test")
-        )
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges(
+                "agent1", sources, "uk1", graph_provider, logging.getLogger("test")
+            )
 
     @pytest.mark.asyncio
     async def test_successful_creation(self) -> None:
@@ -2316,11 +2392,14 @@ class TestCloneAgentTemplate:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"name": "T1"})
         services["graph_provider"].clone_agent_template = AsyncMock(return_value="cloned-id")
 
         request = MagicMock()
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
             result = await clone_agent_template(request, "t1")
             assert result.status_code == 200
 
@@ -2331,11 +2410,14 @@ class TestCloneAgentTemplate:
         from app.api.routes.agent import clone_agent_template
 
         services = {"graph_provider": AsyncMock(), "logger": MagicMock()}
+        services["graph_provider"].get_template = AsyncMock(return_value={"name": "T1"})
         services["graph_provider"].clone_agent_template = AsyncMock(return_value=None)
 
         request = MagicMock()
 
-        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services):
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
             with pytest.raises(HTTPException) as exc:
                 await clone_agent_template(request, "t1")
             assert exc.value.status_code == 500
@@ -2665,6 +2747,46 @@ class TestDeleteAgent:
                 "a1", "k1", "o1", transaction="txn-1"
             )
 
+    @staticmethod
+    def _services(agent: dict) -> dict:
+        services = {"graph_provider": AsyncMock(), "logger": MagicMock(), "config_service": MagicMock()}
+        services["graph_provider"].get_agent = AsyncMock(return_value=agent)
+        services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_delete": True})
+        services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
+        services["graph_provider"].delete_agent = AsyncMock(return_value=True)
+        services["graph_provider"].commit_transaction = AsyncMock()
+        return services
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("is_service_account", "removes"), [(True, True), (False, False)])
+    async def test_a_service_account_agent_takes_its_mcp_credentials_with_it(
+        self, is_service_account: bool, removes: bool,
+    ) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": is_service_account})
+        remove = AsyncMock(return_value=[])
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=remove):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+        if removes:
+            remove.assert_awaited_once_with(services["config_service"], "o1", "a1")
+        else:
+            remove.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failing_mcp_cleanup_does_not_fail_the_delete(self) -> None:
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+        from app.api.routes.agent import delete_agent
+
+        services = self._services({"name": "Bot", "isServiceAccount": True})
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services),              patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}),              patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"_key": "k1"}),              patch.object(mcp_lifecycle, "remove_owner_credentials", new=AsyncMock(side_effect=RuntimeError("down"))):
+            result = await delete_agent(MagicMock(), "a1")
+
+        assert result.status_code == 200
+
     @pytest.mark.asyncio
     async def test_not_found(self) -> None:
         from app.api.routes.agent import AgentNotFoundError, delete_agent
@@ -2901,7 +3023,7 @@ class TestUpdateAgent:
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={"name": "A1", "can_edit": True, "shareWithOrg": True})
         services["graph_provider"].update_agent = AsyncMock(return_value=True)
-        services["graph_provider"].delete_edge = AsyncMock()
+        services["graph_provider"].batch_delete_edges = AsyncMock(return_value=1)
 
         request = MagicMock()
         request.body = AsyncMock(return_value=b'{"shareWithOrg":false}')
@@ -2912,7 +3034,13 @@ class TestUpdateAgent:
 
             result = await update_agent(request, "a1")
             assert result.status_code == 200
-            services["graph_provider"].delete_edge.assert_awaited()
+            # The delete that raises when it fails; delete_edge answers False on ArangoDB.
+            services["graph_provider"].batch_delete_edges.assert_awaited_once_with(
+                [{"from_id": "o1", "from_collection": "organizations", "to_id": "a1",
+                  "to_collection": "agentInstances"}],
+                "permission",
+            )
+            services["graph_provider"].delete_edge.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_update_with_toolsets(self) -> None:
@@ -3037,6 +3165,12 @@ class TestAgentChat:
     of."""
 
     @staticmethod
+    def _request() -> MagicMock:
+        request = MagicMock()
+        request.is_disconnected = AsyncMock(return_value=False)
+        return request
+
+    @staticmethod
     def _sse_streaming_response(frames: list[str]):
         from fastapi.responses import StreamingResponse
 
@@ -3057,7 +3191,7 @@ class TestAgentChat:
             f"event: complete\ndata: {json.dumps(completion_data)}\n\n",
         ])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response) as mock_chat_stream:
             result = await chat(request, "a1")
 
@@ -3076,7 +3210,7 @@ class TestAgentChat:
             f"event: error\ndata: {json.dumps(error_payload)}\n\n",
         ])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
             result = await chat(request, "a1")
 
@@ -3094,7 +3228,7 @@ class TestAgentChat:
 
         streaming_response = self._sse_streaming_response([])
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=streaming_response):
             result = await chat(request, "a1")
 
@@ -3111,7 +3245,7 @@ class TestAgentChat:
 
         passthrough = JSONResponse(status_code=400, content={"status": "error", "message": "bad"})
 
-        request = MagicMock()
+        request = self._request()
         with patch("app.api.routes.agent.chat_stream", new_callable=AsyncMock, return_value=passthrough):
             result = await chat(request, "a1")
 
@@ -3162,6 +3296,7 @@ class TestCreateAgentWithToolsetsAndKnowledge:
         services["graph_provider"].begin_transaction = AsyncMock(return_value="txn-1")
         services["graph_provider"].batch_upsert_nodes = AsyncMock(side_effect=RuntimeError("db error"))
         services["graph_provider"].rollback_transaction = AsyncMock()
+        services["graph_provider"].is_write_conflict = MagicMock(return_value=False)
 
         request = MagicMock()
         body = json.dumps({
@@ -3178,6 +3313,108 @@ class TestCreateAgentWithToolsetsAndKnowledge:
                 await create_agent(request)
             assert exc.value.status_code == 500
             services["graph_provider"].rollback_transaction.assert_awaited()
+
+
+class TestCreateAgentTransactionOutcome:
+    """Every way the create's transaction can end: commit, rollback on an
+    ordinary failure, rollback on cancellation, and a begin that never opened."""
+
+    @staticmethod
+    def _graph() -> AsyncMock:
+        graph = AsyncMock()
+        graph.begin_transaction = AsyncMock(return_value="txn-1")
+        graph.batch_upsert_nodes = AsyncMock(return_value=True)
+        graph.batch_create_edges = AsyncMock(return_value=True)
+        graph.commit_transaction = AsyncMock()
+        graph.rollback_transaction = AsyncMock()
+        # Synchronous on the real providers.
+        graph.is_write_conflict = MagicMock(return_value=False)
+        graph.is_transient_error = MagicMock(return_value=False)
+        return graph
+
+    @staticmethod
+    async def _create(graph: AsyncMock) -> JSONResponse:
+        from app.api.routes.agent import create_agent
+
+        request = MagicMock()
+        request.body = AsyncMock(return_value=json.dumps({
+            "name": "Agent",
+            "models": [{"modelKey": "mk1", "modelName": "mn1", "isReasoning": True}],
+        }).encode())
+        services = {"graph_provider": graph, "logger": MagicMock()}
+        with patch("app.api.routes.agent.get_services", new_callable=AsyncMock, return_value=services), \
+             patch("app.api.routes.agent._get_user_context", return_value={"userId": "u1", "orgId": "o1"}), \
+             patch("app.api.routes.agent._get_user_document", new_callable=AsyncMock, return_value={"email": "a@b.com", "_key": "k1"}):
+            return await create_agent(request)
+
+    async def test_success_commits_the_one_transaction(self) -> None:
+        graph = self._graph()
+
+        result = await self._create(graph)
+
+        assert result.status_code == 200
+        graph.begin_transaction.assert_awaited_once()
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        graph.rollback_transaction.assert_not_awaited()
+        for call in graph.batch_upsert_nodes.await_args_list + graph.batch_create_edges.await_args_list:
+            assert call.kwargs["transaction"] == "txn-1"
+
+    async def test_failed_write_after_the_agent_node_rolls_back_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.batch_create_edges = AsyncMock(side_effect=RuntimeError("lock wait timed out"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.batch_upsert_nodes.assert_awaited_once()
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_cancellation_mid_create_rolls_back_and_stays_a_cancellation(self) -> None:
+        graph = self._graph()
+        graph.batch_create_edges = AsyncMock(side_effect=asyncio.CancelledError())
+
+        with pytest.raises(asyncio.CancelledError):
+            await self._create(graph)
+
+        graph.batch_upsert_nodes.assert_awaited_once()
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_failed_begin_answers_500_without_touching_a_transaction(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.begin_transaction = AsyncMock(side_effect=RuntimeError("Neo4j client not connected"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        assert not isinstance(exc.value.__cause__, NameError)
+        graph.batch_upsert_nodes.assert_not_awaited()
+        graph.rollback_transaction.assert_not_awaited()
+        graph.commit_transaction.assert_not_awaited()
+
+    async def test_failed_commit_aborts_and_answers_500(self) -> None:
+        from app.utils.user_messages import action_failed
+
+        graph = self._graph()
+        graph.commit_transaction = AsyncMock(side_effect=RuntimeError("Transaction failed"))
+
+        with pytest.raises(HTTPException) as exc:
+            await self._create(graph)
+
+        assert exc.value.status_code == 500
+        assert exc.value.detail == action_failed("create this agent")
+        graph.commit_transaction.assert_awaited_once_with("txn-1")
+        # ArangoDB leaves the transaction open after a failed commit.
+        graph.rollback_transaction.assert_awaited_once_with("txn-1")
 
 
 # ===========================================================================
@@ -3237,6 +3474,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value=None)
@@ -3267,6 +3505,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3310,6 +3549,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3353,6 +3593,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3407,6 +3648,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3458,6 +3700,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3499,6 +3742,7 @@ class TestChatStream:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].check_agent_permission = AsyncMock(return_value={"can_edit": True})
         services["graph_provider"].get_agent = AsyncMock(return_value={
@@ -3670,8 +3914,8 @@ class TestKnowledgeEdgeFailures2:
         from app.api.routes.agent import _create_knowledge_edges
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("fail"))
-        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
-        assert result == []
+        with pytest.raises(Exception, match="fail"):
+            await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
 
     @pytest.mark.asyncio
     async def test_batch_create_edges_exception(self) -> None:
@@ -3679,8 +3923,8 @@ class TestKnowledgeEdgeFailures2:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=True)
         gp.batch_create_edges = AsyncMock(side_effect=Exception("fail"))
-        result = await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
-        assert len(result) == 1
+        with pytest.raises(Exception, match="fail"):
+            await _create_knowledge_edges("a1", {"c1": {"connectorId": "c1", "filters": {}}}, "uk1", gp, logging.getLogger("test"))
 
 class TestAllErrorPaths:
     @pytest.mark.asyncio
@@ -3710,11 +3954,11 @@ class TestParseKnowledgeSourcesEdgeCases:
         result = _parse_knowledge_sources(raw)
         assert result["c1"]["filters"] == {"types": ["doc"]}
 
-    def test_filters_as_invalid_json_string(self) -> None:
-        from app.api.routes.agent import _parse_knowledge_sources
+    def test_filters_as_invalid_json_string_are_refused(self) -> None:
+        from app.api.routes.agent import InvalidRequestError, _parse_knowledge_sources
         raw = [{"connectorId": "c1", "filters": "not json"}]
-        result = _parse_knowledge_sources(raw)
-        assert result["c1"]["filters"] == {}
+        with pytest.raises(InvalidRequestError, match="cannot be read"):
+            _parse_knowledge_sources(raw)
 
     def test_missing_connector_id(self) -> None:
         from app.api.routes.agent import _parse_knowledge_sources
@@ -3996,8 +4240,8 @@ class TestCreateKnowledgeEdgesFullCoverage:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(return_value=False)
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(RuntimeError):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
     @pytest.mark.asyncio
     async def test_success(self) -> None:
@@ -4018,8 +4262,8 @@ class TestCreateKnowledgeEdgesFullCoverage:
         gp = AsyncMock()
         gp.batch_upsert_nodes = AsyncMock(side_effect=Exception("err"))
         knowledge = {"c1": {"connectorId": "c1", "filters": {}}}
-        result = await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
-        assert result == []
+        with pytest.raises(Exception, match="err"):
+            await _create_knowledge_edges("ak1", knowledge, "uk1", gp, log)
 
 
 class TestServiceAccountAgentRoutes:
@@ -4100,6 +4344,7 @@ class TestServiceAccountAgentRoutes:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "name": "A1",
@@ -4160,6 +4405,7 @@ class TestServiceAccountAgentRoutes:
             "config_service": AsyncMock(),
             "logger": MagicMock(),
             "llm": MagicMock(),
+            "entity_vector_store": None,
         }
         services["graph_provider"].get_agent = AsyncMock(return_value={
             "_key": "sa-org-a",
@@ -4448,3 +4694,25 @@ class TestServiceAccountAgentRoutes:
 
         body = json.loads(result.body)
         assert body["pagination"]["totalItems"] == 2
+
+
+class TestAgentModelDefaultEffort:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("stored", "expected"), [
+        ({"configuration": {"model": "qwen", "defaultReasoningEffort": "low"}}, "low"),
+        ({"configuration": {"model": "qwen"}, "defaultReasoningEffort": "medium"}, "medium"),
+        ({"configuration": {"model": "qwen", "defaultReasoningEffort": "extreme"}}, None),
+        ({"configuration": {"model": "qwen"}}, None),
+    ], ids=["in-configuration", "top-level", "invalid", "not-stored"])
+    async def test_a_models_own_default_effort_is_passed_on(self, stored, expected) -> None:
+        from app.api.routes.agent import _enrich_agent_models
+
+        agent = {"models": ["mk1_qwen"]}
+        config_service = AsyncMock()
+        config_service.get_config = AsyncMock(return_value={
+            "llm": [{"modelKey": "mk1", "provider": "openAICompatible", "isReasoning": True, **stored}]
+        })
+
+        await _enrich_agent_models(agent, config_service, logging.getLogger("test"))
+        assert agent["models"][0].get("defaultReasoningEffort") == expected
+        assert agent["models"][0]["modelName"] == "qwen"

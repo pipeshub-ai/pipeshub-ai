@@ -161,15 +161,6 @@ async def test_failed_upload_leaves_no_storage_document(storage_outage: StorageO
     )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "An upload that fails because storage cannot be written reports the storage layer's own "
-        "error text (the upload pipeline forwards the thrown error's message), not a plain "
-        "explanation with a next step."
-    ),
-)
 async def test_storage_failure_message_reads_plainly(storage_outage: StorageOutage) -> None:
     messages = storage_outage.outcome["messages"]
     assert messages, "the failed upload returned no message to check"

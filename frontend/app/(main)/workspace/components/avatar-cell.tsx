@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import React from 'react';
 import { Flex, Text } from '@radix-ui/themes';
 import { UserAvatar } from '@/app/components/ui/user-avatar';
@@ -37,15 +39,17 @@ export function AvatarCell({
   isSelf = false,
   profilePicture,
 }: AvatarCellProps) {
-  const displayName = isSelf ? `${name} (You)` : name;
+  const { t } = useTranslation();
+  const displayName = isSelf ? `${name} (${t('common.you')})` : name;
 
   return (
-    <Flex align="center" gap="3">
+    <Flex align="center" gap="3" style={{ minWidth: 0, overflow: 'hidden' }}>
       <UserAvatar fullName={name} email={email} src={profilePicture} size={avatarSize} radius='small'/>
       <Flex direction="column" style={{ overflow: 'hidden', minWidth: 0 }}>
         <Text
           size="2"
           weight="medium"
+          title={displayName}
           style={{
             color: 'var(--slate-12)',
             whiteSpace: 'nowrap',
@@ -58,6 +62,7 @@ export function AvatarCell({
         {email && (
           <Text
             size="1"
+            title={email}
             style={{
               color: 'var(--slate-11)',
               whiteSpace: 'nowrap',

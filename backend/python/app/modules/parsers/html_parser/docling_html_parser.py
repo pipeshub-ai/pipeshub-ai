@@ -18,12 +18,14 @@ from typing import Any, Dict, List, Tuple
 from app.modules.parsers.image_parser.image_parser import ImageParser
 from app.services.parsing.interface import ParseResult
 from bs4 import BeautifulSoup
+from docling.datamodel.base_models import InputFormat
 from docling.datamodel.document import DoclingDocument
 from docling.document_converter import DocumentConverter
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.models.blocks import BlocksContainer
 from app.modules.parsers.html_parser import url_utils
+from app.modules.parsers.text_decoding import decode_text
 from app.utils.converters.caption_map import apply_caption_map
 
 
@@ -45,7 +47,7 @@ class DoclingHtmlParser:
         logger: logging.Logger | None = None,
         config_service: object | None = None,
     ) -> None:
-        self.converter = DocumentConverter()
+        self.converter = DocumentConverter(allowed_formats=[InputFormat.HTML])
         self._logger = logger or logging.getLogger(__name__)
         self._config_service = config_service
 
@@ -189,10 +191,7 @@ class DoclingHtmlParser:
         record_name: str,
         config: dict[str, Any] | None = None,
     ) -> ParseResult:
-        if isinstance(content, bytes):
-            html_content = content.decode("utf-8")
-        else:
-            html_content = content
+        html_content = decode_text(content, html=True)
 
         html_content = html_content.strip()
 

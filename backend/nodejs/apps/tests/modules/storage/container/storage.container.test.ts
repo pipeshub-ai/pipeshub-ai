@@ -331,3 +331,39 @@ describe('StorageContainer - coverage', () => {
     })
   })
 })
+
+describe('StorageContainer.warnIfLocalStorageIsSplitAcrossReplicas', () => {
+  const saved = process.env.PIPESHUB_APP_MAX_REPLICAS
+  const realLogger = (StorageContainer as any).logger
+  afterEach(() => {
+    ;(StorageContainer as any).logger = realLogger
+    if (saved === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+    else process.env.PIPESHUB_APP_MAX_REPLICAS = saved
+  })
+
+  // A fake logger, not a stub on the shared singleton other test files stub too.
+  const run = async (replicas: string | undefined, storageConfig: string | null) => {
+    if (replicas === undefined) delete process.env.PIPESHUB_APP_MAX_REPLICAS
+    else process.env.PIPESHUB_APP_MAX_REPLICAS = replicas
+    const error = sinon.stub()
+    ;(StorageContainer as any).logger = { error, warn: sinon.stub() }
+    await StorageContainer.warnIfLocalStorageIsSplitAcrossReplicas({ get: sinon.stub().resolves(storageConfig) } as any)
+    return error
+  }
+
+  it('logs an error at startup for local storage on several replicas', async () => {
+    const error = await run('3', JSON.stringify({ storageType: 'local' }))
+    expect(error.calledOnce).to.be.true
+    expect(error.firstCall.args[0]).to.contain('up to 3 app replicas')
+  })
+
+  it('treats no storage config yet as local', async () => {
+    expect((await run('2', null)).calledOnce).to.be.true
+  })
+
+  it('stays quiet for S3, Azure or a single replica', async () => {
+    expect((await run('3', JSON.stringify({ storageType: 's3' }))).called).to.be.false
+    expect((await run('3', JSON.stringify({ storageType: 'azureBlob' }))).called).to.be.false
+    expect((await run(undefined, JSON.stringify({ storageType: 'local' }))).called).to.be.false
+  })
+})

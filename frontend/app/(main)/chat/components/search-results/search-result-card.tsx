@@ -9,6 +9,7 @@ import { isLocalFsConnectorType } from '@/app/(main)/workspace/connectors/utils/
 import { openRecordSource } from '@/chat/utils/open-record-source';
 import { getConnectorConfig } from '../message-area/response-tabs/citations/utils';
 import type { SearchResultItem } from '@/chat/types';
+import { DemoSourceBadge } from '@/app/(main)/workspace/connectors/demo-data/components';
 
 interface SearchResultCardProps {
   result: SearchResultItem;
@@ -24,7 +25,7 @@ export function SearchResultCard({
   const { t } = useTranslation();
   const isMobile = useIsMobile();
   const { metadata, content, score } = result;
-  const config = getConnectorConfig(metadata.connector);
+  const config = getConnectorConfig(metadata.connector, metadata.connectorInstanceName);
 
   const isCollectionSource = metadata.origin === 'UPLOAD';
   const isLocalFsSource = isLocalFsConnectorType(metadata.connector ?? '');
@@ -89,6 +90,7 @@ export function SearchResultCard({
             >
               {metadata.recordName}
             </Text>
+            <DemoSourceBadge connectorId={metadata.connectorId} />
           </Flex>
 
           {/* Right: action buttons */}
@@ -152,7 +154,7 @@ export function SearchResultCard({
             weight="medium"
             style={{ color: 'var(--slate-10)' }}
           >
-            {config.label}
+            {config.sourceLabel}
           </Text>
         </Flex>
       </Flex>

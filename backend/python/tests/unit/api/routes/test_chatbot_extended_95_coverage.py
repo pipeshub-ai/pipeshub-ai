@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from fastapi import HTTPException
 
+from app.config.constants.arangodb import Connectors
 from app.models.blocks import BlockType
 
 
@@ -99,7 +100,10 @@ def test_pdf_has_any_ocr_page_mocked_doc(needs_ocr_per_page, len_pages, expect):
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
+        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
+        return_value=[120] * len_pages,
+    ):
         with patch(
             "app.api.routes.chatbot.OCRStrategy.needs_ocr",
             return_value=needs_ocr_per_page,
@@ -123,8 +127,109 @@ def test_pdf_has_any_empty_doc():
         def __exit__(self, *_):
             pass
 
-    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen):
+    with patch("app.api.routes.chatbot.pdfplumber.open", FakePDFOpen), patch(
+        "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[],
+    ):
         assert _pdf_has_any_ocr_page(b"%PDF-empty") is False
+
+
+def _fake_pdfplumber_open(page_count: int) -> type:
+    mock_pdf = MagicMock()
+    mock_pdf.pages = [MagicMock() for _ in range(page_count)]
+
+    class FakePDFOpen:
+        def __init__(self, *args, **kwargs) -> None:
+            pass
+
+        def __enter__(self) -> MagicMock:
+            return mock_pdf
+
+        def __exit__(self, *_) -> None:
+            pass
+
+    return FakePDFOpen
+
+
+class TestPdfOcrDecisionUsesTheTextLayer:
+    """PP-256: pdfplumber spent over a minute deciding that a report whose glyphs
+    were drawn as vector paths had no text. pdfium's per-page character counts
+    settle textless pages first; pdfplumber's heuristic sees only pages with text."""
+
+    def test_pages_without_a_text_layer_never_reach_pdfplumber(self) -> None:
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+
+        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", return_value=[0, 0, 0],
+        ), patch("app.api.routes.chatbot.OCRStrategy.needs_ocr") as needs_ocr:
+            assert _pdf_has_any_ocr_page(b"%PDF-x") is True
+
+        needs_ocr.assert_not_called()
+
+    @pytest.mark.parametrize("pages_needing_ocr,expect", [(0, False), (1, True)])
+    def test_pages_with_text_keep_the_existing_heuristic(
+        self, pages_needing_ocr: int, expect: bool,
+    ) -> None:
+        """One textless page of four plus the heuristic's verdict on the other three."""
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+
+        verdicts = [True] * pages_needing_ocr + [False] * (3 - pages_needing_ocr)
+        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(4)), patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
+            return_value=[0, 40, 300, 12],
+        ), patch(
+            "app.api.routes.chatbot.OCRStrategy.needs_ocr", side_effect=verdicts,
+        ) as needs_ocr:
+            assert _pdf_has_any_ocr_page(b"%PDF-x") is expect
+
+        assert needs_ocr.call_count == 3
+
+    @pytest.mark.parametrize(
+        "char_counts",
+        [RuntimeError("pdfium could not open it"), [[0]]],
+        ids=["pdfium-error", "page-count-mismatch"],
+    )
+    def test_every_page_gets_the_heuristic_when_pdfium_cannot_help(
+        self, char_counts: object,
+    ) -> None:
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+
+        with patch("app.api.routes.chatbot.pdfplumber.open", _fake_pdfplumber_open(3)), patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync", side_effect=char_counts,
+        ), patch(
+            "app.api.routes.chatbot.OCRStrategy.needs_ocr", return_value=False,
+        ) as needs_ocr:
+            assert _pdf_has_any_ocr_page(b"%PDF-x") is False
+
+        assert needs_ocr.call_count == 3
+
+    def test_a_real_pdf_of_vector_shapes_is_sent_to_ocr(self) -> None:
+        pytest.importorskip("reportlab")
+        from io import BytesIO
+
+        from reportlab.lib.pagesizes import letter
+        from reportlab.pdfgen import canvas
+
+        from app.api.routes.chatbot import _pdf_has_any_ocr_page
+        from app.modules.parsers.pdf import pdf_rasterizer
+        from app.modules.parsers.pdf.ocr_handler import OCRStrategy
+
+        buf = BytesIO()
+        c = canvas.Canvas(buf, pagesize=letter)
+        for _ in range(2):
+            c.rect(72, 600, 200, 100, fill=1)
+            c.showPage()
+        c.drawString(72, 700, "A page with a real text layer")
+        c.showPage()
+        c.save()
+
+        # The worker runs in-process here; the pool only adds process isolation.
+        with patch(
+            "app.api.routes.chatbot.count_chars_per_page_from_bytes_sync",
+            side_effect=pdf_rasterizer._worker_count_chars_from_bytes,
+        ), patch.object(OCRStrategy, "needs_ocr", wraps=OCRStrategy.needs_ocr) as needs_ocr:
+            assert _pdf_has_any_ocr_page(buf.getvalue()) is True
+
+        assert needs_ocr.call_count == 1
 
 
 def test_pdf_page_count_fixture():
@@ -284,57 +389,289 @@ async def test_upload_png_happy_mocked_sink():
     orch.index.assert_awaited()
 
 
-@pytest.mark.asyncio
-async def test_grant_revoke_attachment_permissions():
+_GRANTOR_CLAIMS = {"userId": "owner", "orgId": "org-1"}
 
-    import app.api.routes.chatbot as cr
 
-    from app.api.routes.chatbot import grant_attachment_permissions, revoke_attachment_permissions
+def _permission_graph(edges=None):
+    """Users resolve to `key-<userId>`; `edges` maps `(user_key, record_id)` to a role."""
+    edges = dict(edges or {})
 
-    req_g = MagicMock()
-
-    req_g.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rec"]})
+    def _get_edge(**kw):
+        role = edges.get((kw["from_id"], kw["to_id"]))
+        return {"role": role} if role else None
 
     gp = AsyncMock()
-
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1"})
-
+    gp.get_user_by_user_id = AsyncMock(
+        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-1"}
+    )
+    gp.get_edge = AsyncMock(side_effect=_get_edge)
+    # Every record here is a chat attachment of the grantor's org.
+    gp.get_document = AsyncMock(side_effect=lambda record_id, _collection: {
+        "orgId": "org-1", "origin": "UPLOAD", "connectorId": "attachments_org-1",
+    })
     gp.batch_create_edges = AsyncMock()
-
     gp.batch_delete_edges = AsyncMock()
+    return gp
+
+
+def _json_request(body):
+    req = MagicMock()
+    req.json = AsyncMock(return_value=body)
+    return req
+
+
+def _edge_pairs(mock_call):
+    return [(e["from_id"], e["to_id"]) for e in mock_call.args[0]]
+
+
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_only_on_records_the_grantor_owns():
+    from app.api.routes.chatbot import grant_attachment_permissions
+
+    gp = _permission_graph({("key-owner", "rec-owned"): "OWNER"})
+    req = _json_request({"userIds": ["viewer"], "recordIds": ["rec-owned", "rec-foreign"]})
+
+    out = await grant_attachment_permissions(req, gp, _GRANTOR_CLAIMS)
+
+    assert out["granted"] == 1
+    created = gp.batch_create_edges.await_args
+    assert _edge_pairs(created) == [("key-viewer", "rec-owned")]
+    assert created.args[0][0]["role"] == "READER"
+
+
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_leaves_existing_edges_untouched():
+    """Re-sharing, or sharing with the owner, must not rewrite or downgrade an edge."""
+    from app.api.routes.chatbot import grant_attachment_permissions
+
+    gp = _permission_graph({
+        ("key-owner", "rec-1"): "OWNER",
+        ("key-viewer", "rec-1"): "READER",
+    })
+    req = _json_request({"userIds": ["viewer", "owner"], "recordIds": ["rec-1"]})
+
+    out = await grant_attachment_permissions(req, gp, _GRANTOR_CLAIMS)
+
+    assert out["granted"] == 0
+    gp.batch_create_edges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_skips_unknown_users_and_empty_payloads():
+    import app.api.routes.chatbot as cr
+    from app.api.routes.chatbot import grant_attachment_permissions
+
+    gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
+    gp.get_user_by_user_id = AsyncMock(
+        side_effect=lambda user_id: None if user_id == "ghost" else {"_key": f"key-{user_id}", "orgId": "org-1"}
+    )
 
     with patch.object(cr.logger, "warning", MagicMock()):
+        out = await grant_attachment_permissions(
+            _json_request({"userIds": ["ghost"], "recordIds": ["rec-1"]}), gp, _GRANTOR_CLAIMS
+        )
+    assert out["granted"] == 0
 
-        r1 = await grant_attachment_permissions(req_g, gp)
-        assert r1["granted"] == 1
+    out_empty = await grant_attachment_permissions(
+        _json_request({"userIds": [], "recordIds": []}), gp, _GRANTOR_CLAIMS
+    )
+    assert out_empty["granted"] == 0
+    gp.batch_create_edges.assert_not_awaited()
 
-    req_none = MagicMock()
 
-    req_none.json = AsyncMock(return_value={"userIds": [], "recordIds": []})
+@pytest.mark.asyncio
+async def test_grant_attachment_permissions_skips_users_of_another_org() -> None:
+    import app.api.routes.chatbot as cr
+    from app.api.routes.chatbot import grant_attachment_permissions
 
-    r2 = await grant_attachment_permissions(req_none, gp)
-    assert r2["granted"] == 0
-
-    gp.get_user_by_user_id = AsyncMock(return_value=None)
-    req_skip = MagicMock()
-
-    req_skip.json = AsyncMock(return_value={"userIds": ["u"], "recordIds": ["rec"]})
+    gp = _permission_graph({("key-owner", "rec-1"): "OWNER"})
+    gp.get_user_by_user_id = AsyncMock(
+        side_effect=lambda user_id: {"_key": f"key-{user_id}", "orgId": "org-2" if user_id == "outsider" else "org-1"}
+    )
 
     with patch.object(cr.logger, "warning", MagicMock()):
+        out = await grant_attachment_permissions(
+            _json_request({"userIds": ["outsider", "viewer"], "recordIds": ["rec-1"]}), gp, _GRANTOR_CLAIMS
+        )
 
-        r3 = await grant_attachment_permissions(req_skip, gp)
+    assert out["granted"] == 1
+    assert _edge_pairs(gp.batch_create_edges.await_args) == [("key-viewer", "rec-1")]
 
-    assert r3["granted"] == 0
 
-    req_r = MagicMock()
+@pytest.mark.asyncio
+async def test_revoke_attachment_permissions_removes_only_reader_edges_on_owned_records():
+    """Naming the owner in an unshare must not delete their OWNER edge, and a READER
+    edge on a record the grantor doesn't own isn't theirs to revoke."""
+    from app.api.routes.chatbot import revoke_attachment_permissions
 
-    req_r.json = AsyncMock(return_value={"userIds": ["x"], "recordIds": ["y"]})
+    gp = _permission_graph({
+        ("key-owner", "rec-1"): "OWNER",
+        ("key-viewer", "rec-1"): "READER",
+        ("key-viewer", "rec-foreign"): "READER",
+    })
+    req = _json_request({"userIds": ["viewer", "owner"], "recordIds": ["rec-1", "rec-foreign"]})
 
-    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "kk"})
+    out = await revoke_attachment_permissions(req, gp, _GRANTOR_CLAIMS)
 
-    out_r = await revoke_attachment_permissions(req_r, gp)
-    gp.batch_delete_edges.assert_awaited()
-    assert out_r["revoked"] >= 1
+    assert out["revoked"] == 1
+    assert _edge_pairs(gp.batch_delete_edges.await_args) == [("key-viewer", "rec-1")]
+
+
+@pytest.mark.asyncio
+async def test_permission_endpoints_reject_bad_payloads_and_tokens_without_grantor():
+    from app.api.routes.chatbot import grant_artifact_permissions, revoke_attachment_permissions
+
+    gp = _permission_graph()
+
+    req_bad_json = MagicMock()
+    req_bad_json.json = AsyncMock(side_effect=RuntimeError("boom"))
+    with pytest.raises(HTTPException) as exc:
+        await grant_artifact_permissions(req_bad_json, gp, _GRANTOR_CLAIMS)
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        await grant_artifact_permissions(_json_request({}), gp, _GRANTOR_CLAIMS)
+    assert exc.value.status_code == 400
+
+    with pytest.raises(HTTPException) as exc:
+        await revoke_attachment_permissions(
+            _json_request({"userIds": ["viewer"], "recordIds": ["rec-1"]}), gp, {"orgId": "org-1"}
+        )
+    assert exc.value.status_code == 400
+    gp.batch_delete_edges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_get_artifact_record_ids_for_conversation_paginates_in_stable_order():
+    from app.api.routes.chatbot import _get_artifact_record_ids_for_conversation
+
+    page1 = [{"_key": f"a{i}"} for i in range(200)]
+    page2 = [{"_key": "a200"}]
+    gp = AsyncMock()
+    gp.get_documents_paginated = AsyncMock(side_effect=[page1, page2])
+
+    record_ids = await _get_artifact_record_ids_for_conversation(gp, "org-1", "conv-1")
+
+    assert len(record_ids) == 201
+    assert record_ids[-1] == "a200"
+    first_kwargs, second_kwargs = (c.kwargs for c in gp.get_documents_paginated.await_args_list)
+    assert first_kwargs["skip"] == 0
+    assert second_kwargs["skip"] == 200
+    assert first_kwargs["filters"] == {"orgId": "org-1", "conversationId": "conv-1"}
+    assert first_kwargs["sort_field"] == "_key"
+    assert first_kwargs["raise_on_error"] is True
+
+
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_grants_once_then_is_a_read_only_no_op():
+    from app.api.routes.chatbot import grant_artifact_permissions
+
+    edges = {("key-owner", "artifact-1"): "OWNER", ("key-owner", "artifact-2"): "OWNER"}
+    gp = _permission_graph(edges)
+    gp.get_documents_paginated = AsyncMock(
+        return_value=[{"_key": "artifact-1"}, {"_key": "artifact-2"}]
+    )
+    body = {"conversationId": "conv-1", "userIds": ["viewer"]}
+
+    out = await grant_artifact_permissions(_json_request(body), gp, _GRANTOR_CLAIMS)
+
+    assert out["granted"] == 2
+    assert gp.get_documents_paginated.await_args.kwargs["filters"] == {
+        "orgId": "org-1",
+        "conversationId": "conv-1",
+    }
+    assert sorted(_edge_pairs(gp.batch_create_edges.await_args)) == [
+        ("key-viewer", "artifact-1"),
+        ("key-viewer", "artifact-2"),
+    ]
+
+    # Shared viewer reopens the conversation: edges already exist, nothing is written.
+    gp_caught_up = _permission_graph({
+        **edges,
+        ("key-viewer", "artifact-1"): "READER",
+        ("key-viewer", "artifact-2"): "READER",
+    })
+    gp_caught_up.get_documents_paginated = gp.get_documents_paginated
+    out_again = await grant_artifact_permissions(_json_request(body), gp_caught_up, _GRANTOR_CLAIMS)
+
+    assert out_again["granted"] == 0
+    gp_caught_up.batch_create_edges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_short_circuits_without_users_or_artifacts():
+    from app.api.routes.chatbot import grant_artifact_permissions
+
+    gp = _permission_graph()
+    gp.get_documents_paginated = AsyncMock(return_value=[])
+
+    out = await grant_artifact_permissions(
+        _json_request({"conversationId": "conv-1", "userIds": []}), gp, _GRANTOR_CLAIMS
+    )
+    assert out["granted"] == 0
+    gp.get_documents_paginated.assert_not_awaited()
+
+    out_no_artifacts = await grant_artifact_permissions(
+        _json_request({"conversationId": "conv-1", "userIds": ["viewer"]}), gp, _GRANTOR_CLAIMS
+    )
+    assert out_no_artifacts["granted"] == 0
+    gp.get_edge.assert_not_awaited()
+    gp.batch_create_edges.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_grant_artifact_permissions_surfaces_graph_errors():
+    """A failed artifact lookup must fail the call, not report `granted: 0`."""
+    from app.api.routes.chatbot import grant_artifact_permissions
+
+    gp = _permission_graph()
+    gp.get_documents_paginated = AsyncMock(side_effect=RuntimeError("graph down"))
+
+    with pytest.raises(RuntimeError):
+        await grant_artifact_permissions(
+            _json_request({"conversationId": "conv-1", "userIds": ["viewer"]}), gp, _GRANTOR_CLAIMS
+        )
+
+
+@pytest.mark.asyncio
+async def test_revoke_artifact_permissions_removes_reader_edges():
+    from app.api.routes.chatbot import revoke_artifact_permissions
+
+    gp = _permission_graph({
+        ("key-owner", "artifact-1"): "OWNER",
+        ("key-viewer", "artifact-1"): "READER",
+    })
+    gp.get_documents_paginated = AsyncMock(return_value=[{"_key": "artifact-1"}])
+
+    out = await revoke_artifact_permissions(
+        _json_request({"conversationId": "conv-1", "userIds": ["viewer"]}), gp, _GRANTOR_CLAIMS
+    )
+
+    assert out["revoked"] == 1
+    assert _edge_pairs(gp.batch_delete_edges.await_args) == [("key-viewer", "artifact-1")]
+
+
+@pytest.mark.asyncio
+async def test_unsharing_a_chat_keeps_an_artifact_shared_on_its_own() -> None:
+    from app.api.routes.chatbot import revoke_artifact_permissions
+    from app.services.artifact_registry.access import ARTIFACT_SHARE_GRANT
+
+    edges = {
+        ("key-owner", "artifact-1"): {"role": "OWNER"},
+        ("key-owner", "artifact-2"): {"role": "OWNER"},
+        ("key-viewer", "artifact-1"): {"role": "READER"},
+        ("key-viewer", "artifact-2"): {"role": "READER", "grantedVia": ARTIFACT_SHARE_GRANT},
+    }
+    gp = _permission_graph()
+    gp.get_edge = AsyncMock(side_effect=lambda **kw: edges.get((kw["from_id"], kw["to_id"])))
+    gp.get_documents_paginated = AsyncMock(return_value=[{"_key": "artifact-1"}, {"_key": "artifact-2"}])
+
+    out = await revoke_artifact_permissions(
+        _json_request({"conversationId": "conv-1", "userIds": ["viewer"]}), gp, _GRANTOR_CLAIMS
+    )
+
+    assert out["revoked"] == 1
+    assert _edge_pairs(gp.batch_delete_edges.await_args) == [("key-viewer", "artifact-1")]
 
 
 @pytest.mark.asyncio
@@ -356,7 +693,7 @@ async def test_delete_chat_attachment_paths():
 
         await delete_chat_attachment("rid", rr, gp)
 
-    assert ex.value.status_code == 403
+    assert ex.value.status_code == 404
 
 
 @pytest.mark.asyncio
@@ -1133,7 +1470,7 @@ async def test_grant_and_revoke_permissions_json_noise():
     with pytest.raises(HTTPException) as exc:
 
 
-        await grant_attachment_permissions(req_g_json, AsyncMock())
+        await grant_attachment_permissions(req_g_json, AsyncMock(), _GRANTOR_CLAIMS)
 
 
 
@@ -1173,7 +1510,7 @@ async def test_grant_and_revoke_permissions_json_noise():
     with pytest.raises(HTTPException) as exc:
 
 
-        await grant_attachment_permissions(rk, AsyncMock())
+        await grant_attachment_permissions(rk, AsyncMock(), _GRANTOR_CLAIMS)
 
 
 
@@ -1212,7 +1549,7 @@ async def test_grant_and_revoke_permissions_json_noise():
 
 
 
-        grant_out = await grant_attachment_permissions(rk2, gp_miss)
+        grant_out = await grant_attachment_permissions(rk2, gp_miss, _GRANTOR_CLAIMS)
 
 
 
@@ -1256,7 +1593,7 @@ async def test_grant_and_revoke_permissions_json_noise():
     with pytest.raises(HTTPException) as exc:
 
 
-        await revoke_attachment_permissions(rq, AsyncMock())
+        await revoke_attachment_permissions(rq, AsyncMock(), _GRANTOR_CLAIMS)
 
 
     assert exc.value.status_code == 400
@@ -1316,7 +1653,9 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    await delete_chat_attachment("rid", rr, gp)
+    with pytest.raises(HTTPException) as ex:
+        await delete_chat_attachment("rid", rr, gp)
+    assert ex.value.status_code == 404
 
 
 
@@ -1333,7 +1672,13 @@ async def test_delete_chat_attachment_early_and_full():
 
 
 
-    gp.get_document.return_value = {"orgId": "o1"}
+    rr.state.user = {"orgId": "o1", "userId": "u1"}
+    gp.get_user_by_user_id = AsyncMock(return_value={"_key": "k1", "orgId": "o1"})
+    gp.get_edge = AsyncMock(return_value={"role": "OWNER"})
+    gp.get_document.return_value = {
+        "orgId": "o1", "origin": "UPLOAD", "connectorId": "attachments_o1",
+        "connectorName": Connectors.ATTACHMENTS.value,
+    }
 
 
 
@@ -1781,7 +2126,7 @@ async def test_revoke_invalid_payload_and_bad_user():
     with pytest.raises(HTTPException) as ex:
 
 
-        await revoke_attachment_permissions(rk, AsyncMock())
+        await revoke_attachment_permissions(rk, AsyncMock(), _GRANTOR_CLAIMS)
 
 
 
@@ -1822,7 +2167,7 @@ async def test_revoke_invalid_payload_and_bad_user():
     with patch.object(cr.logger, "warning", MagicMock()):
 
 
-        out = await revoke_attachment_permissions(rk2, rp)
+        out = await revoke_attachment_permissions(rk2, rp, _GRANTOR_CLAIMS)
 
 
 

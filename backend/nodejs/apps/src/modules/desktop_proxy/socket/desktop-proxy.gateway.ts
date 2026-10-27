@@ -1,12 +1,17 @@
 /**
  * Socket.IO gateway for desktop clients: authenticates the handshake on
- * `/rest-proxy` and routes Local FS messages to `LocalFsRelay`.
+ * `/rest-proxy`, keeps re-checking the session behind each connected socket,
+ * and routes Local FS messages to `LocalFsRelay`.
  */
 import { Server as HttpServer } from 'http';
 import { Namespace, Server, Socket } from 'socket.io';
 import { AuthTokenService } from '../../../libs/services/authtoken.service';
-import { BadRequestError } from '../../../libs/errors/http.errors';
+import {
+  BadRequestError,
+  UnauthorizedError,
+} from '../../../libs/errors/http.errors';
 import { Logger } from '../../../libs/services/logger.service';
+import { findSessionRefusal, findSessionRefusals } from '../../../config';
 import { LocalFsRelay } from './local-fs-relay';
 import {
   DesktopRegisterAck,
@@ -21,6 +26,9 @@ import {
 type RestProxySocketData = {
   userId: string;
   orgId: string;
+  /** `iat` and `email` of the handshake token, for re-checking the session later. */
+  issuedAt?: number;
+  email?: string;
   deviceId?: string;
   deviceName?: string;
 };
@@ -33,6 +41,12 @@ type ClientToServerEvents = {
   'localfs:content:chunk': (payload: LocalFsContentChunkPayload) => void;
   'localfs:content:abort': (payload: LocalFsContentAbortPayload) => void;
 };
+
+/** The edition's session rules; see findSessionRefusal in config.ts. */
+export interface DesktopSessionChecker {
+  findSessionRefusal: typeof findSessionRefusal;
+  findSessionRefusals: typeof findSessionRefusals;
+}
 
 type ServerToClientEvents = Record<string, never>;
 
@@ -47,6 +61,10 @@ type RestProxySocket = Socket<
 
 const NAMESPACE = '/rest-proxy';
 const SOCKET_PATH = '/socket.io-rest-proxy';
+// A socket outlives the token it connected with, so removing, disabling or
+// logging out a user has to reach the sockets already open too. This bounds
+// how long one survives that on any replica.
+const SESSION_RECHECK_INTERVAL_MS = 30_000;
 
 export class DesktopProxySocketGateway {
   private readonly logger = Logger.getInstance({
@@ -55,8 +73,16 @@ export class DesktopProxySocketGateway {
   private io: Server | null = null;
   private namespace: Namespace | null = null;
   private readonly localFsRelay = new LocalFsRelay();
+  private sessionRecheckTimer: NodeJS.Timeout | null = null;
+  private sessionRecheckRunning = false;
 
-  constructor(private readonly authTokenService: AuthTokenService) {}
+  constructor(
+    private readonly authTokenService: AuthTokenService,
+    private readonly sessions: DesktopSessionChecker = {
+      findSessionRefusal,
+      findSessionRefusals,
+    },
+  ) {}
 
   initialize(server: HttpServer): void {
     const rawOrigins = process.env.ALLOWED_ORIGINS;
@@ -80,29 +106,7 @@ export class DesktopProxySocketGateway {
     });
     this.namespace = this.io.of(NAMESPACE);
     this.namespace.use((socket: RestProxySocket, next) => {
-      const extractedToken = this.extractToken(this.getHandshakeToken(socket));
-      if (!extractedToken) {
-        next(new BadRequestError('Authentication token missing'));
-        return;
-      }
-      this.authTokenService
-        .verifyToken(extractedToken)
-        .then((decoded) => {
-          const userId = String(decoded.userId ?? '');
-          const orgId = String(decoded.orgId ?? '');
-          if (!userId || !orgId) {
-            // Otherwise the socket connects but can never be addressed,
-            // which reads as "desktop offline" forever.
-            next(new BadRequestError('Token is missing userId or orgId'));
-            return;
-          }
-          socket.data.userId = userId;
-          socket.data.orgId = orgId;
-          next();
-        })
-        .catch(() => {
-          next(new BadRequestError('Authentication token expired'));
-        });
+      void this.authenticateHandshake(socket).then(next);
     });
 
     this.namespace.on('connection', (socket: RestProxySocket) => {
@@ -136,10 +140,19 @@ export class DesktopProxySocketGateway {
       });
     });
 
+    this.sessionRecheckTimer = setInterval(() => {
+      void this.disconnectRevokedSessions();
+    }, SESSION_RECHECK_INTERVAL_MS);
+    this.sessionRecheckTimer.unref();
+
     this.logger.info('Desktop relay Socket.IO namespace initialized');
   }
 
   shutdown(): void {
+    if (this.sessionRecheckTimer) {
+      clearInterval(this.sessionRecheckTimer);
+      this.sessionRecheckTimer = null;
+    }
     this.namespace?.disconnectSockets(true);
     this.namespace = null;
     void this.io?.close();
@@ -203,6 +216,101 @@ export class DesktopProxySocketGateway {
       connectorId,
       payload,
     );
+  }
+
+  /**
+   * Resolves to the error refusing the handshake, or undefined to accept it.
+   * Refusals that mean "sign in again" carry an auth-looking message: the
+   * desktop client stops on those and retries the rest after a delay.
+   */
+  private async authenticateHandshake(
+    socket: RestProxySocket,
+  ): Promise<Error | undefined> {
+    const extractedToken = this.extractToken(this.getHandshakeToken(socket));
+    if (!extractedToken) {
+      return new BadRequestError('Authentication token missing');
+    }
+
+    let decoded: Awaited<ReturnType<AuthTokenService['verifyToken']>>;
+    try {
+      decoded = await this.authTokenService.verifyToken(extractedToken);
+    } catch {
+      return new BadRequestError('Authentication token expired');
+    }
+
+    const userId = String(decoded.userId ?? '');
+    const orgId = String(decoded.orgId ?? '');
+    if (!userId || !orgId) {
+      // Otherwise the socket connects but can never be addressed,
+      // which reads as "desktop offline" forever.
+      return new BadRequestError('Token is missing userId or orgId');
+    }
+
+    // The same rules as every HTTP request: a signature that still verifies
+    // says nothing about whether the user was removed or disabled since.
+    let refusal: string | null;
+    try {
+      refusal = await this.sessions.findSessionRefusal(decoded, this.logger);
+    } catch (error) {
+      // Fail closed, as HTTP does. The message must not look like an auth
+      // failure, so the desktop client keeps retrying until the check works.
+      this.logger.error('Desktop handshake: session check failed', {
+        error,
+        orgId,
+        userId,
+      });
+      return new Error('Unable to check the session right now');
+    }
+    if (refusal) {
+      return new UnauthorizedError(`Authentication refused: ${refusal}`);
+    }
+
+    socket.data.userId = userId;
+    socket.data.orgId = orgId;
+    socket.data.issuedAt =
+      typeof decoded.iat === 'number' ? decoded.iat : undefined;
+    socket.data.email =
+      typeof decoded.email === 'string' ? decoded.email : undefined;
+    return undefined;
+  }
+
+  /**
+   * Disconnects this replica's sockets whose session no longer holds. Each
+   * replica checks only the sockets it holds, so this needs no cross-replica
+   * fan-out. The client reconnects, and the handshake refuses it.
+   */
+  private async disconnectRevokedSessions(): Promise<void> {
+    if (!this.namespace || this.sessionRecheckRunning) return;
+    const sockets = (
+      [...this.namespace.sockets.values()] as RestProxySocket[]
+    ).filter((socket) => socket.data.userId !== '' && socket.data.orgId !== '');
+    if (sockets.length === 0) return;
+
+    this.sessionRecheckRunning = true;
+    try {
+      const refusals = await this.sessions.findSessionRefusals(
+        sockets.map((socket) => ({
+          userId: socket.data.userId,
+          orgId: socket.data.orgId,
+          iat: socket.data.issuedAt,
+          email: socket.data.email,
+        })),
+      );
+      sockets.forEach((socket, i) => {
+        if (!refusals[i]) return;
+        this.logger.info('Disconnecting desktop socket: session revoked', {
+          orgId: socket.data.orgId,
+          userId: socket.data.userId,
+          reason: refusals[i],
+        });
+        socket.disconnect(true);
+      });
+    } catch (error) {
+      // Leave the sockets up: a database blip must not drop every desktop.
+      this.logger.error('Desktop session re-check failed', { error });
+    } finally {
+      this.sessionRecheckRunning = false;
+    }
   }
 
   private extractToken(token: string): string | null {

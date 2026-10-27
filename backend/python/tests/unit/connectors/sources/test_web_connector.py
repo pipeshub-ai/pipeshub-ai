@@ -33,30 +33,10 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
 )
 from app.connectors.sources.web.connector import (
-    DOCUMENT_MIME_TYPES,
-    IMAGE_MIME_TYPES,
-    RecordUpdate,
-    RetryUrl,
-    Status,
-    WebApp,
-    WebConnector,
     _bytes_async_gen,
 )
-from app.connectors.sources.web.fetch_strategy import FetchResponse
 import base64
 from bs4 import BeautifulSoup
-from app.connectors.sources.web.connector import (
-    DOCUMENT_MIME_TYPES,
-    IMAGE_MIME_TYPES,
-    MAX_RETRIES,
-    RETRYABLE_STATUS_CODES,
-    RecordUpdate,
-    RetryUrl,
-    Status,
-    WebApp,
-    WebConnector,
-    _bytes_async_gen,
-)
 
 
 # ---------------------------------------------------------------------------
@@ -74,6 +54,8 @@ def _make_connector():
     data_entities_processor.on_new_record_groups = AsyncMock()
     data_entities_processor.on_new_records = AsyncMock()
     data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
+    data_entities_processor.get_records_in_record_group = AsyncMock(return_value=[])
+    data_entities_processor.get_file_record_by_id = AsyncMock(return_value=None)
     data_entities_processor.get_user_by_user_id = AsyncMock(return_value=None)
     data_entities_processor.on_record_deleted = AsyncMock()
     data_entities_processor.on_record_metadata_update = AsyncMock()
@@ -108,6 +90,8 @@ def _make_connector():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 
@@ -394,22 +378,14 @@ class TestWebConnectorRecordGroup:
     async def test_create_record_group(self):
         connector = _make_connector()
         connector.url = "https://example.com"
-        from app.models.entities import AppUser
-        app_users = [
-            AppUser(
-                app_name=Connectors.WEB, connector_id="web-conn-1",
-                source_user_id="u1", org_id="org-1",
-                email="test@example.com", full_name="Test User", is_active=True,
-            )
-        ]
-        await connector.create_record_group(app_users)
+        await connector.create_record_group()
         connector.data_entities_processor.on_new_record_groups.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_create_record_group_no_url(self):
         connector = _make_connector()
         connector.url = None
-        await connector.create_record_group([])
+        await connector.create_record_group()
         connector.data_entities_processor.on_new_record_groups.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -418,7 +394,7 @@ class TestWebConnectorRecordGroup:
         connector.url = "https://example.com"
         connector.data_entities_processor.on_new_record_groups = AsyncMock(side_effect=Exception("fail"))
         with pytest.raises(Exception):
-            await connector.create_record_group([])
+            await connector.create_record_group()
 
 
 # ===================================================================
@@ -844,7 +820,6 @@ class TestWebConnectorRunSync:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_single(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -861,7 +836,6 @@ class TestWebConnectorRunSync:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_recursive(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -1165,7 +1139,8 @@ class TestWebConnectorFetchAndProcessDeep:
         connector.retry_urls = {}
         connector._normalize_url = MagicMock(return_value="https://example.com/page")
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
-                    new_callable=AsyncMock, return_value=None):
+                    new_callable=AsyncMock, return_value=None), \
+                patch.object(connector, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             result = await connector._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
         assert "https://example.com/page" in connector.retry_urls
@@ -1181,7 +1156,8 @@ class TestWebConnectorFetchAndProcessDeep:
         connector.retry_urls = {}
         connector._normalize_url = MagicMock(return_value="https://example.com/page")
         with patch("app.connectors.sources.web.connector.fetch_url_with_fallback",
-                    new_callable=AsyncMock) as mock_fetch:
+                    new_callable=AsyncMock) as mock_fetch, \
+                patch.object(connector, "_ensure_crawl4ai_fetcher", new_callable=AsyncMock, return_value=None):
             mock_fetch.return_value = FetchResponse(
                 status_code=429, content_bytes=b"Rate limited",
                 headers={}, final_url="https://example.com/page", strategy="aiohttp",
@@ -1299,7 +1275,6 @@ class TestWebConnectorRunSyncDeep:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_clears_state(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -1319,7 +1294,6 @@ class TestWebConnectorRunSyncDeep:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_exception_propagated(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
         connector.url = "https://example.com"
@@ -1335,7 +1309,6 @@ class TestWebConnectorRunSyncDeep:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_creates_app_users(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         from app.models.entities import User
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector()
@@ -1350,7 +1323,6 @@ class TestWebConnectorRunSyncDeep:
         connector.scope = "PERSONAL"
         connector.created_by = "user-1"
         connector.creator_email = "user@test.com"
-        from app.models.entities import User
         mock_user = User(
             email="user@example.com",
             full_name="User",
@@ -1434,6 +1406,8 @@ def _make_connector_cov():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
@@ -1447,6 +1421,8 @@ def _make_connector_cov():
     )
     c.record_sync_point.read_sync_point = AsyncMock(return_value={})
     c.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 
@@ -1593,20 +1569,16 @@ class TestDetermineMimeTypeExtended:
 
     def test_svg_content_type(self):
         c = _make_connector_cov()
-        # 'image/svg+xml' contains 'xml', which the code checks before 'svg',
-        # so the XML branch takes precedence
         mime, ext = c._determine_mime_type("https://x.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_docx_content_type(self):
         c = _make_connector_cov()
-        # OOXML content types contain 'xml', which the code checks before
-        # 'wordprocessingml', so the XML branch takes precedence
         mime, ext = c._determine_mime_type(
             "https://x.com/f",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.DOCX
 
     def test_doc_content_type(self):
         c = _make_connector_cov()
@@ -1615,13 +1587,11 @@ class TestDetermineMimeTypeExtended:
 
     def test_xlsx_content_type(self):
         c = _make_connector_cov()
-        # OOXML content types contain 'xml', which the code checks before
-        # 'spreadsheetml', so the XML branch takes precedence
         mime, ext = c._determine_mime_type(
             "https://x.com/f",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.XLSX
 
     def test_xls_content_type(self):
         c = _make_connector_cov()
@@ -1630,13 +1600,11 @@ class TestDetermineMimeTypeExtended:
 
     def test_pptx_content_type(self):
         c = _make_connector_cov()
-        # OOXML content types contain 'xml', which the code checks before
-        # 'presentationml', so the XML branch takes precedence
         mime, ext = c._determine_mime_type(
             "https://x.com/f",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.PPTX
 
     def test_ppt_content_type(self):
         c = _make_connector_cov()
@@ -2022,6 +1990,8 @@ def _make_connector_fullcov():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_file_record_by_id = AsyncMock(return_value=None)
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
@@ -2040,6 +2010,8 @@ def _make_connector_fullcov():
     )
     connector.record_sync_point.read_sync_point = AsyncMock(return_value={})
     connector.record_sync_point.update_sync_point = AsyncMock(return_value={})
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    connector.respect_robots_txt = False
     return connector
 
 
@@ -2281,7 +2253,7 @@ class TestDetermineMimeType:
             "https://example.com/f",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.DOCX
 
     def test_doc_from_content_type(self):
         connector = _make_connector_fullcov()
@@ -2296,7 +2268,7 @@ class TestDetermineMimeType:
             "https://example.com/f",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.XLSX
 
     def test_xls_from_content_type(self):
         connector = _make_connector_fullcov()
@@ -2311,7 +2283,7 @@ class TestDetermineMimeType:
             "https://example.com/f",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.PPTX
 
     def test_ppt_from_content_type(self):
         connector = _make_connector_fullcov()
@@ -2338,7 +2310,7 @@ class TestDetermineMimeType:
     def test_svg_from_content_type(self):
         connector = _make_connector_fullcov()
         mime, ext = connector._determine_mime_type("https://example.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_htm_extension(self):
         connector = _make_connector_fullcov()
@@ -2584,6 +2556,7 @@ class TestFetchAndProcessUrl:
         existing.id = "existing-id"
         existing.record_name = "Test"
         existing.external_revision_id = content_hash
+        existing.etag = existing.ctag = None
         existing.parent_external_record_id = None
         existing.indexing_status = ProgressStatus.COMPLETED.value
         existing.extraction_status = "COMPLETED"
@@ -2655,7 +2628,8 @@ class TestFetchAndProcessUrl:
             )
             result = await connector._fetch_and_process_url("https://example.com/page", 0)
         assert result is None
-        assert "https://example.com/page" not in connector.retry_urls
+        # Recorded as a failed page, but never re-fetched this sync.
+        assert connector.retry_urls["https://example.com/page"].retries == MAX_RETRIES
 
 
 class TestEnsureParentRecordsExistFullCoverage:
@@ -2937,7 +2911,6 @@ class TestRunSyncSitemap:
     @pytest.mark.asyncio
     @patch("app.connectors.sources.web.connector.load_connector_filters", new_callable=AsyncMock)
     async def test_run_sync_unknown_crawl_type_falls_through(self, mock_filters):
-        from app.connectors.core.registry.filters import FilterCollection
         mock_filters.return_value = (FilterCollection(), FilterCollection())
         connector = _make_connector_fullcov()
         connector.url = "https://example.com"
@@ -3073,9 +3046,10 @@ class TestUploadNewToStorage:
         assert session.calls[0]["method"] == "post"
         assert session.calls[0].get("allow_redirects") is False
         assert session.calls[1]["method"] == "put"
-        assert session.calls[1]["url"] == presigned
+        assert str(session.calls[1]["url"]) == presigned
         assert session.calls[1]["data"] == content
         assert session.calls[1]["headers"]["Content-Length"] == str(len(content))
+        assert session.calls[1].get("skip_auto_headers") == {"Content-Type"}
         assert session.calls[1].get("allow_redirects") is False
 
     @pytest.mark.asyncio
@@ -3112,7 +3086,7 @@ class TestUploadNewToStorage:
         # fake session's response Location must never trigger a follow-up call.
         assert len(session.calls) == 2
         assert session.calls[1]["method"] == "put"
-        assert session.calls[1]["url"] == presigned
+        assert str(session.calls[1]["url"]) == presigned
         assert session.calls[1].get("allow_redirects") is False
 
     @pytest.mark.asyncio

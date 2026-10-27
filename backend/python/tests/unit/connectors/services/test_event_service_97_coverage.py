@@ -19,6 +19,27 @@ import pytest
 
 from app.config.constants.arangodb import ProgressStatus
 from app.connectors.services.event_service import EventService
+from tests.unit.connectors.services.coordinator_stub import (
+    current,
+    installed_stub,
+    spawned,
+)
+
+
+def _spawn_raises(message):
+    """Stand-in for start_if_idle failing during full-sync prep.
+
+    Still closes the coroutine it was handed — start_if_idle owns it, and an
+    unclosed one turns into a 'never awaited' warning that masks the assertion.
+    """
+
+    def _inner(key, coro):
+        coro.close()
+        raise Exception(message)
+
+    return _inner
+
+
 
 
 # ---------------------------------------------------------------------------
@@ -53,6 +74,12 @@ def mock_container():
     container.messaging_producer = AsyncMock()
     container.messaging_producer.send_message = AsyncMock()
     return container
+
+
+@pytest.fixture(autouse=True)
+def stub_lease_manager():
+    with installed_stub() as stub:
+        yield stub
 
 
 @pytest.fixture
@@ -105,9 +132,8 @@ class TestFullSyncSyncPointDeletionFailure:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
-            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
+             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
+            mock_stm.side_effect = spawned
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -127,9 +153,8 @@ class TestFullSyncSyncPointDeletionFailure:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
-            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
+             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
+            mock_stm.side_effect = spawned
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -137,58 +162,6 @@ class TestFullSyncSyncPointDeletionFailure:
             service.logger.warning.assert_any_call(
                 "Continuing with sync despite sync point deletion failure"
             )
-
-
-# ===========================================================================
-# Lines 270-272: sync edge deletion raises exception
-# ===========================================================================
-
-class TestFullSyncEdgeDeletionException:
-    """Cover the except block for delete_connector_sync_edges."""
-
-    @pytest.mark.asyncio
-    async def test_sync_edges_delete_exception(self, service):
-        """Lines 271-272: sync edge deletion raises exception => error logged."""
-        mock_conn = AsyncMock()
-        mock_conn.run_sync = AsyncMock()
-
-        # Sync edges deletion raises an exception
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(
-            side_effect=Exception("edge deletion error")
-        )
-
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
-            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
-            result = await service._handle_start_sync("gmail", {
-                "orgId": "org1", "connectorId": "c1", "fullSync": True
-            })
-            assert result is True
-
-    @pytest.mark.asyncio
-    async def test_sync_edges_delete_returns_false(self, service):
-        """Lines 269-270: sync edge deletion returns success=False => warning logged."""
-        mock_conn = AsyncMock()
-        mock_conn.run_sync = AsyncMock()
-
-        # Sync edges returns failure
-        service.graph_provider.delete_connector_sync_edges = AsyncMock(
-            return_value=(0, False)
-        )
-
-        with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
-             patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch.object(service, "_update_app_status", new_callable=AsyncMock), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
-            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
-            result = await service._handle_start_sync("gmail", {
-                "orgId": "org1", "connectorId": "c1", "fullSync": True
-            })
-            assert result is True
 
 
 # ===========================================================================
@@ -200,7 +173,7 @@ class TestFullSyncPrepException:
 
     @pytest.mark.asyncio
     async def test_full_sync_prep_fails_and_reverts(self, service):
-        """Lines 278-285: sync_task_manager.start_sync raises => revert lock."""
+        """Lines 278-285: the sync spawn raises => revert lock."""
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
 
@@ -219,9 +192,9 @@ class TestFullSyncPrepException:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock, side_effect=update_status_side_effect), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            # start_sync raises exception during prep
-            mock_stm.start_sync = AsyncMock(side_effect=Exception("task manager error"))
+             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
+            # the spawn raises during prep => the lock must be reverted
+            mock_stm.side_effect = _spawn_raises("task manager error")
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -244,8 +217,8 @@ class TestFullSyncPrepException:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock, side_effect=update_status_side_effect), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock(side_effect=Exception("task error"))
+             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
+            mock_stm.side_effect = _spawn_raises("task error")
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -278,9 +251,8 @@ class TestFullSyncUnlockFailure:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock, side_effect=update_status_side_effect), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
-            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
+             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
+            mock_stm.side_effect = spawned
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": True
             })
@@ -305,9 +277,8 @@ class TestNormalSyncStatusFailure:
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
              patch.object(service, "_update_app_status", new_callable=AsyncMock, side_effect=Exception("status write failed")), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
-            mock_stm.start_if_idle = AsyncMock(return_value=MagicMock())
+             patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
+            mock_stm.side_effect = spawned
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1", "connectorId": "c1", "fullSync": False
             })
@@ -443,6 +414,7 @@ class TestDeleteRevertStatusFailure:
     @pytest.mark.asyncio
     async def test_delete_fails_and_revert_also_fails(self, service):
         """Lines 520-521: delete fails then revert also fails."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(
             return_value={"success": False, "error": "DB error"}
         )
@@ -451,18 +423,20 @@ class TestDeleteRevertStatusFailure:
             side_effect=Exception("revert failed")
         )
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+        with patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete("gmail", {
                 "orgId": "org1", "connectorId": "c1", "previousIsActive": True
             })
             assert result is False
+            service.graph_provider.batch_upsert_nodes.assert_awaited()
             # Verify double-failure error was logged
             service.logger.error.assert_called()
 
     @pytest.mark.asyncio
     async def test_delete_raises_and_revert_also_fails(self, service):
         """Delete raises an exception (not just returns success=False), revert fails too."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(
             side_effect=Exception("unexpected DB crash")
         )
@@ -470,12 +444,13 @@ class TestDeleteRevertStatusFailure:
             side_effect=Exception("revert also crashed")
         )
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
+        with patch.object(current(), "spawn", new_callable=AsyncMock) as mock_stm:
             mock_stm.cancel_sync = AsyncMock()
             result = await service._handle_delete("gmail", {
                 "orgId": "org1", "connectorId": "c1", "previousIsActive": False
             })
             assert result is False
+            service.graph_provider.batch_upsert_nodes.assert_awaited()
 
 
 # ===========================================================================

@@ -1,7 +1,12 @@
 name: Integration Tests
 
+# Runs on pull_request, not pull_request_target. The secret-backed job runs only
+# for branches of this repository, behind the integration-test-dev environment.
+# A fork's pull request gets it-fork, which holds no secrets; a maintainer runs
+# the full suite on a fork commit by dispatching this workflow with the exact
+# commit_hash they reviewed (see integration-tests/README.md).
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, labeled, unlabeled]
     branches:
       - 'main'
@@ -24,8 +29,10 @@ on:
             - bookstack
             - minio
             - sharepoint
+            - sharepoint_sim
             - confluence
             - jira
+            - zendesk
             - linear
             - github_teams
             - github
@@ -36,18 +43,24 @@ on:
             - local_fs
             - google_drive_workspace
             - google_drive_individual
+            - gmail_workspace
+            - gmail_individual
             - gcs
             - azure_blob
+            - smb
             - azure_files
+            - outlook
             - messaging
             - oauth_clients
             - mcp
             - zammad
+            - demo
+            - ai_agents
             - resilience
             - permissions
             - storage
       commit_hash:
-        description: 'Commit hash to checkout (defaults to HEAD)'
+        description: 'Full 40-character commit SHA to test (defaults to the dispatched branch). For a fork PR, the SHA you reviewed.'
         required: false
         default: ''
       python_version:
@@ -103,7 +116,7 @@ permissions:
   contents: read
 
 # The matrix reads labels from each event's frozen payload, so an opened/synchronize
-# event firing before a label lands resolves to the default "both" and would otherwise
+# event firing before a label lands resolves to the neo4j default and would otherwise
 # burn a runner alongside the labeled run. Non-PR events get a unique group per run so
 # a manual dispatch never cancels the nightly cron.
 concurrency:
@@ -127,9 +140,8 @@ jobs:
       label: ${{ steps.pick.outputs.label }}
       is_default: ${{ steps.pick.outputs.is_default }}
     steps:
-      # The base branch's copy on pull_request_target, never the PR's.
       - name: Checkout the picker
-        uses: actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           sparse-checkout: scripts
@@ -143,7 +155,11 @@ jobs:
   integration-tests:
     name: Integration Tests (${{ matrix.graph_db }} · ${{ matrix.shard }}${{ needs.setup.outputs.is_default == 'false' && format(' · {0}', needs.setup.outputs.message_broker) || '' }})
     needs: setup
-    if: ${{ github.event_name != 'pull_request_target' || !contains(github.event.pull_request.labels.*.name, 'skip-it') }}
+    # Secrets only for code from this repository; forks run it-fork below.
+    if: >-
+      github.event_name != 'pull_request' ||
+      (github.event.pull_request.head.repo.full_name == github.repository &&
+       !contains(github.event.pull_request.labels.*.name, 'skip-it'))
     runs-on: runs-on=${{ github.run_id }}/runner=4cpu-linux-x64/volume=100gb/ssh=true
     timeout-minutes: 300
 
@@ -151,23 +167,31 @@ jobs:
       fail-fast: false
       matrix:
         # One job per value; "both" runs both backends sequentially in one job.
-        # Select backends via the graph_db dispatch input or the
-        # it-neo4j / it-arango / it-parallel PR labels (default: sequential "both").
+        # PRs default to neo4j alone; it-arango / it-both / it-parallel (or
+        # it-neo4j + it-arango) widen that. Cron and dispatch still get "both".
         # `strategy` can't read the job env block, so derive from inputs/labels here.
-        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || '["both"]') }}
+        graph_db: ${{ fromJSON((github.event.inputs.graph_db == 'arango' && '["arango"]') || (github.event.inputs.graph_db == 'neo4j' && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-neo4j') && '["neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-arango') && '["arango"]') || ((github.event.inputs.run_mode == 'parallel' || contains(github.event.pull_request.labels.*.name, 'it-parallel')) && '["arango","neo4j"]') || (contains(github.event.pull_request.labels.*.name, 'it-both') && '["both"]') || (github.event_name == 'pull_request' && '["neo4j"]') || '["both"]') }}
         # Split the suite into parallel shards, each with its own stack, so the
-        # slow connector suites do not all serialize on one worker. Three
+        # slow connector suites do not all serialize on one worker. Four
         # connector shards (balanced on measured minutes, see
         # scripts/shard_durations.json) plus a "core" shard for everything else.
-        # Each shard's marker is derived in the test step from CONN_SHARD_1 /
-        # CONN_SHARD_2 / CONN_SHARD_3 (one source of truth); "core" is everything
-        # those three do not own, so the four partition -m "integration" exactly.
+        # Each shard's marker is derived in the test step from CONN_SHARD_1 ..
+        # CONN_SHARD_4 (one source of truth); "core" is everything those four
+        # and "demo" do not own, so the six partition -m "integration" exactly.
         # scripts/shard_balance.py checks that partition and the balance; run it
         # after adding or growing a connector suite.
+        # "demo" runs only the Acme Corp demo questions, on a stack where no
+        # other suite has indexed anything: the demo's prompt differs once the
+        # workspace has real data, and core would index plenty. Core leaves the
+        # demo marker out, so it runs once.
+        # "ai_agents" runs the AI models, agents, MCP and agent harness suite
+        # against a real model. Each test costs model calls, so it runs on the
+        # nightly and on a full manual run, never on a pull request; core leaves
+        # its marker out everywhere, so on a pull request it does not run at all.
         # A workflow_dispatch of one marker (a single connector or suite rather
         # than the whole of `integration`) runs as a single "dispatch" job that
         # selects exactly that marker, so it runs once rather than on every shard.
-        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || '["connectors-1","connectors-2","connectors-3","core"]') }}
+        shard: ${{ fromJSON((github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != '' && github.event.inputs.connectors != 'integration') && '["dispatch"]' || (github.event_name == 'pull_request' && '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo"]') || '["connectors-1","connectors-2","connectors-3","connectors-4","core","demo","ai_agents"]') }}
 
     # One shared env; its required reviewers are the approval gate. Per-backend
     # approval = run only that backend (it-arango/it-neo4j), not a per-backend env.
@@ -176,8 +200,14 @@ jobs:
       name: ${{ github.event_name == 'schedule' && 'integration-test-daily' || 'integration-test-dev' }}
 
     env:
+      DOCKERHUB_PULL_LOGIN: ${{ secrets.DOCKERHUB_PULL_TOKEN != '' }}
       MESSAGE_BROKER: ${{ needs.setup.outputs.message_broker }}
       SECRET_KEY: ${{ secrets.SECRET_KEY }}
+      # One value for both sides: compose seeds the stack with it and the
+      # storage suite mints its service tokens with it. Test-only; a
+      # TEST_SCOPED_JWT_SECRET secret replaces it, except on a pull request,
+      # whose checked-out code must never see a real signing secret.
+      SCOPED_JWT_SECRET: ${{ (github.event_name != 'pull_request' && secrets.TEST_SCOPED_JWT_SECRET) || 'pipeshub-integration-scoped-jwt-secret-test-only' }}
       DOCKER_BUILDKIT: "1"
       PIPESHUB_TEST_ENV: local
       # A connector suite whose credential is missing skips itself, which on the
@@ -185,6 +215,9 @@ jobs:
       # cover these connectors — the nightly, and a dispatch that picked one —
       # a missing credential is a failure instead.
       PIPESHUB_REQUIRE_CONNECTOR_SECRETS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors != 'integration')) && '1' || '' }}
+      # The demo's Build Pack questions cost about four times the golden
+      # questions' model calls, so they run nightly and on a demo dispatch only.
+      DEMO_PACK_QUESTIONS: ${{ (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'demo')) && '1' || '' }}
       ARANGO_PASSWORD: ${{ secrets.TEST_ARANGO_PASSWORD }}
       PIPESHUB_TEST_USER_EMAIL: ${{ secrets.PIPESHUB_TEST_USER_EMAIL }}
       PIPESHUB_TEST_USER_PASSWORD: ${{ secrets.PIPESHUB_TEST_USER_PASSWORD }}
@@ -217,15 +250,27 @@ jobs:
       # compose network and reaches MinIO by service name; the test process
       # reaches it on the published port.
       MINIO_TEST_ENDPOINT: http://localhost:9000
+      MINIO_TEST_CONSOLE_URL: http://localhost:9001
+      MINIO_CONTAINER: docker-compose-minio-1
       MINIO_CONNECTOR_ENDPOINT: http://minio:9000
       MINIO_ROOT_USER: pipeshubtest
       MINIO_ROOT_PASSWORD: pipeshubtest123
       MINIO_TEST_BUCKET: pipeshub-connector-test
+      MINIO_SECOND_TEST_BUCKET: pipeshub-connector-test-2
       # The Web and RSS connectors sync from the web-fixtures service in the
       # integration stack: the connector by service name, the test process
       # (which changes pages through its control API) on the published port.
       WEB_FIXTURES_TEST_URL: http://localhost:8089
       WEB_FIXTURES_CONNECTOR_URL: http://web-fixtures:8080
+      # The agent tests register the mcp-fixture service as an external MCP
+      # server: PipesHub reaches it by service name, the test process reads its
+      # call log on the published port.
+      MCP_FIXTURE_TEST_URL: http://localhost:8097
+      MCP_FIXTURE_CONNECTOR_URL: http://mcp-fixture:8080/mcp
+      # API Toolsets tests add the openapi-fixture service from its OpenAPI spec:
+      # PipesHub calls it by service name, the test process reads its call log.
+      OPENAPI_FIXTURE_TEST_URL: http://localhost:8098
+      OPENAPI_FIXTURE_CONNECTOR_URL: http://openapi-fixture:8080
       # Nextcloud and BookStack run in the compose stack too, behind the
       # selfhosted-sources profile: only the shard that runs their tests
       # (connectors-1, or a dispatch of just one of them) starts them.
@@ -239,30 +284,80 @@ jobs:
       BOOKSTACK_DB_PORT: '3308'
       ZAMMAD_TEST_URL: http://localhost:8096
       ZAMMAD_CONNECTOR_URL: http://zammad-railsserver:3000
-      COMPOSE_PROFILES: ${{ format('{0},{1},{2}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '') }}
+      COMPOSE_PROFILES: ${{ format('{0},{1},{2},{3},{4},{5},{6}', (matrix.shard == 'connectors-1' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'nextcloud' || github.event.inputs.connectors == 'bookstack'))) && 'selfhosted-sources' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'zammad')) && 'zammad-source' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'smb')) && 'smb-source' || '', needs.setup.outputs.message_broker == 'kafka' && 'kafka' || '', (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'atlassian-sim' || '', (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'gmail-sim' || '', (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'notion-sim' || '') }}
       S3_SECRET_KEY: ${{ secrets.S3_SECRET_KEY }}
       S3_REGION: ${{ secrets.S3_REGION }}
+      # Optional: the S3 IAM role and second-bucket tests skip while these are unset.
+      S3_ROLE_ARN: ${{ secrets.S3_ROLE_ARN }}
+      S3_EXTERNAL_ID: ${{ secrets.S3_EXTERNAL_ID }}
+      S3_SECOND_TEST_BUCKET: ${{ secrets.S3_SECOND_TEST_BUCKET }}
       S3_BUCKET: ${{ secrets.S3_BUCKET }}
       GCS_SERVICE_ACCOUNT_JSON: ${{ secrets.GCS_SERVICE_ACCOUNT_JSON }}
       AZURE_BLOB_CONNECTION_STRING: ${{ secrets.AZURE_BLOB_CONNECTION_STRING }}
       AZURE_FILES_CONNECTION_STRING: ${{ secrets.AZURE_FILES_CONNECTION_STRING }}
-      TEST_OPENAI_API_KEY: ${{ secrets.TEST_OPENAI_API_KEY }}
       TEST_OPENAI_LLM_MODEL: ${{ vars.TEST_OPENAI_LLM_MODEL }}
-      CONFLUENCE_TEST_BASE_URL: ${{ secrets.CONFLUENCE_TEST_BASE_URL }}
-      CONFLUENCE_TEST_EMAIL: ${{ secrets.CONFLUENCE_TEST_EMAIL }}
-      CONFLUENCE_TEST_API_TOKEN: ${{ secrets.CONFLUENCE_TEST_API_TOKEN }}
-      CONFLUENCE_TEST_SPACE_KEY: ${{ secrets.CONFLUENCE_TEST_SPACE_KEY }}
+      # Azure OpenAI is where the credits are, and TEST_AI_MODEL_PROVIDER names
+      # it outright: the helper falls back to the next provider on a health
+      # check failure, so without this an Azure problem retries against the
+      # OpenAI key and reports that instead.
+      TEST_AI_MODEL_PROVIDER: azureOpenAI
+      # _LLM_PROVIDER_ORDER tries Azure before OpenAI, but _azure_credentials_complete
+      # needs key, endpoint and deployment together — miss one and Azure is dropped
+      # from the candidates silently, leaving OpenAI as the only provider tried.
+      # secrets || vars so the non-secret names work from either store.
+      TEST_AZURE_OPENAI_API_KEY: ${{ secrets.TEST_AZURE_OPENAI_API_KEY }}
+      TEST_AZURE_OPENAI_ENDPOINT: ${{ secrets.TEST_AZURE_OPENAI_ENDPOINT || vars.TEST_AZURE_OPENAI_ENDPOINT }}
+      TEST_AZURE_OPENAI_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_MODEL: ${{ secrets.TEST_AZURE_OPENAI_MODEL || vars.TEST_AZURE_OPENAI_MODEL }}
+      # Optional. Unset falls back to the LLM deployment above, which is what a
+      # local .env run does today.
+      TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME || vars.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME }}
+      TEST_AZURE_OPENAI_EMBEDDING_MODEL: ${{ secrets.TEST_AZURE_OPENAI_EMBEDDING_MODEL || vars.TEST_AZURE_OPENAI_EMBEDDING_MODEL }}
+      # The demo test's answer judge uses the Azure settings above. Without it,
+      # facts a question lists for the judge would go unchecked yet pass.
+      PIPESHUB_REQUIRE_JUDGE: '1'
+      # Confluence and Jira sync from the confluence-sim and jira-sim services
+      # (atlassian-sim profile), Notion from notion-sim (notion-sim profile); their
+      # settings come from integration-tests/connectors/atlassian_sim.env and
+      # notion_sim.env, loaded by the "Use the connector simulators" step.
+      # CONNSIM_REF pins the simulator commit the image is built from and
+      # CONNSIM_PACK_* the content pack it serves; together they fix every fixture
+      # value in those env files. The same image serves the Gmail simulator. The
+      # pinned commit is connectors-simulator's integration/notion-gmail branch:
+      # d31bd51 (Confluence hardening, with the Notion simulator, #6) plus the
+      # Gmail simulator (#5); none of them merged into its main yet.
+      CONNSIM_REF: 7b4ec0f83c717f9d5e81178303c884924ad6bfed
+      CONNSIM_IMAGE: pipeshub/connectors-simulator:it
+      CONNSIM_PACK_URI: s3://pipeshub-simulator-dataset/packs/lumenfold-2.tar.gz
+      CONNSIM_PACK_SHA256: 54c042080de46e9fbdda84f6c954cceeb9a4d1d3fc78075e29fc418a43096354
+      # The Gmail suites run against the Gmail simulator (gmail-sim profile) on shard 2, next to Jira's.
+      # connectors/gmail_sim.env points the Gmail connectors at it and holds every value they need: no secrets.
+      NEEDS_GMAIL_SIM: ${{ (matrix.shard == 'connectors-2' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'gmail_workspace' || github.event.inputs.connectors == 'gmail_individual'))) && 'true' || 'false' }}
+      NEEDS_ATLASSIAN_SIM: ${{ (matrix.shard == 'connectors-2' || matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && (github.event.inputs.connectors == 'confluence' || github.event.inputs.connectors == 'jira'))) && 'true' || 'false' }}
+      NEEDS_NOTION_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'notion')) && 'true' || 'false' }}
+      # The sharepoint_sim suite runs against the SharePoint simulator on shard 3. It is not a profile: the
+      # connector calls Microsoft's fixed host names over HTTPS, so docker-compose.integration.sharepoint-sim.yml
+      # answers them through a TLS front under those names and has the app trust its CA. The "Use the SharePoint
+      # simulator" step adds that file to every compose call through SHAREPOINT_SIM_COMPOSE, so no suite on that
+      # shard may reach the real Microsoft 365: the live sharepoint suite (shard 1) and outlook (shard 2) stay off it.
+      # Its own pin and image: CONNSIM_SHAREPOINT_REF is connectors-simulator's main with the SharePoint
+      # simulator (#7), while CONNSIM_REF is still the integration/notion-gmail branch, which has Confluence
+      # changes main lacks. One pin will do once that branch is on main.
+      CONNSIM_SHAREPOINT_REF: 7feca7cd6291a7a305073c08cf5d480cc6920c21
+      SHAREPOINT_SIM_IMAGE: pipeshub/connectors-simulator:sharepoint-it
+      NEEDS_SHAREPOINT_SIM: ${{ (matrix.shard == 'connectors-3' || (matrix.shard == 'dispatch' && github.event.inputs.connectors == 'sharepoint_sim')) && 'true' || 'false' }}
       SHAREPOINT_TEST_SITE_NAMES: ${{ secrets.SHAREPOINT_TEST_SITE_NAMES }}
       SHAREPOINT_TEST_EXPECTED_USER_EMAILS: ${{ secrets.SHAREPOINT_TEST_EXPECTED_USER_EMAILS }}
       SHAREPOINT_TEST_TENANT_ID: ${{ secrets.SHAREPOINT_TEST_TENANT_ID }}
       SHAREPOINT_TEST_CLIENT_ID: ${{ secrets.SHAREPOINT_TEST_CLIENT_ID }}
       SHAREPOINT_TEST_SHAREPOINT_DOMAIN: ${{ secrets.SHAREPOINT_TEST_SHAREPOINT_DOMAIN }}
-      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE_CONTENT }}
-      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE_CONTENT }}
-      JIRA_TEST_BASE_URL: ${{ secrets.JIRA_TEST_BASE_URL }}
-      JIRA_TEST_EMAIL: ${{ secrets.JIRA_TEST_EMAIL }}
-      JIRA_TEST_API_TOKEN: ${{ secrets.JIRA_TEST_API_TOKEN }}
-      JIRA_TEST_PROJECT_KEYS: ${{ secrets.JIRA_TEST_PROJECT_KEYS }}
+      # No _CONTENT suffix: the secrets are stored under these names, and a
+      # reference to a secret that does not exist resolves to empty, which the
+      # suite reports as "the SharePoint tenant is not configured" -- the same
+      # message as having no credentials at all.
+      SHAREPOINT_TEST_CERTIFICATE_FILE: ${{ secrets.SHAREPOINT_TEST_CERTIFICATE_FILE }}
+      SHAREPOINT_TEST_PRIVATE_KEY_FILE: ${{ secrets.SHAREPOINT_TEST_PRIVATE_KEY_FILE }}
+      ZENDESK_TEST_SUBDOMAIN: ${{ secrets.ZENDESK_TEST_SUBDOMAIN }}
       LINEAR_TEST_API_TOKEN: ${{ secrets.LINEAR_TEST_API_TOKEN }}
       LINEAR_TEST_TEAM_IDS: ${{ secrets.LINEAR_TEST_TEAM_IDS }}
       # GitHub Teams. Secret names may not start with GITHUB_ (reserved by Actions),
@@ -282,9 +377,12 @@ jobs:
       GITLAB_TEST_SUBGROUP: ${{ secrets.GITLAB_TEST_SUBGROUP }}
       GITLAB_TEST_PRIMARY_PROJECT: ${{ secrets.GITLAB_TEST_PRIMARY_PROJECT }}
       GITLAB_TEST_MUTATION_PROJECT: ${{ secrets.GITLAB_TEST_MUTATION_PROJECT }}
-      NOTION_TEST_API_TOKEN: ${{ secrets.NOTION_TEST_API_TOKEN }}
-      NOTION_TEST_ROOT_PAGE_ID: ${{ secrets.NOTION_TEST_ROOT_PAGE_ID }}
-      NOTION_TEST_ROOT_DATABASE_ID: ${{ secrets.NOTION_TEST_ROOT_DATABASE_ID }}
+      # Outlook (team, app-only): two licensed mailboxes + one M365 group in the test tenant
+      OUTLOOK_TEST_TENANT_ID: ${{ secrets.OUTLOOK_TEST_TENANT_ID }}
+      OUTLOOK_TEST_CLIENT_ID: ${{ secrets.OUTLOOK_TEST_CLIENT_ID }}
+      OUTLOOK_TEST_CLIENT_SECRET: ${{ secrets.OUTLOOK_TEST_CLIENT_SECRET }}
+      OUTLOOK_TEST_USER_IDS: ${{ secrets.OUTLOOK_TEST_USER_IDS }}
+      OUTLOOK_TEST_GROUP_ID: ${{ secrets.OUTLOOK_TEST_GROUP_ID }}
       # Google Drive Workspace (service account + domain-wide delegation)
       GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_SERVICE_ACCOUNT_JSON }}
       GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL: ${{ secrets.GOOGLE_DRIVE_WORKSPACE_ADMIN_EMAIL }}
@@ -300,16 +398,38 @@ jobs:
       SMTP_HOST: mailpit
       SMTP_PORT: '1025'
       SMTP_FROM_EMAIL: no-reply@example.com
+      # The SMB connector syncs from the smb-source Samba share in the compose
+      # stack, started by the smb-source profile for connectors-2 (or a dispatch
+      # of smb). The connector reaches it by service name; the test process
+      # writes files through the published port. A secret, when set, points
+      # both at an external share instead. CIFS is not registered, so it is
+      # not in a shard.
+      SMB_HOST: ${{ secrets.SMB_HOST || 'localhost' }}
+      SMB_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '1445' }}
+      SMB_CONNECTOR_HOST: ${{ secrets.SMB_HOST || 'smb-source' }}
+      SMB_CONNECTOR_PORT: ${{ secrets.SMB_HOST && (secrets.SMB_PORT || '445') || '445' }}
+      SMB_SHARE: ${{ secrets.SMB_SHARE || 'pipeshubtest' }}
+      SMB_USERNAME: ${{ secrets.SMB_USERNAME || 'pipeshubtest' }}
+      SMB_PASSWORD: ${{ secrets.SMB_PASSWORD || 'pipeshubtest123' }}
       # Connector shards, one source of truth. The `core` shard is everything
-      # these three do not own, built in the test step from the same values.
+      # these four and the `demo` shard do not own, built in the test step
+      # from the same values.
       # Balanced on measured minutes across both graph legs (both legs run in
-      # one job, so a shard's wall clock is the sum of the two):
-      # shard 1 ~136 min, shard 2 ~135 min, shard 3 ~132 min. Shard 1 keeps
-      # nextcloud and bookstack, the only suites needing selfhosted-sources.
+      # one job, so a shard's wall clock is the sum of the two, and the job
+      # times out at 300 min): shard 1 ~194 min, shard 2 ~175 min, shard 3
+      # ~209 min, shard 4 ~216 min. Shard 1 keeps nextcloud and bookstack, the
+      # only suites needing selfhosted-sources; shard 2 keeps smb (smb-source)
+      # and shard 3 zammad (zammad-source). The two Google Drive suites have
+      # shard 4: together they pushed shard 2 past the job timeout.
+      # A new connector suite goes on the lightest shard (outlook went on
+      # shard 2, which was lightest); check with scripts/shard_balance.py. The
+      # Gmail suites are on shard 2 too: they need the simulator image Jira's
+      # shard already builds, and no Google secrets.
       # Rebalance with scripts/shard_balance.py when a suite grows.
       CONN_SHARD_1: "nextcloud or bookstack or mariadb or minio or postgres or web or rss or local_fs or github or sharepoint"
-      CONN_SHARD_2: "google_drive_workspace or google_drive_individual or gitlab or jira or linear or azure_blob or azure_files"
-      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad"
+      CONN_SHARD_2: "gitlab or jira or linear or azure_blob or azure_files or smb or zendesk or outlook or gmail_workspace or gmail_individual"
+      CONN_SHARD_3: "notion or github_teams or confluence or s3 or gcs or zammad or sharepoint_sim"
+      CONN_SHARD_4: "google_drive_workspace or google_drive_individual"
       # Routed through env (never interpolated into the shell) so untrusted
       # dispatch input cannot inject; the test steps pick markers from these.
       CONNECTORS_INPUT: ${{ github.event.inputs.connectors }}
@@ -319,16 +439,47 @@ jobs:
       RUN_PLAYWRIGHT: ${{ (matrix.shard == 'core' || matrix.shard == 'dispatch') && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both' || (matrix.graph_db == 'arango' && (github.event.inputs.graph_db == 'arango' || (contains(github.event.pull_request.labels.*.name, 'it-arango') && !contains(github.event.pull_request.labels.*.name, 'it-neo4j') && !contains(github.event.pull_request.labels.*.name, 'it-parallel'))))) && 'true' || 'false' }}
 
     steps:
+      # A branch name or short SHA could move after review; only a full SHA pins
+      # the commit the maintainer actually read.
+      - name: Check commit_hash is a full SHA
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          COMMIT_HASH: ${{ github.event.inputs.commit_hash }}
+        run: |
+          if [ -n "$COMMIT_HASH" ] && ! printf '%s' "$COMMIT_HASH" | grep -Eqx '[0-9a-f]{40}'; then
+            echo "::error::commit_hash must be a full 40-character lowercase SHA"
+            exit 1
+          fi
+
+      # Empty means the event's own ref: the PR merge commit, or the branch run.
       - name: Checkout code
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.inputs.commit_hash || github.event.pull_request.head.sha || github.sha }}
-          allow-unsafe-pr-checkout: true
+          ref: ${{ github.event.inputs.commit_hash }}
           persist-credentials: false
+
+      # The runner shares ~15.7 GB with the Docker stack. If the kernel's out-of-memory
+      # killer picks the runner, the job ends with no steps, no log and no reports. This
+      # shields Runner.Listener and Runner.Worker only: actions/runner resets every step
+      # process to oom_score_adj 500, so a runaway pytest is still the likelier victim.
+      - name: Keep the runner alive when memory runs out
+        run: |
+          shielded=0
+          for pid in $(pgrep -f 'Runner\.(Listener|Worker)'); do
+            if echo -1000 | sudo -n tee "/proc/$pid/oom_score_adj" > /dev/null; then
+              shielded=$((shielded + 1))
+            else
+              echo "::warning::Could not shield runner process $pid from the out-of-memory killer"
+            fi
+          done
+          [ "$shielded" -gt 0 ] || echo "::warning::No runner process found to shield from the out-of-memory killer"
+          mkdir -p integration-tests/reports
+          nohup sh -c 'while :; do date -u +%FT%TZ; free -m | sed -n 2,3p; sleep 60; done' \
+            > integration-tests/reports/memory.log 2>&1 &
 
       - name: Set up Node.js
         if: env.RUN_PLAYWRIGHT == 'true'
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '20'
 
@@ -339,12 +490,101 @@ jobs:
           npm ci
           npx playwright install chromium --with-deps
 
+      # Spot runners share addresses, so anonymous pulls run into Docker Hub's
+      # hourly cap. The token is read-only: PR code on the runner can read it.
+      - name: Log in to Docker Hub (read-only)
+        if: env.DOCKERHUB_PULL_LOGIN == 'true'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_PULL_TOKEN }}
+
       # App Dockerfile uses these as FROM stages; pulling first warms the local
       # cache so compose build does not rebuild Dockerfile.base on every run.
+      # From GHCR so CI neither spends nor inflates Docker Hub pulls; the compose
+      # build reads the exported names. Docker Hub is the fallback per image.
+      # The simulator repository is private, so its checkout needs a token that can
+      # read it (CONNSIM_REPO_TOKEN). Without one the step fails rather than letting
+      # the Confluence, Jira, Notion and Gmail suites skip on a missing source.
+      - name: Check out the connector simulators
+        if: env.NEEDS_ATLASSIAN_SIM == 'true' || env.NEEDS_NOTION_SIM == 'true' || env.NEEDS_GMAIL_SIM == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator
+          persist-credentials: false
+
+      # The pack is the simulators' dataset (lumenfold, kept out of git in S3). A
+      # missing secret or a changed object fails here, not as skips.
+      - name: Use the connector simulators
+        if: env.NEEDS_ATLASSIAN_SIM == 'true' || env.NEEDS_NOTION_SIM == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.CONNSIM_DATASET_AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.CONNSIM_DATASET_AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ap-south-1
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ]; then
+            echo "::error::CONNSIM_DATASET_AWS_ACCESS_KEY_ID / CONNSIM_DATASET_AWS_SECRET_ACCESS_KEY are not set; the simulators cannot load their dataset."
+            exit 1
+          fi
+          docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
+          aws s3 cp --only-show-errors "$CONNSIM_PACK_URI" "$RUNNER_TEMP/connsim-pack.tar.gz"
+          echo "$CONNSIM_PACK_SHA256  $RUNNER_TEMP/connsim-pack.tar.gz" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/connsim-pack"
+          tar -xzf "$RUNNER_TEMP/connsim-pack.tar.gz" -C "$RUNNER_TEMP/connsim-pack" --strip-components=1
+          echo "CONNSIM_PACK_DIR=$RUNNER_TEMP/connsim-pack" >> "$GITHUB_ENV"
+          if [ "$NEEDS_ATLASSIAN_SIM" = true ]; then
+            grep -Ev '^\s*(#|$)' integration-tests/connectors/atlassian_sim.env >> "$GITHUB_ENV"
+          fi
+          if [ "$NEEDS_NOTION_SIM" = true ]; then
+            grep -Ev '^\s*(#|$)' integration-tests/connectors/notion_sim.env >> "$GITHUB_ENV"
+          fi
+
+      # The Gmail simulator is in the same image and needs no dataset: each suite loads its own mailboxes. Its
+      # settings set GMAIL_GOOGLE_API_BASE_URL, so the Gmail suites fail rather than skip if it is not up.
+      - name: Use the Gmail simulator
+        if: env.NEEDS_GMAIL_SIM == 'true'
+        run: |
+          if [ "$NEEDS_ATLASSIAN_SIM" != "true" ] && [ "$NEEDS_NOTION_SIM" != "true" ]; then
+            docker build -q -t "$CONNSIM_IMAGE" connectors-simulator
+          fi
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/gmail_sim.env >> "$GITHUB_ENV"
+
+      - name: Check out the SharePoint simulator
+        if: env.NEEDS_SHAREPOINT_SIM == 'true'
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: pipeshub-ai/connectors-simulator
+          ref: ${{ env.CONNSIM_SHAREPOINT_REF }}
+          token: ${{ secrets.CONNSIM_REPO_TOKEN }}
+          path: connectors-simulator-sharepoint
+          persist-credentials: false
+
+      # No dataset: each test loads its own tenant. make-certs.sh makes a CA for this run only (its key is
+      # deleted, both certificates expire in two days).
+      - name: Use the SharePoint simulator
+        if: env.NEEDS_SHAREPOINT_SIM == 'true'
+        run: |
+          docker build -q -t "$SHAREPOINT_SIM_IMAGE" connectors-simulator-sharepoint
+          deployment/docker-compose/sharepoint-sim/make-certs.sh "$RUNNER_TEMP/sharepoint-sim-tls"
+          echo "SHAREPOINT_SIM_TLS_DIR=$RUNNER_TEMP/sharepoint-sim-tls" >> "$GITHUB_ENV"
+          echo "SHAREPOINT_SIM_COMPOSE=-f docker-compose.integration.sharepoint-sim.yml" >> "$GITHUB_ENV"
+          grep -Ev '^\s*(#|$)' integration-tests/connectors/sharepoint_sim.env >> "$GITHUB_ENV"
+
       - name: Pull pre-built base images
         run: |
-          docker pull pipeshubai/pipeshub-ai-base:python-deps || true
-          docker pull pipeshubai/pipeshub-ai-base:runtime || true
+          for pair in PYTHON_DEPS_IMAGE=python-deps RUNTIME_BASE_IMAGE=runtime; do
+            image="ghcr.io/pipeshub-ai/pipeshub-ai-base:${pair#*=}"
+            if ! docker pull "$image"; then
+              hub="pipeshubai/pipeshub-ai-base:${pair#*=}"
+              echo "::warning::Could not pull ${image} (missing, or the package is not public yet), so this run uses ${hub} from Docker Hub. See the header of .github/workflows/base-images.yml to fix it."
+              image="$hub"
+              docker pull "$image" || true
+            fi
+            echo "${pair%%=*}=${image}" >> "$GITHUB_ENV"
+          done
 
       - name: Build Neo4j stack images
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -358,18 +598,44 @@ jobs:
         run: docker compose -f docker-compose.integration.arango.yml build
 
       - name: Set up Python ${{ github.event.inputs.python_version || '3.12' }}
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ github.event.inputs.python_version || '3.12' }}
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v5
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      # The examples suite runs the Go SDK starter; the runner image only caches Go.
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.23'
+          cache: false
+
+      # setup-go v6+ exports GOTOOLCHAIN=local for the rest of the job, which stops the Go SDK's
+      # go.mod from switching to the newer Go it requires. Restore Go's default.
+      - name: Let go.mod select a newer Go toolchain
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Set up Python and install dependencies
         working-directory: integration-tests
         run: |
           uv venv
           uv pip install -e .
+
+      # client_credentials grant: a fresh token every run, nothing rotates or is written back.
+      # Must cover every job whose markers select zendesk, or that job runs the suite without a token.
+      - name: Mint Zendesk test token
+        if: ${{ matrix.shard == 'connectors-2' || (github.event_name == 'workflow_dispatch' && github.event.inputs.connectors == 'zendesk') }}
+        working-directory: integration-tests
+        env:
+          ZENDESK_TEST_CLIENT_ID: ${{ secrets.ZENDESK_TEST_CLIENT_ID }}
+          ZENDESK_TEST_CLIENT_SECRET: ${{ secrets.ZENDESK_TEST_CLIENT_SECRET }}
+        run: |
+          source .venv/bin/activate
+          export ZENDESK_TEST_ACCESS_TOKEN_FILE="$RUNNER_TEMP/zendesk-access-token"
+          printf 'ZENDESK_TEST_ACCESS_TOKEN_FILE=%s\n' "$ZENDESK_TEST_ACCESS_TOKEN_FILE" >> "$GITHUB_ENV"
+          python connectors/zendesk/prepare_token.py
 
       # Pure helper unit tests (mocks only) — fail fast before Docker/services come up.
       - name: Run helper unit tests
@@ -382,7 +648,7 @@ jobs:
       - name: 'Neo4j: Start services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml up -d
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE up -d
 
       - name: 'Neo4j: Wait for core services'
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
@@ -435,6 +701,7 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'Neo4j: Skip onboarding'
+        id: neo4j-ready
         if: matrix.graph_db == 'neo4j' || matrix.graph_db == 'both'
         run: |
           HEADERS=$(mktemp)
@@ -471,15 +738,18 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            connectors-4) MARKERS="$CONN_SHARD_4" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
+            demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -501,7 +771,7 @@ jobs:
 
 
       - name: 'Neo4j: Run Playwright e2e tests'
-        if: ${{ !cancelled() && env.RUN_PLAYWRIGHT == 'true' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -514,13 +784,14 @@ jobs:
 
       # Restarts Redis, Qdrant, the graph database and MongoDB, kills the
       # indexing process, cuts the app off from its AI provider and makes blob
-      # storage unwritable on the live stack, which would break any test
-      # running beside it. So it runs alone,
+      # storage unwritable on the live stack, and empties and rebuilds the
+      # vector store (Labs cleanup, embedding model change), which would break
+      # any test running beside it. So it runs alone,
       # after everything else on this stack, and only nightly on the core
       # shard's Neo4j pass: one stack, no extra runner, no time added to a PR.
       # A dispatch with connectors=resilience runs it through the step above.
       - name: 'Neo4j: Run resilience tests'
-        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && github.event_name == 'schedule' && matrix.shard == 'core' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -532,7 +803,7 @@ jobs:
       # These repoint the whole deployment's storage while they run, so they go
       # last, after everything else has finished with this stack.
       - name: 'Neo4j: Run storage-backend tests'
-        if: ${{ !cancelled() && github.event_name == 'schedule' && matrix.shard == 'core' && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.neo4j-ready.outcome == 'success' && github.event_name == 'schedule' && matrix.shard == 'core' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: neo4j
@@ -546,25 +817,40 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/neo4j
-          docker compose -f docker-compose.integration.neo4j.yml ps -a \
+          docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/neo4j/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.neo4j.yml config --services); do
-            docker compose -f docker-compose.integration.neo4j.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/neo4j/${svc}.log" 2>&1 || true
           done
+          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
+          # killer means the runner ran out; a simulator hitting its own cap logs
+          # "Memory cgroup out of memory" and CONSTRAINT_MEMCG instead.
+          if kernel_log=$(sudo -n dmesg -T 2>/dev/null); then
+            printf '%s\n' "$kernel_log" | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
+              > ../../integration-tests/reports/docker-logs/neo4j/_oom.txt || true
+          else
+            echo "::warning::Could not read the kernel log, so this run cannot tell whether the runner ran out of memory"
+          fi
+          if [ -s ../../integration-tests/reports/docker-logs/neo4j/_oom.txt ]; then
+            echo "::warning::The runner ran out of memory; the kernel killed these processes:"
+            cat ../../integration-tests/reports/docker-logs/neo4j/_oom.txt
+          fi
 
       - name: 'Neo4j: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'neo4j' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.neo4j.yml down -v
+        run: docker compose -f docker-compose.integration.neo4j.yml $SHAREPOINT_SIM_COMPOSE down -v
 
       - name: 'ArangoDB: Start services'
+        id: arango-start
         if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml up -d
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE up -d
 
       - name: 'ArangoDB: Wait for core services'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-core
+        if: ${{ !cancelled() && steps.arango-start.outcome == 'success' }}
         run: |
           echo "Waiting for core services..."
           timeout 300 bash -c '
@@ -579,7 +865,8 @@ jobs:
           echo "Core services are healthy!"
 
       - name: 'ArangoDB: Wait for Python microservices'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-python
+        if: ${{ !cancelled() && steps.arango-core.outcome == 'success' }}
         run: |
           echo "Waiting for connector and query services..."
           timeout 300 bash -c '
@@ -594,7 +881,8 @@ jobs:
           echo "All services are healthy!"
 
       - name: 'ArangoDB: Create organization and admin user'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-org
+        if: ${{ !cancelled() && steps.arango-python.outcome == 'success' }}
         run: |
           echo "Creating organization..."
           # jq reads the credentials from the environment, so quotes or backslashes
@@ -614,7 +902,8 @@ jobs:
           echo "Organization created successfully!"
 
       - name: 'ArangoDB: Skip onboarding'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        id: arango-ready
+        if: ${{ !cancelled() && steps.arango-org.outcome == 'success' }}
         run: |
           HEADERS=$(mktemp)
           jq -n '{email: $ENV.PIPESHUB_TEST_USER_EMAIL}' \
@@ -643,7 +932,7 @@ jobs:
           echo "Onboarding marked as configured!"
 
       - name: 'ArangoDB: Run integration tests'
-        if: ${{ !cancelled() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both') }}
+        if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' }}
         working-directory: integration-tests
         env:
           TEST_GRAPH_DB_TYPE: arango
@@ -654,15 +943,18 @@ jobs:
         run: |
           source .venv/bin/activate
           # Each shard runs its slice; `core` is everything the three connector
-          # lists do not own, built here so the lists live in one place. The
-          # single "dispatch" job (a one-marker workflow_dispatch) runs exactly
-          # the selected marker.
+          # lists and the demo shard do not own, built here so the lists live in
+          # one place. The single "dispatch" job (a one-marker workflow_dispatch)
+          # runs exactly the selected marker.
           case "$SHARD" in
             dispatch)     MARKERS="$CONNECTORS_INPUT" ;;
             connectors-1) MARKERS="$CONN_SHARD_1" ;;
             connectors-2) MARKERS="$CONN_SHARD_2" ;;
             connectors-3) MARKERS="$CONN_SHARD_3" ;;
-            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not storage" ;;
+            connectors-4) MARKERS="$CONN_SHARD_4" ;;
+            core)         MARKERS="integration and not ($CONN_SHARD_1) and not ($CONN_SHARD_2) and not ($CONN_SHARD_3) and not ($CONN_SHARD_4) and not zendesk and not storage and not cifs and not demo and not ai_agents" ;;
+            demo)         MARKERS="demo" ;;
+            ai_agents)    MARKERS="ai_agents" ;;
             *)            echo "Unknown shard '$SHARD'"; exit 1 ;;
           esac
           # -n 1 still forks a worker, so shared_session_resource treats the run as
@@ -682,7 +974,7 @@ jobs:
             --junitxml=reports/arango-results.xml 2>&1
 
       - name: 'ArangoDB: Run Playwright e2e tests'
-        if: ${{ !cancelled() && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
+        if: ${{ !cancelled() && steps.arango-ready.outcome == 'success' && matrix.graph_db == 'arango' && env.RUN_PLAYWRIGHT == 'true' }}
         working-directory: frontend
         env:
           CI: 'true'
@@ -698,17 +990,30 @@ jobs:
         working-directory: deployment/docker-compose
         run: |
           mkdir -p ../../integration-tests/reports/docker-logs/arango
-          docker compose -f docker-compose.integration.arango.yml ps -a \
+          docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE ps -a \
             > ../../integration-tests/reports/docker-logs/arango/_containers.txt 2>&1 || true
-          for svc in $(docker compose -f docker-compose.integration.arango.yml config --services); do
-            docker compose -f docker-compose.integration.arango.yml logs --no-color --timestamps "$svc" \
+          for svc in $(docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE config --services); do
+            docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE logs --no-color --timestamps "$svc" \
               > "../../integration-tests/reports/docker-logs/arango/${svc}.log" 2>&1 || true
           done
+          # Since boot, so the ArangoDB dump also shows a Neo4j-half kill. Only the global
+          # killer means the runner ran out; a simulator hitting its own cap logs
+          # "Memory cgroup out of memory" and CONSTRAINT_MEMCG instead.
+          if kernel_log=$(sudo -n dmesg -T 2>/dev/null); then
+            printf '%s\n' "$kernel_log" | grep -E '\] Out of memory: Killed process|oom-kill:constraint=CONSTRAINT_NONE' \
+              > ../../integration-tests/reports/docker-logs/arango/_oom.txt || true
+          else
+            echo "::warning::Could not read the kernel log, so this run cannot tell whether the runner ran out of memory"
+          fi
+          if [ -s ../../integration-tests/reports/docker-logs/arango/_oom.txt ]; then
+            echo "::warning::The runner ran out of memory; the kernel killed these processes:"
+            cat ../../integration-tests/reports/docker-logs/arango/_oom.txt
+          fi
 
       - name: 'ArangoDB: Tear down services (preserve images)'
         if: always() && (matrix.graph_db == 'arango' || matrix.graph_db == 'both')
         working-directory: deployment/docker-compose
-        run: docker compose -f docker-compose.integration.arango.yml down -v
+        run: docker compose -f docker-compose.integration.arango.yml $SHAREPOINT_SIM_COMPOSE down -v
 
       - name: Collect Playwright artifacts into reports
         if: always() && env.RUN_PLAYWRIGHT == 'true'
@@ -763,7 +1068,7 @@ jobs:
             PASS_RATE=0
           fi
 
-          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+          if [ "$EVENT_NAME" = "pull_request" ]; then
             TRIGGER_LABEL="PR #${PR_NUMBER_IN}"
             AUTHOR="$PR_LOGIN_IN"
             # Slack mrkdwn escape for link labels (& < >). Build a clickable
@@ -863,7 +1168,7 @@ jobs:
           echo "TRIGGER_LABEL=$TRIGGER_LABEL" >> "$GITHUB_OUTPUT"
           echo "AUTHOR=$AUTHOR" >> "$GITHUB_OUTPUT"
           echo "BACKENDS_RUN=$BACKENDS_RUN" >> "$GITHUB_OUTPUT"
-          echo "IS_PR=$([ "$EVENT_NAME" = "pull_request_target" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "IS_PR=$([ "$EVENT_NAME" = "pull_request" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           # Use a heredoc so a title containing quotes or other special chars
           # can't break the output file format.
           {
@@ -882,7 +1187,7 @@ jobs:
       - name: Send Slack report
         if: ${{ !cancelled() }}
         id: slack-message
-        uses: slackapi/slack-github-action@v2.1.0
+        uses: slackapi/slack-github-action@dcb1066f776dd043e64d0e8ba94ca15cc7e1875d # v4.0.0
         with:
           method: chat.postMessage
           token: ${{ secrets.SLACK_BOT_TOKEN }}
@@ -1113,8 +1418,59 @@ jobs:
 
       - name: Upload reports artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: reports-${{ matrix.graph_db }}-${{ matrix.shard }}
+          path: integration-tests/reports/
+          if-no-files-found: ignore
+
+  # A fork's pull request: no secrets, no environment, a GitHub-hosted runner.
+  # The full stack needs the self-hosted runner and model credentials, so this
+  # runs the helper unit tests, which use mocks only.
+  it-fork:
+    name: Integration helper tests (fork, no secrets)
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      !contains(github.event.pull_request.labels.*.name, 'skip-it')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78 # v7.6.0
+
+      - name: Set up Python and install dependencies
+        working-directory: integration-tests
+        run: |
+          uv venv
+          uv pip install -e .
+
+      - name: Run helper unit tests
+        working-directory: integration-tests
+        env:
+          PIPESHUB_TEST_ENV: local
+        run: |
+          source .venv/bin/activate
+          mkdir -p reports
+          pytest unit/ -v --tb=short --junitxml=reports/unit-results.xml
+
+      - name: Upload reports artifact
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: reports-fork-unit
           path: integration-tests/reports/
           if-no-files-found: ignore

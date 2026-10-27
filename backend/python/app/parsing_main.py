@@ -14,6 +14,7 @@ import types
 from collections.abc import AsyncGenerator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+
 import uvicorn
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
@@ -23,7 +24,9 @@ from app.api.routes.parsing import router as parsing_router
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.ai_models import OCRProvider
 from app.containers.parsing import ParsingAppContainer, initialize_container
+from app.edition_services import configure_app
 from app.modules.parsers.blocks.blocks_parser import BlocksParser
+from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.modules.parsers.csv.csv_parser import CSVParser
 from app.modules.parsers.docx.docparser import DocParser
 from app.modules.parsers.epub.epub_parser import EPUBParser
@@ -37,9 +40,16 @@ from app.modules.parsers.json.json_parser import JSONParser
 from app.modules.parsers.markdown.docling_markdown_parser import DoclingMarkdownParser
 from app.modules.parsers.markdown.markdown_it_parser import MarkdownItParser
 from app.modules.parsers.markdown.mdx_parser import MDXParser
+from app.modules.parsers.parse_pool import (
+    set_resource_governor as set_parse_pool_governor,
+)
+from app.modules.parsers.parse_pool import shutdown_parse_pool
 from app.modules.parsers.pdf.docling_processor import DoclingProcessor
 from app.modules.parsers.pdf.docling_processor import (
     set_resource_governor as set_docling_processor_governor,
+)
+from app.modules.parsers.pdf.pdf_rasterizer import (
+    pdf_raster_pool_size,
 )
 from app.modules.parsers.pdf.pdf_rasterizer import (
     set_resource_governor as set_pdf_rasterizer_governor,
@@ -51,8 +61,8 @@ from app.modules.parsers.pptx.ppt_parser import PPTParser
 from app.modules.parsers.sql.sql_table_parser import SQLTableParser
 from app.modules.parsers.sql.sql_view_parser import SQLViewParser
 from app.modules.parsers.yaml.yaml_parser import YAMLParser
-from app.modules.parsers.code_parser.code_file_parser import CodeFileParser
 from app.services.docling.client import DoclingClient
+from app.services.llm_gateway.gateway import get_llm_gateway
 from app.services.messaging.config import messaging_env
 from app.services.parsing.interface import ParserProvider
 from app.services.parsing.providers.docling_service_parser import DoclingServiceParser
@@ -62,7 +72,14 @@ from app.services.parsing.providers.pdfplumber_parser import PdfPlumberParser
 from app.services.parsing.providers.smart_pdf_parser import SmartPDFParser
 from app.services.parsing.registry import ParserRegistry
 from app.services.resource_governor import ResourceGovernor
+from app.services.resource_governor.probe import (
+    effective_cpu_count,
+    effective_cpu_source,
+)
+from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
 from app.utils.llm import is_local_cpu_embedding_configured
+from app.utils.logger import install_log_redaction
+from app.utils.process_hardening import mark_process_non_dumpable
 
 logger = logging.getLogger("parsing_main")
 
@@ -146,15 +163,21 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
     # PDF
     # ----------------------------------------------------------------
     smart_pdf_docling = SmartPDFParser(docling_svc_parser, docling_ocr_parser)
-    smart_pdf_default = SmartPDFParser(docling_svc_parser, default_ocr_parser)
+    # Same flag as the in-process indexing path (app/events/events.py).
+    use_pdfplumber = os.environ.get("ENABLE_PDFPLUMBER_PROCESSOR", "false").lower() == "true"
+    if use_pdfplumber:
+        smart_pdf_default = SmartPDFParser(pdfplumber_parser, default_ocr_parser)
+    else:
+        smart_pdf_default = SmartPDFParser(
+            docling_svc_parser, default_ocr_parser, large_pdf_parser=pdfplumber_parser
+        )
     registry.register("pdf", ParserProvider.DOCLING, smart_pdf_docling)
     registry.register("pdf", ParserProvider.DEFAULT, smart_pdf_default)
 
-    # EPUB is converted to PDF via LibreOffice, then delegated to the same
-    # SmartPDFParser instances used for native PDFs (Docling / pdfplumber /
-    # OCR selection stays entirely inside SmartPDFParser).
-    registry.register("epub", ParserProvider.DOCLING, EPUBParser(smart_pdf_docling))
-    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(smart_pdf_default))
+    # EPUB chapters are XHTML, so each book goes through the HTML parser of
+    # the same provider.
+    registry.register("epub", ParserProvider.DOCLING, EPUBParser(docling_html_parser))
+    registry.register("epub", ParserProvider.DEFAULT, EPUBParser(default_html_parser))
 
     # ----------------------------------------------------------------
     # DOCX / DOC — local Docling handles these in-process
@@ -226,6 +249,8 @@ def _build_registry(config_service: ConfigurationService, app_logger: logging.Lo
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    mark_process_non_dumpable()
+    install_log_redaction()
     app_container = await _get_initialized_container()
     app.container = app_container  # type: ignore[attr-defined]
 
@@ -257,6 +282,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # periodic sampler noticing the pressure it already caused.
     set_docling_processor_governor(governor)
     set_pdf_rasterizer_governor(governor)
+    set_parse_pool_governor(governor)
 
     # Size the loop's default executor (used by every asyncio.to_thread
     # offload) to the combined heavy+light ceiling so CPU-bound parsers
@@ -298,6 +324,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         app_logger.exception("Error during resource governor shutdown")
     governor.close()
     executor.shutdown(wait=False, cancel_futures=True)
+    shutdown_parse_pool()
     try:
         config_service.close()
     except Exception:
@@ -315,6 +342,7 @@ app = FastAPI(
     version="2.0.0",
     lifespan=lifespan,
 )
+configure_app(app, "parsing")
 
 # Trace context — outermost, so log lines correlate with the caller's request.
 app.add_middleware(RequestContextMiddleware)
@@ -329,6 +357,11 @@ async def health_check() -> JSONResponse:
         "status": "healthy",
         "service": "parsing",
         "formats": list(registry.list_all_formats().keys()),
+        "cpu": {
+            "effective_cpus": effective_cpu_count(),
+            "source": effective_cpu_source(),
+            "pdf_raster_workers": pdf_raster_pool_size(),
+        },
     }
     governor: ResourceGovernor | None = getattr(app.state, "governor", None)
     if governor is not None:
@@ -337,7 +370,15 @@ async def health_check() -> JSONResponse:
         except Exception as stats_error:
             # Observability failure must not fail the liveness probe — the
             # service itself is still healthy.
-            content["resource_governor"] = {"error": str(stats_error)}
+            container.logger().warning("Resource governor stats failed: %s", stats_error)
+            content["resource_governor"] = {"error": "unavailable"}
+    try:
+        # Table summaries, image descriptions and VLM OCR call models through this process's gateway.
+        content["llm_gateway"] = get_llm_gateway().stats()
+    except Exception as stats_error:
+        # Logged, not returned: exception text does not belong in /health.
+        container.logger().warning("LLM gateway stats failed: %s", stats_error)
+        content["llm_gateway"] = {"error": "unavailable"}
     return JSONResponse(content=content)
 
 
@@ -372,6 +413,7 @@ def run(host: str = "0.0.0.0", port: int | None = None, workers: int | None = No
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 

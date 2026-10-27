@@ -6,12 +6,24 @@ const MODELS_API = '/api/v1/configurationManager/ai-models';
 export const ADDED_MODELS_FILE = '.auth/ai-models.json';
 
 type ModelType = 'llm' | 'embedding';
+
+/**
+ * Part of the backend's refusal to change or delete the embedding model while
+ * the vector store holds its vectors (EMBEDDING_MODEL_IN_USE_MESSAGE in
+ * cm_controller.ts).
+ */
+const EMBEDDING_IN_USE_MARKER = 'is embedding your indexed content';
+
 export type AddedModel = { type: ModelType; modelKey: string };
 
 /**
  * Where a real model comes from, mirroring the integration tests'
- * `helper/ai_models_setup.py`: OpenAI with TEST_OPENAI_API_KEY (the CI secret),
- * or, for local runs, any OpenAI-compatible server at E2E_AI_ENDPOINT.
+ * `helper/ai_models_setup.py`: Azure OpenAI when its credentials are set — which
+ * is what CI runs on — then OpenAI, or, for local runs, any OpenAI-compatible
+ * server at E2E_AI_ENDPOINT.
+ *
+ * Azure is tried first for the same reason the Python helper tries it first:
+ * whichever key the org is given here is the one every answering test spends.
  */
 function modelConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
   const endpoint = process.env.E2E_AI_ENDPOINT;
@@ -25,6 +37,10 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
       },
     };
   }
+
+  const azure = azureConfig(type);
+  if (azure) return azure;
+
   const apiKey = process.env.TEST_OPENAI_API_KEY || process.env.OPENAI_API_KEY;
   if (!apiKey) return null;
   const model =
@@ -32,6 +48,35 @@ function modelConfig(type: ModelType): { provider: string; configuration: Record
       ? process.env.TEST_OPENAI_LLM_MODEL || 'gpt-5.4-nano'
       : process.env.TEST_OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
   return { provider: 'openAI', configuration: { model, apiKey } };
+}
+
+/**
+ * Azure needs an endpoint and a deployment as well as a key, so a half-set
+ * environment falls through to the next provider rather than being configured
+ * with blanks.
+ *
+ * The embedding deployment is required rather than falling back to the chat
+ * one: a chat deployment fails an embedding health check, and failing there is
+ * worse than never claiming Azure at all, because falling through would have
+ * found a working provider.
+ */
+function azureConfig(type: ModelType): { provider: string; configuration: Record<string, string> } | null {
+  const apiKey = process.env.TEST_AZURE_OPENAI_API_KEY;
+  const endpoint = process.env.TEST_AZURE_OPENAI_ENDPOINT;
+  if (!apiKey || !endpoint) return null;
+
+  const llmDeployment = process.env.TEST_AZURE_OPENAI_DEPLOYMENT_NAME;
+  const deploymentName =
+    type === 'llm'
+      ? llmDeployment
+      : process.env.TEST_AZURE_OPENAI_EMBEDDING_DEPLOYMENT_NAME;
+  if (!deploymentName) return null;
+
+  const model =
+    type === 'llm'
+      ? process.env.TEST_AZURE_OPENAI_MODEL || deploymentName
+      : process.env.TEST_AZURE_OPENAI_EMBEDDING_MODEL || 'text-embedding-3-small';
+  return { provider: 'azureOpenAI', configuration: { endpoint, apiKey, deploymentName, model } };
 }
 
 async function listModels(api: APIRequestContext, type: ModelType): Promise<unknown[]> {
@@ -45,13 +90,21 @@ export async function hasAnsweringModels(api: APIRequestContext): Promise<boolea
   return (await listModels(api, 'llm')).length > 0 && (await listModels(api, 'embedding')).length > 0;
 }
 
-/** Remove every model in `added`, trying them all before reporting any failure. */
+/**
+ * Remove every model in `added`, trying them all before reporting any failure.
+ *
+ * An embedding model whose vectors are stored is refused by the backend and
+ * left configured; the next run on the same stack finds it and adds nothing.
+ */
 export async function removeModels(api: APIRequestContext, added: AddedModel[]): Promise<void> {
   const failures: string[] = [];
   for (const { type, modelKey } of [...added].reverse()) {
     try {
       const res = await api.delete(`${MODELS_API}/providers/${type}/${modelKey}`);
-      if (!res.ok() && res.status() !== 404) failures.push(`${type} ${modelKey}: ${res.status()} ${await res.text()}`);
+      if (res.ok() || res.status() === 404) continue;
+      const body = await res.text();
+      if (type === 'embedding' && body.includes(EMBEDDING_IN_USE_MARKER)) continue;
+      failures.push(`${type} ${modelKey}: ${res.status()} ${body}`);
     } catch (error) {
       failures.push(`${type} ${modelKey}: ${(error as Error).message}`);
     }
@@ -88,7 +141,18 @@ export async function provisionAnsweringModels(api: APIRequestContext): Promise<
         },
         timeout: 120_000,
       });
-      if (!res.ok()) throw new Error(`adding the test ${type} model failed: ${res.status()} ${await res.text()}`);
+      if (!res.ok()) {
+        const body = await res.text();
+        if (type === 'embedding' && body.includes(EMBEDDING_IN_USE_MARKER)) {
+          throw new Error(
+            'adding the test embedding model failed: this deployment already embeds content with the ' +
+              'built-in model, and the backend refuses to switch models while those vectors are stored. ' +
+              'Run on a fresh stack, add the embedding model before anything is indexed, or delete the ' +
+              `embeddings in Labs (Workspace > Labs > Vector store) and run again. Backend answered: ${res.status()} ${body}`
+          );
+        }
+        throw new Error(`adding the test ${type} model failed: ${res.status()} ${body}`);
+      }
       const modelKey = ((await res.json()) as { details?: { modelKey?: string } }).details?.modelKey;
       if (!modelKey) throw new Error(`adding the test ${type} model returned no model key`);
       added.push({ type, modelKey });

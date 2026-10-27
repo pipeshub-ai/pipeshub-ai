@@ -45,11 +45,12 @@ _INTERNAL_TO_DISPLAY: dict[str, str] = {
 
 
 def confidence_enabled() -> bool:
-    """Return True iff ``PIPESHUB_ENABLE_CONFIDENCE`` is ``"true"``.
+    """Return True unless ``PIPESHUB_ENABLE_CONFIDENCE`` is set to something other than ``"true"``.
 
-    Defaults to **False** — confidence is opt-in.  Set the variable to
-    ``"true"`` to enable the confidence trailer / FinalAnswerTool confidence
-    parameter / frontend badge.
+    Defaults to **True** — confidence is on when the variable is unset.
+    Set it to ``"false"`` (or any value other than ``"true"``, compared
+    case-insensitively) to turn off the confidence trailer / FinalAnswerTool
+    confidence parameter / frontend badge.
     """
     return os.getenv("PIPESHUB_ENABLE_CONFIDENCE", "true").strip().lower() == "true"
 

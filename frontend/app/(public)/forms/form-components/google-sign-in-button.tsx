@@ -1,6 +1,14 @@
 'use client';
 
 import { useState, useCallback, useEffect, useRef } from 'react';
+import {
+  buildDesktopRedirectUri,
+  desktopOAuthErrorMessage,
+  isElectron,
+  runDesktopOAuth,
+} from '@/lib/electron';
+import { makeDesktopState } from '@/lib/auth/desktop-oauth';
+import { decodeJwtPayload } from '@/lib/api/token-refresh';
 import ProviderButton from './provider-button';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -59,15 +67,34 @@ export default function GoogleSignInButton({
       window.crypto.getRandomValues(new Uint8Array(16)),
     ).map((b) => b.toString(16).padStart(2, '0')).join('');
 
-    const state = Array.from(
+    const random = Array.from(
       window.crypto.getRandomValues(new Uint8Array(16)),
     ).map((b) => b.toString(16).padStart(2, '0')).join('');
 
-    // Store for CSRF/replay validation in the callback page
-    localStorage.setItem('google_oauth_nonce', nonce);
-    localStorage.setItem('google_oauth_state', state);
+    // The desktop callback page runs in the user's browser, so the state has to
+    // carry a marker it can recognise there.
+    const desktop = isElectron();
+    const state = desktop ? makeDesktopState(random) : random;
 
-    const redirectUri = `${window.location.origin}/auth/google/callback`;
+    let redirectUri: string;
+    try {
+      redirectUri = desktop
+        ? buildDesktopRedirectUri('google')
+        : `${window.location.origin}/auth/google/callback`;
+    } catch (err) {
+      const message = desktopOAuthErrorMessage(err, 'Google');
+      if (message) onError(message);
+      return;
+    }
+
+    if (!desktop) {
+      // The callback page reads these back. Under Electron it runs in a
+      // separate browser with its own storage, so writing them here would only
+      // leave stale values for a later web flow in this renderer to trip over.
+      localStorage.setItem('google_oauth_nonce', nonce);
+      localStorage.setItem('google_oauth_state', state);
+    }
+
     const params = new URLSearchParams({
       client_id: clientId,
       redirect_uri: redirectUri,
@@ -79,6 +106,37 @@ export default function GoogleSignInButton({
     });
 
     const authUrl = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+
+    if (desktop) {
+      const flow = runDesktopOAuth({ provider: 'google', authUrl, expectedState: state });
+      cleanupRef.current = () => {
+        flow.cancel();
+        cleanupRef.current = null;
+      };
+      setIsLoading(true);
+      flow.promise
+        .then((result) => {
+          const idToken = result.id_token;
+          if (!idToken) throw new Error('No id token received from Google.');
+          // Google binds the nonce into the token, so one minted for a different
+          // flow cannot carry ours. Worth checking on a token that reached us
+          // through an OS-level URL handler any local app could have answered.
+          if (decodeJwtPayload(idToken)?.nonce !== nonce) {
+            throw new Error('Google sign-in could not be verified. Please try again.');
+          }
+          cleanupRef.current = null;
+          setIsLoading(false);
+          onSuccess(idToken);
+        })
+        .catch((err: unknown) => {
+          cleanupRef.current = null;
+          setIsLoading(false);
+          const message = desktopOAuthErrorMessage(err, 'Google');
+          if (message) onError(message);
+        });
+      return;
+    }
+
     const width = 500;
     const height = 600;
     const left = Math.round((window.screen.width - width) / 2);

@@ -1,5 +1,6 @@
 import mongoose, { Schema, Document as MongooseDocument } from 'mongoose';
 import {
+  ArtifactSet,
   Document as IDocument,
   DocumentPermission,
   StorageInfo,
@@ -56,6 +57,17 @@ const DocumentVersionSchema = new Schema<DocumentVersion>(
   { _id: false },
 );
 
+const ArtifactSetSchema = new Schema<ArtifactSet>(
+  {
+    virtualRecordId: { type: String, required: true },
+    rev: { type: String, required: true },
+    root: { type: String, required: true },
+    // Set when a delete claims the revision; presign refuses it from then on.
+    retiringAt: { type: Number },
+  },
+  { _id: false },
+);
+
 // Main Document Schema
 const DocumentSchema = new Schema(
   {
@@ -75,6 +87,7 @@ const DocumentSchema = new Schema(
     documentPath: {
       type: String,
       trim: true,
+      index: true,
     },
     isVersionedFile: {
       type: Boolean,
@@ -163,6 +176,9 @@ const DocumentSchema = new Schema(
     awaitingDirectUpload: {
       type: Boolean,
     },
+    artifactSet: {
+      type: ArtifactSetSchema,
+    },
   },
   {
     timestamps: {
@@ -172,6 +188,8 @@ const DocumentSchema = new Schema(
 );
 
 DocumentSchema.index({ orgId: 1, _id: 1 });
+// Finds a virtual record's record_/metadata_ documents wherever they are filed.
+DocumentSchema.index({ orgId: 1, documentName: 1 });
 // Lets a retried create find what its first attempt made, and settles two
 // attempts racing each other. Keys are per principal (initiatorUserId, null for
 // service tokens). Partial, so documents without a key are exempt.
@@ -180,6 +198,18 @@ DocumentSchema.index(
   {
     unique: true,
     partialFilterExpression: { idempotencyKey: { $type: 'string' } },
+  },
+);
+// One document per content revision of a virtual record, so two presigns of
+// the same revision racing each other settle on one. Its prefix also serves
+// listing and purging a virtual record's revisions.
+DocumentSchema.index(
+  { orgId: 1, 'artifactSet.virtualRecordId': 1, 'artifactSet.rev': 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      'artifactSet.virtualRecordId': { $exists: true },
+    },
   },
 );
 

@@ -60,6 +60,31 @@ class ConversationsClient(APIClient):
         """Delete a conversation."""
         return self.delete(f"/{conversation_id}", **kwargs)
 
+    def create_conversation(
+        self,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Start a conversation and wait for the full answer (POST /create)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post("/create", json=body, **options)
+
+    def add_message(
+        self,
+        conversation_id: str,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Add a message and wait for the full answer (POST /{id}/messages)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post(f"/{conversation_id}/messages", json=body, **options)
+
     def stream_conversation(
         self,
         *,
@@ -292,6 +317,37 @@ class AgentConversationsClient(APIClient):
         body.update(payload)
         return self.patch(
             f"/{agent_key}/conversations/{conversation_id}/title",
+            json=body,
+            **options,
+        )
+
+    def create_conversation(
+        self,
+        agent_key: str,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Start an agent conversation and wait for the full answer (POST /{agentKey}/conversations)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post(f"/{agent_key}/conversations", json=body, **options)
+
+    def add_message(
+        self,
+        agent_key: str,
+        conversation_id: str,
+        *,
+        query: str | None = None,
+        json: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> requests.Response:
+        """Add a message and wait for the full answer (POST /{agentKey}/conversations/{id}/messages)."""
+        options, payload = _request_options(kwargs)
+        body = _merge_json_body(query=query, json=json, payload=payload)
+        return self.post(
+            f"/{agent_key}/conversations/{conversation_id}/messages",
             json=body,
             **options,
         )

@@ -15,6 +15,7 @@ import pytest
 
 from app.connectors.sources.github_teams import connector as connector_mod
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 from app.connectors.sources.github_teams.connector import GitHubTeamsConnector
 
 from tests.unit.connectors.sources.test_github_teams.conftest import (
@@ -37,18 +38,16 @@ def _runnable_connector() -> object:
     c.repos.timestamps.schedule = lambda: None
     c.users.sync_users = AsyncMock()
     c.projects.sync_all_repos = AsyncMock()
+    c.projects.failures = []
     return c
 
 
 class TestTeamAppEdge:
-    """Without a Teams->App edge the record-access query's
-    ``connectorId IN user_apps_ids`` pre-filter excludes every GitHub record,
-    making a public repo's ORG grant unreachable for users whose GitHub
-    account never resolved to an AppUser."""
-
-    async def test_run_sync_ensures_the_team_app_edge(
+    async def test_run_sync_leaves_the_team_app_edge_to_the_repo_sync(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """The edge is conditional on a public repo, which only the per-repo
+        sync knows about (see test_projects.py::TestTeamAppEdge)."""
         c = _runnable_connector()
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
@@ -56,25 +55,8 @@ class TestTeamAppEdge:
 
         await GitHubTeamsConnector.run_sync(c)
 
-        c.tx_store.ensure_team_app_edge.assert_awaited_once_with(
-            c.connector_id, c.data_entities_processor.org_id,
-        )
-
-    async def test_edge_is_established_before_user_sync(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        """A user sync that raises (e.g. org discovery failure) must not leave
-        the connector unreachable for the whole org."""
-        c = _runnable_connector()
-        c.users.sync_users = AsyncMock(side_effect=RuntimeError("org discovery failed"))
-        monkeypatch.setattr(
-            connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
-        )
-
-        with pytest.raises(RuntimeError):
-            await GitHubTeamsConnector.run_sync(c)
-
-        c.tx_store.ensure_team_app_edge.assert_awaited_once()
+        c.data_entities_processor.ensure_team_app_edge.assert_not_awaited()
+        c.projects.sync_all_repos.assert_awaited_once()
 
 
 class TestInit:
@@ -202,6 +184,15 @@ class TestConnectionAndAccess:
 
         assert await GitHubTeamsConnector.test_connection_and_access(c) is False
 
+    async def test_rejected_credentials_say_so(self) -> None:
+        c = make_mock_connector()
+        res = failed_response("Bad credentials", status_code=401)
+        res.api_message = "Bad credentials"
+        c.runtime.ds_call = AsyncMock(return_value=res)
+
+        with pytest.raises(ConnectorInitError, match="rejected the credentials"):
+            await GitHubTeamsConnector.test_connection_and_access(c)
+
     async def test_exception_returns_false(self) -> None:
         c = make_mock_connector()
         c.runtime.refresh_token_if_needed = AsyncMock(side_effect=RuntimeError("network"))
@@ -217,6 +208,7 @@ class TestRunSyncAndIncremental:
         order: list[str] = []
         c.users.sync_users = AsyncMock(side_effect=lambda: order.append("users"))
         c.projects.sync_all_repos = AsyncMock(side_effect=lambda: order.append("projects"))
+        c.projects.failures = []
         monkeypatch.setattr(
             connector_mod, "load_connector_filters", AsyncMock(return_value=({}, {})),
         )

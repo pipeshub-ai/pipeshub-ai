@@ -30,14 +30,22 @@ def missing_env(names: Sequence[str]) -> list[str]:
     return [name for name in names if not os.getenv(name)]
 
 
-def source_unavailable(reason: str, *, secrets: Sequence[str] = ()) -> NoReturn:
+def source_unavailable(
+    reason: str, *, secrets: Sequence[str] = (), required: bool | None = None
+) -> NoReturn:
     """Skip while developing, fail on a run that was meant to cover this.
 
     ``reason`` says what is missing in plain words. ``secrets`` names the
     environment variables to set, so whoever reads a red nightly knows what to
     do without opening the test.
+
+    ``required`` overrides the decision for callers that are not connector
+    suites, where shard membership does not say whether this run was meant to
+    cover the thing. Left alone, the run's own flag decides.
     """
-    if not secrets_required():
+    if required is None:
+        required = secrets_required()
+    if not required:
         pytest.skip(reason)
 
     names = ", ".join(secrets)

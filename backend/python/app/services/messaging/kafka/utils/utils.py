@@ -1,17 +1,26 @@
-import ssl
 from collections.abc import AsyncGenerator
+from contextlib import aclosing
 from typing import Any
 
+from app.services.messaging.kafka.config.kafka_config import kafka_security_kwargs
 from app.config.constants.service import KafkaConfig as KafkaConstants, config_node_constants
 from app.edition_services import (
     EntityEventService,
     EventService,
     RecordEventHandler,
 )
+from app.connectors.services.code_graph_event_service import CodeGraphEventService
 from app.containers.connector import ConnectorAppContainer
 from app.containers.indexing import IndexingAppContainer
 from app.containers.query import QueryAppContainer
+from app.modules.code_graph.edge_build_runner import CodeEdgeBuildRunner
+from app.modules.code_graph.facts_source import BlobCodeFactsSource
+from app.modules.transformers.blob_storage import BlobStorage
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.services.model_identity.boundary import config_service_of
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
 from app.services.messaging.config import (
     IndexingMessageHandler,
     MessageHandler,
@@ -24,6 +33,11 @@ from app.services.messaging.kafka.config.kafka_config import (
     KafkaProducerConfig,
 )
 from app.services.messaging.kafka.handlers.ai_config import AiConfigEventService
+from app.services.vector_db.rebuild_state import redis_from_config_service
+
+
+def _str_or_none(value: Any) -> str | None:  # noqa: ANN401 - a message field of unknown type
+    return str(value) if value else None
 
 
 class KafkaUtils:
@@ -128,17 +142,7 @@ class KafkaUtils:
             'topics': kafka_config.topics  # Include topics in the dictionary
         }
 
-        # Add SSL/SASL configuration for AWS MSK
-        if kafka_config.ssl:
-            config["ssl_context"] = ssl.create_default_context()
-            sasl_config = kafka_config.sasl or {}
-            if sasl_config.get("username"):
-                config["security_protocol"] = "SASL_SSL"
-                config["sasl_mechanism"] = sasl_config.get("mechanism", "SCRAM-SHA-512").upper()
-                config["sasl_plain_username"] = sasl_config["username"]
-                config["sasl_plain_password"] = sasl_config["password"]
-            else:
-                config["security_protocol"] = "SSL"
+        config.update(kafka_security_kwargs(ssl_enabled=kafka_config.ssl, sasl=kafka_config.sasl))
 
         return config
 
@@ -245,8 +249,21 @@ class KafkaUtils:
                 payload["is_final_failure"] = message.is_final_failure
 
                 logger.debug(f"Processing record event: {event_type}")
-                async for event in record_event_service.process_event(event_type, payload):
-                    yield event
+                # Every model call this record makes (describe images, embed, extract)
+                # goes out as the indexing service, not as whoever happens to be
+                # logged in. Bound here because this generator is driven by one worker
+                # task for the whole record; the handler's own coroutines copy it.
+                async with call_scope(
+                    service_principal("indexing", str(payload.get("orgId") or "")),
+                    Workload.INDEXING,
+                    config_service=config_service_of(app_container),
+                    container=app_container,
+                    record_id=_str_or_none(payload.get("recordId")),
+                    connector_id=_str_or_none(payload.get("connectorId")),
+                ):
+                    async with aclosing(record_event_service.process_event(event_type, payload)) as events:
+                        async for event in events:
+                            yield event
 
             except Exception as e:
                 logger.error(f"Error processing record message: {str(e)}", exc_info=True)
@@ -294,6 +311,55 @@ class KafkaUtils:
                 return False
 
         return handle_sync_message
+
+    @staticmethod
+    async def create_code_graph_event_service(
+        app_container: ConnectorAppContainer,
+        graph_provider: IGraphDBProvider,
+    ) -> CodeGraphEventService:
+        """One instance per process, shared by the consumer and the reconciler.
+
+        Both must see the same Redis client and task manager, or the lock and
+        the in-process "already running" check would disagree about a repo.
+        """
+        event_service = vars(app_container).get("code_graph_event_service")
+        if event_service is not None:
+            return event_service
+        logger = app_container.logger()
+        redis = vars(app_container).get("code_edge_build_redis")
+        if redis is None:
+            redis = await redis_from_config_service(app_container.config_service())
+            app_container.code_edge_build_redis = redis
+        blob_storage = BlobStorage(logger, app_container.config_service(), graph_provider)
+        event_service = CodeGraphEventService(
+            logger=logger,
+            runner=CodeEdgeBuildRunner(
+                graph_provider,
+                redis,
+                logger,
+                facts_source=BlobCodeFactsSource(blob_storage, graph_provider, logger),
+            ),
+        )
+        app_container.code_graph_event_service = event_service
+        return event_service
+
+    @staticmethod
+    async def create_code_graph_message_handler(
+        app_container: ConnectorAppContainer,
+        graph_provider: IGraphDBProvider,
+    ) -> MessageHandler:
+        event_service = await KafkaUtils.create_code_graph_event_service(
+            app_container,
+            graph_provider,
+        )
+
+        async def handle_code_graph_message(message: StreamMessage) -> bool:
+            return await event_service.process_event(
+                message.eventType,
+                message.payload,
+            )
+
+        return handle_code_graph_message
 
     @staticmethod
     async def create_aiconfig_message_handler(

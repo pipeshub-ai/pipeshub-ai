@@ -1,6 +1,7 @@
 import mongoose, { Schema, Model } from 'mongoose';
 import slug from 'slug';
 import { Logger } from '../services/logger.service';
+import { isDuplicateKeyError } from './mongo.utils';
 
 const logger = Logger.getInstance();
 
@@ -24,11 +25,6 @@ const counterSchema = new Schema<CounterDocument>({
 export const Counter: Model<CounterDocument> =
   mongoose.models.Counter ??
   mongoose.model<CounterDocument>('Counter', counterSchema);
-
-const isDuplicateKeyError = (err: unknown): boolean =>
-  typeof err === 'object' &&
-  err !== null &&
-  (err as { code?: number }).code === 11000;
 
 const MAX_ATTEMPTS = 5;
 
@@ -69,7 +65,7 @@ const getNextSequence = async (name: string): Promise<number> => {
       const counter = await Counter.findOneAndUpdate(
         { name },
         { $inc: { seq: 1 } },
-        { new: true, upsert: true },
+        { returnDocument: 'after', upsert: true },
       );
       return counter.seq;
     } catch (err) {

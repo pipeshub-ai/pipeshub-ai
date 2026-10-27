@@ -200,6 +200,10 @@ class FakeVectorDBService(IVectorDBService):
         matched = [p for p in points if _filter_matches(p.payload, scroll_filter)]
         return ScrollResult(points=matched[:limit], next_offset=None)
 
+    async def retrieve_points(self, collection_name: str, ids: List[str]) -> List[VectorPoint]:
+        wanted = set(ids)
+        return [p for p in self.collections.get(collection_name, []) if p.id in wanted]
+
     async def query_nearest_points(
         self, collection_name: str, requests: List[HybridSearchRequest]
     ) -> List[List[SearchResult]]:
@@ -243,11 +247,17 @@ class FakeVectorDBService(IVectorDBService):
             if _filter_matches(p.payload, filter):
                 p.payload.update(payload)
 
+    async def update_payload_by_ids(self, collection_name: str, point_ids: List[str], payload: dict) -> None:
+        wanted = set(point_ids)
+        for p in self.collections.get(collection_name, []):
+            if p.id in wanted:
+                p.payload.update(payload)
+
 
 def _make_config_service():
     store: dict = {}
 
-    async def get_config(key, default=None):
+    async def get_config(key, default=None, raise_on_error=False):
         return store.get(key, default)
 
     async def set_config(key, value):
@@ -263,7 +273,7 @@ def _make_registry(vector_db_service, strategy) -> CollectionRegistry:
     return CollectionRegistry(
         vector_db_service=vector_db_service,
         strategy=strategy,
-        collection_config_factory=lambda size, sparse_idf=False: CollectionConfig(
+        collection_config_factory=lambda size: CollectionConfig(
             embedding_size=size
         ),
         manifest_store=CollectionManifestStore(_make_config_service(), MagicMock()),
@@ -326,7 +336,7 @@ class TestConnectorDeletionPreservesOtherConnectors:
         original_delay = run_mod.EMPTY_CONFIRM_DELAY_SECONDS
         run_mod.EMPTY_CONFIRM_DELAY_SECONDS = 0
         try:
-            result = await pipeline.purge_connector(ctx, ["vr-drive-1"])
+            result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-drive-1"])
         finally:
             run_mod.EMPTY_CONFIRM_DELAY_SECONDS = original_delay
 
@@ -374,7 +384,7 @@ class TestConnectorDeletionPreservesOtherConnectors:
         )
 
         ctx = DeleteContext(org_id="org-1", connector_id="conn-drive")
-        result = await pipeline.purge_connector(ctx, ["vr-shared"])
+        result = await pipeline.purge_connector_by_virtual_record_ids(ctx, ["vr-shared"])
 
         assert result["action"] == "filtered_delete"
         assert result["virtual_record_ids_deleted"] == 0

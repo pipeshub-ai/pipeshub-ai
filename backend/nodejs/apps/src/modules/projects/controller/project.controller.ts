@@ -8,6 +8,9 @@ import { HTTP_STATUS } from '../../../libs/enums/http-status.enum';
 import { IAMServiceCommand } from '../../../libs/commands/iam/iam.service.command';
 import { BadRequestError } from '../../../libs/errors/http.errors';
 import { ChatSession } from '../../enterprise_search/schema/chat.session.schema';
+import { IChatSessionDocument } from '../../enterprise_search/types/conversation.interfaces';
+import { asQueryFilter } from '../../../libs/utils/mongo-filter';
+import { withoutOwnerOnlyFields } from '../../enterprise_search/utils/utils';
 import {
   CreateProjectInput,
   ProjectService,
@@ -58,19 +61,20 @@ export const listProjects =
       const orgId = req.user?.orgId as string;
       // ValidationMiddleware replaces req.query with the Zod-parsed/coerced
       // result, so page/limit are already numbers and includeArchived a boolean.
-      const { page, limit, search, scope, includeArchived } =
+      const { page, limit, search, scope, includeArchived, isArchived } =
         req.query as unknown as {
           page: number;
           limit: number;
           search?: string;
           scope: 'mine' | 'shared' | 'all';
           includeArchived: boolean;
+          isArchived?: boolean;
         };
       const callerTeamIds = await resolveCallerTeamIds(req, appConfig);
       const { projects, totalCount } = await ProjectService.list(
         orgId,
         userId,
-        { page, limit, search, scope, includeArchived },
+        { page, limit, search, scope, includeArchived, isArchived },
         callerTeamIds,
       );
       res.status(200).json({
@@ -314,18 +318,20 @@ export const getProjectConversations =
       };
 
       const [conversations, totalCount] = await Promise.all([
-        ChatSession.find(filter)
+        ChatSession.find(asQueryFilter<IChatSessionDocument>(filter))
           .sort({ lastActivityAt: -1, _id: -1 })
           .skip(skip)
           .limit(limit)
           .select('-__v')
           .lean()
           .exec(),
-        ChatSession.countDocuments(filter),
+        ChatSession.countDocuments(asQueryFilter<IChatSessionDocument>(filter)),
       ]);
 
       res.status(200).json({
-        conversations,
+        conversations: conversations.map((c) =>
+          String(c.userId) === userId ? c : withoutOwnerOnlyFields(c),
+        ),
         pagination: {
           page,
           limit,
@@ -366,7 +372,7 @@ async function teamExists(
 ): Promise<boolean> {
   try {
     const command = new AIServiceCommand<unknown>({
-      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${teamId}`,
+      uri: `${appConfig.connectorBackend}/api/v1/entity/team/${encodeURIComponent(teamId)}`,
       method: HttpMethod.GET,
       headers: req.headers as Record<string, string>,
     });
@@ -414,7 +420,7 @@ export const upsertProjectMembers =
           }
           try {
             const iamCommand = new IAMServiceCommand({
-              uri: `${appConfig.iamBackend}/api/v1/users/${member.principalId}`,
+              uri: `${appConfig.iamBackend}/api/v1/users/${encodeURIComponent(member.principalId)}`,
               method: HttpMethod.GET,
               headers: req.headers as Record<string, string>,
             });

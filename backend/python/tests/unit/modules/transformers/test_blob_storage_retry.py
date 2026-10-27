@@ -367,3 +367,32 @@ class TestLocalUploadStatuses:
             ) == (None, None)
 
         assert len(keys) == 1
+
+
+class TestRecordUploadRejection:
+    """A record the storage service refuses fails at once, with the service's reason."""
+
+    @pytest.mark.asyncio
+    async def test_a_too_large_record_raises_a_rejection_with_the_reason(self, feedback) -> None:
+        body = {"error": {"message": "One of the files is larger than the 30 MB limit."}}
+        blob, keys, session = _local_upload_blob([_response(400, body)])
+
+        with patch.object(bs_mod, "get_shared_session", return_value=session), pytest.raises(
+            bs_mod.StorageRequestRejectedError, match="30 MB limit"
+        ) as raised:
+            await _local_upload(blob, "record")
+
+        assert raised.value.status == 400
+        assert raised.value.too_large
+        assert len(keys) == 1
+
+    @pytest.mark.asyncio
+    async def test_a_refused_service_token_is_not_a_rejection(self, feedback) -> None:
+        blob, _keys, session = _local_upload_blob([_response(401)])
+
+        with patch.object(bs_mod, "get_shared_session", return_value=session), pytest.raises(
+            aiohttp.ClientError
+        ) as raised:
+            await _local_upload(blob, "record")
+
+        assert not isinstance(raised.value, bs_mod.StorageRequestRejectedError)

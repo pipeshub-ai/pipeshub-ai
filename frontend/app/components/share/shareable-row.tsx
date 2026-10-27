@@ -1,5 +1,6 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
 import React from 'react';
 import { Flex, Text, Box } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -22,6 +23,7 @@ interface ShareableRowProps {
   showRoleDropdown?: boolean;
   /** When provided, suppresses role options in the dropdown (e.g. for chat) */
   noRolesInfo?: { title: string; description: string };
+  roleOptions?: { roles: ShareRole[]; labels?: Record<ShareRole, { label: string; description: string }> };
   /** Whether to show a radio button for selection */
   showRadio?: boolean;
   /** Whether to show "Invite to Pipeshub" link */
@@ -52,6 +54,7 @@ export function ShareableRow({
   showRadio = false,
   showInvite = false,
   noRolesInfo,
+  roleOptions,
   isCurrentUser = false,
   onToggle,
   onRoleChange,
@@ -59,6 +62,7 @@ export function ShareableRow({
   onRemove,
   onRoleDropdownOpenChange,
 }: ShareableRowProps) {
+  const { t } = useTranslation();
   return (
     <Flex
       align="center"
@@ -160,13 +164,15 @@ export function ShareableRow({
           onRemove={onRemove}
           isTeam={type === 'team'}
           noRolesInfo={noRolesInfo}
+          roles={roleOptions?.roles}
+          labels={roleOptions?.labels}
           onOpenChange={onRoleDropdownOpenChange}
         />
       )}
 
       {isOwner && !showRoleDropdown && (
         <Text size="2" style={{ color: 'var(--slate-9)', flexShrink: 0 }}>
-          Owner
+          {t('recordView.permissionOwner')}
         </Text>
       )}
 
@@ -183,7 +189,7 @@ export function ShareableRow({
             onInvite?.();
           }}
         >
-          Invite to Pipeshub
+          {t('shareSidebar.invite')}
         </Text>
       )}
     </Flex>

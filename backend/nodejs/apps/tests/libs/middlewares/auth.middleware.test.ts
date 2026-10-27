@@ -10,6 +10,7 @@ import { UserActivities } from '../../../src/modules/auth/schema/userActivities.
 import { Users } from '../../../src/modules/user_management/schema/users.schema'
 import { Org } from '../../../src/modules/user_management/schema/org.schema'
 import { OAuthApp } from '../../../src/modules/oauth_provider/schema/oauth.app.schema'
+import { ServiceAccountDelegation } from '../../../src/modules/oauth_provider/schema/service-account-delegation.schema'
 import { TokenScopes } from '../../../src/libs/enums/token-scopes.enum'
 import { PAT_TOKEN_PREFIX } from '../../../src/modules/oauth_provider/constants/constants'
 
@@ -203,6 +204,68 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.equal(decoded)
     })
 
+    it("keeps the web app's client name on a session token", async () => {
+      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: Math.floor(Date.now() / 1000) })
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(null))
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}`, 'client-name': 'pipeshub-ai' } })
+      await authMiddleware.authenticate(req, createMockResponse(), createMockNext())
+
+      expect(req.headers['client-name']).to.equal('pipeshub-ai')
+    })
+
+    it('rejects a session belonging to a disabled account', async () => {
+      // Sessions handed out before the account was disabled have to stop too,
+      // or disabling only prevents the next sign-in.
+      sinon.restore()
+      sinon.stub(jwt, 'decode').returns({ userId: 'user1', orgId: 'org1' })
+      sinon
+        .stub(Users, 'findOne')
+        .returns(createMockQuery({ _id: 'user1', orgId: 'org1', isDisabled: true }))
+      tokenService = { verifyToken: sinon.stub(), verifyScopedToken: sinon.stub() } as any
+      authMiddleware = new AuthMiddleware(logger as unknown as Logger, tokenService as unknown as AuthTokenService)
+      tokenService.verifyToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      })
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('disabled')
+    })
+
+    it('rejects a session that claims to belong to a service account', async () => {
+      sinon.restore()
+      sinon.stub(jwt, 'decode').returns({ userId: 'user1', orgId: 'org1' })
+      sinon
+        .stub(Users, 'findOne')
+        .returns(createMockQuery({ _id: 'user1', orgId: 'org1', kind: 'service' }))
+      tokenService = { verifyToken: sinon.stub(), verifyScopedToken: sinon.stub() } as any
+      authMiddleware = new AuthMiddleware(logger as unknown as Logger, tokenService as unknown as AuthTokenService)
+      tokenService.verifyToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        role: 'member',
+        iat: Math.floor(Date.now() / 1000),
+      })
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.calledOnce).to.be.true
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('cannot sign in')
+    })
+
     it('should reject token if logout activity is newer than token iat', async () => {
       const tokenIat = Math.floor(Date.now() / 1000) - 3600 // 1 hour ago
       const decoded = {
@@ -230,6 +293,33 @@ describe('AuthMiddleware', () => {
       const error = next.firstCall.args[0]
       expect(error).to.be.instanceOf(UnauthorizedError)
       expect(error.message).to.equal('Session expired, please login again')
+    })
+
+    it('refuses an access token issued in the same second the account was deleted', async () => {
+      const tokenIat = Math.floor(Date.now() / 1000) - 3600
+      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: tokenIat })
+      // A re-invite restores the account and leaves the deletion recorded.
+      const deletion = { activityType: 'ACCOUNT DELETED', createdAt: new Date(tokenIat * 1000 + 500) }
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(deletion))
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+    })
+
+    it('keeps the one-second allowance for a password change in the token\'s own second', async () => {
+      const tokenIat = Math.floor(Date.now() / 1000) - 3600
+      tokenService.verifyToken.resolves({ userId: 'user1', orgId: 'org1', role: 'member', iat: tokenIat })
+      const change = { activityType: 'PASSWORD CHANGED', createdAt: new Date(tokenIat * 1000 + 500) }
+      sinon.stub(UserActivities, 'findOne').returns(createMockQuery(change))
+
+      const req = createMockRequest({ headers: { authorization: `Bearer ${validToken}` } })
+      const next = createMockNext()
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args).to.have.length(0)
     })
 
     it('should allow token if activity timestamp is before token iat + delay', async () => {
@@ -446,6 +536,48 @@ describe('AuthMiddleware', () => {
       expect(req.user.oauthScopes).to.deep.equal(['user:read', 'kb:read'])
     })
 
+    it('should reject an OAuth token that carries no scopes', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: '',
+      })
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.calledOnce).to.be.true
+      const error = next.firstCall.args[0]
+      expect(error).to.be.instanceOf(UnauthorizedError)
+      expect(error.message).to.equal('Token carries no scopes')
+    })
+
+    it("can't claim the web app's client name, which lets a run wait for a person's approval", async () => {
+      sinon.stub(jwt, 'decode').returns({ tokenType: 'oauth', client_id: 'client123', iss: 'https://example.com' })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'user1', orgId: 'org1', client_id: 'client123', scope: 'conversation:chat',
+      })
+      sinon.stub(Users, 'findOne').returns(createMockQuery({ email: 'test@example.com', fullName: 'Test User', role: 'member' }))
+
+      const spoofed = createMockRequest({ headers: { authorization: 'Bearer oauth-token', 'client-name': 'PipesHub-AI' } })
+      await authMiddleware.authenticate(spoofed, createMockResponse(), createMockNext())
+      expect(spoofed.headers['client-name']).to.equal('api')
+
+      const other = createMockRequest({ headers: { authorization: 'Bearer oauth-token', 'client-name': 'my-script' } })
+      await authMiddleware.authenticate(other, createMockResponse(), createMockNext())
+      expect(other.headers['client-name']).to.equal('my-script')
+    })
+
     it('should reject OAuth tokens without a userId', async () => {
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
@@ -508,7 +640,10 @@ describe('AuthMiddleware', () => {
       expect(req.user).to.deep.include({ userId: 'user1', orgId: 'org1', isOAuth: true })
     })
 
-    it('should resolve client_credentials JWT via createdBy', async () => {
+    it('resolves client_credentials from the app record', async () => {
+      // The identity comes from the application, not from the token's own
+      // userId. A token whose claim disagrees with the application is refused
+      // rather than silently remapped — covered by the test below.
       sinon.stub(jwt, 'decode').returns({
         tokenType: 'oauth',
         client_id: 'client123',
@@ -524,6 +659,9 @@ describe('AuthMiddleware', () => {
         accountType: 'premium',
       })
 
+      sinon
+        .stub(OAuthApp, 'findOne')
+        .returns(createMockQuery({ createdBy: 'real-owner-id' }))
       const userQuery = createMockQuery({ email: 'owner@example.com', fullName: 'Owner' })
       sinon.stub(Users, 'findOne').returns(userQuery)
 
@@ -535,6 +673,311 @@ describe('AuthMiddleware', () => {
 
       expect(next.firstCall.args).to.have.length(0)
       expect(req.user.userId).to.equal('real-owner-id')
+    })
+
+    it('authenticates a delegated token as the person, not the service account', async () => {
+      // The keystone of delegation. The issued token names the person in
+      // `userId`, so it travels this path as an ordinary user token and every
+      // check downstream — here and in the Python services, which read the
+      // same claim — treats it as that person without knowing delegation
+      // exists. The `act` claim records who was really calling and is
+      // deliberately not read for authorisation.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+        createdBy: 'the-service-account',
+      })
+
+      const appLookup = sinon.stub(OAuthApp, 'findOne')
+      const users = sinon.stub(Users, 'findOne')
+      // First the person the token speaks as, then the service account behind
+      // it — both re-read on every request, so neither can go stale.
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          fullName: 'A Person',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      users.onSecondCall().returns(createMockQuery({ isDisabled: false }))
+      const delegations = sinon
+        .stub(ServiceAccountDelegation, 'findOne')
+        .returns(createMockQuery({ _id: 'delegation-1' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.userId).to.equal('the-person')
+      // `createdBy` names the service account on a delegated token, and must
+      // not be substituted the way a client_credentials token's is. That
+      // substitution happens only when userId === client_id, which is the
+      // reason this works — so the app lookup is never even reached.
+      expect(appLookup.called).to.equal(false)
+      expect(req.user.email).to.equal('person@example.com')
+      expect(req.user.role).to.equal('member')
+      // The allow-list entry is read on every request, scoped to the actor
+      // and the person the token speaks as.
+      expect(delegations.firstCall.args[0]).to.deep.equal({
+        orgId: { $eq: 'org1' },
+        serviceAccountId: { $eq: 'the-service-account' },
+        subjectUserId: { $eq: 'the-person' },
+      })
+    })
+
+    it('refuses a delegated token once the permission is withdrawn', async () => {
+      // An administrator withdrawing a permission is the most deliberate way
+      // of saying stop, and it was the one rule of the three that did not take
+      // effect until the token expired. It also closes the window the issuing
+      // path cannot: a revocation landing between the allow-list read and the
+      // token insert leaves a token that never had a live row behind it.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      users.onSecondCall().returns(createMockQuery({ isDisabled: false }))
+      sinon
+        .stub(ServiceAccountDelegation, 'findOne')
+        .returns(createMockQuery(null))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('may no longer act as')
+    })
+
+    it('refuses a delegated token once its subject becomes an administrator', async () => {
+      // Delegation refuses administrators when the token is minted, but the
+      // token then lives for five minutes and the middleware reads the live
+      // record. Without this the promotion would hand a machine credential
+      // admin rights for the rest of that window — the exact thing service
+      // accounts exist to prevent.
+      //
+      // Refused rather than downgraded on purpose: the Python services ask
+      // `/api/v1/users/me/role`, which re-reads the user document rather than
+      // trusting the request, so a clamp here would leave the two halves
+      // disagreeing. There is no value to clamp to that both would honour.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      sinon.stub(Users, 'findOne').returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'admin',
+          kind: 'human',
+        }),
+      )
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('administrator')
+    })
+
+    it('refuses a delegated token once its service account is disabled', async () => {
+      // The person named in the token is a colleague in good standing, so the
+      // disabled-account check above passes. Checking the actor here is what
+      // makes disabling a service account take effect at once, and closes the
+      // race where an exchange inserts its token just after the revocation
+      // sweep has run.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      users.onSecondCall().returns(createMockQuery({ isDisabled: true }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('no longer active')
+      // The lookup has to be the actor named in `act`, in this organisation,
+      // and restricted to live service accounts — otherwise the stub above
+      // would answer for any query at all and this would pass without the
+      // check being right.
+      expect(users.secondCall.args[0]).to.deep.equal({
+        _id: { $eq: 'the-service-account' },
+        orgId: { $eq: 'org1' },
+        kind: 'service',
+        isDeleted: false,
+      })
+    })
+
+    it('refuses a delegated token whose service account has been deleted', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'svc-system:org1',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'the-person',
+        orgId: 'org1',
+        client_id: 'svc-system:org1',
+        scope: 'kb:read',
+        act: { sub: 'the-service-account' },
+      })
+      const users = sinon.stub(Users, 'findOne')
+      users.onFirstCall().returns(
+        createMockQuery({
+          email: 'person@example.com',
+          role: 'member',
+          kind: 'human',
+        }),
+      )
+      // The `kind: 'service'` and `isDeleted: false` clauses are part of the
+      // query, so a deleted account simply is not found.
+      users.onSecondCall().returns(createMockQuery(null))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer phsvc_delegated' } })
+      const res = createMockResponse()
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, res, next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('no longer active')
+      expect(users.secondCall.args[0]).to.deep.equal({
+        _id: { $eq: 'the-service-account' },
+        orgId: { $eq: 'org1' },
+        kind: 'service',
+        isDeleted: false,
+      })
+    })
+
+    it('refuses a token minted for an identity the app no longer acts as', async () => {
+      // Substituting the live identity would leave Node authorising as the
+      // new one while the Python services, which read the claim rather than
+      // the record, went on reading as the previous person's documents.
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+        createdBy: 'the-person-it-used-to-act-as',
+        accountType: 'premium',
+      })
+      sinon.stub(OAuthApp, 'findOne').returns(
+        createMockQuery({
+          createdBy: 'the-person-it-used-to-act-as',
+          tokenIdentityUserId: 'the-service-account',
+        }),
+      )
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args[0]).to.be.instanceOf(UnauthorizedError)
+      expect(next.firstCall.args[0].message).to.contain('no longer acts as')
+    })
+
+    it('prefers the app token identity over its creator', async () => {
+      sinon.stub(jwt, 'decode').returns({
+        tokenType: 'oauth',
+        client_id: 'client123',
+        iss: 'https://example.com',
+      })
+
+      mockOAuthTokenService.verifyAccessToken.resolves({
+        userId: 'client123',
+        orgId: 'org1',
+        client_id: 'client123',
+        scope: 'kb:read',
+        // Minted after the application was pointed at the service account, so
+        // the claim matches the identity it acts as now.
+        createdBy: 'the-service-account',
+        accountType: 'premium',
+      })
+
+      sinon.stub(OAuthApp, 'findOne').returns(
+        createMockQuery({
+          createdBy: 'the-person-who-made-it',
+          tokenIdentityUserId: 'the-service-account',
+        }),
+      )
+      sinon
+        .stub(Users, 'findOne')
+        .returns(createMockQuery({ email: 'svc@service.pipeshub.internal', kind: 'service' }))
+
+      const req = createMockRequest({ headers: { authorization: 'Bearer oauth-token' } })
+      const next = createMockNext()
+
+      await authMiddleware.authenticate(req, createMockResponse(), next)
+
+      expect(next.firstCall.args).to.have.length(0)
+      expect(req.user.userId).to.equal('the-service-account')
+      // A service account is never an admin, whatever the record says.
+      expect(req.user.role).to.equal('member')
     })
 
     it('should resolve client_credentials via OAuthApp when createdBy absent', async () => {
@@ -609,9 +1052,12 @@ describe('AuthMiddleware', () => {
         orgId: 'org1',
         client_id: 'client123',
         scope: 'kb:read',
-        createdBy: 'owner-id',
       })
 
+      // The identity is read from the app record now, so it has to exist.
+      sinon
+        .stub(OAuthApp, 'findOne')
+        .returns(createMockQuery({ createdBy: 'owner-id' }))
       const userQuery = createMockQuery({ email: 'user@test.com', fullName: 'User' })
       sinon.stub(Users, 'findOne').returns(userQuery)
 
@@ -821,7 +1267,7 @@ describe('AuthMiddleware', () => {
       sinon.stub(UserActivities, 'findOne').returns(mockQuery)
 
       const middleware = authMiddleware.scopedTokenValidator(TokenScopes.PASSWORD_RESET)
-      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token' } })
+      const req = createMockRequest({ headers: { authorization: 'Bearer scoped-token extra' } })
       const res = createMockResponse()
       const next = createMockNext()
 
@@ -829,6 +1275,8 @@ describe('AuthMiddleware', () => {
 
       expect(next.calledOnce).to.be.true
       expect(next.firstCall.args).to.have.length(0)
+      // Handlers identify the link by the token verified here, not the raw header.
+      expect(req.verifiedToken).to.equal('scoped-token')
     })
 
     it('should not check password activity for non-password-reset scopes', async () => {

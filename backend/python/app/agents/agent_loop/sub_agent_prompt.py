@@ -23,9 +23,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from app.agent_loop_lib.core.finish_moves import TASK_COMPLETE
 from app.utils.time_conversion import build_llm_time_context
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from app.agents.agent_loop.context import AgentContext
 
 SUB_AGENT_EXECUTION_RULES = """\
@@ -59,6 +62,15 @@ SUB_AGENT_EXECUTION_RULES = """\
   document, page, ticket, or record, reproduce that content in your answer — do
   not paraphrase, condense, or omit sections. Length is fine; loss of detail is not.
 
+### Completion
+Once you have enough information, reply with your COMPLETE answer in plain text
+(no further tool calls). Your response is returned VERBATIM as the final result —
+it is NOT post-processed or summarised — so include every detail the goal asks for."""
+
+
+# Only for children granted task_complete: PipesHub's tool loader never
+# registers it, and a rule naming a tool the child lacks leaves it no valid move.
+SUB_AGENT_ARTIFACT_RULES = """\
 ### Large or Structured Results → Artifacts
 - If your findings include many items, a large document, or structured records
   (tickets, rows, JSON) — in ADDITION to your complete prose answer above, also
@@ -66,12 +78,7 @@ SUB_AGENT_EXECUTION_RULES = """\
   "content": <the full, un-truncated data>}])`. A task that depends on yours
   receives your artifacts as files with the exact original data, instead of
   having to parse it back out of prose that may have been summarized in transit.
-  This is additive — never omit the prose answer in favor of the artifact.
-
-### Completion
-Once you have enough information, reply with your COMPLETE answer in plain text
-(no further tool calls). Your response is returned VERBATIM as the final result —
-it is NOT post-processed or summarised — so include every detail the goal asks for."""
+  This is additive — never omit the prose answer in favor of the artifact."""
 
 
 def build_sub_agent_prompt(
@@ -79,19 +86,26 @@ def build_sub_agent_prompt(
     context: "AgentContext | None",
     *,
     extra_instructions: str | None = None,
+    tool_names: Iterable[str] = (),
 ) -> str:
     """System prompt for a child agent scoped to one domain's tools:
     role line + execution rules + optional domain-specific instructions +
-    user identity + time context."""
+    user identity + time context. `tool_names` is the child's grant."""
     parts: list[str] = [
         f"You are a focused sub-agent for the '{domain}' domain. "
         "Complete the assigned task using ONLY the tools you were given.",
         SUB_AGENT_EXECUTION_RULES,
     ]
+    if TASK_COMPLETE in tool_names:
+        parts.append(SUB_AGENT_ARTIFACT_RULES)
     if extra_instructions:
         parts.append(extra_instructions)
 
     if context is not None:
+        demo_note = context.get_source_catalog().demo_note()
+        # The exploration agent already gets the note inside its source table.
+        if demo_note and demo_note not in (extra_instructions or ""):
+            parts.append(demo_note)
         user_block = build_user_context_block(context)
         if user_block:
             parts.append(user_block)
@@ -108,6 +122,8 @@ def build_sub_agent_prompt(
 def build_user_context_block(context: "AgentContext") -> str:
     """The child needs user identity to resolve 'my tickets', 'assigned to
     me' — mirrors the legacy `deep/sub_agent.py::_build_sub_agent_instructions`."""
+    if not context.send_user_info:
+        return ""
     user_info = context.user_info or {}
     email = context.user_email or user_info.get("userEmail") or user_info.get("email") or ""
     name = (
@@ -131,4 +147,4 @@ def build_user_context_block(context: "AgentContext") -> str:
     return "\n".join(lines)
 
 
-__all__ = ["SUB_AGENT_EXECUTION_RULES", "build_sub_agent_prompt", "build_user_context_block"]
+__all__ = ["SUB_AGENT_ARTIFACT_RULES", "SUB_AGENT_EXECUTION_RULES", "build_sub_agent_prompt", "build_user_context_block"]

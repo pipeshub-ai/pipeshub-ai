@@ -75,7 +75,7 @@ class TestLlmHealthCheck:
             )
 
         assert resp.status_code == 500
-        assert "LLM failed" in resp.body.decode()
+        assert "LLM failed" not in resp.body.decode()  # logged, never returned
 
 
 class TestInitializeEmbeddingModel:
@@ -232,7 +232,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=["test_coll", "other"])
+        registry.recreate_records_collections = AsyncMock(return_value=["test_coll", "other"])
         registry.ensure_collection = AsyncMock()
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -240,7 +240,7 @@ class TestRecreateCollection:
         from app.api.routes.health import recreate_collection
         await recreate_collection(retrieval_svc, 768, logger)
 
-        registry.recreate_all_collections.assert_awaited_once()
+        registry.recreate_records_collections.assert_awaited_once()
         # Nothing to backfill when the registry already rebuilt something.
         registry.ensure_collection.assert_not_awaited()
 
@@ -256,7 +256,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(return_value=[])
+        registry.recreate_records_collections = AsyncMock(return_value=[])
         registry.ensure_collection = AsyncMock(return_value="test_coll")
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
@@ -271,7 +271,7 @@ class TestRecreateCollection:
         retrieval_svc = MagicMock()
         retrieval_svc.collection_name = "test_coll"
         registry = MagicMock()
-        registry.recreate_all_collections = AsyncMock(side_effect=Exception("fail"))
+        registry.recreate_records_collections = AsyncMock(side_effect=Exception("fail"))
         retrieval_svc.collection_registry = registry
         logger = MagicMock()
 
@@ -677,28 +677,20 @@ class TestPerformEmbeddingHealthCheck:
     async def test_comma_separated_models_uses_first(self, mock_request):
         logger = MagicMock()
         config = {"provider": "openai", "configuration": {"model": "model-a, model-b"}}
-        mock_embed = MagicMock()
+        first_model = MagicMock()
+        second_model = MagicMock()
 
-        retrieval_svc = AsyncMock()
-        retrieval_svc.collection_name = "coll"
-        retrieval_svc.vector_db_service = AsyncMock()
-
-        dense_vec = MagicMock()
-        dense_vec.size = 768
-        vectors = MagicMock()
-        vectors.get.return_value = dense_vec
-        coll_info = MagicMock()
-        coll_info.config.params.vectors = vectors
-        coll_info.points_count = 0
-        retrieval_svc.vector_db_service.get_collection = AsyncMock(return_value=coll_info)
-        mock_request.app.container.retrieval_service = AsyncMock(return_value=retrieval_svc)
-
-        with patch(f"{MODULE}.get_embedding_model", return_value=mock_embed) as mock_get, \
-             patch("asyncio.wait_for", new_callable=AsyncMock, return_value=[[0.1] * 768]):
+        with patch(f"{MODULE}.get_embedding_model", side_effect=[first_model, second_model]) as mock_get, \
+             patch(f"{MODULE}._embed_with_timeout", new_callable=AsyncMock,
+                   side_effect=[[[0.1] * 768], [[0.1] * 1024]]), \
+             patch(f"{MODULE}._check_collection_compatibility", new_callable=AsyncMock,
+                   return_value=None) as collection_check:
             from app.api.routes.health import perform_embedding_health_check
             resp = await perform_embedding_health_check(mock_request, config, logger)
 
-        mock_get.assert_called_once_with(provider="openai", config=config, model_name="model-a")
+        assert resp.status_code == 200
+        assert [call.kwargs["model_name"] for call in mock_get.call_args_list] == ["model-a", "model-b"]
+        collection_check.assert_awaited_once_with(mock_request, first_model, 768, logger)
 
 
 class TestHealthCheckEndpoint:

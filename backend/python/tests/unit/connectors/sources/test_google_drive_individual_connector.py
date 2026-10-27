@@ -33,6 +33,7 @@ from app.connectors.sources.google.common.connector_google_exceptions import (
 )
 from app.models.entities import FileRecord, Record, RecordGroupType, RecordType
 from app.models.permission import EntityType, Permission, PermissionType
+from app.connectors.core.base.connector.connector_service import ConnectorInitError
 
 
 # ---------------------------------------------------------------------------
@@ -255,8 +256,8 @@ class TestInit:
         connector.config_service.get_config = AsyncMock(
             return_value={"auth": {}}
         )
-        result = await connector.init()
-        assert result is False
+        with pytest.raises(ConnectorInitError, match="not linked to an OAuth app"):
+            await connector.init()
 
     @pytest.mark.asyncio
     @patch("app.utils.oauth_config.fetch_oauth_config_by_id")
@@ -772,8 +773,8 @@ class TestProcessDriveItem:
         assert result.record.record_name == "test.txt"
         assert result.record.is_file is True
         assert result.record.version == 0
-        assert len(result.new_permissions) == 1
-        assert result.new_permissions[0].email == "u@t.com"
+        assert result.new_permissions == []
+        assert result.record.inherit_permissions is True
 
     @pytest.mark.asyncio
     async def test_new_record_folder(self, connector):
@@ -879,7 +880,7 @@ class TestProcessDriveItem:
 
     @pytest.mark.asyncio
     async def test_existing_record_version_incremented(self, connector):
-        """Existing record gets version incremented."""
+        """A rename is not a new revision, so the stored version stays put."""
         existing = _make_existing_file_record(
             record_name="old.txt",
             external_revision_id="rev-1",
@@ -893,7 +894,7 @@ class TestProcessDriveItem:
 
         meta = _make_file_metadata(name="new.txt", parents=["parent-1"])
         result = await connector._process_drive_item(meta, "u1", "u@t.com", "d1")
-        assert result.record.version == 6
+        assert result.record.version == 5
 
     @pytest.mark.asyncio
     async def test_no_parents_in_metadata(self, connector):
@@ -948,13 +949,13 @@ class TestProcessDriveItem:
 
     @pytest.mark.asyncio
     async def test_no_extension_no_dot_in_name(self, connector):
-        """No fileExtension and no dot in name."""
+        """No fileExtension and no dot in the name: the mime type supplies txt."""
         connector._pass_date_filters = MagicMock(return_value=True)
         connector._pass_extension_filter = MagicMock(return_value=True)
         meta = _make_file_metadata(file_extension=None, name="README")
         meta.pop("fileExtension", None)
         result = await connector._process_drive_item(meta, "u1", "u@t.com", "d1")
-        assert result.record.extension is None
+        assert result.record.extension == "txt"
 
     @pytest.mark.asyncio
     async def test_shared_file(self, connector):
@@ -1166,6 +1167,7 @@ class TestHandleRecordUpdates:
         update.is_deleted = False
         update.is_new = True
         update.is_updated = False
+        update.content_changed = False
         update.record = MagicMock()
         update.record.record_name = "new.txt"
         await connector._handle_record_updates(update)
@@ -1239,7 +1241,9 @@ class TestHandleRecordUpdates:
             record_name="Folder A",
             mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value,
         )
+        existing.external_record_id = "folder-ext-1"
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=existing)
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(return_value=[])
         update = MagicMock()
         update.is_deleted = True
         update.external_record_id = "folder-ext-1"
@@ -1248,6 +1252,40 @@ class TestHandleRecordUpdates:
             record_id="folder-rec-1"
         )
         connector.data_entities_processor.on_records_deleted_cascade.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_deleted_folder_removes_only_contents_the_account_can_no_longer_open(self, connector) -> None:
+        """Drive may report only the folder: its files go too, unless still open through their own share."""
+        from googleapiclient.errors import HttpError
+
+        folder = _make_existing_file_record(id="folder-rec", record_name="F",
+                                            mime_type=MimeTypes.GOOGLE_DRIVE_FOLDER.value)
+        folder.external_record_id = "folder-ext"
+        gone = _make_existing_file_record(id="gone-rec", record_name="gone.txt", mime_type="text/plain",
+                                          is_placeholder=False)
+        gone.external_record_id = "gone-ext"
+        shared = _make_existing_file_record(id="kept-rec", record_name="kept.txt", mime_type="text/plain",
+                                            is_placeholder=False)
+        shared.external_record_id = "kept-ext"
+        connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=folder)
+        connector.data_entities_processor.get_records_by_parent = AsyncMock(
+            side_effect=lambda _c, parent, *a, **k: [gone, shared] if parent == "folder-ext" else []
+        )
+        not_found = HttpError(MagicMock(status=404), b'{"error": {"errors": [{"reason": "notFound"}]}}')
+
+        async def files_get(fileId, **_) -> dict:
+            if fileId == "gone-ext":
+                raise not_found
+            return {"id": fileId, "trashed": False}
+
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.files_get = AsyncMock(side_effect=files_get)
+        update = MagicMock(is_deleted=True, external_record_id="folder-ext")
+
+        await connector._handle_record_updates(update)
+
+        deleted = [c.kwargs["record_id"] for c in connector.data_entities_processor.on_record_deleted.await_args_list]
+        assert deleted == ["gone-rec", "folder-rec"]
 
     @pytest.mark.asyncio
     async def test_deleted_file_uses_shallow_delete(self, connector):
@@ -1298,7 +1336,7 @@ class TestSyncUserPersonalDrive:
     async def test_drive_data_source_not_initialized(self, connector):
         connector.drive_data_source = None
         await connector._sync_user_personal_drive("d1")
-        # Should log error and return
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
@@ -1308,7 +1346,7 @@ class TestSyncUserPersonalDrive:
             return_value={"user": {}}
         )
         await connector._sync_user_personal_drive("d1")
-        # Should log error and return, no sync performed
+        assert connector._sync_ledger.incomplete
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
@@ -1389,6 +1427,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1411,6 +1450,7 @@ class TestPerformFullSync:
             update_del = MagicMock()
             update_del.is_deleted = True
             update_del.is_updated = False
+            update_del.content_changed = False
             yield MagicMock(), [], update_del
 
             update_upd = MagicMock()
@@ -1465,6 +1505,7 @@ class TestPerformFullSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1526,15 +1567,15 @@ class TestSyncSharedWithMeErrorHandling:
 
     @pytest.mark.asyncio
     @patch("app.connectors.sources.google.drive.individual.connector.refresh_google_datasource_credentials")
-    async def test_non_retryable_403_is_skipped(self, mock_refresh, connector):
-        """A 403 without a retryable reason (or genuinely revoked access) is
-        still safe to skip permanently."""
+    async def test_permission_refused_403_is_skipped(self, mock_refresh, connector):
+        """A 403 whose reason is a known permission refusal (access revoked since
+        the folder was listed) is safe to skip permanently."""
         mock_refresh.return_value = None
         resp = MagicMock()
         resp.status = 403
         resp.reason = "Forbidden"
         not_found_error = HttpError(resp, b"forbidden")
-        not_found_error.error_details = [{"reason": "insufficientPermissions"}]
+        not_found_error.error_details = [{"reason": "insufficientFilePermissions"}]
         connector.drive_data_source.files_list = AsyncMock(
             side_effect=_shared_with_me_files_list_side_effect(not_found_error)
         )
@@ -1613,6 +1654,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1662,6 +1704,7 @@ class TestPerformIncrementalSync:
             upd = MagicMock()
             upd.is_deleted = True
             upd.is_updated = False
+            upd.content_changed = False
             upd.record = MagicMock()
             yield upd.record, [], upd
 
@@ -1691,6 +1734,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1742,6 +1786,7 @@ class TestPerformIncrementalSync:
                 update = MagicMock()
                 update.is_deleted = False
                 update.is_updated = False
+                update.content_changed = False
                 yield MagicMock(), [], update
 
         connector._process_drive_items_generator = mock_gen
@@ -1804,6 +1849,10 @@ class TestTestConnectionAndAccess:
     @pytest.mark.asyncio
     async def test_success(self, connector):
         connector.google_client.get_client.return_value = MagicMock()
+        connector._get_fresh_datasource = AsyncMock()
+        connector.drive_data_source.about_get = AsyncMock(
+            return_value={"user": {"emailAddress": "user@example.com"}}
+        )
         result = await connector.test_connection_and_access()
         assert result is True
 
@@ -2394,6 +2443,8 @@ class TestRunSync:
         connector._create_personal_record_group = AsyncMock()
         connector._sync_user_personal_drive = AsyncMock()
 
+        # A listing that is not a drive list makes the run incomplete, so the mock lists none.
+        connector.drive_data_source.drives_list = AsyncMock(return_value={"drives": []})
         await connector.run_sync()
         connector._create_app_user.assert_awaited_once()
         connector._create_personal_record_group.assert_awaited_once()
@@ -2674,6 +2725,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = True
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None
@@ -2688,6 +2740,7 @@ class TestCheckAndFetchUpdatedRecord:
         update = MagicMock()
         update.is_deleted = False
         update.is_updated = False
+        update.content_changed = False
         connector._process_drive_item = AsyncMock(return_value=update)
         result = await connector._check_and_fetch_updated_record("org1", record, "u1", "u@t.com")
         assert result is None

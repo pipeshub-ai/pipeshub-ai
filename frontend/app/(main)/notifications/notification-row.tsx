@@ -17,11 +17,28 @@ export type NotificationRowAction =
   | 'dismiss';
 
 /** App-relative paths from the API may omit a leading slash; Next.js Link needs one. */
+/**
+ * An absolute http(s) URL, or a protocol-relative one (`//host`, and `/\host`, which browsers
+ * read the same way): it leaves the app, so it opens in a new tab and is never handled in-app.
+ */
+export function isExternalNotificationHref(href: string): boolean {
+  return /^(?:https?:)?[/\\]{2}/i.test(href);
+}
+
 function notificationHref(redirectLink: string): string | null {
   const trimmed = redirectLink.trim();
   if (!trimmed) return null;
-  if (/^https?:\/\//i.test(trimmed)) return trimmed;
+  if (isExternalNotificationHref(trimmed)) return trimmed;
   return trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+}
+
+/** The conversation an in-app chat link such as `/chat/?conversationId=…` opens, or null. */
+export function chatConversationIdFromHref(href: string): string | null {
+  if (!href.startsWith('/') || isExternalNotificationHref(href)) return null;
+  const url = new URL(href, 'http://app.invalid');
+  if (url.origin !== 'http://app.invalid') return null;
+  if (url.pathname.replace(/\/+$/, '') !== '/chat') return null;
+  return url.searchParams.get('conversationId') || null;
 }
 
 function formatRelativeTime(
@@ -85,6 +102,28 @@ const titleWrapStyle: CSSProperties = {
   overflowWrap: 'anywhere',
 };
 
+/**
+ * A "chat shared with you" notification is stored with plain English text, so it is built here
+ * from its payload in the viewer's language. A row without a sharer name keeps the stored text.
+ */
+function sharedChatText(
+  n: NotificationListItem,
+  t: (key: string, options?: Record<string, unknown>) => string,
+): { title: string; message: string } | null {
+  const payload = n.payload ?? {};
+  const name = typeof payload.sharerName === 'string' && payload.sharerName.trim()
+    ? payload.sharerName.trim()
+    : t('notifications.chatShared.someone');
+  if (typeof payload.conversationId !== 'string') return null;
+  const chat = typeof payload.chatTitle === 'string' ? payload.chatTitle.trim() : '';
+  return {
+    title: t(payload.agentKey ? 'notifications.chatShared.titleAgent' : 'notifications.chatShared.title', { name }),
+    message: chat
+      ? t('notifications.chatShared.body', { chat })
+      : t('notifications.chatShared.bodyNoTitle', { place: t('nav.shared') }),
+  };
+}
+
 function NotificationTitle({
   title,
   href,
@@ -106,7 +145,7 @@ function NotificationTitle({
           data-ph-notification-row-title-link=""
           style={{ ...titleWrapStyle, ...style }}
           onClick={onNavigate}
-          {...(/^https?:\/\//i.test(href)
+          {...(isExternalNotificationHref(href)
             ? { target: '_blank', rel: 'noopener noreferrer' }
             : {})}
         >
@@ -193,8 +232,11 @@ export function NotificationRow({
   dismissLabel,
   compactTime = false,
   pendingAction = null,
+  onOpenLink,
 }: {
   notification: NotificationListItem;
+  /** Called before an in-app link navigates, including to the page already open. */
+  onOpenLink?: (href: string) => void;
   onMarkRead: (n: NotificationListItem) => void;
   onMarkUnread: (n: NotificationListItem) => void;
   onArchive: (n: NotificationListItem) => void;
@@ -208,7 +250,7 @@ export function NotificationRow({
   compactTime?: boolean;
   pendingAction?: NotificationRowAction | null;
 }) {
-  const { i18n } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [isExpanded, setIsExpanded] = useState(false);
   const [isTruncated, setIsTruncated] = useState(false);
   // Hidden unclamped clone used solely for measuring the natural text height.
@@ -220,8 +262,9 @@ export function NotificationRow({
 
   const timeLabel = formatRelativeTime(n.createdAt, i18n.language, compactTime);
   const severity = n.severity ?? 'error';
-  const title = n.title ?? '';
-  const message = n.message ?? '';
+  const shared = n.type === 'chatShared' ? sharedChatText(n, t) : null;
+  const title = shared?.title ?? n.title ?? '';
+  const message = shared?.message ?? n.message ?? '';
   const href = notificationHref(n.redirectLink ?? '');
 
   const isRead = n.status === 'read' || n.status === 'archived';
@@ -295,6 +338,7 @@ export function NotificationRow({
                 style={titleStyle}
                 onNavigate={() => {
                   if (!isRead) onMarkRead(n);
+                  if (href && href.startsWith('/') && !isExternalNotificationHref(href)) onOpenLink?.(href);
                 }}
               />
             </Box>

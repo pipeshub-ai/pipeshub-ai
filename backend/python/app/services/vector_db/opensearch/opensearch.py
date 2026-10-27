@@ -1,7 +1,8 @@
 """OpenSearch vector database provider.
 
 Fully async — uses AsyncOpenSearch everywhere.
-Hybrid search: BM25 ``match`` (text_query) + k-NN dense, fused via
+Hybrid search: BM25 ``multi_match`` over exact and English-stemmed
+``page_content`` (text_query) + k-NN dense, fused via
 OpenSearch RRF ``score-ranker-processor`` pipeline (requires OpenSearch >= 2.19).
 
 Key design decisions
@@ -52,6 +53,7 @@ from typing import Any, Dict, List, Optional, Union
 
 from opensearchpy import AsyncOpenSearch  # type: ignore
 from opensearchpy import helpers as os_helpers
+from opensearchpy.exceptions import NotFoundError
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
@@ -73,6 +75,7 @@ from app.services.vector_db.models import (
     HybridSearchRequest,
     QuantizationType,
     ScrollResult,
+    SearchFailureKind,
     SearchResult,
     VectorCollectionInfo,
     VectorDBCapabilities,
@@ -80,8 +83,16 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 from app.services.vector_db.opensearch.config import OpenSearchConfig
-from app.services.vector_db.opensearch.utils import OpenSearchUtils
+from app.services.vector_db.opensearch.errors import classify_opensearch_search_error
+from app.services.vector_db.opensearch.utils import (
+    PAGE_CONTENT_FIELD,
+    PAGE_CONTENT_MAPPING,
+    STEMMED_PAGE_CONTENT_FIELD,
+    STEMMED_SUBFIELD,
+    OpenSearchUtils,
+)
 from app.utils.logger import create_logger
+from app.utils.loop_local import LoopLocal, running_loop
 
 logger = create_logger("opensearch_service")
 
@@ -110,6 +121,36 @@ _DEFAULT_SEGMENTS_PER_TIER = 4
 _DEFAULT_MAX_CONCURRENT_SEARCHES = 8
 _DEFAULT_CONFIDENCE_INTERVAL = 0.99
 _DEFAULT_RRF_RANK_CONSTANT = 60
+# A partial update re-reads the document when another write lands between its
+# read and write; without retries it fails the item with a 409.
+_UPDATE_RETRY_ON_CONFLICT = 3
+
+# Progress of the stemmed-field backfill, kept in the index's own ``_meta`` so
+# every replica reads the same state: {"task": <id>} while it runs, {"done":
+# true} once it succeeded.
+_STEMMED_BACKFILL_META_KEY = "pipeshub_stemmed_backfill"
+# The backfill rewrites every older document; throttling keeps it from
+# competing with live indexing and search for I/O.
+_STEMMED_BACKFILL_DOCS_PER_SECOND = 500
+_MISSING_STEMMED_QUERY: Dict[str, Any] = {
+    "bool": {"must_not": {"exists": {"field": STEMMED_PAGE_CONTENT_FIELD}}}
+}
+
+
+def _has_stemmed_page_content(mappings: Dict[str, Any]) -> bool:
+    page_content = (mappings.get("properties") or {}).get(PAGE_CONTENT_FIELD) or {}
+    return STEMMED_SUBFIELD in (page_content.get("fields") or {})
+
+
+class _LoopClient:
+    """One event loop's client, and whether it has been checked against the server yet."""
+
+    def __init__(self, client: AsyncOpenSearch) -> None:
+        super().__init__()
+        self.client = client
+        self.checked = False
+        # One caller probes the server; the others on this loop wait for it.
+        self.checking = asyncio.Lock()
 
 
 class OpenSearchService(IVectorDBService):
@@ -120,9 +161,30 @@ class OpenSearchService(IVectorDBService):
         config_service: ConfigurationService | OpenSearchConfig,
     ) -> None:
         self.config_service = config_service
-        self.client: Optional[AsyncOpenSearch] = None
         self._cfg: Optional[OpenSearchConfig] = None
-        self._client_loop: Optional[asyncio.AbstractEventLoop] = None
+        # The aiohttp session inside AsyncOpenSearch binds to the loop that first uses it, and
+        # this service is shared by the server loop and every consumer's worker loop.
+        self._clients: LoopLocal[_LoopClient] = LoopLocal(self._new_loop_client)
+        # Assigned through `client` (tests); served to every loop as-is.
+        self._client_override: AsyncOpenSearch | None = None
+
+    @property
+    def client(self) -> AsyncOpenSearch | None:
+        """The running loop's client; ``_ensure_client`` is what checks it against the server."""
+        if self._client_override is not None:
+            return self._client_override
+        if self._cfg is None:
+            return None
+        return self._clients.get().client
+
+    @client.setter
+    def client(self, value: AsyncOpenSearch | None) -> None:
+        self._client_override = value
+
+    def _new_loop_client(self) -> _LoopClient:
+        if self._cfg is None:
+            raise RuntimeError("OpenSearch config not loaded. Call connect() first.")
+        return _LoopClient(self._build_client(self._cfg))
 
     # ------------------------------------------------------------------
     # Factory
@@ -205,58 +267,61 @@ class OpenSearchService(IVectorDBService):
         )
 
     async def _ensure_client(self) -> AsyncOpenSearch:
-        """Return the live client, creating it on the current event loop if needed.
+        """Return the running loop's client, checking it against the server on first use.
 
-        The ``aiohttp.ClientSession`` inside ``AsyncOpenSearch`` is bound to the
-        event loop where it was created.  The indexing consumer runs a dedicated
-        worker thread with its own ``asyncio.new_event_loop()``, so a client
-        created on the main loop cannot be reused there.
-
-        This method detects a loop mismatch and transparently recreates the
-        client on the current loop — no caller changes required.
+        Each loop keeps its own client, so a loop never swaps out a client another loop
+        has requests in flight on.
         """
-        current_loop = asyncio.get_running_loop()
-        if self.client is not None:
-            if self._client_loop is None or self._client_loop is current_loop:
-                return self.client
-            # Loop mismatch — the old aiohttp session cannot be used here.
-            self.client = None
-            self._client_loop = None
-
+        if self._client_override is not None:
+            return self._client_override
         if self._cfg is None:
             raise RuntimeError(
                 "OpenSearch config not loaded. Call connect() first."
             )
 
-        self.client = self._build_client(self._cfg)
-        self._client_loop = current_loop
-        try:
-            info = await self.client.info()
-            version = info.get("version", {}).get("number", "unknown")
-            logger.info(
-                f"Connected to OpenSearch {version} at "
-                f"{self._cfg.host}:{self._cfg.port} "
-                f"(loop id={id(current_loop)})"
-            )
-        except Exception:
-            try:
-                await self.client.close()
-            except Exception:
-                pass
-            self.client = None
-            self._client_loop = None
-            raise
-        return self.client
+        while True:
+            entry = self._clients.get()
+            if entry.checked:
+                return entry.client
+            async with entry.checking:
+                if entry.checked:
+                    return entry.client
+                if entry is not self._clients.get():
+                    # A failed probe replaced it while this caller waited: check the new one.
+                    continue
+                try:
+                    info = await entry.client.info()
+                except Exception:
+                    # Nobody was served this client: close it; the next call builds a fresh one.
+                    self._clients.replace_current()
+                    try:
+                        await entry.client.close()
+                    except Exception:
+                        pass
+                    raise
+                version = info.get("version", {}).get("number", "unknown")
+                logger.info(
+                    f"Connected to OpenSearch {version} at "
+                    f"{self._cfg.host}:{self._cfg.port} "
+                    f"(loop id={id(running_loop())})"
+                )
+                entry.checked = True
+                return entry.client
 
     async def disconnect(self) -> None:
-        if self.client is not None:
+        """Close every loop's client, each on the loop that owns it."""
+        override, self._client_override = self._client_override, None
+        had_clients = override is not None or len(self._clients) > 0
+        errors = await self._clients.aclose_all(lambda entry: entry.client.close())
+        if override is not None:
             try:
-                await self.client.close()
-                logger.info("Disconnected from OpenSearch")
+                await override.close()
             except Exception as e:
-                logger.warning(f"Error during OpenSearch disconnect: {e}")
-            finally:
-                self.client = None
+                errors.append(e)
+        for error in errors:
+            logger.warning(f"Error during OpenSearch disconnect: {error}")
+        if had_clients:
+            logger.info("Disconnected from OpenSearch")
 
     # ------------------------------------------------------------------
     # Identity
@@ -277,6 +342,9 @@ class OpenSearchService(IVectorDBService):
 
     def get_capabilities(self) -> VectorDBCapabilities:
         return _OS_CAPABILITIES
+
+    def transient_search_error(self, error: BaseException) -> SearchFailureKind | None:
+        return classify_opensearch_search_error(error)
 
     async def health_check(self) -> VectorDBHealth:
         start = time.monotonic()
@@ -414,7 +482,7 @@ class OpenSearchService(IVectorDBService):
                                 "parameters": hnsw_params,
                             },
                         },
-                        "page_content": {"type": "text"},
+                        PAGE_CONTENT_FIELD: PAGE_CONTENT_MAPPING,
                         # Sortable stand-in for _id so scroll can page with
                         # search_after; _id itself requires fielddata.
                         "point_id": {"type": "keyword"},
@@ -483,6 +551,102 @@ class OpenSearchService(IVectorDBService):
             body=pipeline_body,
         )
         logger.info(f"Created RRF pipeline '{pipeline_name}' (rank_constant={rank_constant})")
+
+    async def reconcile_lexical_scoring(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Add the English-stemmed ``page_content`` sub-field to an older index.
+
+        A new sub-field is a mapping change only: documents written from now on
+        carry it and nothing stored is touched. Documents indexed before it are
+        filled in by ``reconcile_storage_layout``, which rewrites them and so
+        stays behind the operator's opt-in.
+        """
+        await self._assert_connected()
+        if _has_stemmed_page_content(await self._index_mappings(collection_name)):
+            return None
+        await self.client.indices.put_mapping(  # type: ignore
+            index=collection_name,
+            body={"properties": {PAGE_CONTENT_FIELD: PAGE_CONTENT_MAPPING}},
+        )
+        logger.info(f"Added {STEMMED_PAGE_CONTENT_FIELD} to OpenSearch index '{collection_name}'")
+        return STEMMED_PAGE_CONTENT_FIELD
+
+    async def reconcile_storage_layout(
+        self,
+        collection_name: str = "records",
+        config: Optional[CollectionConfig] = None,
+    ) -> Optional[str]:
+        """Backfill the stemmed sub-field on documents indexed before it existed.
+
+        Runs as one throttled background ``_update_by_query`` per index. Each
+        call advances it one step: start the task, wait while it runs, then
+        record success, or forget a failed or lost task so the next call
+        retries it. Only documents still missing the field are rewritten.
+        """
+        await self._assert_connected()
+        mappings = await self._index_mappings(collection_name)
+        if not _has_stemmed_page_content(mappings):
+            return None
+
+        meta = dict(mappings.get("_meta") or {})
+        state = meta.get(_STEMMED_BACKFILL_META_KEY) or {}
+        if state.get("done"):
+            return None
+
+        task_id = state.get("task")
+        if task_id:
+            try:
+                task = await self.client.tasks.get(task_id=task_id)  # type: ignore
+            except NotFoundError:
+                task = {"completed": True, "error": "task not found"}
+            if not task.get("completed"):
+                return None
+            failed = task.get("error") or (task.get("response") or {}).get("failures")
+            if failed:
+                logger.warning(
+                    f"Stemmed-field backfill on '{collection_name}' did not finish "
+                    f"({failed}); it will be retried"
+                )
+            await self._set_stemmed_backfill_state(
+                collection_name, meta, {} if failed else {"done": True}
+            )
+            return None
+
+        response = await self.client.update_by_query(  # type: ignore
+            index=collection_name,
+            body={"query": _MISSING_STEMMED_QUERY},
+            params={
+                "conflicts": "proceed",
+                "wait_for_completion": "false",
+                "requests_per_second": _STEMMED_BACKFILL_DOCS_PER_SECOND,
+                "slices": "auto",
+            },
+        )
+        await self._set_stemmed_backfill_state(
+            collection_name, meta, {"task": response["task"]}
+        )
+        logger.info(
+            f"Started {STEMMED_PAGE_CONTENT_FIELD} backfill on '{collection_name}' "
+            f"(task {response['task']})"
+        )
+        return f"{STEMMED_PAGE_CONTENT_FIELD}.backfill"
+
+    async def _index_mappings(self, collection_name: str) -> Dict[str, Any]:
+        response = await self.client.indices.get_mapping(index=collection_name)  # type: ignore
+        index_body = response.get(collection_name) or next(iter(response.values()), {})
+        return index_body.get("mappings") or {}
+
+    async def _set_stemmed_backfill_state(
+        self, collection_name: str, meta: Dict[str, Any], state: Dict[str, Any]
+    ) -> None:
+        # ``_meta`` is replaced wholesale on update, so keep whatever else is in it.
+        await self.client.indices.put_mapping(  # type: ignore
+            index=collection_name,
+            body={"_meta": {**meta, _STEMMED_BACKFILL_META_KEY: state}},
+        )
 
     async def get_collections(self) -> object:
         await self._assert_connected()
@@ -589,6 +753,7 @@ class OpenSearchService(IVectorDBService):
         should: Optional[Dict[str, FilterValue]] = None,
         must_not: Optional[Dict[str, FilterValue]] = None,
         min_should_match: Optional[int] = None,
+        max_values: Optional[Dict[str, int]] = None,
         **kwargs: FilterValue,
     ) -> FilterExpression:
         from app.services.vector_db.filters import build_filter_expression
@@ -599,6 +764,7 @@ class OpenSearchService(IVectorDBService):
             should=should,
             must_not=must_not,
             min_should_match=min_should_match,
+            max_values=max_values,
             extra_kwargs=kwargs or None,
             build_conditions=OpenSearchUtils.build_conditions,
         )
@@ -613,19 +779,28 @@ class OpenSearchService(IVectorDBService):
         scroll_filter: FilterExpression,
         limit: int,
         offset: Optional[str] = None,
+        with_payload: Optional[List[str]] = None,
     ) -> ScrollResult:
         """Scroll a page of points.
 
         ``offset`` is the opaque cursor returned in ``ScrollResult.next_offset``
         from the previous call.  It is the OpenSearch ``search_after`` value
         serialised as a JSON string.  Pass ``None`` for the first page.
+
+        ``with_payload`` maps to ``_source`` includes, so a caller that needs
+        two fields does not transfer every chunk's text.
         """
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(scroll_filter)
+        source: Dict[str, Any] = (
+            {"includes": list(with_payload)}
+            if with_payload
+            else {"exclude": ["dense_embedding"]}
+        )
         body: Dict[str, Any] = {
             "query": bool_query,
             "size": min(limit, 10000),
-            "_source": {"exclude": ["dense_embedding"]},
+            "_source": source,
             "sort": [{"point_id": "asc"}],
         }
 
@@ -639,25 +814,7 @@ class OpenSearchService(IVectorDBService):
         hits = result.get("hits", {}).get("hits", [])
         if len(hits) > limit:
             hits = hits[:limit]
-        points = [
-            VectorPoint(
-                id=hit["_id"],
-                payload={
-                    "metadata": hit.get("_source", {}).get("metadata", {}),
-                    "page_content": hit.get("_source", {}).get("page_content", ""),
-                    CONNECTOR_IDS_FIELD: list(
-                        hit.get("_source", {}).get(CONNECTOR_IDS_FIELD) or []
-                    ),
-                    RECORD_GROUP_IDS_FIELD: list(
-                        hit.get("_source", {}).get(RECORD_GROUP_IDS_FIELD) or []
-                    ),
-                    ROOT_RECORD_GROUP_IDS_FIELD: list(
-                        hit.get("_source", {}).get(ROOT_RECORD_GROUP_IDS_FIELD) or []
-                    ),
-                },
-            )
-            for hit in hits
-        ]
+        points = [self._hit_to_point(hit) for hit in hits]
         # Return a cursor for the next page when the result set is full
         next_offset = None
         if len(hits) == limit and hits:
@@ -675,6 +832,36 @@ class OpenSearchService(IVectorDBService):
             next_offset = json.dumps(last_sort)
 
         return ScrollResult(points=points, next_offset=next_offset)
+
+    @staticmethod
+    def _hit_to_point(hit: Dict[str, Any]) -> VectorPoint:
+        source = hit.get("_source", {})
+        return VectorPoint(
+            id=hit["_id"],
+            payload={
+                "metadata": source.get("metadata", {}),
+                "page_content": source.get("page_content", ""),
+                CONNECTOR_IDS_FIELD: list(source.get(CONNECTOR_IDS_FIELD) or []),
+                RECORD_GROUP_IDS_FIELD: list(source.get(RECORD_GROUP_IDS_FIELD) or []),
+                ROOT_RECORD_GROUP_IDS_FIELD: list(source.get(ROOT_RECORD_GROUP_IDS_FIELD) or []),
+            },
+        )
+
+    async def retrieve_points(
+        self,
+        collection_name: str,
+        ids: List[str],
+    ) -> List[VectorPoint]:
+        """``mget`` is realtime: it sees documents indexed since the last refresh."""
+        await self._assert_connected()
+        if not ids:
+            return []
+        result = await self.client.mget(  # type: ignore
+            index=collection_name,
+            body={"ids": list(ids)},
+            _source_excludes=["dense_embedding"],
+        )
+        return [self._hit_to_point(doc) for doc in result.get("docs", []) if doc.get("found")]
 
     async def query_nearest_points(
         self,
@@ -790,20 +977,32 @@ class OpenSearchService(IVectorDBService):
         self,
         collection_name: str,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "delete_points called with an empty filter — this would wipe the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
+        if not filter.has_positive_match():
+            raise ValueError(
+                "delete_points called with only array-length conditions — a point "
+                "whose field is absent satisfies those too, so this would delete "
+                "most of the index. Pair it with a value match (e.g. connectorIds)."
+            )
         await self._assert_connected()
         bool_query = OpenSearchUtils.filter_expression_to_bool_query(filter)
+        # Opt-in only: the index runs a 30s refresh_interval on purpose, and
+        # forcing a refresh per call creates a Lucene segment per call. The
+        # connector cleanup asks for it because it re-reads the matched set to
+        # decide when it is done; per-record deletes must not.
         await self.client.delete_by_query(  # type: ignore
             index=collection_name,
             body={"query": bool_query},
             conflicts="proceed",
             slices="auto",
             wait_for_completion=True,
+            refresh=refresh,
         )
         logger.info(f"Deleted points from OpenSearch index '{collection_name}'")
 
@@ -812,6 +1011,7 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         points: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         """Update fields in matched documents via a Painless script.
 
@@ -850,6 +1050,8 @@ class OpenSearchService(IVectorDBService):
             # current arrays. Default "abort" would fail the whole update for the
             # rest of the matched documents over a doc that is already correct.
             conflicts="proceed",
+            # Opt-in, same reason as delete_points.
+            refresh=refresh,
             body={
                 "query": bool_query,
                 "script": {
@@ -865,13 +1067,44 @@ class OpenSearchService(IVectorDBService):
         collection_name: str,
         payload: dict,
         filter: FilterExpression,
+        refresh: bool = False,
     ) -> None:
         if filter.is_empty():
             raise ValueError(
                 "set_payload called with an empty filter — this would update the entire "
                 "index. Populate at least one filter condition (e.g. virtualRecordId)."
             )
-        await self.overwrite_payload(collection_name, payload, filter)
+        await self.overwrite_payload(collection_name, payload, filter, refresh=refresh)
+
+    async def update_payload_by_ids(
+        self,
+        collection_name: str,
+        point_ids: List[str],
+        payload: dict,
+    ) -> None:
+        """A bulk partial update by ``_id`` reaches documents the index has
+        not refreshed yet, which ``update_by_query`` cannot."""
+        await self._assert_connected()
+        if not point_ids:
+            return
+        doc = OpenSearchUtils.nest_dotted_keys(payload)
+        actions = [
+            {
+                "_op_type": "update", "_index": collection_name, "_id": point_id,
+                "doc": doc, "retry_on_conflict": _UPDATE_RETRY_ON_CONFLICT,
+            }
+            for point_id in point_ids
+        ]
+        _, errors = await os_helpers.async_bulk(
+            self.client, actions, raise_on_error=False, refresh=False,
+        )
+        # A missing id is ignored by contract; any other item error is a lost write.
+        failed = [e for e in errors if (e.get("update") or {}).get("status") != 404]
+        if failed:
+            raise RuntimeError(
+                f"update_payload_by_ids on '{collection_name}' failed for "
+                f"{len(failed)} of {len(point_ids)} point(s): {failed[0]}"
+            )
 
     # ------------------------------------------------------------------
     # Performance utilities

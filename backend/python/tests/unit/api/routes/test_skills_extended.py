@@ -171,13 +171,14 @@ class TestGetUserKey:
         assert exc.value.status_code == 404
 
     @pytest.mark.asyncio
-    async def test_exception_raises_500(self):
+    async def test_a_failed_user_read_is_503(self) -> None:
         gp = AsyncMock()
         gp.get_user_by_user_id = AsyncMock(side_effect=RuntimeError("db down"))
         logger = MagicMock()
         with pytest.raises(HTTPException) as exc:
             await _get_user_key("u1", gp, logger)
-        assert exc.value.status_code == 500
+        assert exc.value.status_code == 503
+        gp.get_user_by_user_id.assert_awaited_once_with("u1", raise_on_error=True)
 
 
 # ============================================================================

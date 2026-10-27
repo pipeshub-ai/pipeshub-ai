@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from functools import lru_cache
 from typing import Literal
 from uuid import uuid4
 
@@ -23,7 +24,9 @@ from app.models.blocks import (
     ImageMetadata,
     TableMetadata,
 )
+from app.modules.parsers.link_text import link_destination_end
 from app.modules.parsers.text_splitting import split_long_text
+from app.modules.transformers.block_container_validator import strip_base64_images
 
 _MD_IMAGE_RE = re.compile(
     r'!\[((?:[^\[\]]|\[[^\]]*\])*)\]\('
@@ -93,12 +96,19 @@ def _split_raw_markdown_into_segments(raw: str) -> list[_Segment]:
                 segments.append(_Segment(kind="text", text=tail))
             break
 
-        before = raw[pos:match.start()]
+        start, end = match.start(), match.end()
+        # A linked image `[![alt](src)](href)`: without taking the wrapper
+        # along, its brackets are left behind as stray "[" and "](href)" text.
+        link_close = link_destination_end(raw, end + 1) if raw.startswith("](", end) else None
+        if link_close is not None and start > pos and raw[start - 1] == "[" and raw[start - 2 : start - 1] != "\\":
+            start, end = start - 1, link_close + 1
+
+        before = raw[pos:start]
         if before.strip():
             segments.append(_Segment(kind="text", text=before))
 
         segments.append(_Segment(kind="image", alt_text=_image_alt_from_match(match)))
-        pos = match.end()
+        pos = end
 
     return segments
 
@@ -209,6 +219,22 @@ class MarkdownToBlocksConverter:
         return container
 
 
+@lru_cache(maxsize=1)
+def _worker_converter() -> MarkdownToBlocksConverter:
+    return MarkdownToBlocksConverter()
+
+
+def convert_markdown_to_blocks(
+    markdown_content: str,
+    caption_map: dict[str, str] | None = None,
+    page_number: int | None = None,
+) -> BlocksContainer:
+    """``MarkdownToBlocksConverter.convert`` as a function a parse worker can be sent."""
+    return _worker_converter().convert(
+        markdown_content, caption_map=caption_map, page_number=page_number
+    )
+
+
 class _TokenWalker:
     def __init__(
         self,
@@ -216,7 +242,12 @@ class _TokenWalker:
         caption_map: dict[str, str] | None = None,
     ) -> None:
         self.caption_map = caption_map or {}
-        self._source_lines = markdown_content.splitlines()
+        # token.map counts lines the way markdown-it does: only \r\n, \r and \n
+        # end a line. str.splitlines also breaks on form feeds, U+2028 and other
+        # separators, which would shift every later slice onto the wrong lines.
+        self._source_lines = (
+            markdown_content.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        )
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
         self.group_stack: list[_OpenGroup] = []
@@ -561,7 +592,7 @@ class _TokenWalker:
                 type=BlockType.TEXT,
                 sub_type=BlockSubType.CODE,
                 format=DataFormat.CODE,
-                data=content,
+                data=strip_base64_images(content),
                 parent_index=self._current_parent_index(),
                 code_metadata=CodeMetadata(language=language),
             )
@@ -698,11 +729,16 @@ class _TokenWalker:
         format: DataFormat,
         parent_block_index: int | None = None,
     ) -> Block | None:
-        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        """Emit one or more TEXT blocks, splitting oversized content at parse time.
+
+        An image payload that reached text (it sits in code, a table cell or an
+        unclosed fence, so it never became an IMAGE block) is replaced first:
+        before the split, so no chunk keeps the tail of one.
+        """
         if not text or not text.strip():
             return None
 
-        chunks = split_long_text(text)
+        chunks = split_long_text(strip_base64_images(text))
         if parent_block_index is not None:
             last: Block | None = None
             for chunk in chunks:

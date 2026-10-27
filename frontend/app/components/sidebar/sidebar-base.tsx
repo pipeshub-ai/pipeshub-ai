@@ -1,5 +1,7 @@
 'use client';
 
+import { useTranslation } from 'react-i18next';
+
 import { useRef, useCallback, useEffect, useState } from 'react';
 import { Flex, Box, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
@@ -11,7 +13,9 @@ import {
   FOOTER_HEIGHT,
   CONTENT_PADDING,
 } from './constants';
-import { useSidebarWidthStore } from '@/lib/store/sidebar-width-store';
+import { useSidebarWidthStore, useAppliedSidebarWidth, clampSidebarWidth } from '@/lib/store/sidebar-width-store';
+import { useMobileSidebarRegistration } from '@/lib/store/mobile-sidebar-store';
+import { BELOW_DESKTOP_MAX_PX } from '@/lib/hooks/use-is-mobile';
 import type { SidebarBaseProps } from './types';
 
 /**
@@ -24,20 +28,120 @@ import type { SidebarBaseProps } from './types';
  * secondary panel render side-by-side in a horizontal flex container.
  * This is used for "More Chats", "More items", etc.
  */
-export function SidebarBase({ header, children, footer, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
+export function SidebarBase({ header, children, footer, footerHeight = FOOTER_HEIGHT, secondaryPanel, onDismissSecondaryPanel, isMobile, mobileOpen, onMobileClose }: SidebarBaseProps) {
+  const { t } = useTranslation();
+  // Every hook runs before the mobile branch returns: isMobile flips after mount
+  // and on resize, and a render with fewer hooks than the last one crashes React.
+  const sidebarWidth = useAppliedSidebarWidth();
+  const setSidebarWidth = useSidebarWidthStore((s) => s.setSidebarWidth);
+
+  const primaryRef = useRef<HTMLDivElement>(null);
+  const outerRef = useRef<HTMLDivElement>(null);
+  const secondaryRef = useRef<HTMLDivElement>(null);
+  const backdropRef = useRef<HTMLDivElement>(null);
+  const widthRef = useRef(sidebarWidth);
+  const isDragging = useRef(false);
+
+  // Sync ref when store value changes (e.g. on hydration from localStorage)
+  useEffect(() => {
+    widthRef.current = sidebarWidth;
+  }, [sidebarWidth]);
+
+  const [dragHandleHovered, setDragHandleHovered] = useState(false);
+
+  const handlePointerDown = useCallback((e: React.PointerEvent) => {
+    e.preventDefault();
+    isDragging.current = true;
+    document.body.style.cursor = 'col-resize';
+    document.body.style.userSelect = 'none';
+
+    const onPointerMove = (ev: PointerEvent) => {
+      const clamped = clampSidebarWidth(
+        Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, ev.clientX)),
+        window.innerWidth,
+      );
+      widthRef.current = clamped;
+      const hasSecondary = !!secondaryRef.current;
+      const clusterW = hasSecondary ? clamped + SIDEBAR_WIDTH : clamped;
+
+      if (primaryRef.current) {
+        primaryRef.current.style.width = `${clamped}px`;
+      }
+      if (outerRef.current) {
+        outerRef.current.style.width = `${clusterW}px`;
+        outerRef.current.style.minWidth = `${clusterW}px`;
+      }
+      if (secondaryRef.current) {
+        secondaryRef.current.style.left = `${clamped}px`;
+      }
+      if (backdropRef.current) {
+        backdropRef.current.style.left = `${clusterW}px`;
+      }
+    };
+
+    const onPointerUp = () => {
+      isDragging.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      document.removeEventListener('pointermove', onPointerMove);
+      document.removeEventListener('pointerup', onPointerUp);
+      document.removeEventListener('pointercancel', onPointerUp);
+      // Below desktop the dragged value is already capped; saving it would replace the saved desktop width.
+      if (window.innerWidth > BELOW_DESKTOP_MAX_PX) setSidebarWidth(widthRef.current);
+    };
+
+    document.addEventListener('pointermove', onPointerMove);
+    document.addEventListener('pointerup', onPointerUp);
+    document.addEventListener('pointercancel', onPointerUp);
+  }, [setSidebarWidth]);
+
+  // The shell shows its hamburger only while a sidebar that can open as a drawer is mounted.
+  useMobileSidebarRegistration(!!isMobile);
+
+  const drawerOpen = !!isMobile && !!mobileOpen;
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // shortcut: Escape, initial focus and focus return only, with no focus trap (Tab can still reach the page behind), upgrade to a Radix Dialog if keyboard users need the trap.
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const previous = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    // The secondary panel view has no close button, so fall back to the first focusable control.
+    (
+      closeButtonRef.current ??
+      dialogRef.current?.querySelector<HTMLElement>('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])') ??
+      dialogRef.current
+    )?.focus();
+    const onKeyDown = (e: KeyboardEvent) => {
+      // Radix menus inside the drawer call preventDefault on the Escape that closes them.
+      if (e.key === 'Escape' && !e.defaultPrevented) onMobileClose?.();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      previous?.focus();
+    };
+    // Callers pass the store's stable close(), so this re-runs only when the drawer opens or closes.
+  }, [drawerOpen, onMobileClose]);
+
   // ── Mobile full-screen drawer ─────────────────────────────────
   // On mobile, render nothing when closed; a fixed full-width panel when open.
   if (isMobile) {
     if (!mobileOpen) return null;
+    const dialogProps = { role: 'dialog', 'aria-modal': true, 'aria-label': t('sidebar.navigation') } as const;
 
     // When a secondary panel is active (e.g. More Chats), render it full-screen
     // as an in-place replacement of the primary sidebar — no side-by-side on mobile.
     if (secondaryPanel) {
       return (
         <Box
+          {...dialogProps}
+          ref={dialogRef}
+          tabIndex={-1}
           style={{
             position: 'fixed',
             inset: 0,
+            outline: 'none',
             zIndex: 200,
             fontFamily: 'Manrope, sans-serif',
           }}
@@ -49,6 +153,8 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
 
     return (
       <Flex
+        {...dialogProps}
+        ref={dialogRef}
         direction="column"
         style={{
           position: 'fixed',
@@ -80,12 +186,13 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
                 }}
               >
                 <IconButton
+                  ref={closeButtonRef}
                   variant="ghost"
                   color="gray"
                   size="2"
                   onClick={onMobileClose}
                   style={{ margin: 0 }}
-                  aria-label="Close sidebar"
+                  aria-label={t('sidebar.close')}
                 >
                   <MaterialIcon name="close" size={20} color="var(--gray-11)" />
                 </IconButton>
@@ -110,7 +217,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
         {footer && (
           <Box
             style={{
-              height: `${FOOTER_HEIGHT}px`,
+              height: footerHeight === 'auto' ? undefined : `${footerHeight}px`,
               flexShrink: 0,
             }}
           >
@@ -120,63 +227,6 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       </Flex>
     );
   }
-
-  const sidebarWidth = useSidebarWidthStore((s) => s.sidebarWidth);
-  const setSidebarWidth = useSidebarWidthStore((s) => s.setSidebarWidth);
-
-  const primaryRef = useRef<HTMLDivElement>(null);
-  const outerRef = useRef<HTMLDivElement>(null);
-  const secondaryRef = useRef<HTMLDivElement>(null);
-  const backdropRef = useRef<HTMLDivElement>(null);
-  const widthRef = useRef(sidebarWidth);
-  const isDragging = useRef(false);
-
-  // Sync ref when store value changes (e.g. on hydration from localStorage)
-  useEffect(() => {
-    widthRef.current = sidebarWidth;
-  }, [sidebarWidth]);
-
-  const [dragHandleHovered, setDragHandleHovered] = useState(false);
-
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    isDragging.current = true;
-    document.body.style.cursor = 'col-resize';
-    document.body.style.userSelect = 'none';
-
-    const onMouseMove = (ev: MouseEvent) => {
-      const clamped = Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, ev.clientX));
-      widthRef.current = clamped;
-      const hasSecondary = !!secondaryRef.current;
-      const clusterW = hasSecondary ? clamped + SIDEBAR_WIDTH : clamped;
-
-      if (primaryRef.current) {
-        primaryRef.current.style.width = `${clamped}px`;
-      }
-      if (outerRef.current) {
-        outerRef.current.style.width = `${clusterW}px`;
-        outerRef.current.style.minWidth = `${clusterW}px`;
-      }
-      if (secondaryRef.current) {
-        secondaryRef.current.style.left = `${clamped}px`;
-      }
-      if (backdropRef.current) {
-        backdropRef.current.style.left = `${clusterW}px`;
-      }
-    };
-
-    const onMouseUp = () => {
-      isDragging.current = false;
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-      document.removeEventListener('mousemove', onMouseMove);
-      document.removeEventListener('mouseup', onMouseUp);
-      setSidebarWidth(widthRef.current);
-    };
-
-    document.addEventListener('mousemove', onMouseMove);
-    document.addEventListener('mouseup', onMouseUp);
-  }, [setSidebarWidth]);
 
   const primarySidebar = (
     <Flex
@@ -220,7 +270,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       {footer && (
         <Box
           style={{
-            height: `${FOOTER_HEIGHT}px`,
+            height: footerHeight === 'auto' ? undefined : `${footerHeight}px`,
             flexShrink: 0,
           }}
         >
@@ -231,7 +281,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
       {/* Drag handle — kept fully inside the sidebar; the app shell clips the
           slot (overflow: hidden) so anything past the border edge is unreachable. */}
       <Box
-        onMouseDown={handleMouseDown}
+        onPointerDown={handlePointerDown}
         onMouseEnter={() => setDragHandleHovered(true)}
         onMouseLeave={() => setDragHandleHovered(false)}
         style={{
@@ -241,6 +291,7 @@ export function SidebarBase({ header, children, footer, secondaryPanel, onDismis
           width: 4,
           height: '100%',
           cursor: 'col-resize',
+          touchAction: 'none',
           zIndex: 20,
         }}
       >

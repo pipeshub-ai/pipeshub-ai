@@ -7,18 +7,20 @@ One Redis leader, one connector, one page per tick.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import inspect
-from logging import Logger
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
 from app.config.constants.arangodb import CollectionNames
 from app.connectors.core.constants import ConnectorStateKeys
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.services.messaging.config import RedisConfig, messaging_env
 from app.services.messaging.utils import MessagingUtils
 
 if TYPE_CHECKING:
+    from logging import Logger
+
+    from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
     from app.services.redis.connection_provider import RedisClient as Redis
 
 LEADER_KEY = "vector_membership_backfill:leader"
@@ -26,6 +28,25 @@ LEADER_KEY = "vector_membership_backfill:leader"
 _RELEASE_IF_OWNER_LUA = """
 if redis.call('get', KEYS[1]) == ARGV[1] then
     return redis.call('del', KEYS[1])
+end
+return 0
+"""
+# Renewal compares the holder in the same step: SET XX checks only that the
+# key exists, so it would hand the lease to whichever replica asked last.
+_RENEW_IF_OWNER_LUA = """
+if redis.call('get', KEYS[1]) == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
+end
+return 0
+"""
+_ACQUIRE_OR_RENEW_LUA = """
+local holder = redis.call('get', KEYS[1])
+if holder == ARGV[1] then
+    return redis.call('expire', KEYS[1], ARGV[2])
+end
+if not holder then
+    redis.call('set', KEYS[1], ARGV[1], 'EX', ARGV[2])
+    return 1
 end
 return 0
 """
@@ -71,6 +92,13 @@ class VectorMembershipBackfillLeaderLock:
         self.ttl_seconds = max(1, ttl_seconds)
         self.key = key
         self._redis: Redis | None = None
+        self._pg = None
+        from app.services.redis.connection_provider_factory import uses_pg_state
+
+        if uses_pg_state():          # REDIS_MODE=postgres: the lock row lives in platform.kv_entries, visible to every process
+            from app.services.pg_state import PgLeaderLock
+
+            self._pg = PgLeaderLock(owner, self.ttl_seconds, key)
 
     async def _client(self) -> Redis | None:
         if self._redis is not None:
@@ -101,20 +129,15 @@ class VectorMembershipBackfillLeaderLock:
         return client
 
     async def try_acquire(self) -> bool:
+        if self._pg is not None:
+            return await self._pg_call(self._pg.try_acquire)
         try:
             client = await self._client()
             if client is None:
                 return False
-            # SET XX renews only if the key still exists AND is still ours; a
-            # GET-then-EXPIRE would report success when the key expired in
-            # between, putting two replicas on the same connector.
-            if await client.set(
-                self.key, self.owner, xx=True, ex=self.ttl_seconds, get=True
-            ) == self.owner:
-                return True
-            return bool(
-                await client.set(self.key, self.owner, nx=True, ex=self.ttl_seconds)
-            )
+            return bool(await client.eval(
+                _ACQUIRE_OR_RENEW_LUA, 1, self.key, self.owner, self.ttl_seconds,
+            ))
         except Exception as e:
             self.logger.warning(
                 "Vector membership backfill skipped this tick; Redis lock failed: %s",
@@ -123,17 +146,23 @@ class VectorMembershipBackfillLeaderLock:
             await self.close()
             return False
 
+    async def _pg_call(self, fn):  # noqa: ANN001, ANN202
+        try:
+            return await fn()
+        except Exception as e:
+            self.logger.warning("Leader lock %s skipped; the database lock failed: %s", self.key, e)
+            return False
+
     async def refresh(self) -> bool:
+        if self._pg is not None:
+            return await self._pg_call(self._pg.refresh)
         try:
             client = self._redis
             if client is None:
                 return False
-            return (
-                await client.set(
-                    self.key, self.owner, xx=True, ex=self.ttl_seconds, get=True
-                )
-                == self.owner
-            )
+            return bool(await client.eval(
+                _RENEW_IF_OWNER_LUA, 1, self.key, self.owner, self.ttl_seconds,
+            ))
         except Exception as e:
             self.logger.warning(
                 "Vector membership backfill leader refresh failed: %s", e
@@ -141,6 +170,9 @@ class VectorMembershipBackfillLeaderLock:
             return False
 
     async def release(self) -> None:
+        if self._pg is not None:
+            await self._pg_call(self._pg.release)
+            return
         client = self._redis
         if client is None:
             return
@@ -157,10 +189,8 @@ class VectorMembershipBackfillLeaderLock:
         client = self._redis
         self._redis = None
         if client is not None:
-            try:
+            with contextlib.suppress(Exception):
                 await client.aclose()
-            except Exception:
-                pass
 
 
 def distinct_non_empty_vrids(page: list[dict]) -> list[str]:
@@ -190,7 +220,7 @@ def _app_key(app: dict) -> str | None:
     return None
 
 
-async def _resolve_indexing_pipeline(app_container: Any) -> Any | None:
+async def _resolve_indexing_pipeline(app_container: Any) -> Any | None:  # noqa: ANN401
     getter = getattr(app_container, "indexing_pipeline", None)
     if getter is None:
         return None
@@ -209,7 +239,7 @@ async def run_vector_membership_backfill_tick(
     *,
     logger: Logger,
     graph_provider: IGraphDBProvider,
-    pipeline: Any,
+    pipeline: Any,  # noqa: ANN401
     lock: LeaderLock,
     page_size: int,
     vrid_pause_ms: int,
@@ -300,6 +330,11 @@ async def run_vector_membership_backfill_tick(
                 CollectionNames.APPS.value,
                 {
                     ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILLED: True,
+                    # Exhausted too: this is a give-up, not a completion. Points
+                    # beyond the cursor were never tagged, and the delete-time
+                    # gate reads both flags precisely so it does not send an
+                    # untagged connector down the membership path and orphan it.
+                    ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_EXHAUSTED: True,
                     ConnectorStateKeys.VECTOR_MEMBERSHIP_BACKFILL_AFTER_KEY: None,
                 },
             )
@@ -426,7 +461,7 @@ async def run_vector_membership_backfill_tick(
 
 
 async def run_vector_membership_backfill_loop(
-    app_container: Any,
+    app_container: Any,  # noqa: ANN401
     graph_provider: IGraphDBProvider,
 ) -> None:
     logger = app_container.logger()

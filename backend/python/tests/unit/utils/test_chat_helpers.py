@@ -7,11 +7,15 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import quote
 
+import aiohttp
 import pytest
 
 from app.config.constants.arangodb import Connectors, OriginTypes, RecordRelations
 from app.connectors.sources.atlassian.jira.enrichment.record_identifiers import (
     is_jira_ticket_record,
+)
+from app.exceptions.storage_exceptions import (
+    StoredRecordTooLargeError,
 )
 from app.models.blocks import BlockType, GroupType
 from app.models.entities import (
@@ -25,6 +29,7 @@ from app.models.entities import (
     RecordType,
     TicketRecord,
 )
+from app.services.graph_db.interface.graph_db_provider import AccessCheck
 from app.services.vector_db.models import ScrollResult
 from app.utils.chat_helpers import (
     TEXT_FRAGMENT_DIRECTIVE_PREFIX,
@@ -32,8 +37,8 @@ from app.utils.chat_helpers import (
     _find_first_block_index_recursive,
     build_block_web_url,
     build_message_content_array,
+    build_node_relations_info,
     build_parent_info,
-    build_record_relations_info,
     context_includes_jira_tickets,
     count_tokens,
     count_tokens_in_messages,
@@ -43,7 +48,6 @@ from app.utils.chat_helpers import (
     enrich_records_with_graph_context,
     enrich_virtual_record_id_to_result_with_fk_children,
     extract_bounding_boxes,
-    extract_start_end_text,
     flattened_result_sort_key,
     generate_text_fragment_url,
     get_enhanced_metadata,
@@ -308,6 +312,16 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, TicketRecord)
         assert result.labels == ["bug", "urgent"]
 
+    def test_ticket_record_shows_jira_own_status(self) -> None:
+        """Chat builds tickets from the tickets node; Jira's own status name
+        has to come through with the normalised one."""
+        d = _base_record_dict(record_type="TICKET", connector_name="JIRA")
+        graph_doc = {"status": "NEW", "sourceStatus": "Backlog"}
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, TicketRecord)
+        assert result.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in result.to_llm_context()
+
     def test_project_record(self):
         d = _base_record_dict(record_type="PROJECT")
         graph_doc = {
@@ -354,6 +368,34 @@ class TestCreateRecordInstanceFromDict:
         assert isinstance(result, LinkRecord)
         assert result.url == "https://example.com"
         assert result.is_public == LinkPublicStatus.TRUE
+
+    def test_pull_request_record(self):
+        """PRs used to fall through to `None` here, so chat dropped their
+        merge state even when the prs node was loaded."""
+        from app.models.entities import PullRequestRecord
+        d = _base_record_dict(record_type="PULL_REQUEST", connector_name="GITHUB")
+        graph_doc = {
+            "status": "DONE",
+            "creatorName": "octocat",
+            "creatorEmail": "octo@example.com",
+            "mergedBy": "hubot",
+            "mergeable": None,
+            "assignee": ["alice"],
+            "assigneeEmail": [],
+            "reviewName": ["bob"],
+            "reviewEmail": [],
+            "labels": ["bug"],
+            "lastCommitSha": "abc123",
+        }
+        result = create_record_instance_from_dict(d, graph_doc)
+        assert isinstance(result, PullRequestRecord)
+        assert result.record_type == RecordType.PULL_REQUEST
+        assert result.status == "DONE"
+        assert result.merged_by == "hubot"
+        assert result.review_name == ["bob"]
+        ctx = result.to_llm_context()
+        assert "* Status: Merged" in ctx
+        assert "* Merged By: hubot" in ctx
 
     def test_unknown_record_type_returns_none(self):
         d = _base_record_dict(record_type="WEBPAGE")
@@ -501,64 +543,6 @@ class TestCountTokensText:
 
 
 # ===================================================================
-# extract_start_end_text
-# ===================================================================
-class TestExtractStartEndText:
-    def test_empty_string(self):
-        assert extract_start_end_text("") == ("", "")
-
-    def test_none_input(self):
-        assert extract_start_end_text(None) == ("", "")
-
-    def test_no_alphanumeric(self):
-        assert extract_start_end_text("!!!@@@###") == ("", "")
-
-    def test_short_text_under_fragment_count(self):
-        """Text with fewer words than FRAGMENT_WORD_COUNT."""
-        start, end = extract_start_end_text("hello world")
-        assert start == "hello world"
-        # end may be empty for very short text
-        assert isinstance(end, str)
-
-    def test_normal_text(self):
-        snippet = "The quick brown fox jumps over the lazy dog and then some more words follow at the end"
-        start, end = extract_start_end_text(snippet)
-        assert len(start.split()) <= 8
-        assert start != ""
-        # end_text should contain trailing words
-        assert isinstance(end, str)
-
-    def test_single_word(self):
-        # The regex requires at least 2 consecutive alphabetic words; a single
-        # word produces no match and both values are empty strings.
-        start, end = extract_start_end_text("hello")
-        assert start == ""
-        assert end == ""
-
-    def test_text_with_special_chars_between_words(self):
-        snippet = "Hello—world! This is a test: of punctuation. And more words here at the very end."
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-
-    def test_long_text_has_both_start_and_end(self):
-        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
-        alpha_words = [
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
-            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
-            "pi", "rho", "sigma", "tau", "upsilon", "phi", "chi", "psi",
-            "omega", "lorem", "ipsum", "dolor", "sit", "amet", "consectetur",
-            "adipiscing", "elit", "sed", "perspiciatis", "unde", "omnis",
-            "iste", "natus", "error", "voluptatem", "accusantium", "laudantium",
-            "totam", "rem", "aperiam", "eaque", "ipsa", "quae", "veritatis",
-            "dicta",
-        ]
-        snippet = " ".join(alpha_words)
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-        assert end != ""
-
-
-# ===================================================================
 # generate_text_fragment_url
 # ===================================================================
 class TestGenerateTextFragmentUrl:
@@ -586,13 +570,24 @@ class TestGenerateTextFragmentUrl:
         result = generate_text_fragment_url(url, snippet)
         assert result.startswith(f"https://example.com/page{TEXT_FRAGMENT_DIRECTIVE_PREFIX}")
 
-    def test_url_with_existing_hash_is_stripped(self):
+    def test_url_with_existing_hash_keeps_it(self):
+        """The directive is appended: a conforming browser still hands the page `#section1`."""
         url = "https://example.com/page#section1"
         snippet = "some text to search for and find in the page content here"
         result = generate_text_fragment_url(url, snippet)
-        # The old hash should be removed
-        assert "#section1" not in result
-        assert TEXT_FRAGMENT_DIRECTIVE_PREFIX in result
+        assert result.startswith("https://example.com/page#section1:~:text=")
+
+    def test_gmail_message_anchor_survives(self):
+        """Stripping `#all/<id>` left attachment citations pointing at the inbox."""
+        url = "https://mail.google.com/mail?authuser=a@b.com#all/m1"
+        result = generate_text_fragment_url(url, "Junior Process Engineer with experience")
+        assert result.startswith(f"{url}:~:text=")
+
+    def test_url_with_anchor_and_directive_is_left_alone(self):
+        """A second `:~:` would make the directive unparseable."""
+        url = "https://example.com/page#section1:~:text=already%20set"
+        result = generate_text_fragment_url(url, "chunk text that must not be appended")
+        assert result == url
 
     def test_no_alphanumeric_snippet_returns_base_url(self):
         url = "https://example.com/page"
@@ -2373,6 +2368,51 @@ class TestGetRecord:
         assert vr_map["vr-1"].get("context_metadata") is not None
 
     @pytest.mark.asyncio
+    async def test_pull_request_context_shows_merge_state(self):
+        """End to end through chat's record loading: a PR's header carries
+        the status stored on its prs node."""
+        record_blob = _make_record_blob(
+            record_type="PULL_REQUEST", connector_name="GITHUB", record_name="Fix login redirect",
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=record_blob)
+
+        pr_doc = {"status": "CANCELLED", "creatorName": "octocat", "labels": ["wontfix"]}
+
+        async def _get_document(document_key, collection):
+            return pr_doc if collection == "prs" else None
+
+        graph_provider = AsyncMock()
+        graph_provider.get_document = AsyncMock(side_effect=_get_document)
+
+        virtual_to_record_map = {
+            "vr-1": {
+                "_key": "rec-1",
+                "recordType": "PULL_REQUEST",
+                "recordName": "Fix login redirect",
+                "version": 1,
+                "origin": "CONNECTOR",
+                "connectorName": "GITHUB",
+                "connectorId": "conn-1",
+                "webUrl": "https://github.com/org/repo/pull/42",
+                "mimeType": "application/blocks",
+            },
+        }
+        vr_map = {}
+        await get_record(
+            "vr-1", vr_map, blob_store, "org-1",
+            virtual_to_record_map, graph_provider
+        )
+        ctx = vr_map["vr-1"]["context_metadata"]
+        graph_provider.get_document.assert_any_await(document_key="rec-1", collection="prs")
+        # The base header must survive too: with the prs doc loaded but no PR
+        # branch in the factory, the whole header would come back empty.
+        assert "Name: Fix login redirect" in ctx
+        assert "* Status: Closed without merging" in ctx
+        assert "* Author: octocat" in ctx
+        assert "* Labels: wontfix" in ctx
+
+    @pytest.mark.asyncio
     async def test_with_graph_provider_error_graceful(self):
         """Graph provider error should not crash, just log."""
         record_blob = _make_record_blob()
@@ -2402,6 +2442,31 @@ class TestGetRecord:
         )
         # Should succeed despite graph error
         assert "vr-1" in vr_map
+
+    @pytest.mark.asyncio
+    async def test_citation_metadata_carries_connector_instance_name(self) -> None:
+        """The name the retrieval service put on the graph record reaches the citation."""
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value=_make_record_blob())
+        virtual_to_record_map = {
+            "vr-1": {
+                "_key": "rec-1",
+                "recordType": "FILE",
+                "recordName": "Q3 plan.pdf",
+                "origin": "CONNECTOR",
+                "connectorName": "DRIVE",
+                "connectorId": "conn-1",
+                "connectorInstanceName": "Marketing Drive",
+                "mimeType": "application/pdf",
+            },
+        }
+        vr_map = {}
+        await get_record("vr-1", vr_map, blob_store, "org-1", virtual_to_record_map)
+
+        meta = get_enhanced_metadata(vr_map["vr-1"], _make_text_block(index=0, data="x"), {})
+
+        assert meta["connector"] == "DRIVE"
+        assert meta["connectorInstanceName"] == "Marketing Drive"
 
     @pytest.mark.asyncio
     async def test_without_graph_provider(self):
@@ -2680,6 +2745,310 @@ class TestGetFlattenedResults:
         assert results[0]["block_type"] == BlockType.TEXT.value
 
     @pytest.mark.asyncio
+    async def test_hits_on_two_items_of_one_list_yield_the_list_once(self) -> None:
+        """Each list-item hit expands to its whole list; a second hit on the same
+        list must not add a duplicate unit that takes another ranked slot."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.9), (1, "ItemB", 0.8))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert [r.get("block_group_index") for r in results] == [0]
+
+    @pytest.mark.asyncio
+    async def test_a_list_hit_twice_keeps_its_best_score(self) -> None:
+        """/search flattens before it sorts, and its query batches are not in score order."""
+        item_a = _make_text_block(index=0, data="ItemA", parent_index=0)
+        item_b = _make_text_block(index=1, data="ItemB", parent_index=0)
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [item_a, item_b]
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, text, score in ((0, "ItemA", 0.4), (1, "ItemB", 0.9))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert [child["score"] for child in unit["content"][1]] == [0.9, 0.9]
+        # The search API keeps every item that matched, whatever its score.
+        assert unit["hit_block_scores"] == {0: 0.4, 1: 0.9}
+
+    @pytest.mark.asyncio
+    async def test_a_weaker_later_hit_on_a_list_is_still_recorded_as_a_match(self) -> None:
+        """Merging a second hit into the list must not lose which item it matched."""
+        items = [_make_text_block(index=i, data=f"Item{i}", parent_index=0) for i in range(8)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [
+            _make_list_group(index=0, children_block_indices=list(range(8)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": f"Item{idx}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": idx, "isBlockGroup": False}}
+            for idx, score in ((1, 0.9), (6, 0.3))
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["score"] == 0.9
+        assert unit["hit_block_scores"] == {1: 0.9, 6: 0.3}
+
+    @pytest.mark.asyncio
+    async def test_a_row_hit_inside_a_table_already_expanded_is_recorded_on_it(self) -> None:
+        """A small table hit as a whole is expanded into every row first; a hit on
+        one of its rows used to be dropped as already seen."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Row 7", "score": 0.7, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 7, "isBlockGroup": False}},
+            {"content": "", "score": 0.8, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == {7: 0.7}
+        assert len(table["content"][1]) == 10
+
+    @pytest.mark.asyncio
+    async def test_a_hit_on_a_split_row_of_an_expanded_table_is_recorded_on_its_row(self) -> None:
+        """A row with an inline image is stored as an empty row container plus text
+        fragments, and the fragment is what was indexed. When the table was already
+        expanded, the fragment's hit is recorded on the container's row."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        rows[7]["data"] = {"row_number": 8}
+        fragment = {
+            "id": "frag-10", "index": 10, "type": BlockType.TEXT.value, "data": "Row 7 text",
+            "citation_metadata": None, "parent_index": None, "parent_block_index": 7,
+        }
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [*rows, fragment]
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "", "score": 0.5, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+            {"content": "Row 7 text", "score": 0.6, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 10, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == {7: 0.6}
+        assert any(child["block_index"] == 7 and child["content"] == "Row 7 text" for child in table["content"][1])
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_seen_message_raises_its_score(self) -> None:
+        """A long block is several points with one blockIndex, and the search API
+        runs several queries; the passage must keep its best point's score."""
+        items = [_make_text_block(index=i, data=f"message {i}", parent_index=0) for i in range(40)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [
+            _make_list_group(index=0, children_block_indices=list(range(40)), group_type=GroupType.CONVERSATION)
+        ]
+        vr_map = {"vr-1": record}
+        points = [(0, 0.5), (1, 0.5), (2, 0.5), (3, 0.5), (30, 0.3), (30, 0.95)]
+        result_set = [
+            {"content": f"message {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, score in points
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["hit_block_scores"][30] == 0.95
+
+    @pytest.mark.asyncio
+    async def test_a_small_table_hit_again_more_strongly_raises_its_rows(self) -> None:
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        ]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}}
+            for score in (0.3, 0.9)
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert [child["score"] for child in table_unit["content"][1]] == [0.9, 0.9, 0.9]
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_standalone_block_raises_its_score(self) -> None:
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [_make_text_block(index=0, data="a long paragraph")]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "part", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False}}
+            for score in (0.3, 0.8)
+        ]
+
+        (passage,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert passage["score"] == 0.8
+
+    @pytest.mark.asyncio
+    async def test_a_later_stronger_point_on_a_queued_large_table_row_raises_its_score(self) -> None:
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        table = _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        table["table_metadata"] = {"num_of_cells": 500}
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [table]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Row 1", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 1, "isBlockGroup": False}}
+            for score in (0.3, 0.9)
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert [child["score"] for child in table_unit["content"][1]] == [0.9]
+
+    @pytest.mark.asyncio
+    async def test_a_split_row_of_a_large_table_keeps_its_best_fragment_score(self) -> None:
+        """Two fragments of one image-split row of a large table both match; the
+        row is queued once, and must carry the stronger hit's score."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(3)]
+        rows[1]["data"] = {"row_number": 2}
+        fragments = [
+            {"id": f"frag-{i}", "index": i, "type": BlockType.TEXT.value, "data": f"part {i}",
+             "citation_metadata": None, "parent_index": None, "parent_block_index": 1}
+            for i in (3, 4)
+        ]
+        table = _make_table_group(index=0, children_block_indices=[0, 1, 2])
+        table["table_metadata"] = {"num_of_cells": 500}
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = [*rows, *fragments]
+        record["block_containers"]["block_groups"] = [table]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": f"part {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+            for i, score in ((3, 0.3), (4, 0.9))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert {child["score"] for child in table_unit["content"][1]} == {0.9}
+
+    @pytest.mark.asyncio
+    async def test_each_row_hit_on_an_expanded_table_keeps_its_own_score(self) -> None:
+        """The rows all carry the table point's score; the search API ranks the
+        matched rows by their own hits, so each hit's score is kept."""
+        rows = [_make_table_row_block(index=i, row_text=f"Row {i}", parent_index=0) for i in range(10)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = rows
+        record["block_containers"]["block_groups"] = [
+            _make_table_group(index=0, children_block_indices=list(range(10)))
+        ]
+        vr_map = {"vr-1": record}
+        hits = {0: 0.2, 1: 0.25, 2: 0.3, 3: 0.35, 9: 0.95}
+        result_set = [
+            {"content": "", "score": 0.5, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": True}},
+            *[
+                {"content": f"Row {i}", "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": i, "isBlockGroup": False}}
+                for i, score in hits.items()
+            ],
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        assert table["hit_block_scores"] == hits
+
+    @pytest.mark.asyncio
+    async def test_a_list_unit_records_the_item_that_matched(self) -> None:
+        items = [_make_text_block(index=i, data=f"Item{i}", parent_index=0) for i in range(3)]
+        record = _make_record_blob()
+        record["block_containers"]["blocks"] = items
+        record["block_containers"]["block_groups"] = [_make_list_group(index=0, children_block_indices=[0, 1, 2])]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": "Item2", "score": 0.7, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 2, "isBlockGroup": False}},
+        ]
+
+        (unit,) = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        assert unit["hit_block_scores"] == {2: 0.7}
+        assert [child["block_index"] for child in unit["content"][1]] == [0, 1, 2]
+
+    @pytest.mark.asyncio
+    async def test_one_unreadable_record_does_not_fail_the_rest(self):
+        """A storage 404 for one hit must drop that record, not the whole search."""
+        good = _make_record_blob()
+        good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
+
+        async def fetch(virtual_record_id, *_args, **_kwargs):
+            if virtual_record_id == "vr-missing":
+                raise aiohttp.ClientError("Failed to retrieve record from storage")
+            return good
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=fetch)
+        vr_map: dict = {}
+        result_set = [
+            {"content": "gone", "score": 0.9,
+             "metadata": {"virtualRecordId": "vr-missing", "blockIndex": 0, "isBlockGroup": False}},
+            {"content": "still here", "score": 0.8,
+             "metadata": {"virtualRecordId": "vr-ok", "blockIndex": 0, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
+
+        assert vr_map["vr-missing"] is None
+        assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
+
+    @pytest.mark.asyncio
+    async def test_a_record_refused_by_the_decode_guard_is_skipped(self) -> None:
+        """A record too large to decode drops out of this search; the rest still answers."""
+        refusal = StoredRecordTooLargeError("decodes to 300 MiB")
+        good = _make_record_blob()
+        good["block_containers"]["blocks"] = [_make_text_block(index=0, data="still here")]
+
+        async def fetch(virtual_record_id: str, *_args: object, **_kwargs: object) -> dict:
+            if virtual_record_id == "vr-huge":
+                raise refusal
+            return good
+
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=fetch)
+        vr_map: dict = {}
+        result_set = [
+            {"content": "huge", "score": 0.9,
+             "metadata": {"virtualRecordId": "vr-huge", "blockIndex": 0, "isBlockGroup": False}},
+            {"content": "still here", "score": 0.8,
+             "metadata": {"virtualRecordId": "vr-ok", "blockIndex": 0, "isBlockGroup": False}},
+        ]
+
+        results = await get_flattened_results(result_set, blob_store, "org-1", False, vr_map)
+
+        assert vr_map["vr-huge"] is None
+        assert [r["virtual_record_id"] for r in results] == ["vr-ok"]
+
+    @pytest.mark.asyncio
     async def test_image_block_multimodal(self):
         img_block = _make_image_block(index=0, uri="data:image/png;base64,abc")
         record = _make_record_blob()
@@ -2936,34 +3305,9 @@ class TestGetFlattenedResults:
         assert len(results) >= 1
 
     @pytest.mark.asyncio
-    async def test_from_tool_no_adjacent_chunks(self):
-        """With from_tool=True, adjacent chunks should not be added."""
-        block0 = _make_text_block(index=0, data="Main text")
-        block1 = _make_text_block(index=1, data="Adjacent text")
-        record = _make_record_blob()
-        record["block_containers"]["blocks"] = [block0, block1]
-
-        blob_store = self._make_blob_store(record)
-        vr_map = {"vr-1": record}
-
-        result_set = [
-            {
-                "content": "Main text",
-                "score": 0.9,
-                "metadata": {"virtualRecordId": "vr-1", "blockIndex": 0, "isBlockGroup": False},
-            },
-        ]
-        results = await get_flattened_results(
-            result_set, blob_store, "org-1", False, vr_map,
-            from_tool=True,
-        )
-        # block_index=1 should not appear as adjacent chunk
-        adjacent_results = [r for r in results if r.get("block_index") == 1]
-        assert len(adjacent_results) == 0
-
-    @pytest.mark.asyncio
-    async def test_adjacent_chunks_added_for_regular_call(self):
-        """Without from_tool/from_retrieval_service, adjacent text blocks should be added."""
+    async def test_no_adjacent_chunks_are_added(self):
+        """Neighbours are added after ranking, around the units kept
+        (`modules/retrieval/context`), never here."""
         block0 = _make_text_block(index=0, data="Adjacent before")
         block1 = _make_text_block(index=1, data="Main text")
         block2 = _make_text_block(index=2, data="Adjacent after")
@@ -2983,11 +3327,7 @@ class TestGetFlattenedResults:
         results = await get_flattened_results(
             result_set, blob_store, "org-1", False, vr_map,
         )
-        # Should contain the main block plus adjacent text blocks
-        block_indices = {r.get("block_index") for r in results}
-        assert 1 in block_indices  # main
-        assert 0 in block_indices  # adjacent before
-        assert 2 in block_indices  # adjacent after
+        assert [r.get("block_index") for r in results] == [1]
 
     @pytest.mark.asyncio
     async def test_config_service_error_graceful(self):
@@ -3433,34 +3773,6 @@ class TestGetFlattenedResults:
 
 
 # ===================================================================
-# Additional edge cases for extract_start_end_text
-# ===================================================================
-class TestExtractStartEndTextEdgeCases:
-    """Additional tests for extract_start_end_text edge cases."""
-
-    def test_text_with_more_than_fragment_count_words_in_first_match(self):
-        """When first_text has > FRAGMENT_WORD_COUNT words and no last_text found."""
-        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
-        words = [
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
-            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
-            "pi", "rho", "sigma", "tau", "upsilon",
-        ]
-        snippet = " ".join(words)
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-        assert len(start.split()) <= 8
-        # end should come from the last part of the match
-        assert end != ""
-
-    def test_text_with_exactly_fragment_count_words(self):
-        # FRAGMENT_WORD_COUNT=4, so start_text is the first 4 words only
-        snippet = "one two three four five six seven eight"
-        start, end = extract_start_end_text(snippet)
-        assert start == "one two three four"
-
-
-# ===================================================================
 # Additional edge cases for generate_text_fragment_url
 # ===================================================================
 class TestGenerateTextFragmentUrlEdgeCases:
@@ -3571,46 +3883,6 @@ class TestCountTokensEdgeCases:
             current, new = count_tokens(messages, [[{"type": "text", "text": "content"}]])
             assert current >= 0
             assert new >= 0
-
-
-# ===================================================================
-# Additional extract_start_end_text branch coverage
-# ===================================================================
-class TestExtractStartEndTextBranches:
-    """Target remaining uncovered branches in extract_start_end_text."""
-
-    def test_first_match_all_spaces_returns_empty(self):
-        """When PATTERN matches spaces only, first_text.strip() is empty."""
-        # The regex [a-zA-Z0-9 ]+ matches space sequences.
-        # If leading with " " followed by non-alnum chars, the first match is spaces.
-        snippet = " !!!"
-        start, end = extract_start_end_text(snippet)
-        assert start == "" or isinstance(start, str)
-
-    def test_end_text_fallback_when_no_last_text_but_long_first(self):
-        """Lines 1610-1615: first_text has > FRAGMENT_WORD_COUNT words,
-        no last_text found in remaining. End text falls back to last words of first."""
-        # Use purely alphabetic words so they match the [A-Za-z]+ pattern
-        words = [
-            "alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta",
-            "theta", "iota", "kappa", "lambda", "mu", "nu", "xi", "omicron",
-            "pi", "rho", "sigma", "tau", "upsilon",
-        ]
-        snippet = " ".join(words)
-        start, end = extract_start_end_text(snippet)
-        assert start != ""
-        assert end != ""
-        # end should be from the tail of the first match
-        assert end.split()[-1] in snippet
-
-    def test_generate_fragment_url_exception_branch(self):
-        """Lines 1657-1658: Exception in fragment URL generation returns base_url."""
-        # We can trigger this by making extract_start_end_text raise,
-        # but it's hard to do naturally. Test with mock.
-        url = "https://example.com/page"
-        with patch("app.utils.chat_helpers.extract_start_end_text", side_effect=Exception("boom")):
-            result = generate_text_fragment_url(url, "some text")
-            assert result == url
 
 
 # ===================================================================
@@ -3869,87 +4141,6 @@ class TestGetFlattenedResultsBranches:
         # Second table has children [0, 2] but 0 is already seen -> only 1
         _, children2 = table_results[1]["content"]
         assert len(children2) == 1
-
-
-# ===================================================================
-# extract_start_end_text — fallback to last words of first segment
-# ===================================================================
-class TestExtractStartEndTextFallback:
-    """Cover uncovered fallback branch in extract_start_end_text (lines 1611-1615)."""
-
-    def test_single_long_segment_no_remaining_text(self):
-        """Lines 1611-1615: When first_text has more words than FRAGMENT_WORD_COUNT
-        and there is no separate last_text, fall back to last words of first_text.
-        FRAGMENT_WORD_COUNT is 8, so we need >8 words in a single alphanumeric segment
-        and NO alphanumeric text remaining after start_text in the snippet.
-
-        The trick: start_text takes first 8 words; remaining = snippet[start_text_end:].
-        If remaining has no alpha matches, last_text stays None and fallback triggers.
-
-        We construct: 9+ words followed immediately by only special chars.
-        """
-        # Exactly 10 words, no special chars between them, followed by special chars only
-        # first_text = "a b c d e f g h i j" (10 words)
-        # start_text = "a b c d e f g h" (first 8 words)
-        # start_text_end points after "a b c d e f g h" -> remaining = " i j!@#$"
-        # But wait, remaining "i j" will match PATTERN. We need remaining to be ONLY special chars.
-        # So we need exactly 8+ words and nothing else after the 8th word.
-        # Actually: start_text = first 8 words. start_text_end = position after those 8 words in snippet.
-        # If snippet has exactly 9 words with no special chars, remaining = " word9" which matches.
-        # We need >8 words in first_text (first_match.group()) but after start_text_end,
-        # the remaining snippet must have zero alphanumeric chars.
-        # This means: the entire snippet is one first_match, >8 words, so remaining
-        # includes trailing words from the same match... which will match the pattern.
-        # The ONLY way remaining has no matches is if all chars after start_text_end
-        # are non-alphanumeric. So: first 8 words + only special chars.
-        # But first_text = first_match.group().strip(), words = first_text.split()
-        # If len(words) > 8, fallback triggers. But first_match covers all alphanumeric+space
-        # so if there are 10 words, first_text has 10 words. remaining starts after
-        # first 8 words of first_text within the snippet.
-        # remaining = snippet[start_text_end:] where start_text is 8 words.
-        # If snippet = "a b c d e f g h i j", start_text = "a b c d e f g h"
-        # start_text_begin = 0, start_text_end = len("a b c d e f g h") = 15
-        # remaining = " i j" -> matches "i j" -> last_text = "i j" -> line 1607 taken.
-        # So we CAN'T hit the fallback with a purely alphanumeric snippet.
-        # We need: first_match to capture >8 words, AND remaining to have NO alpha.
-        # e.g.: "a b c d e f g h i j" + "!@#" -> first_match = "a b c d e f g h i j"
-        # start_text = "a b c d e f g h", remaining = " i j!@#"
-        # PATTERN.finditer on remaining -> "i j" matches, so last_text = "i j".
-        # The ONLY way: the PATTERN regex match for first_text must include >8 words,
-        # but we truncate start_text to 8. remaining includes the rest of the match
-        # plus any trailing non-alpha chars. Those rest-of-match chars are alphanumeric.
-        # CONCLUSION: This branch is unreachable with normal text because
-        # first_text always covers all alphanumeric chars in the first match segment,
-        # and any extra words beyond 8 remain in `remaining` and match PATTERN.
-        # To trigger it, we'd need first_text.split() > 8 but remaining empty.
-        # This happens if start_text_end >= len(snippet), i.e. start_text covers
-        # the ENTIRE snippet. That requires first 8 words = entire snippet,
-        # meaning len(first_text.split()) == 8, which does NOT satisfy > 8.
-        # This branch may be truly dead code. Let's just verify the function
-        # handles a long single segment correctly regardless.
-        snippet = "a b c d e f g h i j k l m n o p"
-        start_text, end_text = extract_start_end_text(snippet)
-        assert start_text
-        assert end_text  # Will hit the last_text path (line 1607)
-
-    def test_snippet_with_only_special_chars_after_first_segment(self):
-        """Lines 1611-1615: To hit lines 1610-1615, we need:
-        1. first_text.split() > FRAGMENT_WORD_COUNT (>8)
-        2. last_text is None (no alphanumeric matches in remaining)
-
-        This can only happen if the remaining text after start_text_end has
-        zero alphanumeric characters. But remaining includes the leftover
-        from first_text (words 9+). Unless... start_text_end calculation
-        overshoots. Let's test the edge: snippet starts with spaces before
-        the match, so leading_spaces shifts start_text_begin forward,
-        making start_text_end cover beyond the snippet length? No, that's
-        unlikely. Let's just test a normal case and verify behavior.
-        """
-        snippet = "one two three four five six seven eight nine ten!@#"
-        start_text, end_text = extract_start_end_text(snippet)
-        assert start_text
-        # end_text will have "nine ten" since remaining includes them
-        assert end_text
 
 
 # ===================================================================
@@ -4460,13 +4651,12 @@ class TestGenerateTextFragmentUrlHash:
     """Cover hash-stripping branch in generate_text_fragment_url."""
 
     def test_url_with_existing_hash(self):
-        """Line 1652-1653: URL with existing hash is stripped."""
+        """The existing anchor is preserved and the directive appended after it."""
         url = generate_text_fragment_url(
             "https://example.com/page#section",
             "Some important text content here with multiple words"
         )
-        assert "#section" not in url
-        assert "#:~:text=" in url
+        assert url.startswith("https://example.com/page#section:~:text=")
 
     def test_empty_snippet_after_strip(self):
         """Lines 1639-1640: Whitespace-only snippet returns base_url."""
@@ -4939,6 +5129,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         parent_relations=None,
         vrid_map=None,
         graph_doc=None,
+        trashed=(),
     ):
         gp = AsyncMock()
         gp.get_child_record_ids_by_relation_type = AsyncMock(
@@ -4951,7 +5142,88 @@ class TestEnrichVirtualRecordIdFKChildren:
             return_value=vrid_map or {}
         )
         gp.get_document = AsyncMock(return_value=graph_doc or {})
+        gp.get_user_by_user_id = AsyncMock(return_value={"id": "user-key-1"})
+        gp.check_access = AsyncMock(side_effect=lambda key, org, node_ids=(), **_: AccessCheck(
+            node_ids=frozenset(n for n in node_ids if n not in trashed)
+        ))
+        # The live-record read the enrichment also makes: a trashed table is not live.
+        gp.get_records_by_record_ids = AsyncMock(side_effect=lambda ids, org, **_: [
+            {"_key": i, "id": i} for i in ids if i not in trashed
+        ])
         return gp
+
+    @pytest.mark.asyncio
+    async def test_leaves_out_a_related_table_in_the_trash(self) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-dropped", "childTable": "orders"}],
+            parent_relations=[{"record_id": "rec-parent", "parentTable": "departments"}],
+            vrid_map={"rec-parent": "vr-parent"},
+            trashed={"rec-dropped"},
+        )
+        blob_store = self._make_blob_store()
+        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda vrid, *_a, **_kw: {
+            "vr-dropped": self._sql_table_record(vrid="vr-dropped", record_id="rec-dropped"),
+            "vr-parent": self._sql_table_record(vrid="vr-parent", record_id="rec-parent"),
+        }.get(vrid))
+        flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened, user_id="user-1",
+        )
+
+        gp.get_virtual_record_ids_for_record_ids.assert_awaited_once_with(["rec-parent"])
+        assert flattened[0]["fk_child_relations"] == []
+        assert [r["record_id"] for r in flattened[0]["fk_parent_relations"]] == ["rec-parent"]
+        added = [r["record_id"] for r in flattened if r.get("metadata", {}).get("source") == "FK_ENRICHMENT"]
+        assert added == ["rec-parent"]
+        assert "vr-dropped" not in vr_map
+        assert gp.check_access.await_args_list[0].args[1] == "org-1"
+
+    @pytest.mark.asyncio
+    async def test_leaves_a_trashed_table_out_of_a_related_tables_own_relations(self) -> None:
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(vrid_map={"rec-parent": "vr-parent"}, trashed={"rec-dropped"})
+        parents = {
+            "rec-sql-1": [{"record_id": "rec-parent", "parentTable": "departments"}],
+            "rec-parent": [{"record_id": "rec-dropped", "parentTable": "regions"},
+                           {"record_id": "rec-live", "parentTable": "companies"}],
+        }
+        gp.get_parent_record_ids_by_relation_type = AsyncMock(
+            side_effect=lambda record_id, _relation: parents.get(record_id, [])
+        )
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-parent", record_id="rec-parent"))
+        flattened = []
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened, user_id="user-1",
+        )
+
+        (entry,) = [r for r in flattened if r.get("metadata", {}).get("source") == "FK_ENRICHMENT"]
+        assert entry["record_id"] == "rec-parent"
+        assert [r["record_id"] for r in entry["fk_parent_relations"]] == ["rec-live"]
+
+    @pytest.mark.asyncio
+    async def test_adds_no_related_table_when_the_access_check_cannot_answer(self) -> None:
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
+
+        vr_map = {"vr-1": self._sql_table_record()}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-child"}], vrid_map={"rec-child": "vr-child"},
+        )
+        gp.check_access = AsyncMock(side_effect=PermissionVerificationUnavailableError("graph down"))
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-child", record_id="rec-child"))
+        flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened, user_id="user-1",
+        )
+
+        assert flattened[0]["fk_child_relations"] == []
+        assert len(flattened) == 1
+        blob_store.get_record_from_storage.assert_not_awaited()
 
     def _sql_table_record(self, vrid="vr-1", record_id="rec-sql-1", **overrides):
         rec = _make_record_blob(
@@ -4988,7 +5260,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store()
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         gp.get_child_record_ids_by_relation_type.assert_not_called()
         gp.get_parent_record_ids_by_relation_type.assert_not_called()
@@ -5000,7 +5272,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         gp = self._make_graph_provider()
         blob_store = self._make_blob_store()
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=[],
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=[],
         )
         gp.get_child_record_ids_by_relation_type.assert_called_once()
         gp.get_parent_record_ids_by_relation_type.assert_called_once()
@@ -5020,14 +5292,14 @@ class TestEnrichVirtualRecordIdFKChildren:
         parent_blob = self._sql_table_record(vrid="vr-parent", record_id="rec-parent")
 
         blob_store = self._make_blob_store()
-        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda **kw: {
+        blob_store.get_record_from_storage = AsyncMock(side_effect=lambda vrid, *_a, **_kw: {
             "vr-child": child_blob,
             "vr-parent": parent_blob,
-        }.get(kw.get("virtual_record_id")))
+        }.get(vrid))
 
         flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         assert "fk_child_relations" in flattened[0]
         assert "fk_parent_relations" in flattened[0]
@@ -5047,7 +5319,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store(related_blob)
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         blob_store.get_record_from_storage.assert_called()
         assert "vr-child" in vr_map
@@ -5065,7 +5337,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store(related_blob)
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
         assert len(fk_entries) >= 1
@@ -5082,7 +5354,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store()
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         assert flattened == []
         gp.get_virtual_record_ids_for_record_ids.assert_not_called()
@@ -5101,7 +5373,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store()
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         assert flattened == []
 
@@ -5121,7 +5393,7 @@ class TestEnrichVirtualRecordIdFKChildren:
             {"virtual_record_id": "vr-child", "metadata": {"virtualRecordId": "vr-child"}},
         ]
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
         assert len(fk_entries) == 0
@@ -5154,7 +5426,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store(related_blob)
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
         assert len(fk_entries) >= 1
@@ -5187,7 +5459,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         blob_store = self._make_blob_store(related_blob)
         flattened = []
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=flattened,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
         )
         fk_entries = [r for r in flattened if (r.get("metadata") or {}).get("source") == "FK_ENRICHMENT"]
         assert len(fk_entries) == 1
@@ -5196,6 +5468,39 @@ class TestEnrichVirtualRecordIdFKChildren:
         assert "Alice, 30" in summary_text
         assert "Bob, 25" in summary_text
         assert "Charlie, 40" not in summary_text
+
+    @pytest.mark.asyncio
+    async def test_a_related_table_the_user_may_not_access_is_neither_fetched_nor_named(self) -> None:
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        gp = self._make_graph_provider(
+            child_relations=[{"record_id": "rec-open"}, {"record_id": "rec-secret"}],
+            vrid_map={"rec-open": "vr-open"},
+        )
+        gp.check_access = AsyncMock(side_effect=lambda key, org, node_ids=(), **_: AccessCheck(node_ids=frozenset(node_ids) - {"rec-secret"}))
+        blob_store = self._make_blob_store(self._sql_table_record(vrid="vr-open", record_id="rec-open"))
+        flattened = [{"virtual_record_id": "vr-1", "metadata": {"virtualRecordId": "vr-1"}}]
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=flattened,
+        )
+
+        assert gp.get_virtual_record_ids_for_record_ids.await_args.args[0] == ["rec-open"]
+        assert "rec-secret" not in str(flattened)
+
+    @pytest.mark.asyncio
+    async def test_no_user_fetches_no_related_table(self) -> None:
+        rec = self._sql_table_record()
+        vr_map = {"vr-1": rec}
+        gp = self._make_graph_provider(child_relations=[{"record_id": "rec-child"}], vrid_map={"rec-child": "vr-child"})
+        blob_store = self._make_blob_store()
+
+        await enrich_virtual_record_id_to_result_with_fk_children(
+            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=[],
+        )
+
+        gp.get_virtual_record_ids_for_record_ids.assert_not_called()
+        assert "vr-child" not in vr_map
 
     @pytest.mark.asyncio
     async def test_flattened_results_none_skips_ddl(self):
@@ -5209,7 +5514,7 @@ class TestEnrichVirtualRecordIdFKChildren:
         )
         blob_store = self._make_blob_store(related_blob)
         await enrich_virtual_record_id_to_result_with_fk_children(
-            vr_map, blob_store, "org-1", graph_provider=gp, flattened_results=None,
+            vr_map, blob_store, "org-1", user_id="user-1", graph_provider=gp, flattened_results=None,
         )
         assert "vr-child" in vr_map
 
@@ -5219,6 +5524,25 @@ class TestEnrichVirtualRecordIdFKChildren:
 # ===================================================================
 class TestEnrichRecordsWithGraphContext:
     """Unified graph context enrichment: dependent parents + record relations."""
+
+    @staticmethod
+    def _allow(gp, allowed=None) -> None:
+        """Every neighbour is accessible unless ``allowed`` says otherwise."""
+        gp.filter_accessible_record_ids = AsyncMock(
+            side_effect=lambda ids, user_id, org_id, **_: (
+                set(ids) if allowed is None else set(ids) & set(allowed)
+            )
+        )
+        gp._access_configured = True
+
+    async def _enrich(self, *args, **kwargs) -> None:
+        """The enrichment as a signed-in user; neighbours are access-checked."""
+        gp = kwargs.get("graph_provider") or (args[1] if len(args) > 1 else None)
+        if gp is not None and getattr(gp, "_access_configured", None) is not True:
+            self._allow(gp)
+        kwargs.setdefault("user_id", "user-1")
+        kwargs.setdefault("org_id", "org-1")
+        await enrich_records_with_graph_context(*args, **kwargs)
 
     def _make_graph_provider(
         self,
@@ -5241,7 +5565,7 @@ class TestEnrichRecordsWithGraphContext:
         gp.get_parent_record_ids_by_relation_type = AsyncMock(side_effect=_parent)
         gp.get_child_record_ids_by_relation_type = AsyncMock(side_effect=_child)
 
-        async def _relations_batch(record_ids, relation_types, transaction=None):
+        async def _relations_batch(record_ids, relation_types, transaction=None, limit_per_direction=None):
             return {
                 rid: {
                     "parents": [
@@ -5256,7 +5580,9 @@ class TestEnrichRecordsWithGraphContext:
                 for rid in record_ids
             }
 
-        gp.get_record_relations_batch = AsyncMock(side_effect=_relations_batch)
+        gp.get_node_relations_batch = AsyncMock(side_effect=_relations_batch)
+
+        self._allow(gp)
 
         async def _get_document(record_id, collection=None, *args, **kwargs):
             if record_id in docs_by_id:
@@ -5325,8 +5651,9 @@ class TestEnrichRecordsWithGraphContext:
     async def test_skips_when_no_graph_provider(self):
         vr_map = {"vr-attach": self._dependent_file_record()}
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=None, flattened_results=flattened,
+            user_id="user-1",
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5337,9 +5664,10 @@ class TestEnrichRecordsWithGraphContext:
         gp = self._make_graph_provider()
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         gp.get_document.assert_not_called()
 
@@ -5350,9 +5678,10 @@ class TestEnrichRecordsWithGraphContext:
         gp = self._make_graph_provider()
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry(isDependentNode=False)}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         # Not dependent and has no record_id on main result -> no edge queries
         assert "parent_node_relation" not in flattened[0]
@@ -5364,9 +5693,10 @@ class TestEnrichRecordsWithGraphContext:
         gp = self._make_graph_provider()
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry(parentNodeId=None)}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5406,9 +5736,10 @@ class TestEnrichRecordsWithGraphContext:
         gp.get_document = AsyncMock(side_effect=_get_document)
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5439,9 +5770,10 @@ class TestEnrichRecordsWithGraphContext:
             "vr-attach": self._virtual_to_record_map_entry(),
             "vr-issue-1": parent_base_doc,
         }
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "context_metadata" in flattened[0]["parent_node_relation"]
 
@@ -5472,9 +5804,10 @@ class TestEnrichRecordsWithGraphContext:
             "vr-a1": self._virtual_to_record_map_entry(id="rec-a1"),
             "vr-a2": self._virtual_to_record_map_entry(id="rec-a2"),
         }
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
         assert flattened[1]["parent_node_relation"]["record_id"] == "rec-issue-1"
@@ -5504,10 +5837,11 @@ class TestEnrichRecordsWithGraphContext:
 
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1",
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5538,10 +5872,11 @@ class TestEnrichRecordsWithGraphContext:
 
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1",
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5566,10 +5901,11 @@ class TestEnrichRecordsWithGraphContext:
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
         doc_index = {"rec-issue-1": {"recordName": "PROJ-77", "id": "rec-issue-1"}}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
             blob_store=blob_store, org_id="org-1", doc_index=doc_index,
+            user_id="user-1",
         )
         rel = flattened[0]["parent_node_relation"]
         assert rel["record_id"] == "rec-issue-1"
@@ -5590,9 +5926,10 @@ class TestEnrichRecordsWithGraphContext:
 
         flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
         vtr_map = {"vr-attach": self._virtual_to_record_map_entry()}
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         assert "parent_node_relation" not in flattened[0]
 
@@ -5610,25 +5947,29 @@ class TestEnrichRecordsWithGraphContext:
             }
         }
         gp = self._make_graph_provider()
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp,
             flattened_results=[{"virtual_record_id": "vr-ticket", "block_index": 0}],
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
-        assert "record_relations" not in rec
+        assert "node_relations" not in rec
 
     @pytest.mark.asyncio
     async def test_queries_both_relation_types_in_one_batch(self):
         rec = self._ticket_record()
         vr_map = {"vr-ticket": rec}
         gp = self._make_graph_provider()
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
-        gp.get_record_relations_batch.assert_awaited_once()
-        from app.utils.chat_helpers import RECORD_RELATION_ENRICHMENT_TYPES
-        requested = set(gp.get_record_relations_batch.await_args.args[1])
-        assert requested == {rel.value for rel in RECORD_RELATION_ENRICHMENT_TYPES}
+        gp.get_node_relations_batch.assert_awaited_once()
+        from app.utils.chat_helpers import NODE_RELATION_ENRICHMENT_TYPES
+        requested = set(gp.get_node_relations_batch.await_args.args[1])
+        assert requested == {rel.value for rel in NODE_RELATION_ENRICHMENT_TYPES}
+        from app.utils.chat_helpers import RELATION_FETCH_LIMIT_PER_DIRECTION
+        assert gp.get_node_relations_batch.await_args.kwargs["limit_per_direction"] == RELATION_FETCH_LIMIT_PER_DIRECTION
         assert gp.get_parent_record_ids_by_relation_type.await_count == 0
         assert gp.get_child_record_ids_by_relation_type.await_count == 0
 
@@ -5642,10 +5983,11 @@ class TestEnrichRecordsWithGraphContext:
                 RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-sub-1"}],
             },
         )
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
-        relations = rec["record_relations"]
+        relations = rec["node_relations"]
         assert len(relations) == 2
         by_id = {r["record_id"]: r for r in relations}
         assert by_id["rec-file-1"]["record_name"] == "Name-rec-file-1"
@@ -5662,10 +6004,11 @@ class TestEnrichRecordsWithGraphContext:
                 RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-dup"}],
             },
         )
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
-        relations = rec["record_relations"]
+        relations = rec["node_relations"]
         assert len(relations) == 1
         assert set(relations[0]["labels"]) == {"ATTACHMENT", "CHILD"}
 
@@ -5686,23 +6029,293 @@ class TestEnrichRecordsWithGraphContext:
                 },
             },
         )
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
-        assert "record_relations" not in rec
+        assert "node_relations" not in rec
 
     @pytest.mark.asyncio
-    async def test_returns_all_relations_without_cap(self):
+    async def test_returns_all_relations_under_the_cap(self):
         rec = self._ticket_record()
         vr_map = {"vr-ticket": rec}
         many = [{"record_id": f"rec-{i}"} for i in range(25)]
         gp = self._make_graph_provider(
             outgoing_by_type={RecordRelations.ATTACHMENT.value: many},
         )
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
+            user_id="user-1",
         )
-        assert len(rec["record_relations"]) == 25
+        assert len(rec["node_relations"]) == 25
+        assert "node_relations_truncated" not in rec
+
+    # --- Access control ---
+
+    @pytest.mark.asyncio
+    async def test_skipped_without_user_id(self):
+        """No user means no access verdict; nothing is added and nothing queried."""
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}]},
+        )
+        await enrich_records_with_graph_context(
+            {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], user_id="",
+        )
+        assert "node_relations" not in rec
+        gp.get_node_relations_batch.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_access_check_failure_adds_nothing(self):
+        """Fail closed: a related record may be one the user cannot open."""
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}]},
+        )
+        gp.filter_accessible_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        blob_store = AsyncMock()
+        flattened = [{"virtual_record_id": "vr-ticket", "block_index": 0}]
+        await enrich_records_with_graph_context(
+            {"vr-ticket": rec}, graph_provider=gp, flattened_results=flattened,
+            blob_store=blob_store, org_id="org-1", user_id="user-1",
+        )
+        assert "node_relations" not in rec
+        assert flattened == [{"virtual_record_id": "vr-ticket", "block_index": 0}]
+        blob_store.get_record_from_storage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unreadable_related_records_are_dropped_before_any_fetch(self):
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [
+                {"record_id": "rec-open"}, {"record_id": "rec-restricted"},
+            ]},
+            vrid_map={"rec-open": "vr-open", "rec-restricted": "vr-restricted"},
+        )
+        self._allow(gp, {"rec-open"})
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "semantic_metadata": {"summary": "s"},
+        })
+        await enrich_records_with_graph_context(
+            {"vr-ticket": rec}, graph_provider=gp, flattened_results=[],
+            blob_store=blob_store, org_id="org-1", user_id="user-1",
+        )
+        assert [r["record_id"] for r in rec["node_relations"]] == ["rec-open"]
+        gp.filter_accessible_record_ids.assert_awaited_once()
+        ids, user_id, org = gp.filter_accessible_record_ids.await_args.args
+        assert sorted(ids) == ["rec-open", "rec-restricted"]
+        assert (user_id, org) == ("user-1", "org-1")
+        fetched_docs = {c.args[0] for c in gp.get_document.await_args_list}
+        assert "rec-restricted" not in fetched_docs
+        assert blob_store.get_record_from_storage.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_parents_survive_the_cap_ahead_of_children(self):
+        from app.utils.chat_helpers import MAX_RELATED_RECORDS_PER_HIT
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [
+                {"record_id": f"rec-child-{i}"} for i in range(MAX_RELATED_RECORDS_PER_HIT)
+            ]},
+            incoming_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-parent"}]},
+        )
+        await enrich_records_with_graph_context(
+            {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], org_id="org-1", user_id="user-1",
+        )
+        ids = [r["record_id"] for r in rec["node_relations"]]
+        assert ids[0] == "rec-parent"
+        assert len(ids) == MAX_RELATED_RECORDS_PER_HIT
+        assert rec["node_relations_truncated"] is True
+
+    # --- A connected app's limit ---
+
+    _FILE_LIMIT = {"apps": [], "recordGroups": [], "records": ["rec-attach", "rec-ticket"]}
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(("outside", "shown"), [({"rec-issue-1"}, False), (set(), True)])
+    async def test_a_dependent_parent_outside_the_limit_is_not_named(self, outside, shown) -> None:
+        rec = self._dependent_file_record()
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        check = AsyncMock(return_value=outside)
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-attach": rec}, graph_provider=gp, flattened_results=flattened,
+                virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+                user_id="user-1", org_id="org-1", connection_sources=self._FILE_LIMIT,
+            )
+        assert ("parent_node_relation" in flattened[0]) is shown
+        assert set(check.await_args.args[3]) == {"rec-issue-1"}
+        assert check.await_args.args[4] == self._FILE_LIMIT
+
+    @pytest.mark.asyncio
+    async def test_a_parent_relation_outside_the_limit_is_left_out_and_a_child_inside_stays(self) -> None:
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-child-1"}]},
+            incoming_by_type={RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-parent"}]},
+        )
+        check = AsyncMock(side_effect=lambda _gp, _u, _o, ids, _s: set(ids) & {"rec-parent"})
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], org_id="org-1",
+                user_id="user-1", connection_sources=self._FILE_LIMIT,
+            )
+        assert [r["record_id"] for r in rec["node_relations"]] == ["rec-child-1"]
+        assert set(check.await_args.args[3]) == {"rec-parent", "rec-child-1"}
+
+    @pytest.mark.asyncio
+    async def test_a_child_outside_the_limit_is_left_out_and_a_related_header_names_no_source_parent(
+        self,
+    ) -> None:
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: [
+                {"record_id": "rec-child-in"}, {"record_id": "rec-child-out"},
+            ]},
+            docs_by_id={"rec-child-in": {
+                "id": "rec-child-in", "_key": "rec-child-in", "recordName": "Child", "recordType": "TICKET",
+                "connectorName": "JIRA", "connectorId": "conn-1", "externalRecordId": "PST-10",
+                "externalParentId": "ext-secret-parent",
+            }},
+        )
+        gp.get_records_by_record_ids = AsyncMock(return_value=[])
+        check = AsyncMock(side_effect=lambda _gp, _u, _o, ids, _s: set(ids) & {"rec-child-out"})
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], org_id="org-1",
+                user_id="user-1", connection_sources=self._FILE_LIMIT,
+            )
+        assert [r["record_id"] for r in rec["node_relations"]] == ["rec-child-in"]
+        assert "ext-secret-parent" not in str(rec["node_relations"])
+        assert "Name-rec-child-out" not in str(rec)
+
+    @pytest.mark.asyncio
+    async def test_without_a_limit_the_parent_is_named_and_no_limit_is_checked(self) -> None:
+        rec = self._dependent_file_record()
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        check = AsyncMock(return_value=set())
+        with patch("app.modules.retrieval.selection_scope.outside_connection", check):
+            await enrich_records_with_graph_context(
+                {"vr-attach": rec}, graph_provider=gp, flattened_results=flattened,
+                virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+                user_id="user-1", org_id="org-1",
+            )
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        check.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_parent_check_failure_adds_nothing(self):
+        rec = self._dependent_file_record()
+        gp = self._make_graph_provider()
+        gp.filter_accessible_record_ids = AsyncMock(side_effect=RuntimeError("graph down"))
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        await enrich_records_with_graph_context(
+            {"vr-attach": rec}, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+            user_id="user-1",
+        )
+        assert "parent_node_relation" not in flattened[0]
+
+    @pytest.mark.asyncio
+    async def test_unreadable_dependent_parent_is_not_annotated_or_fetched(self):
+        rec = self._dependent_file_record()
+        gp = self._make_graph_provider(vrid_map={"rec-issue-1": "vr-issue-1"})
+        self._allow(gp, set())
+        blob_store = AsyncMock()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        await enrich_records_with_graph_context(
+            {"vr-attach": rec}, graph_provider=gp, flattened_results=flattened,
+            virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+            blob_store=blob_store, org_id="org-1", user_id="user-1",
+        )
+        assert "parent_node_relation" not in flattened[0]
+        gp.filter_accessible_record_ids.assert_awaited_once()
+        ids, user_id, org = gp.filter_accessible_record_ids.await_args.args
+        assert (set(ids), user_id, org) == ({"rec-issue-1"}, "user-1", "org-1")
+        gp.get_nodes_by_field_in.assert_not_awaited()
+        blob_store.get_record_from_storage.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_parent_that_is_a_hit_is_not_rechecked(self):
+        """The search already adjudicated its hits."""
+        dependent = self._dependent_file_record()
+        parent_hit = self._ticket_record(vrid="vr-issue", record_id="rec-issue-1")
+        gp = self._make_graph_provider()
+        flattened = [{"virtual_record_id": "vr-attach", "block_index": 0}]
+        await enrich_records_with_graph_context(
+            {"vr-attach": dependent, "vr-issue": parent_hit}, graph_provider=gp,
+            flattened_results=flattened,
+            virtual_to_record_map={"vr-attach": self._virtual_to_record_map_entry()},
+            user_id="user-1",
+        )
+        assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
+        gp.filter_accessible_record_ids.assert_not_awaited()
+
+    # --- Limits ---
+
+    @pytest.mark.asyncio
+    async def test_list_is_capped_and_marked_when_cut(self):
+        from app.utils.chat_helpers import MAX_RELATED_RECORDS_PER_HIT
+        rec = self._ticket_record()
+        many = [{"record_id": f"rec-{i}"} for i in range(MAX_RELATED_RECORDS_PER_HIT + 10)]
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: many},
+        )
+        await enrich_records_with_graph_context(
+            {"vr-ticket": rec}, graph_provider=gp, flattened_results=[], org_id="org-1", user_id="user-1",
+        )
+        assert len(rec["node_relations"]) == MAX_RELATED_RECORDS_PER_HIT
+        assert rec["node_relations_truncated"] is True
+        assert "(more related records exist; not shown)" in build_node_relations_info(rec)
+
+    @pytest.mark.asyncio
+    async def test_full_metadata_is_capped_per_hit(self):
+        from app.utils.chat_helpers import MAX_FULL_METADATA_RELATED_PER_HIT
+        rec = self._ticket_record()
+        many = [{"record_id": f"rec-{i:02d}"} for i in range(30)]
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.PARENT_CHILD.value: many},
+            vrid_map={f"rec-{i:02d}": f"vr-{i}" for i in range(30)},
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "semantic_metadata": {"summary": "s"},
+        })
+        await enrich_records_with_graph_context(
+            {"vr-ticket": rec}, graph_provider=gp, flattened_results=[],
+            blob_store=blob_store, org_id="org-1", user_id="user-1",
+        )
+        full = [r for r in rec["node_relations"] if "context_metadata" in r]
+        assert len(rec["node_relations"]) == 30
+        assert len(full) == MAX_FULL_METADATA_RELATED_PER_HIT
+        # List order decides who gets full metadata, and fetches match what is shown.
+        assert [r["record_id"] for r in full] == [f"rec-{i:02d}" for i in range(len(full))]
+        assert blob_store.get_record_from_storage.await_count == MAX_FULL_METADATA_RELATED_PER_HIT
+
+    @pytest.mark.asyncio
+    async def test_record_shared_by_two_hits_is_fetched_once(self):
+        hits = {
+            "vr-a": self._ticket_record(vrid="vr-a", record_id="rec-a"),
+            "vr-b": self._ticket_record(vrid="vr-b", record_id="rec-b"),
+        }
+        gp = self._make_graph_provider(
+            outgoing_by_type={RecordRelations.ATTACHMENT.value: [{"record_id": "rec-shared"}]},
+            vrid_map={"rec-shared": "vr-shared"},
+        )
+        blob_store = AsyncMock()
+        blob_store.get_record_from_storage = AsyncMock(return_value={
+            "semantic_metadata": {"summary": "s"},
+        })
+        await enrich_records_with_graph_context(
+            hits, graph_provider=gp, flattened_results=[],
+            blob_store=blob_store, org_id="org-1", user_id="user-1",
+        )
+        assert blob_store.get_record_from_storage.await_count == 1
+        for hit in hits.values():
+            assert "context_metadata" in hit["node_relations"][0]
 
     @pytest.mark.asyncio
     async def test_related_record_gets_context_metadata(self):
@@ -5726,11 +6339,12 @@ class TestEnrichRecordsWithGraphContext:
             },
             vrid_map={},
         )
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=None, org_id="org-1",
+            user_id="user-1",
         )
-        relations = rec["record_relations"]
+        relations = rec["node_relations"]
         assert len(relations) == 1
         assert "context_metadata" in relations[0]
         assert "[PST-10] Subtask" in relations[0]["context_metadata"]
@@ -5762,11 +6376,12 @@ class TestEnrichRecordsWithGraphContext:
             "record_type": "TICKET",
             "semantic_metadata": {"summary": "This subtask adds test evidence."},
         })
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=blob_store, org_id="org-1",
+            user_id="user-1",
         )
-        relations = rec["record_relations"]
+        relations = rec["node_relations"]
         assert len(relations) == 1
         ctx = relations[0]["context_metadata"]
         assert "Summary" in ctx
@@ -5793,11 +6408,12 @@ class TestEnrichRecordsWithGraphContext:
             },
             vrid_map={},
         )
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=[],
             blob_store=None, org_id="org-1",
+            user_id="user-1",
         )
-        relations = rec["record_relations"]
+        relations = rec["node_relations"]
         assert len(relations) == 1
         ctx = relations[0]["context_metadata"]
         assert "[PST-10] Subtask" in ctx
@@ -5845,15 +6461,45 @@ class TestEnrichRecordsWithGraphContext:
             "vr-attach": self._virtual_to_record_map_entry(),
             "vr-ticket": {"isDependentNode": False, "connectorName": "JIRA"},
         }
-        await enrich_records_with_graph_context(
+        await self._enrich(
             vr_map, graph_provider=gp, flattened_results=flattened,
             virtual_to_record_map=vtr_map,
+            user_id="user-1",
         )
         # Dependent parent was annotated
         assert flattened[0]["parent_node_relation"]["record_id"] == "rec-issue-1"
         # Relation-eligible got relations
-        assert len(ticket_rec["record_relations"]) == 1
-        assert ticket_rec["record_relations"][0]["record_id"] == "rec-related"
+        assert len(ticket_rec["node_relations"]) == 1
+        assert ticket_rec["node_relations"][0]["record_id"] == "rec-related"
+
+    # --- Access to neighbours ---
+
+    def _ticket_with_two_neighbours(self) -> tuple:
+        rec = self._ticket_record()
+        gp = self._make_graph_provider(
+            outgoing_by_type={
+                RecordRelations.ATTACHMENT.value: [{"record_id": "rec-file-1"}],
+                RecordRelations.PARENT_CHILD.value: [{"record_id": "rec-sub-1"}],
+            },
+        )
+        return rec, gp
+
+    @pytest.mark.asyncio
+    async def test_a_neighbour_the_user_cannot_access_is_never_named(self) -> None:
+        rec, gp = self._ticket_with_two_neighbours()
+        self._allow(gp, allowed={"rec-sub-1"})
+        await self._enrich({"vr-ticket": rec}, graph_provider=gp, flattened_results=[])
+        assert [r["record_id"] for r in rec["node_relations"]] == ["rec-sub-1"]
+        gp.filter_accessible_record_ids.assert_awaited_once()
+        assert gp.filter_accessible_record_ids.await_args.args[1:] == ("user-1", "org-1")
+
+    @pytest.mark.asyncio
+    async def test_without_a_user_no_neighbour_is_named(self) -> None:
+        rec, gp = self._ticket_with_two_neighbours()
+        self._allow(gp)
+        await self._enrich({"vr-ticket": rec}, graph_provider=gp, flattened_results=[], user_id="")
+        assert "node_relations" not in rec or not rec["node_relations"]
+        gp.check_access.assert_not_awaited()
 
 class TestBuildParentInfo:
     def test_returns_empty_when_no_relation(self):
@@ -5931,12 +6577,12 @@ class TestBuildMessageContentArrayParentInfo:
 
 class TestBuildRecordRelationsInfo:
     def test_returns_empty_when_no_relations(self):
-        assert build_record_relations_info({}) == ""
-        assert build_record_relations_info({"record_relations": []}) == ""
+        assert build_node_relations_info({}) == ""
+        assert build_node_relations_info({"node_relations": []}) == ""
 
     def test_renders_minimal_record_id_name_and_labels(self):
-        text = build_record_relations_info({
-            "record_relations": [
+        text = build_node_relations_info({
+            "node_relations": [
                 {
                     "record_id": "rec-1",
                     "record_name": "screenshot.png",
@@ -5970,8 +6616,8 @@ class TestBuildRecordRelationsInfo:
             "* Status: DONE\n"
             "* Priority: MEDIUM"
         )
-        text = build_record_relations_info({
-            "record_relations": [
+        text = build_node_relations_info({
+            "node_relations": [
                 {
                     "record_id": "rec-task-1",
                     "record_name": "[PST-10] Add test evidence",
@@ -5987,8 +6633,8 @@ class TestBuildRecordRelationsInfo:
         assert "Summary: Task requesting addition of test evidence" in text
 
     def test_mixed_rich_and_minimal_entries(self):
-        text = build_record_relations_info({
-            "record_relations": [
+        text = build_node_relations_info({
+            "node_relations": [
                 {
                     "record_id": "rec-rich",
                     "record_name": "Rich",
@@ -6007,8 +6653,8 @@ class TestBuildRecordRelationsInfo:
         assert "- Record ID: rec-minimal | Name: Minimal" in text
 
     def test_groups_many_records_under_one_label_heading(self):
-        text = build_record_relations_info({
-            "record_relations": [
+        text = build_node_relations_info({
+            "node_relations": [
                 {"record_id": "rec-1", "record_name": "Sub 1", "labels": ["CHILD"]},
                 {"record_id": "rec-2", "record_name": "Sub 2", "labels": ["CHILD"]},
                 {"record_id": "rec-3", "record_name": "Sub 3", "labels": ["CHILD"]},
@@ -6076,7 +6722,7 @@ class TestBuildMessageContentArrayRecordRelations:
         record = _make_record_blob(
             virtual_record_id="vr-ticket",
             record_name="[PST-9] Test ticket",
-            record_relations=[
+            node_relations=[
                 {
                     "record_id": "rec-file-1",
                     "record_name": "screenshot.png",
@@ -6131,7 +6777,7 @@ class TestGetFlattenedResultsNewBranches:
 
         blob_store = self._make_blob_store(record)
         blob_store.get_reconciliation_metadata = AsyncMock(return_value={
-            "block_id_to_index": {"block-abc": 0},
+            "block_id_to_index": {"block-0": 0},
             "hash_to_block_ids": {},
         })
         vr_map = {"vr-1": record}
@@ -6142,7 +6788,7 @@ class TestGetFlattenedResultsNewBranches:
             "metadata": {
                 "virtualRecordId": "vr-1",
                 "blockIndex": None,
-                "blockId": "block-abc",
+                "blockId": "block-0",
                 "isBlockGroup": False,
             },
         }]
@@ -6231,6 +6877,31 @@ class TestGetFlattenedResultsNewBranches:
         assert "DDL:" in summary
         assert len(children) == 1
         assert children[0]["content"] == "id=1, name=Alice"
+
+    @pytest.mark.asyncio
+    async def test_an_out_of_blob_sql_row_keeps_its_strongest_point(self) -> None:
+        """A SQL row past the rows the blob stores, hit by two points: the row
+        takes the stronger point's score and text."""
+        record = _make_record_blob(record_type="SQL_TABLE")
+        record["block_containers"]["blocks"] = []
+        record["block_containers"]["block_groups"] = [{
+            "type": "table",
+            "data": {"table_summary": "sql table", "ddl": "CREATE TABLE t(id INT)"},
+            "children": [],
+            "table_metadata": {},
+            "citation_metadata": None,
+        }]
+        vr_map = {"vr-1": record}
+        result_set = [
+            {"content": text, "score": score, "metadata": {"virtualRecordId": "vr-1", "blockIndex": 99, "isBlockGroup": False}}
+            for text, score in (("id=1, part one", 0.3), ("id=1, part two", 0.95))
+        ]
+
+        results = await get_flattened_results(result_set, self._make_blob_store(record), "org-1", False, vr_map)
+
+        (table_unit,) = [r for r in results if r.get("block_type") == GroupType.TABLE.value]
+        (row,) = table_unit["content"][1]
+        assert (row["score"], row["content"]) == (0.95, "id=1, part two")
 
     @pytest.mark.asyncio
     async def test_block_index_out_of_bounds_non_sql(self):
@@ -6443,6 +7114,51 @@ class TestBuildMessageContentArraySummaryCitation:
             item["text"] for group in contents for item in group if item.get("type") == "text"
         )
         assert "Citation ID for summary:" in text
+
+
+class TestBuildMessageContentArrayCodeLabel:
+    """GroupType.CODE and BlockType.CODE are both "code"; only the content's shape
+    tells a code group from a code block."""
+
+    @staticmethod
+    def _render(flat: list[dict]) -> str:
+        contents, _ = build_message_content_array(
+            flat, {"vr-1": _make_record_blob()}, is_multimodal_llm=False, from_tool=True
+        )
+        return " ".join(
+            item["text"] for group in contents for item in group if item.get("type") == "text"
+        )
+
+    def test_code_group_renders_its_members_not_the_tuple(self) -> None:
+        child = {
+            "content": "def run(self):\n    pass",
+            "block_type": BlockType.CODE.value,
+            "block_index": 9,
+            "virtual_record_id": "vr-1",
+            "metadata": {},
+        }
+        text = self._render([
+            _make_flattened_result(
+                block_index=9,
+                block_type=GroupType.CODE.value,
+                content=("", [child]),
+                block_group_index=2,
+            )
+        ])
+        assert "('', [" not in text
+        assert "[code #2]" in text
+        assert "def run(self):" in text
+
+    def test_code_block_still_renders_as_a_leaf(self) -> None:
+        text = self._render([
+            _make_flattened_result(
+                block_index=3,
+                block_type=BlockType.CODE.value,
+                content="def main():\n    return 1",
+            )
+        ])
+        assert "def main():\n    return 1" in text
+        assert "[code #" not in text
 
 
 # ===================================================================
@@ -6693,6 +7409,13 @@ class TestCollectionMapMessage:
         assert collection_map[RecordType.FILE.value] == "files"
         assert collection_map[RecordType.MAIL.value] == "mails"
 
+    def test_pull_request_maps_to_prs(self):
+        """The graph keeps PR fields in the `prs` collection; without this
+        entry chat never loads them."""
+        from app.config.constants.arangodb import CollectionNames
+        from app.utils.chat_helpers import collection_map
+        assert collection_map[RecordType.PULL_REQUEST.value] == CollectionNames.PULLREQUESTS.value == "prs"
+
 
 class TestValidGroupLabelsConversation:
     def test_conversation_in_valid_labels(self):
@@ -6829,3 +7552,169 @@ class TestRenderBlocksWithImagesBudgetAccounting:
 
         assert budget.used == 1
         assert any("conversation image limit" in item["text"] for item in content)
+
+
+@pytest.mark.asyncio
+async def test_the_per_record_fallback_caps_queries_in_flight() -> None:
+    """Every query in flight can open a new database connection; a page of hits
+    fanned out at once timed connects out ("Connection timeout to host")."""
+    import asyncio
+
+    from app.utils.chat_helpers import _relations_per_record
+    from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY
+
+    in_flight = peak = 0
+
+    async def query(*_args, **_kwargs) -> list:
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await asyncio.sleep(0)
+        in_flight -= 1
+        return []
+
+    gp = MagicMock()
+    gp.get_child_record_ids_by_relation_type = query
+    gp.get_parent_record_ids_by_relation_type = query
+    record_ids = [f"r{i}" for i in range(GRAPH_FANOUT_CONCURRENCY * 2)]
+    out = await _relations_per_record(gp, record_ids, ["PARENT_CHILD", "ATTACHMENT"])
+    assert set(out) == set(record_ids)
+    assert peak == GRAPH_FANOUT_CONCURRENCY
+
+
+class TestAccessibleNodeIds:
+    """A user who does not exist reaches nothing; a lookup that failed is not
+    an answer, and must not read as one."""
+
+    @staticmethod
+    def _graph(lookup) -> AsyncMock:
+        from app.services.graph_db.interface.graph_db_provider import AccessCheck
+
+        graph = AsyncMock()
+        graph.get_user_by_user_id = AsyncMock(side_effect=lookup)
+        graph.check_access = AsyncMock(
+            side_effect=lambda _key, _org, *, node_ids=(), **_kwargs: AccessCheck(node_ids=frozenset(node_ids)),
+        )
+        return graph
+
+    @pytest.mark.asyncio
+    async def test_a_failed_user_lookup_is_unavailable_not_no_access(self) -> None:
+        from app.exceptions.graph_db_exceptions import (
+            PermissionVerificationUnavailableError,
+        )
+        from app.utils.chat_helpers import accessible_node_ids
+
+        async def lookup(_user_id, *, raise_on_error=False) -> None:
+            if raise_on_error:
+                raise RuntimeError("graph down")
+
+        graph = self._graph(lookup)
+        with pytest.raises(PermissionVerificationUnavailableError):
+            await accessible_node_ids(graph, {"r1"}, "u1", "o1")
+        graph.check_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_user_who_does_not_exist_reaches_nothing(self) -> None:
+        from app.utils.chat_helpers import accessible_node_ids
+
+        async def lookup(_user_id, *, raise_on_error=False) -> None:
+            return None
+
+        graph = self._graph(lookup)
+        assert await accessible_node_ids(graph, {"r1"}, "nobody", "o1") == set()
+        graph.check_access.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_found_user_is_checked_by_their_graph_key(self) -> None:
+        from app.utils.chat_helpers import accessible_node_ids
+
+        async def lookup(_user_id, *, raise_on_error=False):
+            return {"_key": "uk1"}
+
+        graph = self._graph(lookup)
+        assert await accessible_node_ids(graph, {"r1"}, "u1", "o1") == {"r1"}
+        assert graph.check_access.await_args.args[:2] == ("uk1", "o1")
+
+    @pytest.mark.asyncio
+    async def test_enrichment_names_no_neighbour_when_the_lookup_failed(self) -> None:
+        from app.utils.chat_helpers import accessible_node_ids_for_enrichment
+
+        async def lookup(_user_id, *, raise_on_error=False) -> None:
+            if raise_on_error:
+                raise RuntimeError("graph down")
+
+        assert await accessible_node_ids_for_enrichment(self._graph(lookup), {"r1"}, "u1", "o1") == set()
+
+
+@pytest.mark.asyncio
+async def test_the_per_record_fallback_is_bounded_like_the_batch() -> None:
+    from app.utils.chat_helpers import (
+        RELATION_FETCH_LIMIT_PER_DIRECTION,
+        _relations_per_record,
+    )
+
+    gp = MagicMock()
+    many = [{"record_id": f"c{i}"} for i in range(RELATION_FETCH_LIMIT_PER_DIRECTION * 4)]
+    gp.get_child_record_ids_by_relation_type = AsyncMock(return_value=many)
+    gp.get_parent_record_ids_by_relation_type = AsyncMock(return_value=[])
+    out = await _relations_per_record(gp, ["a"], ["PARENT_CHILD", "ATTACHMENT"])
+    assert len(out["a"]["children"]) == RELATION_FETCH_LIMIT_PER_DIRECTION
+    # The reads themselves are bounded, not only what is kept of them.
+    assert gp.get_child_record_ids_by_relation_type.await_args.kwargs["limit"] == RELATION_FETCH_LIMIT_PER_DIRECTION
+
+
+class TestLinkedContextNamesTheGraphRecord:
+    """L11: a stored copy shared by several records carries one record's name and
+    link; linked-record context must describe the record it was asked about."""
+
+    def test_graph_identity_wins_over_the_stored_copy(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        stored = {"id": "rec-x", "record_name": "X budget", "weburl": "https://x/1",
+                  "connector_id": "conn-x", "block_containers": {"blocks": []}}
+        graph = {"_key": "rec-y", "recordName": "Y plan", "webUrl": "https://y/9",
+                 "connectorId": "conn-y", "connectorName": "DRIVE"}
+        merged = _merge_graph_into_blob_record(stored, graph)
+        assert merged["id"] == "rec-y"
+        assert merged["record_name"] == "Y plan"
+        assert merged["weburl"] == "https://y/9"
+        assert merged["connector_id"] == "conn-y"
+        assert merged["block_containers"] == {"blocks": []}
+
+    def test_stored_value_kept_where_the_graph_has_none(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        merged = _merge_graph_into_blob_record(
+            {"id": "r", "record_name": "Kept", "mime_type": "text/plain"}, {"_key": "r"},
+        )
+        assert merged["record_name"] == "Kept" and merged["mime_type"] == "text/plain"
+
+    def test_another_records_copy_lends_nothing_the_graph_lacks(self) -> None:
+        # The shared copy was stored by record X; this is record Y, whose graph
+        # node has no link or external id. X's must not show up as Y's.
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        merged = _merge_graph_into_blob_record(
+            {"id": "x", "record_name": "X", "weburl": "https://private/x", "external_record_id": "ext-x",
+             "block_containers": {"blocks": []}},
+            {"_key": "y", "recordName": "Y"},
+        )
+        assert merged["id"] == "y" and merged["record_name"] == "Y"
+        assert "weburl" not in merged and "external_record_id" not in merged
+        assert merged["block_containers"] == {"blocks": []}
+
+    def test_another_records_copy_does_not_hide_this_records_link(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        merged = _merge_graph_into_blob_record(
+            {"id": "x", "weburl": "https://x/1", "hide_weburl": True},
+            {"_key": "y", "webUrl": "https://y/9", "hideWeburl": False},
+        )
+        assert merged["weburl"] == "https://y/9" and merged["hide_weburl"] is False
+
+    def test_a_link_hidden_by_this_records_copy_or_the_graph_stays_hidden(self) -> None:
+        from app.utils.chat_helpers import _merge_graph_into_blob_record
+
+        own = _merge_graph_into_blob_record({"id": "y", "hide_weburl": True}, {"_key": "y", "webUrl": "https://y/9"})
+        graph = _merge_graph_into_blob_record({"id": "x"}, {"_key": "y", "webUrl": "https://y/9", "hideWeburl": True})
+        assert own["hide_weburl"] is True and graph["hide_weburl"] is True

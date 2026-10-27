@@ -5,9 +5,12 @@ Since events.py and processor.py contain the same EventProcessor class,
 these tests provide additional coverage for edge cases and boundary conditions.
 """
 
+import asyncio
 import hashlib
 import json
-from unittest.mock import AsyncMock, MagicMock, patch
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import AbstractContextManager
+from unittest.mock import AsyncMock, MagicMock, create_autospec, patch
 
 import pytest
 
@@ -19,6 +22,7 @@ from app.config.constants.arangodb import (
 )
 from app.events.events import DedupDecision, EventProcessor
 from app.exceptions.indexing_exceptions import ProcessingError
+from app.modules.parsers.pdf.untrusted_pdf import InspectedPdf, UnreadablePdfError
 from app.services.messaging.config import (
     IndexingEvent,
     PipelineEvent,
@@ -38,6 +42,8 @@ def _make_event_processor():
     # MagicMock raises TypeError, which the caller now propagates rather than
     # swallowing.
     processor.indexing_pipeline = AsyncMock()
+    # Dedup checks the twin's stored content before reusing it; default to present.
+    processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
@@ -76,6 +82,15 @@ def _make_event_payload(
     return data
 
 
+def _rereads_as_still_in_flight(twin, doc) -> AsyncMock:
+    """The post-QUEUED re-read of the twin: same content and org, still running.
+
+    Read at call time, after dedup has stored the computed md5 on ``doc``."""
+    return AsyncMock(side_effect=lambda *_a, **_k: {
+        **twin, "md5Checksum": doc.get("md5Checksum"), "orgId": doc.get("orgId"),
+    })
+
+
 async def _drain(async_gen):
     """Collect all items from an async generator."""
     items = []
@@ -87,6 +102,19 @@ async def _drain(async_gen):
 async def _mock_processor_gen(*args, **kwargs):
     yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
     yield PipelineEvent(event=IndexingEvent.INDEXING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+
+
+def _pdf_inspection(
+    needs_ocr: bool = False, page_count: int | None = None, **patch_kwargs: object
+) -> AbstractContextManager[AsyncMock]:
+    """Patch the PDF inspection to read every file as sent, deciding *needs_ocr*."""
+    patch_kwargs.setdefault(
+        "side_effect",
+        lambda content, **_kw: InspectedPdf(
+            content, needs_ocr=needs_ocr, repaired=False, page_count=page_count
+        ),
+    )
+    return patch("app.events.events.inspect_untrusted_pdf", new_callable=AsyncMock, **patch_kwargs)
 
 
 # ===========================================================================
@@ -186,6 +214,24 @@ class TestMarkRecordStatusEdgeCases:
         assert doc["other"] == "data"
 
     @pytest.mark.asyncio
+    async def test_the_in_process_parse_start_marks_parsing_in_progress(self) -> None:
+        """In-process, parse and index are one step: a re-index must not show the old parse as done."""
+        ep, _, _, gp = _make_event_processor()
+        doc = {"_key": "k7", "parsingStatus": ProgressStatus.COMPLETED.value}
+
+        await ep.mark_record_status(doc, ProgressStatus.IN_PROGRESS, parsing_starts=True)
+        assert doc["parsingStatus"] == ProgressStatus.IN_PROGRESS.value
+
+    @pytest.mark.asyncio
+    async def test_other_in_progress_writes_leave_parsing_alone(self) -> None:
+        """The stale-record scan requeues a parse left IN_PROGRESS, so only a real parse start sets it."""
+        ep, _, _, gp = _make_event_processor()
+        doc = {"_key": "k8", "parsingStatus": ProgressStatus.COMPLETED.value}
+
+        await ep.mark_record_status(doc, ProgressStatus.IN_PROGRESS)
+        assert doc["parsingStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
     async def test_error_with_non_empty_status_raises(self):
         ep, _, _, gp = _make_event_processor()
         gp.update_node.side_effect = Exception("fail")
@@ -255,6 +301,23 @@ class TestCheckDuplicateMd5EdgeCases:
         assert result.skip_indexing is False
 
     @pytest.mark.asyncio
+    async def test_a_restored_record_without_its_checksum_is_hashed_again_and_indexed(self) -> None:
+        """A restore clears md5Checksum and keeps virtualRecordId; unchanged content must
+        get its checksum back and be indexed, never matched against itself."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = []
+        doc = {"_key": "restored-1", "virtualRecordId": "vr-old", "recordType": "FILE", "sizeInBytes": 4}
+
+        with patch.object(ep, "update_record_fields", new_callable=AsyncMock, return_value=True) as update:
+            result = await ep._check_duplicate_by_md5(b"same", doc)
+
+        md5 = ep._hash_for_dedup(b"same", "FILE", None)
+        update.assert_awaited_once_with(doc, {"md5Checksum": md5})
+        assert gp.find_duplicate_records.await_args.kwargs["record_key"] == "restored-1"
+        assert gp.find_duplicate_records.await_args.kwargs["md5_checksum"] == md5
+        assert result.skip_indexing is False
+
+    @pytest.mark.asyncio
     async def test_completed_without_virtual_record_id_not_matched(self):
         """A COMPLETED duplicate without virtualRecordId is NOT treated as processed."""
         ep, _, _, gp = _make_event_processor()
@@ -320,6 +383,103 @@ class TestCheckDuplicateMd5EdgeCases:
         gp.copy_document_relationships.assert_awaited_once_with("dup-src", "r-fallback")
 
 
+class TestCheckDuplicateMd5MissingStoredContent:
+    """A twin whose stored content is gone (e.g. deleted with the connector
+    that indexed it first) must not be reused, or every re-index -- forced or
+    not -- skips against it and the record stays unreadable."""
+
+    @staticmethod
+    def _setup(twin_status=ProgressStatus.COMPLETED.value, stored_path=None):
+        ep, _, processor, gp = _make_event_processor()
+        lookup = processor.sink_orchestrator.blob_storage.get_actual_content_path
+        lookup.return_value = stored_path
+        gp.find_duplicate_records.return_value = [{
+            "_key": "twin",
+            "virtualRecordId": "vr-shared",
+            "indexingStatus": twin_status,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "summaryDocumentId": "sum-1",
+        }]
+        doc = {
+            "_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared",
+            "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10,
+        }
+        return ep, gp, lookup, doc
+
+    @pytest.mark.asyncio
+    async def test_a_storage_error_retries_the_event_instead_of_guessing(self) -> None:
+        # A 503 while the twin's folder is being moved says nothing about its
+        # content: rebuilding on it duplicates vectors, and reusing it could
+        # complete this record with no readable content. The event is retried.
+        from app.modules.transformers.blob_storage import StorageLookupUnavailableError
+        from app.services.messaging.error_classifier import (
+            MessageErrorClassifier,
+            MessageErrorType,
+        )
+
+        ep, gp, lookup, doc = self._setup()
+        lookup.side_effect = StorageLookupUnavailableError("storage answered 503")
+
+        with pytest.raises(StorageLookupUnavailableError) as raised:
+            await ep._check_duplicate_by_md5(b"x", doc)
+
+        gp.copy_document_relationships.assert_not_awaited()
+        assert MessageErrorClassifier.classify_by_exception(raised.value) == MessageErrorType.TRANSIENT
+
+    @pytest.mark.asyncio
+    async def test_completed_twin_without_stored_content_is_indexed(self):
+        ep, gp, lookup, doc = self._setup(stored_path=None)
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        assert result.virtual_record_id is None
+        assert doc["virtualRecordId"] == "vr-shared"
+        lookup.assert_awaited_once_with("org-1", "vr-shared")
+        gp.copy_document_relationships.assert_not_called()
+        assert result.rebuild_shared_vrid is True
+
+    @pytest.mark.asyncio
+    async def test_twin_on_another_vrid_is_not_rebuilt_through_this_record(self):
+        ep, _, _, doc = self._setup(stored_path=None)
+        doc["virtualRecordId"] = "vr-own"
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        assert result.rebuild_shared_vrid is False
+
+    @pytest.mark.asyncio
+    async def test_completed_twin_with_stored_content_is_still_reused(self):
+        ep, gp, _, doc = self._setup(stored_path="PipesHub/records/c1/a.pdf")
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        gp.copy_document_relationships.assert_awaited_once_with("twin", "r1")
+
+    @pytest.mark.asyncio
+    async def test_empty_twin_is_reused_without_a_storage_lookup(self):
+        ep, _, lookup, doc = self._setup(twin_status=ProgressStatus.EMPTY.value)
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        lookup.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_no_blob_storage_keeps_reusing_the_twin(self):
+        ep, _, _, doc = self._setup()
+        ep.processor.sink_orchestrator = None
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+
+
 # ===========================================================================
 # _check_duplicate_by_md5 - cross-collection dedup matrix
 #
@@ -345,6 +505,8 @@ def _make_multi_collection_event_processor():
     logger = MagicMock()
     processor = MagicMock()
     processor.indexing_pipeline = AsyncMock()
+    # Dedup checks the twin's stored content before reusing it; default to present.
+    processor.sink_orchestrator.blob_storage.get_actual_content_path = AsyncMock(return_value="stored/path")
     graph_provider = AsyncMock()
     graph_provider.update_node = AsyncMock(return_value=True)
     config_service = MagicMock()
@@ -357,6 +519,58 @@ def _make_multi_collection_event_processor():
         collection_strategy=_PerConnectorNameStrategy(),
     )
     return ep, graph_provider
+
+
+class TestCheckDuplicateMd5UnscannedTwin:
+    """A code file must not inherit a twin indexed before secret redaction:
+    its vectors and blob hold the raw content."""
+
+    @staticmethod
+    def _setup(twin_mark) -> tuple:
+        ep, _, _, gp = _make_event_processor()
+        twin = {
+            "_key": "twin", "virtualRecordId": "vr-shared", "recordType": "CODE_FILE",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }
+        if twin_mark is not None:
+            twin["secretsRedacted"] = twin_mark
+        gp.find_duplicate_records.return_value = [twin]
+        doc = {
+            "_key": "r1", "orgId": "org-1", "virtualRecordId": "vr-shared",
+            "md5Checksum": "abc", "recordType": "CODE_FILE", "sizeInBytes": 10,
+        }
+        return ep, gp, doc
+
+    @pytest.mark.asyncio
+    async def test_unscanned_completed_twin_is_not_reused(self) -> None:
+        ep, gp, doc = self._setup(twin_mark=None)
+
+        result = await ep._check_duplicate_by_md5(b"x", doc, scans_for_secrets=True)
+
+        assert result.skip_indexing is False
+        assert result.rebuild_shared_vrid is True
+        gp.copy_document_relationships.assert_not_called()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("mark", [0, 2])
+    async def test_scanned_twin_is_still_reused_and_lends_its_mark(self, mark) -> None:
+        ep, gp, doc = self._setup(twin_mark=mark)
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc, scans_for_secrets=True)
+
+        assert result.skip_indexing is True
+        assert doc["secretsRedacted"] == mark
+
+    @pytest.mark.asyncio
+    async def test_records_not_scanned_reuse_any_twin(self) -> None:
+        ep, _, doc = self._setup(twin_mark=None)
+
+        with patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
 
 
 class TestCheckDuplicateMd5CrossCollectionMatrix:
@@ -433,6 +647,7 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
             "recordType": "FILE",
             "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(in_progress, doc)
 
         result = await ep._check_duplicate_by_md5(b"x", doc)
 
@@ -466,6 +681,103 @@ class TestCheckDuplicateMd5CrossCollectionMatrix:
 
 
 # ===========================================================================
+# _check_duplicate_by_md5 - entities-collection sync on the finished-
+# duplicate branch (SinkOrchestrator.sync_entities_for_duplicate)
+# ===========================================================================
+
+
+class TestCheckDuplicateMd5EntitySync:
+    """sync_entities_for_duplicate must run only for same-collection,
+    already-processed duplicates -- a different-collection duplicate
+    continues to full indexing and gets entity sync from
+    SinkOrchestrator.index()/enrich() instead."""
+
+    _DUP = {
+        "_key": "dup-1",
+        "connectorName": "GOOGLE_DRIVE",
+        "virtualRecordId": "vr-1",
+        "indexingStatus": ProgressStatus.COMPLETED.value,
+        "extractionStatus": ProgressStatus.COMPLETED.value,
+    }
+
+    @pytest.mark.asyncio
+    async def test_same_collection_finished_duplicate_syncs_entities(self):
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        ep.sink_orchestrator.sync_entities_for_duplicate.assert_awaited_once_with(doc)
+
+    @pytest.mark.asyncio
+    async def test_different_collection_finished_duplicate_skips_entity_sync(self):
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "SLACK",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is False
+        ep.sink_orchestrator.sync_entities_for_duplicate.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_sink_orchestrator_does_not_raise(self):
+        """ep.sink_orchestrator defaults to None; must not AttributeError."""
+        ep, gp = _make_multi_collection_event_processor()
+        assert ep.sink_orchestrator is None
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+
+    @pytest.mark.asyncio
+    async def test_entity_sync_failure_is_non_fatal(self):
+        """A raising sink still returns the normal dedup decision -- entity
+        sync is bookkeeping, not part of the correctness of the decision."""
+        ep, gp = _make_multi_collection_event_processor()
+        ep.sink_orchestrator = AsyncMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(
+            side_effect=RuntimeError("boom")
+        )
+        gp.find_duplicate_records.return_value = [self._DUP]
+        doc = {
+            "_key": "r1",
+            "connectorName": "GOOGLE_DRIVE",
+            "md5Checksum": "abc",
+            "recordType": "FILE",
+            "sizeInBytes": 10,
+        }
+
+        result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result == DedupDecision(virtual_record_id="vr-1", skip_indexing=True)
+
+
+# ===========================================================================
 # on_event - Additional Edge Cases
 # ===========================================================================
 
@@ -487,6 +799,32 @@ class TestOnEventEdgeCases:
             events = await _drain(ep.on_event(event_data))
 
         assert len(events) == 3
+
+    @pytest.mark.asyncio
+    async def test_a_reprocessed_record_loses_its_previous_failure_reason(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)),              patch.object(ep, "update_record_fields", new_callable=AsyncMock) as update:
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
+
+        assert any(c.args[1] == {"reason": None} for c in update.await_args_list)
+
+    @pytest.mark.asyncio
+    async def test_a_failed_reason_clear_fails_the_attempt(self) -> None:
+        from app.exceptions.indexing_exceptions import IndexingError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE", "reason": "parse failed"}
+        gp.update_node = AsyncMock(return_value=False)
+        processor.process_docx_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             pytest.raises(IndexingError, match="reason"):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.DOCX.value)))
 
     @pytest.mark.asyncio
     async def test_virtual_record_id_from_record_when_not_in_payload(self):
@@ -713,7 +1051,7 @@ class TestOnEventEdgeCases:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
             events = await _drain(ep.on_event(event_data))
@@ -722,93 +1060,257 @@ class TestOnEventEdgeCases:
         processor.process_pdf_with_pdf_plumber.assert_called_once()
 
     @pytest.mark.asyncio
-    async def test_pymupdf_failure_falls_back_to_ocr(self):
+    async def test_a_layout_parser_failure_is_not_sent_to_ocr(self) -> None:
+        """A PDF with a text layer is never OCR'd page by page, one model call each."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        async def pymupdf_fails(*args, **kwargs):
-            raise RuntimeError("pymupdf error")
+        async def layout_parser_fails(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            raise ProcessingError("layout parser failed")
             yield  # noqa: unreachable
 
-        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=pymupdf_fails)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=layout_parser_fails)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "true"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-            events = await _drain(ep.on_event(event_data))
+            with pytest.raises(ProcessingError):
+                await _drain(ep.on_event(event_data))
 
-        processor.process_pdf_document_with_ocr.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_fitz_open_exception_defaults_to_layout_parser(self):
-        """If OCR detection fails (e.g. corrupt PDF), routing defaults to layout parser."""
+    async def test_a_pdf_larger_than_docling_accepts_goes_to_the_layout_parser(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
              patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=Exception("corrupted pdf")):
-            event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-            await _drain(ep.on_event(event_data))
+             _pdf_inspection(needs_ocr=False), \
+             patch("app.events.events.within_docling_size_limit", return_value=False):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
 
-        processor.process_pdf_with_docling.assert_called_once()
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
-
-class TestEpubDispatch:
-    """EPUB must be converted to PDF then routed through the identical PDF
-    decision logic used for native PDFs — never through PyMuPDF/fitz."""
-
+    @pytest.mark.parametrize(
+        ("page_count", "env", "parser"),
+        [
+            (1, {}, "docling"),
+            (30, {}, "docling"),
+            (31, {}, "pdf_plumber"),
+            (300, {}, "pdf_plumber"),
+            (None, {}, "docling"),
+            (11, {"PDF_DOCLING_MAX_PAGES": "10"}, "pdf_plumber"),
+            (10, {"PDF_DOCLING_MAX_PAGES": "10"}, "docling"),
+            (1, {"PDF_DOCLING_MAX_PAGES": "0"}, "pdf_plumber"),
+            (31, {"PDF_DOCLING_MAX_PAGES": "abc"}, "pdf_plumber"),
+            (30, {"PDF_DOCLING_MAX_PAGES": "-1"}, "docling"),
+        ],
+        ids=["1", "30", "31", "300", "unknown", "11 of 10", "10 of 10", "limit 0", "bad limit", "negative limit"],
+    )
     @pytest.mark.asyncio
-    async def test_epub_converts_then_routes_to_docling_by_default(self):
+    async def test_a_text_pdf_over_the_page_limit_goes_to_the_layout_parser(
+        self, page_count: int | None, env: dict[str, str], parser: str
+    ) -> None:
+        """More than PDF_DOCLING_MAX_PAGES (30) pages: PdfPlumber; otherwise Docling."""
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false", **env}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
-             patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 return_value=b"pdf bytes",
-             ) as mock_convert:
-            event_data = _make_event_payload(
-                extension=ExtensionTypes.EPUB.value, record_name="book.epub"
-            )
-            events = await _drain(ep.on_event(event_data))
+             _pdf_inspection(needs_ocr=False, page_count=page_count):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
 
-        mock_convert.assert_called_once_with(b"hello", "epub", "pdf")
-        processor.process_pdf_with_docling.assert_called_once()
-        assert processor.process_pdf_with_docling.call_args.kwargs["recordName"] == "book.pdf"
-        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"pdf bytes"
-        assert len(events) == 3
+        used = getattr(processor, f"process_pdf_with_{parser}")
+        other = processor.process_pdf_with_pdf_plumber if parser == "docling" else processor.process_pdf_with_docling
+        used.assert_called_once()
+        other.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_libreoffice_conversion_failure_bubbles_up(self):
-        """A LibreOffice failure (e.g. missing binary, corrupt EPUB) surfaces
-        as an indexing error rather than being silently swallowed."""
+    async def test_a_long_scan_still_goes_to_ocr(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=True, page_count=100):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_document_with_ocr.assert_called_once()
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreachable_docling_hands_the_text_pdf_to_the_layout_parser(self) -> None:
+        from app.services.docling.client import DoclingUnavailableError
+
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+        async def docling_down(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            raise DoclingUnavailableError("Docling could not parse rec-1.pdf: down")
+            yield  # noqa: unreachable
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling_down)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch(
-                 "app.events.events.convert_with_libreoffice",
-                 new_callable=AsyncMock,
-                 side_effect=RuntimeError("LibreOffice is not installed"),
-             ):
-            event_data = _make_event_payload(extension=ExtensionTypes.EPUB.value)
-            with pytest.raises(RuntimeError, match="LibreOffice is not installed"):
+             _pdf_inspection(needs_ocr=False):
+            events = await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        assert len(events) == 3
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_docling_lost_after_it_began_indexing_is_not_parsed_twice(self) -> None:
+        """Once Docling's parse completed, the record is retried rather than parsed again."""
+        from app.services.docling.client import DoclingUnavailableError
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def lost_midway(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.PARSING_COMPLETE, data=PipelineEventData(record_id="rec-1"))
+            raise DoclingUnavailableError("Docling went away")
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=lost_midway)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=False):
+            with pytest.raises(DoclingUnavailableError):
+                await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_a_scan_with_docling_down_still_goes_to_ocr(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=AssertionError("Docling is not asked about a scan"))
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(needs_ocr=True, page_count=5):
+            await _drain(ep.on_event(_make_event_payload(extension=ExtensionTypes.PDF.value)))
+
+        processor.process_pdf_document_with_ocr.assert_called_once()
+        processor.process_pdf_with_pdf_plumber.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_pdf_fails_before_any_parser_reads_it(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(side_effect=UnreadablePdfError("pdfium could not open the PDF either")):
+            event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
+            with pytest.raises(UnreadablePdfError):
                 await _drain(ep.on_event(event_data))
 
         processor.process_pdf_with_docling.assert_not_called()
         processor.process_pdf_document_with_ocr.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_parsers_read_the_bytes_the_inspection_returned(self) -> None:
+        """A rewritten file replaces the damaged one for every parser, the fallback included."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        async def docling_fails(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
+            yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
+
+        processor.process_pdf_with_docling = MagicMock(side_effect=docling_fails)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
+        rewritten = InspectedPdf(b"%PDF-rewritten", needs_ocr=False, repaired=True)
+
+        with patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}), \
+             patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             _pdf_inspection(side_effect=None, return_value=rewritten) as inspect:
+            event_data = _make_event_payload(extension=ExtensionTypes.PDF.value, buffer=b"%PDF-damaged")
+            await _drain(ep.on_event(event_data))
+
+        assert inspect.await_args.args[0] == b"%PDF-damaged"
+        assert processor.process_pdf_with_docling.call_args.kwargs["pdf_binary"] == b"%PDF-rewritten"
+        assert processor.process_pdf_with_pdf_plumber.call_args.kwargs["pdf_binary"] == b"%PDF-rewritten"
+
+
+class TestEpubDispatch:
+    """EPUB is read by the processor's EPUB reader, never converted to PDF."""
+
+    @pytest.mark.parametrize(
+        ("extension", "mime_type"),
+        [(ExtensionTypes.EPUB.value, "unknown"), ("unknown", MimeTypes.EPUB.value)],
+    )
+    @pytest.mark.asyncio
+    async def test_epub_routes_to_the_epub_processor(self, extension: str, mime_type: str) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+        processor.process_epub_document = MagicMock(side_effect=_mock_processor_gen)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch("asyncio.create_subprocess_exec", new_callable=AsyncMock) as spawn:
+            event_data = _make_event_payload(
+                extension=extension, mime_type=mime_type, record_name="book.epub"
+            )
+            events = await _drain(ep.on_event(event_data))
+
+        processor.process_epub_document.assert_called_once()
+        kwargs = processor.process_epub_document.call_args.kwargs
+        assert kwargs["epub_binary"] == b"hello"
+        assert kwargs["recordName"] == "book.epub"
+        processor.process_pdf_with_docling.assert_not_called()
+        processor.process_pdf_document_with_ocr.assert_not_called()
+        spawn.assert_not_called()
+        assert len(events) == 3
+
+    @pytest.mark.asyncio
+    async def test_an_epub_failure_bubbles_up(self) -> None:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+
+        processor.process_epub_document = MagicMock(side_effect=RuntimeError("book could not be read"))
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)):
+            event_data = _make_event_payload(extension=ExtensionTypes.EPUB.value)
+            with pytest.raises(RuntimeError, match="book could not be read"):
+                await _drain(ep.on_event(event_data))
+
+        processor.process_pdf_with_docling.assert_not_called()
 
 
 # ===========================================================================
@@ -1291,6 +1793,37 @@ class TestOnEventUpdateEvent:
         assert len(call_kwargs["virtual_record_id"]) == 36
 
     @pytest.mark.asyncio
+    async def test_shared_vrid_with_missing_content_is_rebuilt_not_isolated(self):
+        """Isolating would repair only this record; the others sharing the
+        VRID would keep reading content that no longer exists."""
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "recordType": "SQL_TABLE",
+            "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=[
+            {"_key": "rec-1"}, {"_key": "rec-2"},
+        ])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+        cleanup = AsyncMock()
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+             return_value=DedupDecision(rebuild_shared_vrid=True)),              patch.object(ep, "_cleanup_abandoned_vrid_storage", cleanup):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.REINDEX_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )
+            await _drain(ep.on_event(event_data))
+
+        call_kwargs = processor.process_sql_structured_data.call_args[1]
+        assert call_kwargs["virtual_record_id"] == "shared-vrid"
+        assert call_kwargs["prev_virtual_record_id"] == "shared-vrid"
+        cleanup.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_reindex_event_uses_same_reconciliation_logic(self):
         """REINDEX_RECORD follows the same reconciliation path as UPDATE_RECORD."""
         ep, _, processor, gp = _make_event_processor()
@@ -1346,115 +1879,29 @@ class TestOnEventUpdateEvent:
 
 
 class TestOnEventDoclingFallback:
-    """Test docling failure falls back to OCR handler."""
+    """A PDF Docling cannot read is read by the layout parser, never by per-page OCR."""
 
     @pytest.mark.asyncio
-    async def test_docling_failure_falls_back_to_ocr(self):
+    async def test_docling_failure_falls_back_to_the_layout_parser(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
 
-        async def docling_fails(*args, **kwargs):
+        async def docling_fails(*_args: object, **_kwargs: object) -> AsyncIterator[PipelineEvent]:
             yield PipelineEvent(event=IndexingEvent.DOCLING_FAILED, data=PipelineEventData(record_id="rec-1"))
 
         processor.process_pdf_with_docling = MagicMock(side_effect=docling_fails)
+        processor.process_pdf_with_pdf_plumber = MagicMock(side_effect=_mock_processor_gen)
         processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=False), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension=ExtensionTypes.PDF.value)
-            events = await _drain(ep.on_event(event_data))
+            await _drain(ep.on_event(event_data))
 
-        processor.process_pdf_document_with_ocr.assert_called_once()
-
-
-# ===========================================================================
-# Coverage: _get_pdf_ocr_detection_worker_count (lines 32-35)
-# ===========================================================================
-
-
-class TestPdfOcrDetectionWorkerCount:
-    """Tests for _get_pdf_ocr_detection_worker_count."""
-
-    def test_valid_env_value(self):
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {"PDF_OCR_DETECTION_WORKERS": "4"}):
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result == 4
-
-    def test_invalid_env_value_returns_1(self):
-        """Invalid integer returns 1 (lines 34-35)."""
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {"PDF_OCR_DETECTION_WORKERS": "not-a-number"}):
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result == 1
-
-    def test_zero_value_returns_1(self):
-        """Zero returns 1 (max(1,...))."""
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {"PDF_OCR_DETECTION_WORKERS": "0"}):
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result == 1
-
-    def test_no_env_uses_cpu_count(self):
-        from app.events.events import _get_pdf_ocr_detection_worker_count
-        with patch.dict("os.environ", {}, clear=False):
-            import os
-            os.environ.pop("PDF_OCR_DETECTION_WORKERS", None)
-            result = _get_pdf_ocr_detection_worker_count()
-        assert result >= 1
-
-
-# ===========================================================================
-# Coverage: _detect_pdf_needs_ocr (lines 52-72)
-# ===========================================================================
-
-
-class TestDetectPdfNeedsOcr:
-    """Tests for _detect_pdf_needs_ocr."""
-
-    def test_empty_pdf_returns_false(self):
-        """PDF with 0 pages returns False (line 57)."""
-        from app.events.events import _detect_pdf_needs_ocr
-
-        mock_pdf = MagicMock()
-        mock_pdf.pages = []
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_pdf
-        mock_cm.__exit__.return_value = None
-        with patch("app.events.events.pdfplumber.open", return_value=mock_cm):
-            assert _detect_pdf_needs_ocr(b"fake pdf") is False
-
-    def test_all_pages_need_ocr(self):
-        """All pages need OCR -> True (lines 62-66)."""
-        from app.events.events import _detect_pdf_needs_ocr
-
-        pages = [MagicMock() for _ in range(4)]
-        mock_pdf = MagicMock()
-        mock_pdf.pages = pages
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_pdf
-        mock_cm.__exit__.return_value = None
-        with patch("app.events.events.pdfplumber.open", return_value=mock_cm), patch(
-            "app.events.events.OCRStrategy.needs_ocr", return_value=True
-        ):
-            assert _detect_pdf_needs_ocr(b"fake pdf") is True
-
-    def test_no_pages_need_ocr_early_exit(self):
-        """Early exit when remaining pages can't reach threshold (lines 68-70)."""
-        from app.events.events import _detect_pdf_needs_ocr
-
-        pages = [MagicMock() for _ in range(4)]
-        mock_pdf = MagicMock()
-        mock_pdf.pages = pages
-        mock_cm = MagicMock()
-        mock_cm.__enter__.return_value = mock_pdf
-        mock_cm.__exit__.return_value = None
-        with patch("app.events.events.pdfplumber.open", return_value=mock_cm), patch(
-            "app.events.events.OCRStrategy.needs_ocr", return_value=False
-        ):
-            assert _detect_pdf_needs_ocr(b"fake pdf") is False
+        processor.process_pdf_with_pdf_plumber.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
 
 # ===========================================================================
@@ -1507,6 +1954,38 @@ class TestOnEventEarlyReturns:
             IndexingEvent.PARSING_COMPLETE,
             IndexingEvent.INDEXING_COMPLETE,
         ]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_lookup_is_not_drained_as_a_deletion(self):
+        """The graph being unreachable must not read as "this record is gone".
+
+        Draining is permanent: the message is acknowledged and the record sits
+        at QUEUED until the stranded sweep republishes it an hour later. During
+        a graph restart every record in flight took that path.
+        """
+        ep, _logger, _, gp = _make_event_processor()
+
+        async def unreachable_graph(*_args, raise_on_error: bool = False, **_kwargs):
+            # What both providers do: swallow and answer None unless asked not to.
+            # A double that raised either way would pass without the fix.
+            if raise_on_error:
+                raise RuntimeError("graph is restarting")
+            return None
+
+        gp.get_document.side_effect = unreachable_graph
+
+        with pytest.raises(RuntimeError):
+            await _drain(ep.on_event(_make_event_payload()))
+
+    @pytest.mark.asyncio
+    async def test_the_record_lookup_asks_for_failures_to_be_raised(self):
+        """`raise_on_error` is what makes the None above mean "deleted"."""
+        ep, _logger, _, gp = _make_event_processor()
+        gp.get_document.return_value = None
+
+        await _drain(ep.on_event(_make_event_payload()))
+
+        assert gp.get_document.await_args.kwargs.get("raise_on_error") is True
 
     @pytest.mark.asyncio
     async def test_no_buffer_proceeds_with_none_content(self):
@@ -1588,12 +2067,12 @@ class TestOnEventDuplicate:
         ep, _, _, gp = _make_event_processor()
 
         # find_duplicate_records returns an in-progress duplicate (no processed one)
-        gp.find_duplicate_records = AsyncMock(return_value=[
-            {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
-        ])
+        twin = {"_key": "dup-1", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records = AsyncMock(return_value=[twin])
         gp.batch_update_nodes = AsyncMock()
 
         doc = {"_key": "rec-1", "md5Checksum": "abc123", "recordType": "FILE", "sizeInBytes": 100}
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
         result = await ep._check_duplicate_by_md5(b"hello world", doc)
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
@@ -1608,21 +2087,21 @@ class TestOnEventOcrPath:
     """Test PDF OCR processing path."""
 
     @pytest.mark.asyncio
-    async def test_ocr_check_exception_defaults_to_false(self):
-        """OCR check failure defaults to no OCR (line 410)."""
+    async def test_a_pdf_that_needs_no_ocr_goes_to_docling(self) -> None:
         ep, _, processor, gp = _make_event_processor()
         gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
         processor.process_pdf_with_docling = MagicMock(side_effect=_mock_processor_gen)
+        processor.process_pdf_document_with_ocr = MagicMock(side_effect=_mock_processor_gen)
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, side_effect=RuntimeError("OCR check failed")), \
+             _pdf_inspection(needs_ocr=False), \
              patch.dict("os.environ", {"ENABLE_PDFPLUMBER_PROCESSOR": "false"}):
             event_data = _make_event_payload(extension="pdf")
-            events = await _drain(ep.on_event(event_data))
+            await _drain(ep.on_event(event_data))
 
-        # Should fall through to docling since OCR check failed (needs_ocr=False)
         processor.process_pdf_with_docling.assert_called_once()
+        processor.process_pdf_document_with_ocr.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_pdf_needs_ocr_uses_ocr_handler(self):
@@ -1633,7 +2112,7 @@ class TestOnEventOcrPath:
 
         with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
              return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
-             patch.object(ep, "_pdf_needs_ocr", new_callable=AsyncMock, return_value=True):
+             _pdf_inspection(needs_ocr=True):
             event_data = _make_event_payload(extension="pdf")
             events = await _drain(ep.on_event(event_data))
 
@@ -2154,7 +2633,11 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
             "indexingStatus": ProgressStatus.COMPLETED.value,
             "extractionStatus": ProgressStatus.COMPLETED.value,
         }]
-        gp.update_node = _fail_every_write_except_md5()
+
+        async def _fail_the_identity_write(record_id, collection, fields):
+            return "virtualRecordId" not in fields
+
+        gp.update_node = AsyncMock(side_effect=_fail_the_identity_write)
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
@@ -2185,6 +2668,55 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
             await ep._check_duplicate_by_md5(b"payload", doc)
 
     @pytest.mark.asyncio
+    async def test_failed_mention_copy_raises_before_the_record_is_completed(self):
+        """A same-collection duplicate is never indexed, so a mention copy lost
+        here would never be retried once the record is COMPLETED."""
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.copy_named_entity_mentions = AsyncMock(side_effect=RuntimeError("graph down"))
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with patch(
+            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+            AsyncMock(return_value=True),
+        ), pytest.raises(IndexingError, match="mentions"):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+        written = [c.args[2] for c in gp.update_node.await_args_list]
+        assert not any(w.get("indexingStatus") == ProgressStatus.COMPLETED.value for w in written)
+
+    @pytest.mark.asyncio
+    async def test_with_the_flag_off_no_mention_copy_can_fail_a_duplicate(self):
+        ep, gp = _make_multi_collection_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1",
+            "connectorName": "GOOGLE_DRIVE",
+            "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        gp.copy_named_entity_mentions = AsyncMock(side_effect=RuntimeError("graph down"))
+        doc = {
+            "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
+            "recordType": "FILE", "sizeInBytes": 10,
+        }
+
+        with patch(
+            "app.services.featureflag.platform_settings.is_named_entity_extraction_enabled",
+            AsyncMock(return_value=False),
+        ):
+            await ep._check_duplicate_by_md5(b"payload", doc)
+        gp.copy_named_entity_mentions.assert_not_awaited()
+
+    @pytest.mark.asyncio
     async def test_failed_queued_write_raises(self):
         """The in-flight branch: QUEUED is the only handle the sweeper has, so
         losing that write is what strands the record for good."""
@@ -2207,17 +2739,681 @@ class TestFailedGraphWritesAreNotReportedAsSuccess:
     async def test_a_successful_in_flight_duplicate_still_skips(self):
         """The happy path is unchanged: raising is reserved for real failures."""
         ep, gp = _make_multi_collection_event_processor()
-        gp.find_duplicate_records.return_value = [{
+        twin = {
             "_key": "dup-1",
             "connectorName": "GOOGLE_DRIVE",
             "indexingStatus": ProgressStatus.IN_PROGRESS.value,
-        }]
+        }
+        gp.find_duplicate_records.return_value = [twin]
         doc = {
             "_key": "r1", "md5Checksum": "abc", "connectorName": "GOOGLE_DRIVE",
             "recordType": "FILE", "sizeInBytes": 10,
         }
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
 
         result = await ep._check_duplicate_by_md5(b"payload", doc)
 
         assert result.skip_indexing is True
         assert doc["indexingStatus"] == ProgressStatus.QUEUED.value
+
+
+# ===========================================================================
+# Duplicate attach: the record's status is written last
+# ===========================================================================
+
+_TWIN = {
+    "_key": "twin",
+    "orgId": "org-1",
+    "md5Checksum": "abc",
+    "recordType": "FILE",
+    "sizeInBytes": 10,
+    "virtualRecordId": "vr-1",
+    "summaryDocumentId": "sum-1",
+    "indexingStatus": ProgressStatus.COMPLETED.value,
+    "extractionStatus": ProgressStatus.COMPLETED.value,
+}
+
+
+def _twin(**overrides):
+    return {**_TWIN, **overrides}
+
+
+def _copy(key="r1", **overrides):
+    return {
+        "_key": key,
+        "orgId": "org-1",
+        "md5Checksum": "abc",
+        "recordType": "FILE",
+        "sizeInBytes": 10,
+        "indexingStatus": ProgressStatus.QUEUED.value,
+        "virtualRecordId": None,
+        "summaryDocumentId": None,
+        **overrides,
+    }
+
+
+def _step(key, fields):
+    """Name one graph write by what it does to the record."""
+    if "md5Checksum" in fields:
+        return None
+    if fields.get("indexingStatus") == ProgressStatus.IN_PROGRESS.value:
+        return ("claim", key)
+    if "indexingStatus" in fields:
+        return ("status", key)
+    if "virtualRecordId" in fields:
+        return ("identity", key)
+    return None
+
+
+def _record_attach(ep, gp, finds):
+    """Wire the graph so every attach step is recorded, in order, with its fields.
+
+    ``finds`` is what each duplicate lookup returns, in call order.
+    """
+    steps, fields_of = [], {}
+    answers = list(finds)
+
+    async def _find(**kwargs):
+        steps.append(("find",))
+        return answers.pop(0)
+
+    async def _edges(src, dst):
+        steps.append(("edges", f"{src}->{dst}"))
+        return True
+
+    async def _update(key, collection, fields):
+        step = _step(key, fields)
+        if step:
+            steps.append(step)
+            fields_of.setdefault(step, fields)
+        return True
+
+    async def _sync(vrid):
+        steps.append(("sync", vrid))
+
+    gp.find_duplicate_records = AsyncMock(side_effect=_find)
+    gp.copy_document_relationships = AsyncMock(side_effect=_edges)
+    gp.update_node = AsyncMock(side_effect=_update)
+    gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+    return steps, fields_of, patch.object(ep, "sync_vector_membership", side_effect=_sync)
+
+
+class TestProcessedTwinAttachOrdering:
+    """The same-collection attach writes the record's status last.
+
+    The record handler acknowledges a redelivered newRecord for a COMPLETED record.
+    Writing COMPLETED first turned any failure in the edge copy or the
+    membership sync into a permanent one: the record claimed to be indexed
+    while its connectorId was missing from the VRID's points.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_record_is_claimed_first_and_completed_last(self):
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, sync = _record_attach(ep, gp, [[_twin()]])
+        doc = _copy()
+
+        with sync, patch("app.events.events.get_epoch_timestamp_in_ms", return_value=100):
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert steps == [
+            ("find",),
+            ("claim", "r1"),
+            ("edges", "twin->r1"),
+            ("identity", "r1"),
+            ("sync", "vr-1"),
+            ("status", "r1"),
+        ]
+        assert fields_of[("identity", "r1")] == {
+            "virtualRecordId": "vr-1", "summaryDocumentId": "sum-1",
+        }
+        assert fields_of[("status", "r1")] == {
+            "isDirty": False,
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "hasIndexedCopy": True,
+            "processingStartedAt": None,
+            "lastIndexTimestamp": 100,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+            "lastExtractionTimestamp": 100,
+        }
+
+    @pytest.mark.asyncio
+    async def test_a_failed_sync_leaves_status_unwritten_and_restores_identity(self):
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, _ = _record_attach(ep, gp, [[_twin()]])
+        doc = _copy(virtualRecordId="vr-own", summaryDocumentId="sum-own")
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ) as sync:
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert ("status", "r1") not in steps
+        assert gp.update_node.await_args.args == (
+            "r1", "records", {"virtualRecordId": "vr-own", "summaryDocumentId": "sum-own"},
+        )
+        # A sync that raised may already have written some points, so the
+        # VRID is recomputed once the identity is back.
+        assert [c.args for c in sync.await_args_list] == [("vr-1",), ("vr-1",)]
+
+    @pytest.mark.asyncio
+    async def test_an_identity_write_whose_answer_is_lost_is_restored(self):
+        """The write may have landed. Left alone, the record would keep the
+        twin's VRID, and a later reindex of it would overwrite the twin's vectors."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+        writes = []
+
+        async def _update(key, collection, fields):
+            writes.append(fields)
+            if fields.get("virtualRecordId") == "vr-1":
+                raise RuntimeError("connection reset")
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with pytest.raises(RuntimeError, match="connection reset"):
+                await ep._check_duplicate_by_md5(b"x", _copy(virtualRecordId="vr-own"))
+
+        assert writes[-1] == {"virtualRecordId": "vr-own", "summaryDocumentId": None}
+        # The sync never started, so no point can carry this record.
+        sync.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_failed_resync_is_reported_apart_from_the_restored_identity(self):
+        """With the vector store down the identity is still put back; the log
+        must not say it was not."""
+        ep, logger, _, gp = _make_event_processor()
+        steps, _, _ = _record_attach(ep, gp, [[_twin()]])
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+        assert logger.error.call_count == 1
+        assert "Could not re-sync VRID" in logger.error.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_a_failed_status_write_restores_identity_and_membership(self):
+        """By then the record's connectorId is on the VRID's points."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.IN_PROGRESS.value})
+
+        async def _update(key, collection, fields):
+            return fields.get("indexingStatus") != ProgressStatus.COMPLETED.value
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock) as sync:
+            with pytest.raises(IndexingError, match="duplicate record fields"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+        assert sync.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_status_write_that_landed_is_not_undone(self):
+        """Only its answer was lost. Taking the identity away would leave a
+        COMPLETED record with no VRID, which no redelivery ever revisits."""
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(return_value={"indexingStatus": ProgressStatus.COMPLETED.value})
+
+        async def _update(key, collection, fields):
+            if fields.get("indexingStatus") == ProgressStatus.COMPLETED.value:
+                raise RuntimeError("connection reset")
+            return True
+
+        gp.update_node = AsyncMock(side_effect=_update)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            with pytest.raises(RuntimeError, match="connection reset"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert gp.update_node.await_args.args[2]["indexingStatus"] == ProgressStatus.COMPLETED.value
+
+    @pytest.mark.asyncio
+    async def test_cancellation_mid_attach_restores_identity(self):
+        import asyncio
+
+        ep, _, _, gp = _make_event_processor()
+        steps, _, _ = _record_attach(ep, gp, [[_twin()]])
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=asyncio.CancelledError(),
+        ):
+            with pytest.raises(asyncio.CancelledError):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert steps[-1] == ("identity", "r1")
+        assert gp.update_node.await_args.args[2] == {"virtualRecordId": None, "summaryDocumentId": None}
+
+    @pytest.mark.asyncio
+    async def test_a_failed_restore_is_reported_and_keeps_the_original_error(self):
+        ep, logger, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        gp.get_document = AsyncMock(side_effect=RuntimeError("graph down"))
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            side_effect=IndexingError("qdrant down"),
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert "Could not restore" in logger.error.call_args.args[0]
+
+    @pytest.mark.asyncio
+    async def test_empty_twin_without_vrid_is_attached_without_a_sync(self):
+        ep, _, _, gp = _make_event_processor()
+        empty = _twin(virtualRecordId=None, indexingStatus=ProgressStatus.EMPTY.value,
+                      extractionStatus=None)
+        steps, fields_of, sync = _record_attach(ep, gp, [[empty]])
+
+        with sync:
+            result = await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert result.skip_indexing is True
+        assert [s[0] for s in steps] == ["find", "claim", "edges", "identity", "status"]
+        assert fields_of[("status", "r1")]["indexingStatus"] == ProgressStatus.EMPTY.value
+        assert fields_of[("status", "r1")]["extractionStatus"] == ProgressStatus.NOT_STARTED.value
+
+    @pytest.mark.asyncio
+    async def test_entities_are_synced_once_the_record_is_attached(self):
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [_twin()]
+        seen = {}
+
+        async def _sync_entities(doc):
+            seen["status"] = doc.get("indexingStatus")
+
+        ep.sink_orchestrator = MagicMock()
+        ep.sink_orchestrator.sync_entities_for_duplicate = AsyncMock(side_effect=_sync_entities)
+
+        with patch.object(ep, "sync_vector_membership", new_callable=AsyncMock):
+            await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert seen == {"status": ProgressStatus.COMPLETED.value}
+
+    @pytest.mark.asyncio
+    async def test_a_redelivery_after_a_failed_sync_attaches(self):
+        """The failed attempt left nothing COMPLETED behind, so the retry is
+        not acknowledged as already done and runs the whole attach again."""
+        ep, _, _, gp = _make_event_processor()
+        steps, fields_of, _ = _record_attach(ep, gp, [[_twin()], [_twin()]])
+        doc = _copy()
+
+        with patch.object(
+            ep, "sync_vector_membership", new_callable=AsyncMock,
+            # Fails, the restore's re-sync, then the retry's.
+            side_effect=[IndexingError("qdrant down"), None, None],
+        ):
+            with pytest.raises(IndexingError, match="qdrant down"):
+                await ep._check_duplicate_by_md5(b"x", doc)
+            assert doc["indexingStatus"] != ProgressStatus.COMPLETED.value
+            result = await ep._check_duplicate_by_md5(b"x", doc)
+
+        assert result.skip_indexing is True
+        assert steps[-1] == ("status", "r1")
+
+    @pytest.mark.asyncio
+    async def test_a_twin_that_finished_while_this_record_was_parked_is_attached_the_same_way(self):
+        ep, _, _, gp = _make_event_processor()
+        enriching = _twin(
+            extractionStatus=ProgressStatus.IN_PROGRESS.value,
+            processingStartedAt=10**15,
+        )
+        steps, _, sync = _record_attach(ep, gp, [[enriching]])
+        # The re-read twin must still carry this content's checksum.
+        gp.get_document = AsyncMock(
+            return_value=_twin(md5Checksum=ep._hash_for_dedup(b"x", "FILE", None))
+        )
+
+        with sync:
+            result = await ep._check_duplicate_by_md5(b"x", _copy())
+
+        assert result.skip_indexing is True
+        assert steps == [
+            ("find",),
+            ("status", "r1"),  # parked QUEUED
+            ("claim", "r1"),
+            ("edges", "twin->r1"),
+            ("identity", "r1"),
+            ("sync", "vr-1"),
+            ("status", "r1"),
+        ]
+
+# ===========================================================================
+# Code-graph projection on the duplicate path
+# ===========================================================================
+
+
+def _finished_duplicate(calls: list | None = None) -> Callable[..., Awaitable[DedupDecision]]:
+    """Stand-in for a same-collection finished duplicate: runs the hook where
+    the real helper does, just before the duplicate's status is copied."""
+
+    async def _check(
+        content: object, doc: dict,
+        before_reusing_status: Callable[[], Awaitable[None]] | None = None,
+        **_: object,
+    ) -> DedupDecision:
+        if before_reusing_status is not None:
+            await before_reusing_status()
+        if calls is not None:
+            calls.append("status copied")
+        return DedupDecision(virtual_record_id=None, skip_indexing=True)
+
+    return _check
+
+
+class TestDuplicateCodeFileProjection:
+    """A deduped code file must still get its own block nodes.
+
+    The blob and the vectors are shared through the duplicate's
+    virtualRecordId, but block nodes are keyed by record -- so without this the
+    file is searchable and yet completely absent from the code graph.
+    """
+
+    @staticmethod
+    def _setup(record_type: str = "CODE_FILE") -> tuple:
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1",
+            "orgId": "org-1",
+            "recordType": record_type,
+            "recordGroupId": "repo-1",
+            "connectorId": "conn-1",
+            "virtualRecordId": "vr-original",
+        }
+        from app.events.processor import Processor
+
+        # Autospec'd: a caller passing a kwarg the real processor does not
+        # accept fails here instead of at runtime.
+        processor.project_code_blocks_to_graph = create_autospec(
+            Processor, instance=True
+        ).project_code_blocks_to_graph
+        return ep, processor
+
+    @pytest.mark.asyncio
+    async def test_duplicate_code_file_projects_under_the_new_record(self) -> None:
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
+            event_data = _make_event_payload(
+                extension="py", mime_type="text/plain", record_name="client.py",
+                buffer=b"def helper():\n    return 1\n",
+            )
+            event_data["payload"]["filePath"] = "src/client.py"
+            await _drain(ep.on_event(event_data))
+
+        processor.project_code_blocks_to_graph.assert_awaited_once()
+        kwargs = processor.project_code_blocks_to_graph.await_args.kwargs
+        assert kwargs["record_id"] == "rec-1"
+        assert kwargs["org_id"] == "org-1"
+        assert kwargs["record_group_id"] == "repo-1"
+        assert kwargs["connector_id"] == "conn-1"
+        assert kwargs["file_path"] == "src/client.py"
+        assert kwargs["content"] == b"def helper():\n    return 1\n"
+
+    @pytest.mark.asyncio
+    async def test_duplicate_code_file_still_completes(self) -> None:
+        """Projection is additive: the two terminal events are unchanged."""
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
+            event_data = _make_event_payload(extension="py", mime_type="text/plain")
+            events = await _drain(ep.on_event(event_data))
+
+        assert [e.event for e in events] == [
+            IndexingEvent.PARSING_COMPLETE,
+            IndexingEvent.INDEXING_COMPLETE,
+        ]
+
+    @pytest.mark.asyncio
+    async def test_duplicate_non_code_file_is_not_projected(self) -> None:
+        ep, processor = self._setup(record_type="FILE")
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
+            event_data = _make_event_payload(extension=ExtensionTypes.DOCX.value)
+            await _drain(ep.on_event(event_data))
+
+        processor.project_code_blocks_to_graph.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_code_detected_from_record_name_when_extension_unknown(self) -> None:
+        """Connectors walking a git tree often send text/plain and no extension."""
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
+            event_data = _make_event_payload(
+                extension="unknown", mime_type="text/plain", record_name="main.ts",
+            )
+            await _drain(ep.on_event(event_data))
+
+        processor.project_code_blocks_to_graph.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_str_buffer_is_encoded_before_projection(self) -> None:
+        """`decode_source` indexes by byte offset and rejects a str."""
+        ep, processor = self._setup()
+
+        with patch.object(ep, "_check_duplicate_by_md5", side_effect=_finished_duplicate()):
+            event_data = _make_event_payload(
+                extension="py", mime_type="text/plain", record_name="client.py",
+                buffer="def helper():\n    return 1\n",
+            )
+            await _drain(ep.on_event(event_data))
+
+        content = processor.project_code_blocks_to_graph.await_args.kwargs["content"]
+        assert content == b"def helper():\n    return 1\n"
+
+    @pytest.mark.asyncio
+    async def test_projection_lands_before_the_status_is_copied(self) -> None:
+        """The copied COMPLETED status is what tells the edge builder the repo
+        has drained, so it must not precede this file's blocks."""
+        ep, processor = self._setup()
+        calls: list[str] = []
+        async def _project(**_: object) -> None:
+            calls.append("projected")
+
+        processor.project_code_blocks_to_graph.side_effect = _project
+
+        with patch.object(ep, "_check_duplicate_by_md5",
+                          side_effect=_finished_duplicate(calls)):
+            await _drain(ep.on_event(_make_event_payload(extension="py", mime_type="text/plain")))
+
+        assert calls == ["projected", "status copied"]
+        assert processor.project_code_blocks_to_graph.await_args.kwargs["propagate_failure"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_projection_stops_the_record(self) -> None:
+        ep, processor = self._setup()
+        calls: list[str] = []
+        processor.project_code_blocks_to_graph.side_effect = RuntimeError("graph down")
+
+        with patch.object(ep, "_check_duplicate_by_md5",
+                          side_effect=_finished_duplicate(calls)), \
+             pytest.raises(RuntimeError, match="graph down"):
+            await _drain(ep.on_event(_make_event_payload(extension="py", mime_type="text/plain")))
+
+        assert calls == [], "the duplicate's status must not be copied"
+
+
+
+class TestDedupHookBeforeReusedStatus:
+    """`before_reusing_status` runs only where a finished duplicate's status is
+    copied, and before that write."""
+
+    @staticmethod
+    def _doc() -> dict:
+        return {"_key": "r1", "md5Checksum": "abc", "recordType": "FILE", "sizeInBytes": 10}
+
+    @pytest.mark.asyncio
+    async def test_runs_before_the_status_write(self) -> None:
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1", "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+            "extractionStatus": ProgressStatus.COMPLETED.value,
+        }]
+        calls: list[str] = []
+        real_update = ep.update_record_fields
+
+        async def _update(doc: dict, fields: dict) -> bool:
+            if "indexingStatus" in fields:
+                calls.append("status")
+            return await real_update(doc, fields)
+
+        async def _hook() -> None:
+            calls.append("hook")
+
+        with patch.object(ep, "update_record_fields", side_effect=_update):
+            result = await ep._check_duplicate_by_md5(b"x", self._doc(), before_reusing_status=_hook)
+
+        assert result.skip_indexing is True
+        # The attach writes IN_PROGRESS and then the twin's status; both after the hook.
+        assert calls[0] == "hook"
+        assert calls.count("status") >= 1
+
+    @pytest.mark.asyncio
+    async def test_a_raising_hook_leaves_the_status_alone(self) -> None:
+        ep, _, _, gp = _make_event_processor()
+        gp.find_duplicate_records.return_value = [{
+            "_key": "dup-1", "virtualRecordId": "vr-1",
+            "indexingStatus": ProgressStatus.COMPLETED.value,
+        }]
+
+        async def _hook() -> None:
+            raise RuntimeError("graph down")
+
+        doc = self._doc()
+        with pytest.raises(RuntimeError, match="graph down"):
+            await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=_hook)
+        assert doc.get("indexingStatus") is None
+        gp.copy_document_relationships.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_runs_before_an_in_flight_duplicate_is_queued(self) -> None:
+        """The twin's completion promotes a QUEUED copy straight to COMPLETED
+        without processing it again, so its blocks must exist first (R-5)."""
+        ep, _, _, gp = _make_event_processor()
+        twin = {"_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records.return_value = [twin]
+        doc = self._doc()
+        gp.get_document = _rereads_as_still_in_flight(twin, doc)
+        calls: list[str] = []
+        real_update = ep.update_record_fields
+
+        async def _update(doc: dict, fields: dict) -> bool:
+            calls.append(fields.get("indexingStatus", "other"))
+            return await real_update(doc, fields)
+
+        async def _hook() -> None:
+            calls.append("hook")
+
+        with patch.object(ep, "update_record_fields", side_effect=_update):
+            result = await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=_hook)
+
+        assert result.skip_indexing is True
+        assert calls.index("hook") < calls.index(ProgressStatus.QUEUED.value)
+
+    @pytest.mark.asyncio
+    async def test_runs_once_when_the_twin_finishes_while_queueing(self) -> None:
+        ep, _, _, gp = _make_event_processor()
+        twin = {"_key": "dup-ip", "indexingStatus": ProgressStatus.IN_PROGRESS.value}
+        gp.find_duplicate_records.return_value = [twin]
+        doc = self._doc()
+        finished = {**twin, "virtualRecordId": "vr-1",
+                    "indexingStatus": ProgressStatus.COMPLETED.value,
+                    "extractionStatus": ProgressStatus.COMPLETED.value}
+        gp.get_document = _rereads_as_still_in_flight(finished, doc)
+        hook = AsyncMock()
+
+        result = await ep._check_duplicate_by_md5(b"x", doc, before_reusing_status=hook)
+
+        assert result.skip_indexing is True
+        hook.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_a_code_file_emptied_to_zero_bytes_loses_its_old_blocks() -> None:
+    """B3: a zero-byte file is marked EMPTY before parsing, so its last version's
+    blocks, and their calls and imports, stayed in the code graph."""
+    ep, _, processor, gp = _make_event_processor()
+    gp.get_document.return_value = {"_key": "rec-1", "recordType": "FILE"}
+    processor._drop_code_blocks = AsyncMock()
+    with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                      return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+         patch.object(ep, "mark_record_status", new_callable=AsyncMock) as mark:
+        await _drain(ep.on_event(_make_event_payload(
+            mime_type="text/x-python", extension="py", buffer=b"",
+            event_type=EventTypes.UPDATE_RECORD.value, record_name="m.py")))
+
+    processor._drop_code_blocks.assert_awaited_once_with("rec-1")
+    assert mark.await_args.args[1] == ProgressStatus.EMPTY
+
+
+class TestAbandonedVridCleanupRunsInBackground:
+    """L23: the abandoned-vrid storage cleanup waits to confirm no record still
+    uses the vrid (and backs off on errors); it must not hold the indexing slot."""
+
+    @pytest.mark.asyncio
+    async def test_indexing_continues_while_the_cleanup_is_still_waiting(self) -> None:
+        from app.events import events as events_mod
+
+        ep, _, processor, gp = _make_event_processor()
+        gp.get_document.return_value = {
+            "_key": "rec-1", "recordType": "SQL_TABLE", "virtualRecordId": "shared-vrid",
+        }
+        gp.get_records_by_virtual_record_id = AsyncMock(return_value=["rec-1", "rec-2"])
+        processor.process_sql_structured_data = MagicMock(side_effect=_mock_processor_gen)
+        release = asyncio.Event()
+        cleaned = []
+
+        async def slow_cleanup(org_id, vrid) -> None:
+            await release.wait()
+            cleaned.append(vrid)
+
+        with patch.object(ep, "_check_duplicate_by_md5", new_callable=AsyncMock,
+                          return_value=DedupDecision(virtual_record_id=None, skip_indexing=False)), \
+             patch.object(ep, "_rewrite_or_delete_vrid_vectors", new_callable=AsyncMock), \
+             patch.object(ep, "_cleanup_abandoned_vrid_storage", side_effect=slow_cleanup):
+            event_data = _make_event_payload(
+                mime_type=MimeTypes.SQL_TABLE.value,
+                extension=ExtensionTypes.SQL_TABLE.value,
+                event_type=EventTypes.UPDATE_RECORD.value,
+                virtual_record_id="shared-vrid",
+            )
+            await asyncio.wait_for(_drain(ep.on_event(event_data)), timeout=5)
+
+            assert cleaned == []  # indexing finished; the cleanup is still waiting
+            pending = list(events_mod._ABANDONED_VRID_CLEANUPS)
+            assert len(pending) == 1
+            release.set()
+            await asyncio.gather(*pending)
+
+        assert cleaned == ["shared-vrid"]
+        assert not events_mod._ABANDONED_VRID_CLEANUPS
+
+    @pytest.mark.asyncio
+    async def test_a_failing_cleanup_does_not_surface_from_the_task(self) -> None:
+        ep, _, processor, _ = _make_event_processor()
+        processor.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid = AsyncMock(
+            side_effect=RuntimeError("storage down")
+        )
+        with patch("app.events.events.asyncio.sleep", new_callable=AsyncMock):
+            task = ep._spawn_abandoned_vrid_cleanup("org-1", "v-old")
+            await task
+        assert task.exception() is None
+        assert processor.sink_orchestrator.blob_storage.delete_storage_docs_for_vrid.await_count == 3

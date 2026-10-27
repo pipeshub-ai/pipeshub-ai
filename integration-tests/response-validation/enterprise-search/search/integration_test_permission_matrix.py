@@ -46,6 +46,7 @@ for _p in (_ROOT, _RV_HELPER):
         sys.path.insert(0, str(_p))
 
 from helper import kb_sharing  # noqa: E402
+from helper.stored_names import stored_extension, stored_name
 from helper.clients.kb_client import KBClient  # noqa: E402
 from helper.pipeshub_client import PipeshubClient  # noqa: E402
 from helper.realistic_files import (  # noqa: E402
@@ -101,23 +102,6 @@ def _plain_file(slug: str, token: str) -> RealisticFile:
 PROBE = _plain_file("probe", "tallowmere1177")
 # Deleted by the deletion test, so kept apart from everything else.
 DOOMED = _plain_file("doomed", "cinderwolk5530")
-
-
-def stored_name(file_name: str) -> str:
-    """The name PipesHub stores: the file name without its final extension.
-
-    The extension is kept in its own field so the UI can show a type icon, so a
-    record listed as "board-pack" for "board-pack.pdf" is correct, not a bug.
-    Mirrors getFilenameWithoutExtension in libs/utils/file-extension.util.ts.
-    """
-    dot = file_name.rfind(".")
-    return file_name if dot <= 0 or dot == len(file_name) - 1 else file_name[:dot]
-
-
-def stored_extension(file_name: str) -> str | None:
-    """The extension PipesHub stores: lower-cased, no dot, None when there is none."""
-    dot = file_name.rfind(".")
-    return None if dot <= 0 or dot == len(file_name) - 1 else file_name[dot + 1:].lower()
 
 
 @dataclass

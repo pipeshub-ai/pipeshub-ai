@@ -1,0 +1,5 @@
+requests>=2.31
+PyYAML>=6.0
+# Only the object-store load sources need boto3; everything else in the harness
+# is stdlib. Kept here rather than made optional so a fresh box is one install.
+boto3>=1.34

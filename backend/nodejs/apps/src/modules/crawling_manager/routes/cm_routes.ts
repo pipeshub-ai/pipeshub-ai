@@ -17,9 +17,12 @@ import { AuthMiddleware } from '../../../config';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { requireScopes } from '../../../libs/middlewares/require-scopes.middleware';
 import { OAuthScopeNames } from '../../../libs/enums/oauth-scopes.enum';
+import { guardPathParams } from '../../../libs/middlewares/safe-path-params.middleware';
+import { userAdminCheck } from '../../user_management/middlewares/userAdminCheck';
 
 export function createCrawlingManagerRouter(container: Container): Router {
   const router = Router();
+  guardPathParams(router, 'connector', 'connectorId');
   const crawlingService = container.get<CrawlingSchedulerService>(
     CrawlingSchedulerService,
   );
@@ -44,18 +47,24 @@ export function createCrawlingManagerRouter(container: Container): Router {
   );
 
   // GET /api/v1/crawlingManager/schedule/all - Get all job statuses for organization
+  // Admin only: it lists other members' connectors, which a member cannot
+  // read one at a time either.
   router.get(
     '/schedule/all',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_READ),
+    userAdminCheck,
     getAllCrawlingJobStatus(crawlingService),
   );
 
   // DELETE /api/v1/crawlingManager/schedule/all - Remove all jobs for organization
+  // Admin only: it reaches org-wide and other members' connectors, which a
+  // member cannot remove one at a time either.
   router.delete(
     '/schedule/all',
     authMiddleware.authenticate,
     requireScopes(OAuthScopeNames.CRAWL_DELETE),
+    userAdminCheck,
     removeAllCrawlingJob(crawlingService),
   );
 

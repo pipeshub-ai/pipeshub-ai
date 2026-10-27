@@ -9,11 +9,15 @@ import uvicorn
 from fastapi import Depends, FastAPI, HTTPException, Request, status
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 import app.utils.runtime_threads  # noqa: E402 - must precede all ML library imports
+from app.api.middlewares.admin_gate import require_admin_caller
 from app.api.middlewares.request_context import RequestContextMiddleware
+from app.api.routes.chatbot import warm_up_entity_vector_store
+from app.api.routes.records import router as records_router
+from app.core.envelope import configure_from_config as configure_envelope
+from app.core.org_context import spawn_detached
 from app.edition_config import (
     agent_router,
     agent_sharing_router,
@@ -22,15 +26,26 @@ from app.edition_config import (
     ensure_org_context,
     search_router,
 )
+from app.services.model_identity.principal import service_principal
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
+from app.utils.log_redaction import log_safe_validation_errors
+from app.utils.logger import install_log_redaction
 from app.utils.request_context import set_service_suffix
 
 set_service_suffix("-qs")
 from app.api.routes.ai_models_registry import router as ai_models_registry_router
+from app.api.routes.code_graph import router as code_graph_router  # noqa: E402 - after set_service_suffix(), like the imports around it
 from app.api.routes.health import router as health_router
+from app.api.routes.openai_models import router as openai_models_router
 from app.api.routes.skills import router as skills_router
 from app.api.routes.speech import router as speech_router
 from app.api.routes.toolsets import router as toolsets_router
 from app.edition_containers import QueryAppContainer
+from app.edition_services import (  # noqa: E402 - like the imports around it, after set_service_suffix()
+    configure_app,
+    register_extra_toolsets,
+)
 from app.health.health import Health
 from app.services.messaging.config import get_message_broker_type
 from app.services.messaging.kafka.utils.utils import KafkaUtils
@@ -38,7 +53,9 @@ from app.services.messaging.messaging_factory import MessagingFactory
 from app.services.messaging.utils import MessagingUtils
 from app.telemetry.setup import setup_telemetry
 from app.utils.llm_api_mode_store import get_llm_api_mode_store
+from app.utils.process_hardening import mark_process_non_dumpable
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.url_redaction import redact_sensitive_query_params
 from app.utils.validation_messages import friendly_validation_errors
 from app.utils.worker_scaling import set_process_worker_count
 
@@ -154,6 +171,8 @@ async def stop_kafka_consumers(container: QueryAppContainer) -> bool|None:
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Lifespan context manager for FastAPI"""
+    mark_process_non_dumpable()
+    install_log_redaction()
 
     # Before anything builds a pool or semaphore off a per-process budget.
     set_process_worker_count(configured_worker_count())
@@ -165,6 +184,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     logger = app.container.logger()
     logger.debug("🚀 Starting retrieval application")
+
+    await configure_envelope(app_container.config_service())
+
+    from app.agents.actions.storage_search.storage_search import (
+        sweep_orphan_views_at_startup,
+    )
+
+    await sweep_orphan_views_at_startup(app_container.config_service())
 
     try:
         await telemetry.bind(app_container.config_service(), logger).start()
@@ -218,14 +245,37 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         async def _warmup_embedding_model() -> None:
             try:
                 logger.info("🔥 Warming up embedding model in background")
-                await retrieval_service.get_embedding_model_instance()
+                async with call_scope(
+                    service_principal("warmup"),
+                    Workload.SYSTEM,
+                    config_service=container.config_service(),
+                    container=container,
+                ):
+                    await retrieval_service.get_embedding_model_instance()
                 logger.info("✅ Embedding model warmup complete")
             except Exception as warmup_error:
                 logger.error(
                     f"❌ Embedding model warmup failed (will retry on first use): {warmup_error}"
                 )
 
-        app.state.embedding_warmup_task = asyncio.create_task(_warmup_embedding_model())
+        app.state.embedding_warmup_task = spawn_detached(_warmup_embedding_model())
+
+        # Builtin skill packs are seeded here, once per org per pack version,
+        # instead of being checked on every agent request.
+        try:
+            from app.agents.agent_loop.skills_wiring import skills_enabled
+            from app.services.featureflag.platform_settings import is_skills_enabled
+
+            if skills_enabled() and await is_skills_enabled(container.config_service()):
+                from app.agents.agent_loop.skills.manager_factory import (
+                    reconcile_builtin_skills_for_orgs,
+                )
+
+                app.state.skills_seed_task = asyncio.create_task(
+                    reconcile_builtin_skills_for_orgs(graph_provider, orgs)
+                )
+        except Exception as e:
+            logger.warning(f"Builtin skill seeding not scheduled at startup (requests will retry): {e}")
 
         # For OpenSearch: pre-load the k-NN HNSW graphs into the OS page cache
         # so that the first search after a restart or force-merge is not blocked
@@ -253,7 +303,25 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                     f"k-NN index warmup failed (non-fatal, search will still work): {warmup_error}"
                 )
 
-        app.state.knn_warmup_task = asyncio.create_task(_warmup_knn_index())
+        app.state.knn_warmup_task = spawn_detached(_warmup_knn_index())
+
+        app.state.entity_store_warmup_task = spawn_detached(
+            warm_up_entity_vector_store(app_container, logger)
+        )
+
+        # Collections created before keyword scoring was fixed (Qdrant IDF,
+        # OpenSearch stemming) are updated in place. A deployment that only
+        # serves search never reaches the indexing write path that would
+        # otherwise do it, so it has to happen here too.
+        async def _reconcile_lexical_scoring() -> None:
+            try:
+                changed = await retrieval_service.collection_registry.reconcile_lexical_scoring()
+                if changed:
+                    logger.info(f"Updated keyword scoring on collection(s) {changed}")
+            except Exception as reconcile_error:
+                logger.warning(f"Keyword-scoring reconcile failed (non-fatal): {reconcile_error}")
+
+        app.state.lexical_reconcile_task = spawn_detached(_reconcile_lexical_scoring())
 
     # Prepare the coding sandbox backend before a user needs it. On Docker
     # that means pulling the sandbox image and creating the egress network —
@@ -264,12 +332,12 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # so it can be read back without re-probing the daemon on every health
     # check.
     async def _warmup_coding_sandbox() -> None:
+        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
         from app.agent_loop_lib.sandbox.coding.registry import build_default_registry
         from app.agent_loop_lib.sandbox.coding.settings import (
             EnvSandboxSettingsLoader,
             SharedSandboxConfig,
         )
-        from app.agent_loop_lib.sandbox.coding.base import SandboxContext
 
         try:
             settings = await EnvSandboxSettingsLoader().load(SandboxContext())
@@ -295,7 +363,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             logger.info("✅ Coding sandbox warmup complete (%s)", settings.backend)
         except Exception as warmup_error:
             app.state.sandbox_health = {
-                "backend": os.getenv("SANDBOX_MODE", "local").lower(),
+                "backend": (os.getenv("SANDBOX_MODE") or "").strip().lower() or "unset",
                 "available": False,
                 "reason": f"{type(warmup_error).__name__}: {warmup_error}",
             }
@@ -304,7 +372,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
                 warmup_error,
             )
 
-    app.state.sandbox_warmup_task = asyncio.create_task(_warmup_coding_sandbox())
+    app.state.sandbox_warmup_task = spawn_detached(_warmup_coding_sandbox())
 
     # Initialize toolset registry for agent tool execution.
     # auto_discover_toolsets() imports ~20 heavy SDK modules (Google, Microsoft,
@@ -315,6 +383,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 
     toolset_registry = get_toolset_registry()
     await asyncio.to_thread(toolset_registry.auto_discover_toolsets)
+    register_extra_toolsets(toolset_registry)
     app.state.toolset_registry = toolset_registry
     logger.info(f"✅ Loaded {len(toolset_registry.list_toolsets())} toolsets in memory")
 
@@ -340,6 +409,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     # Cancel background warmup tasks if still running.
     for _warmup_attr in (
         "embedding_warmup_task", "knn_warmup_task", "sandbox_warmup_task",
+        "lexical_reconcile_task", "entity_store_warmup_task", "skills_seed_task",
     ):
         warmup_task: asyncio.Task | None = getattr(app.state, _warmup_attr, None)
         if warmup_task is not None and not warmup_task.done():
@@ -402,6 +472,7 @@ app = FastAPI(
     redirect_slashes=False,
     dependencies=_app_dependencies,
 )
+configure_app(app, "query")
 
 EXCLUDE_PATHS = ["/health"]  # Exclude health endpoint from authentication for monitoring purposes
 
@@ -437,15 +508,6 @@ async def authenticate_requests(request: Request, call_next) -> JSONResponse:
         )
 
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 # Trace context — outermost, before auth.
 app.add_middleware(RequestContextMiddleware)
 telemetry = setup_telemetry(app, service_name="query_service")
@@ -477,7 +539,10 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
     """Answer a malformed request in plain words, keeping FastAPI's ``detail`` list shape."""
     errors = jsonable_encoder(exc.errors())
     logging.getLogger(__name__).warning(
-        "Request validation failed for %s %s: %s", request.method, request.url, errors
+        "Request validation failed for %s %s: %s",
+        request.method,
+        redact_sensitive_query_params(str(request.url)),
+        log_safe_validation_errors(errors),
     )
     message, detail = friendly_validation_errors(errors)
     return JSONResponse(status_code=422, content={"message": message, "detail": detail})
@@ -485,13 +550,20 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 # Include routes from routes.py
 app.include_router(search_router, prefix="/api/v1")
+app.include_router(records_router, prefix="/api/v1")
 app.include_router(chatbot_router, prefix="/api/v1")
 app.include_router(speech_router, prefix="/api/v1")
 app.include_router(agent_router, prefix="/api/v1/agent")
 app.include_router(skills_router, prefix="/api/v1/skills")
 app.include_router(toolsets_router)
-app.include_router(health_router, prefix="/api/v1")
+app.include_router(code_graph_router, prefix="/api/v1")
+# These routes call whatever provider URL the body names, so only admins may reach them.
+app.include_router(health_router, prefix="/api/v1", dependencies=[Depends(require_admin_caller)])
 app.include_router(ai_models_registry_router, prefix="/api/v1")
+# OpenAI clients call ``{base}/models``. Base may be ``{origin}/v1`` or the
+# query service's ``{origin}/api/v1``.
+app.include_router(openai_models_router, prefix="/v1")
+app.include_router(openai_models_router, prefix="/api/v1")
 if agent_sharing_router is not None:
     app.include_router(agent_sharing_router, prefix="/api/v1/agent")
 
@@ -549,6 +621,8 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         )
         workers = 1
         os.environ["QUERY_UVICORN_WORKERS"] = "1"
+    from app.utils.env_utils import uvicorn_worker_healthcheck_timeout
+
     if workers > 1 and not os.getenv(_EXEC_SENTINEL):
         # uvicorn spawns workers, and a spawned child re-imports the parent's __main__.
         # Reached via `python -m app.query_main`, __main__ IS this module, so every child
@@ -563,6 +637,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
             sys.executable, "-m", "uvicorn", "app.query_main:app",
             "--host", host, "--port", str(port),
             "--log-level", "info", "--workers", str(workers),
+            "--timeout-worker-healthcheck", str(uvicorn_worker_healthcheck_timeout()),
         ]
         try:
             os.execvp(sys.executable, argv)
@@ -582,6 +657,7 @@ def run(host: str = "0.0.0.0", port: int = 8000, *, workers: int | None = None, 
         log_level="info",
         reload=reload,
         workers=workers,
+        timeout_worker_healthcheck=uvicorn_worker_healthcheck_timeout(),
     )
 
 if __name__ == "__main__":

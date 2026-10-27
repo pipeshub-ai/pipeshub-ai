@@ -12,6 +12,7 @@ import { Logger } from '../../../libs/services/logger.service';
 import {
   BadRequestError,
   ConflictError,
+  ForbiddenError,
   InternalServerError,
   UnauthorizedError,
 } from '../../../libs/errors/http.errors';
@@ -30,6 +31,7 @@ import {
 } from '../utils/connector.utils';
 import { CrawlingSchedulerService } from '../../crawling_manager/services/crawling_service';
 import {
+  RECONCILE_LOG_MESSAGE,
   reconcileConnectorSchedule,
   ScheduleReconcileInput,
 } from '../../crawling_manager/services/connector_schedule_orchestrator';
@@ -118,7 +120,7 @@ const createConnectorConfigUpdateHandler = (
 
       // Execute API call
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config/${endpointPath}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config/${endpointPath}`,
         HttpMethod.PUT,
         headers,
         config,
@@ -170,6 +172,20 @@ interface ConnectorSnapshot {
   sync: ConnectorSyncBlock | null;
 }
 
+// The schedule is left as it was until the next toggle or schedule sweep.
+const logSnapshotFailure = (
+  connectorId: string,
+  reason: string,
+  extra: Record<string, unknown> = {},
+): void => {
+  logger.error(RECONCILE_LOG_MESSAGE, {
+    connectorId,
+    outcome: 'snapshot_failed',
+    reason,
+    ...extra,
+  });
+};
+
 /**
  * Pull the post-mutation snapshot of a connector instance from the Python
  * backend so we can read `isActive`, `type`, and `config.sync` after a
@@ -185,6 +201,9 @@ interface ConnectorSnapshot {
  * (the filters-sync endpoint writes only to etcd), so it would silently return
  * the stale initial strategy (e.g. "MANUAL") even after the user changes it.
  */
+/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
+const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
+
 const fetchConnectorSnapshot = async (
   req: AuthenticatedUserRequest,
   connectorId: string,
@@ -194,24 +213,32 @@ const fetchConnectorSnapshot = async (
     const headers = buildProxyHeaders(req);
 
     const resp = await executeConnectorCommand(
-      `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+      `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
       HttpMethod.GET,
       headers,
+      undefined,
+      // Aborted, not just abandoned: a hung backend must not pile up reads across the retries.
+      { timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS },
     );
-    if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) return null;
-
-    const data = resp.data as Record<string, any> | null;
-    if (!data) return null;
+    if (!resp || resp.statusCode < 200 || resp.statusCode >= 300) {
+      logSnapshotFailure(connectorId, 'non-2xx response', {
+        statusCode: resp.statusCode,
+      });
+      return null;
+    }
 
     // Response envelope: { success, config: <envelope> }
     // Envelope fields:   { type, isActive, createdBy, config: { sync, auth, filters } }
-    const envelope = data.config as Record<string, any> | undefined;
-    if (!envelope || typeof envelope !== 'object') return null;
+    const data = resp.data as Record<string, any> | null;
+    const envelope = data?.config as Record<string, any> | undefined;
+    if (!envelope || typeof envelope !== 'object') {
+      logSnapshotFailure(connectorId, 'response has no config envelope');
+      return null;
+    }
 
     const type = String(envelope.type ?? '');
     if (!type) {
-      logger.warn('Connector snapshot missing type field; skipping schedule reconcile', {
-        connectorId,
+      logSnapshotFailure(connectorId, 'response has no connector type', {
         responseKeys: Object.keys(envelope),
       });
       return null;
@@ -228,23 +255,16 @@ const fetchConnectorSnapshot = async (
       sync,
     };
   } catch (error) {
-    logger.warn('Failed to fetch connector snapshot for schedule reconcile', {
-      connectorId,
+    logSnapshotFailure(connectorId, 'request failed', {
       error: error instanceof Error ? error.message : 'Unknown error',
+      stack: error instanceof Error ? error.stack : undefined,
     });
     return null;
   }
 };
 
-/** Timeout (ms) for the background connector snapshot GET used by reconcile. */
-const RECONCILE_SNAPSHOT_TIMEOUT_MS = 10_000;
-
-/**
- * Sentinel returned by the timeout side of the Promise.race so we can
- * distinguish "timed out" from "fetch returned null (error / 404)".
- * Using a Symbol prevents any accidental equality with real return values.
- */
-const SNAPSHOT_TIMEOUT = Symbol('SNAPSHOT_TIMEOUT');
+/** Waits (ms) before each attempt to read the connector settings for a schedule reconcile. */
+const RECONCILE_RETRY_WAITS_MS = [0, 5_000, 30_000];
 
 const fireConnectorScheduleReconcile = (
   scheduler: CrawlingSchedulerService,
@@ -256,29 +276,41 @@ const fireConnectorScheduleReconcile = (
   const actorUserId = req.user?.userId;
   if (!orgId || !actorUserId) return;
   setImmediate(async () => {
-    try {
-      // Race the snapshot fetch against a hard timeout so a hung Python
-      // backend cannot block this background task indefinitely.
-      const timeoutPromise = new Promise<typeof SNAPSHOT_TIMEOUT>((resolve) =>
-        setTimeout(() => resolve(SNAPSHOT_TIMEOUT), RECONCILE_SNAPSHOT_TIMEOUT_MS),
-      );
-      const result = await Promise.race([
-        fetchConnectorSnapshot(req, connectorId, appConfig),
-        timeoutPromise,
-      ]);
-
-      if (result === SNAPSHOT_TIMEOUT) {
-        logger.warn('Connector snapshot fetch timed out; skipping schedule reconcile', {
-          connectorId,
-          timeoutMs: RECONCILE_SNAPSHOT_TIMEOUT_MS,
+    // A later save may mark the connector pending while this one runs; only older marks are cleared.
+    const startedAt = Date.now();
+    const markPending = (): Promise<void> =>
+      scheduler
+        .markReconcilePending(connectorId, String(orgId))
+        .catch((err: unknown) => {
+          logger.error(
+            'Could not record a schedule change for the hourly repair',
+            {
+              connectorId,
+              error: err instanceof Error ? err.message : String(err),
+            },
+          );
         });
-        return;
+    try {
+      // A busy connector service answers late or not at all; a schedule left unwritten because of
+      // that would silently never run, so the read is tried again before giving up.
+      let snapshot: ConnectorSnapshot | null = null;
+      for (const wait of RECONCILE_RETRY_WAITS_MS) {
+        if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
+        snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
+        if (snapshot) break;
+        logger.warn(
+          'Connector snapshot unavailable for schedule reconcile; will retry',
+          {
+            connectorId,
+          },
+        );
       }
-
-      // result is ConnectorSnapshot | null here (fetch completed, may have failed)
-      const snapshot = result;
       if (!snapshot) {
-        // fetchConnectorSnapshot already logged the reason (4xx, network error, etc.)
+        await markPending();
+        logger.error(
+          'Could not read connector settings to update its schedule; the hourly repair will apply them',
+          { connectorId },
+        );
         return;
       }
 
@@ -298,11 +330,17 @@ const fireConnectorScheduleReconcile = (
         sync: snapshot.sync,
       };
       await reconcileConnectorSchedule(scheduler, logger, input);
+      await scheduler.clearReconcilePending(connectorId, startedAt);
     } catch (error) {
-      logger.error('Background schedule reconcile failed', {
-        connectorId,
-        error: error instanceof Error ? error.message : 'Unknown error',
-      });
+      await markPending();
+      logger.error(
+        'Background schedule reconcile failed; the hourly repair will apply it',
+        {
+          connectorId,
+          error: error instanceof Error ? error.message : 'Unknown error',
+          stack: error instanceof Error ? error.stack : undefined,
+        },
+      );
     }
   });
 };
@@ -481,7 +519,7 @@ export const getActiveConnectorInstances =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/active`,
         HttpMethod.GET,
-        req.headers as Record<string, string>,
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
@@ -527,7 +565,7 @@ export const getInactiveConnectorInstances =
       const connectorResponse = await executeConnectorCommand(
         `${appConfig.connectorBackend}/api/v1/connectors/inactive`,
         HttpMethod.GET,
-        req.headers as Record<string, string>,
+        buildProxyHeaders(req),
       );
 
       handleConnectorResponse(
@@ -700,7 +738,7 @@ export const getConnectorInstance =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
         HttpMethod.GET,
         headers,
       );
@@ -747,7 +785,7 @@ export const getConnectorInstanceConfig =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
         HttpMethod.GET,
         headers,
       );
@@ -804,7 +842,7 @@ export const updateConnectorInstanceConfig =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/config`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/config`,
         HttpMethod.PUT,
         headers,
         config,
@@ -894,12 +932,8 @@ export const updateConnectorInstanceFiltersSyncConfig = (
   );
 
 /**
- * Delete a connector instance.
- *
- * We fetch the connector snapshot *before* issuing the DELETE so we still
- * know its `type` after Python removes it (a post-delete GET would 404).
- * On success we fire a background job removal so any active BullMQ
- * repeatable job does not outlive the connector.
+ * Delete a connector instance. On success its sync schedule is removed in the
+ * background, found by connector id, so it does not outlive the connector.
  */
 export const deleteConnectorInstance =
   (appConfig: AppConfig, scheduler: CrawlingSchedulerService) =>
@@ -919,12 +953,8 @@ export const deleteConnectorInstance =
 
       const headers = buildProxyHeaders(req);
 
-      // Fetch snapshot before the DELETE so we still know the connector type
-      // once Python has removed it.
-      const snapshot = await fetchConnectorSnapshot(req, connectorId, appConfig);
-
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}`,
         HttpMethod.DELETE,
         headers,
       );
@@ -934,38 +964,23 @@ export const deleteConnectorInstance =
         connectorResponse.statusCode >= 200 &&
         connectorResponse.statusCode < 300;
 
-      // Remove any lingering BullMQ job in the background after a successful
-      // delete. We need the connector type from the pre-delete snapshot; if
-      // we could not fetch it we skip silently — worst case the job fires once
-      // more and will encounter a 404 from the connector service.
-      if (isSuccess && snapshot?.type) {
-        const orgId = req.user?.orgId;
-        if (orgId) {
-          setImmediate(async () => {
-            try {
-              const existing = await scheduler.getJobStatus(
-                snapshot.type,
-                connectorId,
-                orgId,
-              );
-              if (existing) {
-                await scheduler.removeJob(snapshot.type, connectorId, orgId);
-                logger.info('Removed BullMQ job after connector deletion', {
-                  connectorId,
-                  connectorType: snapshot.type,
-                  orgId,
-                });
-              }
-            } catch (err) {
-              logger.error('Failed to remove BullMQ job after connector deletion', {
-                connectorId,
-                connectorType: snapshot.type,
-                orgId,
-                error: err instanceof Error ? err.message : 'Unknown error',
-              });
-            }
-          });
-        }
+      const orgId = req.user?.orgId;
+      if (isSuccess && orgId) {
+        setImmediate(async () => {
+          try {
+            await scheduler.removeJobsForConnector(connectorId, orgId);
+            logger.info('Removed sync schedule after connector deletion', {
+              connectorId,
+              orgId,
+            });
+          } catch (err) {
+            logger.error('Failed to remove sync schedule after connector deletion', {
+              connectorId,
+              orgId,
+              error: err instanceof Error ? err.message : 'Unknown error',
+            });
+          }
+        });
       }
 
       handleConnectorResponse(
@@ -1014,7 +1029,7 @@ export const updateConnectorInstanceName =
       const headers = buildProxyHeaders(req);
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/name`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/name`,
         HttpMethod.PUT,
         headers,
         { instanceName: instanceName },
@@ -1051,7 +1066,7 @@ export const getOAuthAuthorizationUrl =
   ): Promise<void> => {
     try {
       const { connectorId } = req.params;
-      const { baseUrl } = req.query;
+      const { baseUrl, desktop } = req.query;
 
       if (!connectorId) {
         throw new BadRequestError('Connector ID is required');
@@ -1061,8 +1076,11 @@ export const getOAuthAuthorizationUrl =
       if (baseUrl) {
         queryParams.set('base_url', String(baseUrl));
       }
+      if (desktop === 'true') {
+        queryParams.set('desktop', 'true');
+      }
 
-      const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/oauth/authorize?${queryParams.toString()}`;
+      const authorizationUrl = `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/oauth/authorize?${queryParams.toString()}`;
 
       logger.info(
         `Getting OAuth authorization URL for instance ${connectorId}`,
@@ -1213,7 +1231,7 @@ export const getConnectorInstanceFilterOptions =
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters`,
         HttpMethod.GET,
         headers,
       );
@@ -1295,7 +1313,7 @@ export const getFilterFieldOptions =
       const queryString = queryParams.toString() ? `?${queryParams.toString()}` : '';
 
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters/${filterKey}/options${queryString}`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters/${encodeURIComponent(filterKey)}/options${queryString}`,
         HttpMethod.GET,
         headers,
       );
@@ -1345,11 +1363,13 @@ export const saveConnectorInstanceFilterOptions =
         throw new BadRequestError('Filters are required');
       }
 
-      logger.info(`Saving filter options for instance ${connectorId}`);
+      logger.warn(
+        `Deprecated POST /api/v1/connectors/${connectorId}/filters was called; use PUT /api/v1/connectors/${connectorId}/config/filters-sync with {sync?, filters?: {sync, indexing}} while the connector is disabled. This endpoint will be removed in a future release.`,
+      );
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/filters`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/filters`,
         HttpMethod.POST,
         headers,
         { filters },
@@ -1445,7 +1465,7 @@ export const toggleConnectorInstance =
       if (typeof deviceId === 'string') body.deviceId = deviceId;
       if (typeof deviceName === 'string') body.deviceName = deviceName;
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/toggle`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/toggle`,
         HttpMethod.POST,
         headers,
         body,
@@ -1522,7 +1542,7 @@ export const getConnectorSchema =
 
       const headers = buildProxyHeaders(req);
       const connectorResponse = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/registry/${connectorType}/schema`,
+        `${appConfig.connectorBackend}/api/v1/connectors/registry/${encodeURIComponent(connectorType)}/schema`,
         HttpMethod.GET,
         headers,
       );
@@ -1542,6 +1562,86 @@ export const getConnectorSchema =
         data: error.response?.data,
       });
       const handledError = handleBackendError(error, 'get connector schema');
+      next(handledError);
+    }
+  };
+
+/**
+ * Try auth settings from the setup form before they are saved.
+ * A failed check comes back as 200 with `success: false` and a message for the user.
+ */
+export const testConnectorConnection =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const { connectorType } = req.params;
+      const { auth, connectorId } = req.body;
+
+      if (!connectorType) {
+        throw new BadRequestError('Connector type is required');
+      }
+
+      const headers = buildProxyHeaders(req);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/registry/${encodeURIComponent(connectorType)}/test-connection`,
+        HttpMethod.POST,
+        headers,
+        { auth, connectorId },
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Testing connector connection',
+        'Connector type not found'
+      );
+    } catch (error: any) {
+      logger.error('Error testing connector connection', {
+        error: error.message,
+        connectorType: req.params.connectorType,
+        userId: req.user?.userId,
+        status: error.response?.status,
+      });
+      const handledError = handleBackendError(error, 'test the connection');
+      next(handledError);
+    }
+  };
+
+/**
+ * Public IPs connectors connect from, for users to allow in their firewalls.
+ */
+export const getConnectorEgressIps =
+  (appConfig: AppConfig) =>
+  async (
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> => {
+    try {
+      const headers = buildProxyHeaders(req);
+      const connectorResponse = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/network/egress-ips`,
+        HttpMethod.GET,
+        headers,
+      );
+
+      handleConnectorResponse(
+        connectorResponse,
+        res,
+        'Getting connector egress IPs',
+        'Egress IPs not found'
+      );
+    } catch (error: any) {
+      logger.error('Error getting connector egress IPs', {
+        error: error.message,
+        userId: req.user?.userId,
+        status: error.response?.status,
+      });
+      const handledError = handleBackendError(error, 'get the connector IP addresses');
       next(handledError);
     }
   };
@@ -1658,6 +1758,33 @@ export const getConnectorStats =
     }
   };
 
+/**
+ * The query service parameters for a budgeted read, or null when the caller
+ * asked for none and gets the whole record from the connector service.
+ */
+export const budgetedReadParams = (
+  query: Record<string, unknown> | undefined,
+): URLSearchParams | null => {
+  const names: Array<[string, string]> = [
+    ['mode', 'mode'],
+    ['query', 'query'],
+    ['startBlock', 'start_block'],
+    ['startRecord', 'start_record'],
+    ['maxChars', 'max_chars'],
+  ];
+  const params = new URLSearchParams();
+  for (const [from, to] of names) {
+    const value = query?.[from];
+    if (
+      (typeof value === 'string' && value !== '') ||
+      typeof value === 'number'
+    ) {
+      params.append(to, String(value));
+    }
+  }
+  return params.toString() !== '' ? params : null;
+};
+
 export const getRecordContent =
   (appConfig: AppConfig) =>
   async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
@@ -1672,9 +1799,18 @@ export const getRecordContent =
         );
       }
 
+      // Part of a record, or a Slack thread, is read by the query service:
+      // ranking a record's blocks against a question needs the search index,
+      // which lives there. With no such parameter the whole record comes from
+      // the connector service, exactly as before.
+      const budgeted = budgetedReadParams(req.query as Record<string, unknown>);
+      const uri = budgeted
+        ? `${appConfig.aiBackend}/api/v1/records/${encodeURIComponent(recordId)}/read?${budgeted.toString()}`
+        : `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`;
+
       // Forward only the proxy allowlist (Authorization + tracing). Never raw req.headers.
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/records/${encodeURIComponent(recordId)}/content`,
+        uri,
         HttpMethod.GET,
         buildProxyHeaders(req),
       );
@@ -1859,13 +1995,27 @@ const validateActiveConnector = async (
 const LOCK_MESSAGES: Record<string, string> = {
   FULL_SYNCING: 'A full sync is in progress. Please wait and try again.',
   SYNCING: 'A sync is already in progress. Please wait and try again.',
+  QUEUED: 'A sync is already queued for this connector and will start shortly.',
+  DELETING: 'This connector is being deleted.',
 };
 
 const assertConnectorNotLocked = (
   instance: ConnectorInstanceSummary | null,
 ): void => {
-  if (!instance?.isLocked) return;
-  const status = instance.status ?? '';
+  // Fast UX feedback only — Python's admission check is the hard guarantee that
+  // a new sync never starts while one is running. isLocked alone is not enough:
+  // it is set only during the brief full-sync prep window, so a duplicate resync
+  // during a normal sync used to sail past.
+  const status = (instance?.status ?? '').toUpperCase();
+  if (
+    !instance?.isLocked &&
+    status !== 'SYNCING' &&
+    status !== 'FULL_SYNCING' &&
+    status !== 'QUEUED' &&
+    status !== 'DELETING'
+  ) {
+    return;
+  }
   const message =
     LOCK_MESSAGES[status] ??
     'Another operation is in progress. Please wait and try again.';
@@ -1873,7 +2023,10 @@ const assertConnectorNotLocked = (
 };
 
 const normalizeAppName = (value: string): string =>
-  value.replace(' ', '').toLowerCase();
+  // Global, matching Python's str.replace. A string pattern replaces only the
+  // first space; downstream normalization masked that for routing, but it left
+  // an embedded space in the value carried on the event payload.
+  value.replace(/ /g, '').toLowerCase();
 
 const proxyVectorStoreJob =
   (appConfig: AppConfig, operation: 'cleanup' | 'reindex') =>
@@ -1917,21 +2070,27 @@ export const reindexConnector =
     try {
       const { connectorId } = req.params as { connectorId: string };
       const { userId, orgId } = req.user || {};
-      const { statusFilters } = req.body || {};
+      const { statusFilters, stages } = (req.body ?? {}) as {
+        statusFilters?: string[];
+        stages?: string[];
+      };
 
       if (!userId || !orgId) {
         throw new UnauthorizedError('User not authenticated or missing organization ID');
       }
 
-      const reindexBody: { statusFilters?: string[] } = {};
+      const reindexBody: { statusFilters?: string[]; stages?: string[] } = {};
       if (statusFilters?.length) {
         reindexBody.statusFilters = statusFilters;
+      }
+      if (stages?.length) {
+        reindexBody.stages = stages;
       }
 
       const headers = buildProxyHeaders(req);
 
       const response = await executeConnectorCommand(
-        `${appConfig.connectorBackend}/api/v1/connectors/${connectorId}/reindex`,
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/reindex`,
         HttpMethod.POST,
         headers,
         reindexBody,
@@ -1979,6 +2138,13 @@ export const resyncConnectorRecords =
         appConfig,
         headers,
       );
+      // The read above can be wider than who may sync: a personal connector is
+      // its creator's to sync.
+      if (instance.scope === 'personal' && instance.createdBy !== userId) {
+        throw new ForbiddenError(
+          'Only the person who created this connector can sync it',
+        );
+      }
       // Lock first: "already running" must win over "desktop offline".
       assertConnectorNotLocked(instance);
       const refusal = localFsSyncRefusal(orgId, instance, {
@@ -2016,7 +2182,48 @@ export const resyncConnectorRecords =
       logger.error('Error resyncing connector records', {
         error,
       });
-      next(error);
+      next(handleBackendError(error, 'resync connector'));
       return; // Added return statement
+    }
+  };
+  
+export const stopConnectorSync =
+  (appConfig: AppConfig) =>
+  async (req: AuthenticatedUserRequest, res: Response, next: NextFunction) => {
+    try {
+      const { connectorId } = req.params as { connectorId: string };
+      const { userId, orgId } = req.user || {};
+
+      if (!userId || !orgId) {
+        throw new UnauthorizedError(
+          'User not authenticated or missing organization ID',
+        );
+      }
+
+      const headers = buildProxyHeaders(req);
+
+      // Deliberately not guarded by assertConnectorNotLocked — stop has to work
+      // precisely when the connector *is* busy, and also against a lock left
+      // stuck by a crash.
+      const response = await executeConnectorCommand(
+        `${appConfig.connectorBackend}/api/v1/connectors/${encodeURIComponent(connectorId)}/sync/stop`,
+        HttpMethod.POST,
+        headers,
+      );
+
+      handleConnectorResponse(
+        response,
+        res,
+        'stopping connector sync',
+        'Failed to stop sync',
+      );
+      logger.info('Connector sync stop requested', { connectorId });
+    } catch (error: any) {
+      logger.error('Error stopping connector sync', {
+        connectorId: req.params.connectorId,
+        error,
+      });
+      next(handleBackendError(error, 'stop connector sync'));
+      return;
     }
   };

@@ -135,6 +135,13 @@ describe('mail/utils/emailTemplates', () => {
       expect(result.length).to.be.greaterThan(0)
     })
 
+    // The link is signed to last 20 minutes (jwtGeneratorForValidateEmailLink).
+    it('resetEmail should tell the reader the link lasts 20 minutes', () => {
+      const result = emailTemplates.resetEmail({ name: 'John', link: 'http://example.com' })
+      expect(result).to.include('this link will expire in 20 minutes')
+      expect(result).to.not.include('14 days')
+    })
+
     it('accountCreation should compile and return HTML', () => {
       const result = emailTemplates.accountCreation({ name: 'Acme Corp' })
       expect(result).to.be.a('string')

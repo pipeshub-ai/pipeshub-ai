@@ -119,7 +119,7 @@ describe('es_controller on a replica set: a failed answer is saved, not rolled b
       sinon.stub(searchUtils, c.mark).resolves()
       const next = sinon.stub()
 
-      await c.handler()(c.req as never, { status: sinon.stub().returnsThis(), json: sinon.stub() } as never, next)
+      await c.handler()(c.req as never, { status: sinon.stub().returnsThis(), json: sinon.stub(), setHeader: sinon.stub() } as never, next)
 
       const sent = next.firstCall.args[0] as InternalServerError
       expect(sent.message).to.equal(CHAT_ERROR_MESSAGES.failed)
@@ -133,7 +133,7 @@ describe('es_controller on a replica set: a failed answer is saved, not rolled b
       sinon.stub(searchUtils, c.mark).resolves()
       const next = sinon.stub()
 
-      await c.handler()(c.req as never, { status: sinon.stub().returnsThis(), json: sinon.stub() } as never, next)
+      await c.handler()(c.req as never, { status: sinon.stub().returnsThis(), json: sinon.stub(), setHeader: sinon.stub() } as never, next)
 
       const sent = next.firstCall.args[0] as BadRequestError
       expect(sent.statusCode).to.equal(400)
@@ -157,11 +157,13 @@ describe('es_controller on a replica set: a failed answer is saved, not rolled b
       const markStub = sinon.stub(searchUtils, c.mark).resolves()
       const next = sinon.stub()
 
-      await c.handler()(c.req as never, { status: sinon.stub().returnsThis(), json: sinon.stub() } as never, next)
+      await c.handler()(c.req as never, { status: sinon.stub().returnsThis(), json: sinon.stub(), setHeader: sinon.stub() } as never, next)
 
       expect(markStub.calledOnce).to.be.true
       expect(markStub.firstCall.args[1]).to.equal(CLASSIFIED)
-      expect(markStub.firstCall.args[2]).to.equal(session)
+      // The AI call and the failure write run after the user-message
+      // transaction commits, so nothing can roll the failed state back.
+      expect(markStub.firstCall.args[2]).to.equal(null)
       expect(state.aborted, 'transaction rolled back the failed state').to.be.false
       expect(state.committed).to.be.true
       expect(next.calledOnce).to.be.true

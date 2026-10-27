@@ -13,7 +13,21 @@ import {
   SyncEventProducer,
 } from '../../../../src/modules/configuration_manager/services/kafka_events.service'
 import { NotFoundError } from '../../../../src/libs/errors/http.errors'
+import { TokenScopes } from '../../../../src/libs/enums/token-scopes.enum'
 import axios from 'axios'
+
+// Express does not expose router.stack in its public types, so the scope
+// assertions below describe just the shape they read.
+type ScopedGuard = { scope?: string }
+type RouteLayer = {
+  route?: {
+    path: string
+    methods: Record<string, boolean | undefined>
+    stack: Array<{ handle?: ScopedGuard }>
+  }
+}
+const routeLayers = (router: unknown): RouteLayer[] =>
+  (router as { stack: RouteLayer[] }).stack
 
 describe('ConfigurationManager Routes', () => {
   let container: Container
@@ -79,9 +93,6 @@ describe('ConfigurationManager Routes', () => {
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventService)
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
   })
 
   afterEach(() => {
@@ -146,11 +157,13 @@ describe('ConfigurationManager Routes', () => {
       }))
 
     const paths = routes.map((r: any) => r.path)
-    expect(paths).to.include('/authConfig/azureAd')
     expect(paths).to.include('/authConfig/google')
     expect(paths).to.include('/authConfig/microsoft')
-    expect(paths).to.include('/authConfig/sso')
-    expect(paths).to.include('/authConfig/oauth')
+    // SAML, generic OAuth and Azure AD sign-in were removed in 1.0.
+    for (const removed of ['azureAd', 'sso', 'oauth']) {
+      expect(paths).to.not.include(`/authConfig/${removed}`)
+      expect(paths).to.not.include(`/internal/authConfig/${removed}`)
+    }
   })
 
   it('should register AI models config routes', () => {
@@ -620,6 +633,30 @@ describe('ConfigurationManager Routes', () => {
       expect(internalSlack).to.exist
     })
 
+    // This route hands out every org's Slack credentials, so it must not be
+    // reachable with the broad fetch:config scope other services hold.
+    it('should guard the internal slack-bot route with the bot-only scope', () => {
+      // Tag each generated guard with the scope it was built for, so the route's
+      // own middleware stack identifies which scope protects it.
+      mockAuthMiddleware.scopedTokenValidator = sinon.stub().callsFake((scope: string) => {
+        const guard = (_req: unknown, _res: unknown, next: () => void) => next()
+        ;(guard as ScopedGuard).scope = scope
+        return guard
+      })
+
+      const router = createConfigurationManagerRouter(container)
+      const layer = routeLayers(router).find(
+        (l) => l.route?.path === '/internal/slack-bot' && l.route?.methods.get,
+      )
+      expect(layer, 'internal slack-bot route is not registered').to.exist
+      const scopes = (layer?.route?.stack ?? [])
+        .map((s) => s.handle?.scope)
+        .filter((scope): scope is string => typeof scope === 'string')
+
+      expect(scopes).to.include(TokenScopes.SLACK_BOT_VERIFY)
+      expect(scopes).to.not.include(TokenScopes.FETCH_CONFIG)
+    })
+
     it('should register internal metricsCollection toggle route', () => {
       const router = createConfigurationManagerRouter(container)
       const routes = router.stack
@@ -672,9 +709,6 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
     container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
 
     router = createConfigurationManagerRouter(container)
   })
@@ -784,21 +818,12 @@ describe('Configuration Manager Routes - inline handler branch coverage', () => 
       { path: '/internal/storageConfig', method: 'get' },
       { path: '/smtpConfig', method: 'post' },
       { path: '/smtpConfig', method: 'get' },
-      { path: '/authConfig/azureAd', method: 'get' },
-      { path: '/internal/authConfig/azureAd', method: 'get' },
-      { path: '/authConfig/azureAd', method: 'post' },
       { path: '/authConfig/microsoft', method: 'get' },
       { path: '/internal/authConfig/microsoft', method: 'get' },
       { path: '/authConfig/microsoft', method: 'post' },
       { path: '/authConfig/google', method: 'get' },
       { path: '/internal/authConfig/google', method: 'get' },
       { path: '/authConfig/google', method: 'post' },
-      { path: '/authConfig/sso', method: 'get' },
-      { path: '/internal/authConfig/sso', method: 'get' },
-      { path: '/authConfig/sso', method: 'post' },
-      { path: '/authConfig/oauth', method: 'get' },
-      { path: '/internal/authConfig/oauth', method: 'get' },
-      { path: '/authConfig/oauth', method: 'post' },
       { path: '/platform/settings', method: 'post' },
       { path: '/platform/settings', method: 'get' },
       { path: '/platform/feature-flags/available', method: 'get' },
@@ -888,9 +913,6 @@ describe('Configuration Manager Routes - handler coverage', () => {
     container.bind<AiConfigEventProducer>('AiConfigEventProducer').toConstantValue(mockAiConfigEventService as any)
     container.bind('SyncEventProducer').toConstantValue(mockSyncEventService as any)
     container.bind('ConfigService').toConstantValue(mockConfigService as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
 
     router = createConfigurationManagerRouter(container)
   })
@@ -950,16 +972,10 @@ describe('Configuration Manager Routes - handler coverage', () => {
         .filter((l: any) => l.route)
         .map((l: any) => l.route.path)
 
-      expect(paths).to.include('/authConfig/azureAd')
-      expect(paths).to.include('/internal/authConfig/azureAd')
       expect(paths).to.include('/authConfig/microsoft')
       expect(paths).to.include('/internal/authConfig/microsoft')
       expect(paths).to.include('/authConfig/google')
       expect(paths).to.include('/internal/authConfig/google')
-      expect(paths).to.include('/authConfig/sso')
-      expect(paths).to.include('/internal/authConfig/sso')
-      expect(paths).to.include('/authConfig/oauth')
-      expect(paths).to.include('/internal/authConfig/oauth')
     })
 
     it('should register AI models config routes', () => {
@@ -1131,9 +1147,6 @@ describe('AI Model Registry Proxy Routes', () => {
     container.bind<SyncEventProducer>('SyncEventProducer').toConstantValue(mockSyncEventService)
     container.bind<ConfigService>('ConfigService').toConstantValue(mockConfigService)
     container.bind<AuthMiddleware>('AuthMiddleware').toConstantValue(mockAuthMiddleware as any)
-    container.bind('SamlController').toConstantValue({
-      updateSamlStrategiesWithCallback: sinon.stub().resolves(),
-    })
   })
 
   afterEach(() => {

@@ -6,13 +6,18 @@ import {
   GatewayTimeoutError,
   InternalServerError,
   NotFoundError,
+  PaymentRequiredError,
   ServiceUnavailableError,
   TooManyRequestsError,
   UnauthorizedError,
   UnprocessableEntityError,
 } from './http.errors';
 import { BaseError } from './base.error';
-import { isReaderWritten, markClientSafe } from './reader-friendly';
+import {
+  isReaderWritten,
+  markClientSafe,
+  serverFailureMessage,
+} from './reader-friendly';
 
 const logger = Logger.getInstance({ service: 'Backend Error' });
 
@@ -123,17 +128,6 @@ const transientError = (
   return markClientSafe(new GatewayTimeoutError(message, retry));
 };
 
-/**
- * What a reader is told when a service answered 5xx. Its own words describe
- * the machine that broke, so they go to the log and this goes to the person.
- */
-const serverFailureMessage = (operation: string): string => {
-  const what = /^[A-Z][a-z]/.test(operation)
-    ? operation.charAt(0).toLowerCase() + operation.slice(1)
-    : operation;
-  return `Something went wrong while PipesHub tried to ${what}. Please try again in a moment; if it keeps happening, ask your admin to check the services page.`;
-};
-
 type Indexed = Record<string, unknown>;
 
 const asRecord = (value: unknown): Indexed | undefined =>
@@ -173,6 +167,11 @@ export const handleBackendError = (
     return markClientSafe(
       new InternalServerError(serverFailureMessage(operation)),
     );
+  }
+
+  if (asText(source.name) === 'TimeoutError') {
+    logger.error(`Timed out waiting for the service during ${operation}`);
+    return transientError(504, undefined, undefined);
   }
 
   if (isConnectionRefused(source)) {
@@ -243,6 +242,10 @@ export const handleBackendError = (
       return new BadRequestError(errorDetail);
     case 401:
       return new UnauthorizedError(errorDetail);
+    case 402:
+      return new PaymentRequiredError(
+        asText(asRecord(bodyDetail)?.message) ?? errorDetail,
+      );
     case 403:
       return new ForbiddenError(errorDetail);
     case 404:

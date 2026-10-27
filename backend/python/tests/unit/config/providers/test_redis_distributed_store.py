@@ -192,6 +192,25 @@ class TestGetKey:
         assert result is None
 
     @pytest.mark.asyncio
+    async def test_get_deserialization_error_raises_when_asked(self):
+        """A stored value that cannot be read is not an absent key. For a
+        strict reader -- the collection manifest on a delete path -- None here
+        reads as "no collections", and the delete drops mappings it never
+        deleted points for."""
+        store = _make_store()
+        mock = _mock_client(store)
+        mock.get = AsyncMock(return_value=b"not valid json")
+        with pytest.raises(ConnectionError):
+            await store.get_key("badkey", raise_on_error=True)
+
+    @pytest.mark.asyncio
+    async def test_absent_key_is_none_even_when_asked(self):
+        store = _make_store()
+        mock = _mock_client(store)
+        mock.get = AsyncMock(return_value=None)
+        assert await store.get_key("missing", raise_on_error=True) is None
+
+    @pytest.mark.asyncio
     async def test_get_failure_raises(self):
         store = _make_store()
         mock = _mock_client(store)

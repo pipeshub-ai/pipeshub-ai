@@ -1,17 +1,23 @@
 """Unit tests for the embedding server FastAPI app."""
 
+import asyncio
 import base64
 import struct
+import threading
+from typing import TYPE_CHECKING
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import numpy as np
 import pytest
+import torch
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.config.constants.ai_models import DEFAULT_EMBEDDING_MODEL
 from app.embedding_main import (
     DownloadStatus,
+    EncodeGate,
+    EncodePriority,
     ModelManager,
     _compute_expected_total_bytes,
     _format_embedding_vector,
@@ -21,6 +27,9 @@ from app.embedding_main import (
     model_manager,
     run,
 )
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 
 async def _passthrough_to_thread(func, *args, **kwargs):
@@ -69,7 +78,10 @@ class TestEmbeddingServerRoutes:
         assert len(body["data"]) == 1
         assert body["data"][0]["embedding"] == [0.1, 0.2, 0.3]
         mock_manager.encode.assert_awaited_once_with(
-            DEFAULT_EMBEDDING_MODEL, ["hello"], trust_remote_code=False
+            DEFAULT_EMBEDDING_MODEL,
+            ["hello"],
+            trust_remote_code=False,
+            priority=EncodePriority.BULK,
         )
 
     def test_create_embeddings_batch_input(self, client):
@@ -86,7 +98,10 @@ class TestEmbeddingServerRoutes:
         )
         assert response.status_code == 200
         mock_manager.encode.assert_awaited_once_with(
-            DEFAULT_EMBEDDING_MODEL, ["hello", "world"], trust_remote_code=False
+            DEFAULT_EMBEDDING_MODEL,
+            ["hello", "world"],
+            trust_remote_code=False,
+            priority=EncodePriority.BULK,
         )
 
     def test_create_embeddings_empty_input_rejected(self, client):
@@ -132,7 +147,29 @@ class TestEmbeddingServerRoutes:
             "nomic-ai/nomic-embed-text-v2-moe",
             ["hello"],
             trust_remote_code=True,
+            priority=EncodePriority.BULK,
         )
+
+    def test_a_marked_query_is_encoded_as_a_query(self, client) -> None:
+        test_client, mock_manager = client
+        response = test_client.post(
+            "/v1/embeddings",
+            json={"model": DEFAULT_EMBEDDING_MODEL, "input": "who owns billing?"},
+            headers={"X-Embedding-Priority": "query"},
+        )
+        assert response.status_code == 200
+        assert (
+            mock_manager.encode.await_args.kwargs["priority"] is EncodePriority.QUERY
+        )
+
+    def test_an_unknown_priority_is_bulk(self, client) -> None:
+        test_client, mock_manager = client
+        test_client.post(
+            "/v1/embeddings",
+            json={"model": DEFAULT_EMBEDDING_MODEL, "input": "x"},
+            headers={"X-Embedding-Priority": "urgent"},
+        )
+        assert mock_manager.encode.await_args.kwargs["priority"] is EncodePriority.BULK
 
 
 class TestEmbeddingServerSecurityPolicy:
@@ -281,7 +318,10 @@ class TestModelManager:
 
         assert result is loaded
         mock_st.assert_called_once_with(
-            "local-model", local_files_only=True, device="cpu"
+            "local-model",
+            local_files_only=True,
+            device="cpu",
+            model_kwargs={"dtype": torch.float32},
         )
 
     @pytest.mark.asyncio
@@ -360,8 +400,32 @@ class TestModelManager:
             "trusted-model",
             local_files_only=True,
             device="cpu",
+            model_kwargs={"dtype": torch.float32},
             trust_remote_code=True,
         )
+
+    @pytest.mark.asyncio
+    async def test_model_published_in_half_precision_still_loads_in_fp32(self, tmp_path: "Path") -> None:
+        transformers = pytest.importorskip("transformers")
+        if isinstance(transformers, MagicMock):
+            pytest.skip("needs the real transformers library")
+        vocab = tmp_path / "vocab.txt"
+        vocab.write_text("\n".join(["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]", "hello", "world"]))
+        transformers.BertTokenizerFast(vocab_file=str(vocab)).save_pretrained(tmp_path)
+        config = transformers.BertConfig(
+            vocab_size=7, hidden_size=8, num_hidden_layers=1, num_attention_heads=2,
+            intermediate_size=16, max_position_embeddings=16,
+        )
+        transformers.BertModel(config).to(torch.float16).save_pretrained(tmp_path)
+
+        manager = ModelManager(device="cpu")
+        with patch(
+            "app.embedding_main.asyncio.to_thread",
+            side_effect=_passthrough_to_thread,
+        ):
+            model = await manager.get_model(str(tmp_path))
+
+        assert {p.dtype for p in model.parameters()} == {torch.float32}
 
     @pytest.mark.asyncio
     async def test_warmup_delegates_to_get_model(self):
@@ -415,14 +479,18 @@ class TestEmbeddingServerEdgeCases:
         mock_manager.list_loaded_models.side_effect = RuntimeError("db down")
         mock_manager.warmup = AsyncMock()
 
-        with patch("app.embedding_main.model_manager", mock_manager):
+        with patch("app.embedding_main.model_manager", mock_manager), patch(
+            "app.embedding_main.logger"
+        ) as mock_logger:
             with TestClient(app) as test_client:
                 response = test_client.get("/health")
 
         assert response.status_code == 500
         body = response.json()
         assert body["status"] == "unhealthy"
-        assert "db down" in body["error"]
+        assert body["error"] == "Health check failed"
+        assert "db down" not in response.text
+        mock_logger.exception.assert_called_once_with("Health check failed")
 
     def test_list_models_fallback_when_none_loaded(self):
         mock_manager = MagicMock(spec=ModelManager)
@@ -730,3 +798,260 @@ class TestDownloadProgressEndpoint:
         assert response.status_code == 200
         assert response.json()["model"] == "BAAI/bge-m3"
         mock_manager.get_download_status.assert_called_once_with("BAAI/bge-m3")
+
+
+class TestEncodeGate:
+    """Search queries ahead of indexing batches in the bundled server."""
+
+    @staticmethod
+    async def _settle() -> None:
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    @pytest.mark.asyncio
+    async def test_bulk_leaves_a_slot_free_for_queries(self) -> None:
+        gate = EncodeGate(capacity=3, reserved_for_queries=1)
+        await gate.acquire(EncodePriority.BULK)
+        await gate.acquire(EncodePriority.BULK)
+        third_bulk = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        assert not third_bulk.done()
+
+        # A query arriving now starts at once on the reserved slot.
+        await asyncio.wait_for(gate.acquire(EncodePriority.QUERY), timeout=1)
+        assert gate.in_use == 3
+        third_bulk.cancel()
+
+    @pytest.mark.asyncio
+    async def test_a_query_goes_ahead_of_bulk_already_waiting(self) -> None:
+        gate = EncodeGate(capacity=2, reserved_for_queries=0)
+        await gate.acquire(EncodePriority.BULK)
+        await gate.acquire(EncodePriority.BULK)
+        order: list[str] = []
+
+        async def take(priority: EncodePriority, name: str) -> None:
+            await gate.acquire(priority)
+            order.append(name)
+            gate.release(priority)
+
+        bulk = [asyncio.ensure_future(take(EncodePriority.BULK, f"bulk-{i}")) for i in range(3)]
+        await self._settle()
+        query = asyncio.ensure_future(take(EncodePriority.QUERY, "query"))
+        await self._settle()
+
+        gate.release(EncodePriority.BULK)
+        await asyncio.gather(*bulk, query)
+        assert order == ["query", "bulk-0", "bulk-1", "bulk-2"]
+
+    @pytest.mark.asyncio
+    async def test_bulk_always_keeps_one_slot(self) -> None:
+        """A reservation as large as the pool must not stop indexing."""
+        gate = EncodeGate(capacity=2, reserved_for_queries=5)
+        assert gate.bulk_limit == 1
+        await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_a_steady_stream_of_queries_cannot_stop_indexing(self) -> None:
+        """Queries looping on every slot, with more always queued: a bulk
+        request still gets a slot."""
+        gate = EncodeGate(capacity=4, reserved_for_queries=1)
+        stop = asyncio.Event()
+
+        async def query_loop() -> None:
+            while not stop.is_set():
+                async with gate.slot(EncodePriority.QUERY):
+                    await asyncio.sleep(0.001)
+
+        loops = [asyncio.ensure_future(query_loop()) for _ in range(8)]
+        await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+        finally:
+            stop.set()
+            await asyncio.gather(*loops)
+        gate.release(EncodePriority.BULK)
+        assert gate.in_use == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("capacity", [1, 2])
+    async def test_a_steady_stream_of_batches_cannot_keep_a_query_waiting(
+        self, capacity: int
+    ) -> None:
+        """Batches looping on every slot, with more always queued: a query
+        still gets the next slot a batch frees."""
+        gate = EncodeGate(capacity=capacity, reserved_for_queries=0)
+        stop = asyncio.Event()
+
+        async def bulk_loop() -> None:
+            while not stop.is_set():
+                async with gate.slot(EncodePriority.BULK):
+                    await asyncio.sleep(0.001)
+
+        loops = [asyncio.ensure_future(bulk_loop()) for _ in range(4)]
+        await asyncio.sleep(0.01)
+        try:
+            await asyncio.wait_for(gate.acquire(EncodePriority.QUERY), timeout=1)
+        finally:
+            stop.set()
+        gate.release(EncodePriority.QUERY)
+        await asyncio.gather(*loops)
+        assert gate.in_use == 0
+
+    @pytest.mark.asyncio
+    async def test_queries_leave_the_last_slot_to_bulk_that_has_none(self) -> None:
+        gate = EncodeGate(capacity=3, reserved_for_queries=1)
+        await gate.acquire(EncodePriority.QUERY)
+        await gate.acquire(EncodePriority.QUERY)
+        await gate.acquire(EncodePriority.QUERY)
+        bulk = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        query = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
+        await self._settle()
+
+        gate.release(EncodePriority.QUERY)
+        await asyncio.wait_for(bulk, timeout=1)
+        assert not query.done()
+        gate.release(EncodePriority.QUERY)
+        await asyncio.wait_for(query, timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_bulk_waits_while_a_query_is_waiting(self) -> None:
+        gate = EncodeGate(capacity=2, reserved_for_queries=0)
+        await gate.acquire(EncodePriority.BULK)
+        await gate.acquire(EncodePriority.QUERY)
+        query = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
+        bulk = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+
+        gate.release(EncodePriority.QUERY)
+        await self._settle()
+        assert query.done() and not bulk.done()
+        gate.release(EncodePriority.BULK)
+        await asyncio.wait_for(bulk, timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_waiter_does_not_hold_a_slot(self) -> None:
+        gate = EncodeGate(capacity=1, reserved_for_queries=0)
+        await gate.acquire(EncodePriority.BULK)
+        gone = asyncio.ensure_future(gate.acquire(EncodePriority.QUERY))
+        await self._settle()
+        gone.cancel()
+        await self._settle()
+
+        gate.release(EncodePriority.BULK)
+        assert gate.in_use == 0
+        await asyncio.wait_for(gate.acquire(EncodePriority.BULK), timeout=1)
+
+    @pytest.mark.asyncio
+    async def test_a_waiter_cancelled_after_its_grant_hands_it_back(self) -> None:
+        gate = EncodeGate(capacity=1, reserved_for_queries=0)
+        await gate.acquire(EncodePriority.BULK)
+        waiter = asyncio.ensure_future(gate.acquire(EncodePriority.BULK))
+        await self._settle()
+        gate.release(EncodePriority.BULK)  # granted to the waiter...
+        waiter.cancel()  # ...which is cancelled before it resumes
+        with pytest.raises(asyncio.CancelledError):
+            await waiter
+        assert gate.in_use == 0
+
+    def test_priority_header_values(self) -> None:
+        assert EncodePriority.from_header("query") is EncodePriority.QUERY
+        assert EncodePriority.from_header(" Query ") is EncodePriority.QUERY
+        assert EncodePriority.from_header(None) is EncodePriority.BULK
+        assert EncodePriority.from_header("bulk") is EncodePriority.BULK
+
+
+class TestQueriesDuringIndexing:
+    """End to end through ``ModelManager.encode`` with a model that takes
+    real (thread) time per call, as a CPU model does."""
+
+    @pytest.mark.asyncio
+    async def test_a_query_does_not_wait_for_queued_indexing_batches(self) -> None:
+        manager = ModelManager(max_concurrency=2, query_reserved_slots=1)
+        release_bulk = threading.Event()
+        encoded: list[str] = []
+
+        model = MagicMock()
+
+        def encode(texts: list[str], **_kwargs: object) -> np.ndarray:
+            if texts[0].startswith("batch"):
+                release_bulk.wait(timeout=5)
+            encoded.append(texts[0])
+            return np.zeros((len(texts), 2))
+
+        model.encode.side_effect = encode
+
+        with patch.object(manager, "get_model", new_callable=AsyncMock, return_value=model):
+            batches = [
+                asyncio.ensure_future(
+                    manager.encode("m", [f"batch-{i}"], priority=EncodePriority.BULK)
+                )
+                for i in range(4)
+            ]
+            await asyncio.sleep(0.05)
+            # Every indexing batch is running or queued; the query still
+            # finishes while the first batch is stuck in the model.
+            await asyncio.wait_for(
+                manager.encode("m", ["query"], priority=EncodePriority.QUERY),
+                timeout=2,
+            )
+            assert encoded == ["query"]
+            release_bulk.set()
+            await asyncio.gather(*batches)
+        assert sorted(encoded[1:]) == [f"batch-{i}" for i in range(4)]
+
+
+class TestDefaultEncodeConcurrency:
+    """Without an explicit setting, encode slots follow the container's CPUs."""
+
+    def test_follows_effective_cpu_count_not_host(self) -> None:
+        import os
+
+        from app import embedding_main
+
+        with (
+            patch.object(os, "cpu_count", return_value=64),
+            patch.object(embedding_main, "effective_cpu_count", return_value=4),
+        ):
+            assert embedding_main._default_max_concurrent_embeddings() == 4
+
+    def test_floor_of_two(self) -> None:
+        from app import embedding_main
+
+        with patch.object(embedding_main, "effective_cpu_count", return_value=1):
+            assert embedding_main._default_max_concurrent_embeddings() == 2
+
+    def test_health_reports_cpu_source_and_slots(self, client) -> None:
+        test_client, _ = client
+        with (
+            patch("app.embedding_main.effective_cpu_count", return_value=3),
+            patch("app.embedding_main.effective_cpu_source", return_value="cgroup_v1"),
+        ):
+            body = test_client.get("/health").json()
+        assert body["cpu"]["effective_cpus"] == 3
+        assert body["cpu"]["source"] == "cgroup_v1"
+
+    def test_module_constant_comes_from_helper(self) -> None:
+        import os
+        import subprocess
+        import sys
+
+        code = (
+            "import app.services.resource_governor.probe as p;"
+            "p.effective_cpu_count = lambda: 7;"
+            "import app.embedding_main as m;"
+            "print(m.MAX_CONCURRENT_EMBEDDINGS)"
+        )
+        env = {k: v for k, v in os.environ.items() if k != "EMBEDDING_SERVER_MAX_CONCURRENCY"}
+        out = subprocess.run(
+            [sys.executable, "-c", code], env=env, capture_output=True, text=True, check=True, timeout=300
+        )
+        assert out.stdout.strip().splitlines()[-1] == "7"
+
+    def test_health_reports_slot_count(self, client) -> None:
+        from app import embedding_main
+
+        test_client, _ = client
+        with patch.object(embedding_main, "MAX_CONCURRENT_EMBEDDINGS", 11):
+            body = test_client.get("/health").json()
+        assert body["cpu"]["max_concurrent_embeddings"] == 11

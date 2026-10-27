@@ -45,6 +45,14 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
     hr               → skipped (no block emitted)
     img              → Block(IMAGE)  (uri from caption_map alt → base64, or inline
                          data:image src; HTTP src alone does not emit a block)
+                         Author alt → media_metadata.alt_text; <figcaption>
+                         (else the alt) → image_metadata.captions.
+                         Icon-sized images inside running text become their
+                         alt text instead of splitting the paragraph.
+
+    a (image only,   → "[label]" text, label from title / alt / target path
+    before text in     (not for page controls such as edit or back-to-top)
+    li / td / th)
 
     div / section /… → recurse into children, or emit Block(TEXT, PARAGRAPH) when
                        the node has text but no block-level descendants.
@@ -60,11 +68,12 @@ Block / group mapping (mirrors markdown_to_blocks.MarkdownToBlocksConverter):
 
 from __future__ import annotations
 
+import logging
 import re
 from dataclasses import dataclass, field
 from collections.abc import Callable
 from typing import Iterator
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlsplit
 from uuid import uuid4
 
 from selectolax.lexbor import LexborHTMLParser, LexborNode
@@ -91,9 +100,14 @@ from app.models.blocks import (
     GroupSubType,
     GroupType,
     ImageMetadata,
+    MediaMetadata,
     TableMetadata,
 )
+from app.modules.parsers.link_text import markdown_link_destination
 from app.modules.parsers.text_splitting import split_long_text
+from app.modules.transformers.block_container_validator import strip_base64_images
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Tag classification
@@ -180,6 +194,12 @@ class NormalizedTable:
     num_cols: int
     num_body_rows: int
     has_header: bool
+    # A leading row that is one cell spanning the whole table names the table
+    # (an infobox title) rather than its columns.
+    title: str = ""
+    # Per body row: whether its first cell is a row label (`<th>`), which is
+    # what a header-less key/value table (an infobox) is made of.
+    row_labels: list[bool] = field(default_factory=list)
 
     def to_markdown(self) -> str:
         """Render this table as a GitHub-flavoured markdown pipe table.
@@ -355,9 +375,12 @@ def _inline_text(node: LexborNode) -> str:
 
 
 _TABLE_TAG_RE = re.compile(r"<table\b", re.IGNORECASE)
+# Nested-table serialization depth (see HtmlTableNormalizer): 3 keeps real
+# nested tables readable while bounding pathological nesting.
+_MAX_NESTED_TABLE_DEPTH = 3
 
 
-def _html_to_markdown(html: str) -> str:
+def _html_to_markdown(html: str, depth: int = 0) -> str:
     """Convert an HTML fragment to ATX-style markdown via ``markdownify``.
 
     Central HTML→markdown bridge for the parser. Called whenever inline
@@ -377,7 +400,7 @@ def _html_to_markdown(html: str) -> str:
     root = parser.css_first("ph-pipes-table-root")
     if root is None:
         return markdownify(html, heading_style="ATX").strip()
-    return _lexbor_subtree_to_markdown(root).strip()
+    return _lexbor_subtree_to_markdown(root, depth).strip()
 
 
 def _html_fragment_to_segments(
@@ -571,6 +594,285 @@ def _resolve_relative_links_on_tree(root: LexborNode, base_url: str) -> None:
         anchor.attrs["href"] = urljoin(base_url, href)
 
 
+def _encode_link_destinations_on_tree(root: LexborNode) -> None:
+    """Percent-encode ``<a href>`` and ``<img src>`` for use as markdown destinations.
+
+    Every block's markdown comes from markdownify over this tree, which copies
+    URLs verbatim; a raw space or parenthesis would end the destination early
+    and leave ``[`` / ``](...)`` fragments in stored and embedded text. Inline
+    ``data:`` sources are left alone: they are the image bytes the walker stores.
+    """
+    for tag, attr in (("a", "href"), ("img", "src")):
+        for node in root.css(f"{tag}[{attr}]"):
+            value = (node.attributes or {}).get(attr) or ""
+            if not value or value.lstrip().startswith("data:"):
+                continue
+            encoded = markdown_link_destination(value)
+            if encoded != value:
+                node.attrs[attr] = encoded
+
+
+# Set by ``SelectolaxHtmlParser.extract_and_replace_images``, which rewrites
+# ``alt`` to a lookup key for the downloaded image; this keeps the author's alt.
+ORIGINAL_ALT_ATTR = "data-ph-alt"
+
+_ICON_MAX_PX = 32
+_ICON_LINK_CELL_TAGS = frozenset({"li", "td", "th"})
+_ANCHOR_TAGS = frozenset({"a"})
+_ICON_TEXT_CONTAINER_TAGS = frozenset({
+    "p", "li", "td", "th", "dd", "dt", "figcaption", "caption", "address",
+    *_HEADING_TAGS,
+})
+_GENERIC_LINK_LABELS = frozenset({
+    "edit", "top", "back to top", "icon", "image", "link", "permalink",
+    "anchor", "external link", "more", "print", "share", "download",
+})
+_IMAGE_FILE_RE = re.compile(r"\.(?:png|jpe?g|gif|svg|webp|bmp|ico|tiff?)$", re.IGNORECASE)
+_PAGE_EXTENSION_RE = re.compile(r"\.(?:html?|php|aspx?|jsp)$", re.IGNORECASE)
+
+
+def original_alt(img: LexborNode) -> str:
+    """The alt text the author wrote, even after the alt was rewritten to a key."""
+    attrs = img.attributes or {}
+    if ORIGINAL_ALT_ATTR in attrs:
+        return (attrs.get(ORIGINAL_ALT_ATTR) or "").strip()
+    return (attrs.get("alt") or "").strip()
+
+
+def _img_data_uri(img: LexborNode, caption_map: dict[str, str]) -> str | None:
+    """The ``data:image`` URI an ``<img>`` will be stored with, or ``None``.
+
+    ``caption_map`` (keyed by ``alt``) wins over ``src``, then the first
+    ``srcset`` entry. HTTP(S) sources are not stored, so they return ``None``.
+    """
+    attrs = img.attributes or {}
+    alt_text = (attrs.get("alt") or "").strip()
+    if alt_text and alt_text in caption_map:
+        caption_uri = (caption_map[alt_text] or "").strip()
+        if caption_uri.startswith("data:image"):
+            return caption_uri
+    src = (attrs.get("src") or "").strip()
+    if not src and attrs.get("srcset"):
+        first_part = attrs["srcset"].split(",")[0].split()
+        if first_part:
+            src = first_part[0].strip()
+    return src if src.startswith("data:image") else None
+
+
+def _is_generic_label(text: str | None) -> bool:
+    return (text or "").strip().lower() in _GENERIC_LINK_LABELS
+
+
+def _pixel_size(value: str | None) -> int | None:
+    match = re.match(r"\s*(\d+)(?:\.\d+)?\s*(?:px)?\s*$", value or "")
+    return int(match.group(1)) if match else None
+
+
+def _is_icon_image(img: LexborNode) -> bool:
+    """Declared no larger than an icon in every dimension the markup gives."""
+    attrs = img.attributes or {}
+    sizes = [_pixel_size(attrs.get(name)) for name in ("width", "height") if attrs.get(name)]
+    return bool(sizes) and all(size is not None and size <= _ICON_MAX_PX for size in sizes)
+
+
+def _nearest_ancestor(node: LexborNode, tags: frozenset[str]) -> LexborNode | None:
+    parent = node.parent
+    while parent is not None:
+        if _tag_name(parent) in tags:
+            return parent
+        parent = parent.parent
+    return None
+
+
+def _is_descendant(node: LexborNode, ancestor: LexborNode) -> bool:
+    parent = node.parent
+    while parent is not None:
+        if parent == ancestor:
+            return True
+        parent = parent.parent
+    return False
+
+
+def _text_around(container: LexborNode, target: LexborNode) -> tuple[bool, bool]:
+    """Whether ``container`` has visible text before and after ``target``."""
+    before = after = seen = False
+    for node in container.traverse(include_text=True):
+        if node == target:
+            seen = True
+            continue
+        if _tag_name(node) is not None or not node.text(deep=False).strip():
+            continue
+        if seen and _is_descendant(node, target):
+            continue
+        if seen:
+            after = True
+        else:
+            before = True
+    return before, after
+
+
+def _replace_with_inline_text(node: LexborNode, text: str) -> None:
+    """Replace ``node`` with ``text``, joined into the text node after it.
+
+    One text node rather than two siblings: table cells join each child on
+    its own line, which would put a label on a different line from its name.
+    """
+    previous = node.prev
+    if previous is not None and _tag_name(previous) is None:
+        preceding = previous.text(deep=False)
+        if preceding and not preceding[-1].isspace():
+            text = " " + text
+    following_node = node.next
+    if following_node is not None and _tag_name(following_node) is None:
+        following = following_node.text(deep=False)
+        joiner = "" if not following or following[0].isspace() else " "
+        following_node.replace_with(text + joiner + following)
+        node.decompose()
+        return
+    node.replace_with(text + " ")
+
+
+def _label_from_target(href: str) -> str:
+    """A readable name from the last path segment of a link target, or ``""``."""
+    if not href or href.startswith(("#", "javascript:", "mailto:", "data:")):
+        return ""
+    try:
+        path = urlsplit(href).path
+    except ValueError:
+        return ""
+    segment = unquote(path.rstrip("/").rsplit("/", 1)[-1]).strip()
+    if not segment or segment.isdigit() or _IMAGE_FILE_RE.search(segment):
+        return ""
+    segment = _PAGE_EXTENSION_RE.sub("", segment)
+    return re.sub(r"[_\s]+", " ", segment).strip()
+
+
+def _icon_link_label(anchor: LexborNode, img: LexborNode) -> str:
+    """The name an icon link stands for, or ``""`` when it is a page control.
+
+    A generic title or alt ("Edit", "Top") marks a control, so it ends the
+    search rather than falling through to the target. A target with a query
+    string is an action, not a thing, and yields no name either.
+    """
+    attrs = anchor.attributes or {}
+    for candidate in ((attrs.get("title") or "").strip(), original_alt(img)):
+        if candidate:
+            return "" if _is_generic_label(candidate) else candidate
+    href = (attrs.get("href") or "").strip()
+    if "?" in href:
+        return ""
+    label = _label_from_target(href)
+    return "" if _is_generic_label(label) else label
+
+
+def _label_icon_only_links(root: LexborNode, caption_map: dict[str, str]) -> int:
+    """Replace an image-only link that introduces a list item or cell with ``[label]``.
+
+    Such a link (a flag or logo in front of a name) carries the only mention
+    of what it links to; left as an image it is dropped whenever the image
+    cannot be stored. Links with no usable label, or not placed before text,
+    are left alone so edit and back-to-top controls do not turn into words,
+    and so is a full-size image that will be stored as an image block.
+    """
+    # Decide against the tree as parsed: a label written for one link is text
+    # that would make the next link in the same cell look like it follows text.
+    pending: list[tuple[LexborNode, str]] = []
+    for anchor in root.css("a"):
+        if anchor.text(deep=True).strip():
+            continue
+        images = anchor.css("img")
+        if not images:
+            continue
+        if any(not _is_icon_image(img) and _img_data_uri(img, caption_map) for img in images):
+            continue
+        cell = _nearest_ancestor(anchor, _ICON_LINK_CELL_TAGS)
+        if cell is None:
+            continue
+        before, after = _text_around(cell, anchor)
+        if before or not after:
+            continue
+        label = _icon_link_label(anchor, images[0])
+        if label:
+            pending.append((anchor, label))
+    for anchor, label in pending:
+        _replace_with_inline_text(anchor, f"[{label}]")
+    return len(pending)
+
+
+def _inline_icons_as_text(root: LexborNode) -> int:
+    """Replace icon-sized images inside running text with their alt text.
+
+    Left as images they split the paragraph into separate text blocks around
+    an image block that carries nothing a reader needs.
+    """
+    replaced = 0
+    for img in root.css("img"):
+        if not _is_icon_image(img):
+            continue
+        container = _nearest_ancestor(img, _ICON_TEXT_CONTAINER_TAGS)
+        if container is None:
+            continue
+        if not any(_text_around(container, img)):
+            continue
+        alt = original_alt(img)
+        anchor = _nearest_ancestor(img, _ANCHOR_TAGS)
+        if anchor is not None and (
+            _is_generic_label(alt) or _is_generic_label((anchor.attributes or {}).get("title"))
+        ):
+            alt = ""
+        if alt:
+            _replace_with_inline_text(img, alt)
+        else:
+            img.decompose()
+        replaced += 1
+    return replaced
+
+
+_FIGURE_IMAGE_KEY = "ph-figure-image-{}"
+_FIGURE_TAGS = frozenset({"figure"})
+
+
+def _figure_captions(root: LexborNode) -> dict[str, str]:
+    """Image key → ``<figcaption>`` text for images inside a ``<figure>``.
+
+    The walker finds an image's metadata by its ``alt``. Downloaded images
+    already carry a unique ``Image_N`` key there; an inline ``data:`` image
+    keeps the author's alt, which can repeat or be empty, so it is given a
+    key of its own (author alt kept in ``ORIGINAL_ALT_ATTR``).
+    """
+    captions: dict[str, str] = {}
+    for figure in root.css("figure"):
+        # A nested figure's caption and images are its own, not this one's.
+        caption_node = next(
+            (child for child in _direct_children(figure) if _tag_name(child) == "figcaption"),
+            None,
+        )
+        caption = _node_text(caption_node) if caption_node is not None else ""
+        if not caption:
+            continue
+        for img in figure.css("img"):
+            if _nearest_ancestor(img, _FIGURE_TAGS) != figure:
+                continue
+            attrs = img.attributes or {}
+            if ORIGINAL_ALT_ATTR not in attrs and _img_data_uri(img, {}):
+                img.attrs[ORIGINAL_ALT_ATTR] = (attrs.get("alt") or "").strip()
+                img.attrs["alt"] = _FIGURE_IMAGE_KEY.format(len(captions) + 1)
+            alt = ((img.attributes or {}).get("alt") or "").strip()
+            if alt:
+                captions.setdefault(alt, caption)
+    return captions
+
+
+def _original_alts(root: LexborNode) -> dict[str, str]:
+    """Lookup key → author alt, for images whose alt was rewritten to a key."""
+    mapping: dict[str, str] = {}
+    for img in root.css("img"):
+        attrs = img.attributes or {}
+        if ORIGINAL_ALT_ATTR in attrs and attrs.get("alt"):
+            mapping[attrs["alt"].strip()] = (attrs.get(ORIGINAL_ALT_ATTR) or "").strip()
+    return mapping
+
+
 # ---------------------------------------------------------------------------
 # Table grid utilities
 # ---------------------------------------------------------------------------
@@ -587,39 +889,30 @@ def _table_caption(table_node: LexborNode) -> str:
     return ""
 
 
-def _table_section_rows(
-    table_node: LexborNode,
-) -> tuple[list[LexborNode], list[LexborNode]]:
-    """Split a ``<table>`` into (header_rows, body_rows) lists of ``<tr>`` nodes.
+def _table_rows(table_node: LexborNode) -> tuple[list[LexborNode], int]:
+    """All ``<tr>`` rows of a ``<table>`` in reading order, and how many of
+    the leading ones are header rows.
 
-    Uses explicit ``<thead>``/``<tbody>`` when present. Otherwise infers headers
-    by counting leading rows with ``<th>`` cells (handles Lexbor auto-inserted
-    ``<tbody>`` transparently). Header rows feed ``TableMetadata.column_names``;
-    body rows become individual ``TABLE_ROW`` blocks.
+    ``<thead>`` rows come first and are the header. Without one, the header is
+    inferred from the leading rows (see ``_count_leading_header_rows``).
+    Header and body are returned together so one grid expansion carries a
+    rowspan across the boundary between them.
     """
     thead_rows: list[LexborNode] = []
-    body_rows: list[LexborNode] = []
-    bare_rows: list[LexborNode] = []
-
+    other_rows: list[LexborNode] = []
     for child in _direct_children(table_node):
         tag = _tag_name(child)
         if tag == "thead":
             thead_rows.extend(_row_children(child))
         elif tag in {"tbody", "tfoot"}:
-            body_rows.extend(_row_children(child))
+            other_rows.extend(_row_children(child))
         elif tag == "tr":
-            bare_rows.append(child)
+            other_rows.append(child)
 
     if thead_rows:
-        return thead_rows, body_rows + bare_rows
-
-    all_rows = body_rows + bare_rows
-    if not all_rows:
-        return [], []
-
-    # Lexbor may auto-insert <tbody>; infer headers from leading <th> rows.
-    split_at = _count_leading_header_rows(all_rows)
-    return all_rows[:split_at], all_rows[split_at:]
+        return thead_rows + other_rows, len(thead_rows)
+    # Lexbor may auto-insert <tbody>; infer headers from the leading rows.
+    return other_rows, _count_leading_header_rows(other_rows)
 
 
 def _row_children(section_node: LexborNode) -> list[LexborNode]:
@@ -631,22 +924,33 @@ def _row_children(section_node: LexborNode) -> list[LexborNode]:
     return [child for child in _direct_children(section_node) if _tag_name(child) == "tr"]
 
 
-def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
-    """Count consecutive leading rows that contain at least one ``<th>`` cell.
+def _is_row_label(cell: LexborNode) -> bool:
+    scope = str((cell.attributes or {}).get("scope") or "").strip().lower()
+    return scope in {"row", "rowgroup"}
 
-    Heuristic for tables without explicit ``<thead>``/``<tbody>``: the first
-    all-``<td>`` row ends the header region. Used by ``_table_section_rows``
-    to split rows into header and body segments.
+
+def _count_leading_header_rows(row_nodes: list[LexborNode]) -> int:
+    """Count the leading rows that label columns, for tables without ``<thead>``.
+
+    A header row is made only of ``<th>`` cells (empty ``<td>`` padding aside)
+    and none of them labels its row (``scope="row"``). A ``<td>`` with content,
+    or a row label, marks a data row: Wikipedia-style tables put a ``<th>`` at
+    the start of every data row, and counting those as headers turned the
+    first data row into every column's label, or swallowed whole tables.
     """
     count = 0
     for row in row_nodes:
         cells = [child for child in _direct_children(row) if _tag_name(child) in {"th", "td"}]
         if not cells:
             break
-        if any(_tag_name(cell) == "th" for cell in cells):
-            count += 1
-        else:
+        is_header = all(
+            (_tag_name(cell) == "th" and not _is_row_label(cell))
+            or (_tag_name(cell) == "td" and not _node_text(cell).strip())
+            for cell in cells
+        ) and any(_tag_name(cell) == "th" for cell in cells)
+        if not is_header:
             break
+        count += 1
     return count
 
 
@@ -703,6 +1007,14 @@ def _grid_width(*grids: list[list[NormalizedCell]]) -> int:
     """
     widths = [len(row) for grid in grids for row in grid]
     return max(widths) if widths else 0
+
+
+def _spanning_title(row: list[NormalizedCell], width: int) -> str:
+    """The text of a row that is one cell spanning the full table width."""
+    origins = [cell for cell in row if cell.is_origin and cell.text.strip()]
+    if len(origins) == 1 and origins[0].colspan >= width:
+        return origins[0].text.strip()
+    return ""
 
 
 def _column_groups(
@@ -776,116 +1088,57 @@ def _collapse_body_rows(
     body_grid: list[list[NormalizedCell]],
     column_groups: list[tuple[int, int]],
 ) -> list[list[str]]:
-    """Collapse the expanded body grid into output rows with merged column groups.
+    """One output row per HTML row, its physical columns merged per logical
+    column group.
 
-    Applies two merges: (1) consecutive HTML rows sharing a first-column
-    rowspan are grouped into one output row, and (2) physical columns within
-    each logical column group are merged per cell. The result is a list of
-    string-valued rows ready for ``TABLE_ROW`` block emission.
+    A rowspan's value is repeated in every row it covers, so each row stands
+    on its own: merging the rows a first-column rowspan covers into one output
+    row kept only one of their values per column and severed each value from
+    the rest of its row.
     """
-    if not body_grid:
-        return []
-
-    output: list[list[str]] = []
-    row_idx = 0
-    while row_idx < len(body_grid):
-        span = _body_output_row_span(body_grid[row_idx])
-        group_rows = body_grid[row_idx:row_idx + span]
-        output.append([
-            _collapse_body_cell(group_rows, col_start, col_end)
-            for col_start, col_end in column_groups
-        ])
-        row_idx += span
-    return output
-
-
-def _body_output_row_span(row: list[NormalizedCell]) -> int:
-    """Return how many grid rows merge into one output row (first column's rowspan).
-
-    Only the first column drives grouping — middle-column spans must not fold
-    unrelated rows together, which would produce incorrect records.
-    """
-    if not row:
-        return 1
-    label = row[0]
-    if label.is_origin and label.rowspan > 1:
-        return label.rowspan
-    return 1
+    return [
+        [_collapse_body_cell(row, col_start, col_end) for col_start, col_end in column_groups]
+        for row in body_grid
+    ]
 
 
 def _collapse_body_cell(
-    group_rows: list[list[NormalizedCell]],
+    row: list[NormalizedCell],
     col_start: int,
     col_end: int,
 ) -> str:
-    """Format one logical column group across one or more grouped HTML rows.
+    """The text of one logical column group in one row.
 
-    Single-column groups delegate to ``_collapse_single_column_cell`` (handles
-    rowspan labels and stacked values). Multi-column groups join origin cells
-    within the range with ``" | "`` per row, then stack rows with newlines.
+    Cells covered by a rowspan carry the spanning cell's text; colspan
+    continuation slots are empty and drop out, so every remaining part is a
+    distinct cell, even when two neighbours hold the same value.
     """
-    group_width = col_end - col_start
-    if group_width == 1:
-        return _collapse_single_column_cell(group_rows, col_start)
-
-    lines: list[str] = []
-    for html_row in group_rows:
-        parts: list[str] = []
-        for col in range(col_start, col_end):
-            cell = html_row[col]
-            if not cell.is_origin:
-                continue
-            text = cell.text.strip()
-            if text:
-                parts.append(text)
-        if parts:
-            lines.append(_CELL_SEP.join(parts))
-    return _LEVEL_SEP.join(lines)
+    parts = [text for col in range(col_start, col_end) if (text := row[col].text.strip())]
+    return _CELL_SEP.join(parts)
 
 
-def _collapse_single_column_cell(
-    group_rows: list[list[NormalizedCell]],
-    col: int,
-) -> str:
-    """Format a single column across grouped rows, handling rowspan and label semantics.
-
-    Single row → text directly. Rowspan > 1 origin → that cell wins (covers
-    the full group). First column (label) → first non-empty value only. Other
-    columns → all values newline-joined.
-    """
-    if len(group_rows) == 1:
-        return group_rows[0][col].text.strip()
-
-    values: list[str] = []
-    for html_row in group_rows:
-        cell = html_row[col]
-        if not cell.is_origin:
-            continue
-        text = cell.text.strip()
-        if not text:
-            continue
-        if cell.rowspan > 1:
-            return text
-        if col == 0:
-            return text
-        values.append(text)
-    return _LEVEL_SEP.join(values)
-
-
-def _format_table_row(headers: list[str], cells: list[str]) -> str:
+def _format_table_row(headers: list[str], cells: list[str], *, labelled: bool = False) -> str:
     """Build a ``Header: value`` sentence for one table row (for RAG / full-text search).
 
-    Pairs each cell with its column header (e.g. ``"Name: Alice, Age: 30"``).
-    Falls back to ``Column N`` labels for ragged tables, or plain comma-join
-    when no headers exist.
+    Pairs each cell with its column header (e.g. ``"Name: Alice, Age: 30"``),
+    falling back to ``Column N`` labels for ragged tables. Empty cells are
+    left out (``"Ref.: "`` says nothing), and a cell under an empty header
+    is its bare value. Without headers, a row whose first
+    cell labels it reads ``"Born: 9 November 1915"``; otherwise cells are
+    comma-joined.
     """
     if headers:
-        parts = [
-            f"{headers[i] if i < len(headers) else f'Column {i + 1}'}: {cell}"
-            for i, cell in enumerate(cells)
-        ]
+        parts = []
+        for i, cell in enumerate(cells):
+            if not cell.strip():
+                continue
+            header = headers[i] if i < len(headers) else f"Column {i + 1}"
+            parts.append(f"{header}: {cell}" if header.strip() else cell)
         return ", ".join(parts)
-    return ", ".join(cells)
+    values = [cell for cell in cells if cell.strip()]
+    if labelled and len(values) > 1 and cells and cells[0].strip():
+        return f"{values[0]}: {', '.join(values[1:])}"
+    return ", ".join(values)
 
 
 def _escape_markdown_cell(value: str) -> str:
@@ -931,21 +1184,50 @@ class HtmlTableNormalizer:
     Nested ``<table>`` elements are normalized recursively and rendered as
     markdown pipe tables inside the parent cell text.
     Inline / block markup inside cells is converted to markdown.
+
+    Nesting is capped (`_MAX_NESTED_TABLE_DEPTH`): every level re-serializes
+    everything below it, so deeply nested tables grow exponentially: a 17KB
+    page whose tables nested 17 deep produced a 36MB row. Past the cap a
+    nested table contributes its plain text.
     """
+
+    def __init__(self, depth: int = 0) -> None:
+        self._depth = depth
 
     def normalize(self, table_node: LexborNode) -> NormalizedTable:
         """Expand rowspan/colspan into a grid, then collapse into logical columns.
 
-        Produces the same collapsed shape the block walker expects: one header
-        label per logical column and one body row per merged HTML row group.
+        Produces one header label per logical column and one body row per HTML
+        row. Header and body rows are expanded as one grid so a rowspan that
+        starts in the header region carries into the body.
         """
-        header_row_nodes, body_row_nodes = _table_section_rows(table_node)
-        header_grid = self._expand_rows(header_row_nodes, is_header=True)
-        body_grid = self._expand_rows(body_row_nodes, is_header=False)
+        row_nodes, header_count = _table_rows(table_node)
+        grid, header_flags = self._expand_rows(row_nodes, header_count=header_count)
+        width = _grid_width(grid)
+        if (
+            header_count == 0 and len(grid) > 1 and width > 1
+            and any(_tag_name(child) in {"th", "td"} for child in _direct_children(row_nodes[0]))
+            and _spanning_title(grid[0], width)
+        ):
+            # A <td> title is not a header row, so counting stopped on it and
+            # the column labels below it were read as data.
+            header_count = 1 + _count_leading_header_rows(row_nodes[1:])
+            grid, header_flags = self._expand_rows(row_nodes, header_count=header_count)
+        grid = _pad_grid_to_width(grid, width)
+        header_grid = [row for row, is_header in zip(grid, header_flags, strict=True) if is_header]
+        body_grid = [row for row, is_header in zip(grid, header_flags, strict=True) if not is_header]
 
-        width = _grid_width(header_grid, body_grid)
-        header_grid = _pad_grid_to_width(header_grid, width)
-        body_grid = _pad_grid_to_width(body_grid, width)
+        title = ""
+        if (
+            header_grid and len(grid) > 1 and width > 1
+            and (row_title := _spanning_title(header_grid[0], width))
+        ):
+            title = row_title
+            header_grid = header_grid[1:]
+        if not body_grid:
+            # A table made only of header-like rows still holds data; losing
+            # it is worse than losing its column labels.
+            header_grid, body_grid = [], header_grid
 
         column_groups = _column_groups(header_grid, width)
         headers = _collapse_header_row(header_grid, column_groups) if header_grid else []
@@ -957,27 +1239,37 @@ class HtmlTableNormalizer:
             num_cols=len(column_groups),
             num_body_rows=len(body_rows),
             has_header=bool(headers),
+            title=title,
+            row_labels=[bool(row) and row[0].is_header and bool(row[0].text.strip()) for row in body_grid],
         )
 
     def _expand_rows(
         self,
         row_nodes: list[LexborNode],
         *,
-        is_header: bool,
-    ) -> list[list[NormalizedCell]]:
-        """Expand HTML table rows into a 2D grid, filling rowspan/colspan placeholder slots.
-        Tracks pending rowspans per column and pads the final grid to a uniform width.
+        header_count: int,
+    ) -> tuple[list[list[NormalizedCell]], list[bool]]:
+        """Expand HTML table rows into a 2D grid, filling rowspan/colspan slots.
+
+        Returns the grid and, per grid row, whether it is a header row (the
+        first ``header_count`` rows with cells). Rowspan slots carry the
+        spanning cell's text; colspan slots are empty.
         """
         grid: list[list[NormalizedCell]] = []
+        header_flags: list[bool] = []
         rowspan_pending: dict[int, tuple[int, NormalizedCell]] = {}
 
-        for row_node in row_nodes:
+        for position, row_node in enumerate(row_nodes):
             cells = [
                 child for child in _direct_children(row_node)
                 if _tag_name(child) in {"th", "td"}
             ]
-            if not cells:
+            # A row every slot of which is covered by rowspans from above
+            # still consumes one row of each span; skipping it would shift
+            # every later row.
+            if not cells and not rowspan_pending:
                 continue
+            is_header = position < header_count
 
             row: list[NormalizedCell] = []
             col = 0
@@ -1014,18 +1306,22 @@ class HtmlTableNormalizer:
                     else:
                         slot = NormalizedCell(
                             text="",
+                            rowspan=rowspan,
                             colspan=colspan,
-                            is_header=is_header,
+                            is_header=normalized.is_header,
                             is_origin=False,
                         )
                     row.append(slot)
                     if rowspan > 1:
-                        rowspan_pending[col + offset] = (rowspan - 1, normalized)
+                        # Each covered column repeats its own slot, so a later
+                        # row carries the text once, where the origin row has it.
+                        rowspan_pending[col + offset] = (rowspan - 1, slot)
                 col += colspan
 
             grid.append(row)
+            header_flags.append(is_header)
 
-        return _pad_grid(grid)
+        return grid, header_flags
 
     def _normalize_cell(self, cell_node: LexborNode, *, is_header: bool) -> NormalizedCell:
         """Build one ``NormalizedCell`` from a ``<th>``/``<td>`` node including span attributes."""
@@ -1048,10 +1344,15 @@ class HtmlTableNormalizer:
         for child in _direct_children(cell_node):
             tag = _tag_name(child)
             if tag == "table":
-                nested = self.normalize(child)
-                serialized = normalized_table_to_markdown(nested)
-                if serialized:
-                    parts.append(serialized)
+                if self._depth >= _MAX_NESTED_TABLE_DEPTH:
+                    text = _table_plain_text(child)
+                    if text:
+                        parts.append(text)
+                else:
+                    nested = HtmlTableNormalizer(self._depth + 1).normalize(child)
+                    serialized = normalized_table_to_markdown(nested)
+                    if serialized:
+                        parts.append(serialized)
             elif tag == "img" and is_header:
                 continue
             elif tag is None:
@@ -1059,7 +1360,9 @@ class HtmlTableNormalizer:
                 if text:
                     parts.append(text)
             else:
-                markdown = _html_to_markdown(child.html)
+                # Depth + 1: a nested table reached through this markup is one
+                # serialization level deeper (that recursion is what exploded).
+                markdown = _html_to_markdown(child.html, self._depth + 1)
                 if is_header:
                     markdown = _strip_inline_images_from_markdown(markdown)
                 if markdown:
@@ -1067,13 +1370,13 @@ class HtmlTableNormalizer:
         return "\n".join(parts).strip()
 
 
-def normalize_html_table(table_node: LexborNode) -> NormalizedTable:
+def normalize_html_table(table_node: LexborNode, depth: int = 0) -> NormalizedTable:
     """Public entry: normalize one ``<table>`` DOM node into collapsed logical columns.
 
     Thin wrapper around ``HtmlTableNormalizer`` for callers that need the
     collapsed grid without walking the full block conversion pipeline.
     """
-    return HtmlTableNormalizer().normalize(table_node)
+    return HtmlTableNormalizer(depth).normalize(table_node)
 
 
 def normalized_table_to_markdown(
@@ -1081,16 +1384,28 @@ def normalized_table_to_markdown(
     *,
     caption: str = "",
 ) -> str:
-    """Render a normalized table as markdown, optionally prefixing a caption on its own line."""
+    """Render a normalized table as markdown, prefixed by its caption and title row."""
     table_md = _render_table_markdown(table)
+    heading = "\n".join(_distinct_lines(caption, table.title))
     if not table_md:
-        return caption.strip()
-    if caption.strip():
-        return f"{caption.strip()}\n\n{table_md}"
+        return heading
+    if heading:
+        return f"{heading}\n\n{table_md}"
     return table_md
 
 
-def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
+def _table_plain_text(table_node: LexborNode) -> str:
+    """Text of a table past the nesting cap; the separator keeps adjacent cells
+    from fusing into one token."""
+    return table_node.text(deep=True, separator=" ", strip=True).strip()
+
+
+def _distinct_lines(*texts: str) -> list[str]:
+    """The non-empty stripped ``texts``, each once, in order."""
+    return list(dict.fromkeys(stripped for text in texts if (stripped := text.strip())))
+
+
+def _lexbor_subtree_to_markdown(node: LexborNode, depth: int = 0) -> str:
     """Render a DOM subtree to markdown, normalizing ``<table>`` nodes in-place.
 
     Walks children recursively whenever a ``<table>`` appears anywhere in the
@@ -1101,7 +1416,11 @@ def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
     """
     tag = _tag_name(node)
     if tag == "table":
-        return normalized_table_to_markdown(normalize_html_table(node))
+        # ``depth`` is the level this table would sit at, so a table reached
+        # through cell markup gets the same cap as a direct child table.
+        if depth > _MAX_NESTED_TABLE_DEPTH:
+            return _table_plain_text(node)
+        return normalized_table_to_markdown(normalize_html_table(node, depth))
 
     children = list(_direct_children(node))
     if not children:
@@ -1122,12 +1441,10 @@ def _lexbor_subtree_to_markdown(node: LexborNode) -> str:
     parts: list[str] = []
     for child in children:
         child_tag = _tag_name(child)
-        if child_tag == "table":
-            piece = normalized_table_to_markdown(normalize_html_table(child))
-        elif child_tag is None:
+        if child_tag is None:
             piece = child.text(deep=False, strip=False).strip()
         else:
-            piece = _lexbor_subtree_to_markdown(child)
+            piece = _lexbor_subtree_to_markdown(child, depth)
         if piece:
             parts.append(piece)
     return "\n\n".join(parts)
@@ -1170,11 +1487,23 @@ class HtmlToBlocksConverter:
             return BlocksContainer()
         if base_url:
             _resolve_relative_links_on_tree(root, base_url)
+        _encode_link_destinations_on_tree(root)
+        labelled = _label_icon_only_links(root, caption_map or {})
+        inlined = _inline_icons_as_text(root)
+        if labelled or inlined:
+            logger.debug(
+                "HTML parse: labelled %d icon-only link(s), inlined %d icon image(s)",
+                labelled, inlined,
+            )
         title_node = parser.css_first("head > title")
         document_title = _node_text(title_node) if title_node is not None else ""
+        # Runs first: it re-keys inline figure images that _original_alts reads.
+        figure_captions = _figure_captions(root)
         walker = _DomWalker(
             caption_map=caption_map,
             document_title=document_title,
+            original_alts=_original_alts(root),
+            figure_captions=figure_captions,
         )
         return walker.walk(root)
 
@@ -1196,6 +1525,8 @@ class _DomWalker:
         *,
         caption_map: dict[str, str] | None = None,
         document_title: str | None = None,
+        original_alts: dict[str, str] | None = None,
+        figure_captions: dict[str, str] | None = None,
     ) -> None:
         """Initialize walker state for one conversion pass.
 
@@ -1203,8 +1534,13 @@ class _DomWalker:
             caption_map: Alt-text to base64 URI map for inlined images.
             document_title: Non-empty ``<title>`` text from ``<head>``, emitted
                 as a leading HEADING before body content.
+            original_alts: Lookup key → author alt, for images whose ``alt``
+                was rewritten to a ``caption_map`` key.
+            figure_captions: Image key (``alt``) → ``<figcaption>`` text.
         """
         self.caption_map = caption_map or {}
+        self.original_alts = original_alts or {}
+        self.figure_captions = figure_captions or {}
         self.document_title = (document_title or "").strip()
         self.blocks: list[Block] = []
         self.block_groups: list[BlockGroup] = []
@@ -1601,7 +1937,7 @@ class _DomWalker:
             type=BlockType.TEXT,
             sub_type=BlockSubType.CODE,
             format=DataFormat.CODE,
-            data=content.rstrip("\n"),
+            data=strip_base64_images(content.rstrip("\n")),
             parent_index=self._current_parent_index(),
             code_metadata=CodeMetadata(language=language),
         ))
@@ -1652,22 +1988,7 @@ class _DomWalker:
         entry in ``srcset``. Only ``data:image`` URIs are returned; HTTP(S)
         URLs are ignored so behaviour matches standalone ``_emit_image``.
         """
-        attrs = node.attributes or {}
-        alt_text = (attrs.get("alt") or "").strip()
-        if alt_text and alt_text in self.caption_map:
-            caption_uri = (self.caption_map[alt_text] or "").strip()
-            if caption_uri.startswith("data:image"):
-                return caption_uri
-        src = (attrs.get("src") or "").strip()
-        if not src and attrs.get("srcset"):
-            srcset_parts = attrs["srcset"].split(",")
-            if srcset_parts:
-                first_part = srcset_parts[0].split()
-                if first_part:
-                    src = first_part[0].strip()
-        if src.startswith("data:image"):
-            return src
-        return None
+        return _img_data_uri(node, self.caption_map)
 
     def _uri_from_markdown(
         self,
@@ -1755,6 +2076,9 @@ class _DomWalker:
         if not uri:
             return None
 
+        author_alt = self.original_alts.get(alt_text, alt_text)
+        caption = self.figure_captions.get(alt_text) or author_alt
+
         image_fmt = None
         if uri.startswith("data:"):
             header = uri.split(",", 1)[0]
@@ -1775,9 +2099,10 @@ class _DomWalker:
             ),
             parent_block_index=parent_block_index,
             image_metadata=ImageMetadata(
-                captions=[alt_text] if alt_text else [],
+                captions=[caption] if caption else [],
                 image_format=image_fmt,
             ),
+            media_metadata=MediaMetadata(alt_text=author_alt) if author_alt else None,
         )
 
     def _append_block_only(self, block: Block) -> Block:
@@ -1804,11 +2129,15 @@ class _DomWalker:
         format: DataFormat,
         parent_block_index: int | None = None,
     ) -> Block | None:
-        """Emit one or more TEXT blocks, splitting oversized content at parse time."""
+        """Emit one or more TEXT blocks, splitting oversized content at parse time.
+
+        An image payload left in text (inside ``<pre>``, a table cell, or markup
+        that never became an ``<img>``) is replaced first, before the split.
+        """
         if not text or not text.strip():
             return None
 
-        chunks = split_long_text(text)
+        chunks = split_long_text(strip_base64_images(text))
         if parent_block_index is not None:
             last: Block | None = None
             for chunk in chunks:
@@ -2012,6 +2341,8 @@ class _DomWalker:
         self,
         headers: list[str],
         row_cells: list[_TableCell],
+        *,
+        labelled: bool = False,
     ) -> list[_Segment]:
         """Split one table row into alternating TEXT and IMAGE segments.
 
@@ -2021,15 +2352,21 @@ class _DomWalker:
         segment, then resumes accumulation. Mirrors
         ``markdown_to_blocks.MarkdownToBlocksConverter._split_table_row_into_segments``.
         """
-        pending_pairs: list[tuple[str, str]] = []
+        pending_pairs: list[tuple[int, str, str]] = []
         fragments: list[_Segment] = []
 
         def flush_text_fragment() -> None:
             if not pending_pairs:
                 return
-            hdrs = [pair[0] for pair in pending_pairs]
-            vals = [pair[1] for pair in pending_pairs]
-            text = _format_table_row(hdrs, vals)
+            vals = [pair[2] for pair in pending_pairs]
+            if headers:
+                text = _format_table_row([pair[1] for pair in pending_pairs], vals)
+            else:
+                # As on the text path: no invented "Column N" labels, and only
+                # the fragment that starts at the row's label reads "Label: value".
+                text = _format_table_row(
+                    [], vals, labelled=labelled and pending_pairs[0][0] == 0,
+                )
             if text.strip():
                 fragments.append(_Segment(kind="text", text=text))
             pending_pairs.clear()
@@ -2048,14 +2385,14 @@ class _DomWalker:
                 elif cell.plain:
                     value = cell.plain.strip()
                 if value:
-                    pending_pairs.append((header, value))
+                    pending_pairs.append((col_idx, header, value))
                 continue
 
             for seg in cell_segments:
                 if seg.kind == "text":
                     value = seg.text.strip()
                     if value:
-                        pending_pairs.append((header, value))
+                        pending_pairs.append((col_idx, header, value))
                 else:
                     flush_text_fragment()
                     fragments.append(seg)
@@ -2070,6 +2407,7 @@ class _DomWalker:
         row_number: int,
         headers: list[str],
         row_cells: list[_TableCell],
+        labelled: bool,
         row_block_indices: list[int],
         row_markdown: str,
     ) -> None:
@@ -2085,10 +2423,11 @@ class _DomWalker:
             row_number: 1-based row number stored on the container.
             headers: Collapsed column header labels for fragment formatting.
             row_cells: Per-column cell content (plain and markdown are identical).
+            labelled: Whether the row's first cell labels it (headerless tables).
             row_block_indices: Mutable list; receives the container block index.
             row_markdown: Joined cell markdown used for ``data:image`` URI lookup.
         """
-        segments = self._split_table_row_into_segments(headers, row_cells)
+        segments = self._split_table_row_into_segments(headers, row_cells, labelled=labelled)
         container = Block(
             id=str(uuid4()),
             index=len(self.blocks),
@@ -2202,7 +2541,8 @@ class _DomWalker:
             _strip_inline_images_from_markdown(header)
             for header in normalized.column_headers
         ]
-        caption = _table_caption(table_node)
+        # The title row was taken out of the grid, so it is kept even beside a <caption>.
+        captions = _distinct_lines(_table_caption(table_node), normalized.title)
         body_rows = normalized.body_rows
 
         row_block_indices: list[int] = []
@@ -2211,12 +2551,17 @@ class _DomWalker:
                 _TableCell(plain=cell, markdown=cell) for cell in row_cells
             ]
             row_markdown = " ".join(row_cells)
+            labelled = (
+                row_number <= len(normalized.row_labels)
+                and normalized.row_labels[row_number - 1]
+            )
             if self._row_has_images(table_cells):
                 self._emit_table_row_with_image_splits(
                     group_index=group.index,
                     row_number=row_number,
                     headers=headers,
                     row_cells=table_cells,
+                    labelled=labelled,
                     row_block_indices=row_block_indices,
                     row_markdown=row_markdown,
                 )
@@ -2229,7 +2574,9 @@ class _DomWalker:
                 format=DataFormat.JSON,
                 parent_index=group.index,
                 data={
-                    "row_natural_language_text": _format_table_row(headers, row_cells),
+                    "row_natural_language_text": _format_table_row(
+                        headers, row_cells, labelled=labelled,
+                    ),
                     "row_number": row_number,
                     "cells": row_cells,
                 },
@@ -2244,9 +2591,9 @@ class _DomWalker:
             num_of_cells=sum(len(row) for row in body_rows),
             has_header=normalized.has_header,
             column_names=headers or None,
-            captions=[caption] if caption else [],
+            captions=captions,
         )
-        group.data = {"table_summary": caption, "column_headers": headers}
+        group.data = {"table_summary": "\n".join(captions), "column_headers": headers}
         group.children = BlockGroupChildren.from_indices(
             block_indices=row_block_indices,
             block_group_indices=open_group.child_group_indices,

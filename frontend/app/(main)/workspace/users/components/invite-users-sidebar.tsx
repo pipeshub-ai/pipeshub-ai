@@ -241,7 +241,7 @@ export function InviteUsersSidebar({
         });
       } else {
         // ── Create mode: send new invite ──
-        await UsersApi.inviteUsers(
+        const { queued } = await UsersApi.inviteUsers(
           validEmails,
           inviteGroupIds.length > 0 ? inviteGroupIds : undefined,
           isAdmin ? inviteRole || USER_ROLES.MEMBER : USER_ROLES.MEMBER,
@@ -251,15 +251,27 @@ export function InviteUsersSidebar({
           validEmails.length === 1
             ? validEmails[0]
             : `${validEmails.length} users`;
-        addToast({
-          variant: 'success',
-          title: t('workspace.users.invite.successTitle', 'Invite sent!'),
-          description: t('workspace.users.invite.successDescription', {
-            email: emailDisplay,
-            defaultValue: `${emailDisplay} has been invited`,
-          }),
-          duration: 3000,
-        });
+        addToast(
+          queued
+            ? {
+                variant: 'success',
+                title: t('workspace.users.invite.queuedTitle', 'Invites queued'),
+                description: t('workspace.users.invite.queuedDescription', {
+                  email: emailDisplay,
+                  defaultValue: `Emails to ${emailDisplay} are being sent in the background. You'll get a notification if any can't be delivered.`,
+                }),
+                duration: 5000,
+              }
+            : {
+                variant: 'success',
+                title: t('workspace.users.invite.successTitle', 'Invite sent!'),
+                description: t('workspace.users.invite.successDescription', {
+                  email: emailDisplay,
+                  defaultValue: `${emailDisplay} has been invited`,
+                }),
+                duration: 3000,
+              },
+        );
       }
 
       // Close panel and refresh parent list
@@ -460,7 +472,7 @@ export function InviteUsersSidebar({
   // Panel title & button labels change in edit mode
   const panelTitle = isEditMode
     ? t('workspace.users.invite.editTitle', 'Edit Invite')
-    : t('workspace.users.invite.title', 'Invite User(s)');
+    : t('workspace.users.invite.title');
 
   const primaryLabel = isEditMode
     ? t('workspace.users.invite.update', 'Update Invite')
@@ -607,7 +619,7 @@ export function InviteUsersSidebar({
         </FormField>
 
         {/* Role dropdown */}
-        <FormField label={t('workspace.users.invite.roleLabel', 'Assign Role')}>
+        <FormField label={t('workspace.users.invite.roleLabel')}>
           <SelectDropdown
             value={isAdmin ? inviteRole : USER_ROLES.MEMBER}
             onChange={setInviteRole}

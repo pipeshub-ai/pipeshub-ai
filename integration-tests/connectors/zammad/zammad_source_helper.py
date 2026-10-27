@@ -130,6 +130,33 @@ class ZammadSourceHelper:
     def update_ticket_title(self, ticket_id: int, title: str) -> None:
         self._api("PUT", f"tickets/{ticket_id}", title=title)
 
+    def delete_ticket(self, ticket_id: int) -> None:
+        self._api("DELETE", f"tickets/{ticket_id}")
+
+    # -- people and access ---------------------------------------------------
+
+    def create_agent(self, email: str, firstname: str) -> int:
+        """An agent with no group access, so it sees a ticket only once given its group."""
+        found = self._api("GET", f"users/search?query={requests.utils.quote(email)}&limit=10")
+        for user in found if isinstance(found, list) else []:
+            if str(user.get("email", "")).lower() == email.lower():
+                self._api("PUT", f"users/{user['id']}", group_ids={}, active=True)
+                return user["id"]
+        return self._api(
+            "POST", "users", firstname=firstname, lastname="Sharee", email=email,
+            roles=["Agent"], group_ids={}, active=True,
+        )["id"]
+
+    def set_user_groups(self, user_id: int, group_ids: list[int]) -> None:
+        """Replace the groups ``user_id`` may work in; Zammad's groups are its ticket permissions."""
+        self._api("PUT", f"users/{user_id}", group_ids={str(g): ["full"] for g in group_ids})
+
+    def delete_user(self, user_id: int) -> None:
+        self._api("DELETE", f"users/{user_id}")
+
+    def delete_group(self, group_id: int) -> None:
+        self._api("DELETE", f"groups/{group_id}")
+
     # -- search index ------------------------------------------------------
 
     def wait_until_searchable(self, titles: list[str], timeout: float = 300) -> None:

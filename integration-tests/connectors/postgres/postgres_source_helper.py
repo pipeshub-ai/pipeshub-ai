@@ -27,6 +27,10 @@ class PostgresSourceHelper:
         self.schema = schema
         self._connect_timeout = connect_timeout
 
+    def for_schema(self, schema: str) -> "PostgresSourceHelper":
+        """The same database, another schema: a suite that must not touch this one's tables."""
+        return PostgresSourceHelper(self._dsn, schema=schema, connect_timeout=self._connect_timeout)
+
     def _connect(self) -> psycopg.Connection:
         # Bounded on purpose. The fixture catches connection errors to decide
         # between skipping locally and failing in CI; without a timeout, a host
@@ -79,6 +83,17 @@ class PostgresSourceHelper:
                 f'INSERT INTO "{self.schema}"."{table}" (title, body) VALUES (%s, %s)',
                 list(rows),
             )
+
+    def update_body(self, table: str, title: str, body: str) -> None:
+        """Change one row's body in place."""
+        with self._connect() as conn:
+            conn.execute(
+                f'UPDATE "{self.schema}"."{table}" SET body = %s WHERE title = %s', (body, title)
+            )
+
+    def drop_table(self, table: str) -> None:
+        with self._connect() as conn:
+            conn.execute(f'DROP TABLE IF EXISTS "{self.schema}"."{table}"')
 
     def row_count(self, table: str) -> int:
         with self._connect() as conn:

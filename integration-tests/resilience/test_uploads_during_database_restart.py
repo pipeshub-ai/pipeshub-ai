@@ -31,6 +31,7 @@ import requests
 from helper.clients.kb_client import KBClient
 from helper.compose_control import ComposeStack
 from helper.indexing_progress import document, wait_until_finished
+from helper.stored_names import stored_name
 from pipeshub_client import PipeshubClientError
 
 logger = logging.getLogger("resilience")
@@ -119,10 +120,14 @@ async def test_uploads_while_the_database_is_down_land_whole_or_fail_cleanly(
         stuck = {n: final[rid] for n, rid in saved.items() if final[rid] != "COMPLETED"}
         assert not stuck, f"uploads reported as saved never finished indexing: {stuck}"
 
+        # A record is stored under the file name without its extension, so
+        # comparing against the uploaded names would fail on every upload that
+        # was saved and indexed perfectly well.
         listed = [item["name"] for item in kb_client.list_records(kb_id).get("items") or []]
-        assert sorted(listed) == sorted(saved), (
+        expected = sorted(stored_name(name) for name in saved)
+        assert sorted(listed) == expected, (
             f"the knowledge base lists {sorted(listed)}; expected exactly the {len(saved)} saved uploads "
-            f"and none of the {len(failed)} that failed ({sorted(failed)})"
+            f"({expected}) and none of the {len(failed)} that failed ({sorted(failed)})"
         )
 
         retried = {}

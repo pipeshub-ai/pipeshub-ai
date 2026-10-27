@@ -2,7 +2,7 @@ import asyncio
 import json
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 from pydantic import BaseModel, Field
 from app.connectors.core.constants import IconPaths
@@ -18,6 +18,7 @@ from app.modules.agents.qna.chat_state import ChatState
 from app.sources.client.redshift.redshift import RedshiftClient
 from app.sources.external.redshift.redshift_ import RedshiftDataSource
 from app.utils.conversation_tasks import register_task
+from app.services.artifact_registry.models import artifact_owner_id
 
 logger = logging.getLogger(__name__)
 
@@ -398,6 +399,8 @@ class Redshift:
         try:
             if not schema_name:
                 return self._result(False, {"error": "Missing required parameter: schema_name"})
+            if isinstance(tables, str):
+                tables = [tables]
             if not tables:
                 return self._result(False, {"error": "Missing required parameter: tables"})
 
@@ -585,6 +588,8 @@ class Redshift:
         query: str,
     ) -> tuple[bool, str]:
         """Execute SQL query using configured Redshift client."""
+        # Redshift has no read-only transaction or timeout here (server-side enforcement is not
+        # verified): only the statement classifier (read_only_statement) protects it.
         try:
             if not query:
                 return self._result(False, {
@@ -647,32 +652,19 @@ class Redshift:
                 raw_columns = columns
                 raw_rows = row_tuples
 
-                async def _save_csv_to_blob() -> Optional[dict[str, Any]]:
-                    try:
-                        from app.utils.conversation_tasks import _rows_to_csv_bytes
+                from app.sandbox.artifact_upload import save_query_result_csv
 
-                        csv_bytes = _rows_to_csv_bytes(raw_columns, raw_rows)
-                        file_name = f"query_result_{int(time.time())}.csv"
-                        upload_info = await blob_store.save_conversation_file_to_storage(
-                            org_id=org_id,
-                            conversation_id=conversation_id,
-                            file_name=file_name,
-                            file_bytes=csv_bytes,
-                        )
-                        logger.info(
-                            "Redshift CSV export complete for conversation %s (%d rows)",
-                            conversation_id,
-                            len(raw_rows),
-                        )
-                        return {"type": "csv_download", **upload_info}
-                    except Exception:
-                        logger.exception(
-                            "Background Redshift CSV export failed for conversation %s",
-                            conversation_id,
-                        )
-                        return None
-
-                task = asyncio.create_task(_save_csv_to_blob())
+                task = asyncio.create_task(save_query_result_csv(
+                    blob_store=blob_store,
+                    graph_provider=self.chat_state.get("graph_provider"),
+                    org_id=org_id,
+                    user_id=artifact_owner_id(self.chat_state),
+                    conversation_id=conversation_id,
+                    columns=raw_columns,
+                    rows=raw_rows,
+                    file_name=f"query_result_{int(time.time())}.csv",
+                    source_tool="redshift.execute_query",
+                ))
                 register_task(conversation_id, task)
 
             return self._result(True, result_payload)

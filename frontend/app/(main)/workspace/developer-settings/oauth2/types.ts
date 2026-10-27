@@ -1,3 +1,5 @@
+import type { KnowledgeLimit } from '@/app/components/knowledge-limit/knowledge-limit';
+
 /**
  * OAuth 2.0 clients (developer settings).
  * List item shape from GET /api/v1/oauth-clients.
@@ -25,8 +27,15 @@ export interface OAuthClient {
   homepageUrl?: string | null;
   privacyPolicyUrl?: string | null;
   termsOfServiceUrl?: string | null;
+  /** What every token of the app may reach; absent for everything each user can see. */
+  knowledgeLimit?: KnowledgeLimit;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * The service account this application's own tokens act as. Absent means
+   * they act as whoever created it — the case the migration prompt is for.
+   */
+  tokenIdentityUserId?: string;
 }
 
 export interface OAuthClientsPagination {
@@ -65,6 +74,9 @@ export interface CreateOAuthClientPayload {
   privacyPolicyUrl?: string;
   termsOfServiceUrl?: string;
   isConfidential: boolean;
+  knowledgeLimit?: KnowledgeLimit;
+  /** Required when allowedGrantTypes includes client_credentials. */
+  tokenIdentityUserId?: string;
 }
 
 /** POST /api/v1/oauth-clients ΓÇö response includes clientSecret only at creation time */
@@ -86,6 +98,8 @@ export interface UpdateOAuthClientPayload {
   privacyPolicyUrl?: string;
   termsOfServiceUrl?: string;
   isConfidential?: boolean;
+  /** null lifts the limit. */
+  knowledgeLimit: KnowledgeLimit | null;
 }
 
 /** POST /api/v1/oauth-clients/:id/regenerate-secret */

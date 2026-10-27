@@ -12,9 +12,9 @@ from app.connectors.core.registry.auth_builder import (
 )
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
-    ToolCategory,
     ToolDefinition,
     ToolsetBuilder,
+    ToolsetCategory,
 )
 from app.sources.client.azure.azure_blob import AzureBlobClient
 from app.sources.external.azure.azure_blob import AzureBlobDataSource
@@ -91,7 +91,7 @@ tools: List[ToolDefinition] = [
 @ToolsetBuilder("Azure Blob Storage")\
     .in_group("Storage")\
     .with_description("Azure Blob Storage integration for object storage and container management")\
-    .with_category(ToolCategory.APP)\
+    .with_category(ToolsetCategory.APP)\
     .with_auth([
         AuthBuilder.type(AuthType.API_TOKEN).fields([
             CommonFields.api_token("Azure Storage Account Name", "your-account-name", field_name="accountName"),

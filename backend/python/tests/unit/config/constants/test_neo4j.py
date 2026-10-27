@@ -33,6 +33,9 @@ class TestNeo4jLabel:
     def test_records_label(self) -> None:
         assert Neo4jLabel.RECORDS.value == "Record"
 
+    def test_stage_states_label(self) -> None:
+        assert Neo4jLabel.STAGE_STATES.value == "StageState"
+
     def test_record_groups_label(self) -> None:
         assert Neo4jLabel.RECORD_GROUPS.value == "RecordGroup"
 
@@ -58,9 +61,6 @@ class TestNeo4jLabel:
         assert Neo4jLabel.PEOPLE.value == "Person"
         assert Neo4jLabel.ROLES.value == "Role"
         assert Neo4jLabel.ORGS.value == "Organization"
-        assert Neo4jLabel.ANYONE.value == "Anyone"
-        assert Neo4jLabel.ANYONE_WITH_LINK.value == "AnyoneWithLink"
-        assert Neo4jLabel.ANYONE_SAME_ORG.value == "AnyoneSameOrg"
 
     def test_app_labels(self) -> None:
         assert Neo4jLabel.APPS.value == "App"
@@ -104,7 +104,7 @@ class TestNeo4jLabel:
         assert Neo4jLabel.AGENT_SKILL_CANDIDATES.value == "AgentSkillCandidates"
 
     def test_total_member_count(self) -> None:
-        assert len(Neo4jLabel) == 48
+        assert len(Neo4jLabel) == 50
 
 
 # ---------------------------------------------------------------------------
@@ -113,13 +113,14 @@ class TestNeo4jLabel:
 
 class TestNeo4jRelationshipType:
     def test_core_relationships(self) -> None:
-        assert Neo4jRelationshipType.RECORD_RELATIONS.value == "RECORD_RELATION"
+        assert Neo4jRelationshipType.NODE_RELATIONS.value == "NODE_RELATION"
         assert Neo4jRelationshipType.BELONGS_TO.value == "BELONGS_TO"
         assert Neo4jRelationshipType.IS_OF_TYPE.value == "IS_OF_TYPE"
         assert Neo4jRelationshipType.PERMISSION.value == "PERMISSION"
         assert Neo4jRelationshipType.INHERIT_PERMISSIONS.value == "INHERIT_PERMISSIONS"
         assert Neo4jRelationshipType.ENTITY_RELATIONS.value == "ENTITYRELATIONS"
         assert Neo4jRelationshipType.USER_APP_RELATION.value == "USER_APP_RELATION"
+        assert Neo4jRelationshipType.AUTHENTICATED_AS.value == "AUTHENTICATED_AS"
         assert Neo4jRelationshipType.ORG_APP_RELATION.value == "ORG_APP_RELATION"
         assert Neo4jRelationshipType.USER_DRIVE_RELATION.value == "USER_DRIVE_RELATION"
 
@@ -140,8 +141,12 @@ class TestNeo4jRelationshipType:
     def test_agent_skill_relationship(self) -> None:
         assert Neo4jRelationshipType.AGENT_SKILL_RELATION.value == "AGENT_SKILL_RELATION"
 
+    def test_record_link_relationship(self) -> None:
+        """Links between records are stored apart from the hierarchy."""
+        assert Neo4jRelationshipType.RECORD_LINK.value == "RECORD_LINK"
+
     def test_total_member_count(self) -> None:
-        assert len(Neo4jRelationshipType) == 28
+        assert len(Neo4jRelationshipType) == 31
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +158,7 @@ class TestCollectionToLabelMapping:
         """Verify that every key in COLLECTION_TO_LABEL maps to the expected Neo4j label."""
         expected_pairs = [
             (CollectionNames.RECORDS.value, Neo4jLabel.RECORDS.value),
+            (CollectionNames.STAGE_STATES.value, Neo4jLabel.STAGE_STATES.value),
             (CollectionNames.RECORD_GROUPS.value, Neo4jLabel.RECORD_GROUPS.value),
             (CollectionNames.SYNC_POINTS.value, Neo4jLabel.SYNC_POINTS.value),
             (CollectionNames.FILES.value, Neo4jLabel.FILES.value),
@@ -205,7 +211,7 @@ class TestCollectionToLabelMapping:
             )
 
     def test_mapping_size(self) -> None:
-        assert len(COLLECTION_TO_LABEL) == 46
+        assert len(COLLECTION_TO_LABEL) == 50
 
     def test_all_values_are_strings(self) -> None:
         for k, v in COLLECTION_TO_LABEL.items():
@@ -220,13 +226,14 @@ class TestCollectionToLabelMapping:
 class TestEdgeCollectionToRelationshipMapping:
     def test_all_edge_entries(self) -> None:
         expected_pairs = [
-            (CollectionNames.RECORD_RELATIONS.value, Neo4jRelationshipType.RECORD_RELATIONS.value),
+            (CollectionNames.NODE_RELATIONS.value, Neo4jRelationshipType.NODE_RELATIONS.value),
             (CollectionNames.BELONGS_TO.value, Neo4jRelationshipType.BELONGS_TO.value),
             (CollectionNames.IS_OF_TYPE.value, Neo4jRelationshipType.IS_OF_TYPE.value),
             (CollectionNames.PERMISSION.value, Neo4jRelationshipType.PERMISSION.value),
             (CollectionNames.INHERIT_PERMISSIONS.value, Neo4jRelationshipType.INHERIT_PERMISSIONS.value),
             (CollectionNames.ENTITY_RELATIONS.value, Neo4jRelationshipType.ENTITY_RELATIONS.value),
             (CollectionNames.USER_APP_RELATION.value, Neo4jRelationshipType.USER_APP_RELATION.value),
+            (CollectionNames.AUTHENTICATED_AS.value, Neo4jRelationshipType.AUTHENTICATED_AS.value),
             (CollectionNames.ORG_APP_RELATION.value, Neo4jRelationshipType.ORG_APP_RELATION.value),
             (CollectionNames.USER_DRIVE_RELATION.value, Neo4jRelationshipType.USER_DRIVE_RELATION.value),
             (CollectionNames.BELONGS_TO_DEPARTMENT.value, Neo4jRelationshipType.BELONGS_TO_DEPARTMENT.value),
@@ -253,7 +260,7 @@ class TestEdgeCollectionToRelationshipMapping:
             assert EDGE_COLLECTION_TO_RELATIONSHIP[arango_key] == neo4j_rel
 
     def test_mapping_size(self) -> None:
-        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 28
+        assert len(EDGE_COLLECTION_TO_RELATIONSHIP) == 30
 
     def test_all_values_are_strings(self) -> None:
         for k, v in EDGE_COLLECTION_TO_RELATIONSHIP.items():
@@ -294,7 +301,7 @@ class TestCollectionToLabelFunction:
 
 class TestEdgeCollectionToRelationshipFunction:
     def test_known_edge(self) -> None:
-        assert edge_collection_to_relationship(CollectionNames.RECORD_RELATIONS.value) == "RECORD_RELATION"
+        assert edge_collection_to_relationship(CollectionNames.NODE_RELATIONS.value) == "NODE_RELATION"
 
     def test_another_known_edge(self) -> None:
         assert edge_collection_to_relationship(CollectionNames.BELONGS_TO.value) == "BELONGS_TO"

@@ -1,0 +1,11 @@
+{{- if .Values.s3SignatureV4Preload }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "pipeshub-ai.fullname" . }}-s3-sigv4
+  labels:
+    {{- include "pipeshub-ai.labels" . | nindent 4 }}
+data:
+  force-sigv4.js: |
+    // AWS SDK v3 signs with Signature Version 4. Nothing to preload.
+{{- end }}

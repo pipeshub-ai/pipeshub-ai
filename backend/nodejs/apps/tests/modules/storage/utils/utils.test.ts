@@ -3,6 +3,8 @@ import { expect } from 'chai'
 import sinon from 'sinon'
 import {
   parseBoolean,
+  getArtifactSetFolder,
+  getArtifactSetRoot,
   isValidStorageVendor,
   getExtension,
   hasExtension,
@@ -11,6 +13,7 @@ import {
   encodeRFC5987,
   extractOrgId,
   extractUserId,
+  toObjectId,
   validateFileAndDocumentName,
   getDocumentInfo,
   generatePresignedUrlForDirectUpload,
@@ -270,6 +273,36 @@ describe('storage/utils/utils', () => {
   })
 
   // -------------------------------------------------------------------------
+  // toObjectId
+  // -------------------------------------------------------------------------
+  describe('toObjectId', () => {
+    it('should return an ObjectId for a valid id', () => {
+      expect(toObjectId('64d000000000000000000a01', 'organization').toHexString()).to.equal('64d000000000000000000a01')
+    })
+
+    // new ObjectId('user-123') throws a BSONError, which the error middleware answers with 500.
+    // A number and a 12-character string are not ids a token should carry; new ObjectId(6)
+    // would build an unrelated timestamp id instead of failing.
+    const malformed: ReadonlyArray<readonly [unknown, 'organization' | 'user']> = [
+      ['user-123', 'user'],
+      ['org-1', 'organization'],
+      ['', 'user'],
+      [6, 'organization'],
+      [1234567890123, 'user'],
+      ['0123456789ab', 'organization'],
+      [{ id: '64d000000000000000000a01' }, 'user'],
+    ]
+    for (const [id, kind] of malformed) {
+      it(`should throw BadRequestError naming the ${kind} id for ${JSON.stringify(id)}`, () => {
+        expect(() => toObjectId(id, kind))
+          .to.throw(BadRequestError)
+          .with.property('message')
+          .that.contains(`The ${kind} id in the storage token isn't valid`)
+      })
+    }
+  })
+
+  // -------------------------------------------------------------------------
   // extractUserId
   // -------------------------------------------------------------------------
   describe('extractUserId', () => {
@@ -361,6 +394,46 @@ describe('storage/utils/utils', () => {
         // expected
       }
       expect(next.calledOnce).to.be.true
+    })
+  })
+
+  describe('getDocumentInfo - a missing document', () => {
+    it('is a 404 marked to be logged at warn, not error', async () => {
+      sinon.stub(DocumentModel, 'findOne').resolves(null)
+      const next = sinon.stub()
+      const req = {
+        params: { documentId: '507f1f77bcf86cd799439011' },
+        tokenPayload: { orgId: '507f1f77bcf86cd799439012' },
+      } as any
+
+      try {
+        await getDocumentInfo(req, next)
+      } catch {
+        // expected
+      }
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(404)
+      expect(error.metadata).to.deep.equal({ logLevel: 'warn' })
+    })
+
+    it('leaves a failed lookup unmarked, so it is still logged at error', async () => {
+      sinon.stub(DocumentModel, 'findOne').rejects(new Error('mongo down'))
+      const next = sinon.stub()
+      const req = {
+        params: { documentId: '507f1f77bcf86cd799439011' },
+        tokenPayload: { orgId: '507f1f77bcf86cd799439012' },
+      } as any
+
+      try {
+        await getDocumentInfo(req, next)
+      } catch {
+        // expected
+      }
+
+      const error = next.firstCall.args[0]
+      expect(error.statusCode).to.equal(500)
+      expect(error.metadata).to.equal(undefined)
     })
   })
 
@@ -606,6 +679,11 @@ describe('storage/utils/utils', () => {
         'root/README',
       )
     })
+
+    it('keeps a long name whole: object stores take it, and old keys must still resolve', () => {
+      const name = 'a'.repeat(400)
+      expect(getCurrentFilePath('root', name, '.pdf', true)).to.equal(`root/current/${name}.pdf`)
+    })
   })
 
   // -------------------------------------------------------------------------
@@ -828,6 +906,21 @@ describe('storage/utils/utils - additional coverage', () => {
         expect.fail('Should have thrown')
       } catch (error) {
         expect(error).to.be.instanceOf(BadRequestError)
+      }
+    })
+  })
+
+  describe('artifact set paths', () => {
+    it('roots a revision at record-revisions/{vrid}/{rev} in the org', () => {
+      expect(getArtifactSetFolder('org1', 'vr-1')).to.equal('org1/PipesHub/record-revisions/vr-1')
+      expect(getArtifactSetRoot('org1', 'vr-1', '0123abcd')).to.equal('org1/PipesHub/record-revisions/vr-1/0123abcd')
+    })
+
+    it('keeps revisions out of every records/ path, where a flat record move would reach them', () => {
+      const root = getArtifactSetRoot('org1', 'vr-1', '0123abcd')
+      for (const recordPath of ['records', 'records/vr-1', 'records/vr-1/0123abcd']) {
+        expect(root.startsWith(`${getFullDocumentPath('org1', recordPath)}/`), recordPath).to.be.false
+        expect(root, recordPath).to.not.equal(getFullDocumentPath('org1', recordPath))
       }
     })
   })

@@ -63,6 +63,7 @@ class Connectors(Enum):
     DROPBOX_PERSONAL = "DROPBOX PERSONAL"
     WEB = "WEB"
     BOOKSTACK = "BOOKSTACK"
+    DRUPAL_WIKI = "DRUPAL WIKI"
     GITHUB = "GITHUB"
     GITHUB_TEAMS = "GITHUB TEAMS"
     SERVICENOW = "SERVICENOW"
@@ -74,6 +75,7 @@ class Connectors(Enum):
     AZURE_FILES = "AZURE FILES"
     LINEAR = "LINEAR"
     ZAMMAD = "ZAMMAD"
+    ZENDESK = "ZENDESK"
     ZOOM = "ZOOM"
 
     GITLAB = "GITLAB"
@@ -86,6 +88,9 @@ class Connectors(Enum):
 
     RSS = "RSS"
     LOCAL_FS = "LOCAL_FS"
+    DEMO = "DEMO"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
     CODING_SANDBOX = "CODING_SANDBOX"
     DATABASE_SANDBOX = "DATABASE_SANDBOX"
@@ -114,6 +119,26 @@ class PermissionModel(Enum):
     RECORD_GROUP_LEVEL = "RECORD_GROUP_LEVEL"
 
 
+class AccessRule(Enum):
+    """How a node's own permissions combine with its ancestors'.
+
+    ``OPEN``: inheritance from an accessible parent, or a direct grant, is
+    enough — nothing above the parent is consulted.
+    ``STRICT``: every ancestor up to the App must be accessible as well.
+    ``RESTRICTED``: implies strict, and inheritance alone is not sufficient —
+    the node's own grant is required on top of it.
+
+    A missing value reads as ``OPEN`` (a connector that declares nothing gets
+    the permissive reading), but an *unrecognised* value reads as
+    ``RESTRICTED``, so corruption or a foreign writer fails closed rather than
+    exposing a node.
+    """
+
+    OPEN = "OPEN"
+    STRICT = "STRICT"
+    RESTRICTED = "RESTRICTED"
+
+
 class AppGroups(Enum):
     GOOGLE_WORKSPACE = "Google Workspace"
     NOTION = "Notion"
@@ -126,6 +151,7 @@ class AppGroups(Enum):
     NEXTCLOUD = "Nextcloud"
     WEB = "Web"
     BOOKSTACK = "BookStack"
+    DRUPAL_WIKI = "Drupal Wiki"
     GITHUB = "Github"
     S3 = "S3"
     MINIO = "MinIO"
@@ -134,14 +160,18 @@ class AppGroups(Enum):
     LINEAR = "Linear"
     SLACK = "Slack"
     ZAMMAD = "Zammad"
+    ZENDESK = "Zendesk"
     ZOOM = "Zoom"
     LOCAL_STORAGE = "Local Storage"
+    DEMO = "Demo"
     RSS = "RSS"
     GITLAB = "GitLab"
 
     SNOWFLAKE = "Snowflake"
     POSTGRESQL = "PostgreSQL"
     MARIADB = "MariaDB"
+    SMB = "SMB"
+    CIFS = "CIFS"
 
 class OriginTypes(Enum):
     CONNECTOR = "CONNECTOR"
@@ -168,7 +198,10 @@ class GraphNames(Enum):
 class CollectionNames(Enum):
     # Records and Record relations
     RECORDS = "records"
-    RECORD_RELATIONS = "recordRelations"
+    NODE_RELATIONS = "nodeRelations"
+    # Links between records (BLOCKS, FOREIGN_KEY, SIBLING, ...), apart from the
+    # hierarchy. Shared code addresses them through NODE_RELATIONS.
+    RECORD_LINKS = "recordLinks"
     RECORD_GROUPS = "recordGroups"
     SYNC_POINTS = "syncPoints"
     INHERIT_PERMISSIONS = "inheritPermissions"
@@ -201,14 +234,13 @@ class CollectionNames(Enum):
     SQL_VIEWS = "sqlViews"
 
     # Users and groups
-    PEOPLE = "people"
+    PEOPLE = "person"
     USERS = "users"
     GROUPS = "groups"
     ROLES = "roles"
     ORGS = "organizations"
-    # DOMAINS = "domains"
+    # No grant type writes these nodes; kept for the queries that still read them.
     ANYONE = "anyone"
-    # ANYONE_WITH_LINK = "anyoneWithLink"
     BELONGS_TO = "belongsTo"
     TEAMS = "teams"
 
@@ -221,6 +253,10 @@ class CollectionNames(Enum):
     BELONGS_TO_LANGUAGE = "belongsToLanguage"
     TOPICS = "topics"
     BELONGS_TO_TOPIC = "belongsToTopic"
+    NAMED_ENTITIES = "namedEntities"
+    MENTIONS_ENTITY = "mentionsEntity"
+    VALUE_MENTIONS = "valueMentions"
+    NAMED_ENTITY_PERSIST_RETRIES = "namedEntityPersistRetries"
     SUBCATEGORIES1 = "subcategories1"
     SUBCATEGORIES2 = "subcategories2"
     SUBCATEGORIES3 = "subcategories3"
@@ -233,6 +269,7 @@ class CollectionNames(Enum):
     APPS = "apps"
     ORG_APP_RELATION = "orgAppRelation"
     USER_APP_RELATION = "userAppRelation"
+    AUTHENTICATED_AS = "authenticatedAs"  # User -> User: connector creator -> source account it authenticated as, per connectorId
     ORG_DEPARTMENT_RELATION = "orgDepartmentRelation"
     PROSPECT = "prospect"  # Org -> Org: prospect/account relationship
     CUSTOMER = "customer"  # Org -> Org: customer relationship
@@ -253,6 +290,7 @@ class CollectionNames(Enum):
 
     # Storage mappings
     VIRTUAL_RECORD_TO_DOC_ID_MAPPING = "virtualRecordToDocIdMapping"
+    STAGE_STATES = "stageStates"
     # Agent Builder collections
     AGENT_TEMPLATES = "agentTemplates"
     AGENT_INSTANCES = "agentInstances"
@@ -284,6 +322,7 @@ class CollectionNames(Enum):
 
 class QdrantCollectionNames(Enum):
     RECORDS = "records"
+    ENTITIES = "entities"
 
 
 class ExtensionTypes(Enum):
@@ -308,7 +347,7 @@ class ExtensionTypes(Enum):
     HEIC = "heic"
     HEIF = "heif"
     EPUB = "epub"
-    SQL_TABLE = "sql_table"  
+    SQL_TABLE = "sql_table"
     SQL_VIEW = "sql_view"
     # Registry key for the tree-sitter code parser; not a file extension.
     CODE = "code"
@@ -338,11 +377,37 @@ class ExtensionTypes(Enum):
     DART = "dart"
     SH = "sh"
     BASH = "bash"
+    PYI = "pyi"
+    MTS = "mts"
+    CTS = "cts"
+    SCALA = "scala"
+    GROOVY = "groovy"
+    GRADLE = "gradle"
+    LUA = "lua"
     HTM = "htm"
     BLOCKS = "blocks"
     JSON = "json"
     YAML = "yaml"
     YML = "yml"
+
+# Common file types PipesHub cannot index. Sync filters offer them so a user can
+# exclude them (Not in); they are kept out of ExtensionTypes because that enum
+# lists the types that can be indexed.
+EXCLUDABLE_FILE_EXTENSIONS: tuple[str, ...] = (
+    # archives
+    "zip", "7z", "rar", "tar", "gz", "tgz", "bz2", "xz",
+    # databases
+    "db", "sqlite", "sqlite3", "mdb", "accdb",
+    # executables and installers
+    "exe", "dll", "msi", "bin", "iso", "dmg", "apk", "jar",
+    # temporary and backup files
+    "tmp", "bak", "swp", "lock",
+    # logs
+    "log",
+    # video and audio
+    "mp4", "mov", "avi", "mkv", "webm", "wmv",
+    "mp3", "wav", "flac", "m4a", "aac", "ogg",
+)
 
 class MimeTypes(Enum):
     PDF = "application/pdf"
@@ -406,6 +471,15 @@ class MimeTypes(Enum):
     SQL_TABLE = "application/vnd.sql.table"  
     SQL_VIEW = "application/vnd.sql.view"  
 
+# Every mimeType a folder record has been written with. Folders are written as
+# MimeTypes.FOLDER only; readers accept the older values too, so a folder the
+# startup migration has not rewritten yet still reads as a folder.
+FOLDER_MIME_TYPES = [
+    MimeTypes.FOLDER.value,
+    "application/vnd.folder",  # older collection folders
+    MimeTypes.GOOGLE_DRIVE_FOLDER.value,  # older Google Drive folders
+]
+
 CODE_FILE_MIME_TYPE_VALUES = frozenset({
     MimeTypes.PYTHON.value,
     MimeTypes.PYTHON_SCRIPT.value,
@@ -456,6 +530,15 @@ CODE_FILE_EXTENSION_VALUES = frozenset({
     ExtensionTypes.DART.value,
     ExtensionTypes.SH.value,
     ExtensionTypes.BASH.value,
+    # Parsed by the code parser too; test_code_file_extensions keeps this list
+    # a superset of lang_config's, which it had drifted from (P-3).
+    ExtensionTypes.PYI.value,
+    ExtensionTypes.MTS.value,
+    ExtensionTypes.CTS.value,
+    ExtensionTypes.SCALA.value,
+    ExtensionTypes.GROOVY.value,
+    ExtensionTypes.GRADLE.value,
+    ExtensionTypes.LUA.value,
 })
 
 # MIME type mapping for common file extensions
@@ -578,6 +661,19 @@ class ProgressStatus(Enum):
     EMPTY = "EMPTY"
     ENABLE_MULTIMODAL_MODELS = "ENABLE_MULTIMODAL_MODELS"
     QUEUED = "QUEUED"
+    # A stage that does not apply to this record (policy off, nothing to process).
+    SKIPPED = "SKIPPED"
+    # The file needs a password to open. Terminal: only a new version of the
+    # file (or, later, a password) changes the outcome, so nothing retries it.
+    PASSWORD_PROTECTED = "PASSWORD_PROTECTED"
+
+
+class DeleteSource(str, Enum):
+    """Who moved a record to the trash. Decides whether a sync may restore it."""
+
+    USER = "USER"
+    CONNECTOR = "CONNECTOR"
+    SYSTEM = "SYSTEM"
 
 
 class RecordTypes(Enum):
@@ -617,20 +713,43 @@ class RecordRelations(Enum):
     DEPENDS_ON = "DEPENDS_ON"
     CLONES = "CLONES"
     IMPLEMENTS = "IMPLEMENTS"
+    # A concrete method and the interface/abstract method it satisfies. Written
+    # by the code-graph edge pass, never by the parser: at parse time a base is
+    # only a name, and whether it is an interface is known once it resolves.
+    OVERRIDES = "OVERRIDES"
     REVIEWS = "REVIEWS"
     CAUSES = "CAUSES"
+    # Inverse of CAUSES. A link edge always runs from the record being synced, so a
+    # source that names the cause on the effect (Zendesk's problem_id) needs this.
+    CAUSED_BY = "CAUSED_BY"
     RELATED = "RELATED"
     FOREIGN_KEY = "FOREIGN_KEY"
     # An output artifact (chart, PDF, spreadsheet, ...) was produced by
     # running a specific version of a CODE artifact. Auto-captured by the
     # harness (`sandbox_bridge.py`'s POST_TOOL_USE hook) — never asserted
     # by the model — carrying `sourceVersion`/`derivedVersion` custom
-    # properties (see `record_relations_schema`, which allows additional
-    # properties). Portable to Neo4j unchanged: it is just another
-    # `relationshipType` value on the existing RECORD_RELATION edge type
-    # (see `config/constants/neo4j.py`), no new edge collection or Neo4j
-    # relationship type required.
+    # properties (see `record_links_schema`, which allows additional
+    # properties). A link like any other type outside the hierarchy: stored on
+    # RECORD_LINK in Neo4j and in recordLinks in Arango.
     DERIVED_FROM = "DERIVED_FROM"
+
+    # --- code knowledge graph ---
+    # Structural, written at parse time because both endpoints are in one file.
+    CONTAINS = "CONTAINS"      # record -> block, or block group -> block
+    DEFINES = "DEFINES"        # class -> field
+    METHOD = "METHOD"          # class -> method
+    # Cross-file, written by the edge-resolution pass once a repo is indexed.
+    CALLS = "CALLS"
+    IMPORTS = "IMPORTS"            # file -> imported symbol
+    IMPORTS_FROM = "IMPORTS_FROM"  # file -> imported module file
+    RE_EXPORTS = "RE_EXPORTS"
+    EXPORTS = "EXPORTS"
+    INHERITS = "INHERITS"
+
+
+#: The relation types that are hierarchy. Every other type is a link, stored
+#: apart from the hierarchy.
+HIERARCHY_RELATION_TYPES = frozenset({RecordRelations.PARENT_CHILD.value, RecordRelations.ATTACHMENT.value})
 
 
 class EntityRelations(Enum):
@@ -652,8 +771,14 @@ class EventTypes(Enum):
     REINDEX_RECORD = "reindexRecord"
     REINDEX_FAILED = "reindexFailed"
     BULK_DELETE_RECORDS = "bulkDeleteRecords"
+    DELETE_CONNECTOR_EMBEDDINGS = "deleteConnectorEmbeddings"
+    DELETE_CONNECTOR_ENTITIES = "deleteConnectorEntities"
     SYNC_VECTOR_MEMBERSHIP = "syncVectorMembership"
     DELETE_VECTOR_COLLECTION = "deleteVectorCollection"
+    # Vectors-only cleanup for records moved to the trash; never touches blob or Mongo.
+    SOFT_DELETE_RECORDS = "softDeleteRecords"
+    DELETE_STORED_DOCUMENTS = "deleteStoredDocuments"
+    BUILD_CODE_EDGES = "buildCodeEdges"
 
 
 class AccountType(Enum):
@@ -672,6 +797,7 @@ class AppStatus(Enum):
     IDLE = "IDLE"
     FULL_SYNCING = "FULL_SYNCING"
     SYNCING = "SYNCING"
+    QUEUED = "QUEUED"
 
 
 RECORD_TYPE_COLLECTION_MAPPING = {
@@ -702,3 +828,34 @@ RECORD_TYPE_COLLECTION_MAPPING = {
     "SQL_VIEW": CollectionNames.SQL_VIEWS.value,
     # Note: MESSAGE, DRIVE, SHAREPOINT_*, and other types are stored only in records collection
 }
+
+
+# Person -> User promotion (see docs/external-user-support-plan.md, D4).
+#
+# One definition for both graph backends so they cannot drift: a Person that carries any
+# CRM edge is a Salesforce contact as well as a collaborator, so the two identities split
+# rather than merge - the collaborator edges move to the User and the Person survives
+# holding only its CRM edges. A Person with no CRM edge migrates outright and is deleted.
+#
+# Direction matters and differs: the transferable edges always have the Person as _from,
+# while `lead`/`contact` point AT the Person and only `memberOf` points away from it - so
+# the CRM check has to look both ways.
+PERSON_TRANSFERABLE_EDGES = (
+    CollectionNames.PERMISSION.value,
+    CollectionNames.USER_APP_RELATION.value,
+)
+
+PERSON_CRM_EDGES_OUTBOUND = (CollectionNames.MEMBER_OF.value,)
+PERSON_CRM_EDGES_INBOUND = (
+    CollectionNames.LEAD.value,
+    CollectionNames.CONTACT.value,
+)
+PERSON_CRM_EDGES = PERSON_CRM_EDGES_OUTBOUND + PERSON_CRM_EDGES_INBOUND
+
+
+class PersonMigrationMode:
+    """Outcome of migrate_person_to_user. Distinguished so callers can log which of the
+    two very different things happened."""
+
+    MIGRATED = "migrated"  # no CRM edges: everything moved, Person node deleted
+    SPLIT = "split"  # CRM edges present: collaborator edges moved, Person kept

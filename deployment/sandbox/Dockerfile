@@ -3,7 +3,11 @@ FROM python:3.12-slim
 LABEL maintainer="pipeshub" \
       description="Unified sandbox for Python, TypeScript, SQLite, and PostgreSQL code execution"
 
-# System deps: Cairo/Pango for SVG/PDF rendering, SQLite, PostgreSQL client, curl for Node setup
+# System deps: Cairo/Pango for SVG/PDF rendering, SQLite, PostgreSQL client, curl for Node setup.
+# iptables: containers on the egress bridge install their egress firewall at start
+# (app/agent_loop_lib/sandbox/coding/egress_firewall.py), then drop to `sandbox`
+# with no capabilities via setpriv (util-linux). Without iptables, networked runs
+# fall back to no network.
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
         libcairo2 \
@@ -15,6 +19,7 @@ RUN apt-get update && \
         curl \
         gnupg \
         tzdata \
+        iptables \
     && rm -rf /var/lib/apt/lists/*
 
 # Node.js 20 via nodesource

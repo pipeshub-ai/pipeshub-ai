@@ -3,11 +3,14 @@ from collections.abc import Callable, Coroutine, Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any, Literal, Optional
 
+import jwt
 from dependency_injector.wiring import inject
 from fastapi import HTTPException, Request, status
-from jose import JWTError, jwt
+from jwt import PyJWTError
 
 from app.api.middlewares.caller_role import (
+    CallerRole,
+    CallerRoleCache,
     CallerRoleStatus,
     fetch_caller_role,
     normalize_auth_role,
@@ -23,6 +26,8 @@ from app.api.middlewares.token_policy import (
 )
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.service import config_node_constants
+from app.core.org_context import OrgContext, set_request_context
+from app.utils.request_context import get_context as get_request_context
 
 # Marks the dependency that states which token classes a route accepts; the route
 # inventory test requires one on every route so no route admits service tokens by omission.
@@ -30,7 +35,31 @@ AUTH_POLICY_ATTR = "__auth_policy__"
 
 # Set only by the regular path from a verified OAuth access token; a service token that
 # arrives carrying them must not be able to pose as an OAuth client.
-_OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId")
+_OAUTH_DERIVED_CLAIMS = ("isOAuth", "oauthScopes", "oauthClientId", "knowledgeLimit")
+
+#: What the user let a connected app see (``apps`` / ``recordGroups`` /
+#: ``records``), signed into the app's OAuth or personal access token by Node.
+KNOWLEDGE_LIMIT_CLAIM = "knowledgeLimit"
+_KNOWLEDGE_LIMIT_KEYS = ("apps", "recordGroups", "records")
+
+DEFAULT_SESSION_CHECK_TTL_SECONDS = 30.0
+
+
+def session_check_ttl_seconds() -> float:
+    """How long Node's answer about a session token is reused (``SESSION_CHECK_CACHE_SECONDS``).
+
+    This bounds both how late signing out, a password change or a lockout takes effect
+    here and how often each session costs Node a lookup.
+    """
+    raw = os.environ.get("SESSION_CHECK_CACHE_SECONDS", "").strip()
+    try:
+        ttl = float(raw) if raw else DEFAULT_SESSION_CHECK_TTL_SECONDS
+    except ValueError:
+        return DEFAULT_SESSION_CHECK_TTL_SECONDS
+    return ttl if 0 <= ttl < float("inf") else DEFAULT_SESSION_CHECK_TTL_SECONDS
+
+
+_session_checks = CallerRoleCache(ttl_seconds=session_check_ttl_seconds(), max_entries=10_000)
 
 
 async def get_config_service(request: Request) -> ConfigurationService:
@@ -84,15 +113,46 @@ def _normalize_regular_payload(payload: dict[str, Any], token: str) -> dict[str,
     """Add metadata and normalize OAuth tokens for scope enforcement."""
     payload["user"] = token
     payload["token_type"] = AuthTokenType.REGULAR.value
+    limit = payload.pop(KNOWLEDGE_LIMIT_CLAIM, None)
     if payload.get("tokenType") == "oauth":
+        # "".split(" ") is [""]. A token with no scope names is not a grant.
+        scopes = str(payload.get("scope") or "").split()
+        if not scopes:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Could not validate credentials",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         payload["isOAuth"] = True
-        payload["oauthScopes"] = payload.get("scope", "").split(" ")
+        payload["oauthScopes"] = scopes
         payload["oauthClientId"] = payload.get("client_id")
+        if isinstance(limit, dict):
+            payload[KNOWLEDGE_LIMIT_CLAIM] = {
+                key: [i for i in limit.get(key) or [] if isinstance(i, str) and i]
+                if isinstance(limit.get(key), list) else []
+                for key in _KNOWLEDGE_LIMIT_KEYS
+            }
+        # A client_credentials token has no caller of its own: its userId is
+        # the client id. The `createdBy` claim carries the identity it acts
+        # as, which Node resolves when minting the token — the application's
+        # chosen service account where one has been set, and its creator
+        # otherwise. The claim keeps its original name for tokens already in
+        # circulation; it means "the identity", not "who made the app".
+        #
+        # Pointing an application at a different identity revokes the tokens
+        # it has already issued, so a claim reaching here is never stale.
         if payload.get("userId") == payload.get("client_id") and payload.get("createdBy"):
             payload["userId"] = payload["createdBy"]
 
     payload["role"] = normalize_auth_role(payload.get("role"))
     return payload
+
+
+def connection_limit(user: Mapping[str, Any] | None) -> dict[str, list[str]] | None:
+    """What the connected app making this request may see, or None when it may
+    see everything its user can (a session, or an app given no limit)."""
+    limit = (user or {}).get(KNOWLEDGE_LIMIT_CLAIM)
+    return limit if isinstance(limit, dict) else None
 
 
 def _normalize_scoped_payload(payload: dict[str, Any], token: str) -> dict[str, Any]:
@@ -163,7 +223,7 @@ async def isJwtTokenValid(request: Request) -> dict:
             payload = jwt.decode(token, regular_jwt_secret, algorithms=[algorithm])
             logger.debug("✅ Validated token using regular JWT secret")
             return _normalize_regular_payload(payload, token)
-        except JWTError as regular_jwt_error:
+        except PyJWTError as regular_jwt_error:
             regular_error_name = type(regular_jwt_error).__name__
 
         if not scoped_jwt_secret:
@@ -172,7 +232,7 @@ async def isJwtTokenValid(request: Request) -> dict:
 
         try:
             payload = jwt.decode(token, scoped_jwt_secret, algorithms=[algorithm])
-        except JWTError as scoped_jwt_error:
+        except PyJWTError as scoped_jwt_error:
             logger.warning(
                 f"Token validation failed with both secrets. "
                 f"Regular JWT error: {regular_error_name}, "
@@ -236,6 +296,7 @@ async def authMiddleware(request: Request) -> Request:
 
         # Attach the authenticated user information to the request state
         request.state.user = payload
+        _bind_org_context(request, payload)
 
         logger.debug(f"✅ Authentication successful. Token type: {payload.get('token_type', 'unknown')}")
 
@@ -249,6 +310,29 @@ async def authMiddleware(request: Request) -> Request:
     return request
 
 
+# Pre-org routes: the only paths that accept a service token with no ``orgId``. Any other
+# route receiving one answers 401 (same as ``service_token_org``). Keep in sync with docs/org-context.md.
+PRE_ORG_SERVICE_ROUTES = frozenset({"/api/v1/parse/providers"})
+
+
+def _bind_org_context(request: Request, payload: dict[str, Any]) -> None:
+    """Bind the verified token's org for the rest of the request (never a client field)."""
+    scoped = payload.get("token_type") == AuthTokenType.SCOPED.value
+    org_id = payload.get("orgId")
+    if not org_id:
+        if scoped and getattr(getattr(request, "url", None), "path", None) not in PRE_ORG_SERVICE_ROUTES:
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token missing orgId")
+        return  # stays unbound: current() fails closed
+    rc = get_request_context()
+    set_request_context(OrgContext(
+        org_id=org_id,
+        user_id=payload.get("userId"),
+        kind="service" if scoped else "user",
+        source="scoped_jwt" if scoped else "jwt",
+        request_id=rc.root_id if rc else "-",
+    ))
+
+
 def is_request_admin(request: Request) -> bool:
     """Org-admin from JWT role on request.state.user."""
     user = getattr(request.state, "user", None) or {}
@@ -258,20 +342,37 @@ def is_request_admin(request: Request) -> bool:
 
 
 async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str:
-    """Org role for the authenticated caller.
+    """Org role for the authenticated caller, once Node has confirmed the token is live.
 
-    Session JWTs carry a role claim. OAuth/PAT tokens do not, and only Node knows
-    whether one has been revoked or its user deleted, so their role comes from Node. A
-    token Node refuses is refused here, and so is one Node could not confirm.
+    A signature proves only that a token was issued. Whether a session has since
+    ended (signed out, password changed, account locked or deleted) or an OAuth/PAT
+    token been revoked is known to Node alone, so both are checked there, and a token
+    Node refuses, or could not confirm, is refused here. Service tokens are not.
+
+    A session's role is its claim, which is current because Node ends every session
+    when a role changes. OAuth/PAT tokens carry none, so theirs is Node's.
     """
-    if not payload.get("isOAuth"):
+    if is_service_token(payload):
         return normalize_auth_role(payload.get("role"))
 
-    caller = await fetch_caller_role(request, await get_config_service(request))
+    config_service = await get_config_service(request)
+    if payload.get("isOAuth"):
+        caller = await fetch_caller_role(request, config_service)
+        _refuse_unconfirmed(caller, "Token is no longer valid")
+        return caller.role
+
+    caller = await _session_checks.get(
+        payload["user"], lambda: fetch_caller_role(request, config_service)
+    )
+    _refuse_unconfirmed(caller, "Your session has ended. Please sign in again.")
+    return normalize_auth_role(payload.get("role"))
+
+
+def _refuse_unconfirmed(caller: CallerRole, rejected_detail: str) -> None:
     if caller.status is CallerRoleStatus.REJECTED:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token is no longer valid",
+            detail=rejected_detail,
             headers={"WWW-Authenticate": "Bearer"},
         )
     if caller.status is CallerRoleStatus.UNKNOWN:
@@ -281,7 +382,6 @@ async def resolve_request_role(request: Request, payload: dict[str, Any]) -> str
             detail="We couldn't confirm your sign-in just now. Please try again in a few seconds.",
             headers={"Retry-After": "5"},
         )
-    return caller.role
 
 
 @dataclass(frozen=True)
@@ -378,6 +478,22 @@ def require_service_token(*scopes: ScopeLike) -> Callable[..., Coroutine[Any, An
         return user
 
     return _tag_auth_policy(_check_service_token, "service", scopes)
+
+
+def service_token_org(claims: Mapping[str, Any], requested_org_id: str | None = None) -> str:
+    """Org a service token acts for; a caller-supplied org may only repeat it."""
+    org_id = claims.get("orgId")
+    if not org_id:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token missing orgId",
+        )
+    if requested_org_id and requested_org_id != org_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="org_id does not match the service token",
+        )
+    return org_id
 
 
 async def deny_service_tokens(request: Request) -> None:

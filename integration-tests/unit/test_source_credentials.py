@@ -55,3 +55,22 @@ def test_missing_env_lists_only_the_unset_ones(monkeypatch) -> None:
         "ABSENT_ONE",
         "BLANK_ONE",
     ]
+
+
+def test_a_caller_can_say_this_run_was_meant_to_cover_it(monkeypatch) -> None:
+    """Not every caller is a connector suite, where the shard settles it."""
+    monkeypatch.delenv(REQUIRE_ENV, raising=False)
+    with pytest.raises(BaseException) as caught:
+        source_unavailable(
+            "openAI: no live credentials", secrets=["TEST_OPENAI_API_KEY"], required=True
+        )
+    assert caught.typename == "Failed"
+
+
+def test_a_caller_can_say_this_run_was_not(monkeypatch) -> None:
+    monkeypatch.setenv(REQUIRE_ENV, "1")
+    with pytest.raises(BaseException) as caught:
+        source_unavailable(
+            "groq: no live credentials", secrets=["TEST_GROQ_API_KEY"], required=False
+        )
+    assert caught.typename == "Skipped"

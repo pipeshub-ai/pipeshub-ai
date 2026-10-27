@@ -21,10 +21,12 @@ from app.exceptions.indexing_exceptions import (
     BlockContainerValidationError,
     ChunkingError,
     DocumentProcessingError,
+    EntityLookupUnavailableError,
     ExtractionError,
     IndexingError,
     ProcessingError,
 )
+from app.exceptions.non_retryable import NonRetryableError
 
 # Import aiohttp at module level for efficiency (cached in sys.modules)
 try:
@@ -244,10 +246,12 @@ class MessageErrorClassifier:
 
         Classification rules:
         0. Walk exception chain to find root cause (handles wrapped exceptions)
+        0b2. ServiceAuthRefusedError = TRANSIENT (an internal service refused
+            our service token: a deployment fault, not a document fault)
         0c. ParsingClientError(PARSE_BACKPRESSURE) = TRANSIENT (saturated, not
             failed); every other ParsingClientError code = TERMINAL
         1. Extract HTTP status code if available and classify by status
-        2. JSON decode errors = TERMINAL (bad message format)
+        2. JSON and UTF-8 decode errors = TERMINAL (bad message format)
         3. Pydantic ValidationError = TERMINAL (invalid schema)
         4. Subprocess errors (CalledProcessError, TimeoutExpired) = TERMINAL
         5. FileNotFoundError = TERMINAL (missing dependency/file)
@@ -276,12 +280,45 @@ class MessageErrorClassifier:
         root_exc = _get_root_cause(exc)
         chain = list(_iter_exception_chain(exc))
 
+        # 0a. A deliberate stop wins over the transport error it was raised from.
+        if any(isinstance(chain_exc, NonRetryableError) for chain_exc in chain):
+            return MessageErrorType.TERMINAL
+
+        # 0a2. An entity lookup that could not run says nothing about the
+        # document, whatever the store answered (a 4xx root would otherwise
+        # mark an already searchable record FAILED on its first delivery).
+        if any(isinstance(chain_exc, EntityLookupUnavailableError) for chain_exc in chain):
+            return MessageErrorType.TRANSIENT
+
         # 0b. Scan full chain for aiohttp transport errors before HTTP status rules.
         # ClientPayloadError may wrap TransferEncodingError whose .code is not HTTP status.
         for chain_exc in chain:
             aiohttp_result = _classify_aiohttp_transport_error(chain_exc)
             if aiohttp_result is not None:
                 return aiohttp_result
+
+        # 0b2. An internal service refused this process's own service token.
+        # Every record would be refused alike until the deployment is fixed
+        # (secret mismatch, services upgraded out of order), so it is retried
+        # rather than read as a client error by the HTTP status rule below.
+        try:
+            from app.services.base_client import ServiceAuthRefusedError
+
+            if any(isinstance(chain_exc, ServiceAuthRefusedError) for chain_exc in chain):
+                return MessageErrorType.TRANSIENT
+        except ImportError:
+            pass
+
+        # 0b3. A stored record that could not be read from its signed URL: an
+        # expired or skewed signature answers 403 like a retired document, and
+        # only the reader (which re-looks-up first) can tell them apart.
+        try:
+            from app.modules.transformers.blob_storage import SignedUrlReadError
+
+            if any(isinstance(chain_exc, SignedUrlReadError) for chain_exc in chain):
+                return MessageErrorType.TRANSIENT
+        except ImportError:
+            pass
 
         # 0c. Parsing-service structured errors: PARSE_BACKPRESSURE means the
         # service is saturated but healthy (admission gate timed out) and
@@ -321,6 +358,7 @@ class MessageErrorClassifier:
                     ExtractionError,
                     ProcessingError,
                     BlockContainerValidationError,
+                    NonRetryableError,
                     ImportError,
                     ModuleNotFoundError,
                     FileNotFoundError,
@@ -339,6 +377,17 @@ class MessageErrorClassifier:
             # JSON decode errors in chain
             if isinstance(chain_exc, json.JSONDecodeError):
                 return MessageErrorType.TERMINAL
+
+        # 0e. Undecodable bytes read the same on every delivery, so a retry can
+        # only repeat the failure. Only the raised error and its explicit
+        # `raise ... from` causes count: handlers often try an encoding, catch
+        # the UnicodeDecodeError and fall back, and a network error raised
+        # during that fallback must stay retryable.
+        cause: Optional[BaseException] = exc
+        while cause is not None:
+            if isinstance(cause, UnicodeDecodeError):
+                return MessageErrorType.TERMINAL
+            cause = cause.__cause__
 
         # 1. Check for HTTP status code in exception
         status_code = _extract_status_code(root_exc)

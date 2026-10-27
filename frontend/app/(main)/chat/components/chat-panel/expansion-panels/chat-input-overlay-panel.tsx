@@ -1,5 +1,6 @@
 'use client';
 
+import { overlayWidth } from '@/app/components/ui/responsive';
 import React, { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Box, Flex, Theme } from '@radix-ui/themes';
@@ -113,8 +114,8 @@ export function ChatInputOverlayPanel({
           direction="column"
           onClick={(e: React.MouseEvent) => e.stopPropagation()}
           style={{
-            width: '37.5rem',
-            height: '512px',
+            width: overlayWidth(600),
+            height: 'min(512px, 100dvh - 80px)',
             backdropFilter: 'blur(25px)',
             WebkitBackdropFilter: 'blur(25px)',
             backgroundColor: 'var(--effects-translucent)',

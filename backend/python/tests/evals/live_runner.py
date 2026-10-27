@@ -38,6 +38,7 @@ from app.agent_loop_lib.tools.builtin.planning.task_complete import (
 )
 from app.agent_loop_lib.tools.registry import ToolRegistry
 from app.agent_loop_lib.transport.registry import TransportRegistry
+from tests.evals.chat_models import MissingModelError, build_chat_model, resolve_model
 from tests.evals.live_harness import GoldenCase, TraceResult
 from tests.evals.tool_cards import ToolCard, card_for, card_from_decorated
 
@@ -131,10 +132,6 @@ class TerminalStubTool(StubTool):
         )
 
 
-class MissingModelError(RuntimeError):
-    """No model to run against — a run without one measures nothing."""
-
-
 class UnknownToolError(RuntimeError):
     """A case grants a tool nothing here can describe faithfully."""
 
@@ -142,7 +139,7 @@ class UnknownToolError(RuntimeError):
 def _ask_user_question_card() -> ToolCard:
     """The real ask_user_question tool's own metadata.
 
-    Its mandatory-ask contract and terminal tag are the whole point of the
+    Its confirm-before-writing contract and terminal tag are the whole point of the
     write-gating case; a stub without them would test nothing.
     """
     from app.agents.actions.internal_tools.intrim_tools import InternalTools
@@ -276,27 +273,6 @@ def build_system_prompt(
     )
     return PipesHubPromptBuilder(ctx).build(
         spec, AgentRuntime(), Goal(description="q"), [], {}
-    )
-
-
-def build_chat_model(provider: str, model: str, api_key: str | None) -> BaseChatModel:
-    """A LangChain chat model for ``provider``."""
-    if not api_key:
-        raise MissingModelError(
-            f"No API key for '{provider}'. Set the key in the workflow's "
-            "environment (TEST_OPENAI_API_KEY for OpenAI) and run again."
-        )
-    if provider == "openai":
-        from langchain_openai import ChatOpenAI
-
-        return ChatOpenAI(model=model, api_key=api_key, temperature=0)
-    if provider == "anthropic":
-        from langchain_anthropic import ChatAnthropic
-
-        return ChatAnthropic(model=model, api_key=api_key, temperature=0)
-    raise MissingModelError(
-        f"'{provider}' is not a provider this runner knows. Use 'openai' or "
-        "'anthropic', or add it to build_chat_model in tests/evals/live_runner.py."
     )
 
 
@@ -482,32 +458,6 @@ def make_run_agent(
         return trace_from(result, case)
 
     return run_agent
-
-
-def resolve_model(
-    provider_override: str | None = None, model_override: str | None = None
-) -> tuple[str, str, str | None]:
-    """Provider, model and key — the key chosen for the FINAL provider.
-
-    The provider must be settled before its key is read. Picking the key first
-    and then letting a command-line flag change the provider would send one
-    provider's key to another's endpoint: an authentication failure, and a
-    secret handed to a party that should never see it.
-
-    Reads the variables the integration workflows already set, so a scheduled
-    run needs no new secret.
-    """
-    provider = provider_override or os.getenv("EVAL_PROVIDER", "openai")
-    model = model_override or os.getenv("EVAL_MODEL") or ""
-    if provider == "openai":
-        return provider, model or os.getenv("TEST_OPENAI_LLM_MODEL") or "gpt-4o-mini", os.getenv(
-            "TEST_OPENAI_API_KEY"
-        )
-    if provider == "anthropic":
-        return provider, model or "claude-haiku-4-5", os.getenv("TEST_ANTHROPIC_API_KEY")
-    # An unknown provider has no key here; build_chat_model says so by name
-    # rather than trying whatever key happens to be set.
-    return provider, model, None
 
 
 __all__ = [

@@ -2,6 +2,7 @@ import re
 from typing import Any
 
 from app.modules.parsers.markdown.markdown_parser import MarkdownParser
+from app.modules.parsers.text_decoding import decode_text
 from app.services.parsing.interface import ParseResult
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
@@ -25,7 +26,7 @@ class MDXParser:
 
     def convert_mdx_to_md(self, binary_content: bytes) -> bytes:
         try:
-            content = binary_content.decode('utf-8')
+            content = decode_text(binary_content)
 
             # Step 1: Handle <Accordion title="...">...</Accordion> first
             content = re.sub(

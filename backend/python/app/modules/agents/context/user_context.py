@@ -10,6 +10,9 @@ from app.modules.agents.qna.chat_state import ChatState
 
 def _format_user_context(state: ChatState) -> str:
     """Format user information for planner"""
+    if state.get("send_user_info", True) is False:
+        return ""
+
     user_info = state.get("user_info") or {}
     org_info = state.get("org_info") or {}
 

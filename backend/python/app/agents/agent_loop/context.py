@@ -20,9 +20,26 @@ then shared by reference across every tool call for the life of the request.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
+
+if TYPE_CHECKING:
+    from app.services.artifact_registry.models import Actor
+
+
+def _tool_approval_answer(raw: Any) -> Any:  # noqa: ANN401
+    """The request's answer to an approval card, or None when it has none or it's malformed."""
+    if not isinstance(raw, dict):
+        return None
+    from pydantic import ValidationError
+
+    from app.agents.agent_loop.tool_approvals import ToolApprovalAnswer
+
+    try:
+        return ToolApprovalAnswer.model_validate(raw)
+    except ValidationError:
+        return None
 
 
 class AgentContext(BaseModel):
@@ -34,14 +51,23 @@ class AgentContext(BaseModel):
     # and re-renders a few KB of routing text; prompt_builder + domain_agents
     # both need the same catalog in one turn.
     _source_catalog: Any = PrivateAttr(default=None)
+    # One ledger per request so `retrieval_context` frames carry only what
+    # is new since the last tool call, not the whole accumulated set.
+    _retrieval_ledger: Any = PrivateAttr(default=None)
+    # Every model call of the request, for the opt-in `run_usage` frame.
+    _usage_ledger: Any = PrivateAttr(default=None)
+    _run_usage_claimed: bool = PrivateAttr(default=False)
 
     # Identity
     org_id: str
     user_id: str
     user_email: str
+    # Who owns the artifacts the run makes; see `chat_state.ChatState`.
+    artifact_owner_user_id: str = ""
     user_info: dict[str, Any] = Field(default_factory=dict)
     org_info: dict[str, Any] = Field(default_factory=dict)
     is_service_account: bool = False
+    send_user_info: bool = True
 
     # Services (injected, not serializable)
     retrieval_service: Any = None
@@ -56,6 +82,8 @@ class AgentContext(BaseModel):
     tool_to_toolset_map: dict[str, str] = Field(default_factory=dict)
     toolset_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
     web_search_config: dict[str, Any] | None = None
+    # Deep research: the research method in the prompt, more turns and a larger web budget.
+    deep_research: bool = False
 
     # MCP servers — parallel to the toolset fields above. `mcp_servers` is the
     # attached/authenticated instance metadata (from `agent.py`'s chat handler);
@@ -64,6 +92,9 @@ class AgentContext(BaseModel):
     # (`app/agents/agent_loop/mcp_access.py` / `mcp_tool_loader.py`).
     mcp_servers: list[dict[str, Any]] = Field(default_factory=list)
     mcp_server_configs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    # API toolset operations the agent may call, as stored on the agent:
+    # `"<instanceId>:<toolName>"` (see `app/agents/openapi/attachments.py`).
+    api_toolset_tools: list[str] = Field(default_factory=list)
 
     # Knowledge config
     has_knowledge: bool = False
@@ -84,6 +115,8 @@ class AgentContext(BaseModel):
     has_sql_knowledge: bool = False
     has_slack_connector: bool = False
     has_slack_knowledge: bool = False
+    has_code_connector: bool = False
+    has_code_knowledge: bool = False
     is_multimodal_llm: bool = False
     # The user's question for this turn. Reaches tools that need to know what
     # is being asked -- `fetch_record` ranks an over-budget record's blocks
@@ -98,6 +131,12 @@ class AgentContext(BaseModel):
     # (mirrored here for typed access) before minting a shortener — never
     # created when this is False, so full record ids pass through unchanged.
     enable_record_id_shortening: bool = False
+
+    # Opt-in per request (`ChatQuery.includeRetrievalContext`). When True the
+    # stream carries CUSTOM `retrieval_context` frames naming the records and
+    # blocks that reached the model, and a `run_usage` frame. Off by default:
+    # it is measurement surface, not product behaviour.
+    include_retrieval_context: bool = False
 
     # Image attachment blocks (LangChain ``image_url`` dicts) resolved by
     # ``resolve_attachments_for_goal`` for the current turn. Consumed by
@@ -126,6 +165,13 @@ class AgentContext(BaseModel):
     # Mutable per-request state
     conversation_id: str | None = None
     has_ui_client: bool = False
+    # Per-tool approvals (`tool_approvals.py`): the client (only the web app can answer a card), the
+    # agent, and the person's answer to an approval card, when this request carries one.
+    client_name: str | None = None
+    agent_key: str | None = None
+    is_assistant: bool = False
+    chat_streaming: bool = True
+    tool_approval: Any = None
 
     # Conversation history (for multi-turn seeding)
     previous_conversations: list[dict[str, Any]] = Field(default_factory=list)
@@ -149,6 +195,14 @@ class AgentContext(BaseModel):
     # onto `tool_state["mcp_tool_load_failures"]` the same way
     # `toolset_load_failures` is, for the same reason (see comment above).
     mcp_tool_load_failures: list[dict[str, Any]] = Field(default_factory=list)
+
+    # MCP servers whose sign-in lacked a scope this request, for the reply's sign-in card
+    # (`mcp_sign_in.py`).
+    mcp_sign_in_needed: list[dict[str, Any]] = Field(default_factory=list)
+
+    # `{"instanceId", "name", "instructions"}` for each loaded MCP server whose `initialize`
+    # result carried instructions, for the capability summary.
+    mcp_server_instructions: list[dict[str, Any]] = Field(default_factory=list)
 
     # Group names (as registered on the per-request `ToolRegistry`, i.e.
     # `PipesHubToolLoader`'s `group_name`, not the registry's raw toolset
@@ -275,6 +329,10 @@ class AgentContext(BaseModel):
     # go through get_llm_for_chat.
     llm_provider: str = ""
     context_length: int | None = None
+    # The model's contextLength exactly as configured: None when unset, where
+    # `context_length` may hold a route's default. Sizes the agent's context
+    # budget, which otherwise comes from a table keyed by model name.
+    configured_context_window: int | None = None
     is_reasoning_model: bool = False
 
     # Record IDs for which dynamic_fetch_full_record was called this request.
@@ -289,6 +347,20 @@ class AgentContext(BaseModel):
     # through unchanged — see module docstring. Populated by
     # `model_post_init`.
     tool_state: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("configured_context_window", mode="before")
+    @classmethod
+    def _window_or_none(cls, value: Any) -> int | None:  # noqa: ANN401
+        # Model config is admin-entered JSON. Only a whole number, or one written
+        # as digits, is a window: `true` or 1.5 means "not configured", never 1.
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, float):
+            value = int(value) if value.is_integer() else None
+        elif isinstance(value, str):
+            text = value.strip()
+            value = int(text) if text.isascii() and text.isdigit() else None
+        return value if isinstance(value, int) and value > 0 else None
 
     @property
     def model_profile(self) -> Any:
@@ -326,6 +398,17 @@ class AgentContext(BaseModel):
         return AGUI_FORMATTER if self.protocol == "agui" else LEGACY_FORMATTER
 
     @property
+    def artifact_actor(self) -> Actor:
+        """The `Actor` artifacts are created and read as; see `artifact_owner`."""
+        from app.services.artifact_registry.models import artifact_owner
+
+        return artifact_owner({
+            "org_id": self.org_id,
+            "user_id": self.user_id,
+            "artifact_owner_user_id": self.artifact_owner_user_id,
+        })
+
+    @property
     def artifact_registry(self) -> Any:
         """`ArtifactRegistryService` for this request — `None` when either
         `graph_provider` or `blob_store` isn't wired (background/test runs
@@ -345,6 +428,7 @@ class AgentContext(BaseModel):
     def from_chat_state(
         cls, state: dict[str, Any], *, event_sink: Any = None, protocol: str = "legacy",
         llm_provider: str = "", context_length: int | None = None,
+        configured_context_window: int | None = None,
         is_reasoning_model: bool = False, run_id: str | None = None,
         cancellation_token: Any = None,
     ) -> "AgentContext":
@@ -364,10 +448,12 @@ class AgentContext(BaseModel):
         return cls(
             org_id=state.get("org_id", ""),
             user_id=state.get("user_id", ""),
+            artifact_owner_user_id=state.get("artifact_owner_user_id") or state.get("user_id", ""),
             user_email=state.get("user_email", ""),
             user_info=state.get("user_info") or {},
             org_info=state.get("org_info") or {},
             is_service_account=bool(state.get("is_service_account", False)),
+            send_user_info=state.get("send_user_info", True) is not False,
             retrieval_service=state.get("retrieval_service"),
             graph_provider=state.get("graph_provider"),
             config_service=state.get("config_service"),
@@ -379,7 +465,9 @@ class AgentContext(BaseModel):
             toolset_configs=state.get("toolset_configs") or {},
             mcp_servers=state.get("mcp_servers") or [],
             mcp_server_configs=state.get("mcp_server_configs") or {},
+            api_toolset_tools=state.get("api_toolset_tools") or [],
             web_search_config=state.get("web_search_config"),
+            deep_research=bool(state.get("deep_research", False)) and bool(state.get("web_search_config")),
             has_knowledge=bool(state.get("has_knowledge", False)),
             apps=state.get("apps"),
             kb=state.get("kb"),
@@ -391,9 +479,12 @@ class AgentContext(BaseModel):
             has_sql_knowledge=bool(state.get("has_sql_knowledge", False)),
             has_slack_connector=bool(state.get("has_slack_connector", False)),
             has_slack_knowledge=bool(state.get("has_slack_knowledge", False)),
+            has_code_connector=bool(state.get("has_code_connector", False)),
+            has_code_knowledge=bool(state.get("has_code_knowledge", False)),
             is_multimodal_llm=bool(state.get("is_multimodal_llm", False)),
             query=str(state.get("query") or ""),
             enable_record_id_shortening=bool(state.get("enable_record_id_shortening", False)),
+            include_retrieval_context=bool(state.get("include_retrieval_context", False)),
             system_prompt=state.get("system_prompt"),
             instructions=state.get("instructions"),
             custom_instructions=state.get("custom_instructions"),
@@ -402,11 +493,21 @@ class AgentContext(BaseModel):
             current_time=state.get("current_time"),
             conversation_id=state.get("conversation_id"),
             has_ui_client=bool(state.get("has_ui_client", False)),
+            client_name=(
+                state["client_name"]
+                if isinstance(state.get("client_name"), str)
+                else None
+            ),
+            agent_key=state.get("agent_key"),
+            is_assistant=bool(state.get("is_assistant_chat", False)),
+            chat_streaming=state.get("chat_streaming", True) is not False,
+            tool_approval=_tool_approval_answer(state.get("tool_approval")),
             previous_conversations=state.get("previous_conversations") or [],
             event_sink=event_sink,
             protocol=protocol,
             llm_provider=llm_provider,
             context_length=context_length,
+            configured_context_window=configured_context_window,
             is_reasoning_model=is_reasoning_model,
             run_id=run_id,
             cancellation_token=cancellation_token,
@@ -416,6 +517,36 @@ class AgentContext(BaseModel):
     def model_post_init(self, __context: Any) -> None:  # noqa: ANN401
         for key, value in self._seed_tool_state().items():
             self.tool_state.setdefault(key, value)
+
+    @property
+    def retrieval_ledger(self) -> Any:  # noqa: ANN401
+        from app.agents.agent_loop.retrieval_ledger import RetrievalContextLedger
+
+        if self._retrieval_ledger is None:
+            self._retrieval_ledger = RetrievalContextLedger()
+        return self._retrieval_ledger
+
+    @property
+    def usage_ledger(self) -> Any:  # noqa: ANN401
+        from app.agents.agent_loop.protocol.run_usage import UsageLedger
+
+        if self._usage_ledger is None:
+            self._usage_ledger = UsageLedger()
+        return self._usage_ledger
+
+    def claim_run_usage_frame(self) -> bool:
+        """True the first time it is called for this request: the `run_usage`
+        frame is sent from every way a turn ends, but only once."""
+        if self._run_usage_claimed:
+            return False
+        self._run_usage_claimed = True
+        return True
+
+    def citation_ref_to_url(self) -> dict[str, str] | None:
+        """This request's citation refs and the URLs they stand for, read at
+        call time: the mapper in `tool_state` can be replaced mid-request."""
+        mapper = self.tool_state.get("citation_ref_mapper")
+        return mapper.ref_to_url if mapper is not None else None
 
     def get_source_catalog(self) -> Any:
         """Return the per-request `SourceCatalog`, building it once on first use."""
@@ -464,10 +595,12 @@ class AgentContext(BaseModel):
             "blob_store": self.blob_store,
             "org_id": self.org_id,
             "user_id": self.user_id,
+            "artifact_owner_user_id": self.artifact_owner_user_id or self.user_id,
             "user_email": self.user_email,
             "user_info": self.user_info,
             "org_info": self.org_info,
             "is_service_account": self.is_service_account,
+            "send_user_info": self.send_user_info,
             "conversation_id": self.conversation_id,
             "has_ui_client": self.has_ui_client,
             "agent_toolsets": self.agent_toolsets,
@@ -487,9 +620,17 @@ class AgentContext(BaseModel):
             "has_sql_knowledge": self.has_sql_knowledge,
             "has_slack_connector": self.has_slack_connector,
             "has_slack_knowledge": self.has_slack_knowledge,
+            "has_code_connector": self.has_code_connector,
+            "has_code_knowledge": self.has_code_knowledge,
             "is_multimodal_llm": self.is_multimodal_llm,
             "query": self.query,
             "enable_record_id_shortening": self.enable_record_id_shortening,
+            # Mirrored so a tool can see the flag without reaching for the
+            # context (`fetch.py` records render outcomes only when it is on).
+            "include_retrieval_context": self.include_retrieval_context,
+            # Tools that call a model themselves (grep-command generation)
+            # report into it; absent unless the request opted in.
+            "usage_ledger": self.usage_ledger if self.include_retrieval_context else None,
             "system_prompt": self.system_prompt,
             "instructions": self.instructions,
             "custom_instructions": self.custom_instructions,
@@ -502,6 +643,7 @@ class AgentContext(BaseModel):
             # Written by the knowledge tools that surface Record IDs without a
             # citation payload — see `remember_record_ids()` in chat_state.py.
             "known_record_ids": set(),
+            "known_record_names": {},
             "tool_records": [],
             "citation_ref_mapper": None,
             # TEMPORARY token-savings experiment — see `RecordIdShortener` in
@@ -520,6 +662,7 @@ class AgentContext(BaseModel):
             # here so the tool does not need a direct context reference.
             "needs_whole_document": self.needs_whole_document,
             "mcp_tool_load_failures": self.mcp_tool_load_failures,
+            "mcp_server_instructions": self.mcp_server_instructions,
         }
 
 

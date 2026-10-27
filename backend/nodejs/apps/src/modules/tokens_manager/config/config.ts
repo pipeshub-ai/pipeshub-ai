@@ -1,5 +1,7 @@
 import { RedisConfig } from '../../../libs/types/messaging.types';
 import { ConfigService } from '../services/cm.service';
+import { passwordResetLinkLifetime } from '../../../libs/utils/createJwt';
+import { ParsedTrustProxy, parseTrustProxy } from '../../../libs/utils/trust-proxy';
 
 export interface AppConfig {
   jwtSecret: string;
@@ -80,6 +82,10 @@ export interface AppConfig {
   // Rate limit config
   maxRequestsPerMinute: number;
   maxOAuthClientRequestsPerMinute: number;
+  maxAuthRequestsPerMinute: number;
+
+  // Express `trust proxy` setting, parsed from TRUST_PROXY
+  trustProxy: ParsedTrustProxy;
 
   // Deployment config — which backing services are in use (read from KV store)
   deployment: {
@@ -91,6 +97,9 @@ export interface AppConfig {
 }
 
 export const loadAppConfig = async (): Promise<AppConfig> => {
+  // Fails startup on an unusable PASSWORD_RESET_LINK_EXPIRY, rather than
+  // letting every reset link be issued already expired.
+  passwordResetLinkLifetime();
   const configService = ConfigService.getInstance();
 
   return {
@@ -144,6 +153,11 @@ export const loadAppConfig = async (): Promise<AppConfig> => {
     maxOAuthClientRequestsPerMinute: process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE
       ? parseInt(process.env.MAX_OAUTH_CLIENT_REQUESTS_PER_MINUTE, 10)
       : 1000,
+    maxAuthRequestsPerMinute: process.env.MAX_AUTH_REQUESTS_PER_MINUTE
+      ? parseInt(process.env.MAX_AUTH_REQUESTS_PER_MINUTE, 10)
+      : 10,
+
+    trustProxy: parseTrustProxy(process.env.TRUST_PROXY),
 
     deployment: await configService.getDeploymentConfig() as AppConfig['deployment'],
   };

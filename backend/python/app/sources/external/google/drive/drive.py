@@ -616,7 +616,8 @@ class GoogleDriveDataSource:
         pageSize: Optional[int] = None,
         pageToken: Optional[str] = None,
         q: Optional[str] = None,
-        useDomainAdminAccess: Optional[bool] = None
+        useDomainAdminAccess: Optional[bool] = None,
+        fields: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Google Drive API:  Lists the user's shared drives. This method accepts the `q` parameter, which is a search query combining one or more search terms. For more information, see the [Search for shared drives](/workspace/drive/api/guides/search-shareddrives) guide.
 
@@ -627,6 +628,7 @@ class GoogleDriveDataSource:
             pageToken (str, optional): Page token for shared drives.
             q (str, optional): Query string for searching shared drives.
             useDomainAdminAccess (bool, optional): Issue the request as a domain administrator; if set to true, then all shared drives of the domain in which the requester is an administrator are returned.
+            fields (str, optional): Partial response mask. Capabilities on each drive say whether this user can edit or manage members.
 
         Returns:
             Dict[str, Any]: API response
@@ -640,6 +642,8 @@ class GoogleDriveDataSource:
             kwargs['q'] = q
         if useDomainAdminAccess is not None:
             kwargs['useDomainAdminAccess'] = useDomainAdminAccess
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.drives().list(**kwargs) # type: ignore
         return await self._execute(request)
@@ -888,6 +892,19 @@ class GoogleDriveDataSource:
             fields='id,name,mimeType,webViewLink,parents,size',
             **kwargs
         ) # type: ignore
+        # googleapiclient retries the upload's data PUT only on 5xx/429, not on a
+        # socket timeout. Re-executing the same request asks the upload session how
+        # much it received and resumes, so a retry cannot create a second file.
+        for attempt in range(1, GOOGLE_HTTP_NUM_RETRIES + 1):
+            try:
+                return await self._execute(request)
+            except (TimeoutError, ConnectionError) as e:
+                delay = 2 ** attempt
+                logger.warning(
+                    "Drive media upload of %r failed (%s), resuming in %ds (retry %d of %d)",
+                    file_metadata.get("name"), e, delay, attempt, GOOGLE_HTTP_NUM_RETRIES,
+                )
+                await asyncio.sleep(delay)
         return await self._execute(request)
 
     async def files_delete(
@@ -1794,7 +1811,8 @@ class GoogleDriveDataSource:
         self,
         fileId: str,
         pageSize: Optional[int] = None,
-        pageToken: Optional[str] = None
+        pageToken: Optional[str] = None,
+        fields: str | None = None,
     ) -> Dict[str, Any]:
         """Google Drive API: Lists a file's revisions. For more information, see [Manage file revisions](https://developers.google.com/workspace/drive/api/guides/manage-revisions).
 
@@ -1815,6 +1833,9 @@ class GoogleDriveDataSource:
             kwargs['pageSize'] = pageSize
         if pageToken is not None:
             kwargs['pageToken'] = pageToken
+
+        if fields is not None:
+            kwargs['fields'] = fields
 
         request = self.client.revisions().list(**kwargs) # type: ignore
         return await self._execute(request)

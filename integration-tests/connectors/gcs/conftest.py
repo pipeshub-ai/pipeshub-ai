@@ -16,6 +16,15 @@ from helper.source_credentials import source_unavailable
 from connectors.gcs.gcs_storage_helper import GCSStorageHelper
 
 
+def gcs_connector_config() -> dict[str, Any]:
+    return {
+        "auth": {
+            "serviceAccountJson": os.getenv("GCS_SERVICE_ACCOUNT_JSON"),
+            "bucket": GCS_BUCKET_NAME,
+        }
+    }
+
+
 @pytest.fixture(scope="session")
 def gcs_storage():
     sa_json = os.getenv("GCS_SERVICE_ACCOUNT_JSON")
@@ -34,14 +43,8 @@ async def gcs_connector(
     graph_provider: GraphProviderProtocol,
     sample_data_root,
 ) -> AsyncGenerator[Dict[str, Any], None]:
-    sa_json = os.getenv("GCS_SERVICE_ACCOUNT_JSON")
-    assert sa_json
-    config = {
-        "auth": {
-            "serviceAccountJson": sa_json,
-            "bucket": GCS_BUCKET_NAME,
-        }
-    }
+    assert os.getenv("GCS_SERVICE_ACCOUNT_JSON")
+    config = gcs_connector_config()
 
     state = await constructor(
         gcs_storage,

@@ -1,21 +1,29 @@
 import asyncio
 import json
 import random
+import re
 import threading
 import uuid
 from typing import TYPE_CHECKING, Callable, Generic, List, Optional, TypeVar
 
 from app.config.key_value_store import KeyValueStore
+from app.core.org_context import spawn_detached
 from app.services.redis.config import ClientOptions, RedisConnectionConfig
 from app.services.redis.connection_provider_factory import get_redis_provider
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
-    from app.services.redis.connection_provider import IRedisConnectionProvider, RedisClient
+    from app.services.redis.connection_provider import (
+        IRedisConnectionProvider,
+        RedisClient,
+    )
 
 logger = create_logger("redis_store")
 
 T = TypeVar("T")
+
+# Characters SCAN MATCH reads as a glob.
+_GLOB_SPECIAL = re.compile(r"([\\*?\[\]])")
 
 # Retry configuration
 RETRY_BASE_DELAY = 0.5  # seconds
@@ -289,7 +297,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
             logger.error("Failed to update key %s: %s", key, str(e))
             raise ConnectionError(f"Failed to update key: {str(e)}")
 
-    async def get_key(self, key: str) -> Optional[T]:
+    async def get_key(self, key: str, *, raise_on_error: bool = False) -> Optional[T]:
         """Get value for key from Redis."""
         full_key = self._build_key(key)
         logger.debug("Getting key from Redis: %s (original: %s)", full_key, key)
@@ -303,9 +311,21 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             try:
                 deserialized = self.deserializer(value_bytes)
+                # Present bytes that deserialize to nothing could not be read:
+                # the factory deserializer answers None for bytes that are not
+                # valid UTF-8 instead of raising, so the decode handler below
+                # never sees them. Empty bytes are how None is stored, and stay
+                # absent.
+                if deserialized is None and value_bytes and raise_on_error:
+                    raise ValueError("Stored value could not be decoded")
                 return deserialized
             except json.JSONDecodeError as e:
                 logger.error("Failed to deserialize value: %s", str(e))
+                # A stored value that cannot be read is not an absent one.
+                # Surfaces as ConnectionError via the handler below, as every
+                # failed read from this store does.
+                if raise_on_error:
+                    raise
                 return None
 
         except Exception as e:
@@ -410,7 +430,8 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
         """List all keys under a specific directory prefix."""
         # Ensure directory ends with appropriate separator
         prefix = directory if directory.endswith("/") else f"{directory}/"
-        pattern = f"{self._key_namespace_prefix}{self.key_prefix}{prefix}*"
+        # A literal *, ?, [ or ] in a key path must not act as a wildcard.
+        pattern = _GLOB_SPECIAL.sub(r"\\\1", f"{self._key_namespace_prefix}{self.key_prefix}{prefix}") + "*"
         logger.debug("Listing keys in directory")
 
         try:
@@ -606,7 +627,7 @@ class RedisDistributedKeyValueStore(KeyValueStore[T], Generic[T]):
 
             logger.debug("Pub/Sub listener loop exited")
 
-        task = asyncio.create_task(_listen_with_retry())
+        task = spawn_detached(_listen_with_retry())
         self._pubsub_task = task
         return task
 

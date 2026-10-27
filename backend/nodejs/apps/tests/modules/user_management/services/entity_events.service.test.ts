@@ -14,6 +14,7 @@ import {
   OrgUpdatedEvent,
   OrgDeletedEvent,
 } from '../../../../src/modules/user_management/services/entity_events.service';
+import { OutboxEvent } from '../../../../src/libs/services/outbox/outbox.schema';
 
 describe('EntitiesEventProducer', () => {
   describe('Enums', () => {
@@ -276,19 +277,23 @@ describe('EntitiesEventProducer - additional coverage', () => {
   })
 
   describe('publishEvent method', () => {
-    it('should publish event to entity-events topic', async () => {
+    // publishEvent no longer sends to the broker. It records the event in the
+    // outbox and a dispatcher delivers it, which is what stops a broker
+    // failure from being reported to the caller as success.
+    afterEach(() => sinon.restore())
+
+    function instanceWith(create: sinon.SinonStub) {
       const instance = Object.create(EntitiesEventProducer.prototype)
       ;(instance as any).topic = 'entity-events'
-      const mockProducer = {
-        isConnected: sinon.stub().returns(true),
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        publish: sinon.stub().resolves(),
-        publishBatch: sinon.stub().resolves(),
-        healthCheck: sinon.stub().resolves(true),
-      }
-      ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+      ;(instance as any).producer = { isConnected: sinon.stub().returns(true) }
+      instance.logger = { info: sinon.stub(), debug: sinon.stub(), error: sinon.stub() }
+      sinon.stub(OutboxEvent, 'create').callsFake(create as any)
+      return instance
+    }
+
+    it('records the event for the entity-events topic instead of sending it', async () => {
+      const create = sinon.stub().resolves([{}])
+      const instance = instanceWith(create)
 
       const event: Event = {
         eventType: EventType.OrgCreatedEvent,
@@ -302,28 +307,22 @@ describe('EntitiesEventProducer - additional coverage', () => {
 
       await instance.publishEvent(event)
 
-      expect(mockProducer.publish.calledOnce).to.be.true
-      const [topic, message] = mockProducer.publish.firstCall.args
-      expect(topic).to.equal('entity-events')
-      expect(message.key).to.equal(EventType.OrgCreatedEvent)
-      expect(JSON.parse(message.value)).to.deep.include({ eventType: EventType.OrgCreatedEvent })
-      expect(message.headers.eventType).to.equal(EventType.OrgCreatedEvent)
-      expect(instance.logger.info.calledOnce).to.be.true
+      expect(create.calledOnce).to.be.true
+      const [docs] = create.firstCall.args
+      expect(docs[0].topic).to.equal('entity-events')
+      expect(docs[0].key).to.equal(EventType.OrgCreatedEvent)
+      expect(JSON.parse(docs[0].value)).to.deep.include({
+        eventType: EventType.OrgCreatedEvent,
+      })
+      expect(docs[0].headers.eventType).to.equal(EventType.OrgCreatedEvent)
+      expect(docs[0].status).to.equal('pending')
     })
 
-    it('should log error when publish fails', async () => {
-      const instance = Object.create(EntitiesEventProducer.prototype)
-      ;(instance as any).topic = 'entity-events'
-      const mockProducer = {
-        isConnected: sinon.stub().returns(true),
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        publish: sinon.stub().rejects(new Error('Publish error')),
-        publishBatch: sinon.stub().resolves(),
-        healthCheck: sinon.stub().resolves(true),
-      }
-      ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+    it('throws when the event cannot be recorded', async () => {
+      // The opposite of the old behaviour, and the point of the change. A
+      // failure here means the caller's operation has not fully happened, so
+      // the caller hears about it rather than being told all is well.
+      const instance = instanceWith(sinon.stub().rejects(new Error('mongo down')))
 
       const event: Event = {
         eventType: EventType.NewUserEvent,
@@ -336,44 +335,55 @@ describe('EntitiesEventProducer - additional coverage', () => {
         } as UserAddedEvent,
       }
 
-      await instance.publishEvent(event)
-      expect(instance.logger.error.calledOnce).to.be.true
+      try {
+        await instance.publishEvent(event)
+        expect.fail('expected publishEvent to throw')
+      } catch (error) {
+        expect((error as Error).message).to.equal('mongo down')
+      }
     })
 
-    it('should include timestamp header as string', async () => {
-      const instance = Object.create(EntitiesEventProducer.prototype)
-      ;(instance as any).topic = 'entity-events'
-      const mockProducer = {
-        isConnected: sinon.stub().returns(true),
-        connect: sinon.stub().resolves(),
-        disconnect: sinon.stub().resolves(),
-        publish: sinon.stub().resolves(),
-        publishBatch: sinon.stub().resolves(),
-        healthCheck: sinon.stub().resolves(true),
-      }
-      ;(instance as any).producer = mockProducer
-      instance.logger = { info: sinon.stub(), error: sinon.stub() }
+    it('joins the caller transaction when given a session', async () => {
+      const create = sinon.stub().resolves([{}])
+      const instance = instanceWith(create)
+      const session = { id: 'session-1' }
 
-      const timestamp = 1234567890
-      const event: Event = {
+      await instance.publishEvent(
+        {
+          eventType: EventType.DeleteUserEvent,
+          timestamp: 1234567890,
+          payload: {
+            orgId: 'org-1',
+            userId: 'user-1',
+            email: 'deleted@test.com',
+          } as UserDeletedEvent,
+        },
+        session,
+      )
+
+      expect(create.firstCall.args[1]).to.deep.equal({ session })
+    })
+
+    it('records the timestamp header as a string', async () => {
+      const create = sinon.stub().resolves([{}])
+      const instance = instanceWith(create)
+
+      await instance.publishEvent({
         eventType: EventType.DeleteUserEvent,
-        timestamp,
+        timestamp: 1234567890,
         payload: {
           orgId: 'org-1',
           userId: 'user-1',
           email: 'deleted@test.com',
         } as UserDeletedEvent,
-      }
+      })
 
-      await instance.publishEvent(event)
-
-      const message = mockProducer.publish.firstCall.args[1]
-      expect(message.headers.timestamp).to.equal('1234567890')
+      expect(create.firstCall.args[0][0].headers.timestamp).to.equal('1234567890')
     })
   })
 
   describe('start and stop methods', () => {
-    it('should call disconnect when connected in stop', async () => {
+    it('leaves the shared producer connected on stop', async () => {
       const instance = Object.create(EntitiesEventProducer.prototype)
       const mockProducer = {
         isConnected: sinon.stub().returns(true),
@@ -386,7 +396,10 @@ describe('EntitiesEventProducer - additional coverage', () => {
       ;(instance as any).producer = mockProducer
 
       await instance.stop()
-      expect(mockProducer.disconnect.calledOnce).to.be.true
+      // The message producer is one instance shared with the notification
+      // producer, and the dispatcher publishes from it continuously.
+      // Disconnecting it here would break both.
+      expect(mockProducer.disconnect.called).to.be.false
     })
 
     it('should not call disconnect when not connected in stop', async () => {

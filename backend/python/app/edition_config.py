@@ -4,6 +4,10 @@ knowledge_hub_service_factory = None
 sharing_router = None 
 agent_sharing_router = None
 allowed_connector_list_scopes: set[str] = {"personal", "team"}
+# Organization-wide rules for toolset tools (the "Tool approvals" editor). Off: a toolset tool
+# starts from what it does to data, and the person in the chat answers its approval card.
+organization_toolset_tool_rules = False
+from app.config.redaction import can_reveal_secrets, hide_secrets_by_default
 from app.api.routes.search_llm_resolver import resolve_llm_for_search
 from app.api.routes.toolset_resolvers import (
     REDACTED_PLACEHOLDER,
@@ -37,13 +41,10 @@ from app.api.middlewares.auth import (
 from app.api.routes.agent import router as agent_router
 from app.api.routes.chatbot import router as chatbot_router
 from app.api.routes.entity import router as entity_router
-from app.api.routes.search import router as search_router
-from app.api.routes.toolsets import router as toolsets_router
 # Resolvers must be bound before importing connector_router: the router module
 # imports these symbols from edition_config (circular). Bind first so a
 # mid-load re-entry finds them on this partially initialized module.
 from app.connectors.api.connector_resolvers import (
-    assert_hard_delete_record_org,
     authorize_connector_stats,
     build_graph_data_store,
     default_connector_scope,
@@ -51,10 +52,8 @@ from app.connectors.api.connector_resolvers import (
     ensure_oauth_default,
     filter_oauth_configs_for_list,
     forbid_inherited_oauth_mutation,
-    lookup_user_for_records,
     mask_oauth_config_for_response,
     oauth_create_extra_fields,
-    records_user_id_arg,
     resolve_config_service,
     resolve_oauth_config,
     resolve_oauth_configs,
@@ -85,6 +84,15 @@ def __getattr__(name: str):
     """
     if name == "connector_router":
         from app.connectors.api.router import router
+
+        return router
+    # Same cycle: each of these route modules imports this one at load.
+    if name == "search_router":
+        from app.api.routes.search import router
+
+        return router
+    if name == "toolsets_router":
+        from app.api.routes.toolsets import router
 
         return router
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

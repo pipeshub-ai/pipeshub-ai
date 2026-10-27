@@ -25,13 +25,13 @@ from app.connectors.sources.google_cloud_storage.connector import (
 from app.connectors.core.registry.connector_builder import ConnectorScope
 from app.models.entities import RecordType
 from contextlib import asynccontextmanager
-from app.config.constants.arangodb import MimeTypes, ProgressStatus
+from app.config.constants.arangodb import ProgressStatus
 from app.connectors.core.registry.filters import (
     FilterCollection,
     IndexingFilterKey,
     SyncFilterKey,
 )
-from app.models.entities import FileRecord, RecordGroupType, RecordType, User
+from app.models.entities import FileRecord, RecordGroupType, User
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +51,8 @@ def mock_data_entities_processor():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.get_record_by_external_id = AsyncMock(return_value=None)
     proc.get_record_by_external_revision_id = AsyncMock(return_value=None)
@@ -514,6 +516,8 @@ def mock_data_entities_processor_fullcov():
     proc.on_new_app_users = AsyncMock()
     proc.on_new_record_groups = AsyncMock()
     proc.on_new_records = AsyncMock()
+    proc.get_records_in_record_group = AsyncMock(return_value=[])
+    proc.on_record_deleted = AsyncMock()
     proc.get_all_active_users = AsyncMock(return_value=[])
     proc.reindex_existing_records = AsyncMock()
     proc.initialize = AsyncMock()
@@ -1007,6 +1011,7 @@ class TestSyncBucket95:
         )
         connector.record_sync_point = MagicMock()
         connector.record_sync_point.read_sync_point = AsyncMock(return_value=None)
+        connector.record_sync_point.update_sync_point = AsyncMock()
         await connector._sync_bucket("bucket")
 
     @pytest.mark.asyncio
@@ -1037,6 +1042,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -1135,6 +1141,7 @@ class TestSyncBucket95:
         ext_filter = MagicMock()
         ext_filter.is_empty.return_value = False
         ext_filter.value = ["pdf"]
+        ext_filter.operator_value = "in"
         sync_filters = MagicMock()
         sync_filters.get.side_effect = lambda key: ext_filter if key == "file_extensions" else None
         connector.sync_filters = sync_filters
@@ -1216,6 +1223,14 @@ class TestProcessGcsObject95:
         assert record.is_file is False
 
     @pytest.mark.asyncio
+    async def test_a_folder_marker_is_text_directory_whatever_its_content_type(self, connector) -> None:
+        connector.scope = ConnectorScope.TEAM.value
+        obj = {"Key": "folder/", "LastModified": "2025-06-01T00:00:00Z",
+               "ContentType": "application/x-www-form-urlencoded;charset=UTF-8"}
+        record, _ = await connector._process_gcs_object(obj, "bucket")
+        assert record.mime_type == MimeTypes.FOLDER.value
+
+    @pytest.mark.asyncio
     async def test_existing_record_content_changed(self, connector):
         existing = MagicMock()
         existing.id = "existing-id"
@@ -1261,11 +1276,14 @@ class TestProcessGcsObject95:
         existing = MagicMock()
         existing.id = "moved-id"
         existing.external_record_id = "bucket/old/file.txt"
+        existing.external_record_group_id = "bucket"
         existing.external_revision_id = "same_md5"
         existing.version = 0
         existing.source_created_at = 1700000000000
         connector.data_entities_processor.get_record_by_external_id = AsyncMock(return_value=None)
         connector.data_entities_processor.get_record_by_external_revision_id = AsyncMock(return_value=existing)
+        # The old key is gone from the bucket, so equal content at the new key is a move.
+        connector.data_source = MagicMock(list_blobs=AsyncMock(return_value=MagicMock(success=True, data={"Contents": []})))
         connector.scope = ConnectorScope.TEAM.value
 
         obj = {
@@ -1348,23 +1366,21 @@ class TestCreateGcsPermissions95:
     async def test_team_scope(self, connector):
         connector.scope = ConnectorScope.TEAM.value
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].entity_type.value == "ORG"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_with_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = "user-1"
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
-        assert perms[0].email == "user@test.com"
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_no_creator(self, connector):
         connector.scope = ConnectorScope.PERSONAL.value
         connector.created_by = None
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_lookup_fails(self, connector):
@@ -1381,7 +1397,7 @@ class TestCreateGcsPermissions95:
         provider.transaction = _tx
         connector.data_store_provider = provider
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
+        assert perms == []
 
     @pytest.mark.asyncio
     async def test_personal_scope_user_no_email(self, connector):
@@ -1389,7 +1405,7 @@ class TestCreateGcsPermissions95:
         connector.created_by = "user-1"
         connector.data_store_provider = _make_mock_data_store_provider(user={"email": None})
         perms = await connector._create_gcs_permissions("bucket", "key")
-        assert len(perms) == 1
+        assert perms == []
 
 
 class TestTestConnectionAndAccess95:

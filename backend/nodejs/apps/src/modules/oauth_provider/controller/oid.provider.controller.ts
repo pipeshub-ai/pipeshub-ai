@@ -17,6 +17,7 @@ import {
   buildWwwAuthenticateHeader,
 } from '../middlewares/oauth.auth.middleware';
 import { FirstPartyDeviceAppService } from '../services/oauth.first_party_device.service';
+import { mcpDiscoveryScopes } from '../config/scopes.config';
 
 /**
  * OpenID Connect Provider Controller
@@ -38,6 +39,8 @@ export class OIDCProviderController {
     @inject('AppConfig') private appConfig: AppConfig,
     @inject('FirstPartyDeviceAppService')
     private firstPartyDeviceAppService: FirstPartyDeviceAppService,
+    /** Whether this edition offers delegation; see `config.ts`. */
+    @inject('DelegationAvailable') private delegationAvailable: boolean,
   ) {}
 
   /**
@@ -138,6 +141,13 @@ export class OIDCProviderController {
         ...(deviceEnabled
           ? ['urn:ietf:params:oauth:grant-type:device_code']
           : []),
+        // Service-account delegation, advertised only where it exists.
+        // Listing a grant the token endpoint will always refuse would send
+        // integrators down a road that ends in an error, and discovery is
+        // precisely what they read to decide what to build against.
+        ...(this.delegationAvailable
+          ? ['urn:ietf:params:oauth:grant-type:token-exchange']
+          : []),
       ],
       token_endpoint_auth_methods_supported: [
         'none',
@@ -161,7 +171,7 @@ export class OIDCProviderController {
         'email_verified',
         'picture',
       ],
-      code_challenge_methods_supported: ['S256', 'plain'],
+      code_challenge_methods_supported: ['S256'],
     };
 
     res.json(config);
@@ -187,7 +197,7 @@ export class OIDCProviderController {
     const metadata: OAuthProtectedResourceMetadata = {
       resource: `${backendUrl}/mcp`,
       authorization_servers: [backendUrl],
-      scopes_supported: this.appConfig.mcpScopes,
+      scopes_supported: mcpDiscoveryScopes(this.appConfig.mcpScopes),
       bearer_methods_supported: ['header'],
       resource_documentation: `${backendUrl}/api/v1/docs`,
       ...(deviceClientId

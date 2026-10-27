@@ -7,12 +7,14 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Dict, Optional
-from urllib.parse import parse_qs, urlencode
+from urllib.parse import parse_qs, quote_plus, urlencode
 
 from aiohttp import ClientSession
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.http_status_code import HttpStatusCode
+from app.connectors.sources.web.address_guard import guarded_session_kwargs
+from app.utils.url_fetcher import private_addresses_blocked
 
 
 class GrantType(Enum):
@@ -80,6 +82,8 @@ class OAuthConfig:
     token_access_type: Optional[str] = None
     scope_parameter_name: str = "scope"  # Parameter name for scopes in authorization URL (e.g., "scope", "user_scope", "resource")
     token_response_path: Optional[str] = None  # Optional: path to extract token from nested response (e.g., "authed_user" for Slack)
+    # RFC 8414 name for how the token endpoint takes client credentials; set by get_oauth_config.
+    token_endpoint_auth_method: str = "client_secret_post"
 
     def generate_state(self) -> str:
         """Generate random state for CSRF protection"""
@@ -142,6 +146,7 @@ class OAuthToken:
     uid: Optional[str] = None   # used for dropbox
     account_id: Optional[str] = None
     team_id: Optional[str] = None
+    id: Optional[str] = None  # Salesforce identity URL, ending in /<orgId>/<userId>
 
     @property
     def is_expired(self) -> bool:
@@ -171,7 +176,8 @@ class OAuthToken:
             "created_at": self.created_at.isoformat(),
             "uid": self.uid,
             "account_id": self.account_id,
-            "team_id": self.team_id
+            "team_id": self.team_id,
+            "id": self.id,
         }
 
     @classmethod
@@ -206,7 +212,13 @@ class OAuthProvider:
     async def session(self) -> ClientSession:
         """Get or create aiohttp session"""
         if self._session is None or self._session.closed:
-            self._session = ClientSession()
+            # GitHub's token endpoint sends a ~9 KB Content-Security-Policy header;
+            # aiohttp refuses any header over 8190 bytes by default.
+            # The token URL is configured by an administrator: the deployment's rule for such
+            # hosts applies (this server, link-local and cloud metadata never).
+            self._session = ClientSession(
+                max_field_size=32 * 1024, **guarded_session_kwargs(allow_private=not private_addresses_blocked()),
+            )
         return self._session
 
     async def close(self) -> None:
@@ -240,24 +252,36 @@ class OAuthProvider:
         params.update(self.config.additional_params)
         params.update(kwargs)
 
+        # urlencode writes None as the text "None", so an unset optional parameter
+        # (token_access_type is Dropbox's, unset for every other provider) is left out.
+        params = {key: value for key, value in params.items() if value is not None}
+
         return f"{self.config.authorize_url}?{urlencode(params)}"
 
     async def _make_token_request(self, data: dict) -> dict:
         """Helper to make a token request, handling different auth methods."""
-        use_basic_auth = self.config.additional_params.get("use_basic_auth", False)
+        use_basic_auth = (
+            self.config.token_endpoint_auth_method == "client_secret_basic"
+            or self.config.additional_params.get("use_basic_auth", False)
+        )
         use_json_body = self.config.additional_params.get("use_json_body", False)
 
-        # Notion and some other providers use Basic Auth header instead of body params
         if not use_basic_auth:
             data["client_id"] = self.config.client_id
             data["client_secret"] = self.config.client_secret
+        elif not self.config.client_secret:
+            # A public PKCE client has no secret to put in a Basic header; Airtable
+            # forbids the header then and requires client_id in the body instead.
+            data["client_id"] = self.config.client_id
 
         session = await self.session
         headers = {}
 
-        # Prepare headers for providers requiring Basic Auth (e.g., Notion)
-        if use_basic_auth:
-            credentials = f"{self.config.client_id}:{self.config.client_secret}"
+        if use_basic_auth and self.config.client_secret:
+            # RFC 6749 section 2.3.1: form-encode each part, so a ":" in the id can't move the split.
+            client_id = quote_plus(self.config.client_id, safe="")
+            client_secret = quote_plus(self.config.client_secret, safe="")
+            credentials = f"{client_id}:{client_secret}"
             encoded_credentials = base64.b64encode(credentials.encode()).decode()
             headers["Authorization"] = f"Basic {encoded_credentials}"
 
@@ -296,6 +320,13 @@ class OAuthProvider:
             content_type = response.headers.get('Content-Type', '').lower()
             if 'application/json' in content_type:
                 token_data = await response.json()
+                # Slack answers a rejected grant with HTTP 200 and ok=false, so the
+                # status check above never sees it.
+                if isinstance(token_data, dict) and token_data.get("ok") is False:
+                    raise Exception(
+                        f"OAuth token request was rejected by {self.config.token_url}: "
+                        f"{token_data.get('error') or 'unknown_error'}"
+                    )
                 return token_data
             elif 'application/x-www-form-urlencoded' in content_type or 'text/plain' in content_type:
                 text_response = await response.text()
@@ -375,9 +406,11 @@ class OAuthProvider:
         if not isinstance(config, dict):
             config = {}
 
-        # Store the new token (which includes the new refresh_token if provided)
-        config['credentials'] = token.to_dict()
-        await self.configuration_service.set_config(self.credentials_path, config)
+        # Best effort: callers verify the write and retry it. A copy, because
+        # get_config hands back the cached dict and a failed write must not change it.
+        await self.configuration_service.set_config(
+            self.credentials_path, {**config, 'credentials': token.to_dict()}
+        )
 
         return token
 

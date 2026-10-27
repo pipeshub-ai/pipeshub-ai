@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Box, Flex, Text, IconButton } from '@radix-ui/themes';
+import { Box, Button, Flex, Text, IconButton } from '@radix-ui/themes';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
 import { FileIcon } from '@/app/components/ui/file-icon';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
@@ -65,6 +65,8 @@ export function FilePreviewInlinePanel({
   initialCitationId,
   hideFileDetails,
   showDownload,
+  onDownload,
+  onChat,
   latestVersion,
   onVersionChange,
   isSwitchingVersion,
@@ -209,8 +211,8 @@ export function FilePreviewInlinePanel({
               href={linkedWebUrl}
               target="_blank"
               rel="noopener noreferrer"
-              aria-label={`Open ${file.name} in source`}
-              title="Open in source"
+              aria-label={t('filePreview.openNamedInSource', { name: file.name })}
+              title={t('filePreview.openInSource')}
               style={{
                 display: 'inline-flex',
                 alignItems: 'center',
@@ -234,15 +236,21 @@ export function FilePreviewInlinePanel({
         </Flex>
 
         <Flex align="center" gap="1">
+          {onChat && (
+            <Button size="1" variant="surface" onClick={onChat}>
+              <MaterialIcon name="assistant" size={16} />
+              {t('kb.chatWithSelection')}
+            </Button>
+          )}
           {canDownload && (
             <IconButton
               variant="ghost"
               color="gray"
               size="2"
               onClick={() =>
-                downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob })
+                downloadPreviewFile({ name: file.name, url: file.url, blob: file.blob, onDownload })
               }
-              title="Download"
+              title={t('action.download')}
             >
               <MaterialIcon name="download" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
             </IconButton>
@@ -254,14 +262,14 @@ export function FilePreviewInlinePanel({
               color="gray"
               size="2"
               onClick={onToggleFullscreen}
-              title="Open in fullscreen"
+              title={t('recordView.openFullscreen')}
             >
               <MaterialIcon name="open_in_full" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
             </IconButton>
           )}
 
           {onClose && (
-            <IconButton variant="ghost" color="gray" size="2" onClick={onClose} aria-label="Close preview">
+            <IconButton variant="ghost" color="gray" size="2" onClick={onClose} aria-label={t('filePreview.closePreview')}>
               <MaterialIcon name="close" size={ICON_SIZES.FILE_ICON_SMALL} color="var(--slate-11)" />
             </IconButton>
           )}
@@ -404,7 +412,7 @@ export function FilePreviewInlinePanel({
                   onClick={handlePdfZoomOut}
                   disabled={pdfScale <= PDF_ZOOM_MIN}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom out"
+                  aria-label={t('chat.zoomOut')}
                 >
                   <MaterialIcon name="remove" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -422,7 +430,7 @@ export function FilePreviewInlinePanel({
                   onClick={handlePdfZoomIn}
                   disabled={pdfScale >= PDF_ZOOM_MAX}
                   style={{ width: '24px', height: '24px', padding: 0 }}
-                  aria-label="Zoom in"
+                  aria-label={t('chat.zoomIn')}
                 >
                   <MaterialIcon name="add" size={ICON_SIZES.SECONDARY} />
                 </IconButton>
@@ -498,7 +506,7 @@ export function FilePreviewInlinePanel({
               <Box
                 role="separator"
                 aria-orientation="vertical"
-                aria-label="Resize citations panel"
+                aria-label={t('filePreview.resizeCitations')}
                 onPointerDown={beginCitationsSplitResize}
                 style={{
                   width: '6px',
@@ -542,7 +550,7 @@ export function FilePreviewInlinePanel({
           <Box
             role="separator"
             aria-orientation="vertical"
-            aria-label="Resize file preview panel"
+            aria-label={t('filePreview.resizePreview')}
             onPointerDown={onPointerDownLeftEdgeResize}
             style={{
               position: 'absolute',

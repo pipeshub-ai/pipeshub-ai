@@ -78,6 +78,18 @@ export interface IAppliedFilterNode {
   name: string;
   nodeType: string;
   connector: string;
+  extension?: string;
+  mimeType?: string;
+  mentioned?: boolean;
+}
+
+/** The nodes a user selected for a turn, by the filter key each is sent under. */
+export interface IAppliedFilters {
+  apps?: IAppliedFilterNode[];
+  kb?: IAppliedFilterNode[];
+  recordGroups?: IAppliedFilterNode[];
+  records?: IAppliedFilterNode[];
+  recordsExact?: IAppliedFilterNode[];
 }
 
 export interface IChatAttachmentRef {
@@ -122,11 +134,12 @@ export interface IReasoningTurn {
  * discriminated union) since Mongoose persists this as `Schema.Types.Mixed`
  * and every field beyond `type` is optional depending on the part kind.
  *
- * Only ever carries a bounded preview of any external tool result (see
- * that module's docstring) — never the full tool payload.
+ * Only ever carries a bounded preview of any external tool result, plus a
+ * small view of it within a per-reply budget (see that module's docstring) —
+ * never the full tool payload.
  */
 export interface IMessagePart {
-  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent';
+  type: 'text' | 'reasoning' | 'tool_call' | 'sub_agent' | 'mcp_sign_in';
   content?: string;
   toolCallId?: string;
   toolName?: string;
@@ -135,15 +148,30 @@ export interface IMessagePart {
   args?: string;
   /** Human-readable summary of `args`, computed server-side (see PipesHubToolSummarizer). */
   argsSummary?: string;
-  status?: 'running' | 'completed' | 'failed' | 'blocked';
+  /** The call a person approved, run when they answered. */
+  approved?: boolean;
+  /** How a call that waited for approval was settled (Python `tool_approvals.Outcome.answer`). */
+  approvalAnswer?: 'allowed' | 'declined' | 'expired';
+  status?: 'running' | 'completed' | 'failed' | 'blocked' | 'awaiting_approval';
   resultPreview?: string;
+  /** A call waiting for a person's approval: what the approval card shows (Python `tool_approvals.py`). */
+  approval?: Record<string, unknown>;
   /** Human-readable summary of the tool result, computed server-side from the full (untruncated) output. */
   resultSummary?: string;
+  /** A small table or field list of the result for the tool card (Python `result_view.py`); the UI checks its shape. */
+  resultView?: unknown;
   /** Blob-backed artifact ID for the full tool result (recoverable on follow-up turns). */
   artifactId?: string;
   runId?: string;
   roleName?: string;
   parts?: IMessagePart[];
+  /** On an `mcp_sign_in` part: the MCP servers to sign in to again, for more permission (Python `mcp_sign_in.py`). */
+  servers?: Array<{
+    instanceId: string;
+    serverName: string;
+    scopes: string[];
+    agentKey?: string;
+  }>;
 }
 
 export interface IMessage {
@@ -160,10 +188,7 @@ export interface IMessage {
   createdAt?: Date;
   updatedAt?: Date;
   modelInfo?: IAIModel;
-  appliedFilters?: {
-    apps?: IAppliedFilterNode[];
-    kb?: IAppliedFilterNode[];
-  };
+  appliedFilters?: IAppliedFilters;
   attachments?: IChatAttachmentRef[];
   // Reference data for follow-up queries (IDs from tool responses)
   referenceData?: IReferenceDataItem[];
@@ -273,6 +298,9 @@ export interface IChatSession {
   isArchived?: boolean;
   archivedBy?: Types.ObjectId;
   lastActivityAt?: Number;
+  /** Owner's pin. `true` when pinned, absent otherwise (never stored as `false`). */
+  isPinned?: boolean;
+  activeRunId?: string;
   tags?: Types.ObjectId[];
   createdAt?: Date;
   updatedAt?: Date;
@@ -339,6 +367,8 @@ export interface AIServiceResponse<T> {
   statusCode: number;
   data?: T;
   msg?: string;
+  // Only the response headers a caller passes on, such as `retry-after`.
+  headers?: Record<string, string>;
 }
 
 export type AnswerMatchType =
@@ -352,8 +382,9 @@ export interface IAIResponse {
   citations: ICitation[];
   confidence?: ConfidenceLevel;
   /** Set by Python's `AnswerFinalizer` cancelled branch (Phase 3) — `RUN_FINISHED`/
-   * `complete` payload for a cooperatively-stopped run carries the partial answer. */
-  status?: 'stopped';
+   * `complete` payload for a cooperatively-stopped run carries the partial answer.
+   * `waiting_input` is an ask_user_question pause: empty answer is expected. */
+  status?: 'stopped' | 'waiting_input';
   reason: string;
   answerMatchType: AnswerMatchType;
   documentIndexes: string[];

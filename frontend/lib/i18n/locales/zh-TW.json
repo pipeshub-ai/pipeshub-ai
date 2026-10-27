@@ -9,7 +9,78 @@
       "reindexFailedStart": "正在重新索引失敗的記錄…",
       "reindexFailedError": "重新索引失敗的記錄時發生錯誤",
       "manualIndexStart": "正在索引手動索引的記錄…",
-      "manualIndexError": "啟動手動索引失敗"
+      "manualIndexError": "啟動手動索引失敗",
+      "retryClassificationStart": "分類重試已加入佇列",
+      "retryClassificationError": "重試分類失敗",
+      "retryEntitiesStart": "實體擷取重試已加入佇列",
+      "retryEntitiesError": "重試實體擷取失敗"
+    },
+    "trash": {
+      "menuLabel": "最近刪除",
+      "title": "最近刪除",
+      "back": "返回集合",
+      "retentionNote": "已刪除的項目會在此保留至少 {{days}} 天。之後，排定的清理作業會將其永久刪除，屆時將無法還原。",
+      "columns": {
+        "name": "名稱",
+        "type": "類型",
+        "location": "位置",
+        "deletedAt": "刪除時間",
+        "deletedBy": "刪除者",
+        "removedAfter": "永久刪除"
+      },
+      "typeFolder": "資料夾",
+      "typeFile": "檔案",
+      "folderWithItems_one": "包含 {{count}} 個項目的資料夾",
+      "folderWithItems_other": "包含 {{count}} 個項目的資料夾",
+      "fileWithAttachments_one": "包含 {{count}} 個附件的檔案",
+      "fileWithAttachments_other": "包含 {{count}} 個附件的檔案",
+      "topLevel": "最上層",
+      "unknownUser": "未知",
+      "untitled": "未命名",
+      "removedAfterDate": "{{date}} 之後",
+      "removedAfterDays": "{{days}} 天後",
+      "parentInTrash": "資料夾「{{folder}}」也已刪除。請先還原它。",
+      "restore": "還原",
+      "restoreSelected_one": "還原 {{count}} 個項目",
+      "restoreSelected_other": "還原 {{count}} 個項目",
+      "selected_one": "已選取 {{count}} 個",
+      "selected_other": "已選取 {{count}} 個",
+      "clearSelection": "清除選取",
+      "selectAll": "選取本頁全部",
+      "selectItem": "選取 {{name}}",
+      "restoring": "正在還原…",
+      "emptyTitle": "最近沒有刪除任何內容",
+      "empty": "從此集合刪除的檔案和資料夾會顯示在這裡，方便你還原。",
+      "loadFailed": "無法載入最近刪除的項目。請檢查網路連線，然後再試一次。",
+      "noPermission": "你沒有還原此項目的權限。請向集合擁有者申請編輯權限。",
+      "gone": "此項目已不在垃圾桶中，可能已被還原或永久刪除。請重新整理清單。",
+      "changed": "此項目在還原過程中有所變更。請重新整理清單後再試一次。",
+      "restoreFailed": "無法還原此項目。請稍後再試一次。",
+      "failureLine": "「{{name}}」：{{reason}}",
+      "moreFailures_one": "……還有 {{count}} 個",
+      "moreFailures_other": "……還有 {{count}} 個",
+      "restoreFailedTitle": "無法還原「{{name}}」",
+      "noneRestored_one": "{{count}} 個項目均無法還原",
+      "noneRestored_other": "{{count}} 個項目均無法還原",
+      "reindexPending": "已還原，但部分檔案無法加入索引佇列，暫時還搜尋不到。PipesHub 會在大約一小時內自動重新將其加入佇列。如需更快，請開啟每個檔案的選單並選擇「{{action}}」。",
+      "searchableAfterIndexing": "還原的項目已回到原來的位置，索引完成後會重新出現在搜尋結果中。",
+      "renamed": "「{{from}}」已還原為「{{to}}」，因為該位置已有同名項目。",
+      "partiallyRestored": "已還原 {{restored}}/{{total}} 個項目",
+      "restoredOne": "已還原「{{name}}」",
+      "restoredMany_one": "已還原 {{count}} 個項目",
+      "restoredMany_other": "已還原 {{count}} 個項目",
+      "showing": "第 {{from}}–{{to}} 項，共 {{total}} 項",
+      "previous": "上一頁",
+      "next": "下一頁",
+      "nameAndMore_one": "{{name}} 及另外 {{count}} 項",
+      "nameAndMore_other": "{{name}} 及另外 {{count}} 項",
+      "deletedTogether_one": "一起刪除的 {{count}} 個項目",
+      "deletedTogether_other": "一起刪除的 {{count}} 個項目",
+      "withOthers": "連同 {{names}}",
+      "withOthersAndMore_one": "連同 {{names}} 及另外 {{count}} 項",
+      "withOthersAndMore_other": "連同 {{names}} 及另外 {{count}} 項",
+      "restoredOneAndMore_one": "已還原「{{name}}」及另外 {{count}} 項",
+      "restoredOneAndMore_other": "已還原「{{name}}」及另外 {{count}} 項"
     }
   },
   "resetPassword": {
@@ -19,6 +90,13 @@
       "resetExpiredMessage": "此密碼重設連結已過期。請透過登入頁面上的「忘記密碼」選項重新申請。",
       "backToSignIn": "返回登入",
       "genericLinkInvalidMessage": "此連結可能已過期。請聯絡您的組織管理員重新發送邀請。"
+    },
+    "form": {
+      "title": "變更密碼",
+      "newPasswordLabel": "新密碼*",
+      "newPasswordPlaceholder": "請輸入新密碼",
+      "confirmPasswordLabel": "確認密碼*",
+      "confirmPasswordPlaceholder": "請再次輸入密碼"
     }
   },
   "agents": {
@@ -41,7 +119,12 @@
     "pinnedSection": "已置頂",
     "allSection": "所有專案",
     "backToAllProjects": "所有專案",
-    "loadMore": "載入更多"
+    "loadMore": "載入更多",
+    "tabYourProjects": "您的專案",
+    "tabArchived": "已封存",
+    "archivedEmptyState": "尚無封存的專案",
+    "archivedEmptyStateHint": "您封存的專案會顯示在這裡。",
+    "actionsLabel": "專案操作"
   },
   "timeGroup": {
     "today": "今天",
@@ -53,8 +136,12 @@
     "thinkingFallback": "思考中…",
     "refiningResponse": "正在潤飾回應…",
     "errorFallback": "發生錯誤。請再試一次。",
+    "askQuestionResumeFailed": "無法送出你的回答。請再次提交以重試。",
     "copyCode": "複製",
-    "copiedCode": "已複製"
+    "copiedCode": "已複製",
+    "remoteImageBlocked": "未載入外部圖片",
+    "remoteImageFrom": "來自 {{host}}",
+    "remoteImageLoad": "載入圖片"
   },
   "uploadProgress": {
     "uploadFailedDefault": "上傳失敗",
@@ -114,6 +201,7 @@
   },
   "onboarding": {
     "skipEmbeddingDefault": "略過",
+    "stepOf": "第 {{current}} 步，共 {{total}} 步：{{title}}",
     "skipEmbeddingTitle": "開啟「預設（系統提供）」的設定，然後按下「新增模型」以儲存",
     "nextDisabledEmbeddingHint": "在下方新增嵌入模型供應商，或使用「略過」開啟預設模型設定",
     "embeddingStepHint": "在下方新增嵌入模型供應商以啟用語意搜尋，或按一下「略過」開啟「預設（系統提供）」並按下「新增模型」。您之後可以在工作區設定中變更此項目。",
@@ -143,7 +231,7 @@
       }
     },
     "systemConfig": "系統設定",
-    "stepHeading": "步驟 {{current}}/{{total}}：設定{{name}}",
+    "stepHeading": "設定{{name}}",
     "stepAiModel": {
       "stepName": "AI 模型*",
       "addLlmHint": "請至少新增一個文字（LLM）供應商以繼續。",
@@ -213,11 +301,16 @@
       "visitDocs": "造訪",
       "docsLabel": "說明文件",
       "toLearnMore": "以瞭解更多。"
+    },
+    "tour": {
+      "dismiss": "關閉導覽",
+      "completedDescription": "一切都準備好了。若想瞭解更多，請參閱<docs>說明文件</docs>。"
     }
   },
   "nav": {
     "collections": "集合",
     "allRecords": "所有記錄",
+    "allArtifacts": "所有產物",
     "workspace": "工作區",
     "shared": "與我共用",
     "private": "我的集合",
@@ -232,8 +325,62 @@
     "inbox": "收件匣",
     "notifications": "通知"
   },
+  "artifacts": {
+    "title": "所有產物",
+    "empty": "尚無產物",
+    "emptyHint": "代理程式在對話中建立的檔案會顯示在這裡。",
+    "loadFailed": "無法載入產物",
+    "previewFailed": "無法預覽此檔案",
+    "downloadFailed": "無法下載此檔案",
+    "openInChat": "在對話中開啟",
+    "searchPlaceholder": "搜尋產物",
+    "conversation": "對話",
+    "untitledChat": "—",
+    "name": "名稱",
+    "size": "大小",
+    "types": {
+      "IMAGE": "圖片",
+      "CHART": "圖表",
+      "DOCUMENT": "文件",
+      "SPREADSHEET": "試算表",
+      "PRESENTATION": "簡報",
+      "DATA_FILE": "資料檔",
+      "CODE": "程式碼",
+      "CODE_OUTPUT": "程式碼輸出",
+      "OTHER": "其他"
+    },
+    "tabs": {
+      "all": "所有產物",
+      "mine": "我的",
+      "shared": "與我分享"
+    },
+    "tabsShort": {
+      "all": "全部",
+      "mine": "我的",
+      "shared": "分享"
+    },
+    "share": {
+      "title": "分享產物"
+    },
+    "emptyShared": "尚無與你分享的內容",
+    "emptySharedHint": "隊友與你分享的產物會顯示在這裡。",
+    "notAvailable": "此產物已無法使用",
+    "deleteTitle": "刪除產物？",
+    "deleteConfirmMessage": "「{{name}}」及其所有版本將被永久刪除。顯示它的聊天會將其標示為已無法使用。",
+    "deleteSuccess": "已刪除「{{name}}」",
+    "preview": "預覽",
+    "moreActionsFor": "{{name}} 的更多選項",
+    "loadFailedHint": "請檢查網路連線後再試一次。",
+    "noMatches": "沒有符合篩選條件的產物",
+    "noMatchesHint": "請嘗試其他搜尋，或清除篩選條件以查看所有產物。",
+    "clearFilters": "清除篩選",
+    "gridView": "格狀檢視",
+    "listView": "清單檢視",
+    "closeSearch": "關閉搜尋"
+  },
   "notifications": {
     "title": "通知",
+    "close": "關閉通知",
     "loading": "載入中…",
     "empty": "尚無通知",
     "emptyUnread": "沒有未讀通知",
@@ -249,6 +396,13 @@
     "filterOnlyUnread": "未讀",
     "filterArchived": "已封存",
     "filterTooltip": "篩選：{{filter}}",
+    "chatShared": {
+      "title": "{{name}} 與你共用了一個聊天",
+      "titleAgent": "{{name}} 與你共用了一個代理程式聊天",
+      "body": "你現在可以開啟「{{chat}}」。",
+      "bodyNoTitle": "你現在可以在「{{place}}」中開啟它。",
+      "someone": "一位同事"
+    },
     "loadFailed": "載入通知失敗",
     "updateFailed": "無法更新通知",
     "removeFailed": "無法移除通知"
@@ -273,7 +427,10 @@
     "uploading": "正在上傳...",
     "saving": "正在儲存...",
     "processing": "正在處理...",
-    "reindexing": "正在重新建立索引..."
+    "reindexing": "正在重新建立索引...",
+    "tryAgain": "重試",
+    "edit": "編輯",
+    "remove": "移除"
   },
   "filter": {
     "type": "類型",
@@ -309,10 +466,12 @@
     "statuses": "狀態",
     "sources": "來源",
     "sizes": "大小",
-    "clearFilter": "清除篩選"
+    "clearFilter": "清除篩選",
+    "applyFilters": "套用篩選"
   },
   "form": {
     "leaveBlankToKeep": "留白即保留現有的值。",
+    "showStoredValues": "顯示已儲存的值",
     "title": "標題",
     "description": "描述",
     "search": "搜尋",
@@ -322,7 +481,8 @@
     "required": "此欄位為必填",
     "invalidEmail": "電子郵件地址無效",
     "invalidUrl": "URL 無效",
-    "name": "名稱"
+    "name": "名稱",
+    "optional": "（選填）"
   },
   "dialog": {
     "newFolder": "新增集合資料夾",
@@ -345,7 +505,10 @@
     "willBeDeleted": "將被刪除",
     "willBeReindexed": "將被重新索引",
     "reindexConfirm": "要重新索引此{{type}}嗎？",
-    "reindexDescription": "這將更新此{{type}}及其內容的搜尋索引。"
+    "reindexDescription": "這將更新此{{type}}及其內容的搜尋索引。",
+    "deleteCollectionBody": "'{{name}}' 及其中的所有內容將被刪除。它也會從所有使用它的代理中移除。",
+    "deleteFolderBody": "'{{name}}' 及其中的所有內容將從此集合中刪除。",
+    "deleteFileBody": "'{{name}}' 將從此集合中刪除。"
   },
   "table": {
     "fileName": "檔案名稱",
@@ -402,6 +565,12 @@
     }
   },
   "common": {
+    "shiftKey": "Shift",
+    "pagination": {
+      "showing": "顯示第 {{start}}-{{end}} 項，共 {{total}} 項",
+      "pageOf": "{{page}} / {{total}}",
+      "perPage": "每頁 {{value}} 筆"
+    },
     "yes": "是",
     "no": "否",
     "ok": "確定",
@@ -425,9 +594,30 @@
     "english": "英文",
     "german": "德文",
     "rotateLandscape": "旋轉您的裝置以獲得最佳體驗",
+    "errorOccurred": "發生錯誤。請重試。",
     "beta": {
       "label": "測試版",
       "tooltip": "此功能為測試版，未來可能會有所變動。"
+    },
+    "you": "您",
+    "refreshing": "正在重新整理...",
+    "clear": "清除",
+    "current": "目前",
+    "openProfile": "開啟個人資料",
+    "loading": "載入中...",
+    "moreOptions": "更多選項",
+    "docs": "說明文件",
+    "enterprise": {
+      "label": "EE 版提供",
+      "tooltip": "屬於 PipesHub 企業版"
+    },
+    "errorBoundary": {
+      "title": "發生了一些問題",
+      "body": "頁面的這個部分無法顯示。請重試，或返回聊天。",
+      "retry": "重試",
+      "goToChat": "前往聊天",
+      "notFoundTitle": "找不到頁面",
+      "notFoundBody": "此頁面不存在或已移動。"
     }
   },
   "units": {
@@ -462,12 +652,19 @@
     "noCollectionsAvailable": "沒有可用的集合",
     "noCollectionsCreatePrompt": "沒有可用的集合。請建立新的集合。",
     "seeMoreConnectors": "查看更多連接器",
+    "connectMoreApps": "連接更多應用程式",
+    "connectMoreAppsHint": "接入更多來源，答案更準確。",
     "suggestedInWorkspace": "工作區建議",
     "createSubFolder": "建立子資料夾",
     "more": "更多",
     "loadMore": "載入更多",
     "moreCollections": "更多集合",
-    "searchCollections": "搜尋"
+    "searchCollections": "搜尋",
+    "open": "開啟側邊欄",
+    "expand": "展開側邊欄",
+    "close": "關閉側邊欄",
+    "collapse": "收合側邊欄",
+    "navigation": "導覽"
   },
   "menu": {
     "reindex": "重新索引",
@@ -479,7 +676,8 @@
     "forceReindexing": "強制重新索引",
     "retryIndexing": "重試索引",
     "rename": "重新命名",
-    "delete": "刪除"
+    "delete": "刪除",
+    "indexAll": "全部索引"
   },
   "reindexScope": {
     "description": "選擇要為「{{name}}」建立索引的範圍。",
@@ -490,6 +688,13 @@
     "title": "要開始強制重新索引嗎？",
     "message": "這會從頭重新索引文件，並可能產生額外費用。當搜尋結果過時，或索引完成後文件仍無法被搜尋時，請使用此功能。",
     "confirm": "確認"
+  },
+  "reindexBlocked": {
+    "title": "此記錄無法單獨重新索引",
+    "message": "來自 GitHub 和 GitLab 的檔案會作為整個儲存庫的同一個程式碼圖譜一起索引。單獨重新索引某個檔案會使其版本比儲存庫其餘部分更新,並破壞檔案之間的關聯。如需重新整理，請在知識中心對整個儲存庫重新建立索引——這樣所有檔案會一起重新建立索引。連接器同步只會擷取有變更的檔案。",
+    "folderTitle": "此資料夾無法單獨重新索引",
+    "folderMessage": "來自 GitHub 和 GitLab 的檔案會作為整個儲存庫的同一個程式碼圖譜一起索引。單獨重新索引某個資料夾只會更新其中的檔案，使其版本比儲存庫其餘部分更新，並破壞檔案之間的關聯。如需重新整理，請在知識中心對整個儲存庫重新建立索引——這樣所有檔案會一起重新建立索引。連接器同步只會擷取有變更的檔案。",
+    "goToConnectors": "前往連接器"
   },
   "kb": {
     "viewToggle": "檢視切換",
@@ -503,7 +708,74 @@
     "folderEmpty": "此資料夾是空的",
     "itemStats": "此集合資料夾內共有 {{collections}} 個集合、{{files}} 個檔案",
     "searchPlaceholder": "例如：銷售文件",
-    "searchMinChars": "搜尋至少需要 2 個字元"
+    "searchMinChars": "搜尋至少需要 2 個字元",
+    "createFolder": "建立資料夾",
+    "goToCollections": "前往集合",
+    "namedEmpty": "{{name}} 是空的",
+    "noRecords": "找不到記錄",
+    "collectionsLoadFailed": "無法載入您的集合。請檢查網路連線，然後選取「{{action}}」。",
+    "searchEmptyHint": "找不到您要尋找的內容。請嘗試搜尋其他項目。",
+    "adjustFiltersHint": "請選擇其他來源或調整篩選條件",
+    "addFromCollectionsHint": "您可以從集合中新增公司的檔案或資料夾",
+    "addFilesHint": "新增您的檔案或資料夾",
+    "chatWithSelection": "聊天",
+    "chatSelectionLimit": "聊天最多可帶入 {{max}} 個所選項目。請取消勾選部分項目後再試一次。",
+    "chatTooManyCollections": "聊天一次最多可搜尋 {{max}} 個集合，而您的集合更多。請開啟一個集合，或勾選要提問的集合。",
+    "chatCollectionsLoadFailed": "無法為聊天載入您的集合。請再試一次。",
+    "chatNoCollections": "您還沒有可提問的集合。",
+    "indexingStatus": {
+      "completed": "已完成",
+      "inProgress": "進行中",
+      "failed": "失敗",
+      "fileTypeNotSupported": "不支援的檔案類型",
+      "notStarted": "尚未開始",
+      "queued": "已排入佇列",
+      "manualIndexing": "手動索引",
+      "empty": "空白",
+      "paused": "已暫停",
+      "needsMultimodalModel": "需要多模態模型",
+      "passwordProtected": "受密碼保護",
+      "skipped": "已略過",
+      "pending": "待處理"
+    },
+    "allRecordsBusy_other": "此檢視目前忙碌中，將在 {{count}} 秒後重試。",
+    "allRecordsLoadFailed": "載入記錄失敗",
+    "searchResults": "搜尋結果",
+    "clearSearch": "清除搜尋",
+    "rowActions": {
+      "open": "開啟",
+      "preview": "預覽",
+      "goToParent": "前往上層",
+      "goToNamed": "前往 {{name}}",
+      "moreFor": "{{name}} 的更多選項",
+      "select": "選擇 {{name}}"
+    },
+    "upload": {
+      "title": "上傳資料",
+      "documentation": "文件說明",
+      "filesTitle": "上傳檔案",
+      "filesHint": "每個檔案最大 {{maxMb}} MB。上傳時會檢查類型和大小。",
+      "foldersTitle": "上傳資料夾",
+      "foldersHint": "上傳時會檢查每個檔案（每個檔案最大 {{maxMb}} MB）。",
+      "or": "或",
+      "fileCount_one": "{{count}} 個檔案",
+      "fileCount_other": "{{count}} 個檔案",
+      "folderCount_one": "{{count}} 個資料夾",
+      "folderCount_other": "{{count}} 個資料夾",
+      "depthWarning_one": "這裡只能再容納 {{count}} 層資料夾（資料夾最多可巢狀 {{max}} 層）。請移除一些資料夾後繼續。",
+      "depthWarning_other": "這裡只能再容納 {{count}} 層資料夾（資料夾最多可巢狀 {{max}} 層）。請移除一些資料夾後繼續。",
+      "folderLimitReached": "資料夾最多可巢狀 {{max}} 層，而此資料夾已達上限，因此無法在此上傳資料夾。你仍然可以上傳檔案。",
+      "addFiles": "新增檔案",
+      "addFolder": "新增資料夾",
+      "moreBelow": "下方還有更多",
+      "removeNamed": "移除 {{name}}",
+      "expandFolder": "展開資料夾",
+      "collapseFolder": "摺疊資料夾"
+    },
+    "createDialog": {
+      "titlePlaceholder": "例如：工程",
+      "descriptionPlaceholder": "例如：開發團隊文件"
+    }
   },
   "connectorTypes": {
     "slack": "Slack",
@@ -524,11 +796,19 @@
     "record": "記錄"
   },
   "chat": {
+    "answerReady": {
+      "title": "回答已完成",
+      "open": "開啟對話",
+      "unread": "新回答"
+    },
+    "jumpToNewest": "跳到最新訊息",
     "recordActions": {
       "preview": "預覽",
       "open": "開啟 {{source}}",
       "openIn": "在 {{source}} 中開啟",
       "openInCollections": "在集合中開啟",
+      "syncedJustNow": "剛剛同步",
+      "syncedAgo": "{{age}}前已同步",
       "relevance": "相關度：{{percent}}%"
     },
     "results": "結果",
@@ -536,6 +816,7 @@
     "heyUser": "嗨，{{name}} 👋",
     "heyUserDefaultName": "您好",
     "askAnything": "隨時提問...",
+    "sendMessage": "傳送訊息",
     "quick": "快速",
     "listening": "聆聽中...",
     "voiceInputNotSupported": "此瀏覽器不支援語音輸入",
@@ -543,7 +824,7 @@
     "noModelsAvailable": "尚未設定任何 AI 模型",
     "failedToLoadModels": "無法載入 AI 模型",
     "failedToLoadAgentConfig": "無法載入此代理的模型設定",
-    "openModels": "開啟模型",
+    "openModels": "管理模型",
     "connectorsCollectionsTitle": "連接器與集合",
     "connectorsTooltip": "連接器與集合",
     "connectorsDefaultScopeHint": "預設會搜尋所有連接器與集合。若要縮小範圍，請在下方選取特定項目。",
@@ -563,7 +844,19 @@
       "browseWorkspaceActionsAria": "開啟工作區動作以新增或管理整合",
       "actionsCount": "{{count}} 個動作",
       "resetDefaults": "重設為預設值",
-      "knowledgeScopeClearedWarning": "本次執行未包含任何知識來源，因此代理將不會搜尋您的連接器或集合來尋找答案。"
+      "knowledgeScopeClearedWarning": "本次執行未包含任何知識來源，因此代理將不會搜尋您的連接器或集合來尋找答案。",
+      "searchMcp": "搜尋 MCP 伺服器",
+      "mcpTab": "MCP",
+      "noMcpServers": "此代理程式未設定任何 MCP 伺服器。",
+      "configureMoreMcp": "設定更多 MCP 伺服器",
+      "browseWorkspaceMcp": "瀏覽 MCP 伺服器",
+      "browseWorkspaceMcpAria": "開啟 MCP 伺服器以新增或管理連線",
+      "noActionMatches": "沒有符合您搜尋的動作。",
+      "noMcpMatches": "沒有符合您搜尋的 MCP 伺服器。",
+      "notConnected": "未連線",
+      "connect": "連線",
+      "actionConnected": "{{name}} 已連線",
+      "limitedToCount": "· 限定為 {{count}} 項"
     },
     "projectResources": {
       "noConnectors": "此專案未啟用任何連接器。",
@@ -584,6 +877,7 @@
     "recents": "最近的對話",
     "sharedChats": "共享的對話",
     "sharedBy": "由 {{name}} 分享",
+    "agentChat": "智能體聊天",
     "noSharedChats": "沒有共享的對話",
     "yourChats": "您的對話",
     "noChatsFound": "找不到任何對話",
@@ -591,8 +885,13 @@
     "searchCollections": "搜尋連接器與集合",
     "loadingCollections": "正在載入集合…",
     "failedToLoadCollections": "無法載入集合",
+    "treeEmpty": "這裡沒有內容",
+    "treeLoadFailed": "無法載入這些項目",
+    "treeRetry": "重試",
+    "treeIncludedWith": "已包含在 {{name}} 中",
+    "treeExpand": "顯示 {{name}} 中的內容",
+    "treeCollapse": "隱藏 {{name}} 中的內容",
     "noCollectionsAvailable": "沒有可用的集合",
-    "comingSoon": "即將推出",
     "answer": "回答",
     "sources": "來源",
     "citation": "引用",
@@ -616,6 +915,8 @@
     "like": "有幫助",
     "dislike": "沒有幫助",
     "copy": "複製",
+    "fork": "分叉對話",
+    "forkFromHere": "從此處分叉",
     "regenerate": "重新產生",
     "readAloud": "朗讀",
     "stopReading": "停止朗讀",
@@ -624,6 +925,8 @@
     "copiedAsMarkdown": "已複製為 Markdown",
     "copiedAsText": "已複製為純文字",
     "citations": "引用",
+    "showMoreCitations_one": "顯示另外 {{count}} 則引用",
+    "showMoreCitations_other": "顯示另外 {{count}} 則引用",
     "markdownWithCitations": "含引用的 Markdown",
     "onlyTextWithoutCitations": "僅純文字（不含引用）",
     "differentModesOfQuery": "不同的查詢模式",
@@ -638,6 +941,7 @@
     "backToChatHome": "所有對話",
     "agentSidebarLabel": "代理",
     "agentNameLoading": "載入中…",
+    "sharedAgentChat": "共享的智能體聊天",
     "myAgents": "我的代理",
     "moreAgents": "更多代理",
     "agentHeaderMenuAria": "代理選項",
@@ -657,6 +961,18 @@
     "rename": "重新命名",
     "archive": "封存",
     "deleteChat": "刪除",
+    "pin": "置頂",
+    "unpin": "取消置頂",
+    "pinned": "已置頂",
+    "pinFailed": "無法置頂聊天",
+    "unpinFailed": "無法取消置頂聊天",
+    "export": {
+      "menuItem": "匯出",
+      "exporting": "正在匯出聊天…",
+      "done": "聊天已匯出",
+      "failed": "無法匯出聊天",
+      "assistant": "助理"
+    },
     "renaming": "重新命名中...",
     "archiving": "封存中...",
     "chatRenamed": "對話已重新命名",
@@ -675,6 +991,7 @@
     "askAnythingInContext": "在「{{title}}」中隨時提問",
     "expandTable": "展開表格",
     "fullTableView": "完整表格檢視",
+    "downloadCsv": "下載為 CSV",
     "expandDiagram": "展開圖表",
     "fullDiagramView": "完整圖表檢視",
     "renderingDiagram": "正在繪製圖表…",
@@ -687,13 +1004,55 @@
     "showDiagramSource": "顯示原始碼",
     "hideDiagramSource": "隱藏原始碼",
     "stoppedMarker": "已停止",
+    "toolCard": {
+      "arguments": "引數",
+      "query": "查詢",
+      "queryCutOff": "此查詢僅儲存了開頭部分，因此無法複製。",
+      "result": "結果",
+      "error": "錯誤",
+      "blocked": "已封鎖",
+      "awaitingApproval": "等待核准",
+      "viewRaw": "檢視原始資料",
+      "hideRaw": "隱藏原始資料",
+      "showingOf": "顯示 {{total}} 筆中的 {{shown}} 筆",
+      "open": "開啟",
+      "needsApproval": "需要核准",
+      "approved": "已核准",
+      "declined": "已拒絕",
+      "expired": "已過期"
+    },
+    "mcpConnect": {
+      "title": "連線這些 MCP 伺服器以使用此代理程式",
+      "connect": "連線",
+      "connecting": "正在連線…",
+      "connected": "已連線",
+      "removed": "已移除。請代理程式的擁有者更新它。",
+      "waitingForAdmin": "等待管理員新增共用憑證",
+      "setUpInBuilder": "在 Agent Builder 中設定",
+      "serviceAccount": "此代理程式使用自己的憑證，由其擁有者在 Agent Builder 中設定。",
+      "openAgentBuilder": "開啟 Agent Builder",
+      "allConnected": "已全部連線。請重新傳送訊息以繼續。",
+      "tryAgain": "重試",
+      "unavailable": "無法在此開始登入。請在 Workspace → MCP 伺服器中連線。"
+    },
+    "mcpSignIn": {
+      "title": "重新登入，為這些 MCP 伺服器授予它們要求的權限",
+      "needs": "需要：{{scopes}}",
+      "signIn": "重新登入",
+      "signingIn": "正在登入…",
+      "signedIn": "已登入",
+      "askAnEditor": "請可以編輯此代理程式的人重新登入",
+      "allSignedIn": "已登入。請重試該請求。",
+      "retryMessage": "我已重新登入 {{servers}}。請再試一次。"
+    },
     "toasts": {
       "stopStreamTitle": "正在停止…",
       "stopStreamDescription": "回應即將停止，已產生的部分內容將被保留。",
-      "editComingSoonTitle": "即將推出",
-      "editComingSoonDescription": "我們正在開發編輯功能",
       "deprecatedTools": "此代理包含已不再提供的工具。請開啟代理建構器將其移除。",
-      "openAgentBuilder": "開啟代理建構器"
+      "openAgentBuilder": "開啟代理建構器",
+      "loadConversationFailed": "無法開啟此對話。請重新整理頁面後再試一次。",
+      "forkSuccess": "已從此處開始新對話",
+      "forkError": "無法分叉此對話，請重試。"
     },
     "queryModes": {
       "chat": {
@@ -782,6 +1141,8 @@
         ]
       }
     },
+    "demoBanner": "您正在檢視 Acme Corp，這是以示範資料載入的虛構小公司。試試下列問題，或是",
+    "demoConnectYourOwn": "連接您自己的來源",
     "askMoreQuestionSets": [
       [
         "主要挑戰有哪些，目前如何因應",
@@ -832,6 +1193,7 @@
       "unpinProject": "取消置頂",
       "archiveProject": "封存專案",
       "unarchiveProject": "取消封存",
+      "restoreSuccess": "專案已復原",
       "deleteProject": "刪除專案",
       "shareProject": "分享專案",
       "backToProjects": "所有專案",
@@ -854,6 +1216,7 @@
       },
       "workspace": {
         "failedToLoad": "載入此專案失敗",
+        "failedToLoadFiles": "載入檔案失敗",
         "instructionsTitle": "指令",
         "instructionsPlaceholder": "新增助理在此專案每次對話中應遵循的指令…",
         "noInstructions": "尚未新增指令",
@@ -881,21 +1244,56 @@
         "memberCount_one": "{{count}} 位成員",
         "memberCount_other": "{{count}} 位成員",
         "share": "分享",
-        "recentChatsTitle": "最近對話",
-        "seeAllChats": "查看所有對話",
         "saveInstructionsFailed": "無法儲存指示",
         "updateToolsFailed": "無法更新工具",
         "updatePinFailed": "無法更新釘選狀態",
         "updateArchiveFailed": "無法更新封存狀態",
         "shareRefreshFailed": "無法重新整理共用詳細資料",
         "removeFileConfirmTitle": "Remove file",
-        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone."
+        "removeFileConfirmDescription": "Are you sure you want to remove \"{{fileName}}\" from this project? This cannot be undone.",
+        "heroTitle": "我們要處理什麼？",
+        "heroSubtitle": "您在這裡發起的每個聊天都會沿用此專案的指令、檔案和工具。",
+        "addDescription": "新增描述",
+        "descriptionPlaceholder": "這個專案是關於什麼的？",
+        "descriptionSaveFailed": "儲存描述失敗",
+        "visibilityBadgePrivate": "私人",
+        "visibilityBadgeOrg": "組織",
+        "visibilityLabel": "可見性",
+        "visibilityPrivate": "僅您自己可見",
+        "visibilityOrg": "對您的組織可見",
+        "ownerLabel": "擁有者",
+        "youLabel": "您",
+        "aboutTitle": "關於",
+        "chatDefaultsTitle": "聊天預設設定",
+        "modelLabel": "模型",
+        "projectSetupTitle": "專案設定",
+        "projectSetupProgress": "{{done}} / {{total}}",
+        "statusSet": "已設定",
+        "statusNotSet": "未設定",
+        "filesStatusNone": "無檔案",
+        "filesStatusCount_one": "{{count}} 個檔案",
+        "filesStatusCount_other": "{{count}} 個檔案",
+        "filesStatusCountWithSize_one": "{{count}} 個檔案 · {{size}}",
+        "filesStatusCountWithSize_other": "{{count}} 個檔案 · {{size}}",
+        "connectorsStatusNone": "無",
+        "connectorsStatusCount_one": "已連接 {{count}} 個",
+        "connectorsStatusCount_other": "已連接 {{count}} 個",
+        "toolsStatusDefault": "預設",
+        "toolsStatusCount_one": "已啟用 {{count}} 個",
+        "toolsStatusCount_other": "已啟用 {{count}} 個",
+        "membersStatusOnlyYou": "僅您自己",
+        "suggestSummariseDocument": "總結文件",
+        "suggestPlanWork": "規劃一項工作",
+        "suggestWriteInstructions": "撰寫專案指令",
+        "suggestSummariseDocumentPrompt": "請總結此專案檔案中最重要的文件。",
+        "suggestPlanWorkPrompt": "請幫我為此專案規劃一項工作，並將其拆分為具體的後續步驟。"
       },
       "moveDialog": {
         "title": "移至專案",
         "noProjects": "您還沒有任何專案",
         "removeOption": "無專案",
-        "moving": "移動中…"
+        "moving": "移動中…",
+        "moveFailed": "移動對話失敗"
       },
       "deleteDialog": {
         "title": "刪除此專案？",
@@ -909,7 +1307,177 @@
         "editor": "編輯者",
         "viewer": "檢視者"
       }
-    }
+    },
+    "demoHide": "隱藏示範資料",
+    "scrollAttachmentsLeft": "向左捲動附件",
+    "scrollAttachmentsRight": "向右捲動附件",
+    "demoSuggestions": {
+      "1": {
+        "text": "付款服務的架構為何變更，這項決定是如何做出的？",
+        "icons": [
+          "github",
+          "jira",
+          "slack"
+        ]
+      },
+      "2": {
+        "text": "哪些客戶回報了匯出逾時的問題，最後是如何解決的？",
+        "icons": [
+          "jira",
+          "github"
+        ]
+      },
+      "3": {
+        "text": "關於國定假日值班，我們的政策是什麼？",
+        "icons": [
+          "sheets"
+        ]
+      },
+      "4": {
+        "text": "計費 worker 中的 PR #482 由誰審查並核准，合併前 Dana 提出了什麼要求？",
+        "icons": [
+          "github"
+        ]
+      },
+      "5": {
+        "text": "2026 年的企業定價策略是什麼？",
+        "icons": [
+          "sheets",
+          "slack"
+        ],
+        "restricted": true
+      }
+    },
+    "demoRestrictedHint": "僅限定價委員會檢視，因此這裡不會有答案。這正是權限在發揮作用。",
+    "demoRestrictedHintSignIn": "僅限定價委員會檢視，因此這裡不會有答案。請以 {{email}} 登入以查看答案。",
+    "toolValidation": {
+      "tooManyTools": "選取的工具過多。受效能限制，每個要求最多允許 1024 個工具。",
+      "multipleInstances": "同一動作類型（{{types}}）的多個執行個體無法一起使用。請開啟「動作」面板，每種類型只選取一個執行個體。"
+    },
+    "attachments": {
+      "uploadFailed": "上傳失敗",
+      "uploadFailedNamed": "無法附加 {{name}}。{{error}}",
+      "uploadFailedNamedRetry": "無法附加 {{name}}。請重試。",
+      "unsupportedType": "不支援的檔案類型：{{names}}。支援的類型：{{types}}。",
+      "fileTooLarge": "檔案過大：{{names}}。每個檔案上限為 {{maxMb}} MB。",
+      "tooManyFiles": "每則訊息最多 {{max}} 個附件。",
+      "pasteTruncated": "\n\n[內容已截斷 — 貼上的文字超過附件大小上限。]",
+      "uploading": "上傳中…",
+      "retry": "重新上傳",
+      "pastedText": "貼上的文字",
+      "uploadingNamed": "正在上傳貼上的文字",
+      "removePastedText": "移除貼上的文字",
+      "showInTextField": "在文字欄位中顯示",
+      "previewLoadFailed": "載入內容失敗",
+      "copyText": "複製",
+      "closePreview": "關閉",
+      "loadingPreview": "載入中…",
+      "pasteMeta_other": "{{chars}} 個字元 · {{count}} 行"
+    },
+    "voiceSttNotConfigured": "請在「AI 模型」設定中設定語音轉文字（STT）模型，以啟用語音輸入。",
+    "voiceSttLoading": "正在檢查語音功能…",
+    "expandComposer": "展開輸入框",
+    "stopGenerating": "停止產生",
+    "backToChat": "返回對話",
+    "searchToggle": {
+      "ariaLabel": "切換到搜尋檢視"
+    },
+    "plusMenu": {
+      "ariaLabelFiltersApplied": "附加檔案與功能。已套用搜尋篩選條件",
+      "ariaLabel": "附加檔案與功能",
+      "title": "新增檔案與功能"
+    },
+    "stopListening": "停止聆聽",
+    "voiceInput": "語音輸入",
+    "regenerateResponse": "重新產生回覆",
+    "editQuery": "編輯提問",
+    "queryOptions": "提問選項",
+    "models": "模型",
+    "manage": "管理",
+    "configuredModels": "已設定的模型",
+    "reasoningEffort": {
+      "label": "推理強度",
+      "overrideHint": "再次點選即可使用預設值。",
+      "defaultHintWithLevel": "未設定時預設為{{level}}。",
+      "modelDefaultHint": "未設定時使用此模型本身的預設值：{{level}}。",
+      "modelDefaultLabel": "預設（{{level}}）",
+      "low": "低",
+      "medium": "中",
+      "high": "高",
+      "max": "最高"
+    },
+    "universalAgent": {
+      "toolsLoadError": "載入可用動作失敗。",
+      "mcpLoadError": "載入 MCP 伺服器失敗。",
+      "noReasoningModel": "尚未設定具備推理能力的模型。使用代理程式模式前，請至「設定 → AI 模型」設定一個。",
+      "loadingTools": "正在載入動作…",
+      "noActions": "找不到已驗證的動作。請至「工作區 → 動作」連接整合。",
+      "loadingMcp": "正在載入 MCP 伺服器…",
+      "noMcpServers": "找不到已驗證的 MCP 伺服器。請至「工作區 → MCP 伺服器」連接一個。",
+      "toolCount_other": "{{count}} 個工具"
+    },
+    "agentCapabilities": {
+      "notConfiguredOnAgent": "此代理程式未設定",
+      "internalSearch": "內部搜尋",
+      "webSearch": "網路搜尋"
+    },
+    "resizePanels": "調整對話與預覽面板大小",
+    "toolApproval": {
+      "noArguments": "無詳細資訊",
+      "deny": "拒絕",
+      "showAll": "顯示全部",
+      "showLess": "收合",
+      "partial": "僅顯示詳細資訊的開頭部分：完整呼叫更長。",
+      "cantBeUndone": "無法復原",
+      "allow": "允許",
+      "dontAskAgain": "此工具不再詢問",
+      "answerFailed": "無法傳送你的回答，請再試一次。",
+      "needsApproval": "需要你的核准",
+      "expiresIn_one": "{{count}} 分鐘後過期",
+      "expiresIn_other": "{{count}} 分鐘後過期",
+      "expiresSoon": "不到一分鐘後過期",
+      "notice": {
+        "expired": "{{server}} 上的 {{tool}} 未執行：請求已過期。如仍需要，請再次提問。",
+        "passed": "{{server}} 上的 {{tool}} 未獲核准，因此未執行。",
+        "waiting": "{{server}} 上的 {{tool}} 正在等待對話擁有者核准。"
+      },
+      "receipt": {
+        "allowed": "你允許了 {{tool}}",
+        "declined": "你拒絕了 {{tool}}",
+        "expired": "{{tool}} 未執行：請求已過期",
+        "allowedNotRun": "你允許了 {{tool}}，但它沒有執行"
+      }
+    },
+    "selectedAlone": "{{name}}（僅此項目）",
+    "noConnectorsFound": "找不到連接器",
+    "treeSearching": "正在搜尋…",
+    "treeSearchFailed": "搜尋失敗，請重試。",
+    "treeSearchMatches": "資料夾和項目",
+    "nodeSearchTooShort": "請至少輸入 2 個字元",
+    "mentionNodes": "項目",
+    "mentionNodesLabel": "相符的項目",
+    "mentionTypeToSearch": "輸入名稱以搜尋",
+    "mentionSearching": "正在搜尋…",
+    "mentionNone": "沒有相符的項目",
+    "mentionYourApps": "你的應用程式",
+    "mentionCollections": "集合",
+    "sourceUnavailable": "你無法開啟的來源",
+    "sourceLoading": "載入中…",
+    "mentionBack": "返回",
+    "mentionRemove": "移除 {{name}}",
+    "artifactsPanel": {
+      "generated_other": "已產生 {{count}} 個產物",
+      "newerVersion": "有較新的版本 (v{{version}})",
+      "unavailable": "已無法使用",
+      "viewSource": "檢視原始碼",
+      "loadingSource": "正在載入原始碼",
+      "viewSourceTitle": "檢視產生此產物的程式碼",
+      "preview": "預覽產物",
+      "loadingPreview": "正在載入預覽",
+      "download": "下載產物",
+      "downloading": "正在下載產物"
+    },
+    "deleteChatArtifactsNote": "助理在此聊天中建立的檔案也會一併刪除。"
   },
   "workspaceMenu": {
     "appearance": "外觀",
@@ -982,7 +1550,10 @@
         "unblockSuccess": "已成功解除封鎖使用者",
         "unblockError": "解除封鎖使用者失敗",
         "unblocking": "正在解除封鎖…",
-        "edit": "編輯"
+        "edit": "編輯",
+        "resendInviteSuccess": "已重新傳送邀請",
+        "resendInviteSuccessDescription": "已將邀請重新傳送至 {{email}}",
+        "resendInviteError": "重新傳送邀請失敗"
       },
       "profile": {
         "title": "個人檔案",
@@ -999,7 +1570,8 @@
       },
       "roles": {
         "admin": "管理員",
-        "member": "成員"
+        "member": "成員",
+        "guest": "訪客"
       },
       "statuses": {
         "active": "使用中",
@@ -1026,6 +1598,8 @@
         "send": "傳送邀請",
         "successTitle": "邀請已傳送！",
         "successDescription": "已邀請 {{email}}",
+        "queuedTitle": "邀請已加入佇列",
+        "queuedDescription": "正在背景傳送電子郵件給 {{email}}。若有郵件無法送達，您將會收到通知。",
         "invalidEmail": "電子郵件地址無效",
         "errorGeneric": "傳送邀請失敗",
         "importNoEmails": "檔案中找不到任何電子郵件地址",
@@ -1037,8 +1611,29 @@
         "importSkippedDescription": "無效的項目已在清單中標示 — 請在傳送前將其移除。",
         "importFailed": "匯入失敗",
         "importFailedDescription": "無法讀取檔案。請上傳有效的 CSV 或 Excel 檔案。",
-        "adminGroupWarning": "在此受邀的每個人都會成為完整的組織管理員 — 包括從檔案匯入的每個地址。管理員可以管理使用者、群組與組織設定。"
-      }
+        "adminGroupWarning": "在此受邀的每個人都會成為完整的組織管理員 — 包括從檔案匯入的每個地址。管理員可以管理使用者、群組與組織設定。",
+        "editSuccessTitle": "邀請已更新",
+        "editSuccessDescription": "{{email}} 的邀請已更新",
+        "editError": "更新邀請失敗",
+        "editTitle": "編輯邀請",
+        "update": "更新邀請",
+        "smtpNotConfiguredTooltip": "尚未設定 SMTP。傳送邀請前請先完成電子郵件設定。"
+      },
+      "bulk": {
+        "resendInvite": "重新傳送邀請",
+        "adminInviteCantBeCancelled": "管理員邀請無法取消",
+        "cancelInvite": "取消邀請",
+        "adminCantBeRemoved": "無法移除管理員使用者",
+        "removeFromWorkspace": "從工作區移除",
+        "removeSuccess_other": "已將 {{count}} 位使用者從工作區移除",
+        "removePartialError_other": "移除 {{count}} 位使用者失敗",
+        "resendSuccess_other": "已向 {{count}} 位使用者重新傳送邀請",
+        "resendPartialError_other": "向 {{count}} 位使用者重新傳送邀請失敗",
+        "cancelSuccess_other": "已取消 {{count}} 個邀請",
+        "cancelPartialError_other": "取消 {{count}} 個邀請失敗"
+      },
+      "inviteDisabledSmtp": "尚未設定 SMTP。邀請使用者前請先完成電子郵件設定。",
+      "bulkLabel": "使用者"
     },
     "groups": {
       "title": "群組",
@@ -1064,7 +1659,8 @@
         "delete": "刪除",
         "deleteSuccess": "群組已刪除",
         "deleteError": "刪除群組失敗",
-        "managePermissions": "管理權限"
+        "managePermissions": "管理權限",
+        "deleteSystemTooltip": "只能刪除自訂群組"
       },
       "create": {
         "title": "建立群組",
@@ -1090,7 +1686,8 @@
         "users": "使用者",
         "noUsers": "此群組中沒有使用者",
         "accessPermissions": "存取權限",
-        "accessComingSoon": "存取權限功能即將推出"
+        "accessComingSoon": "存取權限功能即將推出",
+        "searchUsers": "搜尋使用者..."
       },
       "edit": {
         "edit": "編輯群組",
@@ -1110,7 +1707,8 @@
         "deleting": "刪除中...",
         "deleteSuccess": "群組已刪除",
         "deleteSuccessDescription": "「{{name}}」已被刪除",
-        "deleteError": "刪除群組失敗"
+        "deleteError": "刪除群組失敗",
+        "nameRequired": "群組名稱為必填"
       },
       "permissions": {
         "title": "存取權限",
@@ -1162,7 +1760,9 @@
         "cancel": "取消",
         "successTitle": "團隊已建立！",
         "successDescription": "「{{name}}」已成功建立",
-        "errorGeneric": "無法建立團隊"
+        "errorGeneric": "無法建立團隊",
+        "applyToAll": "套用至全部",
+        "memberRoles": "成員角色"
       },
       "detail": {
         "nameLabel": "團隊名稱",
@@ -1173,7 +1773,8 @@
         "noMembers": "此團隊尚無成員",
         "roleLabel": "角色",
         "accessPermissions": "存取權限",
-        "accessComingSoon": "存取權限功能即將推出"
+        "accessComingSoon": "存取權限功能即將推出",
+        "searchMembers": "搜尋成員..."
       },
       "edit": {
         "edit": "編輯團隊",
@@ -1192,7 +1793,10 @@
         "deleting": "正在刪除...",
         "deleteSuccess": "團隊已刪除",
         "deleteSuccessDescription": "「{{name}}」已刪除",
-        "deleteError": "無法刪除團隊"
+        "deleteError": "無法刪除團隊",
+        "saveErrorDescription": "更新團隊失敗。請重試。",
+        "applyToAll": "套用至全部",
+        "newMemberRoles": "新成員角色"
       }
     },
     "oauth2": {
@@ -1201,11 +1805,10 @@
       "searchPlaceholder": "搜尋…",
       "newApplication": "新增 OAuth 應用程式",
       "emptyTitle": "沒有 OAuth 2.0 應用程式",
-      "emptyDescription": "建立 OAuth 2.0 應用程式，讓第三方整合能透過 Pipeshub 存取您的組織。",
+      "emptyDescription": "建立 OAuth 2.0 應用程式，讓第三方整合能透過 PipesHub 存取您的組織。",
       "loading": "正在載入應用程式…",
       "errorGeneric": "載入 OAuth 應用程式失敗",
       "retry": "重試",
-      "docsOpenLabel": "開啟 OAuth 文件（即將推出）",
       "scopesBadgeOne": "{{count}} 個範圍",
       "scopesBadgeMany": "{{count}} 個範圍",
       "manage": "管理",
@@ -1280,7 +1883,14 @@
         "saveErrorTitle": "儲存變更失敗",
         "regenerateSuccessTitle": "密鑰已重新產生",
         "regenerateErrorTitle": "重新產生密鑰失敗",
-        "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。"
+        "errorLifetimeInvalid": "請輸入有效的效期（整數秒數，至少為 1）。",
+        "identityBoundNote": "此應用程式的權杖以所指向的服務帳號身分行事。變更它會撤銷已經簽發的權杖。",
+        "identityUnboundNote": "此應用程式的權杖以建立它的人的身分行事，擁有其文件權限和角色——如果建立者是管理員，就意味著管理員權限。請改為將其指向一個服務帳號。",
+        "identityAdminOnly": "只有管理員才能為此應用程式指定服務帳號。請聯絡管理員處理。",
+        "identityBindAction": "使用此帳號",
+        "identityBindRevokes": "此操作會撤銷該應用程式已簽發的權杖。使用它們的一切都需要重新取得。",
+        "identityBound": "該應用程式現在以此服務帳號的身分行事。",
+        "identityBindFailed": "無法變更服務帳號。請稍後再試。"
       },
       "create": {
         "panelTitle": "建立 OAuth 2.0 應用程式",
@@ -1292,6 +1902,7 @@
         "createDisabledScopesTooltip": "請至少選取一個權限範圍才能建立應用程式。",
         "tabGeneral": "一般",
         "tabPermissions": "權限與範圍",
+        "tabGranular": "細部權限",
         "appNameLabel": "應用程式名稱",
         "appNamePlaceholder": "我的應用程式",
         "descriptionLabel": "描述",
@@ -1337,7 +1948,15 @@
         "errorOptionalUrlInvalid": "選填的 URL 若有填寫，必須是有效的 http(s) 位址。",
         "grantRequiredTitle": "必須選取授權類型",
         "grantRequiredDescription": "至少必須保留一種已選取的授權類型。",
-        "clientCredentialsWarning": "用戶端憑證 token 一律以建立此應用程式的使用者身分存取 Pipeshub，而非以呼叫 token 端點的人的身分。使用者仍可透過授權碼流程為自己授權此應用程式。"
+        "serviceAccountHeading": "此應用程式代表其行事的服務帳號",
+        "clientCredentialsIdentityNote": "此應用程式的權杖以所指向的服務帳號身分行事；若未設定，則以建立它的人的身分行事——如果建立者是管理員，就意味著管理員權限。",
+        "serviceAccountHelper": "用戶端認證權杖不包含任何人員，因此此應用程式需要自己的身分。服務帳號始終是成員，絕不會是管理員，且無法登入。沒有服務帳號，應用程式將以建立它的人的身分行事。",
+        "serviceAccountPlaceholder": "選擇服務帳號",
+        "serviceAccountLoading": "正在載入服務帳號…",
+        "serviceAccountNone": "目前還沒有服務帳號。請在「工作區 → 服務帳號」中建立一個，然後返回此處。",
+        "serviceAccountLoadError": "無法載入服務帳號。請稍後再試。",
+        "serviceAccountRetry": "重試",
+        "errorServiceAccountRequired": "請選擇此應用程式代表其行事的服務帳號。"
       }
     },
     "personalAccessTokens": {
@@ -1353,7 +1972,6 @@
       "columnCreated": "建立時間",
       "columnExpires": "到期時間",
       "columnLastUsed": "上次使用",
-      "scopeCount": "{{count}} 個範圍",
       "neverUsed": "從未",
       "neverExpires": "永不",
       "revokeAria": "撤銷 {{name}}",
@@ -1366,7 +1984,7 @@
         "errorTitle": "無法撤銷權杖"
       },
       "create": {
-        "panelTitle": "建立個人存取權杖",
+        "panelTitle": "新增個人存取權杖",
         "successPanelTitle": "權杖已建立",
         "createButton": "建立權杖",
         "doneButton": "完成",
@@ -1398,7 +2016,8 @@
         "copyPasteBlockAria": "複製貼上區塊",
         "copySuccessTitle": "已複製",
         "copyErrorTitle": "無法複製"
-      }
+      },
+      "scopeCount_other": "{{count}} 個權限範圍"
     },
     "aiModels": {
       "title": "AI 模型",
@@ -1431,6 +2050,8 @@
       "configUpdateModel": "更新模型",
       "configFillRequiredTooltip": "請填寫所有必填欄位",
       "configSaveErrorFallback": "無法儲存模型設定",
+      "configSaveOutboundError": "PipesHub 無法從容器內部連線到此模型供應商。雲端供應商需要對外網路連線 — 請參閱 deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity。",
+      "configSaveTimeoutError": "驗證模型時要求逾時。雲端供應商需要 PipesHub 容器具備對外網路連線 — 請參閱 deployment/docker-compose/ADVANCED_DEPLOYMENT.md#container-outbound-connectivity。",
       "configNoConfigRequired": "此供應商不需要任何設定。",
       "configDefaultModelNotice": "系統將預設使用「{{modelName}}」。",
       "configSectionModelConfiguration": "模型設定",
@@ -1522,8 +2143,112 @@
         "video": {
           "label": "影片",
           "badge": "多模態"
+        },
+        "decision": {
+          "label": "決策",
+          "badge": "決策",
+          "sectionTab": "用於決策"
         }
-      }
+      },
+      "fetchingModels": "正在載入模型…",
+      "savedLeaveBlank": "已儲存 — 留空則保持不變",
+      "modelPickerEmpty": "沒有符合搜尋的模型。",
+      "modelPickerDefault": "預設",
+      "modelPickerFriendlyName": "{{model}} 的顯示名稱",
+      "badgeContext": "{{value}} tokens",
+      "badgeVision": "視覺",
+      "badgeReasoning": "推理",
+      "badgeDeprecated": "已棄用",
+      "batchRetry": "重試",
+      "batchRemove": "移除",
+      "rotateCredentials": "輪換憑證",
+      "rotateCredentialsTitle": "輪換憑證",
+      "rotateCredentialsHint": "更新此連線下所有模型的金鑰。",
+      "rotateCredentialsPlaceholder": "新的 API 金鑰",
+      "rotateCredentialsSave": "更新金鑰",
+      "rotateCredentialsFailed": "無法更新金鑰",
+      "identity": {
+        "menuItem": "身分轉送",
+        "title": "身分轉送",
+        "hint": "向閘道告知請求者是誰，以便依個人套用預算、限額和模型存取權限。適用於此連線中的所有模型。",
+        "enabled": "轉送使用者身分",
+        "format": "格式",
+        "formatHeaders": "LiteLLM 標頭",
+        "formatTemplate": "標頭範本",
+        "formatSignedJwt": "簽章權杖（企業版）",
+        "preset": "閘道預設",
+        "presetCustom": "自訂標頭",
+        "templates": "標頭範本",
+        "templatesHint": "每行一個，格式為 Header-Name: value。可使用 {{placeholders}}。",
+        "serviceKey": "背景工作金鑰",
+        "serviceKeyPlaceholder": "用於索引和擷取的閘道金鑰",
+        "serviceKeySaved": "已儲存金鑰。輸入新值可取代。",
+        "serviceKeyHint": "索引和擷取沒有已登入的使用者。請為它們提供獨立的閘道金鑰，以便將其支出與個人分開預算。",
+        "serviceKeyRemove": "移除已儲存的金鑰",
+        "preview": "預覽",
+        "previewTitle": "將為你傳送的內容",
+        "previewNone": "不會傳送任何內容。",
+        "previewFailed": "無法產生預覽",
+        "save": "儲存",
+        "saved": "身分轉送已儲存",
+        "saveFailed": "無法儲存身分轉送"
+      },
+      "identityPolicy": {
+        "open": "身分原則",
+        "damaged": "無法讀取已儲存的身分原則，因此顯示預設值。儲存後將取代它。",
+        "title": "身分原則",
+        "hint": "PipesHub 可向模型閘道透露的請求者資訊。適用於所有轉送身分的連線。",
+        "subjectSource": "識別使用者的依據",
+        "subjectUserId": "使用者 ID",
+        "subjectEmail": "電子郵件地址",
+        "subjectIdp": "身分提供者物件 ID",
+        "includeEmail": "包含電子郵件地址",
+        "includeDisplayName": "包含顯示名稱",
+        "pseudonymize": "以穩定的假名隱藏身分",
+        "pseudonymizeHint": "閘道看到的是不透明 ID，而非真實 ID。該對應不可逆。",
+        "groups": "轉送群組成員資格",
+        "groupsHint": "讓閘道可依群組套用存取權限和預算。",
+        "allowList": "僅轉送這些群組",
+        "allowListHint": "每行一個群組 ID。留空則轉送所有群組，最多不超過下方限制。",
+        "maxGroups": "最多轉送的群組數",
+        "blockMissing": "拒絕沒有已登入使用者的請求",
+        "blockMissingHint": "轉送身分時，無法關聯到個人的互動式呼叫會被拒絕，而不是以服務身分傳送。",
+        "embeddingAsService": "將搜尋嵌入歸屬於服務",
+        "embeddingAsServiceHint": "關閉：使用者搜尋查詢的嵌入費用計入其個人預算。",
+        "servicePrefix": "服務身分前綴",
+        "saved": "身分原則已儲存",
+        "saveFailed": "無法儲存身分原則",
+        "loadFailed": "無法載入身分原則"
+      },
+      "batchStatus": {
+        "pending": "等待",
+        "checking": "檢查中",
+        "healthy": "已儲存",
+        "failed": "失敗"
+      },
+      "modelPickerSelected": "已選模型（{{count}}）",
+      "modelPickerSelectedHint": "每個模型會個別檢查並儲存。請在此設定其名稱、上下文長度和能力。",
+      "modelPickerFieldFor": "{{model}} 的{{field}}",
+      "modelPickerDefaultFor": "將 {{model}} 設為預設",
+      "modelPickerRemoveFor": "移除 {{model}}",
+      "modelComboboxAddMore": "新增其他模型…",
+      "modelComboboxTypeHint": "輸入模型名稱並按 Enter。",
+      "modelComboboxOtherGroup": "其他模型",
+      "modelComboboxUseTyped": "使用「{{model}}」",
+      "modelHintManual": "輸入模型名稱並按 Enter。可新增多個模型一起儲存。",
+      "modelHintNeedsFields": "填寫上方的連線資訊以載入模型清單，或直接輸入模型名稱。",
+      "modelHintFailed": "無法載入模型：{{message}} 你仍然可以輸入模型名稱。",
+      "modelHintNoneFound": "供應商沒有列出此類型的模型。請輸入模型名稱。",
+      "modelHintLoaded_one": "共有 {{count}} 個可用模型。可搜尋，或輸入任意模型名稱。",
+      "modelHintLoaded_other": "共有 {{count}} 個可用模型。可搜尋，或輸入任意模型名稱。",
+      "modelComboboxPlaceholder": "選擇或輸入模型名稱",
+      "checkingOne": "正在透過 {{provider}} 檢查 {{model}}…",
+      "checkingMany": "正在透過 {{provider}} 檢查 {{total}} 個模型…",
+      "checkingProgress": "已檢查 {{done}}/{{total}} 個模型…",
+      "checkingHint": "每個模型會收到一次簡短的測試呼叫，通常不到一分鐘。",
+      "checkFailedOne": "{{model}} 未通過檢查",
+      "checkFailedMany": "{{total}} 個模型中有 {{failed}} 個未通過檢查",
+      "checkFailedHint": "開啟面板查看原因並重試。"
     },
     "common": {
       "loadingUsers": "正在載入使用者…",
@@ -1539,8 +2264,11 @@
       "createdBy": "建立者",
       "createdOn": "建立日期"
     },
+    "bulk": {
+      "selected": "已選取 {{count}} 個{{label}}"
+    },
     "pagination": {
-      "showing": "顯示第 {{from}}-{{to}} 項，共 {{total}} 項",
+      "showing_other": "顯示第 {{from}}-{{to}} 項，共 {{count}} 項",
       "previous": "上一頁",
       "next": "下一頁"
     },
@@ -1580,14 +2308,15 @@
         "webSearch": "網頁搜尋",
         "tenants": "租戶",
         "superOrgs": "組織",
-        "oauthApps": "OAuth 應用程式"
+        "oauthApps": "連接器 OAuth 應用程式",
+        "serviceAccounts": "服務帳戶"
       }
     },
     "actions": {
       "title": "動作",
       "subtitle": "設定自動化動作，例如建立記錄、更新欄位或觸發工作流程。每個應用程式都有針對其支援功能量身打造的動作。",
       "yourActionsTitle": "您的動作",
-      "yourActionsSubtitle": "驗證並管理管理員為您的帳戶開放的動作。",
+      "yourActionsSubtitle": "登入管理員為您開放的動作，或新增您自己的動作。",
       "tabs": {
         "all": "全部",
         "configured": "已設定",
@@ -1606,7 +2335,8 @@
         "authenticate": "驗證",
         "manage": "管理",
         "unavailable": "無法使用",
-        "notConfigured": "未設定"
+        "notConfigured": "未設定",
+        "add": "新增"
       },
       "trailingYourActions": "您的動作",
       "loading": "正在載入動作…",
@@ -1666,7 +2396,7 @@
         "refreshingList": "正在更新清單…",
         "searchInstances": "搜尋執行個體…",
         "teamInstanceInfo": "對貴組織的動作執行個體進行驗證。已驗證的動作可以加入您的代理程式。",
-        "personalInstanceInfo": "對貴組織的動作執行個體進行驗證。完成驗證後，您就可以在代理程式中使用這些動作。",
+        "personalInstanceInfo": "登入組織的動作或新增您自己的動作。登入後即可在代理程式中使用。",
         "instanceTabs": {
           "all": "全部（{{count}}）",
           "authenticated": "已驗證（{{count}}）",
@@ -1708,7 +2438,11 @@
         "saveSuccess": "變更已儲存。",
         "saveDeauthNotice": "已儲存。{{count}} 位使用者已被登出，必須重新驗證。",
         "missingInstance": "此動作缺少執行個體 ID。請嘗試重新整理頁面。",
-        "copyFailed": "無法複製到剪貼簿。"
+        "copyFailed": "無法複製到剪貼簿。",
+        "loadingOauthApps": "正在載入 OAuth 應用程式…",
+        "noOauthApps": "尚未設定 OAuth 應用程式",
+        "personalActionsHint": "使用者憑證於「我的動作」中管理。",
+        "openPersonalActionsCta": "開啟我的動作"
       },
       "errors": {
         "instanceNameRequired": "請輸入執行個體名稱。"
@@ -1716,8 +2450,42 @@
       "validation": {
         "fieldRequired": "{{field}} 為必填",
         "fieldMustBeTrue": "{{field}} 必須為 true",
-        "fixErrorsAbove": "請修正上方標示的欄位以繼續。"
-      }
+        "fixErrorsAbove": "請修正上方標示的欄位以繼續。",
+        "minLength": "{{field}}至少需要 {{minLength}} 個字元",
+        "maxLength": "{{field}}不能超過 {{maxLength}} 個字元",
+        "email": "{{field}}必須是有效的電子郵件地址",
+        "url": "{{field}}必須是有效的 URL",
+        "urlProtocol": "{{field}}必須使用 http 或 https",
+        "numberRange": "請輸入 {{min, number}} 到 {{max, number}} 之間的整數。",
+        "numberMin": "請輸入不小於 {{min, number}} 的整數。",
+        "numberMax": "請輸入不大於 {{max, number}} 的整數。"
+      },
+      "toolRules": {
+        "open": "工具核准",
+        "title": "工具核准：{{name}}",
+        "description": "當助理或代理程式想使用這些工具時會發生什麼。這些規則對您組織中的每個人都相同。",
+        "readOnly": "只有管理員可以變更這些規則。",
+        "toolsError": "無法載入此工具集的工具。",
+        "defaults": "讀取或變更資料的工具會直接執行。刪除資料、清空工作表或傳送電子郵件的工具會先在 PipesHub 應用程式的聊天中詢問，在無人能回應的地方（例如 Slack 機器人或 API）不會執行。",
+        "enterpriseTitle": "組織工具核准",
+        "enterpriseDescription": "為組織中的所有人選擇此工具組中的哪些工具直接執行、先詢問或從不執行。"
+      },
+      "personal": {
+        "setupCallout": "只有您可以檢視和使用此動作，且無法新增到與組織共用的代理程式中。新增後請登入。",
+        "yours": "我的",
+        "addOwn": "新增我的",
+        "added": "動作已新增。",
+        "delete": "刪除動作",
+        "deleteTitle": "刪除 {{name}}？",
+        "deleteBody": "您對此動作的登入資訊和工具核准也會一併刪除。刪除後無法復原。",
+        "deleted": "動作已刪除。",
+        "adminOnly": "只有管理員可以新增 {{name}}：它透過主機名稱連線到伺服器。請要求管理員為您的組織新增。"
+      },
+      "enterprise": {
+        "userActionsTitle": "成員自己的動作",
+        "userActionsDescription": "檢視並移除組織成員為自己新增的動作。"
+      },
+      "appsHeading": "應用程式動作"
     },
     "rightPanel": {
       "primaryDisabledHint": "請向上捲動並填寫必填欄位（標有 * 者）以繼續。",
@@ -1835,12 +2603,22 @@
         "message": "如果捨棄，您的編輯將不會被儲存",
         "confirm": "捨棄",
         "cancel": "繼續編輯"
+      },
+      "featureFlags": {
+        "title": "功能旗標",
+        "subtitle": "為此工作區中的每個代理程式開啟或關閉實驗性功能。",
+        "advancedTitle": "顯示進階功能旗標",
+        "advancedSubtitle": "大多數工作區可以維持預設值的內部旗標。"
+      },
+      "vectorStore": {
+        "title": "向量儲存庫",
+        "subtitle": "刪除所有嵌入，或依已儲存的內容重新產生每筆記錄的嵌入。"
       }
     },
     "authentication": {
       "loading": "正在載入驗證設定…",
       "configure": "設定",
-      "title": "驗證設定",
+      "title": "驗證",
       "subtitle": "設定使用者登入應用程式的方式",
       "methodsHeading": "驗證方式",
       "methodsSubtitle": "啟用一種或多種驗證方式。使用者可使用任何已啟用的方式登入。",
@@ -1866,17 +2644,11 @@
       "panels": {
         "google": "設定 Google 驗證",
         "microsoft": "設定 Microsoft 驗證",
-        "samlSso": "設定 SAML SSO",
-        "oauth": "設定 OAuth 2.0",
         "github": "設定 GitHub 驗證"
       },
       "jit": {
         "title": "啟用即時（JIT）佈建",
         "description": "使用者首次以 {{providerName}} 登入時自動建立使用者帳戶"
-      },
-      "xmlUpload": {
-        "parseError": "無法從此檔案解析 SAML 中繼資料。請確認它是有效的 IdP 中繼資料 XML。",
-        "readError": "讀取檔案失敗。"
       },
       "riskDialog": {
         "title": "確認驗證變更",
@@ -1885,6 +2657,26 @@
         "body": "您已停用<bold>密碼</bold>與<bold>一次性密碼</bold>。使用者將只能透過以下方式登入：",
         "warningSingle": "儲存前請確認 {{method}} 已完整設定且運作正常。若單一登入因設定錯誤而失敗，使用者可能會被鎖在系統之外。",
         "warningMultiple": "儲存前請確認所有選取的方式皆已完整設定且運作正常。若單一登入因設定錯誤而失敗，使用者可能會被鎖在系統之外。"
+      },
+      "userMethods": {
+        "heading": "使用者登入方式",
+        "subtitle": "控制所有組織中每位使用者可使用的登入方式。"
+      },
+      "signInRemoval": {
+        "title_other": "PipesHub 1.0 已移除 {{methods}} 登入",
+        "nowSignsInWith": "此工作區現在使用{{methods}}登入。",
+        "peopleIntro": "以下人員曾經登入過，但尚未設定密碼：",
+        "person": "{{name}}（{{email}}）",
+        "andMore": "以及其他 {{count}} 人",
+        "howToSetPassword": "未使用 Google、Microsoft 或電子郵件驗證碼登入的人員需要設定密碼。他們可以在登入頁面使用「忘記密碼」（需要已設定電子郵件 SMTP），也可以由執行 PipesHub 伺服器的人員依照 PipesHub 1.0 升級指南為其建立設定密碼的連結。",
+        "methodNames": {
+          "password": "密碼",
+          "otp": "電子郵件驗證碼",
+          "google": "Google",
+          "microsoft": "Microsoft",
+          "samlSso": "SAML SSO",
+          "oauth": "OAuth"
+        }
       }
     },
     "connectors": {
@@ -1906,6 +2698,7 @@
       "configPanelTitle": "{{name}} 設定",
       "instance": "執行個體",
       "emailVisibilityDocLink": "電子郵件可見性設定指南 →",
+      "personalConnectorLink": "改用 {{name}} →",
       "toasts": {
         "loadError": "無法載入連接器",
         "syncStarted": "{{name}} 正在同步",
@@ -1924,7 +2717,8 @@
       },
       "tabs": {
         "authenticate": "驗證執行個體",
-        "configureRecords": "設定記錄"
+        "configureRecords": "設定記錄",
+        "authorize": "授權"
       },
       "tooltips": {
         "authFirst": "請先完成驗證才能儲存設定"
@@ -1938,7 +2732,7 @@
       },
       "successDialog": {
         "title": "執行個體已設定完成，可以開始同步！",
-        "description": "您現在可以開始將 {{name}} 資料與 Pipeshub 同步，",
+        "description": "您現在可以開始將 {{name}} 資料與 PipesHub 同步，",
         "descriptionSuffix": "或選擇稍後從設定中執行。",
         "later": "我稍後再處理",
         "startSync": "立即開始同步"
@@ -1949,6 +2743,30 @@
         "wideSyncMessage": "此程序可能會同步大量記錄。確定要開始同步嗎？建議透過「篩選條件」區段新增篩選條件，以減少要同步的記錄數量。",
         "confirm": "確定",
         "cancel": "取消"
+      },
+      "stopSync": {
+        "label": "停止同步",
+        "labelFull": "停止完整同步",
+        "stopping": "正在停止…"
+      },
+      "stopSyncConfirm": {
+        "title": "要停止進行中的同步嗎？",
+        "titleFull": "要停止進行中的完整同步嗎？",
+        "message": "已同步的記錄會保留，但本次執行的其餘部分將被放棄。同步可能需要片刻才會完全停止。之後可以重新開始。",
+        "confirm": "停止同步",
+        "confirmFull": "停止完整同步"
+      },
+      "disableSyncConfirm": {
+        "title": "要停用 {{name}} 的同步嗎？",
+        "confirm": "停用同步",
+        "confirming": "正在停用..."
+      },
+      "disabledSearchNotice": "此連接器中的記錄仍可搜尋，存取權限維持停用時的狀態。在 {{source}} 中對共用設定所做的變更，在重新啟用之前不會同步到 PipesHub。若要移除這些記錄，請刪除該連接器。",
+      "fullSync": {
+        "disabledTooltip": "請先停止進行中的同步，再開始完整同步"
+      },
+      "sync": {
+        "disabledTooltip": "請先停止進行中的完整同步"
       },
       "fullSyncConfirm": {
         "title": "要開始完整同步嗎？",
@@ -1966,7 +2784,8 @@
         "errorFallback": "無法停用連接器。請再試一次。",
         "actions": {
           "removeInstance": "移除此連接器執行個體",
-          "saveConfig": "儲存設定變更"
+          "saveConfig": "儲存設定變更",
+          "saveAuth": "儲存新的認證資訊"
         }
       },
       "adminAccessDialog": {
@@ -1987,7 +2806,8 @@
         "alreadyRemovingTitle": "已在移除中",
         "alreadyRemovingDescription": "此連接器已在移除中。",
         "successTitle": "已移除連接器",
-        "errorTitle": "無法移除連接器"
+        "errorTitle": "無法移除連接器",
+        "errorDescription": "請重試；若問題持續發生，請聯絡您的工作區管理員。"
       },
       "selectRecords": {
         "title": "選取記錄",
@@ -1996,6 +2816,17 @@
         "addRecords": "新增記錄"
       },
       "authTab": {
+        "connectionCheck": {
+          "testing": "正在測試連線…",
+          "egressTitle": "在防火牆中允許 PipesHub",
+          "egressDescription": "如果 {{name}} 位於防火牆後方或只接受已知的 IP 位址，請允許來自以下位址的連線：",
+          "copyIp": "複製 IP 位址",
+          "ipCopied": "已複製 IP 位址",
+          "copyFailed": "無法複製",
+          "copyFailedDescription": "請手動複製位址，或允許此網站存取剪貼簿。",
+          "failedTitle": "無法連線到 {{name}}",
+          "requestFailed": "無法測試連線，請再試一次。"
+        },
         "methodLabel": "驗證方式",
         "methodPlaceholder": "選取驗證類型...",
         "credentialsHeading": "{{name}} 憑證",
@@ -2014,6 +2845,7 @@
         "redirectUrlHelperNonOauth": "請在您的身分提供者中註冊重新導向/回呼 URL，然後填寫下方欄位。",
         "noAuthRequired": "此連接器不需要驗證",
         "emailVisibilityDocLink": "電子郵件可見性設定指南 →",
+        "personalConnectorLink": "改用 {{name}} →",
         "oauthAppNameLabel": "OAuth 應用程式名稱",
         "oauthAppNamePlaceholder": "例如：{{name}} OAuth",
         "oauthAppNameHelper": "此名稱會與 OAuth 註冊一起儲存，並在使用者為其他執行個體挑選已儲存的應用程式時顯示。",
@@ -2044,7 +2876,13 @@
         "syncStrategyHelper": "選擇要如何從 {{name}} 同步資料",
         "syncInterval": "同步間隔",
         "syncIntervalPlaceholder": "選取間隔...",
-        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率"
+        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率",
+        "lastRunLimit": {
+          "saved": "上次同步：已儲存 {{count, number}} 個頁面",
+          "stoppedAtLimit": "已在此上限停止",
+          "leftOut": "{{count, number}} 個未納入",
+          "nearLimit": "此連接器儲存的頁面已達此上限的 90% 以上。若要保留此網站的更多頁面，請提高上限。"
+        }
       },
       "instancePanel": {
         "overview": "總覽",
@@ -2063,6 +2901,8 @@
         "statFailedSub": "錯誤（API / 權限問題）",
         "statUnsupported": "不支援",
         "statUnsupportedSub": "無法處理",
+        "statPasswordProtected": "受密碼保護",
+        "statPasswordProtectedSub": "沒有密碼無法讀取",
         "statInProgressSub": "仍在建立索引",
         "statQueued": "已排入佇列",
         "statQueuedSub": "等待建立索引",
@@ -2077,7 +2917,68 @@
         "recordsByType": "依類型統計的記錄",
         "noRecordTypes": "沒有可用的記錄類型",
         "localWatcherLabel": "本機監看程式",
-        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗"
+        "localWatcherStatus": "{{state}} · {{pending}} 個待處理 · {{failed}} 個失敗",
+        "classification": "分類",
+        "enrichment": {
+          "title": "AI 資料擷取",
+          "description": "記錄可搜尋後在背景執行，搜尋不必等待。",
+          "classificationHint": "加入摘要、主題和類別",
+          "entities": "實體擷取",
+          "entitiesHint": "識別人物、組織和地點",
+          "progress": "{{completed}} / {{total}}",
+          "waiting": "等待中",
+          "skipped": "已略過",
+          "notStarted": "記錄可搜尋後開始",
+          "inProgress": "進行中",
+          "done": "已完成",
+          "failedCount_one": "{{count}} 個失敗",
+          "failedCount_other": "{{count}} 個失敗",
+          "retry": "重試"
+        },
+        "retryFailedClassification": "重試失敗的分類",
+        "retryClassificationSuccess": "分類重試已加入佇列",
+        "retryClassificationError": "重試分類失敗",
+        "retryFailedEntities": "重試失敗的實體擷取",
+        "retryEntitiesSuccess": "實體擷取重試已加入佇列",
+        "retryEntitiesError": "重試實體擷取失敗",
+        "codeGraph": {
+          "title": "程式碼圖",
+          "status": {
+            "never_built": "尚未建立",
+            "building": "建立中",
+            "ready": "就緒",
+            "stale": "更新中",
+            "waiting_on_indexing": "等待索引",
+            "retrying": "重試中",
+            "failed": "失敗",
+            "too_large": "過大",
+            "unknown": "未知"
+          }
+        },
+        "lastRun": {
+          "title": "上次同步",
+          "outcome": {
+            "succeeded": "已完成",
+            "failed": "失敗",
+            "stopped": "已停止",
+            "skipped": "已略過"
+          },
+          "stopReason": {
+            "max_pages": "已達到最大頁數限制",
+            "time_limit": "已達到時間限制；下次同步將繼續",
+            "stalled": "網站停止回應；下次同步將繼續",
+            "rate_limited": "網站一再要求減少請求；下次同步將繼續"
+          },
+          "pagesSaved": "已儲存 {{count}} 個頁面",
+          "failed": "{{count}} 個頁面失敗",
+          "robotsSkipped": "因 robots.txt 略過 {{count}} 個",
+          "noindexSkipped": "{{count}} 個頁面要求不被索引",
+          "skippedMaxPages": "因最大頁數限制排除 {{count}} 個",
+          "pruned": "已移除 {{count}} 個已不在網站上的頁面",
+          "sitemapUrls": "在網站地圖中找到 {{count}} 個",
+          "resumed": "已繼續未完成的同步",
+          "lastSyncedWithOutcome": "{{time}}（{{outcome}}）"
+        }
       },
       "settingsTab": {
         "instanceName": "執行個體名稱",
@@ -2095,13 +2996,21 @@
         "syncSettings": "同步設定",
         "syncStrategySettingsHint": "您可以前往<bold>{{manageConfig}}</bold>變更同步策略。",
         "syncInterval": "同步間隔",
-        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率"
+        "syncIntervalHelper": "設定 {{name}} 資料的重新整理頻率",
+        "removeInstance": "移除連接器執行個體",
+        "removeInstanceDescription": "永久移除此連接器執行個體並停止同步其資料。此操作無法復原。"
       },
       "instanceCard": {
         "recordsSelected": "已選取的記錄",
         "syncStrategy": "同步策略",
         "authBannerTitle": "驗證個人帳戶",
-        "authBannerDescription": "連接您的帳戶以啟用存取權限與工作區設定"
+        "authBannerDescription": "連接您的帳戶以啟用存取權限與工作區設定",
+        "lastSynced": "上次同步",
+        "syncEnabled": "已啟用同步",
+        "removing": "正在移除此連接器。",
+        "configureFirst": "請先完成設定，才能啟用同步。",
+        "authenticateFirst": "請先驗證此連接器，才能啟用同步。",
+        "selected": "已選取 {{field}}"
       },
       "instanceStatus": {
         "setup": {
@@ -2114,7 +3023,9 @@
           "ready": "已完成",
           "readyTooltip": "設定已完成並通過驗證。啟用後即可執行同步。",
           "desktopOffline": "桌面端離線",
-          "desktopOfflineTooltip": "擁有此資料夾的桌面應用程式未連線。請在該電腦上開啟它以進行同步。"
+          "desktopOfflineTooltip": "擁有此資料夾的桌面應用程式未連線。請在該電腦上開啟它以進行同步。",
+          "actionNeeded": "需要處理",
+          "actionNeededTooltip": "需要您處理：{{items}}"
         },
         "sync": {
           "kind": "同步",
@@ -2122,6 +3033,8 @@
           "syncingTooltip": "此連接器正在同步新增和更新的內容。",
           "fullSyncing": "完整同步進行中",
           "fullSyncingTooltip": "此連接器正在從來源執行完整的重新同步。",
+          "queued": "已排入佇列",
+          "queuedTooltip": "正在等待空閒的同步名額。名額空出後將自動開始。",
           "removing": "移除中",
           "removingTooltip": "此執行個體正在刪除中。"
         }
@@ -2151,29 +3064,264 @@
         "syncing": "正在同步記錄...",
         "synced": "記錄已同步",
         "failed": "同步失敗"
+      },
+      "errors": {
+        "missingCreatedId": "建立成功，但未傳回連接器 ID",
+        "createdConfigUnavailable": "連接器已建立，但無法載入其設定。請嘗試重新開啟面板。",
+        "authenticateFirst": "找不到連接器 ID。請先完成驗證。"
+      },
+      "syncIntervals": {
+        "5": "每 5 分鐘",
+        "15": "每 15 分鐘",
+        "30": "每 30 分鐘",
+        "60": "每 1 小時",
+        "240": "每 4 小時",
+        "480": "每 8 小時",
+        "720": "每 12 小時",
+        "1440": "每 1 天",
+        "10080": "每 1 週",
+        "other": "每 {{minutes}} 分鐘"
+      },
+      "filters": {
+        "selectField": "選取{{field}}",
+        "selectFieldPlaceholder": "選取{{field}}",
+        "searchOptions": "搜尋…",
+        "addFieldValue": "新增{{field}}…",
+        "authenticateForOptions": "請完成驗證並儲存連接器，以載入此篩選條件的選項。",
+        "manualIndexingInfo": "關於手動索引",
+        "manualIndexingTooltip": "關閉（預設）：系統會依下方的索引篩選條件自動索引記錄。\n\n開啟：不會自動索引任何記錄。您需從知識庫中手動選擇要索引的記錄。",
+        "title": "索引與同步篩選條件",
+        "description": "索引篩選條件一律生效——可視需要切換布林值或調整數值。同步篩選條件只需新增您需要的項目；清單與日期篩選條件使用運算子和數值，不需要該限制時可以清除該同步篩選條件。",
+        "syncTitle": "同步篩選條件",
+        "indexingTitle": "索引篩選條件",
+        "add": "新增篩選條件",
+        "incomplete": "請為下方每個篩選條件填入運算子與數值，此處才會顯示摘要。",
+        "empty": "尚無篩選條件。請使用「新增篩選條件」從支援的篩選條件中選擇一個。",
+        "unsetFallback": "{{field}}：{{value}}（預設）",
+        "operator": "運算子",
+        "chooseOperator": "選擇運算子…",
+        "value": "數值",
+        "rollingWindow": "此運算子使用滾動時間範圍——不需設定固定日期。",
+        "dateRange": "日期範圍",
+        "operators": {
+          "is": "等於",
+          "is_not": "不等於",
+          "is_empty": "為空",
+          "is_not_empty": "不為空",
+          "contains": "包含",
+          "does_not_contain": "不包含",
+          "is_after": "晚於",
+          "is_before": "早於",
+          "is_between": "介於",
+          "in": "屬於",
+          "not_in": "不屬於",
+          "greater_than_or_equal": "大於或等於",
+          "greater_than": "大於",
+          "equal": "等於",
+          "less_than": "小於",
+          "less_than_or_equal": "小於或等於",
+          "last_7_days": "最近 7 天",
+          "last_14_days": "最近 14 天",
+          "last_30_days": "最近 30 天",
+          "last_90_days": "最近 90 天",
+          "last_180_days": "最近 180 天",
+          "last_365_days": "最近 365 天"
+        },
+        "fieldValues": "{{field}}數值",
+        "loadingOptions": "正在載入選項…",
+        "noResults": "找不到結果",
+        "optionsLoadFailed": "無法載入此篩選條件的選項。請關閉此清單後重新開啟以重試。",
+        "loadingMore": "正在載入更多…"
+      },
+      "syncStrategies": {
+        "SCHEDULED": "排程",
+        "MANUAL": "手動",
+        "WEBHOOK": "Webhook",
+        "REALTIME": "即時"
+      },
+      "syncIntervalOptions": {
+        "5": "5 分鐘",
+        "15": "15 分鐘",
+        "30": "30 分鐘",
+        "60": "1 小時",
+        "240": "4 小時",
+        "480": "8 小時",
+        "720": "12 小時",
+        "1440": "1 天",
+        "10080": "1 週"
+      },
+      "vectorStore": {
+        "cleanup": {
+          "label": "清理嵌入",
+          "rowDescription": "刪除所有嵌入並重新建立空白的向量集合。記錄不會被刪除。",
+          "buttonLabel": "清理",
+          "title": "刪除所有嵌入？",
+          "body": "此操作會刪除共用的向量集合並重新建立一個空白集合。",
+          "warning": "所有人的搜尋都將無法傳回結果，並會持續如此，直到重新索引完成。在大型部署中，重新索引可能需要數小時。您的記錄不會被刪除——只會刪除其嵌入。",
+          "confirm": "刪除嵌入"
+        },
+        "reindex": {
+          "label": "重新索引嵌入",
+          "rowDescription": "依已儲存的內容重新產生每筆記錄的嵌入。不會重新下載或剖析來源。",
+          "buttonLabel": "重新索引",
+          "title": "重新索引所有記錄？",
+          "body": "此操作會依每筆記錄已儲存的內容重新產生其嵌入。不會重新下載或剖析來源。",
+          "warning": "在大型部署中這可能需要很長時間，且會在背景執行。",
+          "confirm": "開始重新索引"
+        },
+        "typePrompt": "請輸入 {{token}} 以確認。"
+      },
+      "fields": {
+        "web": {
+          "url": {
+            "label": "起始 URL",
+            "help": "PipesHub 造訪的第一個頁面。儲存後無法變更；如要爬取其他網站，請再新增一個連接器。"
+          },
+          "type": {
+            "label": "爬取範圍",
+            "options": {
+              "single": "僅此頁面",
+              "recursive": "此頁面及其連結到的頁面"
+            }
+          },
+          "discovery": {
+            "label": "尋找頁面的方式",
+            "help": "網站地圖最快；連結可以找到網站地圖遺漏的頁面。",
+            "options": {
+              "sitemap_and_links": "網站地圖和連結（建議）",
+              "links": "僅連結",
+              "sitemap": "僅網站地圖"
+            }
+          },
+          "restrict_to_start_path": {
+            "label": "僅限此區段",
+            "help": "僅包含起始 URL 路徑下的頁面，例如 /docs/。"
+          },
+          "max_pages": {
+            "label": "頁面數上限",
+            "help": "PipesHub 最多保留此網站的這麼多頁面。PDF 等檔案也計為頁面。",
+            "unit": "頁"
+          },
+          "url_should_contain": {
+            "label": "僅儲存 URL 包含以下內容的頁面",
+            "help": "留空即儲存所有頁面。不符合的頁面不會被造訪，因此也不會追蹤其中的連結。"
+          },
+          "ignore_query_params": {
+            "label": "同一頁面，不同 URL",
+            "help": "不會改變頁面內容的 URL 參數，例如 sort 或 ref。使用 * 代表全部。追蹤參數（utm_…）一律會被忽略。"
+          },
+          "depth": {
+            "label": "距起始頁的點擊次數",
+            "help": "追蹤連結的深度。網站地圖中列出的頁面計為一次點擊。",
+            "unit": "次點擊"
+          },
+          "max_size_mb": {
+            "label": "可下載的最大檔案",
+            "help": "更大的頁面和檔案會被略過，並列在上次同步中。",
+            "unit": "MB"
+          },
+          "follow_external": {
+            "label": "也追蹤指向其他網站的連結",
+            "help": "通常關閉：爬取可能會遠遠超出此網站。"
+          },
+          "use_headless_browser": {
+            "label": "一律使用瀏覽器（較慢）",
+            "help": "關閉時：PipesHub 會偵測需要 JavaScript 的頁面，只對這些網站使用瀏覽器。"
+          },
+          "browser_like_identity": {
+            "label": "以網頁瀏覽器身分存取",
+            "help": "關閉時：要求會以 PipesHub 爬蟲的身分送出。僅對允許你爬取但會封鎖爬蟲的網站開啟；仍會遵守 robots.txt。"
+          },
+          "respect_robots_txt": {
+            "label": "遵守 robots.txt",
+            "help": "略過網站要求爬蟲不要造訪或建立索引的頁面。"
+          }
+        }
+      },
+      "fieldGroups": {
+        "web": {
+          "website": {
+            "title": "網站"
+          },
+          "crawl": {
+            "title": "爬取內容"
+          },
+          "skip": {
+            "title": "略過內容"
+          },
+          "advanced": {
+            "title": "進階",
+            "description": "爬取深度、檔案大小、瀏覽器和爬蟲身分。"
+          }
+        },
+        "summaryOn": "{{label}}：開",
+        "summaryOff": "{{label}}：關",
+        "summaryValue": "{{label}}：{{value}}",
+        "number": "{{value, number}}"
+      },
+      "presets": {
+        "title": "從範本開始",
+        "custom": "自訂",
+        "suggested": "依此網址建議：{{name}}",
+        "replaceTitle": "要取代目前的設定嗎？",
+        "replaceMessage": "「{{name}}」將取代你目前的爬取設定。",
+        "replaceConfirm": "取代",
+        "web": {
+          "docs": "文件網站",
+          "helpCenter": "說明中心",
+          "wholeSite": "整個網站",
+          "onePage": "單一頁面"
+        }
+      },
+      "actionItems": {
+        "badge": "需要處理",
+        "title": "需要處理",
+        "openAuthentication": "更新驗證",
+        "viewSteps": "查看設定步驟"
       }
     },
     "mcpServers": {
       "searchPlaceholder": "搜尋 MCP 伺服器...",
       "loading": "正在載入 MCP 伺服器…",
       "noResults": "沒有符合您搜尋條件的 MCP 伺服器",
+      "replacedNotice": "已不再維護。請改為新增 {{name}}。",
       "addServer": "新增伺服器",
       "custom": "自訂",
+      "inherited": "繼承",
+      "inheritedDeleteTooltip": "由上層組織管理",
+      "inheritedReadOnly": "此 MCP 伺服器繼承自上層組織，無法在此處編輯。",
       "sharedAuth": "共用管理員驗證",
       "toolsCount_one": "{{count}} 個工具",
       "toolsCount_other": "{{count}} 個工具",
+      "toolsCachedAt": "截至 {{time}} 的工具",
+      "editImpact": {
+        "title": "移除已儲存的登入？",
+        "body": "變更此伺服器的連線或登入方式會移除使用者和代理程式為其儲存的憑證。所有人都需要重新連線。",
+        "personalBody": "變更此伺服器的連線或登入方式會移除你和你的代理程式為其儲存的憑證。你需要重新連線。",
+        "sharedBody": "關閉共用憑證會將其移除。所有人都需要使用自己的憑證連線。",
+        "confirm": "儲存並移除登入"
+      },
       "cta": {
         "manage": "管理",
         "delete": "刪除",
         "reauthenticate": "重新驗證",
+        "reconnect": "重新連線",
         "disconnect": "中斷連線",
         "connect": "連線",
-        "addInstance": "新增執行個體"
+        "addInstance": "新增執行個體",
+        "edit": "編輯"
       },
       "status": {
-        "ready": "就緒",
+        "ready": "已連線",
         "notConnected": "未連線",
-        "needsAuth": "需要驗證"
+        "reconnectNeeded": "需要重新連線",
+        "waitingForAdmin": "等待管理員",
+        "sharedCredentialMissing": "缺少共用憑證",
+        "blocked": "已被政策封鎖",
+        "unreachable": "無法連線到伺服器",
+        "slow": "回應緩慢",
+        "needsAuth": "需要驗證",
+        "disabled": "已停用"
       },
       "team": {
         "title": "MCP 伺服器",
@@ -2183,9 +3331,17 @@
       },
       "personal": {
         "title": "MCP 伺服器",
-        "subtitle": "與管理員提供的 MCP 伺服器進行驗證。",
+        "subtitle": "連接管理員提供的 MCP 伺服器，或新增您自己的伺服器。",
         "emptyTitle": "沒有可用的 MCP 伺服器",
-        "emptyDescription": "您的管理員尚未新增任何 MCP 伺服器。"
+        "emptyDescription": "新增您自己的伺服器，或請管理員為所有人新增一個。",
+        "yourServersDescription": "您新增的伺服器。只有您可以檢視和使用，且無法新增到與組織共用的代理程式中。",
+        "tabs": {
+          "all": "全部",
+          "connected": "已連線",
+          "notConnected": "未連線"
+        },
+        "yours": "我的",
+        "noneInTab": "這裡沒有 MCP 伺服器。"
       },
       "details": {
         "breadcrumbLabel": "MCP 伺服器",
@@ -2205,11 +3361,14 @@
         "authBannerTitle": "需要驗證",
         "authBannerDescription": "請驗證此 MCP 伺服器，讓您團隊的代理程式可以使用它。",
         "authBannerAuthenticatedTitle": "已連線",
-        "authBannerAuthenticatedDescription": "您可以重新驗證或中斷此 MCP 伺服器的連線。"
+        "reconnectBannerDescription": "此伺服器的登入已過期或遭拒。請重新連線以繼續使用。",
+        "authBannerAuthenticatedDescription": "您可以重新驗證或中斷此 MCP 伺服器的連線。",
+        "createdBy": "建立者"
       },
       "deleteDialog": {
         "title": "要刪除 MCP 伺服器嗎？",
-        "body": "名為「{{name}}」的伺服器將被永久移除。使用中的團隊成員將失去存取權限。"
+        "body": "名為「{{name}}」的伺服器將被永久移除。使用中的團隊成員將失去存取權限。",
+        "personalBody": "名為「{{name}}」的伺服器及其儲存的憑證將被永久移除。"
       },
       "toasts": {
         "loadError": "無法載入 MCP 伺服器",
@@ -2223,10 +3382,15 @@
         "disconnected": "已成功中斷連線",
         "disconnectError": "無法中斷連線",
         "credentialsSaveError": "伺服器已儲存，但憑證無法儲存。您可以稍後從「管理」中新增。",
+        "credentialsSaved": "憑證已儲存",
+        "credentialsReset": "MCP 伺服器已更新。由於連線已變更，已儲存的憑證已被移除；請重新連線後再使用。",
+        "oauthTimedOut": "登入時間過長，已停止。請再試一次。",
+        "oauthProviderError": "登入失敗：{{message}}",
         "discoveryError": "無法探索工具"
       },
       "authDialog": {
         "title": "與 {{name}} 進行驗證",
+        "docsLink": "在哪裡找到",
         "description": "輸入您的憑證以連接此 MCP 伺服器。"
       },
       "form": {
@@ -2238,6 +3402,7 @@
         "argsPlaceholder": "新增引數",
         "requiredEnv": "必要環境變數",
         "requiredEnvPlaceholder": "新增環境變數名稱（例如 API_KEY）",
+        "defaultTokenEnvHint": "未列出變數時，權杖會以 {{name}} 傳給指令。",
         "url": "URL",
         "authMode": "驗證模式",
         "headerName": "標頭名稱",
@@ -2248,19 +3413,61 @@
         "scopesPlaceholder": "新增範圍",
         "useAdminAuth": "對所有使用者使用共用的管理員驗證",
         "headerValue": "{{headerName}}",
-        "apiToken": "API Token",
+        "apiToken": "API token",
         "credentialsHeading": "憑證（選填）",
         "credentialsHint": "立即新增憑證，或先跳過並稍後從「連線與工具」分頁進行連線。",
         "multiEnvIncomplete": "請填寫所有必要的環境變數，或全部留白以便稍後連線。",
         "oauthPairRequired": "請同時輸入用戶端 ID 和用戶端密鑰，或兩者皆留白。",
-        "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。"
+        "connectAfterCreateHint": "請先儲存此伺服器，然後重新開啟「管理」進行連線。",
+        "timeoutsHeading": "逾時",
+        "connectTimeout": "連線逾時（秒）",
+        "callTimeout": "工具呼叫逾時（秒）",
+        "timeoutRange": "請輸入 {{min}} 到 {{max}} 之間的數字，或留空以使用預設值。"
       },
       "configPanel": {
         "editTitle": "編輯 MCP 伺服器",
         "createTitle": "新增 MCP 伺服器",
         "tabs": {
           "configuration": "設定",
-          "connection": "連線與工具"
+          "tools": "工具與核准",
+          "toolList": "工具"
+        },
+        "synced": "{{time}}同步",
+        "refreshTools": "重新整理工具清單",
+        "signInForTools": "登入以查看此伺服器的工具。",
+        "toolsError": "無法載入工具清單",
+        "toolsErrorSignIn": "伺服器要求您重新登入。",
+        "rulesKept": "您儲存的核准規則會保留。",
+        "tryAgain": "重試",
+        "findingTools": "正在尋找此伺服器上的工具",
+        "rulesUnlock": "清單就緒後即可設定核准規則。",
+        "unsaved_one": "{{count}} 項未儲存的變更",
+        "unsaved_other": "{{count}} 項未儲存的變更",
+        "allSaved": "所有規則已儲存",
+        "discard": "捨棄",
+        "saveRules": "儲存規則",
+        "discardTitle": "捨棄未儲存的規則變更？",
+        "discardBody_one": "您變更了 {{count}} 個工具的規則。現在關閉將遺失這些變更。",
+        "discardBody_other": "您變更了 {{count}} 個工具的規則。現在關閉將遺失這些變更。",
+        "noSignIn": "無需登入 · {{transport}}",
+        "signInExpired": "登入已過期",
+        "sharedMissing": "缺少共用登入資訊",
+        "signInExpiredBody": "在有人重新登入之前，此伺服器的工具無法執行。",
+        "notSignedIn": "未登入",
+        "notSignedInDetail": "登入以使用此伺服器的工具。",
+        "signedIn": "已登入",
+        "sharedSignIn": "共用登入",
+        "signedInDetail": "{{transport}} · {{time}}登入",
+        "menu": {
+          "label": "更多動作",
+          "copyUrl": "複製伺服器 URL",
+          "copied": "已複製伺服器 URL",
+          "copyFailed": "無法複製伺服器 URL",
+          "addedBy": "由 {{name}} 新增",
+          "disconnectHint": "將您登出。設定和規則會保留。",
+          "remove": "刪除伺服器",
+          "removeHint": "為所有人刪除它。",
+          "removeHintPersonal": "刪除它及您的登入資訊。"
         }
       },
       "oauthConfig": {
@@ -2280,7 +3487,9 @@
         "callbackUrlLabel": "回呼 URL",
         "copyCallbackUrl": "複製回呼 URL",
         "callbackUrlCopied": "已複製回呼 URL",
-        "providerDocsLink": "檢視提供者設定文件"
+        "providerDocsLink": "檢視提供者設定文件",
+        "clientSecretPrefixHint": "以 {{prefix}} 開頭。請複製完整的密鑰，包括這一部分。",
+        "clientSecretPrefixMissing": "此值不以 {{prefix}} 開頭，提供者會拒絕它。按兩下複製會漏掉這一部分：請複製完整的密鑰。"
       },
       "oauth": {
         "completingTitle": "正在完成登入…",
@@ -2293,16 +3502,84 @@
         "noCode": "未傳回授權碼。",
         "noState": "未傳回 state 參數。",
         "backendRejected": "伺服器拒絕了此授權要求。"
+      },
+      "deleteDisabledTooltip": "此伺服器無法刪除",
+      "stdioPolicy": {
+        "disabledTitle": "此部署已停用",
+        "disabledDescription": "自訂 STDIO 伺服器會在 PipesHub 伺服器上執行指令，因此在維運人員於部署環境中設定 {{flag}}=true（Docker Compose 的 .env，或 Helm 的 config.mcpAllowCustomStdio）之前會保持關閉。在此之前，代理程式無法使用此伺服器的工具。你可以刪除它，或改為遠端（HTTP）伺服器。",
+        "unavailableHint": "本機指令（STDIO）伺服器已關閉。請聯絡管理員啟用。",
+        "enabledWarning": "此指令以服務的權限在 PipesHub 伺服器上執行，包括其網路存取與憑證。請只新增你信任的指令。"
+      },
+      "addDialog": {
+        "title": "新增 MCP 伺服器",
+        "description": "從目錄中選擇伺服器，或透過 URL 連接任何遠端 MCP 伺服器。只有您能看到它。",
+        "custom": "自訂伺服器",
+        "customDescription": "透過 URL 連接任何遠端 MCP 伺服器。"
+      },
+      "toolRules": {
+        "open": "工具核准",
+        "title": "工具核准：{{name}}",
+        "description": {
+          "personal": "選擇當助理或代理程式想在您的聊天中使用這些工具時會發生什麼。"
+        },
+        "loading": "正在載入…",
+        "loadError": "無法載入規則。",
+        "search": "依名稱或 ID 搜尋",
+        "empty": "尚無工具。連線伺服器即可查看其工具。",
+        "rule": {
+          "allow": "預先核准",
+          "ask": "核准後允許",
+          "block": "拒絕"
+        },
+        "saved": "工具核准已儲存",
+        "saveError": "無法儲存工具核准",
+        "kindSource": {
+          "name": "依名稱歸類：伺服器沒有說明此工具的作用。",
+          "none": "伺服器沒有說明此工具的作用，因此將其視為會變更資料。"
+        },
+        "group": {
+          "destructive": "無法復原",
+          "write": "變更資料",
+          "read": "唯讀",
+          "notOffered": "目前未提供",
+          "byName": "依名稱設定的規則"
+        },
+        "groupHint": {
+          "destructive": "請先檢查這些",
+          "read": "僅查詢資訊"
+        },
+        "noMatch": "沒有符合搜尋的工具。",
+        "clearSearch": "清除搜尋",
+        "noTools": "沒有可顯示的工具。"
+      },
+      "disconnectDialog": {
+        "title": "中斷 {{name}} 的連線？",
+        "yours_one": "在您重新登入之前，您將無法使用它的 {{count}} 個工具。",
+        "yours_other": "在您重新登入之前，您將無法使用它的 {{count}} 個工具。",
+        "yoursUnknown": "在您重新登入之前，您將無法使用它的工具。",
+        "shared_one": "您組織中的代理程式將立即停止使用它的 {{count}} 個工具，包括在 Slack 和排程執行中。",
+        "shared_other": "您組織中的代理程式將立即停止使用它的 {{count}} 個工具，包括在 Slack 和排程執行中。",
+        "sharedUnknown": "您組織中的代理程式將立即停止使用它的工具，包括在 Slack 和排程執行中。",
+        "keeps": "伺服器設定和核准規則會保留",
+        "reconnect": "隨時重新登入即可重新連線",
+        "deletesYours": "您儲存的登入資訊將被刪除",
+        "deletesShared": "共用的登入資訊將被刪除",
+        "disconnecting": "正在中斷連線…"
+      },
+      "enterprise": {
+        "orgRulesTitle": "組織核准規則",
+        "orgRulesDescription": "為組織中的所有人決定哪些工具直接執行、先詢問或永不執行。在這裡，每個人在自己的 MCP 伺服器頁面設定自己的規則。",
+        "userServersTitle": "成員自己的 MCP 伺服器",
+        "userServersDescription": "檢視並移除組織成員為自己新增的 MCP 伺服器。"
       }
     },
     "bots": {
       "subtitle": "設定機器人憑證，並可選擇將每個機器人對應至代理程式",
       "loading": "正在載入機器人…",
       "defaultAssistant": "預設助理",
-      "createBot": "建立機器人",
-      "emptyTitle": "沒有機器人",
+      "createBot": "新增機器人",
+      "emptyTitle": "尚無機器人",
       "emptyDescription": "立即設定您的第一個機器人",
-      "addBot": "新增機器人",
       "types": {
         "slack": "Slack 機器人",
         "discord": "Discord 機器人",
@@ -2345,8 +3622,8 @@
         "deleteBot": "刪除機器人"
       },
       "title": "機器人",
-      "noBots": "沒有機器人",
-      "setupFirstBot": "立即設定您的第一個機器人",
+      "noBots": "尚無機器人",
+      "setupFirstBot": "機器人可讓使用者直接在 Slack 中向您的代理程式提問。新增一個即可開始。",
       "documentation": "說明文件",
       "configPanelTitle": "機器人設定",
       "selectBotSetup": "選取機器人設定",
@@ -2374,14 +3651,19 @@
         "typeNameToConfirm": "輸入「{{name}}」以確認",
         "deleteBotBodyLine1": "確定要刪除 {{name}} 嗎？此操作無法復原。",
         "deleteBotBodyLine2": "與此機器人相關的所有設定與憑證都將被永久移除。"
-      }
+      },
+      "errors": {
+        "loadConfigs": "載入機器人設定失敗",
+        "loadData": "載入資料失敗"
+      },
+      "refreshed": "已重新整理"
     },
     "skills": {
       "title": "技能",
       "subtitle": "建立可供您的代理程式使用的自訂技能 — Markdown 指示、選用的指令碼與參考檔案，並如同 Agent Builder 中的其他項目一樣進行版本控管與治理。",
       "loading": "正在載入技能…",
       "refreshed": "已重新整理",
-      "createSkill": "建立技能",
+      "createSkill": "新增技能",
       "importSkill": "匯入",
       "reviewCandidates": "審核候選項目",
       "searchPlaceholder": "搜尋技能…",
@@ -2391,7 +3673,8 @@
       "status": {
         "active": "使用中",
         "deprecated": "已棄用",
-        "candidate": "候選"
+        "candidate": "候選",
+        "disabled": "已停用"
       },
       "cta": {
         "manage": "管理",
@@ -2409,6 +3692,9 @@
         "createError": "建立技能失敗",
         "deprecated": "技能「{{name}}」已棄用",
         "deprecateError": "棄用技能失敗",
+        "disabled": "技能「{{name}}」已停用",
+        "enabled": "技能「{{name}}」已啟用",
+        "toggleError": "更新技能可用性失敗",
         "deleted": "技能「{{name}}」已刪除",
         "deleteError": "刪除技能失敗",
         "imported": "技能「{{name}}」已匯入",
@@ -2499,11 +3785,11 @@
         "previewError": "預覽此技能失敗",
         "confirmImport": "匯入技能",
         "source": "來源：{{source}}",
-        "resourceCount": "{{count}} 個資源",
-        "skippedBinary": "已略過 {{count}} 個二進位檔案（尚不支援）",
         "nameHint": "使用小寫加連字號。如果原始名稱已是內建技能（例如 pptx），請改用其他名稱。",
         "nameInvalid": "名稱只能包含小寫字母、數字和單一連字號。",
-        "originalName": "原始名稱：{{name}}"
+        "originalName": "原始名稱：{{name}}",
+        "resourceCount_other": "{{count}} 個資源",
+        "skippedBinary_other": "已略過 {{count}} 個二進位檔案（尚未支援）"
       },
       "candidates": {
         "title": "待審核的技能候選項目",
@@ -2514,6 +3800,12 @@
         "view": "檢視",
         "hide": "隱藏",
         "editAndApprove": "編輯並核准"
+      },
+      "availability": {
+        "label": "可供代理程式使用",
+        "description": "關閉後，此技能仍保留在您的資料庫中，但代理程式無法探索或載入它。",
+        "descriptionBuiltin": "關閉後，此內建技能仍保留在資料庫中，但整個組織的代理程式都無法探索或載入它。",
+        "short": "可用"
       }
     },
     "mail": {
@@ -2603,11 +3895,19 @@
       "systemPrompt": "系統提示詞",
       "systemPromptDescription": "定義 AI 助理的行為與個性",
       "configCalloutTitle": "提示詞設定",
-      "configCalloutDescription": "自訂系統提示詞有助於定義 AI 的行為、語氣以及回答問題的方式。請確保您的提示詞清楚明確，並符合您組織的需求。"
+      "configCalloutDescription": "自訂系統提示詞有助於定義 AI 的行為、語氣以及回答問題的方式。請確保您的提示詞清楚明確，並符合您組織的需求。",
+      "resetToDefault": "還原為預設值",
+      "customInstructionsTitle": "提示詞",
+      "customInstructionsDescription": "為聊天助理新增自訂指示——例如以特定語言回覆、遵循某種格式風格，或套用您想要的任何行為。下方每種模式的回答方式不同，因此各有自己的指示。",
+      "scopeHint": "這些指示僅適用於<bold>聊天助理</bold>（下方的代理程式模式）。在 <bold>Agent Builder</bold> 中建立的自訂代理程式不受影響——每個代理程式使用自己的系統提示與在該代理程式上設定的指示。",
+      "agentTitle": "代理程式",
+      "agentDescription": "當使用者以代理程式模式對話時生效——助理會針對每個問題決定要使用內部知識、網路搜尋，或兩者並用。",
+      "agentPlaceholder": "例如：公司相關問題優先使用內部知識。提供細節前一律先摘要。",
+      "agentHelperText": "當 AI 可以在內部知識與網路搜尋之間自由選擇時，此提示會提供指引。變更會立即套用至新的對話。"
     },
     "webSearch": {
       "loading": "正在載入網頁搜尋設定…",
-      "title": "網頁搜尋設定",
+      "title": "網頁搜尋",
       "subtitle": "設定聊天機器人在搜尋網頁時所使用的網頁搜尋提供者",
       "methodsHeading": "各種網頁搜尋方式",
       "methodsSubtitle": "選取使用者用於網頁搜尋的方式",
@@ -2639,16 +3939,23 @@
         "default": "預設",
         "configured": "已設定",
         "notConfigured": "尚未設定",
-        "active": "已設定"
+        "active": "已設定",
+        "builtIn": "內建"
       },
-      "heading": "網頁搜尋設定",
+      "heading": "網頁搜尋",
       "methodsSection": "各種網頁搜尋方式",
       "methodsSectionDescription": "選取使用者用於網頁搜尋的方式",
       "policyTitle": "網頁搜尋提供者原則",
       "verifying": "正在驗證連線...",
       "disabledReasonConfigure": "請先設定此提供者後再啟用。",
       "disabledReasonActive": "請先停用目前啟用的提供者，再啟用此提供者。",
-      "configureTip": "設定"
+      "configureTip": "設定",
+      "actions": {
+        "setDefault": "設為預設",
+        "settingDefault": "正在設定…",
+        "editConfiguration": "編輯設定",
+        "deleteConfiguration": "刪除設定"
+      }
     },
     "profile": {
       "subtitle": "在此管理您所有的個人資料詳細內容",
@@ -2682,7 +3989,7 @@
         "title": "角色與權限",
         "role": "角色",
         "groups": "群組",
-        "roleDescription": "您在 Pipeshub 應用程式中的角色",
+        "roleDescription": "您在 PipesHub 應用程式中的角色",
         "groupsDescription": "您所屬的使用者群組",
         "noGroups": "找不到使用者群組"
       },
@@ -2750,7 +4057,25 @@
       "seeMore": "查看更多",
       "showMore": "顯示更多",
       "moreAgents": "更多代理程式",
-      "moreChats": "更多對話"
+      "moreChats": "更多對話",
+      "authentication": {
+        "title": "驗證",
+        "subtitle": "為您的帳戶啟用的登入方式。由您的工作區管理員管理。",
+        "methodsLabel": "已啟用的登入方式",
+        "loading": "載入中…",
+        "none": "未啟用任何登入方式"
+      },
+      "demoData": {
+        "title": "示範資料",
+        "description": "Acme Corp 是為了讓您體驗 PipesHub 而載入的虛構公司。這只會改變您看到的內容，不會刪除任何資料。",
+        "label": "在我的回覆、搜尋與記錄中顯示 Acme Corp 示範資料",
+        "followingDefault": "遵循預設值：在您的組織擁有自己的資料之前會持續顯示，之後便隱藏。",
+        "yourChoice": "您自己的選擇。",
+        "useDefault": "使用預設值",
+        "offForEveryone": "管理員已為所有人關閉。",
+        "everyoneLabel": "向所有人提供示範",
+        "everyoneDescription": "關閉後，示範資料會從所有人的回覆、搜尋與記錄中隱藏，範例帳戶也無法登入。不會刪除任何資料。"
+      }
     },
     "services": {
       "pageTitle": "服務",
@@ -2825,6 +4150,12 @@
           "label": "Extraction 服務",
           "description": "基於 LLM 的文件分類與中繼資料擷取"
         }
+      },
+      "vectorDbMemory": {
+        "title": "搜尋索引超出了向量資料庫的記憶體",
+        "message": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；向量資料庫只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "messageHost": "搜尋索引需要約 {{needed}} GB 記憶體才能保持快速；執行向量資料庫的伺服器總共只有約 {{available}} GB，因此搜尋會從磁碟讀取，多個搜尋同時執行時會更慢。",
+        "guide": "向量資料庫容量規劃指南"
       }
     },
     "tenants": {
@@ -2931,7 +4262,7 @@
       }
     },
     "oauthApps": {
-      "title": "OAuth 應用程式",
+      "title": "連接器 OAuth 應用程式",
       "subtitle": "管理連接器與動作的 OAuth 憑證。標示為「預設」的應用程式將自動用於新連線，除非另行覆寫。",
       "addButton": "新增 OAuth 應用程式",
       "tabs": {
@@ -3005,6 +4336,291 @@
         "loadToolsets": "無法載入動作的 OAuth 應用程式。",
         "deleteGeneric": "無法刪除 OAuth 應用程式。"
       }
+    },
+    "serviceAccounts": {
+      "title": "服務帳戶",
+      "subtitle": "機器身分，讓自動化程式以自己的權限讀取資料，而不是借用他人的權限。",
+      "newAccount": "新增服務帳戶",
+      "errorGeneric": "無法載入服務帳戶。",
+      "retry": "重試",
+      "emptyTitle": "尚無服務帳戶",
+      "emptyDescription": "服務帳戶讓指令碼不需以同事身分登入即可從 PipesHub 讀取資料。它只能看到您授予的範圍，並且在人員離職後仍可繼續運作。",
+      "columnName": "名稱",
+      "columnDescription": "用途",
+      "columnStatus": "狀態",
+      "statusActive": "已啟用",
+      "statusDisabled": "已停用",
+      "manageTokens": "Token",
+      "enable": "啟用",
+      "disable": "停用",
+      "delete": "刪除",
+      "enabledTitle": "服務帳戶已啟用",
+      "disabledTitle": "服務帳戶已停用",
+      "disabledBody": "其 Token 會立即停止運作，而非等到下次登入時。",
+      "updateErrorTitle": "無法更新服務帳戶",
+      "deleteTitle": "刪除此服務帳戶？",
+      "deleteDescription": "{{name}} 會立即停止運作，其持有的所有 Token 都會被撤銷。仍在使用這些 Token 的一切都會開始失敗。",
+      "deleteSuccessTitle": "服務帳戶已刪除",
+      "deleteErrorTitle": "無法刪除服務帳戶",
+      "create": {
+        "title": "新增服務帳戶",
+        "intro": "自動化程式以此帳戶而非個人身分進行驗證，因此它能讀取的內容由此處決定，而不是繼承自設定它的人。",
+        "slugLabel": "簡稱",
+        "slugHelp": "使用小寫字母、數字與單一連字號。它會成為該帳戶位址的一部分，之後無法變更。",
+        "slugLengthError": "請使用 3 到 48 個字元。",
+        "slugFormatError": "請使用小寫字母、數字與單一連字號，且不可以連字號開頭或結尾。",
+        "nameLabel": "顯示名稱",
+        "namePlaceholder": "夜間同步",
+        "descriptionLabel": "用途",
+        "descriptionPlaceholder": "為版本摘要讀取手冊",
+        "note": "沒有人能以服務帳戶身分登入，它一律是成員，絕不會是管理員。請像對待同事一樣，透過群組與團隊為它授予存取權。",
+        "submit": "建立",
+        "successTitle": "服務帳戶已建立",
+        "errorTitle": "無法建立服務帳戶"
+      },
+      "tokens": {
+        "title": "Token",
+        "newToken": "新增 Token",
+        "mint": "建立 Token",
+        "nameLabel": "此 Token 的用途",
+        "namePlaceholder": "版本摘要工作",
+        "scopesLabel": "權限範圍",
+        "scopesHelp": "選擇此 Token 可執行的操作。沒有預設值：無人看管執行的憑證應只擁有他人明確為其選擇的權限。",
+        "expiryLabel": "有效期限",
+        "expiryDays": "{{count}} 天",
+        "expiryCustom": "自訂",
+        "expiryCustomLabel": "權杖到期前的天數",
+        "expiryCustomUnit": "天",
+        "expiryCustomHelp": "請輸入 1 到 {{max}} 之間的天數。",
+        "expiryCustomInvalid": "請輸入 1 到 {{max}} 之間的整數天數。",
+        "expiryCustomPreview": "將於 {{date}} 到期",
+        "existing": "Token",
+        "none": "此帳戶尚未持有任何 Token。",
+        "lastUsed": "上次使用 {{date}}",
+        "neverUsed": "從未使用",
+        "expiresOn": "{{date}} 到期",
+        "expiresInDays": "剩餘 {{count}} 天",
+        "expired": "已過期",
+        "expiringSoon": "有 {{count}} 個 Token 即將到期。請先建立替代的 Token，將整合切換過去，再撤銷舊的。",
+        "revoke": "撤銷",
+        "revokeSuccessTitle": "Token 已撤銷",
+        "revokeErrorTitle": "無法撤銷 Token",
+        "mintErrorTitle": "無法建立 Token",
+        "loadErrorTitle": "無法載入 Token",
+        "copyNowTitle": "請立即複製此 Token",
+        "copyNowBody": "這是唯一一次顯示。系統只儲存其雜湊值，因此無法再次取得。",
+        "disabledNote": "此帳戶已停用，因此無法建立新的 Token。現有的 Token 列在下方，仍可撤銷。",
+        "rotationHelp": "輪替方式：先建立新的 Token，在兩者都有效時將整合切換過去，再撤銷舊的。先撤銷會中斷正在使用它的服務。",
+        "loading": "正在載入 Token…",
+        "copy": "複製 Token",
+        "revokeTitle": "撤銷此 Token？",
+        "revokeDescription": "「{{name}}」會立即停止運作且無法復原。仍在使用它的一切都會開始失敗。若您正在輪替，請先建立替代的 Token 並將整合切換過去。",
+        "selectAllScopes": "全選",
+        "clearAllScopes": "全部清除"
+      },
+      "disableTitle": "停用此服務帳戶？",
+      "disableDescription": "{{name}} 會立即停止運作——包括它已持有的所有 Token，而不只是等到下次登入。在您重新啟用之前，使用這些 Token 的一切都會持續失敗。",
+      "disableConfirm": "停用",
+      "memberBadge": "服務帳戶",
+      "manageDelegations": "可代表哪些人",
+      "delegations": {
+        "title": "代表他人執行操作",
+        "explainer": "可以允許此服務帳號代表指定的人員執行操作。此時它讀取的內容與該人員完全一致，所取得的權杖有效期為五分鐘。此處不能指定管理員。",
+        "unavailableTitle": "代表某個人行事屬於企業版功能",
+        "unavailableBody": "允許此服務帳號以指定同事的身分行事 —— 允許名單、以該人名義簽發的五分鐘權杖，以及每次嘗試的紀錄 —— 屬於企業版，本版本不包含該功能。",
+        "unavailableAvailableHere": "本版本包含：服務帳號本身、它對您授予的知識庫的自有存取權限，以及您可以簽發和撤銷的權杖。這足以滿足任何使用自身權限而非他人權限的整合。",
+        "addTitle": "允許代表某人",
+        "subjectLabel": "人員",
+        "subjectPlaceholder": "name@example.com",
+        "subjectHelp": "請輸入此服務帳號可代表的人員的電子郵件地址。",
+        "reasonLabel": "原因",
+        "reasonPlaceholder": "為什麼需要",
+        "reasonHelp": "將顯示給日後審核此清單的人。",
+        "addConfirm": "允許",
+        "listTitle": "可代表",
+        "none": "此服務帳號不能代表任何人，只能以自己的權限讀取。",
+        "loading": "載入中…",
+        "inactive": "不再可用",
+        "revoke": "移除",
+        "revokeTitle": "移除此權限？",
+        "revokeDescription": "此服務帳號將不能再代表 {{subject}}。",
+        "revokeSuccessTitle": "權限已移除",
+        "revokeErrorTitle": "無法移除權限",
+        "grantSuccessTitle": "權限已授予",
+        "grantErrorTitle": "無法授予權限",
+        "loadErrorTitle": "無法載入委派設定",
+        "logTitle": "近期活動",
+        "logHelp": "此清單的每次變更，以及此服務帳號每次請求代表他人的紀錄，包括被拒絕的請求。",
+        "logNone": "尚無紀錄。",
+        "outcomeIssued": "已允許",
+        "outcomeRefused": "已拒絕",
+        "outcomeGranted": "已新增權限",
+        "outcomeRevoked": "已移除權限",
+        "byAdmin": "由 {{admin}}"
+      }
+    },
+    "apiToolsets": {
+      "title": "API 動作",
+      "subtitle": "管理員提供給代理程式的內部 API。需要時，請連線您自己的憑證。",
+      "subtitleAdmin": "透過 OpenAPI 規格將內部 REST API 轉換為動作。選擇代理程式可以呼叫的操作，以及 PipesHub 的登入方式。",
+      "emptyTitle": "新增您的第一個 API 動作",
+      "emptyAdmin": "上傳任何內部 REST API 的 OpenAPI 3.0 或 3.1 規格。",
+      "card": {
+        "fallbackDescription": "依 OpenAPI 規格新增的內部 REST API。"
+      },
+      "operationCount_other": "{{count}} 個操作",
+      "kind": {
+        "read": "讀取",
+        "write": "寫入",
+        "destructive": "刪除"
+      },
+      "authType": {
+        "none": "不需驗證",
+        "api_key": "API 金鑰",
+        "http_bearer": "Bearer 權杖",
+        "http_basic": "使用者名稱和密碼",
+        "oauth2_client_credentials": "OAuth 2.0 用戶端憑證",
+        "oauth2_authorization_code": "OAuth 2.0 登入"
+      },
+      "status": {
+        "connected": "已連線",
+        "notConnected": "未連線",
+        "open": "不需登入",
+        "shared": "共用憑證"
+      },
+      "cta": {
+        "add": "新增 API 動作",
+        "connect": "連線",
+        "manageConnection": "管理連線",
+        "details": "詳細資料",
+        "edit": "編輯",
+        "delete": "刪除",
+        "more": "{{name}} 的更多選項"
+      },
+      "toasts": {
+        "loadError": "無法載入 API 動作",
+        "created": "已新增 API 動作",
+        "updated": "已更新 API 動作",
+        "saveError": "無法儲存 API 動作",
+        "deleted": "已刪除 API 動作",
+        "deleteError": "無法刪除 API 動作",
+        "connected": "已連線",
+        "disconnected": "已中斷連線"
+      },
+      "deleteDialog": {
+        "title": "刪除 API 動作",
+        "body": "要刪除 {{name}} 嗎？為它儲存的所有憑證都會移除。代理程式正在使用的 API 動作無法刪除。"
+      },
+      "editor": {
+        "addTitle": "新增 API 動作",
+        "editTitle": "編輯 API 動作",
+        "spec": "OpenAPI 規格",
+        "specHint": "上傳或貼上該 API 的 OpenAPI 3.0 或 3.1 規格（JSON 或 YAML 格式）。PipesHub 會讀取其中的操作和登入方式。",
+        "specEditHint": "留白即保留目前的規格。上傳新規格後可從其操作和驗證方式中選擇。",
+        "specPlaceholder": "openapi: 3.1.0\ninfo:\n  title: …",
+        "preview": "讀取規格",
+        "previewing": "正在讀取規格…",
+        "validateError": "無法讀取規格",
+        "warnings": "已略過規格中的部分內容：",
+        "operations": "操作（已選 {{selected}} / {{total}}）",
+        "operationsHint": "代理程式只能呼叫您選擇的操作。",
+        "name": "名稱",
+        "description": "說明",
+        "baseUrl": "基礎 URL",
+        "baseUrlHint": "PipesHub 傳送要求的位址，操作路徑會附加在其後。",
+        "loopbackHint": "localhost 指的是 PipesHub 伺服器本身。請使用 PipesHub 存取該 API 的位址，例如它在你網路中的主機名稱。",
+        "authScheme": "驗證",
+        "authSchemeLocked": "重新上傳規格才能變更 PipesHub 的驗證方式。",
+        "scopes": "權限範圍",
+        "oauthClientId": "OAuth 應用程式用戶端 ID",
+        "oauthClientSecret": "OAuth 應用程式用戶端密碼",
+        "keepSecret": "留白即保留已儲存的密碼",
+        "sharedCredential": "使用一組共用憑證",
+        "sharedCredentialHint": "您只需設定一次憑證，所有成員都會使用。關閉後，每位成員各自連線自己的憑證。",
+        "sharedCredentialForced": "用戶端憑證以應用程式而非個人身分登入，因此所有人共用您設定的憑證。",
+        "timeout": "逾時（秒）",
+        "timeoutHint": "等待 API 回應的時間，1 到 {{max}} 秒。",
+        "problems": {
+          "name": "請輸入名稱。",
+          "baseUrl": "請輸入基礎 URL。",
+          "operations": "請至少選擇一個操作。",
+          "timeout": "請輸入 1 到 120 秒之間的逾時時間。",
+          "oauthClientId": "請輸入 OAuth 應用程式的用戶端 ID。"
+        },
+        "create": "新增 API 動作",
+        "specLoadedHint": "此 API 動作所依據的規格。取代規格即可從較新版本中選擇。",
+        "replaceSpec": "取代規格",
+        "specUnread": "請先讀取新規格，或取消取代。",
+        "specSummary_other": "版本 {{version}} · OpenAPI {{openapi}} · {{count}} 個操作",
+        "dropFile": "將規格檔案拖放到這裡，或按一下選擇檔案",
+        "dropFileHint": "JSON 或 YAML。您也可以在下方貼上規格。",
+        "sampleHint": "手邊沒有規格？從範例開始：一個支援所有登入方式的服務台 API。",
+        "sample": {
+          "yaml": "範例 YAML",
+          "json": "範例 JSON"
+        },
+        "detailsHeading": "詳細資料",
+        "descriptionHint": "代理程式會讀取這段內容來決定何時使用該 API。",
+        "authSchemeHint": "代理程式呼叫 API 時 PipesHub 的登入方式。",
+        "redirectUrl": "重新導向 URL",
+        "redirectUrlHint": "在 OAuth 應用程式中將此 URL 註冊為允許的重新導向位址。",
+        "noAuthHint": "PipesHub 不帶憑證呼叫該 API，因此只有規格中標示為公開的操作才能正常運作。",
+        "selectReads": "僅讀取",
+        "selectAll": "全部",
+        "selectNone": "全不選",
+        "unreachableWarning_other": "已選的 {{count}} 個操作需要憑證，未經驗證將會失敗。",
+        "deselectUnreachable": "取消選取這些操作",
+        "needsCredentials": "需要憑證",
+        "needsCredentialsHint": "規格顯示此操作需要憑證。未經驗證，API 會拒絕該要求。",
+        "advancedHeading": "進階"
+      },
+      "connect": {
+        "mode": {
+          "none": "此 API 不需要憑證。",
+          "own": "代理程式使用您自己的憑證呼叫此 API。",
+          "shared": "所有成員都使用您在此設定的憑證。",
+          "managed": "此 API 動作的憑證由管理員管理。"
+        },
+        "status": "狀態",
+        "signIn": "登入",
+        "signInAgain": "重新登入",
+        "signingIn": "正在登入…",
+        "fields": {
+          "apiKey": "API 金鑰",
+          "token": "權杖",
+          "username": "使用者名稱",
+          "password": "密碼",
+          "clientId": "用戶端 ID",
+          "clientSecret": "用戶端密碼"
+        },
+        "replaceHint": "已儲存。輸入新值即可取代。",
+        "error": "操作未成功，請再試一次。",
+        "test": "測試連線",
+        "testing": "正在測試…",
+        "testOk": "API 已回應。",
+        "testFailed": "API 回傳了錯誤。",
+        "testTruncated": "僅顯示回應的開頭部分。",
+        "disconnect": "中斷連線",
+        "disconnecting": "正在中斷連線…",
+        "panelTitle": "API 動作",
+        "connectionHeading": "連線",
+        "testHeading": "測試連線",
+        "testHint": "呼叫一個不需輸入的讀取操作。",
+        "testIdle": "執行測試呼叫，查看 API 回傳的內容。",
+        "testNeedsConnection": "請先連線，再執行測試呼叫。",
+        "operationsHeading_other": "代理程式可以呼叫的 {{count}} 個操作"
+      },
+      "sectionTitle": "API 動作",
+      "kindCount": {
+        "read_other": "{{count}} 個讀取",
+        "write_other": "{{count}} 個寫入",
+        "destructive_other": "{{count}} 個刪除"
+      },
+      "kindPolicy": {
+        "read": "立即執行",
+        "write": "先詢問使用者",
+        "destructive": "除非代理程式的動作規則允許，否則會被封鎖"
+      }
     }
   },
   "filePreview": {
@@ -3015,26 +4631,37 @@
     "showMore": "顯示更多",
     "showLess": "顯示較少",
     "lockZoom": "鎖定縮放比例",
-    "unlockZoom": "解除鎖定縮放比例"
+    "unlockZoom": "解除鎖定縮放比例",
+    "closePreview": "關閉預覽",
+    "openWebUrl": "開啟網頁 URL",
+    "openInSource": "在來源中開啟",
+    "noDetails": "沒有可用的檔案詳細資訊",
+    "metadata": "中繼資料",
+    "webUrl": "網頁 URL",
+    "fitToScreen": "符合螢幕大小",
+    "resizeCitations": "調整引用面板大小",
+    "resizePreview": "調整檔案預覽面板大小",
+    "viewCitations": "檢視引用",
+    "preview": "預覽",
+    "fileDetails": "檔案詳細資料",
+    "openNamedInSource": "在來源中開啟 {{name}}"
   },
   "agentBuilder": {
     "goBack": "返回",
     "agentName": "名稱",
     "createdBy": "建立者",
     "agentNamePlaceholder": "例如：客服機器人",
-    "serviceAccountBadge": "服務代理",
-    "serviceAccountBadgeTooltip": "此服務代理使用專屬的工具組憑證與全組織知識存取權限，適用於所有使用者。",
-    "convertToServiceAccount": "轉換為服務代理",
-    "convertToServiceAccountTooltip": "永久性操作：代理層級的工具組與全組織知識。無法復原。",
-    "convertToServiceAccountTooltipNewAgent": "將此代理建立為服務代理，具備代理層級工具組與全組織知識。",
-    "createAsServiceAccount": "服務代理",
-    "createAsServiceAccountTooltip": "以代理層級工具組與完整知識存取權限建立。",
+    "serviceAgentBadge": "服務代理",
+    "serviceAgentBadgeTooltip": "此服務代理使用自己的工具組憑證。它以建立者的權限檢索知識，因此所有使用者看到的結果都來自建立者有權閱讀的內容。",
+    "convertToServiceAgentTooltip": "永久性操作：代理層級的工具組、與整個組織共用，並以建立者的權限檢索知識。無法復原。",
+    "convertToServiceAgentTooltipNewAgent": "將此代理建立為服務代理：代理層級的工具組、與整個組織共用，並以您的權限檢索知識。",
     "agentActionsMenuAria": "代理選單",
     "agentMenuCreateAsServiceAgent": "建立為服務代理",
     "agentMenuConvertToServiceAgent": "轉換為服務代理",
+    "share": "分享",
     "shareWithOrg": "與所有人共用",
     "shareWithOrgTooltip": "與您組織中的所有人共用此代理。",
-    "serviceAccountShareTooltip": "服務代理一律與整個組織共用。",
+    "serviceAgentShareTooltip": "服務代理一律與整個組織共用。",
     "saving": "儲存中…",
     "saveChanges": "儲存變更",
     "createAgent": "建立代理",
@@ -3043,9 +4670,20 @@
     "userAgent": "使用者代理",
     "userAgentDesc": "個人代理，各使用者分別進行工具組驗證。",
     "serviceAgent": "服務代理",
-    "serviceAgentDesc": "全組織代理，使用代理層級的工具組憑證。",
+    "serviceAgentDesc": "全組織代理，使用代理層級的工具組憑證。以建立者的權限檢索知識。",
+    "identitySearchesAs": "以{{identity}}的身分檢索",
+    "identityCreator": "建立者",
+    "identityBoundUnknown": "某個服務帳號",
+    "identityTooltip": "選擇此代理檢索知識時使用的身分。所有使用它的人，看到的都是該身分有權讀取的內容。",
+    "identityDialogTitle": "以此身分檢索知識",
+    "identityDialogBody": "此代理與整個組織共用，因此這決定了所有人的提問能觸及的範圍。預設是它的建立者。服務帳號是管理員刻意授予權限的身分。",
+    "identityChoose": "選擇",
+    "identityLoading": "正在載入服務帳號…",
+    "identityLoadError": "無法載入服務帳號。",
+    "identityRetry": "重試",
+    "identityNone": "尚無服務帳號。請在「工作區 → 服務帳號」中建立。",
     "nameRequired": "請輸入名稱以繼續。",
-    "saveAsServiceAccountFirst": "請先將代理儲存為服務代理，再設定工具組憑證。",
+    "saveAsServiceAgentFirst": "請先將代理儲存為服務代理，再設定工具組憑證。",
     "hidePalette": "隱藏元件面板",
     "showPalette": "顯示元件面板",
     "openInChat": "在聊天中開啟",
@@ -3056,8 +4694,14 @@
     "removeConnectionDesc": "這會移除兩個節點之間的連結。您可以從連接點重新連接它們。",
     "remove": "移除",
     "palette": "元件面板",
+    "addToCanvas": "新增至畫布",
     "paletteDragHint": "將區塊拖曳到畫布",
-    "paletteViewOnlyServiceAccount": "僅供檢視。此組織服務代理的元件面板與工具組設定已鎖定。",
+    "paletteTapHint": "點按 + 將區塊新增到畫布",
+    "loadingAgent": "正在載入代理程式…",
+    "agentLoadFailedTitle": "無法載入此代理程式",
+    "agentLoadFailedDescription": "請檢查網路連線後再試一次。代理程式載入完成前不會儲存任何內容。",
+    "agentLoadRetry": "重試",
+    "paletteViewOnlyServiceAgent": "僅供檢視。此組織服務代理的元件面板與工具組設定已鎖定。",
     "paletteActionBlockedViewOnly": "僅供檢視。無法在此變更此組織服務代理。",
     "viewerPaletteDragBlocked": "僅供檢視。流程已鎖定；請在「工具」下驗證工具組。",
     "paletteViewerAuthenticateInTools": "僅供檢視。畫布拖曳已停用；請在「工具」下登入工具組。",
@@ -3071,10 +4715,11 @@
     "skillNodeTemplateDescription": "您的代理可以呼叫的自訂技能",
     "skillDeprecated": "此技能已棄用",
     "skillDeprecatedReplacedBy": "此技能已棄用。請改用 {{name}}。",
+    "skillDisabled": "此技能已停用，重新啟用前代理程式將無法使用",
     "collapse": "收合",
     "expand": "展開",
-    "serviceAccountCreated": "服務代理已建立。請使用元件面板中的鑰匙圖示設定每個工具組。",
-    "serviceAccountConverted": "代理已轉換為服務代理。請使用元件面板中的鑰匙圖示設定工具組憑證。",
+    "serviceAgentCreated": "服務代理已建立。請使用元件面板中的鑰匙圖示設定每個工具組。",
+    "serviceAgentConverted": "代理已轉換為服務代理。請使用元件面板中的鑰匙圖示設定工具組憑證。",
     "unsavedChangesConfirm": "您有尚未儲存的變更。確定要離開嗎？",
     "agentUpdated": "代理已更新",
     "agentUpdatedDesc": "您的變更已儲存。",
@@ -3155,6 +4800,8 @@
     "startingMessageLabel": "起始訊息",
     "defaultReasoningEffortLabel": "預設推理力度",
     "defaultReasoningEffortHint": "當使用者在聊天中未選擇時使用的備用推理力度。",
+    "sendUserContextLabel": "傳送使用者與組織內容",
+    "sendUserContextHint": "關閉後，此代理不會在系統提示中收到使用者的姓名、電子郵件或組織名稱，將僅依賴工具、動作與知識來源。",
     "moreItems": "還有 {{count}} 個",
     "toolsetNodeSubtitle": "工具組",
     "toolsLabel": "工具",
@@ -3186,6 +4833,8 @@
     "svcAcctCreateTitle": "建立服務代理",
     "svcAcctConvertDesc": "此代理將成為共用的服務代理：整個組織皆可使用，每個工具組只需在代理層級驗證一次，且知識僅限於您在流程中連接的內容。",
     "svcAcctCreateDesc": "您正在建立共用的服務代理：整個組織皆可使用，每個工具組只需在代理層級驗證一次，且知識僅限於您在流程中連接的內容。",
+    "svcAcctConvertDescNoOrg": "此代理程式將成為服務代理程式：每個工具組在代理程式層級驗證一次，知識範圍僅限於您在流程中連接的內容。請使用「分享」按鈕控制誰可以存取。",
+    "svcAcctCreateDescNoOrg": "您正在建立服務代理程式：每個工具組在代理程式層級驗證一次，知識範圍僅限於您在流程中連接的內容。請使用「分享」按鈕控制誰可以存取。",
     "svcAcctConvertLabel": "轉換為服務代理",
     "svcAcctCreateLabel": "建立服務代理",
     "svcAcctConvertBusy": "轉換中…",
@@ -3216,7 +4865,12 @@
     "mcpCredentialsTitle": "MCP 伺服器憑證",
     "mcpCredentialsDesc": "驗證此 MCP 伺服器，讓代理可以使用其工具。",
     "mcpServerDefaultName": "MCP 伺服器",
+    "configureMcpTooltip": "管理憑證",
+    "authenticateMcpTooltip": "驗證此 MCP 伺服器",
     "mcpAuthUpdatedNotify": "MCP 驗證已更新。",
+    "mcpServersUnavailable": "無法載入此代理程式的 MCP 伺服器",
+    "mcpServersUnavailableHint": "此處不會顯示它們，儲存也不會變更它們。請重新整理頁面再試一次。",
+    "mcpServersUnavailableNoDrop": "無法載入此代理程式的 MCP 伺服器，重新整理頁面前無法新增。",
     "mcpAuthSaveError": "儲存 MCP 憑證失敗。",
     "mcpAuthRemoveError": "移除 MCP 憑證失敗。",
     "loadingSchema": "載入結構描述中…",
@@ -3312,10 +4966,43 @@
     "toolInlineSuffix": "{{name}} 工具",
     "paletteToolGroupLabel": "{{app}} 工具",
     "nodeTemplateChatResponseDesc": "將回覆傳送給使用者",
-    "deprecatedToolsBanner": "此代理上有 {{count}} 個工具已淘汰，請移除：{{tools}}",
     "removeDeprecatedTools": "移除已淘汰的工具",
     "showMore": "顯示更多",
-    "showLess": "顯示較少"
+    "showLess": "顯示較少",
+    "mcpServerAlreadyAttachedNotify": "此代理程式已有另一個與 {{name}} 同類型的伺服器。每種類型的伺服器，一個代理程式只能使用一個。",
+    "webSearchOnlyOne": "只能附加一個網路搜尋供應商",
+    "mcpServerNodeSubtitle": "來自 MCP 伺服器的工具",
+    "noMcpServersAvailable": "沒有可用的 MCP 伺服器",
+    "webSearchLocked": "此代理程式的網路搜尋無法變更",
+    "webSearchLoading": "正在載入網路搜尋供應商…",
+    "webSearchConfigureFirst": "請先設定 {{name}}",
+    "webSearch": "網路搜尋",
+    "toolsetOAuthServerError": "驗證失敗。請重試或聯絡您的管理員。",
+    "attached": "已附加",
+    "mcpServerWithToolCount_other": "包含 {{count}} 個工具的 MCP 伺服器",
+    "deprecatedToolsBanner_other": "此代理程式上有 {{count}} 個工具已淘汰。請移除它們：{{tools}}",
+    "mcpAllTools": "所有工具",
+    "mcpAllToolsHint": "包括伺服器之後新增的工具。",
+    "mcpServerUnavailable": "無法使用",
+    "mcpServerUnavailableHint": "此伺服器不在你的 MCP 伺服器中：它已被刪除，或未與你共用。",
+    "mcpToolNotOnServer": "伺服器上已沒有",
+    "mcpToolNotOnServerHint": "伺服器不再提供此工具。請將其移除，否則代理程式無法使用它。",
+    "mcpAllToolsNoneYet": "伺服器尚未列出任何工具。代理程式將取得它提供的所有工具。",
+    "mcpNoToolsSelected": "未選擇工具。請新增工具，或開啟「所有工具」。",
+    "mcpServerNeedsToolsTooltip": "請為每個 MCP 伺服器選擇工具，或開啟「所有工具」。",
+    "mcpServerNeedsToolsBanner": "請為 {{names}} 至少選擇一個工具，或開啟「所有工具」。",
+    "mcpPersonalOnSharedAgentNotify": "{{name}} 是您的個人 MCP 伺服器，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
+    "mcpAgentApprovalsEnterprise": "依代理程式設定的工具核准屬於企業版。在這裡，適用每個人自己的工具核准設定。",
+    "mcpAgentApprovals": "依代理程式設定工具核准",
+    "limitSource": "選擇 {{name}} 的搜尋範圍",
+    "limitSourceHint": "保持勾選整個來源，或取消勾選後勾選代理可以搜尋的資料夾和項目。",
+    "limitSourceCount": "僅限所選的 {{count}} 項",
+    "toolsetPersonalOnSharedAgentNotify": "{{name}} 是您的個人動作，無法新增到與組織共用或以服務帳戶執行的代理程式中。",
+    "apiToolsets": {
+      "section": "API 動作",
+      "connectTooltip": "請在「動作」中連線",
+      "serviceAccountBlocked": "服務帳戶代理程式只能使用具有共用憑證或不需登入的 API 動作。"
+    }
   },
   "recordView": {
     "sections": {
@@ -3343,6 +5030,13 @@
       "noRecordMetadata": "此項目沒有其他記錄中繼資料。"
     },
     "indexingReasonAria": "索引失敗詳細資訊",
+    "stageTrackLabel": "處理流程",
+    "stageParsed": "已解析",
+    "stageSearchable": "可搜尋",
+    "stageClassified": "已分類",
+    "stageEntities": "實體",
+    "stageAttempt": "第 {{n}} 次嘗試",
+    "stageDetailsAria": "階段詳細資訊",
     "tabRecordInformation": "記錄資訊",
     "tabDocumentDetails": "文件詳細資訊",
     "chat": "聊天",
@@ -3389,18 +5083,48 @@
       "folder": "資料夾",
       "connectorId": "連接器 ID",
       "notAvailable": "無",
-      "typeEmail": "電子郵件",
-      "typeFile": "檔案",
-      "typeArtifact": "成品",
-      "typeTicket": "工單",
-      "typeWebpage": "網頁",
-      "typeMessage": "訊息",
       "mailSubject": "主旨",
       "ticketSummary": "摘要",
-      "ticketDescription": "描述"
-    }
+      "ticketDescription": "描述",
+      "recordTypes": {
+        "FILE": "檔案",
+        "DRIVE": "雲端硬碟",
+        "WEBPAGE": "網頁",
+        "DATABASE": "資料庫",
+        "DATASOURCE": "資料來源",
+        "MESSAGE": "訊息",
+        "MAIL": "電子郵件",
+        "EMAIL": "電子郵件",
+        "GROUP_MAIL": "群組郵件",
+        "TICKET": "工單",
+        "COMMENT": "留言",
+        "INLINE_COMMENT": "行內留言",
+        "CONFLUENCE_PAGE": "Confluence 頁面",
+        "CONFLUENCE_BLOGPOST": "Confluence 網誌文章",
+        "SHAREPOINT_PAGE": "SharePoint 頁面",
+        "SHAREPOINT_LIST": "SharePoint 清單",
+        "SHAREPOINT_LIST_ITEM": "SharePoint 清單項目",
+        "SHAREPOINT_DOCUMENT_LIBRARY": "SharePoint 文件庫",
+        "LINK": "連結",
+        "PROJECT": "專案",
+        "PULL_REQUEST": "提取要求",
+        "MEETING": "會議",
+        "PRODUCT": "產品",
+        "DEAL": "商機",
+        "CASE": "案例",
+        "TASK": "工作",
+        "ARTIFACT": "成品",
+        "CODE_FILE": "程式碼檔案",
+        "SQL_TABLE": "SQL 資料表",
+        "SQL_VIEW": "SQL 檢視",
+        "OTHERS": "其他"
+      }
+    },
+    "previewConversionFailed": "預覽轉換失敗。您仍然可以下載該檔案。",
+    "missingRecordId": "缺少記錄 ID"
   },
   "oauthConsent": {
+    "workspace": "工作區：{{name}}",
     "loading": "正在載入授權請求…",
     "missingParams": "缺少必要的 OAuth 參數（client_id、redirect_uri）。",
     "noData": "沒有可用的授權資料。",
@@ -3408,6 +5132,10 @@
     "errorTitle": "授權錯誤",
     "signedInAs": "已以 {{display}} 的身分登入",
     "requestHeading": "此應用程式正在請求存取：",
+    "notGrantedHeading": "此應用程式還要求了以下權限。其設定不允許這些權限，因此它不會獲得這些權限：",
+    "notGrantedOwnerHint": "建立此應用程式的人可以在 工作區設定 → 開發人員設定 → OAuth 2.0 應用程式 中新增這些權限。",
+    "notGrantedOfflineAccess": "此應用程式不會保持登入狀態。工作階段結束後，你需要重新登入。",
+    "unreviewedApp": "此應用程式是自行註冊的，沒有管理員審核過。",
     "legalNotice": "按一下「允許」即表示您授權 {{appName}} 依上述說明存取您的資料。",
     "privacyPolicy": "隱私權政策",
     "deny": "拒絕",
@@ -3497,9 +5225,7 @@
         "emailNotePre": "請確認您註冊時使用的電子郵件 —",
         "emailNotePost": "— 與您組織的應用程式中使用的電子郵件相同，這樣您的權限才能被正確識別。",
         "cancelButton": "取消",
-        "signUpButton": "註冊",
-        "verificationNoteTitle": "需要驗證",
-        "verificationNoteBody": "驗證連結將傳送至上方的電子郵件。您的組織必須在驗證完成後才能存取。"
+        "signUpButton": "註冊"
       }
     },
     "login": {
@@ -3507,13 +5233,13 @@
       "emailVerifiedDescription": "您的電子郵件地址已更新。請使用新的電子郵件登入。",
       "emailVerifyFailedTitle": "電子郵件驗證失敗",
       "emailVerifyFailedDescription": "連結可能無效或已過期。",
-      "samlErrorTitle": "使用 SAML 登入時發生錯誤",
-      "samlSignInFailedTitle": "登入失敗",
-      "samlSignInFailedDescription": "SAML SSO 無法完成。請再試一次。",
       "orgEmailVerifiedTitle": "組織已驗證",
       "orgEmailVerifiedDescription": "您的組織現已啟用。請登入以繼續。",
       "orgEmailVerifyFailedTitle": "驗證失敗",
-      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。"
+      "orgEmailVerifyFailedDescription": "連結可能無效或已過期。請重新註冊。",
+      "loadFailedTitle": "無法載入登入",
+      "loadFailedDescription": "PipesHub 無法連線至伺服器以載入登入選項。請檢查網路連線或伺服器位址，然後再試一次。",
+      "retry": "重試"
     },
     "common": {
       "signIn": "登入",
@@ -3536,15 +5262,20 @@
       "signInWithEmailOtp": "使用電子郵件 OTP 登入",
       "orContinueWith": "或使用 {{provider}} 繼續",
       "orContinueWithAny": "或使用其中任一方式繼續",
-      "orContinueWithSso": "或使用單一登入（SSO）繼續",
       "googleNotConfigured": "您的組織尚未設定 Google 登入。",
       "microsoftNotConfigured": "您的組織尚未設定 Microsoft 登入。",
-      "oauthNotConfigured": "您的組織尚未設定 OAuth 登入。",
       "googleUnavailable": "Google 登入目前無法使用。請聯絡您的管理員。",
       "microsoftUnavailable": "Microsoft 登入目前無法使用。請聯絡您的管理員。",
-      "oauthUnavailable": "OAuth 登入目前無法使用。請聯絡您的管理員。",
       "showPassword": "顯示密碼",
-      "hidePassword": "隱藏密碼"
+      "hidePassword": "隱藏密碼",
+      "accountDisabled": "您的帳戶已停用。",
+      "tooManyIncorrectCredentials": "您輸入錯誤憑證的次數過多"
+    },
+    "desktopHandoff": {
+      "title": "登入已傳送至 PipesHub",
+      "integrationTitle": "授權已傳送至 PipesHub",
+      "description": "您可以關閉此分頁並返回 PipesHub 應用程式。",
+      "openApp": "開啟 PipesHub"
     }
   },
   "healthGate": {
@@ -3571,6 +5302,159 @@
     "back": "上一步",
     "skip": "略過",
     "next": "下一步",
-    "submit": "提交"
+    "submit": "提交",
+    "selectOne": "選擇一項",
+    "selectMany": "選擇所有適用項目",
+    "skipAll": "全部略過",
+    "expired": "此問題已過期。請在聊天中回覆以繼續。",
+    "repliedInChat": "你已在聊天中回覆。"
+  },
+  "oauthDevice": {
+    "title": "連接裝置",
+    "codeLabel": "請輸入終端機中顯示的代碼",
+    "phishingWarning": "只有在您自己於可控裝置上發起此操作時才繼續。若是他人傳送此代碼給您，請關閉本頁面。",
+    "codePlaceholder": "ABCD-EFGH",
+    "continue": "繼續",
+    "loading": "正在尋找此裝置…",
+    "doneTitle": "裝置已連接",
+    "doneLine": "您可以返回終端機。此視窗可以關閉。",
+    "deniedTitle": "要求遭拒",
+    "deniedLine": "未授予該裝置存取權。"
+  },
+  "knowledgeLimit": {
+    "title": "{{appName}} 可以看到什麼？",
+    "help": "它只能搜尋和讀取您在此處允許的內容，永遠不會超出您自己能看到的範圍。",
+    "everything": "我能看到的所有內容",
+    "everythingHint": "包括您之後新增的來源。",
+    "only": "僅限我選擇的內容",
+    "onlyHint": "選擇整個來源，或開啟一個來源以選擇空間、資料夾或檔案。",
+    "pickOne": "請至少選擇一個來源、空間、資料夾或檔案。",
+    "tooMany": "最多選擇 {{max}} 項，或改為選擇整個來源。",
+    "selectedCount_other": "已選擇 {{count}} 項",
+    "canSeeEverything": "可檢視：您能看到的所有內容",
+    "canSeeSome_other": "可檢視：所選的 {{count}} 項",
+    "thisToken": "此權杖",
+    "app": {
+      "thisApp": "此應用程式",
+      "help": "連接此應用程式的使用者只能搜尋和閱讀您在此選擇的內容，且絕不會超出他們自己可見的範圍。",
+      "everything": "每位使用者可見的全部內容",
+      "everythingHint": "包括之後新增的來源。"
+    },
+    "appLimited_other": "{{appName}} 只能查看其建立者選擇的 {{count}} 個項目，且僅限您可見的部分。"
+  },
+  "errorToast": {
+    "accessDenied": "存取遭拒",
+    "invalidRequest": "無效的請求",
+    "notFound": "找不到",
+    "actionRequired": "需要處理",
+    "connectionError": "連線錯誤",
+    "serverError": "伺服器錯誤",
+    "timedOut": "請求逾時",
+    "somethingWentWrong": "發生錯誤",
+    "tryAgainShortly": "請稍後再試",
+    "connectedServiceProblem": "連線的服務發生問題"
+  },
+  "validation": {
+    "password": {
+      "rules": "至少 8 個字元：小寫字母、大寫字母、數字、符號。",
+      "minLength": "密碼至少需要 8 個字元。",
+      "lowercase": "密碼必須包含一個小寫字母。",
+      "uppercase": "密碼必須包含一個大寫字母。",
+      "number": "密碼必須包含一個數字。",
+      "symbol": "密碼必須包含一個符號。",
+      "mismatch": "兩次輸入的密碼不一致。"
+    }
+  },
+  "filterDropdown": {
+    "selectedCount": "已選取 {{count}} 項",
+    "is": "等於",
+    "isAnyOf": "是其中之一",
+    "loadingOptions": "正在載入選項…",
+    "refreshingOptions": "正在重新整理選項…",
+    "loadingMore": "正在載入更多…",
+    "clear": "清除{{label}}篩選"
+  },
+  "moveFolder": {
+    "moving": "正在移動...",
+    "noFolders": "找不到資料夾"
+  },
+  "shareSidebar": {
+    "suggestedTeams": "建議的團隊",
+    "suggestedMembers": "建議的成員",
+    "loadingMoreUsers": "正在載入更多使用者...",
+    "noResults": "找不到使用者或團隊",
+    "createNewTeam": "建立新團隊",
+    "sharing": "正在分享...",
+    "accessShared": "已分享存取權",
+    "sharedWith": "已與 {{names}} 分享",
+    "shareFailed": "分享失敗",
+    "shareError": "無法分享存取權。請重試。",
+    "roleUpdated": "角色已更新",
+    "roleUpdatedDescription": "{{name}} 現在是{{role}}",
+    "member": "成員",
+    "roleError": "無法更新角色。請重試。",
+    "roleFailed": "更新角色失敗",
+    "accessRevoked": "存取權已撤銷",
+    "accessRevokedDescription": "{{name}} 不再擁有存取權",
+    "revokeError": "無法移除存取權。請重試。",
+    "revokeFailed": "撤銷存取權失敗",
+    "memberCount_other": "{{count}} 位成員",
+    "roles": {
+      "owner": {
+        "label": "完整存取",
+        "description": "共同擁有該集合"
+      },
+      "writer": {
+        "label": "可編輯",
+        "description": "僅可編輯與整理檔案和資料夾"
+      },
+      "reader": {
+        "label": "可檢視",
+        "description": "僅有檢視權限"
+      }
+    },
+    "team": "團隊",
+    "teamsNoRoles": "團隊沒有角色",
+    "invite": "邀請加入 Pipeshub"
+  },
+  "demoData": {
+    "badge": {
+      "label": "示範",
+      "tooltip": "來自 Acme Corp 示範的範例資料，並非貴公司的記錄"
+    },
+    "removalNotice": {
+      "title": "Acme Corp 示範資料仍在您的工作區中",
+      "description": "貴公司自己的資料現已在 PipesHub 中。示範資料預設不會出現在回覆裡，但任何人都可以重新開啟，其範例帳戶也仍可登入。請為所有人關閉，或永久移除。",
+      "remove": "永久移除",
+      "keep": "暫時保留",
+      "turnOff": "為所有人關閉"
+    },
+    "removeDialog": {
+      "title": "永久移除 Acme Corp 示範資料？",
+      "description": "此操作會刪除 Demo 連接器及其所有記錄、群組與權限。若只想隱藏而不刪除任何內容，請改為為所有人關閉。之後您可以在連接器頁面重新新增。",
+      "deleteAccounts": "同時刪除範例帳戶：{{names}}",
+      "deleteAccountsHint": "它們建立時帶有初始密碼，因此任何知道密碼的人都能以這些帳戶登入。",
+      "cancel": "取消",
+      "confirm": "永久移除",
+      "successTitle": "示範資料已移除",
+      "successAccounts": "範例帳戶也已刪除。",
+      "partialTitle": "示範資料已移除，但仍有部分範例帳戶",
+      "partialDescription": "請在「工作區 → 使用者」中刪除 {{emails}}。",
+      "errorTitle": "無法移除示範資料",
+      "errorDescription": "請重試。若問題持續發生，請在連接器頁面移除 Demo 連接器。"
+    },
+    "switch": {
+      "errorTitle": "無法變更示範資料設定",
+      "errorDescription": "沒有任何變更。請稍後重試。",
+      "hiddenTitle": "已隱藏 Acme Corp 示範資料",
+      "hiddenDescription": "它已從您的回覆、搜尋與記錄中移除。您可以隨時在「個人資料 → 示範資料」中重新開啟。",
+      "undo": "復原"
+    },
+    "everyone": {
+      "offTitle": "已為所有人關閉示範資料",
+      "offDescription": "它已從所有人的回覆、搜尋與記錄中移除，範例帳戶也無法登入。請在「個人資料 → 示範資料」中重新開啟。",
+      "onTitle": "已為所有人重新開啟示範資料",
+      "errorTitle": "無法為所有人變更示範資料"
+    }
   }
 }

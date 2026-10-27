@@ -30,8 +30,44 @@ from app.models.entities import (
     SQLTableRecord,
     SQLViewRecord,
     TicketRecord,
+    substitute_user_email,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+
+
+class TestSubstituteUserEmail:
+    TEMPLATE = "https://mail.google.com/mail?authuser={user.email}#all/m1"
+    GMAIL = Connectors.GOOGLE_MAIL.value
+    GMAIL_WORKSPACE = Connectors.GOOGLE_MAIL_WORKSPACE.value
+
+    @pytest.mark.parametrize("connector", [GMAIL, GMAIL_WORKSPACE])
+    def test_replaces_placeholder_for_gmail_connectors(self, connector):
+        assert substitute_user_email(self.TEMPLATE, "a@b.com", connector) == (
+            "https://mail.google.com/mail?authuser=a@b.com#all/m1"
+        )
+
+    def test_encodes_plus_so_it_is_not_read_as_space(self):
+        assert "authuser=a%2Btag@b.com" in substitute_user_email(
+            self.TEMPLATE, "a+tag@b.com", self.GMAIL
+        )
+
+    @pytest.mark.parametrize("connector", [
+        Connectors.OUTLOOK.value,
+        Connectors.GOOGLE_DRIVE.value,
+        None,
+        "",
+    ])
+    def test_leaves_placeholder_for_non_gmail_connectors(self, connector):
+        assert substitute_user_email(self.TEMPLATE, "a@b.com", connector) == self.TEMPLATE
+
+    @pytest.mark.parametrize("weburl,email", [
+        (TEMPLATE, None),
+        (TEMPLATE, ""),
+        (None, "a@b.com"),
+        ("https://example.com/doc", "a@b.com"),
+    ])
+    def test_returns_input_unchanged(self, weburl, email):
+        assert substitute_user_email(weburl, email, self.GMAIL) == weburl
 
 
 def _record_kwargs(**overrides):
@@ -85,6 +121,21 @@ class TestTimestampDefaults:
             if k != "_key"
         }
         doc["lastRepublishedAt"] = 456
+        doc["republishCount"] = 2
+        jsonschema.validate(instance=doc, schema=schema)
+
+    def test_a_rate_limit_wait_is_declared_in_the_record_schema(self) -> None:
+        schema = get_node_schema(CollectionNames.RECORDS.value)
+        doc = {
+            k: v
+            for k, v in Record(**_record_kwargs(queued_at=123)).to_arango_base_record().items()
+            if k != "_key"
+        }
+        doc["retryNotBefore"] = 1_800_000_000_000
+        doc["rateLimitedSince"] = 1_799_990_000_000
+        jsonschema.validate(instance=doc, schema=schema)
+        doc["retryNotBefore"] = None
+        doc["rateLimitedSince"] = None
         jsonschema.validate(instance=doc, schema=schema)
 
 
@@ -271,6 +322,36 @@ class TestRecord:
         }
         rec = Record.from_arango_base_record(arango_doc)
         assert rec.parsing_status == ProgressStatus.NOT_STARTED.value
+
+    def test_uploaded_by_survives_a_graph_round_trip(self) -> None:
+        rec = Record(
+            org_id="org-1",
+            record_name="Upload",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id="kb-1",
+            uploaded_by="user-7",
+        )
+        assert Record.from_arango_base_record(rec.to_arango_base_record()).uploaded_by == "user-7"
+
+    def test_uploaded_by_survives_a_file_record_graph_round_trip(self) -> None:
+        rec = FileRecord(
+            org_id="org-1",
+            record_name="Upload.pdf",
+            record_type=RecordType.FILE,
+            external_record_id="ext-1",
+            version=1,
+            origin=OriginTypes.UPLOAD,
+            connector_name=Connectors.KNOWLEDGE_BASE,
+            connector_id="kb-1",
+            is_file=True,
+            uploaded_by="user-7",
+        )
+        restored = FileRecord.from_arango_record(rec.to_arango_record(), rec.to_arango_base_record())
+        assert restored.uploaded_by == "user-7"
 
     def test_from_arango_base_record_unknown_connector(self):
         """Unknown connector name should fall back to KNOWLEDGE_BASE."""
@@ -555,6 +636,23 @@ class TestTicketRecord:
         mock_enrich.assert_awaited_once()
 
     @pytest.mark.asyncio
+    async def test_to_llm_context_with_live_fields_passes_the_access_callback(self) -> None:
+        rec = TicketRecord(**_record_kwargs(
+            record_type=RecordType.TICKET,
+            connector_name=Connectors.JIRA,
+        ))
+        check = AsyncMock()
+        config_service = AsyncMock()
+
+        with patch(
+            "app.connectors.sources.atlassian.jira.enrichment.service.enrich_ticket_llm_context",
+            new=AsyncMock(return_value="x"),
+        ) as mock_enrich:
+            await rec.to_llm_context_with_live_fields(config_service=config_service, readable_issue_ids=check)
+
+        assert mock_enrich.await_args.args[2:] == (config_service, check)
+
+    @pytest.mark.asyncio
     async def test_to_llm_context_with_live_fields_falls_back_on_error(self):
         rec = TicketRecord(**_record_kwargs(
             record_type=RecordType.TICKET,
@@ -752,8 +850,7 @@ class TestLinkRecord:
             linked_record_id="rec-linked-1",
         ))
         ctx = rec.to_llm_context()
-        assert "URL" in ctx
-        assert "https://example.com" in ctx
+        assert "* URL: https://example.com" in ctx.splitlines()
         assert "Title" in ctx
         assert "Example Link" in ctx
         assert "Public Access" in ctx
@@ -1035,6 +1132,18 @@ class TestWebpageRecord:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
+    def test_from_arango_record_reads_the_stored_access_rule(self) -> None:
+        """A page read back as OPEN when it is stored RESTRICTED is never re-checked when its restriction is lifted."""
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import WebpageRecord
+        rec = WebpageRecord.from_arango_record({}, self._record_doc(accessRule="RESTRICTED"))
+        assert rec.access_rule == AccessRule.RESTRICTED
+
+    def test_from_arango_record_without_an_access_rule_is_open(self) -> None:
+        from app.config.constants.arangodb import AccessRule
+        from app.models.entities import WebpageRecord
+        assert WebpageRecord.from_arango_record({}, self._record_doc()).access_rule == AccessRule.OPEN
+
 
 # ============================================================================
 # LinkRecord.from_arango_record tests (lines 703-709)
@@ -1093,6 +1202,15 @@ class TestLinkRecordFromArango:
         del link_doc["isPublic"]
         rec = LinkRecord.from_arango_record(link_doc, self._record_doc())
         assert rec.is_public == LinkPublicStatus.UNKNOWN
+
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        # The storage path and access checks read the group; a link read back
+        # without it was filed and checked as if it belonged to no group.
+        rec = LinkRecord.from_arango_record(
+            self._link_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
 
 
 # ============================================================================
@@ -1268,6 +1386,19 @@ class TestTicketRecordFromArango:
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
 
+    @pytest.mark.parametrize("hidden", [True, False])
+    def test_hidden_emails_survive_the_round_trip(self, hidden: bool) -> None:
+        """With the flag lost, the email fields (the source's user ids) would read as emails."""
+        rec = TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc())
+        rec.is_email_hidden = hidden
+
+        back = TicketRecord.from_arango_record(rec.to_arango_record(), self._record_doc())
+
+        assert back.is_email_hidden is hidden
+
+    def test_a_ticket_doc_without_the_flag_reads_as_not_hidden(self) -> None:
+        assert TicketRecord.from_arango_record(self._ticket_doc(), self._record_doc()).is_email_hidden is False
+
 
 # ============================================================================
 # ProjectRecord.from_arango_record tests (lines 1039-1045)
@@ -1319,6 +1450,13 @@ class TestProjectRecordFromArango:
             self._record_doc(connectorName="NONEXISTENT"),
         )
         assert rec.connector_name == Connectors.KNOWLEDGE_BASE
+
+    def test_from_arango_record_keeps_its_record_group(self) -> None:
+        rec = ProjectRecord.from_arango_record(
+            self._project_doc(), self._record_doc(recordGroupId="rg-team", rootRecordGroupId="rg-root"),
+        )
+        assert rec.record_group_id == "rg-team"
+        assert rec.root_record_group_id == "rg-root"
 
 
 # ============================================================================
@@ -1460,6 +1598,99 @@ class TestPullRequestRecord:
         assert isinstance(rec.updated_at, int)
 
 
+class TestPullRequestRecordToLlmContext:
+    """A PR's merge state, author and reviewers are stored on the record but
+    used to be left out of the model's context, so it guessed whether a PR
+    was merged. Tickets already show their status the same way."""
+
+    def _pr(self, **overrides):
+        from app.models.entities import PullRequestRecord
+        kwargs = {
+            "record_name": "Fix login redirect",
+            "record_type": RecordType.PULL_REQUEST,
+            "connector_name": Connectors.GITHUB,
+            "external_record_id": "123/pull/42",
+            **overrides,
+        }
+        return PullRequestRecord(**_record_kwargs(**kwargs))
+
+    @pytest.mark.parametrize("stored, shown", [
+        # The three values `_status_from_pr` in the GitHub connector writes.
+        ("DONE", "Merged"),
+        ("CANCELLED", "Closed without merging"),
+        ("OPEN", "Open"),
+    ])
+    def test_github_status_is_spelled_out(self, stored, shown):
+        ctx = self._pr(status=stored).to_llm_context()
+        assert "Pull Request Information:" in ctx
+        assert f"* Status: {shown}" in ctx
+
+    def test_unknown_status_is_shown_as_stored(self):
+        """GitLab stores its own state words; they pass through unchanged."""
+        ctx = self._pr(status="opened").to_llm_context()
+        assert "* Status: opened" in ctx
+
+    def test_people_and_labels_are_shown(self):
+        ctx = self._pr(
+            status="DONE",
+            creator_name="octocat",
+            creator_email="octo@example.com",
+            merged_by="hubot",
+            assignee=["alice"],
+            review_name=["bob", "carol"],
+            labels=["bug", "backend"],
+        ).to_llm_context()
+        assert "* Author: octocat (octo@example.com)" in ctx
+        assert "* Merged By: hubot" in ctx
+        assert "* Assignees: alice" in ctx
+        assert "* Requested Reviewers: bob, carol" in ctx
+        assert "* Labels: bug, backend" in ctx
+
+    @pytest.mark.parametrize("connector", [Connectors.GITHUB, Connectors.GITHUB_TEAMS])
+    def test_github_reviewers_are_requested_reviewers(self, connector):
+        """GitHub's `requested_reviewers` only lists people yet to review."""
+        ctx = self._pr(connector_name=connector, review_name=["bob"]).to_llm_context()
+        assert "* Requested Reviewers: bob" in ctx
+
+    def test_gitlab_reviewers_are_plain_reviewers(self):
+        """GitLab's `reviewers` keeps people after they review, so calling
+        them "requested" would be wrong."""
+        ctx = self._pr(connector_name=Connectors.GITLAB, review_name=["bob"]).to_llm_context()
+        assert "* Reviewers: bob" in ctx
+        assert "Requested" not in ctx
+
+    def test_base_header_is_kept(self):
+        ctx = self._pr(status="OPEN").to_llm_context()
+        assert "Name: Fix login redirect" in ctx
+        assert "Type: PULL_REQUEST" in ctx
+        assert "External ID: 123/pull/42" in ctx
+
+    def test_no_section_when_nothing_is_stored(self):
+        """A placeholder PR (no fields yet) gets no empty section."""
+        ctx = self._pr().to_llm_context()
+        assert "Pull Request Information:" not in ctx
+
+    def test_from_arango_record_round_trips_into_context(self):
+        """The navigate/lookup header loads PRs through `from_arango_record`."""
+        from app.models.entities import PullRequestRecord
+        record_doc = {
+            "_key": "pr-1",
+            "orgId": "org-1",
+            "recordName": "Fix login redirect",
+            "recordType": "PULL_REQUEST",
+            "externalRecordId": "123/pull/42",
+            "version": 0,
+            "origin": "CONNECTOR",
+            "connectorName": "GITHUB",
+            "connectorId": "conn-1",
+        }
+        pr_doc = {"status": "CANCELLED", "creatorName": "octocat", "mergedBy": None}
+        ctx = PullRequestRecord.from_arango_record(pr_doc, record_doc).to_llm_context()
+        assert "* Status: Closed without merging" in ctx
+        assert "* Author: octocat" in ctx
+        assert "Merged By" not in ctx
+
+
 # ============================================================================
 # RecordGroup tests (lines 1265, 1286)
 # ============================================================================
@@ -1495,6 +1726,24 @@ class TestRecordGroup:
         assert arango["groupName"] == "Test Group"
         assert arango["connectorName"] == "DRIVE"
         assert arango["groupType"] == "DRIVE"
+
+    def test_a_record_group_upsert_takes_back_a_group_kept_for_the_trash(self) -> None:
+        """The source listing the group again clears the mark the purge removes it by."""
+        from app.models.entities import RecordGroup, RecordGroupType
+        rg = RecordGroup(
+            name="Team", external_group_id="ext-1", connector_name=Connectors.GOOGLE_DRIVE,
+            connector_id="conn-1", group_type=RecordGroupType.DRIVE,
+        )
+        arango = rg.to_arango_base_record_group()
+        assert arango["isDeletedAtSource"] is False
+        assert arango["deletedAtSourceTimestamp"] is None
+
+    def test_a_record_group_read_back_says_whether_it_is_kept_for_the_trash(self) -> None:
+        from app.models.entities import RecordGroup
+        doc = {"_key": "rg-1", "groupName": "Team", "connectorName": "DRIVE", "connectorId": "c", "groupType": "DRIVE"}
+        assert RecordGroup.from_arango_base_record_group(doc).is_deleted_at_source is False
+        kept = RecordGroup.from_arango_base_record_group({**doc, "isDeletedAtSource": True})
+        assert kept.is_deleted_at_source is True
 
     def test_from_arango_base_record_group(self):
         from app.models.entities import RecordGroup, RecordGroupType
@@ -1640,6 +1889,31 @@ class TestAppUser:
         assert arango["fullName"] == "App User"
         assert arango["userId"] == "src-1"
 
+    def test_title_round_trips_through_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", title="Staff Engineer")
+        doc = au.to_arango_base_user()
+        assert doc["designation"] == "Staff Engineer"
+        assert AppUser.from_arango_user(doc).title == "Staff Engineer"
+
+    def test_missing_title_is_omitted_from_graph_doc(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.GOOGLE_DRIVE, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U")
+        assert "designation" not in au.to_arango_base_user()
+
+    def test_title_falls_back_to_legacy_field(self) -> None:
+        from app.models.entities import AppUser
+        doc = {"_key": "k", "email": "u@test.com", "fullName": "U", "userId": "s", "title": "Analyst"}
+        assert AppUser.from_arango_user(doc).title == "Analyst"
+
+    def test_source_role_is_not_stored_as_title(self) -> None:
+        from app.models.entities import AppUser
+        au = AppUser(app_name=Connectors.DROPBOX, connector_id="c", source_user_id="s",
+                     email="u@test.com", full_name="U", source_role="team_admin")
+        assert "designation" not in au.to_arango_base_user()
+
     def test_from_arango_user(self):
         from app.models.entities import AppUser
         data = {
@@ -1732,6 +2006,40 @@ class TestAppRole:
         assert ar.source_role_id == "role-1"
 
 
+class TestRecordHeaderWeekdays:
+    """Record headers carry each date's weekday, worked out in code.
+
+    Answers are asked for dates like "Mon, Jul 27, 3:45 PM PDT", but the
+    header gave only "2026-07-27 03:00:00 UTC", so the model guessed the
+    weekday. Monday 03:00 UTC is Sunday evening in California, so the weekday
+    is taken in the user's time zone when the run has one.
+    """
+
+    MON_0300_UTC = 1785121200000  # 2026-07-27 03:00:00 UTC, a Monday
+    TUE_1500_UTC = 1785250800000  # 2026-07-28 15:00:00 UTC
+
+    def _ctx(self) -> str:
+        return Record(**_record_kwargs(
+            source_created_at=self.MON_0300_UTC, source_updated_at=self.TUE_1500_UTC,
+        )).to_llm_context()
+
+    def test_header_dates_carry_their_weekday(self) -> None:
+        ctx = self._ctx()
+        assert "Created At: 2026-07-27 03:00:00 UTC (Mon, Jul 27, 2026, 3:00 AM UTC)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 3:00 PM UTC)" in ctx
+
+    def test_weekday_is_taken_in_the_users_time_zone(self) -> None:
+        from app.utils.time_conversion import reset_llm_time_zone, set_llm_time_zone
+
+        token = set_llm_time_zone("America/Los_Angeles")
+        try:
+            ctx = self._ctx()
+        finally:
+            reset_llm_time_zone(token)
+        assert "Created At: 2026-07-27 03:00:00 UTC (Sun, Jul 26, 2026, 8:00 PM PDT)" in ctx
+        assert "Last Updated At: 2026-07-28 15:00:00 UTC (Tue, Jul 28, 2026, 8:00 AM PDT)" in ctx
+
+
 # ============================================================================
 # Record.to_llm_context edge cases (lines 232->235 branch, mime_type)
 # ============================================================================
@@ -1789,6 +2097,67 @@ class TestRecordToLlmContextEdgeCases:
 # ============================================================================
 # TicketRecord.to_llm_context with Enum values (lines 850-879)
 # ============================================================================
+
+
+class TestTicketRecordSourceStatus:
+    """Jira's own status name is shown beside the normalised one.
+
+    The value mapper stores Jira's "Backlog" and "To Do" both as NEW, and
+    "In Review" and "Testing" both as QA. With only the mapped value in its
+    context, the model answered "NEW" where Jira says "Backlog".
+    """
+
+    def _ticket(self, **overrides: object) -> TicketRecord:
+        from app.models.entities import Status
+        kwargs = {
+            "record_type": RecordType.TICKET,
+            "connector_name": Connectors.JIRA,
+            "status": Status.NEW,
+            **overrides,
+        }
+        return TicketRecord(**_record_kwargs(**kwargs))
+
+    def test_backlog_issue_shows_both_values(self) -> None:
+        ctx = self._ticket(source_status="Backlog").to_llm_context()
+        assert "* Status: NEW (Jira: Backlog)" in ctx
+
+    def test_in_review_issue_shows_both_values(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.QA, source_status="In Review").to_llm_context()
+        assert "* Status: QA (Jira: In Review)" in ctx
+
+    def test_same_name_is_not_repeated(self) -> None:
+        from app.models.entities import Status
+        ctx = self._ticket(status=Status.IN_PROGRESS, source_status="In Progress").to_llm_context()
+        assert "* Status: IN_PROGRESS\n" in ctx + "\n"
+        assert "(Jira:" not in ctx
+
+    def test_unmapped_status_kept_as_is_is_not_repeated(self) -> None:
+        # map_status returns Jira's own name when it has no mapping for it.
+        ctx = self._ticket(status="Ready for Deploy", source_status="Ready for Deploy").to_llm_context()
+        assert "* Status: Ready for Deploy" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_record_stored_before_the_field_shows_status_alone(self) -> None:
+        ctx = self._ticket().to_llm_context()
+        assert "* Status: NEW" in ctx
+        assert "(Jira:" not in ctx
+
+    def test_survives_the_graph_round_trip(self) -> None:
+        rec = self._ticket(id="t-1", org_id="org-1", source_status="Backlog")
+        ticket_doc = rec.to_arango_record()
+        assert ticket_doc["sourceStatus"] == "Backlog"
+        jsonschema.validate(instance=ticket_doc, schema=get_node_schema(CollectionNames.TICKETS.value))
+        record_doc = {
+            "_key": "t-1", "orgId": "org-1", "recordName": "[PROJ-1] Issue",
+            "recordType": "TICKET", "externalRecordId": "ext-123", "version": 1,
+            "origin": "CONNECTOR", "connectorName": Connectors.JIRA.value,
+            "webUrl": "https://example.atlassian.net/browse/PROJ-1", "connectorId": "conn-1",
+            "createdAtTimestamp": 1, "updatedAtTimestamp": 1,
+        }
+        back = TicketRecord.from_arango_record(ticket_doc, record_doc)
+        assert back.source_status == "Backlog"
+        assert "* Status: NEW (Jira: Backlog)" in back.to_llm_context()
 
 
 class TestTicketRecordToLlmContextEnum:

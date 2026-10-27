@@ -9,18 +9,26 @@ Targets:
 - Lines 617-624: _run_reindex status-only mode dispatching
 """
 
+import asyncio
 import logging
+from collections.abc import Coroutine
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.config.constants.arangodb import AppStatus, Connectors, ProgressStatus
+from app.config.constants.arangodb import Connectors, ProgressStatus
 from app.connectors.services.event_service import EventService
-
+from tests.unit.connectors.services.coordinator_stub import installed_stub, spawned
 
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def stub_lease_manager():
+    with installed_stub() as stub:
+        yield stub
 
 
 @pytest.fixture
@@ -74,6 +82,12 @@ def _make_mock_record(record_id="r1", is_placeholder=False, indexing_status="NOT
 # ===========================================================================
 
 
+
+async def _drain_storage_releases() -> None:
+    from app.connectors.services import event_service
+    while event_service._storage_release_tasks:
+        await asyncio.gather(*list(event_service._storage_release_tasks))
+
 class TestProcessEventDeleteAction:
     @pytest.mark.asyncio
     async def test_delete_action_dispatched(self, service):
@@ -102,7 +116,7 @@ class TestProcessEventDeleteAction:
 
 class TestSyncPointDeletionException:
     @pytest.mark.asyncio
-    async def test_sync_point_deletion_exception_continues(self, service):
+    async def test_sync_point_deletion_exception_continues(self, service, stub_lease_manager):
         """Exception during sync point deletion logs error and continues sync."""
         mock_conn = AsyncMock()
         mock_conn.run_sync = AsyncMock()
@@ -116,8 +130,7 @@ class TestSyncPointDeletionException:
 
         with patch.object(service, "_ensure_connector", new_callable=AsyncMock, return_value=mock_conn), \
              patch.object(service, "_get_connector", return_value=mock_conn), \
-             patch("app.connectors.services.event_service.sync_task_manager") as mock_stm:
-            mock_stm.start_sync = AsyncMock()
+             patch.object(stub_lease_manager, "spawn", AsyncMock(side_effect=spawned)):
 
             result = await service._handle_start_sync("gmail", {
                 "orgId": "org1",
@@ -232,6 +245,26 @@ class TestRunReindexModes:
         args = service.graph_provider.get_records_by_status.call_args
         assert args.kwargs["status_filters"] == ["FAILED"]
         assert args.kwargs["is_placeholder"] is False
+
+    @pytest.mark.asyncio
+    async def test_an_explicit_password_protected_filter_is_reindexed(self, service) -> None:
+        """The default selection is FAILED only; asking for PASSWORD_PROTECTED by name works,
+        for when the source file has lost its password."""
+        connector = AsyncMock()
+        connector.reindex_records = AsyncMock()
+        locked = _make_mock_record("r1")
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[[locked], []])
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["PASSWORD_PROTECTED"],
+        )
+
+        first = service.graph_provider.get_records_by_status.call_args_list[0]
+        assert first.kwargs["status_filters"] == ["PASSWORD_PROTECTED"]
+        assert first.kwargs["exclude_statuses"] == [ProgressStatus.IN_PROGRESS.value]
+        connector.reindex_records.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_reindex_processes_batch(self, service):
@@ -351,9 +384,7 @@ class TestHandleDelete:
             "deleted_records_count": 2,
         })
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
 
             result = await service._handle_delete("gmail", {
@@ -363,19 +394,162 @@ class TestHandleDelete:
             })
 
         assert result is True
-        service.app_container.messaging_producer.send_message.assert_awaited_once()
+        # The record cleanup, then the entity cleanup.
+        assert service.app_container.messaging_producer.send_message.await_count == 2
+
+    @pytest.mark.asyncio
+    async def test_a_deleted_connector_frees_its_queue_lane_after_its_cleanup_events(
+        self, service
+    ) -> None:
+        """Freed after, so the cleanup events still go to the lane its earlier
+        events are on."""
+        order: list[str] = []
+        service.app_container.messaging_producer.send_message = AsyncMock(
+            side_effect=lambda **kwargs: order.append(kwargs["message"]["eventType"])
+        )
+
+        async def freed(_logger, connector_id) -> None:
+            order.append(f"free:{connector_id}")
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch(
+                 "app.connectors.services.event_service.free_lane_of_deleted_connector",
+                 side_effect=freed,
+             ):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        assert result is True
+        assert order[-1] == "free:c1"
+        assert len(order) > 1
+
+    @pytest.mark.asyncio
+    async def test_a_connector_whose_delete_failed_keeps_its_queue_lane(self, service) -> None:
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            return_value={"success": False, "error": "boom"}
+        )
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch(
+                 "app.connectors.services.event_service.free_lane_of_deleted_connector",
+                 new_callable=AsyncMock,
+             ) as free:
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+
+        free.assert_not_awaited()
+
+    async def _delete_with_helper(self, service, helper):
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            result = await service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"})
+        await _drain_storage_releases()
+        return result
+
+    @pytest.mark.asyncio
+    async def test_the_delete_returns_before_its_storage_release_finishes(self, service):
+        release_may_finish = asyncio.Event()
+
+        async def release(*_a):
+            from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+            await release_may_finish.wait()
+            return StorageReleaseResult(completed=True)
+
+        helper = AsyncMock()
+        helper.release_connector_storage = AsyncMock(side_effect=release)
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm, \
+             patch("app.connectors.services.event_service.StorageCleanupHelper", return_value=helper):
+            mock_rtm.cancel_by_prefix = AsyncMock()
+            assert await asyncio.wait_for(
+                service._handle_delete("gmail", {"orgId": "org1", "connectorId": "c1"}), timeout=5,
+            ) is True
+
+        helper.close.assert_not_awaited()
+        release_may_finish.set()
+        await _drain_storage_releases()
+        helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
+        helper.close.assert_awaited_once()
+
+    @staticmethod
+    def _helper(calls, completed=True):
+        from app.connectors.core.base.data_processor.storage_cleanup import StorageReleaseResult
+
+        helper = AsyncMock()
+        helper.release_connector_storage = AsyncMock(
+            side_effect=lambda *a: calls.append("release") or StorageReleaseResult(completed=completed)
+        )
+        return helper
+
+    @pytest.mark.asyncio
+    async def test_storage_is_released_after_the_graph_delete_and_its_intent_cleared(
+        self, service, mock_container,
+    ):
+        calls = []
+        config = mock_container.config_service.return_value
+        config.set_config = AsyncMock(side_effect=lambda key, _v: calls.append(key) or True)
+        config.delete_config = AsyncMock(side_effect=lambda key: calls.append(f"clear:{key}") or True)
+        service.graph_provider.delete_connector_instance = AsyncMock(
+            side_effect=lambda **kw: calls.append("graph") or {"success": True}
+        )
+        helper = self._helper(calls)
+
+        assert await self._delete_with_helper(service, helper) is True
+
+        assert [c for c in calls if "/services/connectors/" not in c][:4] == [
+            "/services/entityCleanup/pending/c1",
+            "/services/storageRelease/pending/c1",
+            "graph",
+            "release",
+        ]
+        assert "clear:/services/storageRelease/pending/c1" in calls
+        helper.release_connector_storage.assert_awaited_once_with("org1", "c1")
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_an_unfinished_release_keeps_its_intent_and_does_not_fail_the_delete(
+        self, service, mock_container,
+    ):
+        config = mock_container.config_service.return_value
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+
+        assert await self._delete_with_helper(service, self._helper([], completed=False)) is True
+
+        cleared = [c.args[0] for c in config.delete_config.await_args_list]
+        assert "/services/storageRelease/pending/c1" not in cleared
+        key, intent = config.set_config.await_args.args
+        assert key == "/services/storageRelease/pending/c1" and intent["attempts"] == 1
+
+    @pytest.mark.asyncio
+    async def test_a_release_that_raises_does_not_fail_the_delete(self, service):
+        helper = AsyncMock()
+        helper.release_connector_storage = AsyncMock(side_effect=RuntimeError("storage down"))
+        service.graph_provider.delete_connector_instance = AsyncMock(return_value={"success": True})
+
+        assert await self._delete_with_helper(service, helper) is True
+        helper.close.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_no_graph_delete_without_a_recorded_storage_intent(self, service, mock_container):
+        config = mock_container.config_service.return_value
+        config.set_config = AsyncMock(side_effect=lambda key, _v: "storageRelease" not in key)
+        helper = self._helper([])
+
+        assert await self._delete_with_helper(service, helper) is False
+
+        service.graph_provider.delete_connector_instance.assert_not_called()
+        helper.release_connector_storage.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_delete_failure_reverts_status(self, service):
         """Failed graph DB delete reverts connector status."""
+        service.graph_provider.get_document = AsyncMock(return_value={"_key": "c1", "status": "DELETING"})
         service.graph_provider.delete_connector_instance = AsyncMock(return_value={
             "success": False,
             "error": "test failure",
         })
 
-        with patch("app.connectors.services.event_service.sync_task_manager") as mock_stm, \
-             patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
-            mock_stm.cancel_sync = AsyncMock()
+        with patch("app.connectors.services.event_service.reindex_task_manager") as mock_rtm:
             mock_rtm.cancel_by_prefix = AsyncMock()
 
             result = await service._handle_delete("gmail", {
@@ -387,3 +561,204 @@ class TestHandleDelete:
         assert result is False
         # Should have tried to revert status
         service.graph_provider.batch_upsert_nodes.assert_awaited()
+
+
+class TestStageReruns:
+    def test_the_task_key_keeps_a_stage_rerun_apart_from_a_reindex(self) -> None:
+        assert EventService._reindex_task_key("c1", None, None, 0, None, ["FAILED"], ["classify"]) == (
+            "reindex:c1:*:0:*:FAILED:stages=classify"
+        )
+        assert EventService._reindex_task_key("c1", None, None, 0, None, ["FAILED"]) == "reindex:c1:*:0:*:FAILED"
+
+    @pytest.mark.asyncio
+    async def test_a_stage_rerun_selects_by_the_stage_status_and_republishes_only_the_stage(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        records = [_make_mock_record("r1"), _make_mock_record("r2")]
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=records)
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+        # r2 has no revision (indexed before revisions existed), so its event says so;
+        # r3 left the selection before its revision was read, so it is not re-run.
+        records.append(_make_mock_record("r3"))
+        service.graph_provider.get_record_content_revs = AsyncMock(return_value={"r1": "rev-a", "r2": None})
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["FAILED"], stages=["classify"],
+        )
+
+        kwargs = service.graph_provider.get_records_by_status.call_args.kwargs
+        assert (kwargs["status_field"], kwargs["status_filters"]) == ("extractionStatus", ["FAILED"])
+        service.graph_provider.get_record_content_revs.assert_awaited_once_with(
+            ["r1", "r2", "r3"], status_field="extractionStatus", statuses=["FAILED"],
+            exclude_indexing_statuses=[ProgressStatus.IN_PROGRESS.value],
+        )
+        # Each record carries the revision it holds while still selected, so one re-indexed since is left alone.
+        connector.data_entities_processor.reindex_existing_records.assert_awaited_once_with(
+            records[:2], stages=["classify"], stage_revisions={"r1": "rev-a", "r2": None}
+        )
+        connector.reindex_records.assert_not_awaited()
+        service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_page_that_left_the_selection_republishes_nothing(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=[_make_mock_record("r1")])
+        service.graph_provider.get_record_content_revs = AsyncMock(return_value={})
+
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=["FAILED"], stages=["classify"],
+        )
+
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    @staticmethod
+    def _stage_rerun_graph(service, pages: list) -> None:
+        service.graph_provider.get_stage_states_with_records = AsyncMock(side_effect=pages)
+        service.graph_provider.get_typed_records_batch = AsyncMock(
+            side_effect=lambda keys, **_: {k: _make_mock_record(k) for k in keys}
+        )
+        service.graph_provider.get_records_by_status = AsyncMock()
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+
+    @staticmethod
+    async def _rerun_entities(service, connector, statuses: list[str]) -> None:
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None,
+            status_filters=statuses, stages=["entities"],
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_stage_without_a_record_field_is_selected_by_its_stage_state(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        self._stage_rerun_graph(
+            service, [[("vr1:rev-a:entities", ["r1"]), ("vr2:rev-b:entities", []), ("vr3:rev-c:entities", ["r3"])]]
+        )
+
+        await self._rerun_entities(service, connector, ["FAILED"])
+
+        service.graph_provider.get_stage_states_with_records.assert_awaited_once_with(
+            "org1", "c1", "entities", "FAILED", limit=100, after_key=None,
+            exclude_indexing_statuses=[ProgressStatus.IN_PROGRESS.value],
+        )
+        # A record the indexer is working on is never selected; a failed batch read raises.
+        service.graph_provider.get_typed_records_batch.assert_awaited_once_with(["r1", "r3"], raise_on_error=True)
+        republished = connector.data_entities_processor.reindex_existing_records.await_args
+        assert [r.id for r in republished.args[0]] == ["r1", "r3"]
+        # Each record carries the revision it was selected on, so a record re-indexed since is left alone.
+        assert republished.kwargs == {"stages": ["entities"], "stage_revisions": {"r1": "rev-a", "r3": "rev-c"}}
+        service.graph_provider.get_records_by_status.assert_not_awaited()
+        service.graph_provider.update_indexing_status_for_record_ids.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_stage_state_selection_pages_on_the_last_state_key(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        first = [(f"vr{i:03d}:rev:entities", [f"r{i:03d}"]) for i in range(100)]
+        self._stage_rerun_graph(service, [first, [("vr100:rev:entities", [])]])
+
+        await self._rerun_entities(service, connector, ["FAILED"])
+
+        calls = service.graph_provider.get_stage_states_with_records.await_args_list
+        assert [c.kwargs["after_key"] for c in calls] == [None, "vr099:rev:entities"]
+        # A page whose states have no qualifying record still advances; nothing is republished for it.
+        assert connector.data_entities_processor.reindex_existing_records.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_each_status_gets_its_own_pass(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        self._stage_rerun_graph(service, [[("vr1:rev:entities", ["r1"])], [("vr2:rev:entities", ["r2"])]])
+
+        await self._rerun_entities(service, connector, ["FAILED", "SKIPPED", "FAILED"])
+
+        calls = service.graph_provider.get_stage_states_with_records.await_args_list
+        assert [(c.args[3], c.kwargs["after_key"]) for c in calls] == [("FAILED", None), ("SKIPPED", None)]
+
+    @pytest.mark.asyncio
+    async def test_a_page_whose_records_cannot_be_read_fails_the_run(self, service) -> None:
+        connector = AsyncMock()
+        connector.data_entities_processor.reindex_existing_records = AsyncMock()
+        self._stage_rerun_graph(service, [[("vr1:rev:entities", ["r1"])]])
+        service.graph_provider.get_typed_records_batch = AsyncMock(side_effect=ConnectionError("graph down"))
+
+        with pytest.raises(ConnectionError):
+            await self._rerun_entities(service, connector, ["FAILED"])
+        connector.data_entities_processor.reindex_existing_records.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_a_plain_reindex_still_selects_by_indexing_status(self, service) -> None:
+        connector = AsyncMock()
+        service.graph_provider.get_records_by_status = AsyncMock(return_value=[])
+        await service._run_reindex(
+            connector=connector, connector_name="gmail", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None, status_filters=["FAILED"],
+        )
+        assert service.graph_provider.get_records_by_status.call_args.kwargs["status_field"] == "indexingStatus"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("payload", [
+        {"orgId": "o1", "connectorId": "c1", "recordId": "r1", "stages": ["classify"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": ["embed"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": ["classify", "entities"]},
+        {"orgId": "o1", "connectorId": "c1", "stages": "classify"},
+    ])
+    async def test_stage_reruns_are_connector_wide_and_name_known_stages(self, service, payload) -> None:
+        service._ensure_connector = AsyncMock()
+        assert await service._handle_reindex("gmail", payload) is False
+        service._ensure_connector.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("extra", "expected"),
+        [({}, "reindex:c1:*:0:*:FAILED"), ({"stages": ["classify"]}, "reindex:c1:*:0:*:FAILED:stages=classify")],
+        ids=["indexing", "classification"],
+    )
+    async def test_a_connector_wide_reindex_without_filters_selects_only_failed(self, service, extra, expected) -> None:
+        """The panels' "Reindex failed" buttons send no filter and rely on this default: a record that needs
+        a password is not a failure, and a retry cannot help it."""
+        from unittest.mock import patch
+
+        connector = MagicMock()
+        connector.app.get_app_name.return_value.name = "GOOGLE_DRIVE"
+        service._ensure_connector = AsyncMock(return_value=connector)
+        keys: list[str] = []
+
+        async def start_if_idle(key: str, coro: Coroutine[object, object, object]) -> object:
+            keys.append(key)
+            coro.close()
+            return object()
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as manager:
+            manager.start_if_idle = start_if_idle
+            assert await service._handle_reindex("gmail", {"orgId": "o1", "connectorId": "c1", **extra}) is True
+        assert keys == [expected]
+        assert "PASSWORD_PROTECTED" not in keys[0]
+
+    @pytest.mark.asyncio
+    async def test_a_kb_stage_rerun_without_filters_retries_only_failures(self, service) -> None:
+        from unittest.mock import patch
+
+        connector = MagicMock()
+        connector.app.get_app_name.return_value.name = "KNOWLEDGE_BASE"
+        service._ensure_connector = AsyncMock(return_value=connector)
+        keys: list[str] = []
+
+        async def start_if_idle(key: str, coro: Coroutine[object, object, object]) -> object:
+            keys.append(key)
+            coro.close()
+            return object()
+
+        with patch("app.connectors.services.event_service.reindex_task_manager") as manager:
+            manager.start_if_idle = start_if_idle
+            ok = await service._handle_reindex(
+                Connectors.KNOWLEDGE_BASE.value.lower(), {"orgId": "o1", "connectorId": "kb1", "stages": ["classify"]}
+            )
+        assert ok is True
+        assert keys == ["reindex:kb1:*:0:*:FAILED:stages=classify"]

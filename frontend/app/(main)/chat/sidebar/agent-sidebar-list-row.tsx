@@ -6,6 +6,7 @@ import { useTranslation } from 'react-i18next';
 import { AgentsApi } from '@/app/(main)/agents/api';
 import type { AgentListRecord } from '@/app/(main)/agents/types';
 import { toast } from '@/lib/store/toast-store';
+import { getUserFacingErrorMessage } from '@/lib/api/api-error';
 import { SidebarItem } from './sidebar-item';
 import { AgentSidebarItemMenu } from './agent-sidebar-item-menu';
 import { getAgentSidebarRowMenuAccess } from './agent-sidebar-row-access';
@@ -69,11 +70,8 @@ export function AgentSidebarListRow({
       setDeleteOpen(false);
       onDeleted(id);
     } catch (e: unknown) {
-      const detail =
-        (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail ||
-        (e instanceof Error ? e.message : '');
       toast.error(t('chat.failedToDeleteAgent'), {
-        description: detail.trim() || undefined,
+        description: getUserFacingErrorMessage(e, '') || undefined,
       });
     } finally {
       setIsDeleting(false);

@@ -1,9 +1,15 @@
-import { S3 } from 'aws-sdk';
+import {
+  createS3Service as buildS3Service,
+  type S3Service,
+  type S3ServiceConfig,
+} from './s3-client';
 import { StorageServiceInterface } from '../services/storage.service';
 import {
   FilePayload,
   StorageServiceResponse,
   Document,
+  SignObjectUrlOptions,
+  SignedObjectUrl,
 } from '../types/storage.service.types';
 import {
   StorageError,
@@ -21,13 +27,14 @@ import {
   resolveS3Credentials,
   S3_PARTIAL_CREDENTIALS_MESSAGE,
 } from '../utils/s3-credentials.util';
+import { escapeRegExp } from '../../../utils/escape-regexp';
 
 /**
  * Implementation of StorageServiceInterface for Amazon S3
  * Handles file operations with Amazon S3 storage service
  */
 class AmazonS3Adapter implements StorageServiceInterface {
-  private readonly s3: S3;
+  private readonly s3: S3Service;
   private readonly bucketName: string;
   private readonly region: string;
   private readonly usingIamRole: boolean;
@@ -69,15 +76,16 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
       this.usingIamRole = resolvedCredentials.kind === 'iamRole';
 
-      // Initialize AWS S3 client
-      this.s3 =
-        resolvedCredentials.kind === 'explicit'
-          ? new S3({
+      // Retries (maxAttempts) and Signature V4 live in createS3Service.
+      this.s3 = buildS3Service({
+        region: sanitizedRegion,
+        ...(resolvedCredentials.kind === 'explicit'
+          ? {
               accessKeyId: resolvedCredentials.accessKeyId,
               secretAccessKey: resolvedCredentials.secretAccessKey,
-              region: sanitizedRegion,
-            })
-          : new S3({ region: sanitizedRegion });
+            }
+          : {}),
+      });
 
       this.bucketName = bucket;
       this.region = sanitizedRegion;
@@ -126,7 +134,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const result = await this.s3.upload(uploadParams).promise();
 
-      if (!result?.Key) {
+      if (result.Key === undefined || result.Key === '') {
         throw new StorageUploadError('Upload response missing file key');
       }
 
@@ -180,7 +188,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
 
       const result = await this.s3.upload(uploadParams).promise();
 
-      if (!result?.Key) {
+      if (result.Key === undefined || result.Key === '') {
         throw new StorageUploadError('Update response missing file key');
       }
 
@@ -291,7 +299,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
       }
       return {
         statusCode: 200,
-        data: response.Body as Buffer,
+        data: response.Body,
       };
     } catch (error) {
       if (error instanceof StorageError) {
@@ -451,6 +459,38 @@ class AmazonS3Adapter implements StorageServiceInterface {
     }
   }
 
+  async signObjectUrl(
+    storageKey: string,
+    options: SignObjectUrlOptions,
+  ): Promise<SignedObjectUrl> {
+    try {
+      if (options.method === 'PUT') {
+        // Sent by the uploader, it becomes the stored object's Content-Type.
+        const contentType = options.contentType ?? 'application/octet-stream';
+        const url = await this.s3.getSignedUrlPromise('putObject', {
+          Bucket: this.bucketName,
+          Key: storageKey,
+          ContentType: contentType,
+          Expires: options.expiresInSeconds,
+        });
+        return { url, headers: { 'Content-Type': contentType } };
+      }
+      const url = await this.s3.getSignedUrlPromise('getObject', {
+        Bucket: this.bucketName,
+        Key: storageKey,
+        Expires: options.expiresInSeconds,
+      });
+      return { url, headers: {} };
+    } catch (error) {
+      if (error instanceof StorageError) {
+        throw error;
+      }
+      throw new PresignedUrlError('Failed to generate signed URL', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
   /**
    * Generates a signed URL for accessing or downloading a document.
    * @param document - Metadata of the document.
@@ -488,7 +528,11 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw new PresignedUrlError('Failed to extract S3 key from URL');
       }
 
-      const params: S3.GetObjectRequest = {
+      const params: {
+        Bucket: string;
+        Key: string;
+        ResponseContentDisposition?: string;
+      } = {
         Bucket: this.bucketName,
         Key: key,
       };
@@ -513,6 +557,175 @@ class AmazonS3Adapter implements StorageServiceInterface {
         throw error;
       }
       throw new PresignedUrlError('Failed to generate signed URL', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Lists all objects under a prefix, following pagination via ContinuationToken.
+   * @param prefix - The S3 key prefix to list.
+   * @returns A promise resolving to all matching S3 objects across all pages.
+   */
+  private async _listAllObjects(
+    prefix: string,
+  ): Promise<Array<{ Key?: string }>> {
+    const allObjects: Array<{ Key?: string }> = [];
+    let continuationToken: string | undefined;
+    do {
+      const params: {
+        Bucket: string;
+        Prefix: string;
+        ContinuationToken?: string;
+      } = {
+        Bucket: this.bucketName,
+        Prefix: prefix,
+        ...(continuationToken && { ContinuationToken: continuationToken }),
+      };
+      const response = await this.s3.listObjectsV2(params).promise();
+      if (response.Contents) {
+        allObjects.push(...response.Contents);
+      }
+      continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+    } while (continuationToken);
+    return allObjects;
+  }
+
+  async deleteTree(storagePath: string): Promise<StorageServiceResponse<void>> {
+    try {
+      // List all objects with this prefix (across all pages) then delete them in batches
+      const prefix = storagePath.endsWith('/') ? storagePath : `${storagePath}/`;
+      const allObjects = await this._listAllObjects(prefix);
+
+      // Batch delete in chunks of 1000 (S3 DeleteObjects API limit)
+      for (let i = 0; i < allObjects.length; i += 1000) {
+        const batch = allObjects.slice(i, i + 1000);
+        const result = await this.s3
+          .deleteObjects({
+            Bucket: this.bucketName,
+            Delete: { Objects: batch.map((o) => ({ Key: o.Key! })) },
+          })
+          .promise();
+        // DeleteObjects resolves even when individual keys fail (e.g. AccessDenied).
+        if (result.Errors && result.Errors.length > 0) {
+          throw new StorageUploadError('Failed to delete some objects from S3', {
+            originalError: result.Errors.slice(0, 10)
+              .map((e) => `${e.Key}: ${e.Code} ${e.Message ?? ''}`.trim())
+              .join('; '),
+          });
+        }
+      }
+
+      // Also try to delete the exact key in case storagePath itself is a file
+      try {
+        await this.s3.deleteObject({ Bucket: this.bucketName, Key: storagePath }).promise();
+      } catch {
+        // ignore; the key may not exist as a standalone object
+      }
+
+      this.logger.info('S3 delete successful', { path: storagePath });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to delete object from S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async copyObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const copySource = this.encodeCopySource(sourcePath);
+      await this.s3
+        .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
+        .promise();
+      const destUrl = this.getS3Url(destinationPath);
+      this.logger.info('S3 copy successful', { src: sourcePath, dst: destinationPath });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy object in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  /**
+   * Recursively copies all objects under sourcePrefix to destinationPrefix.
+   * An empty source prefix (zero objects) is a no-op success, not an error.
+   * @param sourcePrefix - The source path / key prefix.
+   * @param destinationPrefix - The destination path / key prefix.
+   */
+  async copyTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      const srcPrefix = sourcePrefix.endsWith('/') ? sourcePrefix : `${sourcePrefix}/`;
+      const dstPrefix = destinationPrefix.endsWith('/')
+        ? destinationPrefix
+        : `${destinationPrefix}/`;
+      const allObjects = await this._listAllObjects(srcPrefix);
+
+      for (const obj of allObjects) {
+        if (!obj.Key) continue;
+        const relativePath = obj.Key.substring(srcPrefix.length);
+        const destKey = `${dstPrefix}${relativePath}`;
+        await this.s3
+          .copyObject({
+            Bucket: this.bucketName,
+            CopySource: this.encodeCopySource(obj.Key),
+            Key: destKey,
+          })
+          .promise();
+      }
+
+      this.logger.info('S3 tree copy successful', { src: sourcePrefix, dst: destinationPrefix });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to copy tree in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameObject(
+    sourcePath: string,
+    destinationPath: string,
+  ): Promise<StorageServiceResponse<string>> {
+    try {
+      const copySource = this.encodeCopySource(sourcePath);
+      await this.s3
+        .copyObject({ Bucket: this.bucketName, CopySource: copySource, Key: destinationPath })
+        .promise();
+      await this.s3.deleteObject({ Bucket: this.bucketName, Key: sourcePath }).promise();
+      const destUrl = this.getS3Url(destinationPath);
+      this.logger.info('S3 rename successful', { src: sourcePath, dst: destinationPath });
+      return { statusCode: 200, data: destUrl };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename object in S3', {
+        originalError: error instanceof Error ? error.message : 'Unknown error',
+      });
+    }
+  }
+
+  async renameTree(
+    sourcePrefix: string,
+    destinationPrefix: string,
+  ): Promise<StorageServiceResponse<void>> {
+    try {
+      await this.copyTree(sourcePrefix, destinationPrefix);
+      await this.deleteTree(sourcePrefix);
+      this.logger.info('S3 tree rename successful', { src: sourcePrefix, dst: destinationPrefix });
+      return { statusCode: 200, data: undefined };
+    } catch (error) {
+      if (error instanceof StorageError) throw error;
+      throw new StorageUploadError('Failed to rename tree in S3', {
         originalError: error instanceof Error ? error.message : 'Unknown error',
       });
     }
@@ -574,7 +787,7 @@ class AmazonS3Adapter implements StorageServiceInterface {
   private extractKeyFromUrl(url: string): string {
     try {
       const urlPattern = new RegExp(
-        `https?://${this.bucketName}\\.s3\\.(?:${this.region}\\.)?amazonaws\\.com/(.+)`,
+        `^https?://${escapeRegExp(this.bucketName)}\\.s3\\.(?:${escapeRegExp(this.region)}\\.)?amazonaws\\.com/(.+)`,
       );
       const match = url.match(urlPattern);
 
@@ -607,6 +820,10 @@ class AmazonS3Adapter implements StorageServiceInterface {
    * @param key - The S3 key (path) to convert to a URL
    * @returns The full S3 URL for the object
    */
+  getObjectUrl(storageKey: string): string {
+    return this.getS3Url(storageKey);
+  }
+
   private getS3Url(key: string): string {
     // Ensure the key is URL-encoded (except for forward slashes)
     const encodedKey = key
@@ -615,6 +832,27 @@ class AmazonS3Adapter implements StorageServiceInterface {
       .join('/');
     return `https://${this.bucketName}.s3.${this.region}.amazonaws.com/${encodedKey}`;
   }
+
+  /**
+   * Builds a correctly percent-encoded CopySource value for S3's copyObject
+   * API. CopySource is sent as the raw `x-amz-copy-source` HTTP header --
+   * unlike `Key`, aws-sdk does NOT auto-encode it, so any special character
+   * in the source key (spaces, em-dashes, commas, non-ASCII) that isn't
+   * valid in a raw header value causes the request to be rejected outright.
+   */
+  private encodeCopySource(key: string): string {
+    const encodedKey = key
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    return `${this.bucketName}/${encodedKey}`;
+  }
+}
+
+// Own function so the export is a writable property. A re-export is a getter,
+// and sinon cannot replace that for the health check's cleanup client.
+export function createS3Service(config: S3ServiceConfig): S3Service {
+  return buildS3Service(config);
 }
 
 export default AmazonS3Adapter;

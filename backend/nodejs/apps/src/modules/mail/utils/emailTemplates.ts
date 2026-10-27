@@ -1,6 +1,7 @@
 import { addStyling } from './styling';
 import Handlebars from 'handlebars';
 import fs from 'fs';
+import { getBrandConfig } from '../../../libs/branding';
 const cwd = process.cwd();
 const loadTemplate = (path: string): string => fs.readFileSync(`${cwd}/${path}`, 'utf8');
 
@@ -8,6 +9,7 @@ const loginTemplate = loadTemplate('src/modules/mail/views/layouts/user/login.hb
 const suspiciousLoginTemplate = loadTemplate('src/modules/mail/views/layouts/user/suspiciousLogin.hbs');
 const resetPasswordTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetPassword.hbs');
 const resetEmailTemplate = loadTemplate('src/modules/mail/views/layouts/user/resetEmail.hbs');
+const emailChangeNoticeTemplate = loadTemplate('src/modules/mail/views/layouts/user/emailChangeNotice.hbs');
 const accountCreationTemplate = loadTemplate('src/modules/mail/views/layouts/org/accountCreation.hbs');
 const domainLimitReachedTemplate = loadTemplate('src/modules/mail/views/layouts/org/domainLimitReached.hbs');
 const appUsersInviteTemplate = loadTemplate('src/modules/mail/views/layouts/appusers/invite.hbs');
@@ -53,18 +55,45 @@ Handlebars.registerPartial('head', headTemplate);
 Handlebars.registerPartial('tasktable', taskTableTemplate);
 
 
+// Every brand field is template data, so a build's own partials can use more of them.
+// A field the caller set explicitly wins over the brand default.
+function withBrand(
+  templateData: Record<string, unknown>,
+): Record<string, unknown> {
+  return { ...getBrandConfig(), ...templateData };
+}
+
 const compileTemplate = (template: string, templateData:Record<string,any>): string => {
   if (!templateData) {
     throw new Error(`Invalid templateData ${JSON.stringify(templateData)}`);
   }
   const compiledTemplate = Handlebars.compile(template);
-  return compiledTemplate(addStyling(templateData));
+  return compiledTemplate(addStyling(withBrand(templateData)));
 };
 
 export const loginWithOTPRequest = (templateData: Record<string,any>): string => compileTemplate(loginTemplate, templateData);
 export const suspiciousLoginAttempt = (templateData: Record<string,any>): string => compileTemplate(suspiciousLoginTemplate, templateData);
 export const resetPassword = (templateData: Record<string,any>): string => compileTemplate(resetPasswordTemplate, templateData);
 export const resetEmail = (templateData: Record<string,any>): string => compileTemplate(resetEmailTemplate, templateData);
+export interface EmailChangeNoticeData {
+  name: string;
+  orgName: string;
+  newEmail: string;
+}
+export const isEmailChangeNoticeData = (
+  data: unknown,
+): data is EmailChangeNoticeData => {
+  if (typeof data !== 'object' || data === null) {
+    return false;
+  }
+  const record = data as Record<string, unknown>;
+  return (
+    typeof record.name === 'string' &&
+    typeof record.orgName === 'string' &&
+    typeof record.newEmail === 'string'
+  );
+};
+export const emailChangeNotice = (templateData: EmailChangeNoticeData): string => compileTemplate(emailChangeNoticeTemplate, templateData);
 export const accountCreation = (templateData: Record<string,any>): string => compileTemplate(accountCreationTemplate, templateData);
 export const appUserInvite = (templateData: Record<string,any>): string => compileTemplate(appUsersInviteTemplate, templateData);
 export const orgEmailVerification = (templateData: Record<string,any>): string => compileTemplate(orgEmailVerificationTemplate, templateData);

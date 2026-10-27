@@ -2,7 +2,7 @@
 
 <div align="center">
 
-**Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md)
+**Translations:** [Français](docs/i18n/fr/CONTRIBUTING.md) · [Deutsch](docs/i18n/de/CONTRIBUTING.md) · [简体中文](docs/i18n/zh-CN/CONTRIBUTING.md) · [日本語](docs/i18n/ja/CONTRIBUTING.md) · [Русский](docs/i18n/ru/CONTRIBUTING.md) · [עברית](docs/i18n/he/CONTRIBUTING.md) · [한국어](docs/i18n/ko/CONTRIBUTING.md) · [Español](docs/i18n/es/CONTRIBUTING.md) · [Português](docs/i18n/pt/CONTRIBUTING.md) · [Türkçe](docs/i18n/tr/CONTRIBUTING.md) · [Tiếng Việt](docs/i18n/vi/CONTRIBUTING.md) · [Italiano](docs/i18n/it/CONTRIBUTING.md) · [Čeština](docs/i18n/cs/CONTRIBUTING.md)
 
 This English file is current. The translations may lag; use this page for labeled issues and local setup until they catch up.
 
@@ -50,7 +50,7 @@ Markdown-only work does not need Docker or a local stack. If you add or change a
 
 ## New connectors
 
-A new connector is a large piece of work. The [connector playbook](CONNECTOR_INTEGRATION_PLAYBOOK.md) is the starting point; Discord is a good place to talk through scope first.
+A new connector is a large piece of work. [CONNECTOR.md](CONNECTOR.md) is the starting point, and [CONNECTOR_CHECKLIST.md](CONNECTOR_CHECKLIST.md) is what a reviewer will check it against; Discord is a good place to talk through scope first.
 
 ## Setting Up the Development Environment
 
@@ -258,6 +258,12 @@ In Docker (`./install.sh --build`), Node serves the API and the built UI togethe
    - Reference any related issues
    - Add screenshots if applicable
 
+Pull requests from forks run the integration tests without repository secrets:
+CI runs only the helper unit tests under `integration-tests/unit/`. A maintainer
+runs the full suite on a reviewed commit using *Run workflow* on
+`integration-tests.yml` with that commit's hash (see
+[integration-tests/README.md](integration-tests/README.md)).
+
 ## Code Style Guidelines
 
 - **Python**: Follow PEP 8 guidelines
@@ -288,6 +294,14 @@ cloud storage and takes hours — that runs in CI. It does run
 `backend/python/tests/integration`, which despite the directory name is mostly
 in-process; the suites there that genuinely need a service skip themselves when
 it is absent.
+
+The suites that need a service run in the `backend-matrix` workflow, one job per
+backend, and any skip fails the job. Tests that read `ARTIFACTS_IT_STORAGE_URL`
+(the artifact store and the storage service's routes) run in its `storage` job,
+on local disk, S3 (MinIO) and Azure Blob (Azurite), against the real storage
+routes started by `backend/nodejs/apps/tests/support/storage-it-server.ts`. To run them
+locally, follow the header of
+[`backend/python/tests/integration/compose/storage.yml`](backend/python/tests/integration/compose/storage.yml).
 
 ### Running Node.js Unit Tests
 
@@ -338,6 +352,22 @@ pytest --cov=app --cov-report=term-missing
 # Run tests in parallel (requires pytest-xdist)
 pytest -n auto
 ```
+
+### Running Frontend Unit Tests
+
+Unit tests use **Vitest** and live in `__tests__` folders beside the code they test under `frontend/app/` and `frontend/lib/`, named `*.test.ts` or `*.test.tsx`.
+
+```bash
+cd frontend
+
+# Run all unit tests
+npm run test:unit
+
+# Run them with coverage, as CI does (reports land in coverage/unit)
+npm run test:unit:coverage
+```
+
+CI runs the coverage command and fails when coverage drops below the minimum set in `coverage.thresholds` in `frontend/vitest.config.ts`. If your change trips it, add tests rather than lowering the minimum.
 
 ### Running Frontend E2E Tests (Playwright)
 

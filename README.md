@@ -38,7 +38,7 @@
   <a href="https://www.npmjs.com/package/@pipeshub-ai/mcp"><img src="https://img.shields.io/npm/v/@pipeshub-ai/mcp?logo=npm&amp;logoColor=white&amp;label=mcp" alt="MCP" /></a>
 </p>
 
-**Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md)
+**Translations:** [Français](docs/i18n/fr/README.md) · [Deutsch](docs/i18n/de/README.md) · [简体中文](docs/i18n/zh-CN/README.md) · [日本語](docs/i18n/ja/README.md) · [Русский](docs/i18n/ru/README.md) · [עברית](docs/i18n/he/README.md) · [한국어](docs/i18n/ko/README.md) · [Español](docs/i18n/es/README.md) · [Português](docs/i18n/pt/README.md) · [Türkçe](docs/i18n/tr/README.md) · [Tiếng Việt](docs/i18n/vi/README.md) · [Italiano](docs/i18n/it/README.md) · [Čeština](docs/i18n/cs/README.md)
 
 </div>
 
@@ -53,6 +53,21 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 > ```bash
 > curl -fsSL https://get.pipeshub.com/install | bash
 > ```
+
+<p align="center">
+  <a href="https://youtu.be/VgyND38QZ7w"><img src="https://img.youtube.com/vi/VgyND38QZ7w/maxresdefault.jpg" alt="Watch the PipesHub demo on YouTube" width="720"/></a>
+  <br/>
+  <strong><a href="https://youtu.be/VgyND38QZ7w">▶ Watch the 2½-minute demo</a></strong>: Claude Code answering from Jira, Slack, GitHub and Drive, with each person's permissions
+</p>
+
+## What can you build with PipesHub?
+
+Don't just use PipesHub — build on it.
+
+**[Give Claude Code, Cursor, or Codex secure access to your company's knowledge →](https://github.com/pipeshub-ai/examples/tree/main/company-knowledge-mcp)**
+About ten minutes once PipesHub is running with data indexed. Mint a Personal Access Token (no admin needed), connect your assistant (one command for Claude Code, one config file for Cursor or Codex), and ask *"why was the retry logic in the billing worker changed?"* — it answers from the incident postmortem, the pull request, the chat thread, and the design doc, each cited, and only if you're allowed to see them.
+
+Want the same retrieval inside your own code, or behind a search box for your team? The [SDK starter and search example](https://github.com/pipeshub-ai/examples) cover both. Built something? [Show us](https://github.com/pipeshub-ai/examples/issues/new?template=showcase.yml).
 
 ## PipesHub in Action
 
@@ -91,9 +106,9 @@ Connect Slack, Google Drive, GitHub, Microsoft 365, Notion and 50+ other systems
 
 ## PipesHub Cloud
 
-Prefer a fully managed PipesHub without running your own infrastructure? PipesHub Cloud is coming soon.
+Prefer a fully managed PipesHub without running your own infrastructure? Sign up for **[PipesHub Cloud](https://app.pipeshub.com)**: the same connectors, permission-aware search, and APIs, with nothing to install.
 
-👉 **[Join the Cloud Waitlist](https://pipeshub.com/cloud-waitlist)** to get early access.
+Coding agents connect to `https://app.pipeshub.com/mcp` with a personal access token. See [For coding agents](https://docs.pipeshub.com/for-agents).
 
 ## Connectors
 
@@ -174,6 +189,11 @@ An agent connects as a specific person rather than as the application, so it
 retrieves exactly what that person is allowed to see. Access is resolved when
 the query runs, against the source system's own permissions, instead of being
 approximated at build time.
+
+Step-by-step tutorials for the most common builds — an MCP for your coding
+assistant, private enterprise search, and SDK starters — live in
+[**pipeshub-ai/examples**](https://github.com/pipeshub-ai/examples). The
+reference material for each building block is below.
 
 ### MCP Server
 

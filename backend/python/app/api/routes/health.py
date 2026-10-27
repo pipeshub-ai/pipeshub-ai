@@ -2,8 +2,9 @@ import asyncio
 import inspect
 import ipaddress
 import os
-import re
 import shutil
+import socket
+from collections.abc import AsyncIterator, Awaitable
 from logging import Logger
 from typing import Any
 from urllib.parse import urlparse
@@ -17,7 +18,14 @@ from langchain_core.messages import BaseMessage, HumanMessage  #type: ignore
 from langchain_core.tools import StructuredTool  #type: ignore
 from pydantic import BaseModel, Field
 
+from app.agent_loop_lib.transport.provider_conflicts import is_api_shape_conflict
+from app.agents.agent_loop.langchain_transport import responses_api_copy
 from app.api.middlewares.auth import deny_service_tokens
+from app.services.ai_models.decision import PredicateQuestion, get_decision_model
+from app.services.model_identity.boundary import principal_from_request_user
+from app.services.model_identity.runtime import call_scope
+from app.services.model_identity.workload import Workload
+from app.services.vector_db.collections import CollectionType
 from app.utils.aimodels import (
     ImageGenerationProvider,
     LLMProvider,
@@ -29,12 +37,43 @@ from app.utils.aimodels import (
     get_image_generation_model,
     get_stt_model,
     get_tts_model,
+    iter_model_names,
+    model_default_reasoning_effort,
+    openai_async_client_kwargs,
+    require_public_endpoint,
 )
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import bedrock_access_denied_cause, provider_error_code
+from app.web.deadline import Deadline
+from app.web.errors import (
+    AuthFailed,
+    Blocked,
+    NotConfigured,
+    QuotaExceeded,
+    RateLimited,
+    TimedOut,
+    UnknownProvider,
+    UpstreamError,
+    WebError,
+)
+from app.web.health import check_provider, provider_name
 
-router = APIRouter(dependencies=[Depends(deny_service_tokens)])
 
-SPARSE_IDF = False
+async def _bind_health_check_identity(request: Request) -> AsyncIterator[None]:
+    """Bind the admin as the caller. The projector sends admin workloads as the service, so a probe never spends a person's gateway budget."""
+    user = getattr(request.state, "user", None)
+    container = getattr(request.app, "container", None)
+    config_service = container.config_service() if container is not None else None
+    async with call_scope(
+        principal_from_request_user(user if isinstance(user, dict) else None),
+        Workload.HEALTH_CHECK,
+        config_service=config_service,
+        container=container,
+    ):
+        yield
+
+
+router = APIRouter(dependencies=[Depends(deny_service_tokens), Depends(_bind_health_check_identity)])
 
 # Cloud LLM health checks call external APIs; local runtimes do not need egress.
 _LOCAL_LLM_PROVIDERS = frozenset({"ollama", "lmStudio"})
@@ -45,9 +84,9 @@ _OUTBOUND_PROBE_TIMEOUT_S = 5.0
 # is rejected rather than reported healthy -- Node's model-type validator is
 # wider than this set (`ocr`, `slm`, `reasoning`, `multiModal`), and a type
 # that falls through would register a model nothing had checked.
-SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt"})
+SUPPORTED_HEALTH_CHECK_TYPES = frozenset({"llm", "embedding", "imageGeneration", "tts", "stt", "decision"})
 
-# Outer cap vs I/O timeouts in web_search_tool / fetch_url (DDG 15s, httpx 30s).
+# Deadline for one test search per provider.
 _WEB_SEARCH_HEALTH_TIMEOUTS_S = {
     "duckduckgo": 20.0,
     "serper": 33.0,
@@ -94,9 +133,22 @@ def _llm_health_check_needs_outbound(provider: str, configuration: dict[str, Any
 
 
 def _looks_like_connectivity_error(exc: BaseException) -> bool:
+    # SDKs wrap the socket error: openai.APIConnectionError("Connection error.") from httpx.ConnectError.
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        if _is_connectivity_error(current):
+            return True
+        seen.add(id(current))
+        current = current.__cause__ or current.__context__
+    return False
+
+
+def _is_connectivity_error(exc: BaseException) -> bool:
     if isinstance(
         exc,
-        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, OSError),
+        # Not bare OSError: a missing local model file is one too, and is no network fault.
+        (httpx.TimeoutException, httpx.ConnectError, httpx.NetworkError, ConnectionError, socket.gaierror),
     ):
         return True
     msg = str(exc).lower()
@@ -199,10 +251,6 @@ def _extract_error_message(e: Exception) -> str:
 
     return str(e)
 
-# Provider text that is really our own exception leaking, not something a person can act on.
-_TECHNICAL_REASON = re.compile(
-    r"Traceback|object has no attribute|NoneType|<[\w.]+ object at 0x|^'[^']*'$|^\w+(Error|Exception)\b",
-)
 _SETUP_NEXT_STEP = "Check the API key, model name and endpoint, then try again."
 
 
@@ -213,32 +261,148 @@ def _provider_display_name(provider: str | None) -> str:
     return (meta or {}).get("name") or provider or "the provider"
 
 
-def _short_provider_reason(e: Exception) -> str:
-    """The provider's own one-line reason when it is readable (e.g. "Incorrect API key provided")."""
-    lines = _extract_error_message(e).strip().splitlines()
-    reason = lines[0].strip().rstrip(". ") if lines else ""
-    if not reason or _TECHNICAL_REASON.search(reason):
-        return ""
-    return reason if len(reason) <= 200 else reason[:197].rstrip() + "..."
+# Failure messages are fixed text: exception and provider text go to the log only, never
+# into a response, where they could carry internals (hosts, request ids, stack frames).
+EMBEDDING_UNAVAILABLE_MESSAGE = (
+    "The embedding model couldn't start. Check it in Workspace > AI Models, then try again."
+)
 
 
-_WEB_SEARCH_NAMES = {"duckduckgo": "DuckDuckGo", "serper": "Serper", "tavily": "Tavily", "exa": "Exa"}
+def _model_setup_failed_message(kind: str, provider: str | None) -> str:
+    return f"Couldn't connect to {_provider_display_name(provider)} with these {kind} settings. {_SETUP_NEXT_STEP}"
 
 
-def _web_search_name(provider: str | None) -> str:
-    return _WEB_SEARCH_NAMES.get(provider or "", provider or "The web search provider")
+# Provider answers that mean the settings are wrong, so the admin has to change them.
+_REJECTED_SETTINGS_CODES = frozenset({"auth_error", "model_not_found", "invalid_request", "request_too_large"})
 
 
-def _embedding_unavailable_message(e: Exception | None) -> str:
-    reason = _short_provider_reason(e) if e is not None else ""
-    lead = f"The embedding model couldn't start: {reason}." if reason else "The embedding model couldn't start."
-    return f"{lead} Check it in Workspace > AI Models, then try again."
+def _rejected_settings_message(
+    code: str, kind: str, model_config: dict, model: str, exc: BaseException | None = None,
+) -> str:
+    provider = _provider_display_name(model_config.get("provider"))
+    configuration = model_config.get("configuration") or {}
+    name = configuration.get("modelFriendlyName") or model_config.get("modelFriendlyName") or model or kind
+    if _normalize_provider_key(model_config.get("provider")) == "bedrock":
+        from app.utils.aimodels import (
+            bedrock_inference_profile_hint,
+            bedrock_is_openai_gpt,
+        )
+
+        profiles = bedrock_inference_profile_hint(model)
+        if profiles and code in ("invalid_request", "model_not_found"):
+            return (
+                f"Bedrock only serves \"{model}\" through a cross-Region inference profile. "
+                f"Change the model name to {profiles} in Workspace > AI Models, then try again."
+            )
+        if code == "auth_error":
+            cause = bedrock_access_denied_cause(exc)
+            if cause == "credentials":
+                return (
+                    f"AWS rejected the credentials for {name}: the access key, secret key or "
+                    "session token is wrong or has expired. Check them in Workspace > AI Models, "
+                    "or the server's IAM role when no key is set, then try again."
+                )
+            if cause == "account":
+                return (
+                    f"AWS hasn't enabled {name} for this AWS account. IAM permissions can't fix "
+                    "this: ask AWS Support to enable the model for the account and Region, "
+                    "or choose another model."
+                )
+            if cause == "marketplace":
+                return (
+                    f"AWS couldn't complete the AWS Marketplace subscription for {name}, "
+                    "usually because the account has no valid payment method. Fix billing in "
+                    "the AWS console, wait a few minutes, then try again. IAM permissions "
+                    "can't fix this."
+                )
+            if cause == "other":
+                return (
+                    f"Bedrock denied access to {name}. Check the model's access, billing and "
+                    "account status in the Amazon Bedrock console, then try again."
+                )
+            if cause == "scp":
+                return (
+                    f"An AWS Organizations service control policy blocks {name}. Ask your AWS "
+                    "Organizations administrator to allow Bedrock for this account, then try again."
+                )
+            extra = (
+                " OpenAI GPT models also need that permission on the account's default project "
+                "(arn:aws:bedrock:<region>:<account-id>:project/default)."
+                if bedrock_is_openai_gpt(model) else ""
+            )
+            return (
+                f"Bedrock denied access to {name}. Make sure the access key, or the server's IAM "
+                f"role when no key is set, allows bedrock:InvokeModel and "
+                f"bedrock:InvokeModelWithResponseStream on this inference profile and on the "
+                f"foundation model in every Region the profile routes to "
+                f"(arn:aws:bedrock:*::foundation-model/...).{extra}"
+            )
+    if code == "auth_error":
+        return (
+            f"The API key for {name} was rejected by {provider}. "
+            "Check the key in Workspace > AI Models, then try again."
+        )
+    if code == "model_not_found":
+        # A bare 404 can also mean a wrong endpoint path (an OpenAI-compatible base URL without /v1).
+        return (
+            f"{provider} couldn't find the model \"{model}\" at this endpoint. "
+            "Check the model name (or deployment name) and the endpoint address "
+            "in Workspace > AI Models, then try again."
+        )
+    return (
+        f"{provider} refused these {kind} settings. Check the model name and its options "
+        "(such as reasoning effort or context length), then try again."
+    )
 
 
-def _model_setup_failed_message(kind: str, provider: str | None, e: Exception) -> str:
-    lead = f"Couldn't connect to {_provider_display_name(provider)} with these {kind} settings"
-    reason = _short_provider_reason(e)
-    return f"{lead}: {reason}. {_SETUP_NEXT_STEP}" if reason else f"{lead}. {_SETUP_NEXT_STEP}"
+async def _model_setup_failed_response(
+    kind: str, model_config: dict, model: str, e: Exception,
+) -> JSONResponse:
+    """What a failed model check returns: 400 when the settings are wrong, 500 otherwise.
+
+    A wrong key, model name or endpoint is the admin's to fix, so it must not
+    read as a PipesHub fault; the dialog shows the message of a 4xx verbatim.
+    Only the classified code and fixed text are returned; callers log ``e``.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    if not isinstance(configuration, dict):
+        configuration = {}
+    code = provider_error_code(e)
+    if code in _REJECTED_SETTINGS_CODES:
+        return _config_error(
+            _rejected_settings_message(code, kind, model_config, model, e),
+            model_config, model, error_code=code,
+        )
+    if _looks_like_connectivity_error(e):
+        # With no egress at all, re-typing the endpoint won't help, so say that instead.
+        if _llm_health_check_needs_outbound(provider or "", configuration) and not await _probe_outbound_connectivity():
+            return _outbound_connectivity_error_response(provider or "", model)
+        return _config_error(
+            f"Couldn't reach {_provider_display_name(provider)} at the endpoint in these settings. "
+            "Check the endpoint address and that PipesHub can connect to it, then try again.",
+            model_config, model, error_code="endpoint_unreachable",
+        )
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "message": _model_setup_failed_message(kind, provider),
+            "details": {"provider": provider, "model": model, "error_code": "model_check_failed"},
+        },
+    )
+
+
+def _is_settings_failure(e: BaseException) -> bool:
+    """Whether the provider refused the settings or could not be reached at all."""
+    return provider_error_code(e) in _REJECTED_SETTINGS_CODES or _looks_like_connectivity_error(e)
+
+
+def _chosen_embedding_config(embedding_configs: list[dict]) -> dict:
+    """The config `initialize_embedding_model` builds: the default one, else the first."""
+    return next((c for c in embedding_configs if c.get("isDefault", False)), None) or (
+        embedding_configs[0] if embedding_configs else {}
+    )
 
 
 # HTTP statuses that mean "ask again later", never "this model cannot do it".
@@ -261,6 +425,30 @@ _CAPABILITY_ERROR_MARKERS = (
     "unknown parameter",
 )
 
+_IMAGE_EMBEDDING_SETUP_FAILED = (
+    "PipesHub couldn't set up image embedding for this provider. Check its endpoint "
+    "and API key in Workspace → AI Models, then try again."
+)
+
+_IMAGE_EMBEDDING_RETURNED_NOTHING = (
+    "The model returned no embedding for a test image, so images wouldn't be "
+    "indexed. Check its API key and endpoint and that it accepts images, then try again."
+)
+
+
+class _ImageEmbeddingSettingsError(Exception):
+    """Image embedding failed because of the model's settings (endpoint, API
+    key), not because the model cannot embed images.
+
+    Kept apart from a capability failure: telling the admin to uncheck
+    Multimodal would switch off a capability over a wrong endpoint or key.
+    `message` is fixed text; the provider's own error goes to the log only.
+    """
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
 
 def _is_capability_error(exc: Exception) -> bool:
     """Whether `exc` says the model cannot do the thing, as opposed to the
@@ -280,6 +468,19 @@ def _is_capability_error(exc: Exception) -> bool:
         return False
     message = str(exc).lower()
     return any(marker in message for marker in _CAPABILITY_ERROR_MARKERS)
+
+
+async def _endpoint_refusal(config: dict) -> JSONResponse | None:
+    """A 400 for a config whose endpoint this deployment may not call, else None."""
+    configuration = config.get("configuration")
+    if not isinstance(configuration, dict):
+        return None  # the health check that follows reports the malformed config
+    try:
+        for field in ("endpoint", "baseUrl"):
+            await require_public_endpoint(configuration.get(field))
+    except ValueError as e:
+        return _config_error(str(e), config, configuration.get("model", ""))
+    return None
 
 
 def _config_error(
@@ -364,99 +565,86 @@ def _get_test_image() -> str:
     return _TEST_IMAGE
 
 
+def _web_search_unhealthy(status_code: int, error: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=status_code,
+        content={"status": "not healthy", "error": error, "timestamp": get_epoch_timestamp_in_ms()},
+    )
+
+
+_NOT_CONFIGURED_HINTS = {
+    "api_key": "{name} needs an API key. Add it in the web search settings, then try again.",
+    "base_url": "{name} needs the http(s) address of its server.",
+    "searxng_json": "SearXNG refused to answer in JSON: add json to search.formats in its settings.yml.",
+    "server_version": "{name} 0.9.4 or later is required; older versions are unsafe to expose.",
+}
+
+
+def _web_search_failure(provider: str, error: WebError) -> JSONResponse:
+    name = provider_name(provider)
+    if isinstance(error, TimedOut):
+        return _web_search_unhealthy(408, f"{name} didn't answer in time. Check your network, then try again.")
+    if isinstance(error, UnknownProvider):
+        return _web_search_unhealthy(400, f"{name} isn't a web search provider this server knows.")
+    if isinstance(error, NotConfigured):
+        # Fixed wording per reason: the error's own message can quote what a remote server said.
+        hint = _NOT_CONFIGURED_HINTS.get(error.reason, _NOT_CONFIGURED_HINTS["api_key"])
+        return _web_search_unhealthy(400, hint.format(name=name))
+    if isinstance(error, AuthFailed):
+        return _web_search_unhealthy(400, f"{name} didn't accept the API key. Check the key in the web search settings, then try again.")
+    if isinstance(error, RateLimited):
+        return _web_search_unhealthy(400, f"{name} is limiting requests right now. Wait a minute, then try again.")
+    if isinstance(error, QuotaExceeded):
+        return _web_search_unhealthy(400, f"{name} says this account's search credits are used up. Check the plan, then try again.")
+    if isinstance(error, Blocked):
+        return _web_search_unhealthy(
+            400, f"{name} blocked the test search as automated traffic. Try again later, or add a provider that uses an API key.",
+        )
+    if isinstance(error, UpstreamError) and error.status:
+        return _web_search_unhealthy(
+            400, f"{name} returned an error ({error.status}). Try again in a minute; if it keeps failing, check the web search settings.",
+        )
+    return _web_search_unhealthy(
+        500, f"Couldn't reach {name} for web search. Check its API key in the web search settings, then try again.",
+    )
+
+
 @router.post("/web-search-health-check")
 async def web_search_health_check(request: Request, provider_config: dict = Body(...)) -> JSONResponse:
-    """Health check endpoint to validate a web search provider configuration."""
+    """Health check endpoint to validate a web search or page-reading provider configuration."""
     provider = provider_config.get("provider", "duckduckgo")
+    configuration = provider_config.get("configuration") or {}
+    deadline = Deadline.after(_WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0))
     try:
-        configuration = provider_config.get("configuration", {})
-
-        from app.utils.web_search_tool import (
-            _search_with_duckduckgo,
-            _search_with_exa,
-            _search_with_serper,
-            _search_with_tavily,
-        )
-
-        provider_map = {
-            "duckduckgo": _search_with_duckduckgo,
-            "serper": _search_with_serper,
-            "tavily": _search_with_tavily,
-            "exa": _search_with_exa,
-        }
-
-        search_func = provider_map.get(provider)
-        if not search_func:
-            return JSONResponse(
-                status_code=400,
-                content={
-                    "status": "not healthy",
-                    "error": f"Unknown web search provider: {provider}",
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-
-        budget_s = _WEB_SEARCH_HEALTH_TIMEOUTS_S.get(provider, 33.0)
-        await asyncio.wait_for(
-            search_func("health check test", configuration),
-            timeout=budget_s,
-        )
-
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": f"Web search provider '{provider}' is responding",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except asyncio.TimeoutError:
-        return JSONResponse(
-            status_code=408,
-            content={
-                "status": "not healthy",
-                "error": f"{_web_search_name(provider)} didn't answer in time. Check your network, then try again.",
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except ValueError as e:
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "not healthy",
-                "error": str(e),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
-    except httpx.HTTPStatusError as e:
-        status = e.response.status_code
-        if status in (401, 403):
-            error_msg = f"{_web_search_name(provider)} didn't accept the API key. Check the key in the web search settings, then try again."
-        elif status == 429:
-            error_msg = f"{_web_search_name(provider)} is limiting requests right now. Wait a minute, then try again."
-        else:
-            error_msg = f"{_web_search_name(provider)} returned an error ({status}). Try again in a minute; if it keeps failing, check the web search settings."
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "not healthy",
-                "error": error_msg,
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        await check_provider(provider, configuration, deadline)
+    except WebError as e:
+        request.app.container.logger().warning(f"Web search health check failed for {provider}: {e.error_type}")
+        return _web_search_failure(provider, e)
     except Exception as e:
         request.app.container.logger().error(f"Web search health check failed for {provider}: {e}")
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "not healthy",
-                "error": (
-                    f"Couldn't reach {_web_search_name(provider)} for web search. Check its API key in the web search "
-                    "settings, then try again."
-                ),
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        return _web_search_failure(provider, WebError(str(e)))
+    return JSONResponse(
+        status_code=200,
+        content={
+            "status": "healthy",
+            "message": f"Web search provider '{provider}' is responding",
+            "timestamp": get_epoch_timestamp_in_ms(),
+        },
+    )
+
+
+@router.post("/model-endpoint-check")
+async def model_endpoint_check(model_configs: list[dict] = Body(...)) -> JSONResponse:
+    """Whether this deployment may call each config's endpoint, without calling the model.
+    For model types saved without a health check of their own."""
+    for model_config in model_configs:
+        refusal = await _endpoint_refusal(model_config)
+        if refusal is not None:
+            return refusal
+    return JSONResponse(
+        status_code=200,
+        content={"status": "healthy", "timestamp": get_epoch_timestamp_in_ms()},
+    )
 
 
 @router.post("/llm-health-check")
@@ -482,7 +670,7 @@ async def llm_health_check(request: Request, llm_configs: list[dict] = Body(...)
         )
 
     for llm_config in llm_configs:
-        response = await perform_llm_health_check(llm_config, logger)
+        response = await _endpoint_refusal(llm_config) or await perform_llm_health_check(llm_config, logger)
         if response.status_code != 200:
             return response
 
@@ -525,21 +713,23 @@ async def initialize_embedding_model(request: Request, embedding_configs: list[d
                 raise HTTPException(status_code=500, detail="No default embedding model found")
     except Exception as e:
         logger.error(f"Failed to initialize embedding model: {str(e)}", exc_info=True)
+        if _is_settings_failure(e):
+            raise
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": _embedding_unavailable_message(e),
+                "error": EMBEDDING_UNAVAILABLE_MESSAGE,
                 "timestamp": get_epoch_timestamp_in_ms(),
             }
-        )
+        ) from e
 
     if dense_embeddings is None:
         raise HTTPException(
             status_code=500,
             detail={
                 "status": "not healthy",
-                "error": _embedding_unavailable_message(None),
+                "error": EMBEDDING_UNAVAILABLE_MESSAGE,
                 "details": {
                     "embedding_model": "initialization_failed",
                     "vector_store": "unknown",
@@ -643,21 +833,42 @@ async def handle_model_change(
         )
 
     if existing_vector_size != 0:
-        await recreate_collection(retrieval_service, embedding_size, logger)
+        try:
+            await recreate_collection(retrieval_service, embedding_size, logger)
+        except Exception as e:
+            # Reporting success would let the caller save (or delete) the model.
+            # The rebuild drops each collection before creating it, so the empty
+            # collection may be gone; the manifest keeps it, and the write path
+            # creates it again at the dimension of the model then in use.
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "status": "not healthy",
+                    "error": (
+                        "The vector store could not be rebuilt for the new embedding "
+                        "model, so the model was not changed. The empty collection "
+                        "may already have been removed; it is created again on the "
+                        "next upload. Check that the vector store is reachable and "
+                        "try again."
+                    ),
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
+            ) from e
 
 async def recreate_collection(retrieval_service, embedding_size, logger) -> None:
-    """Rebuild every managed collection for the new embedding dimension.
+    """Rebuild every managed records collection for the new embedding dimension.
 
     Routed through CollectionRegistry so each rebuilt collection gets the same
     config, payload indexes, and manifest entry as one created by the normal
     indexing write path — and so a multi-collection strategy rebuilds all of
     them, not just the one this service happens to name.
+
+    The entity index is left alone, as in ``survey_managed_collections``: the
+    indexing service recreates and re-embeds it once the new model is saved.
     """
     registry = retrieval_service.collection_registry
     try:
-        recreated = await registry.recreate_all_collections(
-            embedding_size, sparse_idf=SPARSE_IDF
-        )
+        recreated = await registry.recreate_records_collections(embedding_size)
         if not recreated:
             # Nothing managed yet. There is no collection to rebuild, and
             # creating one here would have to invent a context — which under a
@@ -689,17 +900,29 @@ class CollectionSurveyError(Exception):
 
 
 async def survey_managed_collections(retrieval_service, logger) -> tuple[int, int]:
-    """Aggregate (dense dimension, total points) over every managed collection.
+    """Aggregate (dense dimension, total points) over every managed records collection.
 
-    The embedding-model guard must reject a change while *any* managed
+    The embedding-model guard must reject a change while *any* records
     collection still holds data, so the enumeration is read fresh: a cached
     view could miss a collection another service created since this process
     started, and the guard would wave the change through while that collection
-    still holds vectors from the outgoing model.
+    still holds vectors from the outgoing model. It is read strictly for the
+    same reason: a manifest that cannot be read otherwise answers as an empty
+    one, which is "nothing indexed".
+
+    The entity index is left out: it is a projection of the graph that the
+    indexing service recreates and re-embeds itself for a new model
+    (``entity_index_rebuild``), not content the admin must delete first.
     """
     registry = retrieval_service.collection_registry
     try:
-        managed = await registry.list_managed_collections(fresh=True)
+        managed = [
+            entry
+            for entry in await registry.list_managed_collections(
+                fresh=True, strict=True
+            )
+            if entry.collection_type == CollectionType.RECORDS.value
+        ]
         existing_vector_size = 0
         points_count = 0
         for entry in managed:
@@ -779,8 +1002,13 @@ async def check_collection_info(
 @router.post("/embedding-health-check")
 async def embedding_health_check(request: Request, embedding_configs: list[dict] = Body(...)) -> JSONResponse:
     """Health check endpoint to validate embedding configurations."""
-    logger = None
+    logger = request.app.container.logger()
     try:
+        for embedding_config in embedding_configs:
+            refusal = await _endpoint_refusal(embedding_config)
+            if refusal is not None:
+                return refusal
+
         # Initialize components
         dense_embeddings, retrieval_service, logger = await initialize_embedding_model(request, embedding_configs)
 
@@ -810,9 +1038,12 @@ async def embedding_health_check(request: Request, embedding_configs: list[dict]
             detail = {**detail, "message": detail["error"]}
         return JSONResponse(status_code=he.status_code, content=detail)
     except Exception as e:
-        if logger:
-            logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
-        error_msg = _embedding_unavailable_message(e)
+        logger.error(f"Embedding health check failed: {str(e)}", exc_info=True)
+        if _is_settings_failure(e):
+            config = _chosen_embedding_config(embedding_configs)
+            model = (config.get("configuration") or {}).get("model") or ""
+            return await _model_setup_failed_response("embedding model", config, model, e)
+        error_msg = EMBEDDING_UNAVAILABLE_MESSAGE
         return JSONResponse(
             status_code=500,
             content={
@@ -862,6 +1093,17 @@ class _HealthProbe(BaseModel):
     query: str = Field(description="Anything at all; this tool is never run.")
 
 
+def _bind_probe_tool(llm_model: BaseChatModel) -> Any:  # noqa: ANN401
+    return llm_model.bind_tools([
+        StructuredTool.from_function(
+            func=lambda query: query,
+            name="health_probe",
+            description="A no-op probe used by the health check.",
+            args_schema=_HealthProbe,
+        ),
+    ])
+
+
 async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     """Whether this model accepts bound tools.
 
@@ -870,16 +1112,13 @@ async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     them is unusable for agents even though it answers plain prompts. Reported
     rather than fatal: the same model may still be a fine choice for the
     indexing and image-description roles.
+
+    A refusal that asks for the Responses API (Azure's gpt-6 models refuse
+    tools on Chat Completions even with Reasoning unticked) is tried once more
+    there, as an agent turn would retry it (`LangChainTransport._api_shape_fallback`).
     """
     try:
-        bound = llm_model.bind_tools([
-            StructuredTool.from_function(
-                func=lambda query: query,
-                name="health_probe",
-                description="A no-op probe used by the health check.",
-                args_schema=_HealthProbe,
-            ),
-        ])
+        bound = _bind_probe_tool(llm_model)
     except Exception as exc:
         logger.info("Model does not accept bound tools: %s", exc)
         return False
@@ -887,6 +1126,17 @@ async def _check_tool_calling(llm_model: BaseChatModel, logger: Logger) -> bool:
     try:
         await _invoke_with_timeout(bound, _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S)
     except Exception as exc:
+        if is_api_shape_conflict(exc) and hasattr(llm_model, "use_responses_api") \
+                and not getattr(llm_model, "use_responses_api", None):
+            try:
+                await _invoke_with_timeout(
+                    _bind_probe_tool(responses_api_copy(llm_model)), _TEXT_PROBE, _TOOL_PROBE_TIMEOUT_S,
+                )
+            except Exception as retry_exc:
+                exc = retry_exc
+            else:
+                logger.info("Model accepts tools on the Responses API, not on Chat Completions: %s", exc)
+                return True
         if _is_capability_error(exc):
             logger.info("Model rejected a request carrying tools: %s", exc)
             return False
@@ -1002,6 +1252,15 @@ def _validate_context_length(llm_config: dict, model_string: str) -> JSONRespons
     return None
 
 
+def _validate_default_reasoning_effort(llm_config: dict, model_string: str) -> JSONResponse | None:
+    """Reject a model default the LLM factory would refuse, before spending a provider call."""
+    try:
+        model_default_reasoning_effort(llm_config)
+    except ValueError as e:
+        return _config_error(str(e), llm_config, model_string)
+    return None
+
+
 async def perform_llm_health_check(
     llm_config: dict,
     logger: Logger,
@@ -1024,7 +1283,7 @@ async def perform_llm_health_check(
 
     try:
         logger.info("Performing LLM health check for %s with model %s", provider, model_string)
-        model_names = [name.strip() for name in str(model_string).split(",") if name.strip()]
+        model_names = iter_model_names(configuration)
         if not model_names:
             logger.error("No valid model names in configuration for %s", provider)
             return _config_error(
@@ -1034,6 +1293,9 @@ async def perform_llm_health_check(
         context_error = _validate_context_length(llm_config, model_string)
         if context_error is not None:
             return context_error
+        effort_error = _validate_default_reasoning_effort(llm_config, model_string)
+        if effort_error is not None:
+            return effort_error
 
         # Node registers every name in the list as its own model
         # (`cm_controller.ts`'s model flattening), so every name is checked.
@@ -1110,27 +1372,7 @@ async def perform_llm_health_check(
             "LLM health check failed for %s model %s (%s): %s",
             provider, model_string, friendly_name, e,
         )
-        # A refused connection from a cloud provider usually means the
-        # container has no egress at all, which no amount of re-typing the API
-        # key will fix -- so say that instead of relaying the socket error.
-        if (
-            _looks_like_connectivity_error(e)
-            and _llm_health_check_needs_outbound(provider, configuration)
-            and not await _probe_outbound_connectivity()
-        ):
-            return _outbound_connectivity_error_response(provider, model_name or model_string)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("chat model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name or model_string,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+        return await _model_setup_failed_response("chat model", llm_config, model_name or model_string, e)
 
 
 async def _check_one_llm(
@@ -1159,20 +1401,45 @@ async def _check_one_llm(
             llm_config, model_name,
         )
 
-    if is_multimodal:
-        image_error = await _probe_vision(llm_model, logger)
-        if image_error is not None:
-            return _config_error(
-                image_error, llm_config, model_name,
-                hint="Uncheck Multimodal for this model, or choose a vision model.",
-            )
+    # The remaining probes are independent; run them together so a slow model
+    # (a "pro" tier can take a minute per call) is not charged for each in turn.
+    image_error, tool_calling, streaming = await _gather_or_cancel(
+        _probe_vision(llm_model, logger) if is_multimodal else _no_probe(),
+        _check_tool_calling(llm_model, logger),
+        _check_streaming(llm_model, logger),
+    )
+    if image_error is not None:
+        return _config_error(
+            image_error,
+            llm_config,
+            model_name,
+            hint="Uncheck Multimodal for this model, or choose a vision model.",
+        )
 
     return {
         "model": model_name,
         "sample": sample,
-        "tool_calling": await _check_tool_calling(llm_model, logger),
-        "streaming": await _check_streaming(llm_model, logger),
+        "tool_calling": tool_calling,
+        "streaming": streaming,
     }
+
+
+async def _no_probe() -> None:
+    return None
+
+
+async def _gather_or_cancel(*probes: Awaitable[Any]) -> list[Any]:
+    """Like gather, but a raising probe cancels the others instead of leaving them
+    calling the provider. The original exception is re-raised unchanged, so callers'
+    TimeoutError / HTTPException handlers still match (a TaskGroup would wrap it)."""
+    tasks = [asyncio.ensure_future(probe) for probe in probes]
+    try:
+        return await asyncio.gather(*tasks)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
 
 
 async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
@@ -1193,7 +1460,7 @@ async def _probe_vision(llm_model: BaseChatModel, logger: Logger) -> str | None:
     except Exception as image_error:
         if _is_capability_error(image_error):
             logger.info("Model rejected image input: %s", image_error)
-            return f"Model doesn't support images/vision: {_extract_error_message(image_error)}"
+            return "Model doesn't support images/vision."
         # Rate limit, gateway 5xx, auth: says nothing about vision support, so
         # reporting "no vision" here would tell the admin to disable a
         # capability the model may well have.
@@ -1218,7 +1485,8 @@ def _is_multimodal(config: dict) -> bool:
 async def _probe_image_embedding(
     embedding_config: dict, model_name: str, text_dimension: int, logger: Logger,
 ) -> str | None:
-    """None when this model really can embed an image, else why not.
+    """None when this model really can embed an image, else why it cannot.
+    Raises `_ImageEmbeddingSettingsError` when the settings are at fault.
 
     Uses the same `MultimodalEmbeddingFactory` the indexing pipeline uses, so a
     provider with no implementation is caught here rather than by images
@@ -1245,7 +1513,7 @@ async def _probe_image_embedding(
         )
     except Exception as exc:
         logger.warning("Could not build a multimodal embedding provider: %s", exc)
-        return f"This provider cannot embed images: {_extract_error_message(exc)}"
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_SETUP_FAILED) from exc
 
     if multimodal_provider is None or not multimodal_provider.supports_multimodal():
         return (
@@ -1262,14 +1530,16 @@ async def _probe_image_embedding(
         raise
     except Exception as exc:
         if _is_capability_error(exc):
-            return f"Model cannot embed images: {_extract_error_message(exc)}"
+            logger.info("Model rejected image embedding: %s", exc)
+            return "Model cannot embed images."
         raise
 
     first = results[0] if results else None
     embedding = getattr(first, "embedding", None)
     if not embedding:
-        error = getattr(first, "error", None)
-        return f"Image embedding returned nothing{f': {error}' if error else ''}"
+        # Providers report failed calls here (a 401, a bad endpoint), not only refusals.
+        logger.warning("Image embedding probe returned no embedding: %s", getattr(first, "error", None))
+        raise _ImageEmbeddingSettingsError(_IMAGE_EMBEDDING_RETURNED_NOTHING)
     if len(embedding) != text_dimension:
         # A collection holds one vector width; text and image points must agree.
         return (
@@ -1313,9 +1583,8 @@ async def perform_embedding_health_check(
     """Perform health check for embedding models"""
     try:
         logger.info(f"Performing embedding health check for {embedding_config.get('provider')} with configuration model {embedding_config.get('configuration', {}).get('model', '')}")
-        # Use the first model from comma-separated list
         model_string = embedding_config.get("configuration", {}).get("model", "")
-        model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+        model_names = iter_model_names(embedding_config.get("configuration"))
 
         if not model_names:
             logger.error("No valid model names in configuration for %s", embedding_config.get("provider"))
@@ -1323,137 +1592,178 @@ async def perform_embedding_health_check(
                 "No valid model names found in configuration", embedding_config, model_string,
             )
 
-        model_name = model_names[0]
-
-        # Create embedding model
-        embedding_model = await asyncio.to_thread(
-            get_embedding_model,
-            provider=embedding_config.get("provider"),
-            config=embedding_config,
-            model_name=model_name,
-        )
-
-        # Test with sample texts
-        test_texts = [
-            "This is a health check test.",
-        ]
-
-        # The first call may trigger a large model download (e.g. ~1.9 GB
-        # for nomic-embed-text-v2-moe), so we allow a generous timeout.
-        # Subsequent health checks hit the cached model and return quickly.
-        HEALTH_CHECK_TIMEOUT = 600.0
-
-        try:
-            test_embeddings = await _embed_with_timeout(
-                embedding_model, test_texts, HEALTH_CHECK_TIMEOUT,
+        checked: JSONResponse | None = None
+        active_model: Embeddings | None = None
+        active_dimension = 0
+        for model_index, model_name in enumerate(model_names):
+            # Create embedding model
+            embedding_model = await asyncio.to_thread(
+                get_embedding_model,
+                provider=embedding_config.get("provider"),
+                config=embedding_config,
+                model_name=model_name,
             )
 
-            logger.info(f"Test embeddings length: {len(test_embeddings)}")
-            if not test_embeddings:
-                logger.error("Embedding model returned empty results for %s", embedding_config.get("provider"))
-                return _config_error(
-                    "Embedding model returned empty results", embedding_config, model_name,
+            # Test with sample texts
+            test_texts = [
+                "This is a health check test.",
+            ]
+
+            # The first call may trigger a large model download (e.g. ~1.9 GB
+            # for nomic-embed-text-v2-moe), so we allow a generous timeout.
+            # Subsequent health checks hit the cached model and return quickly.
+            HEALTH_CHECK_TIMEOUT = 600.0
+
+            try:
+                test_embeddings = await _embed_with_timeout(
+                    embedding_model, test_texts, HEALTH_CHECK_TIMEOUT,
                 )
 
-            # Validate embedding dimensions. The result of this comparison
-            # used to be discarded, which made it look like a check while
-            # letting a ragged response through to the vector store.
-            embedding_dimension = len(test_embeddings[0])
-            if any(len(emb) != embedding_dimension for emb in test_embeddings):
-                return _config_error(
-                    "Embedding model returned vectors of differing sizes",
-                    embedding_config, model_name,
-                )
-
-            # A provider that silently ignores a `dimensions` override would
-            # otherwise build a collection of the wrong width, discovered only
-            # when the first query returns nothing.
-            requested = embedding_config.get("configuration", {}).get("dimensions")
-            if isinstance(requested, int) and requested > 0 and requested != embedding_dimension:
-                return _config_error(
-                    f"Model ignored the requested dimensions: asked for {requested}, "
-                    f"got {embedding_dimension}",
-                    embedding_config, model_name,
-                )
-
-            # `isMultimodal` on an embedding model is what makes indexing send
-            # images down the image-embedding path at all, and only a handful
-            # of providers implement one. Claiming it without checking means
-            # images silently never get indexed
-            # (`vectorstore._process_image_embeddings` warns and returns []).
-            if _is_multimodal(embedding_config):
-                image_error = await _probe_image_embedding(
-                    embedding_config, model_name, embedding_dimension, logger,
-                )
-                if image_error is not None:
+                logger.info(f"Test embeddings length: {len(test_embeddings)}")
+                if not test_embeddings:
+                    logger.error("Embedding model returned empty results for %s", embedding_config.get("provider"))
                     return _config_error(
-                        image_error, embedding_config, model_name,
-                        hint="Uncheck Multimodal for this model, or choose one that embeds images.",
+                        "Embedding model returned empty results", embedding_config, model_name,
                     )
 
-            # The same collection-compatibility guard the bulk route runs. Without
-            # it, changing dimensions from the model dialog reports healthy and is
-            # discovered when queries start returning nothing.
+                # Validate embedding dimensions. The result of this comparison
+                # used to be discarded, which made it look like a check while
+                # letting a ragged response through to the vector store.
+                embedding_dimension = len(test_embeddings[0])
+                if any(len(emb) != embedding_dimension for emb in test_embeddings):
+                    return _config_error(
+                        "Embedding model returned vectors of differing sizes",
+                        embedding_config, model_name,
+                    )
+
+                # A provider that silently ignores a `dimensions` override would
+                # otherwise build a collection of the wrong width, discovered only
+                # when the first query returns nothing.
+                requested = embedding_config.get("configuration", {}).get("dimensions")
+                if isinstance(requested, int) and requested > 0 and requested != embedding_dimension:
+                    return _config_error(
+                        f"Model ignored the requested dimensions: asked for {requested}, "
+                        f"got {embedding_dimension}",
+                        embedding_config, model_name,
+                    )
+
+                # `isMultimodal` on an embedding model is what makes indexing send
+                # images down the image-embedding path at all, and only a handful
+                # of providers implement one. Claiming it without checking means
+                # images silently never get indexed
+                # (`vectorstore._process_image_embeddings` warns and returns []).
+                if _is_multimodal(embedding_config):
+                    try:
+                        image_error = await _probe_image_embedding(
+                            embedding_config, model_name, embedding_dimension, logger,
+                        )
+                    except _ImageEmbeddingSettingsError as exc:
+                        return _config_error(exc.message, embedding_config, model_name)
+                    if image_error is not None:
+                        return _config_error(
+                            image_error, embedding_config, model_name,
+                            hint="Uncheck Multimodal for this model, or choose one that embeds images.",
+                        )
+
+                if model_index == 0:
+                    active_model = embedding_model
+                    active_dimension = embedding_dimension
+
+                checked = JSONResponse(
+                    status_code=200,
+                    content={
+                        "status": "healthy",
+                        "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
+                        "capabilities": {
+                            "multimodal": _is_multimodal(embedding_config),
+                            "dimensions": embedding_dimension,
+                        },
+                        "timestamp": get_epoch_timestamp_in_ms(),
+                    },
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Embedding health check timed out for %s model %s (timeout=%.0fs). "
+                    "If the model is downloading for the first time, retry after it finishes.",
+                    embedding_config.get("provider"),
+                    embedding_config.get("configuration", {}).get("model", ""),
+                    HEALTH_CHECK_TIMEOUT,
+                )
+                return JSONResponse(
+                    status_code=504,
+                    content={
+                        "status": "error",
+                        "message": (
+                            "Embedding health check timed out. "
+                            "If this is the first run, the model may still be downloading. "
+                            "Please wait for the download to complete and try again."
+                        ),
+                        "details": {
+                            "provider": embedding_config.get("provider"),
+                            "model": model_name,
+                            "timeout_seconds": int(HEALTH_CHECK_TIMEOUT),
+                        },
+                    },
+                )
+        if checked is None or active_model is None:
+            return _config_error(
+                "No valid model names found in configuration", embedding_config, model_string,
+            )
+        # Only the model that will embed once saved may resize the collection.
+        if embedding_config.get("becomesActive", True):
             collection_error = await _check_collection_compatibility(
-                request, embedding_model, embedding_dimension, logger,
+                request, active_model, active_dimension, logger,
             )
             if collection_error is not None:
                 return collection_error
-
-            return JSONResponse(
-                status_code=200,
-                content={
-                    "status": "healthy",
-                    "message": f"Embedding model is responding. Sample embedding size: {embedding_dimension}",
-                    "capabilities": {
-                        "multimodal": _is_multimodal(embedding_config),
-                        "dimensions": embedding_dimension,
-                    },
-                    "timestamp": get_epoch_timestamp_in_ms(),
-                },
-            )
-        except asyncio.TimeoutError:
-            logger.error(
-                "Embedding health check timed out for %s model %s (timeout=%.0fs). "
-                "If the model is downloading for the first time, retry after it finishes.",
-                embedding_config.get("provider"),
-                embedding_config.get("configuration", {}).get("model", ""),
-                HEALTH_CHECK_TIMEOUT,
-            )
-            return JSONResponse(
-                status_code=504,
-                content={
-                    "status": "error",
-                    "message": (
-                        "Embedding health check timed out. "
-                        "If this is the first run, the model may still be downloading. "
-                        "Please wait for the download to complete and try again."
-                    ),
-                    "details": {
-                        "provider": embedding_config.get("provider"),
-                        "model": model_name,
-                        "timeout_seconds": int(HEALTH_CHECK_TIMEOUT),
-                    },
-                },
-            )
+        return checked
     except HTTPException as he:
         return JSONResponse(status_code=he.status_code, content=he.detail)
     except Exception as e:
         logger.error(f"Embedding health check failed for {embedding_config.get('provider')} with model {embedding_config.get('configuration', {}).get('model', '')} ({embedding_config.get('modelFriendlyName', '')}): {str(e)}", exc_info=True)
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message(
-                    "embedding model", embedding_config.get("provider"), e
-                ),
-                "details": {
-                    "provider": embedding_config.get("provider"),
-                    "model": embedding_config.get("configuration", {}).get("model"),
-                    "error_type": type(e).__name__
-                },
-            },
+        return await _model_setup_failed_response(
+            "embedding model", embedding_config,
+            (embedding_config.get("configuration") or {}).get("model") or "", e,
         )
+
+
+async def _probe_openai_listed_model(configuration: dict, model_name: str) -> None:
+    """Confirm ``model_name`` exists on an OpenAI-compatible ``/v1/models`` API.
+
+    ``models.retrieve`` is the cheap check. Servers that don't implement it
+    fall back to listing. A list payload with no ``data`` attribute (tests,
+    or a server that returns a bare acknowledgement) is treated as reachable
+    rather than as an empty catalog.
+    """
+    from openai import AsyncOpenAI
+
+    kwargs = openai_async_client_kwargs(configuration)
+    # Keyless OpenAI-compatible servers (LocalAI, Kokoro, vLLM) have no key.
+    # The image, TTS, and STT builders use this same placeholder. A configured
+    # key, or OPENAI_API_KEY in the environment, still wins.
+    if not kwargs.get("api_key") and not os.environ.get("OPENAI_API_KEY"):
+        kwargs["api_key"] = "not-needed"
+    client = AsyncOpenAI(**kwargs)
+    try:
+        retrieve = getattr(getattr(client, "models", None), "retrieve", None)
+        if retrieve is not None:
+            try:
+                found = await asyncio.wait_for(retrieve(model_name), timeout=30.0)
+                if getattr(found, "id", None) == model_name:
+                    return
+            except Exception:
+                pass
+        page = await asyncio.wait_for(client.models.list(), timeout=30.0)
+        data = getattr(page, "data", None)
+        if data is None:
+            return
+        ids = {getattr(item, "id", None) for item in data}
+        if model_name not in ids:
+            raise RuntimeError(f"Model '{model_name}' is not available on this endpoint")
+    finally:
+        close = getattr(client, "close", None)
+        if close is not None:
+            await close()
 
 
 async def perform_image_generation_health_check(
@@ -1470,7 +1780,7 @@ async def perform_image_generation_health_check(
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
     model_string = configuration.get("model", "")
-    model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+    model_names = iter_model_names(configuration)
 
     if not model_names:
         return JSONResponse(
@@ -1485,109 +1795,83 @@ async def perform_image_generation_health_check(
             },
         )
 
-    model_name = model_names[0]
-    try:
-        adapter = get_image_generation_model(
-            provider=provider,
-            config=model_config,
-            model_name=model_name,
-        )
-    except Exception as e:
-        logger.error(
-            "Image generation health check failed to build adapter for "
-            f"{provider}/{model_name}: {e}", exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("image model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
-
-    try:
-        if provider == ImageGenerationProvider.OPENAI.value:
-            from openai import AsyncOpenAI
-
-            client = AsyncOpenAI(
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
+    for model_name in model_names:
+        try:
+            adapter = get_image_generation_model(
+                provider=provider,
+                config=model_config,
+                model_name=model_name,
             )
-            try:
-                await asyncio.wait_for(client.models.list(), timeout=30.0)
-            finally:
-                await client.close()
-        elif provider == ImageGenerationProvider.GEMINI.value:
-            from google import genai
-
-            client = genai.Client(api_key=configuration["apiKey"])
-            await asyncio.wait_for(
-                client.aio.models.get(model=model_name),
-                timeout=30.0,
+        except Exception as e:
+            logger.error(
+                "Image generation health check failed to build adapter for "
+                f"{provider}/{model_name}: {e}", exc_info=True,
             )
-        elif provider == ImageGenerationProvider.OPENROUTER.value:
-            from app.config.constants.ai_models import OPENROUTER_BASE_URL
+            return await _model_setup_failed_response("image model", model_config, model_name, e)
 
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(
-                    f"{OPENROUTER_BASE_URL}/auth/key",
-                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
+        try:
+            if provider in (
+                ImageGenerationProvider.OPENAI.value,
+                ImageGenerationProvider.OPENAI_COMPATIBLE.value,
+            ):
+                await _probe_openai_listed_model(configuration, model_name)
+            elif provider == ImageGenerationProvider.GEMINI.value:
+                from google import genai
+
+                client = genai.Client(api_key=configuration["apiKey"])
+                await asyncio.wait_for(
+                    client.aio.models.get(model=model_name),
+                    timeout=30.0,
                 )
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+            elif provider == ImageGenerationProvider.OPENROUTER.value:
+                from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.get(
+                        f"{OPENROUTER_BASE_URL}/auth/key",
+                        headers={"Authorization": f"Bearer {configuration['apiKey']}"},
                     )
-        elif provider == ImageGenerationProvider.LITELLM_PROXY.value:
-            endpoint = configuration.get("endpoint", "").rstrip("/")
-            headers: dict[str, str] = {}
-            api_key = configuration.get("apiKey")
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(f"{endpoint}/health", headers=headers)
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
-                    )
-        else:
-            return JSONResponse(
-                status_code=400,
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"OpenRouter credential check returned HTTP {resp.status_code}"
+                        )
+            elif provider == ImageGenerationProvider.LITELLM_PROXY.value:
+                endpoint = configuration.get("endpoint", "").rstrip("/")
+                headers: dict[str, str] = {}
+                api_key = configuration.get("apiKey")
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
+                        )
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": f"Unsupported image generation provider: {provider}",
+                    },
+                )
+
+            checked = JSONResponse(
+                status_code=200,
                 content={
-                    "status": "error",
-                    "message": f"Unsupported image generation provider: {provider}",
+                    "status": "healthy",
+                    "message": "Image generation provider is reachable",
+                    "details": {"provider": provider, "model": model_name},
                 },
             )
+        except Exception as e:
+            logger.error(
+                f"Image generation health check failed for {provider}/{model_name}: {e}",
+                exc_info=True,
+            )
+            return await _model_setup_failed_response("image model", model_config, model_name, e)
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": "Image generation provider is reachable",
-                "details": {"provider": provider, "model": model_name},
-            },
-        )
-    except Exception as e:
-        logger.error(
-            f"Image generation health check failed for {provider}/{model_name}: {e}",
-            exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("image model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+    return checked
 
 
 async def perform_tts_health_check(
@@ -1602,7 +1886,7 @@ async def perform_tts_health_check(
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
     model_string = configuration.get("model", "")
-    model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+    model_names = iter_model_names(configuration)
 
     if not model_names:
         return JSONResponse(
@@ -1614,103 +1898,84 @@ async def perform_tts_health_check(
             },
         )
 
-    model_name = model_names[0]
-    try:
-        adapter = get_tts_model(
-            provider=provider,
-            config=model_config,
-            model_name=model_name,
-        )
-    except Exception as e:
-        logger.error(
-            f"TTS health check failed to build adapter for {provider}/{model_name}: {e}",
-            exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
-
-    try:
-        if provider == TTSProvider.OPENAI.value:
-            from openai import AsyncOpenAI
-
-            client = AsyncOpenAI(
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
+    for model_name in model_names:
+        try:
+            adapter = get_tts_model(
+                provider=provider,
+                config=model_config,
+                model_name=model_name,
             )
-            try:
-                await asyncio.wait_for(client.models.list(), timeout=30.0)
-            finally:
-                await client.close()
-        elif provider == TTSProvider.GEMINI.value:
-            pass  # Gemini TTS uses a REST endpoint; no dedicated health probe needed.
-        elif provider == TTSProvider.OPENROUTER.value:
-            from app.config.constants.ai_models import OPENROUTER_BASE_URL
+        except Exception as e:
+            logger.error(
+                f"TTS health check failed to build adapter for {provider}/{model_name}: {e}",
+                exc_info=True,
+            )
+            return await _model_setup_failed_response("speech model", model_config, model_name, e)
 
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(
-                    f"{OPENROUTER_BASE_URL}/auth/key",
-                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
+        try:
+            if provider in (
+                TTSProvider.OPENAI.value,
+                TTSProvider.OPENAI_COMPATIBLE.value,
+            ):
+                await _probe_openai_listed_model(configuration, model_name)
+            elif provider == TTSProvider.GEMINI.value:
+                # The adapter only calls Gemini when it synthesizes, so check the key and model here.
+                from google import genai
+
+                client = genai.Client(api_key=configuration["apiKey"])
+                await asyncio.wait_for(
+                    client.aio.models.get(model=model_name),
+                    timeout=30.0,
                 )
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"OpenRouter credential check returned HTTP {resp.status_code}"
+            elif provider == TTSProvider.OPENROUTER.value:
+                from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.get(
+                        f"{OPENROUTER_BASE_URL}/auth/key",
+                        headers={"Authorization": f"Bearer {configuration['apiKey']}"},
                     )
-        elif provider == TTSProvider.LITELLM_PROXY.value:
-            endpoint = configuration.get("endpoint", "").rstrip("/")
-            headers = {}
-            api_key = configuration.get("apiKey")
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(f"{endpoint}/health", headers=headers)
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
-                    )
-        else:
-            return JSONResponse(
-                status_code=400,
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"OpenRouter credential check returned HTTP {resp.status_code}"
+                        )
+            elif provider == TTSProvider.LITELLM_PROXY.value:
+                endpoint = configuration.get("endpoint", "").rstrip("/")
+                headers = {}
+                api_key = configuration.get("apiKey")
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
+                        )
+            else:
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": f"Unsupported TTS provider: {provider}",
+                    },
+                )
+
+            checked = JSONResponse(
+                status_code=200,
                 content={
-                    "status": "error",
-                    "message": f"Unsupported TTS provider: {provider}",
+                    "status": "healthy",
+                    "message": "TTS provider is reachable",
+                    "details": {"provider": provider, "model": model_name},
                 },
             )
+        except Exception as e:
+            logger.error(
+                f"TTS health check failed for {provider}/{model_name}: {e}",
+                exc_info=True,
+            )
+            return await _model_setup_failed_response("speech model", model_config, model_name, e)
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": "TTS provider is reachable",
-                "details": {"provider": provider, "model": model_name},
-            },
-        )
-    except Exception as e:
-        logger.error(
-            f"TTS health check failed for {provider}/{model_name}: {e}",
-            exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
+    return checked
 
 
 async def perform_stt_health_check(
@@ -1728,7 +1993,7 @@ async def perform_stt_health_check(
     provider = model_config.get("provider")
     configuration = model_config.get("configuration") or {}
     model_string = configuration.get("model", "")
-    model_names = [name.strip() for name in model_string.split(",") if name.strip()]
+    model_names = iter_model_names(configuration)
 
     if not model_names:
         return JSONResponse(
@@ -1740,149 +2005,211 @@ async def perform_stt_health_check(
             },
         )
 
-    model_name = model_names[0]
-    try:
-        adapter = get_stt_model(
-            provider=provider,
-            config=model_config,
-            model_name=model_name,
-        )
-    except Exception as e:
-        logger.error(
-            f"STT health check failed to build adapter for {provider}/{model_name}: {e}",
-            exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech-to-text model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
-                },
-            },
-        )
-
-    try:
-        if provider == STTProvider.OPENAI.value:
-            from openai import AsyncOpenAI
-
-            client = AsyncOpenAI(
-                api_key=configuration["apiKey"],
-                organization=configuration.get("organizationId"),
+    for model_name in model_names:
+        try:
+            adapter = get_stt_model(
+                provider=provider,
+                config=model_config,
+                model_name=model_name,
             )
-            try:
-                await asyncio.wait_for(client.models.list(), timeout=30.0)
-            finally:
-                await client.close()
-        elif provider == STTProvider.WHISPER.value:
-            try:
-                import importlib.util
+        except Exception as e:
+            logger.error(
+                f"STT health check failed to build adapter for {provider}/{model_name}: {e}",
+                exc_info=True,
+            )
+            return await _model_setup_failed_response("speech-to-text model", model_config, model_name, e)
 
-                if importlib.util.find_spec("faster_whisper") is None:
+        try:
+            if provider in (
+                STTProvider.OPENAI.value,
+                STTProvider.OPENAI_COMPATIBLE.value,
+            ):
+                await _probe_openai_listed_model(configuration, model_name)
+            elif provider == STTProvider.WHISPER.value:
+                try:
+                    import importlib.util
+
+                    if importlib.util.find_spec("faster_whisper") is None:
+                        return JSONResponse(
+                            status_code=500,
+                            content={
+                                "status": "error",
+                                "message": (
+                                    "The 'faster-whisper' package is not installed. "
+                                    "Install dependencies or reinstall the service to "
+                                    "use the local Whisper STT provider."
+                                ),
+                                "details": {"provider": provider, "model": model_name},
+                            },
+                        )
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.error("Failed to probe faster-whisper: %s", exc, exc_info=True)
                     return JSONResponse(
                         status_code=500,
                         content={
                             "status": "error",
                             "message": (
-                                "The 'faster-whisper' package is not installed. "
-                                "Install dependencies or reinstall the service to "
-                                "use the local Whisper STT provider."
+                                "Couldn't check the local Whisper install. Reinstall the "
+                                "service's dependencies, then try again."
                             ),
                             "details": {"provider": provider, "model": model_name},
                         },
                     )
-            except Exception as exc:  # pragma: no cover - defensive
+            elif provider == STTProvider.GEMINI.value:
+                from google import genai
+
+                client = genai.Client(api_key=configuration["apiKey"])
+                await asyncio.wait_for(
+                    client.aio.models.get(model=model_name),
+                    timeout=30.0,
+                )
+            elif provider == STTProvider.WISPR.value:
+                if shutil.which("ffmpeg") is None:
+                    return JSONResponse(
+                        status_code=500,
+                        content={
+                            "status": "error",
+                            "message": (
+                                "The 'wispr' STT provider requires ffmpeg on PATH "
+                                "to transcode audio to 16 kHz WAV. Install ffmpeg "
+                                "on the backend host and retry."
+                            ),
+                            "details": {"provider": provider, "model": model_name},
+                        },
+                    )
+            elif provider == STTProvider.OPENROUTER.value:
+                from app.config.constants.ai_models import OPENROUTER_BASE_URL
+
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.get(
+                        f"{OPENROUTER_BASE_URL}/auth/key",
+                        headers={"Authorization": f"Bearer {configuration['apiKey']}"},
+                    )
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"OpenRouter credential check returned HTTP {resp.status_code}"
+                        )
+            elif provider == STTProvider.LITELLM_PROXY.value:
+                endpoint = configuration.get("endpoint", "").rstrip("/")
+                headers = {}
+                api_key = configuration.get("apiKey")
+                if api_key:
+                    headers["Authorization"] = f"Bearer {api_key}"
+                async with httpx.AsyncClient(timeout=30.0) as http_client:
+                    resp = await http_client.get(f"{endpoint}/health", headers=headers)
+                    if resp.status_code >= 400:
+                        raise RuntimeError(
+                            f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
+                        )
+            else:
                 return JSONResponse(
-                    status_code=500,
+                    status_code=400,
                     content={
                         "status": "error",
-                        "message": f"Failed to probe faster-whisper: {exc}",
-                        "details": {"provider": provider, "model": model_name},
+                        "message": f"Unsupported STT provider: {provider}",
                     },
                 )
-        elif provider == STTProvider.GEMINI.value:
-            from google import genai
 
-            client = genai.Client(api_key=configuration["apiKey"])
-            await asyncio.wait_for(
-                client.aio.models.get(model=model_name),
-                timeout=30.0,
-            )
-        elif provider == STTProvider.WISPR.value:
-            if shutil.which("ffmpeg") is None:
-                return JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "error",
-                        "message": (
-                            "The 'wispr' STT provider requires ffmpeg on PATH "
-                            "to transcode audio to 16 kHz WAV. Install ffmpeg "
-                            "on the backend host and retry."
-                        ),
-                        "details": {"provider": provider, "model": model_name},
-                    },
-                )
-        elif provider == STTProvider.OPENROUTER.value:
-            from app.config.constants.ai_models import OPENROUTER_BASE_URL
-
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(
-                    f"{OPENROUTER_BASE_URL}/auth/key",
-                    headers={"Authorization": f"Bearer {configuration['apiKey']}"},
-                )
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"OpenRouter credential check returned HTTP {resp.status_code}"
-                    )
-        elif provider == STTProvider.LITELLM_PROXY.value:
-            endpoint = configuration.get("endpoint", "").rstrip("/")
-            headers = {}
-            api_key = configuration.get("apiKey")
-            if api_key:
-                headers["Authorization"] = f"Bearer {api_key}"
-            async with httpx.AsyncClient(timeout=30.0) as http_client:
-                resp = await http_client.get(f"{endpoint}/health", headers=headers)
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"LiteLLM Proxy health check returned HTTP {resp.status_code}"
-                    )
-        else:
-            return JSONResponse(
-                status_code=400,
+            checked = JSONResponse(
+                status_code=200,
                 content={
-                    "status": "error",
-                    "message": f"Unsupported STT provider: {provider}",
+                    "status": "healthy",
+                    "message": "STT provider is reachable",
+                    "details": {"provider": provider, "model": model_name},
                 },
             )
+        except Exception as e:
+            logger.error(
+                f"STT health check failed for {provider}/{model_name}: {e}",
+                exc_info=True,
+            )
+            return await _model_setup_failed_response("speech-to-text model", model_config, model_name, e)
 
-        return JSONResponse(
-            status_code=200,
-            content={
-                "status": "healthy",
-                "message": "STT provider is reachable",
-                "details": {"provider": provider, "model": model_name},
-            },
+    return checked
+
+
+async def perform_decision_health_check(model_config: dict, logger: Logger) -> JSONResponse:
+    """Ask each configured decision model one yes/no question.
+
+    A real call proves the key, the model and that the endpoint speaks the decision API.
+    """
+    provider = model_config.get("provider")
+    configuration = model_config.get("configuration") or {}
+    model_names = iter_model_names(configuration)
+    if not model_names:
+        return _config_error(
+            "Enter the decision model's name, then try again.",
+            model_config, "", error_code="invalid_request",
         )
-    except Exception as e:
-        logger.error(
-            f"STT health check failed for {provider}/{model_name}: {e}",
-            exc_info=True,
-        )
-        return JSONResponse(
-            status_code=500,
-            content={
-                "status": "error",
-                "message": _model_setup_failed_message("speech-to-text model", provider, e),
-                "details": {
-                    "provider": provider,
-                    "model": model_name,
-                    "error_type": type(e).__name__,
+
+    checked: JSONResponse | None = None
+    for model_name in model_names:
+        try:
+            model = get_decision_model(provider=provider, config=model_config, model_name=model_name)
+        except Exception as e:
+            logger.error(f"Decision health check failed to build {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+        try:
+            # One attempt: the client's own timeout then decides, not a retry loop
+            # that would outlast the admin's wait.
+            result = await model.decide(
+                "Hello, can you help me?",
+                [PredicateQuestion(name="is_greeting", instructions="Is this message a greeting?")],
+                max_attempts=1,
+            )
+            answer = result.answers["is_greeting"]
+            if answer.refused or answer.missing or answer.probability is None:
+                return _config_error(
+                    f"{_provider_display_name(provider)} answered, but not with a usable decision. "
+                    "Check that the model and endpoint serve the decision API, then try again.",
+                    model_config, model_name, error_code="invalid_response",
+                )
+            checked = JSONResponse(
+                status_code=200,
+                content={
+                    "status": "healthy",
+                    "message": "Decision model is reachable",
+                    "details": {"provider": provider, "model": model_name},
                 },
-            },
-        )
+            )
+        except Exception as e:
+            logger.error(f"Decision health check failed for {provider}/{model_name}: {e}", exc_info=True)
+            return await _model_setup_failed_response("decision model", model_config, model_name, e)
+    return checked
+
+
+async def _check_embedding(request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_embedding_health_check(request, model_config, logger)
+
+
+async def _check_llm(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_llm_health_check(model_config, logger)
+
+
+async def _check_image(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_image_generation_health_check(model_config, logger)
+
+
+async def _check_tts(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_tts_health_check(model_config, logger)
+
+
+async def _check_stt(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_stt_health_check(model_config, logger)
+
+
+async def _check_decision(_request: Request, model_config: dict, logger: Logger) -> JSONResponse:
+    return await perform_decision_health_check(model_config, logger)
+
+
+_HEALTH_CHECKERS = {
+    "embedding": _check_embedding,
+    "llm": _check_llm,
+    "imageGeneration": _check_image,
+    "tts": _check_tts,
+    "stt": _check_stt,
+    "decision": _check_decision,
+}
 
 
 @router.post("/health-check/{model_type}")
@@ -1893,48 +2220,26 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
     try:
         logger.info(f"Health check endpoint called for {model_type}")
 
-        if model_type == "embedding":
-            logger.info(f"Performing embedding health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
-            return await perform_embedding_health_check(request, model_config, logger)
+        refusal = await _endpoint_refusal(model_config)
+        if refusal is not None:
+            return refusal
 
-        elif model_type == "llm":
-            logger.info(f"Performing LLM health check for {model_config.get('provider')} with configuration model {model_config.get('configuration', {}).get('model', '')}")
-            return await perform_llm_health_check(model_config, logger)
-
-        elif model_type == "imageGeneration":
-            logger.info(
-                f"Performing image generation health check for {model_config.get('provider')} "
-                f"with configuration model {model_config.get('configuration', {}).get('model', '')}"
+        checker = _HEALTH_CHECKERS.get(model_type)
+        if checker is None:
+            logger.error("No health check implemented for model type %r", model_type)
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": (
+                        f"No health check exists for model type '{model_type}'. "
+                        f"Supported types: {', '.join(sorted(SUPPORTED_HEALTH_CHECK_TYPES))}."
+                    ),
+                    "details": {"modelType": model_type},
+                    "timestamp": get_epoch_timestamp_in_ms(),
+                },
             )
-            return await perform_image_generation_health_check(model_config, logger)
-
-        elif model_type == "tts":
-            logger.info(
-                f"Performing TTS health check for {model_config.get('provider')} "
-                f"with configuration model {model_config.get('configuration', {}).get('model', '')}"
-            )
-            return await perform_tts_health_check(model_config, logger)
-
-        elif model_type == "stt":
-            logger.info(
-                f"Performing STT health check for {model_config.get('provider')} "
-                f"with configuration model {model_config.get('configuration', {}).get('model', '')}"
-            )
-            return await perform_stt_health_check(model_config, logger)
-
-        logger.error("No health check implemented for model type %r", model_type)
-        return JSONResponse(
-            status_code=400,
-            content={
-                "status": "error",
-                "message": (
-                    f"No health check exists for model type '{model_type}'. "
-                    f"Supported types: {', '.join(sorted(SUPPORTED_HEALTH_CHECK_TYPES))}."
-                ),
-                "details": {"modelType": model_type},
-                "timestamp": get_epoch_timestamp_in_ms(),
-            },
-        )
+        return await checker(request, model_config, logger)
 
     except Exception as e:
         logger.error(f"Health check failed: {str(e)}", exc_info=True)
@@ -1942,7 +2247,7 @@ async def health_check(request: Request, model_type: str, model_config: dict = B
             status_code=500,
             content={
                 "status": "not healthy",
-                "error": f"Health check failed: {str(e)}",
+                "error": f"Health check failed: {type(e).__name__}",
                 "timestamp": get_epoch_timestamp_in_ms(),
             },
         )

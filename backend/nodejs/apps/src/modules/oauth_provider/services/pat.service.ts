@@ -27,7 +27,7 @@ const SECONDS_PER_DAY = 86400
 // Short-lived by default: a token minted without an explicit expiryDays
 // (e.g. a direct API call rather than the UI) should not silently get the
 // longest lifetime.
-const DEFAULT_EXPIRY_DAYS = 30
+export const DEFAULT_EXPIRY_DAYS = 30
 // OAuthAccessToken.expiresAt is required and TTL-indexed, so there's no
 // real "never expires" value to store — a 100-year lifetime is the
 // practical stand-in for the UI's "never" expiry option.
@@ -156,6 +156,7 @@ export class PatService {
       {
         accessTokenLifetimeOverrideSeconds: lifetimeSeconds,
         name: request.name,
+        knowledgeLimit: request.knowledgeLimit,
       },
     )
 
@@ -177,6 +178,7 @@ export class PatService {
       // scanners, unlike a bare JWT. verifyAccessToken strips this back
       // off before hashing/verifying, so it's display-only.
       accessToken: `${PAT_TOKEN_PREFIX}${tokens.accessToken}`,
+      knowledgeLimit: request.knowledgeLimit,
     }
   }
 
@@ -203,6 +205,7 @@ export class PatService {
       createdAt: t.createdAt,
       expiresAt: t.expiresAt,
       lastUsedAt: t.lastUsedAt,
+      knowledgeLimit: t.knowledgeLimit,
     }))
   }
 
@@ -273,7 +276,7 @@ export class PatService {
     // still show up (with ownerDeleted: true) rather than silently drop
     // the owner's name/email from the response.
     const owners = await Users.find({
-      _id: { $in: tokens.map((t) => t.userId) },
+      _id: { $in: tokens.map((t) => t.userId) as unknown as Types.ObjectId[] },
     })
       .select('email fullName isDeleted')
       .lean()
@@ -289,6 +292,7 @@ export class PatService {
         createdAt: t.createdAt,
         expiresAt: t.expiresAt,
         lastUsedAt: t.lastUsedAt,
+        knowledgeLimit: t.knowledgeLimit,
         userId: t.userId ?? '',
         ownerEmail: owner?.email,
         ownerFullName: owner?.fullName,

@@ -27,7 +27,7 @@ beforeEach(() => {
 });
 
 describe('ProjectApi.list', () => {
-  it('defaults page/limit/scope and omits search + includeArchived when unset', async () => {
+  it('defaults page/limit/scope and omits optional filters when unset', async () => {
     mockedGet.mockResolvedValueOnce({
       data: { projects: [], pagination: { page: 1, limit: 20, totalCount: 0, totalPages: 0 } },
     });
@@ -37,13 +37,27 @@ describe('ProjectApi.list', () => {
     });
   });
 
-  it('forwards search, scope, and includeArchived when provided', async () => {
+  it('forwards search, scope, and archive filters when provided', async () => {
     mockedGet.mockResolvedValueOnce({
       data: { projects: [], pagination: { page: 2, limit: 10, totalCount: 0, totalPages: 0 } },
     });
-    await ProjectApi.list({ page: 2, limit: 10, search: 'q3', scope: 'shared', includeArchived: true });
+    await ProjectApi.list({
+      page: 2,
+      limit: 10,
+      search: 'q3',
+      scope: 'shared',
+      includeArchived: true,
+      isArchived: false,
+    });
     expect(mockedGet).toHaveBeenCalledWith('/api/v1/projects', {
-      params: { page: 2, limit: 10, search: 'q3', scope: 'shared', includeArchived: true },
+      params: {
+        page: 2,
+        limit: 10,
+        search: 'q3',
+        scope: 'shared',
+        includeArchived: true,
+        isArchived: false,
+      },
     });
   });
 });

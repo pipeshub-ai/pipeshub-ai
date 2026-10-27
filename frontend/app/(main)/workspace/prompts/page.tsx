@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useCallback, useEffect, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import {
   Box,
   Button,
@@ -17,6 +17,7 @@ import { useToastStore } from '@/lib/store/toast-store';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import { PromptsApi } from './api';
 import { LottieLoader } from '@/app/components/ui/lottie-loader';
+import { SettingsPageContainer } from '@/app/(main)/workspace/components/settings-page-container';
 
 // ============================================================
 // Sub-components
@@ -111,6 +112,7 @@ function PromptEditor({
   onChange,
   onClear,
 }: PromptEditorProps) {
+  const { t } = useTranslation();
   return (
     <>
       <Flex align="center" justify="between">
@@ -124,7 +126,7 @@ function PromptEditor({
           disabled={!value}
           onClick={onClear}
         >
-          Reset to Default
+          {t('workspace.prompts.resetToDefault')}
         </Button>
       </Flex>
 
@@ -256,7 +258,7 @@ export default function PromptsPage() {
     } finally {
       setIsSaving(false);
     }
-  }, [customPrompt, customPromptWebSearch, customPromptAgent, addToast]);
+  }, [customPrompt, customPromptWebSearch, customPromptAgent, addToast, t]);
 
   const handleDiscard = useCallback(() => {
     setCustomPrompt(savedPrompt);
@@ -267,7 +269,7 @@ export default function PromptsPage() {
       title: t('workspace.prompts.toasts.discarded'),
       description: t('workspace.prompts.toasts.discardedDescription'),
     });
-  }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast]);
+  }, [savedPrompt, savedPromptWebSearch, savedPromptAgent, addToast, t]);
 
   // ── Loading state ──────────────────────────────────────────
   if (isLoading) {
@@ -281,18 +283,16 @@ export default function PromptsPage() {
   return (
     <ServiceGate services={['query']}>
     <Box style={{ height: '100%', overflowY: 'auto' }}>
-      <Box style={{ padding: '64px 100px', paddingBottom: 80 }}>
+      <SettingsPageContainer>
 
         {/* ── Page Header ── */}
-        <Flex align="center" justify="between" style={{ marginBottom: 'var(--space-6)' }}>
-          <Box>
+        <Flex align="center" justify="between" wrap="wrap" gap="3" style={{ marginBottom: 'var(--space-6)' }}>
+          <Box style={{ flex: '1 1 240px', minWidth: 0 }}>
             <Heading size="5" weight="medium" style={{ color: 'var(--slate-12)' }}>
-              Custom Instructions
+              {t('workspace.prompts.customInstructionsTitle')}
             </Heading>
             <Text size="2" style={{ color: 'var(--slate-10)', marginTop: 4, display: 'block' }}>
-              Add custom instructions for the Chat Assistant — e.g. respond in a specific
-              language, follow a formatting style, or apply any behaviour you want. Each mode
-              below has its own instructions since they answer questions differently.
+              {t('workspace.prompts.customInstructionsDescription')}
             </Text>
           </Box>
           <Button
@@ -323,10 +323,7 @@ export default function PromptsPage() {
             <MaterialIcon name="info" size={16} color="var(--slate-11)" />
           </IconButton>
           <Text size="1" style={{ color: 'var(--slate-11)', lineHeight: '16px', fontWeight: 300 }}>
-            These instructions apply only to the <strong>Chat Assistant</strong> (Agent mode below).
-            Custom agents created in <strong>Agent Builder</strong>{' '}
-            are unaffected — each agent uses its own system prompt and instructions configured on
-            the agent itself.
+            <Trans i18nKey="workspace.prompts.scopeHint" components={{ bold: <strong /> }} />
           </Text>
         </Flex>
 
@@ -335,14 +332,14 @@ export default function PromptsPage() {
           <PromptSectionCard
             iconName="smart_toy"
             testId="prompt-section-agent"
-            title="Agent"
-            description="Applied when a user chats in Agent mode — the assistant decides per-question whether to use internal knowledge, web search, or both."
+            title={t('workspace.prompts.agentTitle')}
+            description={t('workspace.prompts.agentDescription')}
           >
             <PromptEditor
               label=""
               value={customPromptAgent}
-              placeholder="e.g. Prefer internal knowledge for company-specific questions. Always summarize before providing details."
-              helperText="This prompt guides the AI when it can freely choose between internal knowledge and web search. Changes take effect immediately for new conversations."
+              placeholder={t('workspace.prompts.agentPlaceholder')}
+              helperText={t('workspace.prompts.agentHelperText')}
               onChange={setCustomPromptAgent}
               onClear={handleUseDefaultAgent}
             />
@@ -352,7 +349,7 @@ export default function PromptsPage() {
         {/* ── Prompt Configuration Callout ── */}
         <PromptConfigCallout />
 
-      </Box>
+      </SettingsPageContainer>
 
       {/* ── Settings Save Bar ── */}
       <SettingsSaveBar

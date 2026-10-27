@@ -9,6 +9,7 @@ import type {
   ToolsetReference,
 } from './types';
 import type { WebSearchProviderType } from '../../workspace/web-search/types';
+import { changedAttachments, isApiToolsetNode } from './api-toolset-attachments';
 
 interface ToolsetDataInternal {
   name: string;
@@ -36,11 +37,18 @@ export function extractAgentConfigFromFlow(
   }[],
   currentAgent?: AgentDetail | null,
   shareWithOrg?: boolean,
-  isServiceAccount?: boolean
+  isServiceAccount?: boolean,
+  /**
+   * The service account to search as, by `userId`; `null` clears an existing
+   * binding. `undefined` leaves whatever is stored alone, which is what every
+   * caller that does not offer the choice wants.
+   */
+  serviceAccountUserId?: string | null
 ): AgentFormPayload {
   const toolsetsInternal: ToolsetDataInternal[] = [];
   const knowledgeInternal: KnowledgeDataInternal[] = [];
   const models: { provider: string; modelName: string; isReasoning: boolean; modelKey: string }[] = [];
+  const apiToolsetTools: string[] = [];
 
   const addToolsetWithTools = (
     toolsetName: string,
@@ -164,7 +172,9 @@ export function extractAgentConfigFromFlow(
         }
       });
     }
-    if (toolsFromConfig.length > 0) {
+    if (isApiToolsetNode(toolsetConfig)) {
+      apiToolsetTools.push(...toolsFromConfig.map((tool) => tool.fullName));
+    } else if (toolsFromConfig.length > 0) {
       addToolsetWithTools(toolsetName, productDisplayName, toolsetType, toolsFromConfig, instanceId, instanceName);
     }
   });
@@ -335,11 +345,13 @@ export function extractAgentConfigFromFlow(
         name,
         displayName: (cfg.displayName as string) || undefined,
         typeId: (cfg.typeId as string) || undefined,
+        allTools: cfg.allTools === true,
         tools: toolsCfg
           .filter((tool) => tool.name)
           .map((tool) => ({
             name: tool.name!,
-            fullName: tool.fullName || `${name}.${tool.name}`,
+            // Empty when unknown: the server fills in the name discovery gives the tool.
+            fullName: tool.fullName || '',
             description: tool.description || '',
           })),
       });
@@ -382,10 +394,16 @@ export function extractAgentConfigFromFlow(
     defaultReasoningEffort: agentCoreNode
       ? ((coreCfg.defaultReasoningEffort as AgentFormPayload['defaultReasoningEffort']) ?? null)
       : (currentAgent?.defaultReasoningEffort ?? null),
+    sendUserContext: agentCoreNode
+      ? (coreCfg.sendUserContext as boolean | undefined) !== false
+      : currentAgent?.sendUserContext !== false,
     toolsets,
     knowledge,
     skills,
-    mcpServers,
+    // When the server couldn't read them, the canvas never showed the agent's MCP servers:
+    // sending the empty list would detach them all. Left out, the save keeps what is stored.
+    ...(currentAgent?.mcpServersUnavailable ? {} : { mcpServers }),
+    ...changedAttachments(apiToolsetTools, currentAgent?.apiToolsetTools),
     models,
     webSearch,
     tags: currentAgent?.tags?.length ? currentAgent.tags : ['flow-based', 'visual-workflow'],
@@ -396,5 +414,13 @@ export function extractAgentConfigFromFlow(
         : isServiceAccount !== undefined
           ? isServiceAccount
           : false,
+    // Only a service agent has an identity to bind, and only when the choice
+    // was actually offered. Sent as null to clear, omitted to leave alone —
+    // sending undefined-as-empty would unbind an agent whose builder never
+    // showed the control.
+    ...(serviceAccountUserId !== undefined &&
+    (currentAgent?.isServiceAccount === true || isServiceAccount === true)
+      ? { serviceAccountUserId }
+      : {}),
   };
 }

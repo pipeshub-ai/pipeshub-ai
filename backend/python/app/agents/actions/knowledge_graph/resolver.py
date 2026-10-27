@@ -31,8 +31,13 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
+from app.config.constants.arangodb import (
+    RECORD_TYPE_COLLECTION_MAPPING,
+    CollectionNames,
+)
 from app.models.entities import Record
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.utils.concurrency import GRAPH_FANOUT_CONCURRENCY, gather_with_concurrency
 
 from .catalog import ConnectorCatalog, ConnectorInfo
 from .identifiers import CanonicalRef, RefKind, normalize_weburl, resolve_canonical_ref
@@ -54,7 +59,8 @@ class LookupStrategy:
         "external_id" — get_record_by_external_id(connector_id, value)
         "issue_key"   — get_record_by_issue_key(connector_id, value)
         "weburl"      — get_record_by_weburl(value, org_id)
-        "slack_ts"    — find_slack_burst_record_by_ts(connector_id, channel, ts)
+        "slack_ts"    — find_slack_burst_record_by_ts(connector_id, group, ts),
+                        in the reply's thread group, else the channel
 
     connector_types:
         frozenset of connector type strings to restrict to (e.g. {"JIRA"}).
@@ -103,6 +109,11 @@ STRATEGY_TABLE: dict[RefKind, list[LookupStrategy]] = {
     ],
     RefKind.SLACK_TS: [
         LookupStrategy("slack_ts", _SLACK_TYPES),
+    ],
+    RefKind.RECORD_ID: [
+        LookupStrategy("record_id", None),
+        # A UUID can also be a connector's own id (Notion pages, for one)
+        LookupStrategy("external_id", None),
     ],
 }
 
@@ -182,8 +193,10 @@ class RecordResolver:
         agent_connector_ids: list[str] | None = None,
         connector_name_hint: str | None = None,
         frontend_url: str | None = None,
+        excluded_app_ids: frozenset[str] = frozenset(),
     ) -> None:
         self._graph = graph_provider
+        self._excluded_app_ids = excluded_app_ids
         self._catalog = catalog
         self._org_id = org_id
         self._user_id = user_id
@@ -267,7 +280,9 @@ class RecordResolver:
                 org_id=self._org_id,
                 folder_mime_types=self._folder_mime_types,
             )
-            if node:
+            if node and await self._in_excluded_app(match.id):
+                logger.debug("resolve_one(%r): candidate %s is switched-off demo data", raw, match.id)
+            elif node:
                 if not match.record_type:
                     match.record_type = node.get("recordType")
                 if not match.connector_name:
@@ -283,6 +298,12 @@ class RecordResolver:
                 )
 
         return gated, searched
+
+    async def _in_excluded_app(self, record_id: str) -> bool:
+        if not self._excluded_app_ids:
+            return False
+        doc = await self._graph.get_document(record_id, CollectionNames.RECORDS.value)
+        return bool(doc) and doc.get("connectorId") in self._excluded_app_ids
 
     async def _fetch_candidates(
         self, raw: str, ref: CanonicalRef
@@ -374,7 +395,43 @@ class RecordResolver:
             return await self._by_weburl(ref.value if ref.kind == RefKind.WEB_URL else raw)
         if method == "slack_ts":
             return await self._by_slack_ts(ref, connectors)
+        if method == "record_id":
+            return await self._by_record_id(ref.value, raw)
         return []
+
+    async def _by_record_id(self, record_id: str, raw: str) -> list[LookupMatch]:
+        """``get_record_by_id``; the caller's ACL gate still decides access."""
+        try:
+            rec = await self._graph.get_record_by_id(record_id)
+        except Exception as exc:
+            logger.debug("_by_record_id(%r): %s", record_id, exc)
+            return []
+        m = _record_to_match(rec, raw, self._frontend_url)
+        return [m] if m and m.id else []
+
+    async def _typed(self, rec: Record) -> Record:
+        """Swap a base ``Record`` for its typed subclass when it has one.
+
+        ``get_record_by_weburl`` and ``get_record_by_external_id`` return a
+        base ``Record`` on both graph providers, so its ``to_llm_context()``
+        carries no type-specific fields: a pull request looked up by URL showed
+        no merge state, a ticket no status. ``get_record_by_id`` joins the type
+        document. Same id, so the caller's ACL gate is unchanged; on any miss
+        the base record is kept, as before.
+        """
+        if type(rec) is not Record or not rec.id:
+            return rec
+        record_type = rec.record_type.value if rec.record_type else None
+        # Types with no type collection have nothing to add, and
+        # get_record_by_id answers None for them.
+        if record_type not in RECORD_TYPE_COLLECTION_MAPPING:
+            return rec
+        try:
+            typed = await self._graph.get_record_by_id(rec.id)
+        except Exception as exc:
+            logger.debug("_typed(%r): %s", rec.id, exc)
+            return rec
+        return typed if isinstance(typed, Record) and typed.id == rec.id else rec
 
     async def _by_issue_key(
         self, key: str, connectors: list[ConnectorInfo], raw: str
@@ -383,7 +440,7 @@ class RecordResolver:
         if not connectors:
             return []
         tasks = [self._graph.get_record_by_issue_key(c.id, key) for c in connectors]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for i, rec in enumerate(results):
             if isinstance(rec, Exception):
@@ -401,12 +458,12 @@ class RecordResolver:
         if not connectors:
             return []
         tasks = [self._graph.get_record_by_external_id(c.id, external_id) for c in connectors]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for rec in results:
             if isinstance(rec, Exception) or rec is None:
                 continue
-            m = _record_to_match(rec, raw, self._frontend_url)
+            m = _record_to_match(await self._typed(rec), raw, self._frontend_url)
             if m and m.id:
                 matches.append(m)
         return matches
@@ -425,7 +482,7 @@ class RecordResolver:
                 logger.debug("_by_weburl(%r): %s", url, exc)
                 continue
             if rec:
-                m = _record_to_match(rec, weburl, self._frontend_url)
+                m = _record_to_match(await self._typed(rec), weburl, self._frontend_url)
                 if m and m.id:
                     return [m]
         return []
@@ -433,19 +490,38 @@ class RecordResolver:
     async def _by_slack_ts(
         self, ref: CanonicalRef, connectors: list[ConnectorInfo]
     ) -> list[LookupMatch]:
-        """``find_slack_burst_record_by_ts`` across Slack-type connectors."""
+        """``find_slack_burst_record_by_ts`` across Slack-type connectors.
+
+        Channel messages are grouped into records under the channel's group id.
+        Thread replies are grouped under the thread's own group,
+        ``thread_<channel>_<thread_ts>`` (see the Slack connectors'
+        ``_build_thread_burst_record``), so a reply's permalink, which names
+        its thread, is looked up in that thread's group only. The channel is
+        not searched for a reply: a channel burst whose time window happens to
+        cover the reply's timestamp would be the wrong record. A miss falls
+        through to the webUrl fallback in ``_fetch_candidates``, which finds
+        a reply stored on its own (those have ``startTs == endTs``, which the
+        provider query skips). Links without ``thread_ts``, and the thread's
+        first message (``thread_ts == ts``), are looked up in the channel.
+        """
         if not connectors:
             logger.debug("No Slack connectors in catalog — skipping Slack ts lookup")
             return []
+        channel_id = ref.channel_id or ""
+        if ref.thread_ts and ref.thread_ts != ref.value:
+            group_id = f"thread_{channel_id}_{ref.thread_ts}"
+        else:
+            group_id = channel_id
+
         tasks = [
             self._graph.find_slack_burst_record_by_ts(
                 connector_id=c.id,
-                channel_id=ref.channel_id or "",
+                channel_id=group_id,
                 ts=ref.value,
             )
             for c in connectors
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await gather_with_concurrency(GRAPH_FANOUT_CONCURRENCY, *tasks, return_exceptions=True)
         matches = []
         for rec in results:
             if isinstance(rec, Exception) or rec is None:

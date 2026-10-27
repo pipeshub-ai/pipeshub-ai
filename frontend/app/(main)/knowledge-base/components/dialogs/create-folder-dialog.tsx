@@ -5,6 +5,8 @@ import { Dialog, Flex, Text, TextField, Button, Box, VisuallyHidden } from '@rad
 import { LoadingButton } from '@/app/components/ui/loading-button';
 import { FolderIcon } from '@/app/components/ui';
 import { useTranslation } from 'react-i18next';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { touchTarget } from '@/app/components/ui/responsive';
 
 export interface CreateFolderDialogProps {
   open: boolean;
@@ -24,6 +26,7 @@ export function CreateFolderDialog({
   parentFolderName,
 }: CreateFolderDialogProps) {
   const { t } = useTranslation();
+  const isMobile = useIsMobile();
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
 
@@ -104,7 +107,7 @@ export function CreateFolderDialog({
                 value={title}
                 onChange={(e) => setTitle(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="eg: Engineering"
+                placeholder={t('kb.createDialog.titlePlaceholder')}
                 autoFocus
               />
             </Flex>
@@ -117,7 +120,7 @@ export function CreateFolderDialog({
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
                 onKeyDown={handleKeyDown}
-                placeholder="eg: Company repository for all the developers"
+                placeholder={t('kb.createDialog.descriptionPlaceholder')}
               />
             </Flex>
           </Flex>
@@ -127,7 +130,7 @@ export function CreateFolderDialog({
             <Button
               variant="outline"
               color="gray"
-              size="2"
+              size={isMobile ? '3' : '2'}
               onClick={() => onOpenChange(false)}
               disabled={isCreating}
               style={{cursor: 'pointer'}}
@@ -138,7 +141,8 @@ export function CreateFolderDialog({
               variant={isCreateDisabled ? 'soft' : 'solid'}
               // @ts-expect-error - Radix color prop doesn't accept CSS variable strings
               color="--accent-9"
-              size="2"
+              size={isMobile ? '3' : '2'}
+              style={touchTarget(isMobile)}
               onClick={handleSubmit}
               disabled={!title.trim()}
               loading={isCreating}

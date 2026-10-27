@@ -145,6 +145,7 @@ def raise_for_stream_fetch(
     connector: str | None = None,
     status: int | None = None,
     message: str | None = None,
+    retry_after: int | str | None = None,
 ) -> None:
     """Map a source fetch result onto a stream HTTPException, or return if OK.
 
@@ -163,7 +164,11 @@ def raise_for_stream_fetch(
     if success and has_payload:
         return
     if _is_error_status(status):
-        raise map_source_status(status, connector=connector)  # type: ignore[arg-type]
+        raise map_source_status(
+            status,  # type: ignore[arg-type]
+            connector=connector,
+            retry_after=None if retry_after is None else str(retry_after),
+        )
     if success:
         raise not_found_at_source(connector)
     raise RuntimeError(message or "Failed to fetch from source")
@@ -231,8 +236,8 @@ def to_stream_error(exc: BaseException, *, connector: str | None = None) -> HTTP
             HttpStatusCode.CONFLICT.value,
             _RECONNECT.format(connector=connector or _DEFAULT_CONNECTOR),
         )
-    # ConnectorInitError's message is authored to be shown to the user.
-    if _is_a(exc, "ConnectorInitError"):
+    # These messages are authored to be shown to the user.
+    if _is_a(exc, "ConnectorInitError") or _is_a(exc, "AddressNotAllowedError"):
         return HTTPException(HttpStatusCode.CONFLICT.value, str(exc))
 
     status = extract_source_status(exc)
@@ -361,16 +366,25 @@ def _unwrap_retry_error(exc: BaseException) -> BaseException | None:
     return inner if isinstance(inner, BaseException) else None
 
 
+def _response_header(exc: BaseException, name: str) -> str | None:
+    """Read a header off an SDK exception's response, if present."""
+    # ``response`` for httpx/requests-style errors; ``response_info`` for the Box SDK's BoxAPIError.
+    for attr in ("response", "response_info"):
+        headers = getattr(getattr(exc, attr, None), "headers", None)
+        if headers is None:
+            continue
+        try:
+            value = headers.get(name) or headers.get(name.lower())
+        except Exception:
+            continue
+        if value is not None:
+            return str(value).strip()
+    return None
+
+
 def _extract_retry_after(exc: BaseException) -> str | None:
     """Read a Retry-After header off an SDK exception's response, if present."""
-    headers = getattr(getattr(exc, "response", None), "headers", None)
-    if headers is None:
-        return None
-    try:
-        value = headers.get("Retry-After") or headers.get("retry-after")
-    except Exception:
-        return None
-    return sanitize_retry_after(value)
+    return sanitize_retry_after(_response_header(exc, "Retry-After"))
 
 
 # Transport-level failures, matched without importing every HTTP client.
@@ -405,6 +419,9 @@ _RATE_LIMIT_403_REASONS = frozenset({
 
 
 def _is_rate_limit_403(exc: BaseException) -> bool:
+    # GitHub marks a rate-limited 403 with headers rather than a reason code.
+    if _response_header(exc, "X-RateLimit-Remaining") == "0" or _response_header(exc, "Retry-After"):
+        return True
     details = getattr(exc, "error_details", None)
     if not isinstance(details, (list, tuple)):
         return False

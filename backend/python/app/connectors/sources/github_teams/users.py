@@ -70,6 +70,8 @@ class UsersSync:
         # paying a profile fetch per repo for the same unresolvable identity.
         self._principal_ids: set[int] = set()
         self._collab_resolution_attempted: set[int] = set()
+        # GitHub user id -> the email this run bound it to, the one its grants carry.
+        self._resolved_emails: dict[int, str] = {}
 
     def org_member_emails(self) -> set[str]:
         """Resolved emails of org members (never outside collaborators).
@@ -78,6 +80,10 @@ class UsersSync:
         internal-repo grant fall back to explicit collaborators only.
         """
         return self._org_member_emails
+
+    def resolved_email(self, user_id: int) -> str | None:
+        """The email the last user sync bound this GitHub user to, if any."""
+        return self._resolved_emails.get(user_id)
 
     # ------------------------------------------------------------------
     # Entry point
@@ -158,6 +164,7 @@ class UsersSync:
                     unresolved_ids.discard(uid)
 
         await self._persist_app_users(dict_member, resolved_email)
+        self._resolved_emails = dict(resolved_email)
         member_ids = getattr(self, "_member_ids", set())
         self._org_member_emails = {
             email for uid, email in resolved_email.items() if uid in member_ids

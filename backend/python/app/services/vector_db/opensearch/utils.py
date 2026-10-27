@@ -15,8 +15,35 @@ from app.services.vector_db.models import (
     VectorPoint,
 )
 
+PAGE_CONTENT_FIELD = "page_content"
+STEMMED_SUBFIELD = "stemmed"
+STEMMED_PAGE_CONTENT_FIELD = f"{PAGE_CONTENT_FIELD}.{STEMMED_SUBFIELD}"
+
+# The parent field keeps the standard analyzer so IDs and error codes match as
+# written; the English sub-field stems, so "running" finds "run". Both are
+# queried, which ranks a word matching in both forms above one that only
+# matches once stemmed.
+PAGE_CONTENT_MAPPING: Dict[str, Any] = {
+    "type": "text",
+    "fields": {STEMMED_SUBFIELD: {"type": "text", "analyzer": "english"}},
+}
+LEXICAL_QUERY_FIELDS = (PAGE_CONTENT_FIELD, STEMMED_PAGE_CONTENT_FIELD)
+
 
 class OpenSearchUtils:
+    @staticmethod
+    def nest_dotted_keys(payload: dict) -> dict:
+        """``{"metadata.status": 1, "connectorIds": [...]}`` as the nested
+        document a partial update expects."""
+        nested: dict = {}
+        for key, value in payload.items():
+            target = nested
+            *parents, leaf = key.split(".")
+            for parent in parents:
+                target = target.setdefault(parent, {})
+            target[leaf] = value
+        return nested
+
 
     @staticmethod
     def build_conditions(filters: Dict[str, Any]) -> List[FieldCondition]:
@@ -77,6 +104,29 @@ class OpenSearchUtils:
 
     @staticmethod
     def _field_condition_to_clause(cond: FieldCondition) -> Dict[str, Any]:
+        if cond.values_count_lte is not None:
+            # No native array-length filter; doc values on a keyword field give
+            # the count. A field with no values counts as zero, which is why
+            # this is only ever ANDed with a match on the same key.
+            script = {
+                "script": {
+                    "script": {
+                        "source": (
+                            "doc.containsKey(params.field) "
+                            "&& doc[params.field].size() <= params.limit"
+                        ),
+                        "params": {
+                            "field": cond.key,
+                            "limit": cond.values_count_lte,
+                        },
+                    }
+                }
+            }
+            if cond.values is not None:
+                return {"bool": {"must": [{"terms": {cond.key: cond.values}}, script]}}
+            if cond.value is not None:
+                return {"bool": {"must": [{"term": {cond.key: cond.value}}, script]}}
+            return script
         if cond.values is not None:
             return {"terms": {cond.key: cond.values}}
         return {"term": {cond.key: cond.value}}
@@ -125,7 +175,13 @@ class OpenSearchUtils:
 
         # BM25 text leg — wrap filter around the match query
         if request.text_query:
-            bm25: Dict[str, Any] = {"match": {"page_content": {"query": request.text_query}}}
+            bm25: Dict[str, Any] = {
+                "multi_match": {
+                    "query": request.text_query,
+                    "fields": list(LEXICAL_QUERY_FIELDS),
+                    "type": "most_fields",
+                }
+            }
             queries.append(OpenSearchUtils._wrap_with_filter(bm25, filter_query))
 
         # Dense k-NN leg — embed filter *inside* the knn clause for pre-filtering

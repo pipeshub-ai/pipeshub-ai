@@ -50,11 +50,16 @@ def _make_success_result():
     return result
 
 
-def _make_error_result(error_msg="Failed"):
-    """Build a failed KnowledgeHubNodesResponse."""
+def _make_error_result(error_msg="Failed", error_code=500):
+    """Build a failed KnowledgeHubNodesResponse.
+
+    ``error_code`` is how the service flags text it wrote for the reader: a 4xx
+    means the message is theirs to see, anything else means it is ours to explain.
+    """
     result = MagicMock()
     result.success = False
     result.error = error_msg
+    result.errorCode = error_code
     return result
 
 
@@ -116,6 +121,122 @@ class TestHandleGetNodes:
         assert result.success is True
 
     @pytest.mark.asyncio
+    async def test_a_service_failure_is_not_forwarded(self):
+        """The real path: get_nodes catches and RETURNS, so this runs, not the catch-all."""
+        request = _make_request()
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = AsyncMock(return_value=_make_error_result(
+            "Failed to retrieve nodes: psycopg2.OperationalError: refused", 500,
+        ))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _handle_get_nodes(
+                request=request,
+                knowledge_hub_service=svc,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=1,
+                limit=50,
+                sort_by="updatedAt",
+                sort_order="desc",
+                q=None,
+                node_types=None,
+                record_types=None,
+                origins=None,
+                connector_ids=None,
+                indexing_status=None,
+                created_at=None,
+                updated_at=None,
+                size=None,
+                flattened=False,
+                include=None,
+            )
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == (
+            "We couldn't open this collection. Please try again; if it keeps failing, "
+            "contact your admin."
+        )
+        assert "OperationalError" not in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_exception_text_saying_not_found_is_not_a_404(self):
+        """The neo4j client raises ValueError("Transaction ... not found") for its own
+        failures. Reading the words would turn that into a 404 carrying internal text,
+        so only the code the service set decides."""
+        request = _make_request()
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = AsyncMock(return_value=_make_error_result(
+            "Transaction 7c1b-41 not found", 500,
+        ))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _handle_get_nodes(
+                request=request,
+                knowledge_hub_service=svc,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=1,
+                limit=50,
+                sort_by="updatedAt",
+                sort_order="desc",
+                q=None,
+                node_types=None,
+                record_types=None,
+                origins=None,
+                connector_ids=None,
+                indexing_status=None,
+                created_at=None,
+                updated_at=None,
+                size=None,
+                flattened=False,
+                include=None,
+            )
+
+        assert exc_info.value.status_code == 500
+        assert exc_info.value.detail == (
+            "We couldn't open this collection. Please try again; if it keeps failing, "
+            "contact your admin."
+        )
+        assert "Transaction" not in exc_info.value.detail
+
+    @pytest.mark.asyncio
+    async def test_a_missing_node_keeps_its_own_wording(self):
+        """The service writes the 404 and 400 text for the person; that still shows."""
+        request = _make_request()
+        svc = _make_knowledge_hub_service()
+        svc.get_nodes = AsyncMock(return_value=_make_error_result("Folder not found", 404))
+
+        with pytest.raises(HTTPException) as exc_info:
+            await _handle_get_nodes(
+                request=request,
+                knowledge_hub_service=svc,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=1,
+                limit=50,
+                sort_by="updatedAt",
+                sort_order="desc",
+                q=None,
+                node_types=None,
+                record_types=None,
+                origins=None,
+                connector_ids=None,
+                indexing_status=None,
+                created_at=None,
+                updated_at=None,
+                size=None,
+                flattened=False,
+                include=None,
+            )
+
+        assert exc_info.value.status_code == 404
+        assert exc_info.value.detail == "Folder not found"
+
+    @pytest.mark.asyncio
     async def test_missing_user_id(self):
         request = _make_request(user_id=None)
         svc = _make_knowledge_hub_service()
@@ -147,6 +268,13 @@ class TestHandleGetNodes:
 
     @pytest.mark.asyncio
     async def test_search_query_too_short(self):
+        """`q` of 1 char and 501 chars is refused, 2 and 500 are not.
+
+        `limit` at 0/1/200/201 is enforced a layer up, by
+        `Query(50, ge=1, le=200)` on both endpoints, so limits are rejected
+        (with FastAPI's 422, not 400) rather than clamped, and the service's
+        own `min(max(1, limit), 200)` is defence in depth behind it.
+        """
         request = _make_request()
         svc = _make_knowledge_hub_service()
 
@@ -238,72 +366,75 @@ class TestHandleGetNodes:
         assert exc_info.value.status_code == 400
 
     @pytest.mark.asyncio
-    async def test_invalid_sort_by_defaults_to_name(self):
+    async def test_an_invalid_sort_by_is_refused(self):
+        """A silent fallback would sort by a field nobody asked for."""
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(return_value=_make_success_result())
 
-        await _handle_get_nodes(
-            request=request,
-            knowledge_hub_service=svc,
-            parent_id=None,
-            parent_type=None,
-            only_containers=False,
-            page=1,
-            limit=50,
-            sort_by="invalid_field",
-            sort_order="desc",
-            q=None,
-            node_types=None,
-            record_types=None,
-            origins=None,
-            connector_ids=None,
-            indexing_status=None,
-            created_at=None,
-            updated_at=None,
-            size=None,
-            flattened=False,
-            include=None,
-        )
-        call_kwargs = svc.get_nodes.call_args[1]
-        assert call_kwargs["sort_by"] == "name"
+        with pytest.raises(HTTPException) as caught:
+            await _handle_get_nodes(
+                request=request,
+                knowledge_hub_service=svc,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=1,
+                limit=50,
+                sort_by="invalid_field",
+                sort_order="desc",
+                q=None,
+                node_types=None,
+                record_types=None,
+                origins=None,
+                connector_ids=None,
+                indexing_status=None,
+                created_at=None,
+                updated_at=None,
+                size=None,
+                flattened=False,
+                include=None,
+            )
+        assert caught.value.status_code == 400
+        svc.get_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_invalid_sort_order_defaults_to_asc(self):
+    async def test_an_invalid_sort_order_is_refused(self):
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(return_value=_make_success_result())
 
-        await _handle_get_nodes(
-            request=request,
-            knowledge_hub_service=svc,
-            parent_id=None,
-            parent_type=None,
-            only_containers=False,
-            page=1,
-            limit=50,
-            sort_by="name",
-            sort_order="invalid",
-            q=None,
-            node_types=None,
-            record_types=None,
-            origins=None,
-            connector_ids=None,
-            indexing_status=None,
-            created_at=None,
-            updated_at=None,
-            size=None,
-            flattened=False,
-            include=None,
-        )
-        call_kwargs = svc.get_nodes.call_args[1]
-        assert call_kwargs["sort_order"] == "asc"
+        with pytest.raises(HTTPException) as caught:
+            await _handle_get_nodes(
+                request=request,
+                knowledge_hub_service=svc,
+                parent_id=None,
+                parent_type=None,
+                only_containers=False,
+                page=1,
+                limit=50,
+                sort_by="name",
+                sort_order="invalid",
+                q=None,
+                node_types=None,
+                record_types=None,
+                origins=None,
+                connector_ids=None,
+                indexing_status=None,
+                created_at=None,
+                updated_at=None,
+                size=None,
+                flattened=False,
+                include=None,
+            )
+        assert caught.value.status_code == 400
+        svc.get_nodes.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_error_result_not_found(self):
         request = _make_request()
         svc = _make_knowledge_hub_service()
-        svc.get_nodes = AsyncMock(return_value=_make_error_result("Resource not found"))
+        svc.get_nodes = AsyncMock(return_value=_make_error_result("Resource not found", 404))
 
         with pytest.raises(HTTPException) as exc_info:
             await _handle_get_nodes(
@@ -335,7 +466,7 @@ class TestHandleGetNodes:
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(
-            return_value=_make_error_result("Type mismatch error")
+            return_value=_make_error_result("Type mismatch error", 400)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -368,7 +499,7 @@ class TestHandleGetNodes:
         request = _make_request()
         svc = _make_knowledge_hub_service()
         svc.get_nodes = AsyncMock(
-            return_value=_make_error_result("Invalid request parameter")
+            return_value=_make_error_result("Invalid request parameter", 400)
         )
 
         with pytest.raises(HTTPException) as exc_info:
@@ -490,7 +621,12 @@ class TestHandleGetNodes:
                 include=None,
             )
         assert exc_info.value.status_code == 500
-        assert "unexpected" in str(exc_info.value.detail).lower()
+        # the person gets advice; the exception goes to the log
+        assert exc_info.value.detail == (
+            "We couldn't open this collection. Please try again; if it keeps failing, "
+            "contact your admin."
+        )
+        assert "unexpected" not in str(exc_info.value.detail).lower()
 
     @pytest.mark.asyncio
     async def test_with_all_filters(self):

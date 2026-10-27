@@ -1,23 +1,60 @@
+import asyncio
 import logging
+import time
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from app.config.constants.arangodb import (
     AccountType,
     AppGroups,
+    AppStatus,
     CollectionNames,
     Connectors,
     ConnectorScopes,
+    OriginTypes,
     ProgressStatus,
 )
+from app.connectors.core.base.connector.connector_service import (
+    connector_sync_lock,
+    dispose_connector,
+)
+from app.connectors.core.base.data_store.graph_data_store import (
+    GraphDataStore,
+    ensure_written,
+)
 from app.connectors.core.base.event_service.event_service import BaseEventService
+from app.connectors.core.constants import ConnectorStateKeys
 from app.connectors.core.factory.connector_factory import ConnectorFactory
-from app.connectors.core.sync.task_manager import reindex_task_manager, sync_task_manager
+from app.connectors.core.sync.sync_coordinator import get_coordinator, stop_wait_sec
+from app.connectors.core.sync.task_manager import reindex_task_manager
 from app.containers.connector import (
     ConnectorAppContainer,
 )
 from app.edition_services import get_data_entities_processor_cls
+from app.modules.indexing.record_republish import record_event
+from app.services.graph_db.common.record_visibility import (
+    RecordVisibility,
+    is_live_record,
+)
+from app.services.graph_db.entity_index_queries import APP_STATUS_DELETING
 from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
 from app.utils.time_conversion import get_epoch_timestamp_in_ms
+from app.utils.user_errors import CONNECTOR_OFF
+
+if TYPE_CHECKING:
+    from app.connectors.core.base.data_store.data_store import TransactionStore
+
+_REQUEUE_PAGE_SIZE = 100
+# A burst of added users is collected for this long, then linked by one pass per connector.
+_LINK_DEBOUNCE_SEC = 10
+# A pass waits for a running sync (it may be past its user step) for at most this many debounces.
+_LINK_MAX_DEFERRALS = 360
+# Parked by a turn-off, as opposed to AUTO_INDEX_OFF from the connector's own
+# indexing filters, which carries no such reason.
+_PARKED_WHILE_OFF = {
+    "indexingStatus": ProgressStatus.AUTO_INDEX_OFF.value,
+    "reason": CONNECTOR_OFF,
+}
 
 
 class EntityEventService(BaseEventService):
@@ -29,6 +66,8 @@ class EntityEventService(BaseEventService):
     ) -> None:
         self.logger = logger
         self.graph_provider = graph_provider
+        self.graph_data_store = GraphDataStore(logger, graph_provider)
+        self._link_state: dict[str, dict] = {}
         self.app_container = app_container
 
     async def process_event(self, event_type: str, payload: dict) -> bool:
@@ -68,10 +107,13 @@ class EntityEventService(BaseEventService):
                 'timestamp': get_epoch_timestamp_in_ms()
             }
 
-            # Send the message to sync-events topic using aiokafka
+            # Keyed by connector like Node's sync events: an unkeyed start could
+            # land on another partition than that connector's resyncs and be
+            # consumed out of order with them.
             await self.app_container.messaging_producer.send_message(
                 topic='sync-events',
-                message=message
+                message=message,
+                key=(value or {}).get("connectorId") or None,
             )
 
             self.logger.info(f"Successfully sent sync event: {event_type}")
@@ -108,10 +150,12 @@ class EntityEventService(BaseEventService):
                 [org_data], CollectionNames.ORGS.value
             )
 
-            # Get departments with orgId == None using provider
+            # raise_on_error: a failed read would otherwise create the org with no
+            # department links and acknowledge the event.
             departments = await self.graph_provider.get_nodes_by_filters(
                 collection=CollectionNames.DEPARTMENTS.value,
-                filters={"orgId": None}
+                filters={"orgId": None},
+                raise_on_error=True,
             )
 
             # Create relationships between org and departments
@@ -195,6 +239,9 @@ class EntityEventService(BaseEventService):
             self.logger.info(
                 f"✅ Successfully soft-deleted organization: {payload['orgId']}"
             )
+            await self._remove_mcp_data("org", payload["orgId"])
+            await self._remove_personal_toolsets("org", payload["orgId"])
+            await self._remove_api_toolset_data(payload["orgId"])
             return True
 
         except Exception as e:
@@ -206,9 +253,10 @@ class EntityEventService(BaseEventService):
         """Handle user creation event"""
         try:
             self.logger.info(f"📥 Processing user added event: {payload}")
-            # Check if user already exists by email
+            # raise_on_error: the providers answer None to a failed read too, and
+            # "nobody" here would mint a second user for someone who is there.
             existing_user = await self.graph_provider.get_user_by_email(
-                payload["email"]
+                payload["email"], raise_on_error=True
             )
 
             current_timestamp = get_epoch_timestamp_in_ms()
@@ -223,6 +271,19 @@ class EntityEventService(BaseEventService):
                     "isActive": True,
                     "updatedAtTimestamp": current_timestamp,
                 }
+                # Set on the existing node too: a service account that is
+                # restored, or recreated under an address the graph already
+                # knows, arrives here rather than below. Left alone when
+                # absent, so an older producer cannot blank a value a newer
+                # one has already set. Nodes that predate the field are filled
+                # in by the backfill, not from here.
+                if payload.get("kind"):
+                    user_data["kind"] = payload["kind"]
+                # Sent by restore, which has just switched the account back on
+                # in the collection that owns the answer. Left alone when
+                # absent, so a producer that says nothing cannot change it.
+                if payload.get("isDisabled") is not None:
+                    user_data["isDisabled"] = bool(payload["isDisabled"])
             else:
                 user_key = str(uuid4())
                 user_data = {
@@ -237,6 +298,16 @@ class EntityEventService(BaseEventService):
                     "designation": payload.get("designation", ""),
                     "businessPhones": payload.get("businessPhones", []),
                     "isActive": True,
+                    # Absence means a person. Every producer of a service
+                    # account sends this; nothing else needs to.
+                    "kind": payload.get("kind") or "human",
+                # Absence means not disabled, so only a true value is worth
+                # storing; a person never carries this at all.
+                **(
+                    {"isDisabled": True}
+                    if payload.get("isDisabled") is True
+                    else {}
+                ),
                     "createdAtTimestamp": current_timestamp,
                     "updatedAtTimestamp": current_timestamp,
                 }
@@ -269,6 +340,12 @@ class EntityEventService(BaseEventService):
                 CollectionNames.BELONGS_TO.value,
             )
 
+            # Adopt anything this email already accumulated as an external
+            # collaborator. Never fatal: the account itself is what this event is for, and
+            # letting a failed adoption bubble up would make Kafka redeliver forever while
+            # the person still has no user.
+            await self._adopt_existing_person(payload["email"], user_key, payload["orgId"])
+
             # Get or create knowledge base for the user (creates app + all edges)
             kb_name = self._kb_name_from_user_added_payload(payload)
             await self._get_or_create_knowledge_base(user_key, payload["userId"], payload["orgId"], name=kb_name)
@@ -279,11 +356,70 @@ class EntityEventService(BaseEventService):
             self.logger.info(
                 f"✅ Successfully created/updated user: {payload['email']}"
             )
+            self._schedule_connector_link(payload["orgId"])
             return True
 
         except Exception as e:
             self.logger.error(f"❌ Error creating/updating user: {str(e)}")
             return False
+
+    def _schedule_connector_link(self, org_id: str) -> None:
+        """Ask the org's running connectors that link users to do so, without holding up the event.
+
+        At most one pass per connector is in flight; adds that arrive meanwhile are folded
+        into one more pass that starts after the debounce.
+        """
+        for connector_id, connector in list(getattr(self.app_container, "connectors_map", {}).items()):
+            if not getattr(connector, "user_link_steps", ()):
+                continue
+            if getattr(connector.data_entities_processor, "org_id", None) != org_id:
+                continue
+            state = self._link_state.setdefault(connector_id, {"dirty": False, "task": None})
+            state["dirty"] = True
+            if state["task"] is None:
+                state["task"] = asyncio.create_task(self._link_passes(connector_id))
+
+    async def _link_passes(self, connector_id: str) -> None:
+        state = self._link_state[connector_id]
+        deferrals = 0
+        try:
+            while state["dirty"]:
+                await asyncio.sleep(_LINK_DEBOUNCE_SEC)
+                state["dirty"] = False
+                if await self._link_connector(connector_id):
+                    deferrals = 0
+                elif deferrals < _LINK_MAX_DEFERRALS:
+                    deferrals += 1
+                    state["dirty"] = True
+        finally:
+            state["task"] = None
+
+    async def _link_connector(self, connector_id: str) -> bool:
+        """Best effort: a user added after a connector's last user sync has no edge to it
+        until the next sync, so run the connector's own user-link steps (the source alone
+        decides what the user may reach). Holds connector_sync_lock for the whole pass, so a
+        sync that is admitted meanwhile waits for it, and is not run while the connector syncs
+        (the caller retries once it has ended) nor for a connector that is off or being
+        deleted. Returns False only when deferred; never raises.
+        """
+        try:
+            connector = getattr(self.app_container, "connectors_map", {}).get(connector_id)
+            if connector is None:
+                return True
+            lock = connector_sync_lock(connector_id)
+            if lock.locked():
+                return False
+            async with lock:
+                coordinator = get_coordinator()
+                if coordinator is not None and await coordinator.is_running(connector_id):
+                    return False
+                app = await self.graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+                if not app or not app.get("isActive", False) or app.get("status") == APP_STATUS_DELETING:
+                    return True
+                await connector.link_new_users()
+        except Exception as e:
+            self.logger.warning("Could not link new users to connector %s: %s", connector_id, e)
+        return True
 
     async def _handle_user_updated(self, payload: dict) -> bool:
         """Handle user update event"""
@@ -311,9 +447,27 @@ class EntityEventService(BaseEventService):
                 "designation": payload.get("designation", ""),
                 "businessPhones": payload.get("businessPhones", []),
 
-                "isActive": True,
                 "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
             }
+
+            # `isActive` is deliberately absent from the fields above. Soft
+            # delete writes `isActive: False` (`_handle_user_deleted`) and
+            # these upserts merge, so any `True` here would overwrite it. The
+            # two handlers run at the same time: delete and update are
+            # separate event types on one stream, the chart runs two connector
+            # replicas in the same consumer group
+            # (`app/services/messaging/utils.py:239`), and each can take one.
+            # A `True` decided before a delete commits would land after it and
+            # put a removed user back. The field belongs to the events that
+            # own it — create, delete and restore. A rename is no evidence
+            # that a user still exists.
+
+            # The only signal the graph gets that an account was switched
+            # off. Written only when the event carries it, so an update that
+            # says nothing about it — one from a producer that predates the
+            # field — cannot switch an account back on.
+            if payload.get("isDisabled") is not None:
+                user_data["isDisabled"] = bool(payload["isDisabled"])
 
             # Add only non-null optional fields
             optional_fields = [
@@ -335,6 +489,22 @@ class EntityEventService(BaseEventService):
             await self.graph_provider.batch_upsert_nodes(
                 [user_data], CollectionNames.USERS.value
             )
+
+            # A node written before the field existed carries no `isActive`,
+            # and the permission reads filter on `isActive == true`, so such a
+            # node drops out of them. Stamped here rather than merged above
+            # because the condition is evaluated inside the write: a delete
+            # that lands first leaves `False` in place and this does nothing.
+            # Skipped outright when the read already saw the field, which is
+            # every account created since.
+            if existing_user.get("isActive") is None:
+                await self.graph_provider.update_node_fields_if_match(
+                    user_id,
+                    CollectionNames.USERS.value,
+                    {"isActive": True},
+                    {"isActive": None},
+                )
+
             self.logger.info(f"✅ Successfully updated user: {payload['email']}")
             return True
 
@@ -367,11 +537,59 @@ class EntityEventService(BaseEventService):
                 [user_data], CollectionNames.USERS.value
             )
             self.logger.info(f"✅ Successfully soft-deleted user: {payload['email']}")
+            if payload.get("userId"):
+                await self._remove_mcp_data("user", payload["orgId"], payload["userId"])
+                await self._remove_personal_toolsets("user", payload["orgId"], payload["userId"])
+                await self._remove_api_toolset_data(payload["orgId"], payload["userId"])
             return True
 
         except Exception as e:
             self.logger.error(f"❌ Error deleting user: {str(e)}")
             return False
+
+    async def _remove_mcp_data(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
+        """MCP servers and credentials go with their user or org, so nothing keeps refreshing
+        their tokens. The graph change is already done, so a failure here is logged, not raised."""
+        from app.agents.mcp import lifecycle as mcp_lifecycle
+
+        try:
+            config_service = self.app_container.config_service()
+            if owner_kind == "org":
+                removed = await mcp_lifecycle.remove_org_mcp_data(config_service, org_id)
+            else:
+                removed = await mcp_lifecycle.remove_user_mcp_data(config_service, org_id, user_id or "")
+            self.logger.info(f"Removed {len(removed)} MCP keys for deleted {owner_kind} {user_id or org_id}")
+        except Exception as e:
+            self.logger.error(f"Could not remove MCP data for deleted {owner_kind} {user_id or org_id}: {e}")
+
+    async def _remove_personal_toolsets(self, owner_kind: str, org_id: str, user_id: str | None = None) -> None:
+        """Personal toolset instances, with their sign-ins and tool rules, go with their user or org,
+        so nothing keeps refreshing their tokens. Logged, not raised, as for MCP data."""
+        from app.agents import toolset_store
+
+        try:
+            config_service = self.app_container.config_service()
+            if owner_kind == "org":
+                removed = await toolset_store.remove_org_personal_instances(config_service, org_id)
+            else:
+                removed = await toolset_store.remove_user_personal_instances(config_service, org_id, user_id or "")
+            self.logger.info(f"Removed {removed} personal toolset instance(s) for deleted {owner_kind} {user_id or org_id}")
+        except Exception as e:
+            self.logger.error(f"Could not remove personal toolset instances for deleted {owner_kind} {user_id or org_id}: {e}")
+
+    async def _remove_api_toolset_data(self, org_id: str, user_id: str | None = None) -> None:
+        """A deleted org's API toolsets, or a deleted user's credentials for them. The graph
+        change is already done, so a failure here is logged, not raised."""
+        from app.agents.openapi.store import ApiToolsetStore
+
+        try:
+            store = ApiToolsetStore(self.app_container.config_service())
+            if user_id:
+                await store.remove_owner(org_id, user_id)
+            else:
+                await store.remove_org(org_id)
+        except Exception as e:
+            self.logger.error(f"Could not remove API toolset data for deleted {'user' if user_id else 'org'} {user_id or org_id}: {e}")
 
     # APP EVENTS
     async def _handle_app_enabled(self, payload: dict) -> bool:
@@ -407,6 +625,9 @@ class EntityEventService(BaseEventService):
                             "syncedBy": synced_by,
                         },
                     )
+
+            if connector_id:
+                await self._start_requeue_of_parked_records(connector_id)
 
             self.logger.info(f"✅ Successfully enabled apps for org: {org_id}")
             return True
@@ -454,13 +675,46 @@ class EntityEventService(BaseEventService):
                 app_updates, CollectionNames.APPS.value
             )
 
-            # Cancel any running sync/reindex task so they stop promptly
+            # Stop any running sync/reindex and wait for it to unwind, bounded:
+            # the sweep and the cleanup below must not run while the sync is
+            # still writing records (they would be left QUEUED with nothing to
+            # pick them up), but this is the serial entity consumer, so an
+            # unbounded wait would stall every event behind it.
             try:
-                await sync_task_manager.cancel_sync(connector_id)
-                await reindex_task_manager.cancel_by_prefix(f"reindex:{connector_id}:")
-                self.logger.info(f"✅ Cancelled running sync/reindex for connector {connector_id}")
+                reindex_task_manager.request_stop_by_prefix(f"reindex:{connector_id}:")
+                coordinator = get_coordinator()
+                if coordinator is not None:
+                    await coordinator.request_stop(connector_id)
+                if await self._wait_for_sync_to_stop(connector_id):
+                    self.logger.info(f"✅ Stopped running sync/reindex for connector {connector_id}")
+                else:
+                    self.logger.warning(
+                        f"Sync/reindex for connector {connector_id} still unwinding after "
+                        f"{stop_wait_sec(self.logger)}s; disabling anyway"
+                    )
             except Exception as cancel_err:
-                self.logger.error(f"❌ Failed to cancel sync for connector {connector_id}: {cancel_err}")
+                self.logger.error(f"❌ Failed to stop sync for connector {connector_id}: {cancel_err}")
+
+            # A connector parked at the concurrency limit is owed a sync that must
+            # no longer run: without this it shows QUEUED until re-enabled.
+            try:
+                app_doc = await self.graph_provider.get_document(
+                    connector_id, CollectionNames.APPS.value
+                )
+                if app_doc and app_doc.get("status") == AppStatus.QUEUED.value:
+                    await self.graph_provider.update_node(
+                        connector_id,
+                        CollectionNames.APPS.value,
+                        {
+                            "status": AppStatus.IDLE.value,
+                            ConnectorStateKeys.PENDING_RESYNC: False,
+                            "updatedAtTimestamp": get_epoch_timestamp_in_ms(),
+                        },
+                    )
+            except Exception as queue_err:
+                self.logger.error(
+                    f"❌ Failed to clear the queued sync of disabled connector {connector_id}: {queue_err}"
+                )
 
             # Drain the backlog. Records already QUEUED have no event guard to
             # catch them and no processingStartedAt, so stale recovery — which
@@ -468,14 +722,19 @@ class EntityEventService(BaseEventService):
             # QUEUED for ever. Run this *after* cancelling the sync so nothing
             # re-queues behind the sweep. IN_PROGRESS is excluded deliberately;
             # those are mid-pipeline and are handled by stale recovery.
+            # Only QUEUED, and stamped CONNECTOR_OFF like every other turn-off
+            # path: that reason is what lets turning the connector on queue
+            # them again, so it must not land on records the connector's
+            # filters keep out of auto-indexing, or on FAILED/EMPTY outcomes.
+            # Not on trashed ones either: the resume skips the trash, so one
+            # restored afterwards would stay parked with the connector on.
             try:
                 await self.graph_provider.reset_indexing_status_for_connector(
                     connector_id,
                     ProgressStatus.AUTO_INDEX_OFF.value,
-                    exclude_statuses=[
-                        ProgressStatus.IN_PROGRESS.value,
-                        ProgressStatus.COMPLETED.value,
-                    ],
+                    only_statuses=[ProgressStatus.QUEUED.value],
+                    reason=CONNECTOR_OFF,
+                    visibility=RecordVisibility.LIVE,
                 )
                 self.logger.info(
                     f"✅ Moved queued records for connector {connector_id} to manual indexing"
@@ -492,8 +751,7 @@ class EntityEventService(BaseEventService):
             ):
                 existing_connector = self.app_container.connectors_map.pop(connector_id)
                 try:
-                    if hasattr(existing_connector, "cleanup"):
-                        await existing_connector.cleanup()
+                    await dispose_connector(existing_connector)
                     self.logger.info(f"Cleaned up connector instance {connector_id}")
                 except Exception as cleanup_err:
                     self.logger.error(f"Error cleaning up connector {connector_id}: {cleanup_err}")
@@ -504,6 +762,166 @@ class EntityEventService(BaseEventService):
         except Exception as e:
             self.logger.error(f"❌ Error disabling apps: {str(e)}")
             return False
+
+    async def _adopt_existing_person(self, email: str, user_key: str, org_id: str) -> None:
+        """Move a pre-existing Person's collaborator edges onto the new user.
+
+        Someone shared files with this address before its owner had an account; those
+        grants live on a Person node and must follow them in, or they sign up and see
+        nothing. A Person that is also a Salesforce contact splits instead of merging -
+        see docs/external-user-support-plan.md, D4.
+        """
+        try:
+            mode = await self.graph_provider.migrate_person_to_user(email, user_key, org_id)
+            if mode:
+                self.logger.info(
+                    f"✅ Adopted existing person for {email} ({mode})"
+                )
+        except Exception as e:
+            self.logger.error(
+                f"❌ Failed to adopt existing person for {email}: {str(e)}",
+                exc_info=True,
+            )
+
+    async def _start_requeue_of_parked_records(self, connector_id: str) -> None:
+        """Queue again, in the background, what was parked while the connector was off.
+
+        A background task because a long backlog would hold this serial
+        consumer. The ``reindex:<id>:`` key puts it under the stop that
+        turning the connector off already issues for that prefix.
+        """
+        try:
+            await reindex_task_manager.start_if_idle(
+                f"reindex:{connector_id}:parked-while-off",
+                self._requeue_records_parked_while_off(connector_id),
+            )
+        except Exception as e:
+            # Never fail the enable over it; the next one tries again.
+            self.logger.error(
+                f"❌ Could not start re-queuing records parked while connector "
+                f"{connector_id} was off: {e}"
+            )
+
+    async def _requeue_records_parked_while_off(self, connector_id: str) -> int:
+        """Re-publish the connector's records parked as AUTO_INDEX_OFF / CONNECTOR_OFF.
+
+        Every turn-off path parks queued and in-flight records that way, and
+        their message tells the user turning the connector on will index them.
+        A sync does not: an unchanged record is not sent again. Returns how
+        many were re-published.
+
+        Published first, then moved to QUEUED only while still parked, as
+        ``_mark_queued_after_publish`` does: the indexing service may already
+        have taken the record on, and that must not be overwritten.
+
+        Pages with a key cursor, not an offset: the result set changes under
+        the walk (the sync started beside this deletes records, trash purge
+        removes them, a write may not take), and an offset would then skip a
+        record or send one twice. The cursor visits each record at most once.
+        """
+        connector = await self.graph_provider.get_document(
+            connector_id, CollectionNames.APPS.value, raise_on_error=True
+        )
+        if not connector or not connector.get("isActive", False):
+            # A stale enable, or turned off again since: it would only be parked again.
+            return 0
+
+        producer = self.app_container.messaging_producer
+        filters = {"connectorId": connector_id, **_PARKED_WHILE_OFF}
+        requeued = 0
+        # "" rather than None, so the first page has the key predicate too:
+        # Neo4j uses the (connectorId, indexingStatus, reason, id) index only
+        # when every property in it has one.
+        after_key = ""
+        while True:
+            page = await self.graph_provider.get_documents_paginated(
+                CollectionNames.RECORDS.value,
+                limit=_REQUEUE_PAGE_SIZE,
+                filters=filters,
+                sort_field="_key",
+                raise_on_error=True,
+                after_key=after_key,
+            )
+            if not page:
+                break
+            # Advanced before any work, so nothing on this page is read again.
+            after_key = page[-1].get("_key") or page[-1].get("id")
+            if not after_key:
+                self.logger.error(
+                    f"Last parked record of connector {connector_id} has no key; "
+                    "stopping the re-queue rather than reading the page again"
+                )
+                break
+
+            candidates = [
+                (key, record)
+                for record in page
+                if (key := record.get("_key") or record.get("id"))
+                and record.get("origin") == OriginTypes.CONNECTOR.value
+                and is_live_record(record)
+            ]
+            now = get_epoch_timestamp_in_ms()
+            messages = []
+            for key, record in candidates:
+                event_type, payload = record_event(
+                    record, record_key=key, connector_id=connector_id
+                )
+                messages.append(
+                    (key, {"eventType": event_type, "timestamp": now, "payload": payload})
+                )
+            acked = (
+                await producer.send_messages("record-events", messages)
+                if messages
+                else []
+            )
+            sent = [pair for pair, ok in zip(candidates, acked) if ok]
+            if sent:
+                await self.graph_provider.update_nodes_fields_if_match(
+                    CollectionNames.RECORDS.value,
+                    [
+                        (key, self._requeued_fields(record, now), dict(_PARKED_WHILE_OFF))
+                        for key, record in sent
+                    ],
+                )
+            requeued += len(sent)
+
+            if len(page) < _REQUEUE_PAGE_SIZE:
+                break
+
+        if requeued:
+            self.logger.info(
+                f"✅ Re-queued {requeued} record(s) parked while connector {connector_id} was off"
+            )
+        return requeued
+
+    @staticmethod
+    def _requeued_fields(record: dict, now: int) -> dict:
+        fields: dict = {
+            "indexingStatus": ProgressStatus.QUEUED.value,
+            "queuedAtTimestamp": now,
+            "processingStartedAt": None,
+            "reason": None,
+        }
+        # Stale recovery parks these too when it parks an in-flight record.
+        for status_field in ("parsingStatus", "extractionStatus"):
+            if record.get(status_field) == ProgressStatus.AUTO_INDEX_OFF.value:
+                fields[status_field] = ProgressStatus.NOT_STARTED.value
+        return fields
+
+    async def _wait_for_sync_to_stop(self, connector_id: str) -> bool:
+        """Whether the connector's sync and reindex tasks ended within the wait."""
+        coordinator = get_coordinator()
+        prefix = f"reindex:{connector_id}:"
+        deadline = time.monotonic() + stop_wait_sec(self.logger)
+        while True:
+            busy = (
+                coordinator is not None and await coordinator.is_running(connector_id)
+            ) or any(k.startswith(prefix) for k in reindex_task_manager.active_keys())
+            if not busy:
+                return True
+            if time.monotonic() >= deadline:
+                return False
+            await asyncio.sleep(0.25)
 
     def _kb_name_from_user_added_payload(self, payload: dict) -> str:
         """Compute KB display name from userAdded event: fullName's Private or email's Private."""
@@ -554,6 +972,36 @@ class EntityEventService(BaseEventService):
                 exc_info=True
             )
 
+    @staticmethod
+    async def _ensure_kb_edges(tx_store: "TransactionStore", user_key: str, org_id: str, kb_key: str) -> None:
+        """The three edges that make a default knowledge base reachable, written create-only.
+
+        No read decides this: both providers answer None to a failed edge read as
+        well as to a missing edge, and a replacing write after that would reset a
+        live edge's sync state or role. An edge that is there is left as it is.
+        """
+        timestamp = get_epoch_timestamp_in_ms()
+        await tx_store.create_edges_if_absent([{
+            "from_id": user_key,
+            "from_collection": CollectionNames.USERS.value,
+            "to_id": kb_key,
+            "to_collection": CollectionNames.APPS.value,
+            "externalPermissionId": "",
+            "type": "USER",
+            "role": "OWNER",
+            "createdAtTimestamp": timestamp,
+            "updatedAtTimestamp": timestamp,
+            "lastUpdatedTimestampAtSource": timestamp,
+        }], CollectionNames.PERMISSION.value)
+        await tx_store.create_edges_if_absent([{
+            "from_id": org_id,
+            "from_collection": CollectionNames.ORGS.value,
+            "to_id": kb_key,
+            "to_collection": CollectionNames.APPS.value,
+            "createdAtTimestamp": timestamp,
+        }], CollectionNames.ORG_APP_RELATION.value)
+        await tx_store.ensure_app_membership(user_key, CollectionNames.USERS.value, kb_key, is_external=False)
+
     async def _get_or_create_knowledge_base(
         self,
         user_key: str,
@@ -561,142 +1009,106 @@ class EntityEventService(BaseEventService):
         orgId: str,
         name: str = "Private"
     ) -> dict:
-        """Get or create a default knowledge base app for a user."""
-        try:
-            if not userId or not orgId:
-                self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
-                return {}
+        """Get or create a default knowledge base app for a user.
 
-            # Check if a KB app already exists for this user in this organization
-            existing_kbs = await self.graph_provider.get_nodes_by_filters(
-                collection=CollectionNames.APPS.value,
-                filters={
-                    "createdBy": userId,
-                    "orgId": orgId,
-                    "type": Connectors.KNOWLEDGE_BASE.value,
-                }
-            )
-            existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
-
-            if existing_kbs:
-                self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
-                return existing_kbs[0]
-
-            current_timestamp = get_epoch_timestamp_in_ms()
-            kb_key = str(uuid4())
-
-            kb_data = {
-                "id": kb_key,
-                "createdBy": userId,
-                "orgId": orgId,
-                "name": name,
-                "type": Connectors.KNOWLEDGE_BASE.value,
-                "appGroup": AppGroups.LOCAL_STORAGE.value,
-                "authType": "NONE",
-                "scope": ConnectorScopes.PERSONAL.value,
-                "isActive": True,
-                "isAgentActive": True,
-                "isConfigured": True,
-                "isAuthenticated": True,
-                "vectorMembershipBackfilled": True,
-                "hideConnector": True,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-            permission_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "externalPermissionId": "",
-                "type": "USER",
-                "role": "OWNER",
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-                "lastUpdatedTimestampAtSource": current_timestamp,
-            }
-
-            org_app_edge = {
-                "from_id": orgId,
-                "from_collection": CollectionNames.ORGS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "createdAtTimestamp": current_timestamp,
-            }
-
-            user_app_edge = {
-                "from_id": user_key,
-                "from_collection": CollectionNames.USERS.value,
-                "to_id": kb_key,
-                "to_collection": CollectionNames.APPS.value,
-                "syncState": "NOT_STARTED",
-                "lastSyncUpdate": current_timestamp,
-                "createdAtTimestamp": current_timestamp,
-                "updatedAtTimestamp": current_timestamp,
-            }
-
-            txn_id = None
-            try:
-                txn_id = await self.graph_provider.begin_transaction(
-                    read=[],
-                    write=[
-                        CollectionNames.APPS.value,
-                        CollectionNames.ORG_APP_RELATION.value,
-                        CollectionNames.USER_APP_RELATION.value,
-                        CollectionNames.PERMISSION.value,
-                    ],
-                )
-                await self.graph_provider.batch_upsert_nodes([kb_data], CollectionNames.APPS.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([permission_edge], CollectionNames.PERMISSION.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([org_app_edge], CollectionNames.ORG_APP_RELATION.value, transaction=txn_id)
-                await self.graph_provider.batch_create_edges([user_app_edge], CollectionNames.USER_APP_RELATION.value, transaction=txn_id)
-                await self.graph_provider.commit_transaction(txn_id)
-                txn_id = None  # mark committed so the except block below doesn't roll it back
-            except BaseException:
-                # BaseException so a cancellation also rolls back -- otherwise
-                # the transaction's session leaks a pooled Neo4j connection
-                # (see GraphDataStore.transaction for the full account).
-                if txn_id is not None:
-                    try:
-                        await self.graph_provider.rollback_transaction(txn_id)
-                    except Exception as rb_err:
-                        self.logger.warning(f"⚠️ Rollback of default KB creation failed: {rb_err}")
-                raise
-
-            # Register per-KB connector instance at runtime
-            try:
-                config_service = self.app_container.config_service()
-                data_store_provider = await self.app_container.data_store()
-                if not hasattr(self.app_container, 'connectors_map'):
-                    self.app_container.connectors_map = {}
-                connector = await ConnectorFactory.create_and_start_sync(
-                    name="kb",
-                    logger=self.logger,
-                    data_store_provider=data_store_provider,
-                    config_service=config_service,
-                    connector_id=kb_key,
-                    scope=ConnectorScopes.PERSONAL.value,
-                    created_by=userId,
-                    org_id=orgId,
-                    data_entities_processor_cls=get_data_entities_processor_cls(),
-                    notification_service=self.app_container.connector_notification_service(),
-                )
-                if connector:
-                    self.app_container.connectors_map[kb_key] = connector
-                    self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
-            except Exception as reg_err:
-                self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
-
-            self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
-            return {
-                "kb_id": kb_key,
-                "name": name,
-                "created_at": current_timestamp,
-                "updated_at": current_timestamp,
-                "success": True
-            }
-
-        except Exception as e:
-            self.logger.error(f"Failed to get or create knowledge base: {str(e)}")
+        Raises when the graph write fails, so the user event is not acknowledged
+        with the knowledge base missing or incomplete.
+        """
+        if not userId or not orgId:
+            self.logger.error("Both User ID and Organization ID are required to get or create a knowledge base")
             return {}
 
+        # raise_on_error: the providers answer [] to a failed lookup too, and "no
+        # knowledge base" here would mint a second App under a new id.
+        existing_kbs = await self.graph_provider.get_nodes_by_filters(
+            collection=CollectionNames.APPS.value,
+            filters={
+                "createdBy": userId,
+                "orgId": orgId,
+                "type": Connectors.KNOWLEDGE_BASE.value,
+            },
+            raise_on_error=True,
+        )
+        existing_kbs = [kb for kb in existing_kbs if not kb.get("isDeleted", False)]
+
+        if existing_kbs:
+            self.logger.info(f"Found existing KB app for user {userId} in organization {orgId}")
+            # A create that failed partway on Neo4j before creates ran in a real
+            # transaction (or with NEO4J_CREATE_TRANSACTIONS=false) left the App
+            # without some of its edges; finish it rather than hand it out unusable
+            # again. Create-only, so a complete one is untouched.
+            # Every match, not the first: the lookup is unordered.
+            for existing in existing_kbs:
+                existing_key = existing.get("id") or existing.get("_key")
+                if existing_key:
+                    await self.graph_data_store.execute_idempotent_in_transaction(
+                        self._ensure_kb_edges, user_key, orgId, existing_key, explicit=True
+                    )
+            return existing_kbs[0]
+
+        current_timestamp = get_epoch_timestamp_in_ms()
+        kb_key = str(uuid4())
+
+        kb_data = {
+            "id": kb_key,
+            "createdBy": userId,
+            "orgId": orgId,
+            "name": name,
+            "type": Connectors.KNOWLEDGE_BASE.value,
+            "appGroup": AppGroups.LOCAL_STORAGE.value,
+            "authType": "NONE",
+            "scope": ConnectorScopes.PERSONAL.value,
+            "isActive": True,
+            "isAgentActive": True,
+            "isConfigured": True,
+            "isAuthenticated": True,
+            "vectorMembershipBackfilled": True,
+            "hideConnector": True,
+            "createdAtTimestamp": current_timestamp,
+            "updatedAtTimestamp": current_timestamp,
+        }
+
+        async def write_kb(tx_store: "TransactionStore") -> None:
+            ensure_written(
+                await tx_store.batch_upsert_nodes([kb_data], CollectionNames.APPS.value), "the default knowledge base",
+            )
+            await self._ensure_kb_edges(tx_store, user_key, orgId, kb_key)
+
+        # explicit: a failure leaves no App without its edges on Neo4j either.
+        # Every write is keyed by kb_key, so a re-run after a write conflict
+        # (the org node is shared by every onboarding message) completes the
+        # same App rather than starting a second one.
+        await self.graph_data_store.execute_idempotent_in_transaction(write_kb, explicit=True)
+
+        # Register per-KB connector instance at runtime
+        try:
+            config_service = self.app_container.config_service()
+            data_store_provider = await self.app_container.data_store()
+            if not hasattr(self.app_container, 'connectors_map'):
+                self.app_container.connectors_map = {}
+            connector = await ConnectorFactory.create_and_start_sync(
+                name="kb",
+                logger=self.logger,
+                data_store_provider=data_store_provider,
+                config_service=config_service,
+                connector_id=kb_key,
+                scope=ConnectorScopes.PERSONAL.value,
+                created_by=userId,
+                org_id=orgId,
+                data_entities_processor_cls=get_data_entities_processor_cls(),
+                notification_service=self.app_container.connector_notification_service(),
+            )
+            if connector:
+                self.app_container.connectors_map[kb_key] = connector
+                self.logger.info(f"✅ KB connector instance registered for kb_key={kb_key}")
+        except Exception as reg_err:
+            self.logger.warning(f"⚠️ Failed to register KB connector instance: {reg_err}")
+
+        self.logger.info(f"Created new KB app for user {userId} in organization {orgId} (kb_key={kb_key})")
+        return {
+            "kb_id": kb_key,
+            "name": name,
+            "created_at": current_timestamp,
+            "updated_at": current_timestamp,
+            "success": True
+        }

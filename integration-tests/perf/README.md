@@ -1,11 +1,12 @@
 # Performance benchmarks
 
 Repeatable measurements of how PipesHub behaves under load, and checks that
-tell you when that gets noticeably worse. Four questions are asked here: how
+tell you when that gets noticeably worse. Five questions are asked here: how
 fast does it index (the weekly indexing benchmark), how fast does it answer
-(the weekly query benchmark), does it hold up at a large customer's volume (the
-monthly scale run), and does it lose anything when pushed past its limits (the
-stress run).
+(the weekly query benchmark), does search and chat keep working when many
+people use it at once for a while (the weekly sustained-load test), does it
+hold up at a large customer's volume (the monthly scale run), and does it lose
+anything when pushed past its limits (the stress run).
 
 | File | What it is |
 | --- | --- |
@@ -13,6 +14,7 @@ stress run).
 | `stack.py` | Shared plumbing: log in, create a knowledge base, upload the corpus, wait for the indexer. |
 | `bench_indexing.py` | Uploads the corpus into a fresh knowledge base and times the indexing. |
 | `bench_query.py` | Seeds a knowledge base, then times searches and chat turns under load. |
+| `bench_load.py` | Seeds a knowledge base, then ramps users up through searches and chat, holds them, and fails the run on errors. |
 | `bench_scale.py` | Indexes a much larger corpus, reporting how the run changed as it went. |
 | `bench_stress.py` | Uploads far faster than the stack can index, then checks nothing was lost. |
 | `scale_metrics.py` | The arithmetic behind those two: slices of a run, drift, overload verdicts. |
@@ -20,6 +22,7 @@ stress run).
 | `baselines/<label>.json` | Committed results, one per environment and benchmark. |
 | `../../.github/workflows/perf-indexing.yml` | Runs the indexing benchmark every week on the CI stack. |
 | `../../.github/workflows/perf-query.yml` | Runs the query benchmark every week on the CI stack. |
+| `../../.github/workflows/perf-load.yml` | Runs the sustained-load test every week on the CI stack. |
 | `../../.github/workflows/perf-scale.yml` | Runs the scale run monthly; stress and soak on request. |
 
 It lives in `integration-tests/` rather than `loadtest/` because it drives the
@@ -163,6 +166,100 @@ of its baseline's corpus is reported without a verdict. Questions asked over a h
 knowledge base come back empty, which is faster and counts as a success
 everywhere, so an unfinished seed would otherwise read as the best run yet.
 
+## What the sustained-load test measures
+
+The query benchmark above asks four users for five minutes and reports. It
+cannot say whether search and chat keep working, and keep their speed, when
+more people use them at once for longer, which is what a busy morning at a
+customer looks like. `bench_load.py` asks that, every Wednesday
+(`.github/workflows/perf-load.yml`), and unlike the benchmarks it can fail the
+job.
+
+It seeds 80 files, without spreadsheets (they index slowest, and this measures
+questions, not indexing), and waits for all of them to be indexed, the same way
+the query benchmark does. Then it runs **stages**. Each stage moves the number
+of active users in a straight line from the previous stage's count to its own,
+over its length, the way k6's `ramping-vus` stages work. Stages are written
+`seconds:users`, comma-separated and without spaces; the workflow's input check
+and the parser accept exactly the same values. The default,
+`120:4,120:8,900:8`, ramps to four users over two minutes, to eight over the
+next two, and holds eight for fifteen. A user the ramp drops finishes the
+operation it is in first.
+
+Each user repeats one cycle of six operations: a plain search, a streaming chat
+turn, a search filtered to the seeded knowledge base, a non-streaming chat turn
+(`POST /api/v1/conversations/create`), another search and another streaming
+turn. Between operations it waits a random one to three seconds, like Locust's
+`between(1, 3)`, from a random sequence fixed by the seed, so two runs wait the
+same way. Real users pause; without the pause a handful of simulated users
+behave like hundreds hammering the stack, which measures a queue rather than a
+service.
+
+| Measure | Meaning |
+| --- | --- |
+| Latency p50/p95/p99 | Per operation, for the requests that succeeded. A streaming turn is timed to its terminal frame, and a non-streaming one to its response. A non-streaming response that carries no answer counts as a failure, not a fast success. |
+| Time to first answer | For streaming turns, how long until the first frame carrying answer text, as in the query benchmark. |
+| Throughput | Operations per minute, and separately the successful ones per minute, so a stack that fails fast does not look busier than one that answers. |
+| Error rate | Failed operations over all operations: refusals, cut streams, `RUN_ERROR` frames, empty answers. |
+| By stage | The same numbers for each stage, so a latency that climbs with the users shows where it started. |
+
+The headline numbers are for the **steady window**: the stages that hold the
+peak user count. The ramp stages mix different loads and move whenever the ramp
+changes, so they are shown per stage but never compared with a baseline.
+
+### When the run fails
+
+The run applies its own checks, which need no baseline and so count from the
+very first run:
+
+- the error rate over the whole run is at most 2% (`--max-error-rate`);
+- the steady window measured at least 50 operations, so its percentiles mean
+  something (`--min-operations`);
+- every kind of operation succeeded at least once in the steady window;
+- plain searches found something, and so did searches filtered to the seeded
+  knowledge base, checked separately. An empty result is fast and counts as a
+  success, so a run that found nothing measured the not-found path, and a
+  filter that stopped matching would hide behind plain searches that still
+  find plenty.
+
+If at least half of the last 30 operations failed (`--abort-error-rate`), the
+run stops early rather than spending the rest of its time and AI budget on a
+broken stack, and fails. This is k6's `abortOnFail`.
+
+The result and summary are written before the job fails, so a failed run still
+shows what it measured.
+
+Then `compare.py --fail-on-regression` puts the steady window next to the
+committed baseline. Two kinds of row fail the job. The **p95 latencies** of
+search, filtered search, streaming turn, first answer and non-streaming turn
+fail it when one rises more than 30% **and** by more than a fixed amount
+(0.25 s for searches, 0.5 s for the first answer, 1 s for a whole turn). The
+**share of searches, plain and filtered, that found a hit** fails it on any
+fall: the corpus and the questions are fixed, so a search that stops finding
+its documents is a fault, not noise. The fixed amount matters on short
+requests: a 100 ms search that becomes 150 ms is 50% slower and is still only
+a shared runner's jitter. Throughput, the median, the error rate and the share
+of answers citing a document are shown and flagged, marked "reported only":
+they move with the model provider from week to week.
+
+`baselines/ci-load-neo4j-4cpu.json` is a placeholder until a trusted run
+replaces it (see "Updating a baseline" below). Until then the comparison
+reports each run and passes, and only the run's own checks can fail it.
+
+To run it by hand, with the same setup as the query benchmark:
+
+```bash
+python perf/bench_load.py --docs 40 --stages 60:2,60:4,300:4 --label my-laptop-load \
+  --ai-models existing --container pipeshub-perf-pipeshub-ai-1 --fail-on-violation \
+  --summary reports/perf/summary.md
+```
+
+Cost on CI: about 19 minutes of load, most of it at eight users. With turns
+taking several seconds and one to three seconds of thought between operations,
+that is roughly 600 chat turns a week, plus the embeddings for 80 files. The
+job's time limit is two hours: about 15 minutes to build and start the stack,
+up to 30 to seed, and the load.
+
 ## Scale, stress and soak runs
 
 These answer different questions from the weekly benchmark, and they cost more,
@@ -258,6 +355,8 @@ a measure as a regression when it moves past its threshold:
 | Peak indexing memory | rises more than 25% | Memory is steady from run to run, but the sampler reads it only every 5 seconds, so short spikes can be missed. |
 | Failed or unfinished records | rises at all | The baseline should have none. A new failure is a correctness problem, not noise. |
 
+The load test's checks are described in "When the run fails" above.
+
 For a query run it checks these instead:
 
 | Measure | Flags when | Why there |
@@ -277,10 +376,14 @@ beside a 100,000-file one. Stress results are not compared at all — their
 verdicts are pass or fail, not faster or slower — and `compare.py` says so
 plainly if one is handed to it.
 
-The check does not fail the workflow. It writes its verdict into the job
-summary and exits 0. The thresholds above are reasoned, not yet measured. Once
-four or five weekly runs exist, look at how much they actually vary, adjust the
-numbers, and consider passing `--fail-on-regression`. If the baseline and the
+For the indexing, query and scale benchmarks the check does not fail the
+workflow. It writes its verdict into the job summary and exits 0. The
+thresholds above are reasoned, not yet measured. Once four or five weekly runs
+exist, look at how much they actually vary, adjust the numbers, and consider
+passing `--fail-on-regression`. **Sustained Load** is the exception: it passes
+`--fail-on-regression` already, so a gating row that regresses fails that
+workflow (see "When the run fails" above), while its placeholder baseline
+keeps the comparison reporting only until a real run replaces it. If the baseline and the
 result differ in label, graph DB, broker, AI models, corpus size, seed or file
 kinds, `compare.py` says so and ignores the verdicts.
 
@@ -306,13 +409,16 @@ the next run will say it is not comparable until its baseline is refreshed.
 
 The query baseline works the same way: take `query.json` from a trusted
 scheduled run of **Query Performance** and copy it to
-`integration-tests/perf/baselines/ci-query-neo4j-4cpu.json`.
+`integration-tests/perf/baselines/ci-query-neo4j-4cpu.json`. The load test's is
+`load.json` from **Sustained Load**, copied to
+`integration-tests/perf/baselines/ci-load-neo4j-4cpu.json`; changing
+`--stages`, `--think-time` or its operation mix needs a new one, as above.
 
 `baselines/ci-neo4j-4cpu.json` is a placeholder for now. It holds a note
 instead of numbers, so the workflow reports each run and says there is nothing
 to compare with yet. Replace it with the first trusted scheduled run, as above.
-`baselines/ci-query-neo4j-4cpu.json` is a placeholder too, for the same
-reason: a query benchmark needs its corpus indexed first, and a laptop's CPU
+`baselines/ci-query-neo4j-4cpu.json` and `baselines/ci-load-neo4j-4cpu.json`
+are placeholders too, for the same reason: a query benchmark needs its corpus indexed first, and a laptop's CPU
 model leaves that unfinished. A 50-file run on a developer laptop was tried
 first and did not give a usable baseline. The machine was busy with other stacks, and the laptop's LLM ran on
 its CPU. After an hour, 22 of the 47 uploaded files were indexed and the rest

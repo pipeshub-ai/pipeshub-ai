@@ -1,9 +1,9 @@
 'use client';
 
-import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense } from 'react';
+import React, { useEffect, useCallback, useState, useMemo, useRef, Suspense, useReducer } from 'react';
 import { useTranslation } from 'react-i18next';
 import { useSearchParams, useRouter } from 'next/navigation';
-import { Flex } from '@radix-ui/themes';
+import { Box, Flex } from '@radix-ui/themes';
 import { ServiceGate } from '@/app/components/ui/service-gate';
 import {
   // Legacy components (for collections mode)
@@ -16,21 +16,23 @@ import {
   Header,
   FilterBar,
   SearchBar,
-  // Selection action bar
-  SelectionActionBar,
   BulkDeleteConfirmationDialog,
   DeleteConfirmationDialog,
   FolderDetailsSidebar,
   ReindexScopeDialog,
+  ReindexBlockedDialog,
+  ChatWidgetWrapper,
 } from './components';
+import type { MentionNode } from '@/chat/utils/node-mentions';
 import { CollectionStatsPanel } from './components/collection-stats-panel';
 import type { UploadFileItem } from './components';
+import { SelectionActionBar } from '@/config';
 import { useUploadStore, generateUploadId } from '@/lib/store/upload-store';
 import { notifyUploadFailures } from '@/lib/utils/upload-failure-feedback';
 import { useUploadLimits } from '@/lib/hooks/use-upload-limits';
 import { FileRejectionReason, parseFileRejectionReason } from '@/lib/constants/file-rejection-reason';
 import { KnowledgeBaseApi, KnowledgeHubApi, type FileMetadata } from './api';
-// import KnowledgeBaseSidebar from './sidebar';
+import { folderDepthOf, uploadPathOf } from './utils/folder-depth';
 import { useKnowledgeBaseStore, DEFAULT_PAGE_SIZE } from './store';
 import type {
   KnowledgeBaseItem,
@@ -44,10 +46,8 @@ import type {
   Breadcrumb,
 } from './types';
 import {
-  categorizeNodes,
   effectiveHasChildrenAfterSidebarExpand,
-  mergeChildrenIntoTree,
-  categorizeNode,
+  mergeChildrenIntoSections,
   buildConnectorAppSidebarTree,
   treeHasNodeWithId,
 } from './utils/tree-builder';
@@ -57,7 +57,7 @@ import {
   applyClientSideFilters,
   isKbCollectionsHubApp,
 } from './utils/all-records-transformer';
-import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters } from './utils';
+import { buildFilterParams, buildAllRecordsFilterParams, hasKnowledgeHubFlatteningFilters, toTablePagination } from './utils';
 import { ShareSidebar } from '@/app/components/share';
 import type { SharedAvatarMember } from '@/app/components/share';
 import { createKBShareAdapter } from './share-adapter';
@@ -69,12 +69,22 @@ import {
   buildFilterUrl,
   buildNavUrl as buildNavUrlFn,
 } from './url-params';
-import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl } from './utils/nav';
+import { getIsAllRecordsMode, buildNavUrl as buildCleanNavUrl, pushKbUrl, replaceKbUrl } from './utils/nav';
 import { FOLDER_REINDEX_DEPTH, REINDEX_SELF_DEPTH, SIDEBAR_PAGINATION_PAGE_SIZE } from './constants';
 import { UPLOAD_BATCH_CONFIG } from './constants/upload-batch.constants';
 import { createSizeBatches } from './utils/batch-files';
+import { canDeleteKbTableItem, needsCollectionContext, type KbTableItem } from './utils/kb-table-item-actions';
 import { sidebarNodeChildrenMetaFromResponse } from './utils/sidebar-child-pagination-meta';
 import { refreshKbTree } from './utils/refresh-kb-tree';
+import {
+  loadRootAppListFirstPage,
+  restoreOpenFoldersInSidebar,
+  showCollectionsInSidebar,
+} from './utils/root-app-list';
+import { openFolderChildren, storeChildrenList } from './utils/folder-children';
+import { kbSessionToken } from './utils/kb-session';
+// Registers the sign-out reset for the knowledge base's cached state.
+import './utils/sidebar-session';
 import {
   getPrimaryReindexMenuLabelKey,
   getReindexLoadingTitle,
@@ -84,6 +94,7 @@ import {
   requiresForceReindexConfirmation,
   supportsBulkReindex,
   isKbCollectionNode,
+  isRecordReindexBlocked,
 } from './utils/reindex-label';
 import { ConfirmationDialog } from '@/app/(main)/workspace/components/confirmation-dialog';
 import type { ReindexMenuLabelKey } from './utils/reindex-label';
@@ -102,8 +113,25 @@ import {
   resolvePreviewMimeAfterStream,
 } from '@/app/components/file-preview/utils';
 import { useDebouncedSearch } from './hooks/use-debounced-search';
-import { ErrorType, getUserFacingErrorMessage, isProcessedError } from '@/lib/api/api-error';
+import { toPendingChatNode, useTickedRows } from './hooks/use-ticked-rows';
+import { usePendingChatStore } from '@/lib/store/pending-chat-store';
+import { MAX_SELECTED_NODES } from '@/chat/utils/tree-selection';
+import { ErrorType, getUserFacingErrorMessage, isProcessedError, isRequestCancelledError, parseRetryAfter } from '@/lib/api/api-error';
+import { isRejectedCursorError } from './utils/cursor-recovery';
 import { useUserPermission } from '@/config';
+import { useFeatureFlagsStore, selectSoftDeleteEnabled } from '@/lib/store/feature-flags-store';
+import { canOpenRecentlyDeleted } from './recently-deleted/utils';
+
+// Outlives a remount. The abort ref does not, so an older request's finally
+// would otherwise clear the loading flag a newer fetch just set.
+let allRecordsFetchGeneration = 0;
+let collectionsFetchGeneration = 0;
+
+// An app's or record group's subType is its connector name, which picks the chip icon;
+// a record's subType is its record type.
+function connectorOfCurrentNode(node: { nodeType: string; subType?: string }): string {
+  return node.nodeType === 'app' || node.nodeType === 'recordGroup' ? (node.subType ?? '') : '';
+}
 
 function KnowledgeBasePageContent() {
   const { t } = useTranslation();
@@ -133,7 +161,6 @@ function KnowledgeBasePageContent() {
     categorizedNodes,
     addNodes,
     setCategorizedNodes,
-    cacheNodeChildren,
     clearNodeCacheEntries,
     purgeDeletedIdsFromSidebarChildrenCaches,
     tableData,
@@ -145,7 +172,7 @@ function KnowledgeBasePageContent() {
     setTableDataError,
     setSelectedNode,
     setCollectionsPagination,
-    setCollectionsPage,
+    setCollectionsCursor,
     setCollectionsLimit,
     collectionsPagination,
     clearTableData,
@@ -200,7 +227,6 @@ function KnowledgeBasePageContent() {
     rawFilter.indexingStatus?.join(','),
     rawFilter.origins?.join(','),
     rawFilter.connectorIds?.join(','),
-    rawFilter.kbIds?.join(','),
     rawFilter.sizeRange,
     rawFilter.createdAfter,
     rawFilter.createdBefore,
@@ -260,6 +286,15 @@ function KnowledgeBasePageContent() {
     }
     return crumbs?.[1]?.id || kbId;
   }, [isAllRecordsMode, allRecordsTableData, tableData, kbId, categorizedNodes]);
+
+  // Folder levels that can still be added under the open node. The limit comes
+  // from the server; Infinity where it does not apply or is not known yet.
+  const maxFolderDepth = isAllRecordsMode ? undefined : tableData?.maxFolderDepth;
+  const remainingFolderLevels =
+    maxFolderDepth == null
+      ? Infinity
+      : Math.max(maxFolderDepth - folderDepthOf(tableData?.breadcrumbs, selectedKbId), 0);
+  const canAddFolderHere = remainingFolderLevels > 0;
 
   // Get table items directly from API response (no client-side filtering)
   const tableItems = useMemo(() => {
@@ -324,7 +359,9 @@ function KnowledgeBasePageContent() {
       store.setAllRecordsSort(parsed.sort);
       store.setAllRecordsLimit(parsed.limit);
       store.setAllRecordsSearchQuery(parsed.searchQuery);
-      store.setAllRecordsPage(parsed.page);
+      // Last: the setters above each clear the cursor, so hydrating it first
+      // would be undone by them.
+      store.setAllRecordsCursor(parsed.cursor);
       setIsSearchOpen(!!parsed.searchQuery);
     } else {
       const parsed = parseCollectionsParams(searchParams);
@@ -332,7 +369,7 @@ function KnowledgeBasePageContent() {
       store.setSort(parsed.sort);
       store.setCollectionsLimit(parsed.limit);
       store.setSearchQuery(parsed.searchQuery);
-      store.setCollectionsPage(parsed.page);
+      store.setCollectionsCursor(parsed.cursor);
       setIsSearchOpen(!!parsed.searchQuery);
     }
   }, [searchParams]);
@@ -354,13 +391,13 @@ function KnowledgeBasePageContent() {
       ? serializeAllRecordsParams(
           store.allRecordsFilter,
           store.allRecordsSort,
-          { page: store.allRecordsPagination.page, limit: store.allRecordsPagination.limit },
+          { cursor: store.allRecordsPagination.cursor, limit: store.allRecordsPagination.limit },
           debouncedAllRecordsSearchQuery
         )
       : serializeCollectionsParams(
           store.filter,
           store.sort,
-          { page: store.collectionsPagination.page, limit: store.collectionsPagination.limit },
+          { cursor: store.collectionsPagination.cursor, limit: store.collectionsPagination.limit },
           debouncedSearchQuery
         );
 
@@ -371,14 +408,13 @@ function KnowledgeBasePageContent() {
     if (newUrl !== currentUrl) {
       // Update the hydration ref so the read-effect skips this URL (it came from us, not navigation)
       lastHydratedUrl.current = new URL(newUrl, 'http://x').searchParams.toString();
-      router.replace(newUrl);
+      replaceKbUrl(newUrl);
     }
   }, [
-    filter, sort, collectionsPagination.page, collectionsPagination.limit, debouncedSearchQuery,
-    allRecordsFilter, allRecordsSort, allRecordsPagination.page, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
+    filter, sort, collectionsPagination.cursor, collectionsPagination.limit, debouncedSearchQuery,
+    allRecordsFilter, allRecordsSort, allRecordsPagination.cursor, allRecordsPagination.limit, debouncedAllRecordsSearchQuery,
     isAllRecordsMode,
     searchParams,
-    router,
   ]);
 
   // Check if any filters are active (for empty state messaging)
@@ -405,8 +441,7 @@ function KnowledgeBasePageContent() {
       filter.updatedAfter ||
       filter.updatedBefore ||
       filter.origins?.length ||
-      filter.connectorIds?.length ||
-      filter.kbIds?.length
+      filter.connectorIds?.length
     );
   }, [isAllRecordsMode, allRecordsFilter, filter]);
 
@@ -456,6 +491,9 @@ function KnowledgeBasePageContent() {
     statusFilters?: string[];
   } | null>(null);
   const [isReindexSubmitting, setIsReindexSubmitting] = useState(false);
+  const [isReindexBlockedOpen, setIsReindexBlockedOpen] = useState(false);
+  const [blockedReindexConnector, setBlockedReindexConnector] = useState<string>();
+  const [blockedReindexNodeType, setBlockedReindexNodeType] = useState<string>();
 
   // Bulk delete confirmation dialog state
   const [isBulkDeleteDialogOpen, setIsBulkDeleteDialogOpen] = useState(false);
@@ -478,6 +516,7 @@ function KnowledgeBasePageContent() {
     recordDetails?: RecordDetailsResponse;
     webUrl?: string;
     previewRenderable?: boolean;
+    connector?: string;
   } | null>(null);
   const [previewMode, setPreviewMode] = useState<'sidebar' | 'fullscreen'>('sidebar');
 
@@ -486,10 +525,10 @@ function KnowledgeBasePageContent() {
   const { maxFileSizeBytes, maxFileSizeMB } = useUploadLimits();
 
   /**
-   * Tracks last page we fetched for so filter/sort resets (page → 1) do not trigger a
-   * duplicate fetch from the pagination effect when page actually changes (e.g. 2 → 1).
+   * The cursor we last fetched for, so a filter/sort reset (cursor → null) does
+   * not also trigger the pagination effect when the cursor actually changes.
    */
-  const prevAllRecordsPageRef = useRef(allRecordsPagination.page);
+  const prevAllRecordsCursorRef = useRef(allRecordsPagination.cursor);
 
   // Sync current folder from URL params (Collections mode only).
   // In All Records mode the active node is tracked via nodeId + auto-expansion
@@ -505,29 +544,7 @@ function KnowledgeBasePageContent() {
     async function fetchAppNodesAllRecords() {
       try {
         setLoadingFlatCollections(true);
-        const response = await KnowledgeHubApi.getNavigationNodes({
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          include: 'counts',
-          sortBy: 'updatedAt',
-          sortOrder: 'desc',
-        });
-
-        // Filter to app-type nodes only (root can return other node types)
-        const appItems = response.items.filter((n) => n.nodeType === 'app');
-        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
-        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
-        setAppNodes([...kbApps, ...connectorApps]);
-
-        const p = response.pagination;
-        setAppRootListPagination(
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : null
-        );
+        await loadRootAppListFirstPage();
       } catch (error) {
         console.error('Error fetching app nodes:', error);
         toast.error('Failed to load sidebar', {
@@ -541,27 +558,7 @@ function KnowledgeBasePageContent() {
     async function fetchAppNodesCollections() {
       try {
         setLoadingFlatCollections(true);
-        const response = await KnowledgeHubApi.getNavigationNodes({
-          page: 1,
-          limit: SIDEBAR_PAGINATION_PAGE_SIZE,
-          include: 'counts',
-          sortBy: 'updatedAt',
-          sortOrder: 'desc',
-        });
-        const appItems = response.items.filter((n) => n.nodeType === 'app');
-        const kbApps = appItems.filter((n) => isKbCollectionsHubApp(n));
-        const connectorApps = appItems.filter((n) => !isKbCollectionsHubApp(n));
-        setAppNodes([...kbApps, ...connectorApps]);
-
-        const p = response.pagination;
-        setAppRootListPagination(
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : null
-        );
+        await loadRootAppListFirstPage();
       } catch (error) {
         console.error('Error fetching KB app nodes:', error);
         toast.error('Failed to load Collections', {
@@ -591,19 +588,44 @@ function KnowledgeBasePageContent() {
   useEffect(() => {
     if (appNodes.length === 0 || isAllRecordsMode) return;
 
-    const { setNodes, setCategorizedNodes } = useKnowledgeBaseStore.getState();
     const kbApps = appNodes.filter((n) => isKbCollectionsHubApp(n));
     if (kbApps.length > 0) {
-      setNodes(kbApps);
-      setCategorizedNodes(categorizeNodes(kbApps, null));
+      showCollectionsInSidebar(kbApps);
     }
   }, [appNodes, isAllRecordsMode]);
 
+  // Superseded table fetches are aborted so a slower earlier response cannot
+  // overwrite the latest one, or clear its loading flag.
+  const allRecordsFetchRef = useRef<AbortController | null>(null);
+  const [allRecordsRefused, setAllRecordsRefused] = useState(false);
+  // A busy answer (503) is retried by itself, a few times, after the seconds the server asked for.
+  const allRecordsBusyTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const allRecordsBusyTries = useRef(0);
+  const fetchAllRecordsTableDataRef = useRef<((nodeType?: string, nodeId?: string, page?: number, busyRetry?: boolean) => Promise<void>) | null>(null);
+  const collectionsFetchRef = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
+      allRecordsFetchRef.current?.abort();
+      collectionsFetchRef.current?.abort();
+    };
+  }, []);
+
   // All Records mode: Fetch table data (reusable callback)
-  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string) => {
+  const fetchAllRecordsTableData = useCallback(async (nodeType?: string, nodeId?: string, page?: number, busyRetry = false) => {
+    allRecordsFetchRef.current?.abort();
+    // Each request the user makes gets its own retries; only the timer's retries share them.
+    if (!busyRetry) allRecordsBusyTries.current = 0;
+    const controller = new AbortController();
+    allRecordsFetchRef.current = controller;
+    if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
+    const fetchGeneration = ++allRecordsFetchGeneration;
+    const stillSignedIn = kbSessionToken();
     try {
       setIsLoadingAllRecordsTable(true);
       setAllRecordsTableError(null);
+      setAllRecordsRefused(false);
 
       // Get fresh state from store to avoid stale closure
       const currentState = useKnowledgeBaseStore.getState();
@@ -619,6 +641,11 @@ function KnowledgeBasePageContent() {
         currentAllRecordsSort,
         currentPagination
       );
+      // Sending a cursor as well would repeat this page: the cursor wins.
+      if (page && page > 1) {
+        delete params.cursor;
+        params.page = page;
+      }
 
       // Check if we have URL parameters for drill-down (nodeType and nodeId)
       let data;
@@ -627,23 +654,65 @@ function KnowledgeBasePageContent() {
         data = await KnowledgeHubApi.loadFolderData(
           nodeType as NodeType,
           nodeId,
-          params
+          params,
+          { signal: controller.signal, quietRefusals: true }
         );
       } else {
         // Root level - fetch all records
-        data = await KnowledgeHubApi.getAllRootItems(params);
+        data = await KnowledgeHubApi.getAllRootItems(params, { signal: controller.signal });
       }
+      if (controller.signal.aborted || !stillSignedIn()) return;
       setAllRecordsTableData(data);
-      // Sync derived pagination metadata (totalItems, totalPages, hasNext, hasPrev)
-      // without overwriting user-controlled page/limit to avoid triggering effect loops
+      allRecordsBusyTries.current = 0;
+      // Sync what the response decided (totals, indices, the two cursors)
+      // without touching the cursor the user asked for — overwriting that would
+      // re-trigger the effect watching it.
       if (data.pagination) {
-        syncAllRecordsPaginationMeta(data.pagination);
+        syncAllRecordsPaginationMeta(
+          toTablePagination(data.pagination, currentPagination.cursor)
+        );
       }
     } catch (error) {
+      if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+      // A refused cursor goes back to the first page instead of erroring; the
+      // effect watching the cursor issues that fetch.
+      const rejectedCursor = useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
+      if (isRejectedCursorError(error, rejectedCursor)) {
+        useKnowledgeBaseStore.getState().setAllRecordsCursor(null);
+        return;
+      }
       console.error('Error fetching all records:', error);
-      setAllRecordsTableError('Failed to load records');
+      // Busy (503): say so, count down the seconds the server asked for, and ask again (at most 3 times).
+      if (isProcessedError(error) && error.statusCode === 503 && allRecordsBusyTries.current < 3) {
+        allRecordsBusyTries.current += 1;
+        const headers = (error.originalError as { response?: { headers?: Record<string, unknown> } } | undefined)?.response?.headers;
+        let left = parseRetryAfter(headers?.['retry-after']) ?? 5;
+        const say = () => setAllRecordsTableError(t('kb.allRecordsBusy', { count: left }));
+        setAllRecordsRefused(true);
+        say();
+        allRecordsBusyTimer.current = setInterval(() => {
+          left -= 1;
+          if (left > 0) {
+            say();
+            return;
+          }
+          if (allRecordsBusyTimer.current) clearInterval(allRecordsBusyTimer.current);
+          void fetchAllRecordsTableDataRef.current?.(nodeType, nodeId, page, true);
+        }, 1000);
+        return;
+      }
+      // A view too large to list answers 422 with the sentence to show; asking again cannot change that.
+      const refused = isProcessedError(error) && error.statusCode === 422;
+      setAllRecordsRefused(refused);
+      setAllRecordsTableError(refused ? error.message : t('kb.allRecordsLoadFailed'));
     } finally {
-      setIsLoadingAllRecordsTable(false);
+      if (
+        allRecordsFetchRef.current === controller &&
+        fetchGeneration === allRecordsFetchGeneration &&
+        stillSignedIn()
+      ) {
+        setIsLoadingAllRecordsTable(false);
+      }
     }
   }, [
     // filter/sort are read from getState() inside the function to avoid stale closure on initial load.
@@ -654,7 +723,9 @@ function KnowledgeBasePageContent() {
     setAllRecordsTableError,
     setAllRecordsTableData,
     syncAllRecordsPaginationMeta,
+    t,
   ]);
+  fetchAllRecordsTableDataRef.current = fetchAllRecordsTableData;
 
   // Extract stable primitive values from URL to avoid re-firing effects
   // when router.replace() updates pagination/filter params in the URL.
@@ -686,25 +757,25 @@ function KnowledgeBasePageContent() {
     // setAllRecordsFilter / setAllRecordsSort reset page to 1; sync ref so pagination effect
     // does not duplicate-fetch when page changes (e.g. 2 → 1), without a skip flag that can
     // stick when page stays 1 and the pagination effect never runs.
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsFilter, allRecordsSort]);
 
-  // All Records mode: Re-fetch when pagination page changes
+  // All Records mode: Re-fetch when the cursor moves (Next/Previous)
   useEffect(() => {
     if (!isAllRecordsMode) return;
-    if (allRecordsPagination.page === prevAllRecordsPageRef.current) return;
-    prevAllRecordsPageRef.current = allRecordsPagination.page;
+    if (allRecordsPagination.cursor === prevAllRecordsCursorRef.current) return;
+    prevAllRecordsCursorRef.current = allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
-  }, [allRecordsPagination.page]);
+  }, [allRecordsPagination.cursor]);
 
   // All Records mode: Re-fetch when pagination limit changes
   useEffect(() => {
     if (!isAllRecordsMode || allRecordsPagination.limit === DEFAULT_PAGE_SIZE) return;
     // setAllRecordsLimit resets page to 1; keep pagination ref in sync (same as filter effect).
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [allRecordsPagination.limit]);
 
@@ -740,6 +811,11 @@ function KnowledgeBasePageContent() {
   // Fetch table data when node is selected
   const fetchTableData = useCallback(
     async (nodeType: string, nodeId: string) => {
+      collectionsFetchRef.current?.abort();
+      const controller = new AbortController();
+      collectionsFetchRef.current = controller;
+      const fetchGeneration = ++collectionsFetchGeneration;
+      const stillSignedIn = kbSessionToken();
       setIsLoadingTableData(true);
       setTableDataError(null);
 
@@ -773,16 +849,22 @@ function KnowledgeBasePageContent() {
           nodeType as NodeType,
           nodeId,
           params,
-          { suppressErrorToast: suppressNotFoundToast }
+          { suppressErrorToast: suppressNotFoundToast, signal: controller.signal }
         );
+        if (controller.signal.aborted || !stillSignedIn()) return;
 
         pendingSilentNotFoundNodeIdsRef.current.delete(nodeId);
 
         setTableData(data);
+        // The rows are ready: the sidebar path opened below is separate work and
+        // must not hold the table's loader.
+        setIsLoadingTableData(false);
 
         // Update pagination from response
         if (data.pagination) {
-          setCollectionsPagination(data.pagination);
+          setCollectionsPagination(
+            toTablePagination(data.pagination, currentPagination.cursor)
+          );
         }
         setSelectedNode({ nodeType, nodeId });
 
@@ -805,102 +887,46 @@ function KnowledgeBasePageContent() {
             // Set the current folder to the target nodeId so sidebar highlights it
             setCurrentFolderId(nodeId);
 
-            // Expand the KB in the sidebar tree (exclusive: collapse sibling KBs)
-            expandFolderExclusive(kbBreadcrumb.id);
-
+            // Open the collection and each folder down to the target in the
+            // sidebar. Each list is read far enough to show the next folder on
+            // the path, so the path never breaks at a folder past page one.
             const kbNodeType = (kbTreeNode?.nodeType ?? kbBreadcrumb.nodeType ?? 'kb') as NodeType;
-
-            // Check if KB children are already cached
-            if (!freshState.nodeChildrenCache.has(kbBreadcrumb.id)) {
-              // Fetch KB children to populate sidebar
-              try {
-                const kbChildren = await KnowledgeHubApi.getNodeChildren(kbNodeType, kbBreadcrumb.id, {
-                  onlyContainers: true,
-                  page: 1,
-                  limit: 50,
-                });
-                const kbEffectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
-                  kbChildren.items,
-                );
-
-                cacheNodeChildren(kbBreadcrumb.id, kbChildren.items);
-                addNodes(kbChildren.items);
-
-                // Update categorized tree with fresh state
-                const latestState = useKnowledgeBaseStore.getState();
-                if (latestState.categorizedNodes) {
-                  const kbNode = latestState.nodes.find(n => n.id === kbBreadcrumb.id);
-                  if (kbNode) {
-                    const section = categorizeNode(kbNode);
-                    const updatedTree = mergeChildrenIntoTree(
-                      latestState.categorizedNodes[section],
-                      kbBreadcrumb.id,
-                      kbChildren.items,
-                      kbEffectiveHasChildFolders
-                    );
-                    setCategorizedNodes({
-                      ...latestState.categorizedNodes,
-                      [section]: updatedTree,
-                    });
-                  }
-                }
-              } catch (error) {
-                console.error('Failed to fetch KB children for sidebar expansion', error);
-              }
-            }
-
-            // Expand each intermediate folder ancestor (between KB root and target)
             const kbIndex = data.breadcrumbs.findIndex((b) => b.id === kbBreadcrumb.id);
-            const pathAfterKb = data.breadcrumbs.slice(kbIndex + 1);
-            const intermediates = pathAfterKb.filter((b) => b.id !== nodeId);
+            const intermediates = data.breadcrumbs.slice(kbIndex + 1).filter((b) => b.id !== nodeId);
+            const path = [
+              { id: kbBreadcrumb.id, nodeType: kbNodeType },
+              ...intermediates.map((b) => ({ id: b.id, nodeType: b.nodeType as NodeType })),
+            ];
 
-            for (const breadcrumb of intermediates) {
-              expandFolderExclusive(breadcrumb.id);
-
-              const iterState = useKnowledgeBaseStore.getState();
-
-              if (!iterState.nodeChildrenCache.has(breadcrumb.id)) {
-                try {
-                  const folderChildren = await KnowledgeHubApi.getNodeChildren(
-                    breadcrumb.nodeType as NodeType,
-                    breadcrumb.id,
-                    { onlyContainers: true, page: 1, limit: 50 }
-                  );
-                  const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(
-                    folderChildren.items,
-                  );
-
-                  cacheNodeChildren(breadcrumb.id, folderChildren.items);
-                  addNodes(folderChildren.items);
-
-                  const mergeState = useKnowledgeBaseStore.getState();
-                  if (mergeState.categorizedNodes) {
-                    const parentNode = mergeState.nodes.find((n) => n.id === breadcrumb.id);
-                    if (parentNode) {
-                      const section = categorizeNode(parentNode);
-                      const updatedTree = mergeChildrenIntoTree(
-                        mergeState.categorizedNodes[section],
-                        breadcrumb.id,
-                        folderChildren.items,
-                        effectiveHasChildFolders
-                      );
-                      setCategorizedNodes({
-                        ...mergeState.categorizedNodes,
-                        [section]: updatedTree,
-                      });
-                    }
-                  }
-                } catch (error) {
-                  console.error('Failed to fetch folder children for sidebar expansion', error);
-                }
+            for (let i = 0; i < path.length; i += 1) {
+              if (controller.signal.aborted || !stillSignedIn()) return;
+              const { id, nodeType: pathNodeType } = path[i];
+              const nextId = path[i + 1]?.id ?? (nodeId !== id ? nodeId : undefined);
+              expandFolderExclusive(id);
+              try {
+                await openFolderChildren(
+                  id,
+                  pathNodeType,
+                  nextId ? { until: (children) => children.some((child) => child.id === nextId) } : {},
+                );
+              } catch (error) {
+                console.error('Failed to open a folder on the path in the sidebar', { id, error });
               }
             }
           }
         }
 
-        useKnowledgeBaseStore.getState().reMergeCachedChildrenIntoTree();
+        if (!controller.signal.aborted && stillSignedIn()) restoreOpenFoldersInSidebar();
 
       } catch (error) {
+        if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+        // A refused cursor goes back to the first page instead of erroring;
+        // clearing it rewrites the URL, which re-runs this fetch without one.
+        const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
+        if (isRejectedCursorError(error, rejectedCursor)) {
+          useKnowledgeBaseStore.getState().setCollectionsCursor(null);
+          return;
+        }
         const status = isProcessedError(error) ? error.statusCode : (error as { statusCode?: number })?.statusCode;
         const isNotFound =
           status === 404 || (isProcessedError(error) && error.type === ErrorType.NOT_FOUND);
@@ -944,7 +970,13 @@ function KnowledgeBasePageContent() {
           setTableData(null);
         }
       } finally {
-        setIsLoadingTableData(false);
+        if (
+          collectionsFetchRef.current === controller &&
+          fetchGeneration === collectionsFetchGeneration &&
+          stillSignedIn()
+        ) {
+          setIsLoadingTableData(false);
+        }
       }
     },
     [
@@ -955,7 +987,6 @@ function KnowledgeBasePageContent() {
       setCollectionsPagination,
       setCurrentFolderId,
       expandFolderExclusive,
-      cacheNodeChildren,
       addNodes,
       setCategorizedNodes,
       handleAccessRevoked,
@@ -985,6 +1016,11 @@ function KnowledgeBasePageContent() {
   // (flattened=false) so the API returns app-level collection nodes; with
   // filters, omit flattened and let the backend use search mode.
   const fetchAllCollectionsData = useCallback(async () => {
+    collectionsFetchRef.current?.abort();
+    const controller = new AbortController();
+    collectionsFetchRef.current = controller;
+    const fetchGeneration = ++collectionsFetchGeneration;
+    const stillSignedIn = kbSessionToken();
     setIsLoadingTableData(true);
     setTableDataError(null);
     try {
@@ -1018,21 +1054,43 @@ function KnowledgeBasePageContent() {
               nodeTypes: 'app',
               origins: 'COLLECTION',
               flattened: false,
-            }
+            },
+        { signal: controller.signal }
       );
+      if (controller.signal.aborted || !stillSignedIn()) return;
 
       setTableData(data);
       setSelectedNode(null);
       if (data.pagination) {
-        setCollectionsPagination(data.pagination);
+        setCollectionsPagination(
+          toTablePagination(data.pagination, currentPagination.cursor)
+        );
       }
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
-      setTableDataError(err?.response?.data?.message || err?.message || 'Failed to load collections');
+      if (controller.signal.aborted || isRequestCancelledError(error) || !stillSignedIn()) return;
+      // A refused cursor goes back to the first page instead of erroring;
+      // clearing it rewrites the URL, which re-runs this fetch without one.
+      const rejectedCursor = useKnowledgeBaseStore.getState().collectionsPagination.cursor;
+      if (isRejectedCursorError(error, rejectedCursor)) {
+        useKnowledgeBaseStore.getState().setCollectionsCursor(null);
+        return;
+      }
+      setTableDataError(
+        getUserFacingErrorMessage(
+          error,
+          t('kb.collectionsLoadFailed', { action: t('action.tryAgain') }),
+        ),
+      );
     } finally {
-      setIsLoadingTableData(false);
+      if (
+        collectionsFetchRef.current === controller &&
+        fetchGeneration === collectionsFetchGeneration &&
+        stillSignedIn()
+      ) {
+        setIsLoadingTableData(false);
+      }
     }
-  }, [setIsLoadingTableData, setTableDataError, setTableData, setSelectedNode, setCollectionsPagination]);
+  }, [setIsLoadingTableData, setTableDataError, setTableData, setSelectedNode, setCollectionsPagination, t]);
 
   useEffect(() => {
     if (isAllRecordsMode) return;
@@ -1048,6 +1106,10 @@ function KnowledgeBasePageContent() {
       // auto-navigating into the first one.
       void fetchAllCollectionsData();
     } else {
+      // A list fetch started while collections still existed. Abort it so its
+      // response cannot put deleted rows back after the table is cleared.
+      collectionsFetchRef.current?.abort();
+      setIsLoadingTableData(false);
       clearTableData();
     }
   }, [
@@ -1057,6 +1119,7 @@ function KnowledgeBasePageContent() {
     fetchTableData,
     fetchAllCollectionsData,
     clearTableData,
+    setIsLoadingTableData,
     hasCollections,
   ]);
 
@@ -1097,8 +1160,8 @@ function KnowledgeBasePageContent() {
     }
 
     // setAllRecordsSearchQuery resets page to 1; keep pagination ref in sync (same as filter effect).
-    prevAllRecordsPageRef.current =
-      useKnowledgeBaseStore.getState().allRecordsPagination.page;
+    prevAllRecordsCursorRef.current =
+      useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
     fetchAllRecordsTableData(allRecordsNodeType ?? undefined, allRecordsNodeId ?? undefined);
   }, [debouncedAllRecordsSearchQuery, isAllRecordsMode]);
 
@@ -1191,8 +1254,8 @@ function KnowledgeBasePageContent() {
     setIsSearchOpen(false);
     if (isAllRecordsMode) {
       setAllRecordsSearchQuery('');
-      prevAllRecordsPageRef.current =
-        useKnowledgeBaseStore.getState().allRecordsPagination.page;
+      prevAllRecordsCursorRef.current =
+        useKnowledgeBaseStore.getState().allRecordsPagination.cursor;
       // Immediate refetch when clearing search (bypasses debounce).
       // Preserve drill-down: fetchAllRecordsTableData() with no args loads the global root only.
       const nt = searchParams.get('nodeType');
@@ -1238,15 +1301,16 @@ function KnowledgeBasePageContent() {
     const nodeId = searchParams.get('nodeId');
     if (!nodeType || !nodeId) return;
 
+    const stillSignedIn = kbSessionToken();
     try {
       const response = await KnowledgeHubApi.getNodeChildren(nodeType, nodeId, {
         onlyContainers: true,
-        page: 1,
         limit: SIDEBAR_PAGINATION_PAGE_SIZE,
         include: 'counts',
         sortBy: 'name',
         sortOrder: 'asc',
       });
+      if (!stillSignedIn()) return;
 
       const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
       const state = useKnowledgeBaseStore.getState();
@@ -1257,12 +1321,9 @@ function KnowledgeBasePageContent() {
         const p = response.pagination;
         state.setAppChildPagination(
           selectedApp.id,
-          p
-            ? {
-                hasNext: p.hasNext,
-                nextPage: p.hasNext ? p.page + 1 : p.page,
-              }
-            : { hasNext: false, nextPage: 1 }
+          p?.nextCursor
+            ? { hasNext: p.hasNext, nextCursor: p.nextCursor }
+            : { hasNext: false, nextCursor: null }
         );
 
         if (!isKbCollectionsHubApp(selectedApp)) {
@@ -1275,31 +1336,18 @@ function KnowledgeBasePageContent() {
         return;
       }
 
-      state.cacheNodeChildren(nodeId, response.items);
-      state.setNodeChildrenPagination(
+      storeChildrenList(
         nodeId,
-        sidebarNodeChildrenMetaFromResponse(
-          response.pagination,
-          response.items.length,
-          SIDEBAR_PAGINATION_PAGE_SIZE,
-          nodeType
-        )
+        response.items,
+        sidebarNodeChildrenMetaFromResponse(response.pagination, nodeType)
       );
       state.addNodes(response.items);
 
       const latest = useKnowledgeBaseStore.getState();
       if (latest.categorizedNodes) {
-        const parentNode = latest.nodes.find((n) => n.id === nodeId);
-        if (parentNode) {
-          const section = categorizeNode(parentNode);
-          const updatedTree = mergeChildrenIntoTree(
-            latest.categorizedNodes[section],
-            nodeId,
-            response.items,
-            effectiveHasChildFolders
-          );
-          latest.setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-        }
+        latest.setCategorizedNodes(
+          mergeChildrenIntoSections(latest.categorizedNodes, nodeId, response.items, effectiveHasChildFolders)
+        );
       }
 
       for (const [appId, tree] of Array.from(latest.connectorAppTrees.entries())) {
@@ -1327,6 +1375,8 @@ function KnowledgeBasePageContent() {
     } else if (hasCollections) {
       await fetchAllCollectionsData();
     } else {
+      collectionsFetchRef.current?.abort();
+      setIsLoadingTableData(false);
       clearTableData();
     }
   }, [
@@ -1337,14 +1387,17 @@ function KnowledgeBasePageContent() {
     fetchAllCollectionsData,
     hasCollections,
     clearTableData,
+    setIsLoadingTableData,
   ]);
 
   // Handle refresh
+  const [extrasRefreshKey, bumpExtrasRefresh] = useReducer((n: number) => n + 1, 0);
   const handleRefresh = useCallback(async () => {
     setIsRefreshing(true);
     try {
       await refetchMainTableForCurrentRoute();
       await refreshAllRecordsSidebarForCurrentRoute();
+      bumpExtrasRefresh();
     } finally {
       setIsRefreshing(false);
     }
@@ -1390,6 +1443,24 @@ function KnowledgeBasePageContent() {
       // Needed here for direct-API callers (e.g. handleSidebarDeleteConfirm) that do NOT
       // go through store.deleteNode.
       purgeDeletedIdsFromSidebarChildrenCaches(deletedIds);
+      // Collections are root apps, which the child-cache purge above does not
+      // reach. Drop them from the app list and the tree now, so the sidebar is
+      // right even if the reload below is slow or fails.
+      const kbState = useKnowledgeBaseStore.getState();
+      const deletedIdSet = new Set(deletedIds);
+      if (kbState.appNodes.some((n) => deletedIdSet.has(n.id))) {
+        kbState.setAppNodes(kbState.appNodes.filter((n) => !deletedIdSet.has(n.id)));
+      }
+      if (kbState.nodes.some((n) => deletedIdSet.has(n.id))) {
+        kbState.setNodes(kbState.nodes.filter((n) => !deletedIdSet.has(n.id)));
+      }
+      const tree = kbState.categorizedNodes;
+      if (tree && [...tree.shared, ...tree.private].some((n) => deletedIdSet.has(n.id))) {
+        kbState.setCategorizedNodes({
+          shared: tree.shared.filter((n) => !deletedIdSet.has(n.id)),
+          private: tree.private.filter((n) => !deletedIdSet.has(n.id)),
+        });
+      }
 
       const snapshot = useKnowledgeBaseStore.getState().tableData;
       const urlNodeId = searchParams.get('nodeId') ?? searchParams.get('folderId');
@@ -1444,28 +1515,27 @@ function KnowledgeBasePageContent() {
       });
       setIsCreateFolderDialogOpen(true);
     } else if (currentNode?.nodeType === 'folder') {
-      // Inside a folder — find the KB root from breadcrumbs (app or kb nodeType)
-      const kbBreadcrumb = tableData?.breadcrumbs?.find(
-        (b) => b.nodeType === 'app' || b.nodeType === 'kb'
-      );
-      const kbId = kbBreadcrumb?.id ?? tableData?.breadcrumbs?.[0]?.id;
-      if (kbId) {
-        setCreateFolderContext({
-          type: 'subfolder' as const,
-          kbId,
-          parentId: currentNode.id,
-          parentName: currentNode.name,
+      const kbId = tableData?.breadcrumbs?.find((b) => b.nodeType === 'app')?.id;
+      if (!kbId) {
+        toast.error('Failed to create folder', {
+          description: `Could not find the collection "${currentNode.name}" belongs to.`,
         });
-        setIsCreateFolderDialogOpen(true);
-      } else {
-        // Fallback: no KB root found — create a new collection
-        setCreateFolderContext({ type: 'collection' });
-        setIsCreateFolderDialogOpen(true);
+        return;
       }
-    } else {
-      // No KB context (at root or no currentNode) — create new collection
+      setCreateFolderContext({
+        type: 'subfolder' as const,
+        kbId,
+        parentId: currentNode.id,
+        parentName: currentNode.name,
+      });
+      setIsCreateFolderDialogOpen(true);
+    } else if (!currentNode) {
       setCreateFolderContext({ type: 'collection' });
       setIsCreateFolderDialogOpen(true);
+    } else {
+      toast.error('Failed to create folder', {
+        description: `A folder cannot be created inside "${currentNode.name}" (${currentNode.nodeType}).`,
+      });
     }
   }, [tableData, canCreateCollection]);
 
@@ -1533,10 +1603,11 @@ function KnowledgeBasePageContent() {
         console.error('Failed to create folder:', error);
         setIsCreatingFolder(false);
 
-        // Show error toast
-        const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to create folder', {
-          description: err?.response?.data?.message || err?.message || 'An error occurred',
+          description: getUserFacingErrorMessage(
+            error,
+            "We couldn't create it. Check the name and try again.",
+          ),
         });
         // Keep dialog open so user can retry
       }
@@ -1594,9 +1665,7 @@ function KnowledgeBasePageContent() {
             fileEntries.push({
               storeId: generateUploadId(),
               file: fwp.file,
-              filePath: fwp.relativePath
-                ? `${item.name}/${fwp.relativePath}`
-                : `${item.name}/${fwp.file.name}`,
+              filePath: uploadPathOf(item.name, fwp.relativePath, fwp.file.name),
             });
           }
         }
@@ -1921,6 +1990,15 @@ function KnowledgeBasePageContent() {
     };
   }, [selectedKbId, tableData?.breadcrumbs, tableData?.currentNode?.name]);
 
+  const softDeleteEnabled = useFeatureFlagsStore(selectSoftDeleteEnabled);
+  const showRecentlyDeleted =
+    softDeleteEnabled && !isAllRecordsMode && !!nodeId && !!selectedKbId &&
+    canOpenRecentlyDeleted(tableData?.permissions?.collectionRole);
+  const handleRecentlyDeletedClick = useCallback(() => {
+    if (!selectedKbId) return;
+    router.push(`/knowledge-base/recently-deleted?kbId=${encodeURIComponent(selectedKbId)}`);
+  }, [router, selectedKbId]);
+
   const handleCollectionIndexingStatusClick = useCallback(() => {
     if (!collectionStatsTarget) return;
     openCollectionStatsPanel(collectionStatsTarget.id, collectionStatsTarget.name);
@@ -2001,6 +2079,7 @@ function KnowledgeBasePageContent() {
         return;
       }
 
+      const connector = item.connector ?? '';
       try {
         // 1. Show loading state immediately
         setPreviewFile({
@@ -2011,6 +2090,7 @@ function KnowledgeBasePageContent() {
           size: item.sizeInBytes || undefined,
           isLoading: true,
           webUrl: item.webUrl,
+          connector,
         });
         setPreviewMode('sidebar');
 
@@ -2034,6 +2114,7 @@ function KnowledgeBasePageContent() {
             recordDetails,
             webUrl: record.webUrl || undefined,
             previewRenderable: false,
+            connector,
           });
           return;
         }
@@ -2081,6 +2162,7 @@ function KnowledgeBasePageContent() {
           recordDetails,
           webUrl: record.webUrl || undefined,
           previewRenderable: record.previewRenderable,
+          connector,
         });
 
       } catch (error) {
@@ -2173,6 +2255,7 @@ function KnowledgeBasePageContent() {
           recordDetails,
           webUrl: record.webUrl || undefined,
           previewRenderable: record.previewRenderable,
+          connector: '',
         });
 
       } catch (error) {
@@ -2186,6 +2269,35 @@ function KnowledgeBasePageContent() {
       }
     }
   }, [getPreviewErrorMessage]);
+
+  // The preview dialog covers the selection bar, so Chat for this record lives on the preview.
+  const handlePreviewChat = useCallback(() => {
+    if (!previewFile) return;
+    usePendingChatStore.getState().setPending({
+      message: '',
+      pageContext: {
+        selectedNodes: [{
+          id: previewFile.id,
+          name: previewFile.name,
+          nodeType: 'record',
+          connector: previewFile.connector ?? '',
+        }],
+      },
+      referrerPage: '/knowledge-base',
+    });
+    router.push('/chat');
+  }, [previewFile, router]);
+
+  // Search and filter results come from anywhere below the current place: open a row's
+  // parent as plain navigation, without the search or the filters that found the row.
+  const handleGoToParent = useCallback(
+    (item: KnowledgeHubNode) => {
+      if (!item.parent?.id) return;
+      setIsSearchOpen(false);
+      pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.parent.nodeType, nodeId: item.parent.id }));
+    },
+    [isAllRecordsMode, setIsSearchOpen]
+  );
 
   // Handle item click (navigate into folder or open file)
   const handleItemClick = useCallback(
@@ -2211,7 +2323,12 @@ function KnowledgeBasePageContent() {
         if (isNavigableContainer) {
           // Use clean nav URL — filters don't carry over when drilling into a new container
           setIsSearchOpen(false);
-          router.push(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.nodeType, nodeId: item.id }));
+          // The sidebar lists an app's children once the app is open: start that
+          // read with the table's instead of after it (the loader shares it).
+          if (isAllRecordsMode && item.nodeType === 'app') {
+            void fetchAppDirectChildren(item.id).catch(() => {});
+          }
+          pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: item.nodeType, nodeId: item.id }));
         } else if (item.nodeType === 'record') {
           handlePreviewFile(item);
         }
@@ -2221,13 +2338,13 @@ function KnowledgeBasePageContent() {
           setIsSearchOpen(false);
           setCurrentFolderId(item.id);
           // Use clean nav URL to clear search params when navigating into folders
-          router.push(buildCleanNavUrl(false, { kbId: selectedKbId || '', folderId: item.id }));
+          pushKbUrl(buildCleanNavUrl(false, { kbId: selectedKbId || '', folderId: item.id }));
         } else {
           handlePreviewFile(item);
         }
       }
     },
-    [selectedKbId, router, isAllRecordsMode, setCurrentFolderId, handlePreviewFile, setIsSearchOpen]
+    [selectedKbId, isAllRecordsMode, setCurrentFolderId, handlePreviewFile, setIsSearchOpen]
   );
 
 
@@ -2237,6 +2354,7 @@ function KnowledgeBasePageContent() {
     item: KnowledgeBaseItem | KnowledgeHubNode | AllRecordItem,
     newName: string
   ) => {
+    if (!canEditCollection) return;
 
     try {
       const isHub = 'nodeType' in item && 'origin' in item;
@@ -2278,13 +2396,12 @@ function KnowledgeBasePageContent() {
 
       await refreshData();
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error('Failed to rename', {
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        description: getUserFacingErrorMessage(error, "We couldn't rename it. Please try again in a moment."),
       });
       throw error;
     }
-  }, [selectedKbId, refreshData]);
+  }, [selectedKbId, refreshData, canEditCollection]);
 
   // Handle rename from header breadcrumb
   const handleBreadcrumbRename = useCallback(async (
@@ -2316,9 +2433,8 @@ function KnowledgeBasePageContent() {
 
       await refreshData();
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error('Failed to rename', {
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        description: getUserFacingErrorMessage(error, "We couldn't rename it. Please try again in a moment."),
       });
       throw error;
     }
@@ -2330,12 +2446,12 @@ function KnowledgeBasePageContent() {
     (breadcrumb: Breadcrumb) => {
       setIsSearchOpen(false);
       if (breadcrumb.id === 'all-records-root') {
-        router.push(buildCleanNavUrl(isAllRecordsMode, {}));
+        pushKbUrl(buildCleanNavUrl(isAllRecordsMode, {}));
         return;
       }
-      router.push(buildCleanNavUrl(isAllRecordsMode, { nodeType: breadcrumb.nodeType, nodeId: breadcrumb.id }));
+      pushKbUrl(buildCleanNavUrl(isAllRecordsMode, { nodeType: breadcrumb.nodeType, nodeId: breadcrumb.id }));
     },
-    [router, isAllRecordsMode, setIsSearchOpen]
+    [isAllRecordsMode, setIsSearchOpen]
   );
 
   const executeReindex = useCallback(
@@ -2444,6 +2560,13 @@ function KnowledgeBasePageContent() {
         subType: hubItem.subType,
       });
 
+      if (isRecordReindexBlocked(reindexNode)) {
+        setBlockedReindexConnector(reindexNode.connector);
+        setBlockedReindexNodeType(reindexNode.nodeType);
+        setIsReindexBlockedOpen(true);
+        return;
+      }
+
       if (requiresForceReindexConfirmation(reindexNode, statusFilters)) {
         setForceReindexPending({ item: hubItem, statusFilters });
         return;
@@ -2522,9 +2645,10 @@ function KnowledgeBasePageContent() {
 
   // Handle move - opens the move folder sidebar
   const handleMoveClick = useCallback((item: KnowledgeBaseItem) => {
+    if (!canEditCollection) return;
     setItemToMove(item);
     setIsMoveDialogOpen(true);
-  }, []);
+  }, [canEditCollection]);
 
   // Handle move dialog open/close with state reset
   const handleMoveDialogOpenChange = useCallback((isOpen: boolean) => {
@@ -2535,103 +2659,25 @@ function KnowledgeBasePageContent() {
   }, []);
 
   // Handle node expansion in move dialog - lazy load folder children
-  const handleMoveDialogExpand = useCallback(
-    async (nodeId: string) => {
-      const {
-        categorizedNodes: freshCategorized,
-        nodeChildrenCache: freshCache,
-        nodes: storeNodes,
-      } = useKnowledgeBaseStore.getState();
-
-      // Helper to check if node already has children loaded in tree
-      const hasChildrenInTree = (tree: EnhancedFolderTreeNode[], targetId: string): boolean => {
-        for (const node of tree) {
-          if (node.id === targetId) return (node.children?.length ?? 0) > 0;
-          if (node.children?.length && hasChildrenInTree(node.children as EnhancedFolderTreeNode[], targetId)) {
-            return true;
-          }
-        }
-        return false;
-      };
-
-      // Check if children already loaded in categorizedNodes
-      if (freshCategorized) {
-        const alreadyLoaded =
-          hasChildrenInTree(freshCategorized.shared, nodeId) ||
-          hasChildrenInTree(freshCategorized.private, nodeId);
-        if (alreadyLoaded) return;
-      }
-
-      // Check cache first
-      const cachedChildren = freshCache.get(nodeId);
-      if (cachedChildren !== undefined) {
-        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(cachedChildren);
-
-        if (cachedChildren.length > 0) {
-          addNodes(cachedChildren);
-        }
-
-        const latest = useKnowledgeBaseStore.getState();
-        if (latest.categorizedNodes) {
-          const parentNode = latest.nodes.find((n) => n.id === nodeId);
-          if (parentNode) {
-            const section = categorizeNode(parentNode);
-            const updatedTree = mergeChildrenIntoTree(
-              latest.categorizedNodes[section],
-              nodeId,
-              cachedChildren,
-              effectiveHasChildFolders
-            );
-            setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-          }
-        }
-        return;
-      }
-
-      // Not cached - fetch from API
-      try {
-        setMoveDialogLoadingIds((prev) => new Set(prev).add(nodeId));
-
-        const nodeInStore = storeNodes.find((n) => n.id === nodeId);
-        const resolvedNodeType = (nodeInStore?.nodeType ?? 'folder') as NodeType;
-
-        const response = await KnowledgeHubApi.getNodeChildren(resolvedNodeType, nodeId, {
-          onlyContainers: true,
-          sortBy: 'name',
-          sortOrder: 'asc',
-        });
-
-        cacheNodeChildren(nodeId, response.items);
-        addNodes(response.items);
-
-        const effectiveHasChildFolders = effectiveHasChildrenAfterSidebarExpand(response.items);
-
-        const latest = useKnowledgeBaseStore.getState();
-        if (latest.categorizedNodes) {
-          const parentNode = latest.nodes.find((n) => n.id === nodeId);
-          if (parentNode) {
-            const section = categorizeNode(parentNode);
-            const updatedTree = mergeChildrenIntoTree(
-              latest.categorizedNodes[section],
-              nodeId,
-              response.items,
-              effectiveHasChildFolders
-            );
-            setCategorizedNodes({ ...latest.categorizedNodes, [section]: updatedTree });
-          }
-        }
-      } catch (error) {
-        console.error('Failed to expand node in move dialog', { nodeId, error });
-      } finally {
-        setMoveDialogLoadingIds((prev) => {
-          const next = new Set(prev);
-          next.delete(nodeId);
-          return next;
-        });
-      }
-    },
-    [addNodes, cacheNodeChildren, setCategorizedNodes]
-  );
+  // The move dialog has no "load more", so it reads every page of a folder's
+  // children (up to the loader's bound) through the same loader the sidebar
+  // uses; the sidebar tree and this dialog share that list.
+  const handleMoveDialogExpand = useCallback(async (nodeId: string) => {
+    const nodeType = (useKnowledgeBaseStore.getState().nodes.find((n) => n.id === nodeId)?.nodeType ??
+      'folder') as NodeType;
+    try {
+      setMoveDialogLoadingIds((prev) => new Set(prev).add(nodeId));
+      await openFolderChildren(nodeId, nodeType, { until: () => false });
+    } catch (error) {
+      console.error('Failed to expand node in move dialog', { nodeId, error });
+    } finally {
+      setMoveDialogLoadingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(nodeId);
+        return next;
+      });
+    }
+  }, []);
 
   // Handle move confirmation
   const handleMoveConfirm = useCallback(
@@ -2663,10 +2709,8 @@ function KnowledgeBasePageContent() {
       } catch (error: unknown) {
         console.error('Failed to move item:', error);
 
-        // Show error toast
-        const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to move item', {
-          description: err?.response?.data?.message || err?.message || 'An error occurred',
+          description: getUserFacingErrorMessage(error, "We couldn't move it. Please try again in a moment."),
         });
       } finally {
         setIsMoving(false);
@@ -2677,9 +2721,10 @@ function KnowledgeBasePageContent() {
 
   // Handle replace - opens the replace file dialog
   const handleReplaceClick = useCallback((item: KnowledgeHubNode) => {
+    if (!canEditCollection) return;
     setItemToReplace(item);
     setIsReplaceDialogOpen(true);
-  }, []);
+  }, [canEditCollection]);
 
   // Handle replace confirmation
   const handleReplaceConfirm = useCallback(
@@ -2711,10 +2756,11 @@ function KnowledgeBasePageContent() {
       } catch (error: unknown) {
         console.error('Failed to replace file:', error);
 
-        // Show error toast
-        const err = error as { response?: { data?: { message?: string } }; message?: string };
         toast.error('Failed to replace file', {
-          description: err?.response?.data?.message || err?.message || 'An error occurred',
+          description: getUserFacingErrorMessage(
+            error,
+            "We couldn't replace the file. Please try again in a moment.",
+          ),
         });
       } finally {
         setIsReplacing(false);
@@ -2728,9 +2774,11 @@ function KnowledgeBasePageContent() {
     try {
       await KnowledgeBaseApi.streamDownloadRecord(item.id, item.name);
     } catch (error: unknown) {
-      const err = error as { response?: { data?: { message?: string } }; message?: string };
       toast.error('Failed to download', {
-        description: err?.response?.data?.message || err?.message || 'An error occurred',
+        description: getUserFacingErrorMessage(
+          error,
+          "We couldn't download the file. Check your connection and try again.",
+        ),
       });
     }
   }, []);
@@ -2738,15 +2786,14 @@ function KnowledgeBasePageContent() {
   // Handle delete — reuses the same confirmation dialog/dispatcher as the
   // sidebar delete flow (handleSidebarDeleteConfirm) instead of a separate path.
   const handleDelete = useCallback((item: KnowledgeBaseItem) => {
+    if (!canDeleteCollection) return;
     const isHubNode = 'nodeType' in item && 'origin' in item;
-    // 'app'/'kb' nodes have no nodeType here — deleteNode's fallback path
-    // (nodeType neither 'folder' nor 'record') routes them to
-    // deleteKnowledgeBase, which is what deleting a collection needs.
     let nodeType: NodeType | undefined;
     if (isHubNode) {
       const hubNode = item as unknown as KnowledgeHubNode;
       if (hubNode.nodeType === 'record') nodeType = 'record';
       else if (hubNode.nodeType === 'folder' || hubNode.nodeType === 'recordGroup') nodeType = 'folder';
+      else if (hubNode.nodeType === 'app') nodeType = 'app';
     } else {
       nodeType = item.type === 'folder' ? 'folder' : 'record';
     }
@@ -2757,7 +2804,7 @@ function KnowledgeBasePageContent() {
       rootKbId: selectedKbId || undefined,
     });
     setIsDeleteDialogOpen(true);
-  }, [selectedKbId]);
+  }, [selectedKbId, canDeleteCollection]);
 
   // ========================================
   // Sidebar Action Handlers
@@ -2768,6 +2815,8 @@ function KnowledgeBasePageContent() {
     if (!itemToDelete) return;
     const deletedId = itemToDelete.id;
     const deletedNodeType = itemToDelete.nodeType;
+    const kind =
+      deletedNodeType === 'folder' ? 'folder' : deletedNodeType === 'record' ? 'file' : 'collection';
     setIsDeleting(true);
     try {
       await KnowledgeBaseApi.deleteNode({
@@ -2775,16 +2824,22 @@ function KnowledgeBasePageContent() {
         nodeType: deletedNodeType,
         rootKbId: itemToDelete.rootKbId,
       });
-      toast.success(`"${itemToDelete.name}" deleted successfully`);
-      setIsDeleteDialogOpen(false);
-      setItemToDelete(null);
-      await refreshDataAfterDelete([deletedId]);
     } catch (error: unknown) {
       const err = error as { response?: { data?: { message?: string } }; message?: string };
-      toast.error(
-        err?.response?.data?.message ||
-          `Failed to delete ${deletedNodeType === 'folder' ? 'folder' : 'collection'}`
-      );
+      toast.error(err?.response?.data?.message || `Failed to delete ${kind}`);
+      setIsDeleting(false);
+      return;
+    }
+    toast.success(`"${itemToDelete.name}" deleted successfully`);
+    setIsDeleteDialogOpen(false);
+    setItemToDelete(null);
+    try {
+      await refreshDataAfterDelete([deletedId]);
+    } catch (error: unknown) {
+      console.error('Failed to refresh after delete:', error);
+      toast.warning("Couldn't update the list", {
+        description: `The ${kind} was deleted, but the list didn't refresh. Refresh the page to see the latest list.`,
+      });
     } finally {
       setIsDeleting(false);
     }
@@ -2795,14 +2850,16 @@ function KnowledgeBasePageContent() {
   // Bulk Selection Actions
   // ========================================
 
-  // Get selected items as array
-  const selectedItemsArray = useMemo(() => {
-    const currentItems = isAllRecordsMode ? allRecordsItems : tableItems;
-    const selectedSet = isAllRecordsMode ? selectedRecords : selectedItems;
-    return currentItems.filter(item => selectedSet.has(item.id));
-  }, [isAllRecordsMode, allRecordsItems, tableItems, selectedRecords, selectedItems]);
-
-  const selectedCount = isAllRecordsMode ? selectedRecords.size : selectedItems.size;
+  // Every bulk action works on the rows ticked on any page, not only the one on screen.
+  const tickedRows = useTickedRows<KbTableItem>(
+    isAllRecordsMode ? allRecordsItems : tableItems,
+    isAllRecordsMode ? selectedRecords : selectedItems
+  );
+  const selectedCount = tickedRows.length;
+  // The bar offers Delete only when every ticked row may be deleted, as each row's menu does.
+  const bulkDeleteDenied = !canDeleteCollection || !tickedRows.every(canDeleteKbTableItem);
+  const bulkDeleteNeedsCollection =
+    !selectedKbId && tickedRows.some((row) => needsCollectionContext(row, 'delete'));
 
   // Handle deselect all
   const handleDeselectAll = useCallback(() => {
@@ -2813,15 +2870,25 @@ function KnowledgeBasePageContent() {
     }
   }, [isAllRecordsMode, clearRecordSelection, clearSelection]);
 
-  // Handle bulk chat
+  // Open a new chat scoped to the ticked rows; nothing is sent until the user asks.
   const handleBulkChat = useCallback(() => {
-    const selectedIds = selectedItemsArray.map(item => item.id);
-    router.push(`/chat?recordIds=${selectedIds.join(',')}`);
-  }, [selectedItemsArray, router]);
+    const selectedNodes = tickedRows.map(toPendingChatNode);
+    if (selectedNodes.length === 0) return;
+    if (selectedNodes.length > MAX_SELECTED_NODES) {
+      toast.error(t('kb.chatSelectionLimit', { max: MAX_SELECTED_NODES }));
+      return;
+    }
+    usePendingChatStore.getState().setPending({
+      message: '',
+      pageContext: { selectedNodes },
+      referrerPage: '/knowledge-base',
+    });
+    router.push('/chat');
+  }, [tickedRows, router, t]);
 
   // Handle bulk reindex
   const handleBulkReindex = useCallback(async () => {
-    const items = selectedItemsArray.map(item => {
+    const items = tickedRows.map(item => {
       const hubItem = ('nodeType' in item) ? (item as KnowledgeHubNode) : undefined;
       return {
         id: item.id,
@@ -2831,19 +2898,27 @@ function KnowledgeBasePageContent() {
         subType: hubItem?.subType,
       };
     });
+    const blockedItem = items.find(isRecordReindexBlocked);
+    if (blockedItem) {
+      setBlockedReindexConnector(blockedItem.connector);
+      setBlockedReindexNodeType(blockedItem.nodeType);
+      setIsReindexBlockedOpen(true);
+      return;
+    }
     await bulkReindexSelected(items, refreshData);
-  }, [selectedItemsArray, bulkReindexSelected, refreshData]);
+  }, [tickedRows, bulkReindexSelected, refreshData]);
 
   // Handle bulk delete click (opens dialog)
   const handleBulkDeleteClick = useCallback(() => {
+    if (bulkDeleteDenied) return;
     setIsBulkDeleteDialogOpen(true);
-  }, []);
+  }, [bulkDeleteDenied]);
 
   // Handle bulk delete confirm
   const handleBulkDeleteConfirm = useCallback(async () => {
     setIsBulkDeleting(true);
     try {
-      const items = selectedItemsArray.map(item => {
+      const items = tickedRows.map(item => {
         // Determine node type
         const isKnowledgeHubNodeItem = 'nodeType' in item && 'origin' in item;
         let nodeType: 'kb' | 'app' | 'folder' | 'record' = 'record';
@@ -2868,48 +2943,87 @@ function KnowledgeBasePageContent() {
     } finally {
       setIsBulkDeleting(false);
     }
-  }, [selectedItemsArray, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
+  }, [tickedRows, selectedKbId, bulkDeleteSelected, refreshDataAfterDelete]);
 
-  // Derive current title based on mode
+  // Derive current title based on mode. A search keeps the scope's name, so the
+  // chat box still says what it searches ("Ask in 'Docs'", not "Ask in 'Results'").
   const currentTitle = useMemo(() => {
-    // Show "Results" when actively searching
-    const activeSearchQuery = isAllRecordsMode ? allRecordsSearchQuery : searchQuery;
-    if (activeSearchQuery && activeSearchQuery.trim()) {
-      return 'Results';
-    }
-
     if (isAllRecordsMode) {
-      if (allRecordsSidebarSelection.type === 'all') {
-        return 'All';
-      } else if (allRecordsSidebarSelection.type === 'collection') {
+      if (allRecordsSidebarSelection.type === 'collection') {
         return allRecordsSidebarSelection.name;
       } else if (allRecordsSidebarSelection.type === 'connector') {
         return allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType;
       } else if (allRecordsSidebarSelection.type === 'explorer') {
-        return allRecordsTableData?.currentNode?.name || 'All Records';
+        return allRecordsTableData?.currentNode?.name || t('nav.allRecords');
       }
-      return 'All';
+      return t('nav.allRecords');
     }
-    return tableData?.currentNode?.name || 'Collections';
+    return tableData?.currentNode?.name || t('nav.collections');
   }, [
     isAllRecordsMode,
     allRecordsSidebarSelection,
     tableData,
-    allRecordsSearchQuery,
-    searchQuery,
     allRecordsTableData?.currentNode?.name,
+    t,
+  ]);
+
+  const chatScopeNode = useMemo((): MentionNode | null => {
+    if (isAllRecordsMode) {
+      const nodeId = searchParams.get('nodeId');
+      const nodeType = searchParams.get('nodeType');
+      const current = allRecordsTableData?.currentNode;
+      if (nodeId && nodeType && current?.name && current.id === nodeId) {
+        return {
+          id: nodeId,
+          name: current.name,
+          nodeType: current.nodeType || nodeType,
+          connector: connectorOfCurrentNode(current),
+        };
+      }
+      if (allRecordsSidebarSelection.type === 'collection') {
+        return {
+          id: allRecordsSidebarSelection.id,
+          name: allRecordsSidebarSelection.name,
+          nodeType: 'kb',
+          connector: '',
+        };
+      }
+      if (allRecordsSidebarSelection.type === 'connector' && allRecordsSidebarSelection.itemId) {
+        return {
+          id: allRecordsSidebarSelection.itemId,
+          name: allRecordsSidebarSelection.itemName || allRecordsSidebarSelection.connectorType,
+          nodeType: 'app',
+          connector: allRecordsSidebarSelection.connectorType,
+        };
+      }
+      return null;
+    }
+    const current = tableData?.currentNode;
+    if (!current?.id || !current.name) return null;
+    return {
+      id: current.id,
+      name: current.name,
+      nodeType: current.nodeType,
+      connector: connectorOfCurrentNode(current),
+    };
+  }, [
+    isAllRecordsMode,
+    searchParams,
+    allRecordsTableData?.currentNode,
+    allRecordsSidebarSelection,
+    tableData?.currentNode,
   ]);
 
   // All Records mode: Prepend "All Records" root breadcrumb
   const allRecordsBreadcrumbs = useMemo<Breadcrumb[]>(() => {
     const rootCrumb: Breadcrumb = {
       id: 'all-records-root',
-      name: 'All Records',
+      name: t('nav.allRecords'),
       nodeType: 'all-records',
     };
     const apiBreadcrumbs = allRecordsTableData?.breadcrumbs || [];
     return [rootCrumb, ...apiBreadcrumbs];
-  }, [allRecordsTableData?.breadcrumbs]);
+  }, [allRecordsTableData?.breadcrumbs, t]);
 
   return (
     <Flex style={{ height: '100%', width: '100%' }}>
@@ -2942,12 +3056,15 @@ function KnowledgeBasePageContent() {
               onRefresh={handleRefresh}
               showIndexingStatus={showCollectionIndexingStatus}
               onIndexingStatusClick={handleCollectionIndexingStatusClick}
+              onRecentlyDeletedClick={showRecentlyDeleted ? handleRecentlyDeletedClick : undefined}
               isSearchActive={isSearchOpen && !!(isAllRecordsMode ? allRecordsSearchQuery : searchQuery)?.trim()}
               // Collections mode only props
-              onCreateFolder={isAllRecordsMode ? undefined : handleCreateFolder}
+              onCreateFolder={isAllRecordsMode || !canAddFolderHere ? undefined : handleCreateFolder}
               onUpload={isAllRecordsMode ? undefined : handleUpload}
               onShare={shareAdapter && isSelectedKbOwner ? handleShare : undefined}
               createPermissionDenied={!isAllRecordsMode && !canCreateCollection && !canEditCollection}
+              folderPermissionDenied={!isAllRecordsMode && !canCreateCollection}
+              uploadPermissionDenied={!isAllRecordsMode && !canEditCollection}
               sharePermissionDenied={Boolean(shareAdapter && isSelectedKbOwner && !canShareCollection)}
               sharedMembers={sharedMembers}
               onRename={
@@ -2981,22 +3098,41 @@ function KnowledgeBasePageContent() {
           isLoading={isAllRecordsMode ? isLoadingAllRecordsTable : isLoadingTableData}
           isRefreshing={isRefreshing}
           error={isAllRecordsMode ? allRecordsTableError : tableDataError}
+          errorRetryable={!(isAllRecordsMode && allRecordsRefused)}
           pagination={isAllRecordsMode ? allRecordsTableData?.pagination : tableData?.pagination}
           permissions={isAllRecordsMode ? allRecordsTableData?.permissions : tableData?.permissions}
           currentNodeName={isAllRecordsMode ? currentTitle : tableData?.currentNode?.name}
           pageViewMode={pageViewMode}
           showSourceColumn={isAllRecordsMode}
-          showCheckbox={!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector'))}
           hasActiveFilters={hasActiveFilters}
           hasSearchQuery={hasSearchQuery}
+          onClearSearch={handleSearchClose}
+          extrasRefreshKey={extrasRefreshKey}
           hasCollections={hasCollections}
           onRefresh={() => { void handleRefresh(); }}
-          onPageChange={(page) => {
-            if (isAllRecordsMode) {
-              useKnowledgeBaseStore.getState().setAllRecordsPage(page);
-            } else {
-              setCollectionsPage(page);
+          onCursorChange={(cursor, direction) => {
+            if (!isAllRecordsMode) {
+              setCollectionsCursor(cursor);
+              return;
             }
+            const nt = searchParams.get('nodeType') ?? undefined;
+            const nid = searchParams.get('nodeId') ?? undefined;
+            if (cursor) {
+              // Mark it seen first so the cursor effect does not fetch again.
+              prevAllRecordsCursorRef.current = cursor;
+              useKnowledgeBaseStore.getState().setAllRecordsCursor(cursor);
+              void fetchAllRecordsTableData(nt, nid);
+              return;
+            }
+            // hasNext without a cursor: setting null does not change the position, so the effect never fetches.
+            if (direction !== 'next' && direction !== 'prev') return;
+            const pag = useKnowledgeBaseStore.getState().allRecordsTableData?.pagination;
+            const limit = Math.max(1, pag?.limit || 1);
+            const current = pag?.page && pag.page > 0
+              ? pag.page
+              : Math.floor(((pag?.startIndex ?? 1) - 1) / limit) + 1;
+            const target = direction === 'next' ? current + 1 : Math.max(1, current - 1);
+            void fetchAllRecordsTableData(nt, nid, target > 1 ? target : undefined);
           }}
           onLimitChange={(limit) => {
             if (isAllRecordsMode) {
@@ -3007,56 +3143,64 @@ function KnowledgeBasePageContent() {
           }}
           onItemClick={handleItemClick}
           onPreview={handlePreviewFile}
-          onRename={!isAllRecordsMode && canEditCollection ? handleRename : undefined}
+          onGoToParent={handleGoToParent}
+          onRename={!isAllRecordsMode ? handleRename : undefined}
           onReindex={handleReindexClick}
           onReplace={
-            !isAllRecordsMode && canEditCollection
+            !isAllRecordsMode
               ? (item) => handleReplaceClick(item as KnowledgeHubNode)
               : undefined
           }
-          onMove={!isAllRecordsMode && canEditCollection ? handleMoveClick : undefined}
-          onDelete={!isAllRecordsMode && canDeleteCollection ? handleDelete : undefined}
+          onMove={!isAllRecordsMode ? handleMoveClick : undefined}
+          onDelete={!isAllRecordsMode ? handleDelete : undefined}
           onDownload={handleDownload}
-          onCreateFolder={!isAllRecordsMode && canCreateCollection ? handleCreateFolder : undefined}
+          onCreateFolder={!isAllRecordsMode && canCreateCollection && canAddFolderHere ? handleCreateFolder : undefined}
           onUpload={!isAllRecordsMode && canEditCollection ? handleUpload : undefined}
           onGoToCollection={handleGoToCollection}
           refreshData={refreshDataAfterDelete}
+          hasCollectionContext={Boolean(selectedKbId)}
         />
 
-        {/* Selection Action Bar - shows when items are selected.
-            Hidden in All Records "All" and connector views (mirrors the checkbox guard
-            above). Rows in those views are top-level aggregates that aren't individually
-            reindexable, and stale selections from a prior view shouldn't surface here. */}
-        {!(isAllRecordsMode && (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')) && (
-          <SelectionActionBar
-            selectedCount={selectedCount}
-            onDeselectAll={handleDeselectAll}
-            onChat={handleBulkChat}
-            onReindex={handleBulkReindex}
-            onDelete={!isAllRecordsMode ? handleBulkDeleteClick : undefined}
-            deletePermissionDenied={!canDeleteCollection}
-            pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
-          />
-        )}
+        {/* Rows in the All Records "All" and connector views are whole sources: they
+            can scope a chat but are not reindexed from here. */}
+        <SelectionActionBar
+          selectedCount={selectedCount}
+          onDeselectAll={handleDeselectAll}
+          onChat={handleBulkChat}
+          onReindex={
+            isAllRecordsMode &&
+            (allRecordsSidebarSelection.type === 'all' || allRecordsSidebarSelection.type === 'connector')
+              ? undefined
+              : handleBulkReindex
+          }
+          onDelete={!isAllRecordsMode && !bulkDeleteNeedsCollection ? handleBulkDeleteClick : undefined}
+          deletePermissionDenied={bulkDeleteDenied}
+          pageViewMode={isAllRecordsMode ? 'all-records' : 'collections'}
+        />
 
-        {/* Chat Bar (temporarily disabled)
-        {selectedCount === 0 &&
-        <Box
-          style={{ 
-            position: 'absolute',
-            bottom: 'var(--space-6)',
-            left: '50%',
-            transform: 'translateX(-50%)',
-            zIndex: 10,
-          }}
-        >
-          <ChatWidgetWrapper
-            currentTitle={currentTitle}
-            selectedKbId={selectedKbId}
-            isAllRecordsMode={isAllRecordsMode}
-          />
-        </Box>
-        } */}
+        {selectedCount === 0 && (
+          <>
+            <Flex
+              justify="center"
+              style={{
+                position: 'absolute',
+                bottom: 64,
+                left: '50%',
+                transform: 'translateX(-50%)',
+                width: 'min(800px, calc(100% - 48px))',
+                zIndex: 20,
+                pointerEvents: 'none',
+              }}
+            >
+              <ChatWidgetWrapper
+                currentTitle={currentTitle}
+                selectedKbId={selectedKbId}
+                isAllRecordsMode={isAllRecordsMode}
+                scopeNode={chatScopeNode}
+              />
+            </Flex>
+          </>
+        )}
       </Flex>
 
       {/* Force reindex confirmation (table, grid, and sidebar) */}
@@ -3075,6 +3219,13 @@ function KnowledgeBasePageContent() {
         confirmVariant="primary"
         isLoading={isReindexSubmitting}
         onConfirm={() => void handleForceReindexConfirm()}
+      />
+
+      <ReindexBlockedDialog
+        open={isReindexBlockedOpen}
+        onOpenChange={setIsReindexBlockedOpen}
+        connector={blockedReindexConnector}
+        nodeType={blockedReindexNodeType}
       />
 
       {reindexScopePending && (
@@ -3142,6 +3293,8 @@ function KnowledgeBasePageContent() {
             onOpenChange={setIsUploadSidebarOpen}
             onSave={handleUploadSave}
             isSaving={isUploading}
+            remainingFolderLevels={remainingFolderLevels}
+            maxFolderDepth={maxFolderDepth}
           />
 
           {/* Replace File Dialog */}
@@ -3173,6 +3326,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onChat={handlePreviewChat}
           onToggleFullscreen={() => setPreviewMode('fullscreen')}
           onOpenChange={(open) => {
             if (!open) {
@@ -3203,6 +3357,7 @@ function KnowledgeBasePageContent() {
           isLoading={previewFile.isLoading}
           error={previewFile.error}
           recordDetails={previewFile.recordDetails}
+          onChat={handlePreviewChat}
           onExitFullscreen={() => setPreviewMode('sidebar')}
           onClose={() => {
             // Clean up blob URL (only PDF/image/html/etc. paths allocate one)

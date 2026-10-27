@@ -1,6 +1,9 @@
+import asyncio
 import json
 import logging
-from typing import List, Literal, Optional, Tuple
+from collections.abc import Callable
+from http import HTTPStatus
+from typing import Any, List, Literal, Optional, Tuple, TypeVar
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -11,12 +14,12 @@ from app.agents.actions.util.tool_summaries import (
     entity_summary,
     list_summary,
 )
+from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
 )
-from app.connectors.core.constants import IconPaths
 from app.connectors.core.registry.connector_builder import CommonFields
 from app.connectors.core.registry.tool_builder import (
     ToolsetBuilder,
@@ -27,6 +30,8 @@ from app.sources.client.github.github import GitHubClient, GitHubResponse
 from app.sources.external.github.github_ import GitHubDataSource
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
 
 
 # ---------------------------------------------------------------------------
@@ -79,6 +84,80 @@ def _github_commit_label(commit: dict) -> str:
 
 def _github_file_change_label(entry: dict) -> str:
     return f"{entry.get('filename', '?')} ({entry.get('status', '?')})"
+
+
+# GitHub's list-commits-on-a-pull-request endpoint stops at this many.
+_PR_COMMIT_LIST_CAP = 250
+
+_RECONNECT_STEP = "Reconnect GitHub under Your actions, then try again."
+
+
+def _github_error_message(response: GitHubResponse, action: str) -> str:
+    """Plain-language failure the agent can relay, with what to do next."""
+    status = response.status_code
+    said = f" GitHub said: {response.api_message}." if response.api_message else ""
+    if response.is_rate_limited:
+        seconds = response.retry_after_seconds
+        wait = f"Wait {seconds} seconds" if seconds is not None else "Wait a minute"
+        return f"GitHub's rate limit has been reached, so it could not {action}. {wait} and try again."
+    if status is None:
+        return f"Could not {action} because GitHub could not be reached. Try again in a moment."
+    if status == HTTPStatus.UNAUTHORIZED:
+        return f"Could not {action}: GitHub did not accept the saved sign-in.{said} {_RECONNECT_STEP}"
+    if status == HTTPStatus.FORBIDDEN:
+        return (
+            f"Could not {action}: the signed-in GitHub account is not allowed to do that.{said} "
+            "Ask a repository admin for access, or reconnect the toolset with the missing permission."
+        )
+    if status == HTTPStatus.NOT_FOUND:
+        return (
+            f"Could not {action}: GitHub found nothing at that owner, repository or number, or the signed-in "
+            f"account cannot see it.{said} Check the names, or call get_owner(owner='me') and "
+            "list_repositories to find the right one."
+        )
+    if status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+        return f"GitHub is having a temporary problem and could not {action}. Try again in a moment."
+    return f"GitHub refused to {action}.{said} Correct the request and try again."
+
+
+def _with_paging(result: tuple[bool, str], page: int, per_page: int) -> tuple[bool, str]:
+    """Say whether this page is the last, so one page is never read as the whole list."""
+    success, text = result
+    if not success:
+        return result
+    payload = json.loads(text)
+    items = payload.get("data")
+    if not isinstance(items, list):
+        return result
+    more = len(items) >= per_page
+    payload.update({"page": page, "per_page": per_page, "has_more": more})
+    if more:
+        payload["next_page"] = page + 1
+        payload["message"] += (
+            f". This is page {page} with {len(items)} results; there may be more. "
+            f"Call again with page={page + 1} to see them."
+        )
+    else:
+        payload["message"] += f". This is the last page ({len(items)} results on page {page})."
+    return True, json.dumps(payload)
+
+
+def _missing_text(**fields: object) -> tuple[bool, str] | None:
+    """Refuse a write whose required text is empty, before GitHub is called."""
+    empty = [name for name, value in fields.items() if not isinstance(value, str) or not value.strip()]
+    if not empty:
+        return None
+    return False, json.dumps({"error": f"{' and '.join(empty)} cannot be empty. Ask the user what it should say, then try again."})
+
+
+def _unexpected_failure(doing: str, error: Exception) -> tuple[bool, str]:
+    logger.error("Error %s: %s", doing, error)
+    return False, json.dumps({
+        "error": (
+            f"Something unexpected went wrong while {doing}. Try again, and if it keeps failing, "
+            "reconnect GitHub under Your actions."
+        )
+    })
 
 
 # ---------------------------------------------------------------------------
@@ -156,9 +235,14 @@ class CloseIssueInput(BaseModel):
 
 
 def _normalize_assignees(v: object) -> Optional[List[str]]:
-    """Accept list of strings or list of dicts (from get_issue) and return list of logins."""
+    """Accept list of strings or list of dicts (from get_issue) and return list of logins.
+
+    An empty list stays empty: for update_issue it means "remove every assignee".
+    """
     if v is None:
         return None
+    if isinstance(v, str):
+        return [v]
     if not isinstance(v, list):
         return None
     out: List[str] = []
@@ -171,13 +255,18 @@ def _normalize_assignees(v: object) -> Optional[List[str]]:
             out.append(str(item.get("login", item)))
         else:
             out.append(str(item))
-    return out if out else None
+    return out
 
 
 def _normalize_labels(v: object) -> Optional[List[str]]:
-    """Accept list of strings or list of dicts (from get_issue) and return list of label names."""
+    """Accept list of strings or list of dicts (from get_issue) and return list of label names.
+
+    An empty list stays empty: for update_issue it means "remove every label".
+    """
     if v is None:
         return None
+    if isinstance(v, str):
+        return [v]
     if not isinstance(v, list):
         return None
     out: List[str] = []
@@ -190,7 +279,13 @@ def _normalize_labels(v: object) -> Optional[List[str]]:
             out.append(str(item.get("name", item)))
         else:
             out.append(str(item))
-    return out if out else None
+    return out
+
+
+def _blank_to_none(v: Optional[str]) -> Optional[str]:
+    if isinstance(v, str) and not v.strip():
+        return None
+    return v
 
 
 class UpdateIssueInput(BaseModel):
@@ -402,6 +497,13 @@ class GitHub:
 
     def __init__(self, client: GitHubClient) -> None:
         self.client = GitHubDataSource(client)
+        # PyGithub's requester shares one HTTP session and rate-limit state without a lock.
+        self._sdk_lock = asyncio.Lock()
+
+    async def _call(self, fn: Callable[..., T], /, *args: object, **kwargs: object) -> T:
+        """Run one PyGithub call off the event loop, never two at once on this client."""
+        async with self._sdk_lock:
+            return await asyncio.to_thread(fn, *args, **kwargs)
 
     # Keys to keep when sending repo list to LLM (avoids huge payloads)
     _REPO_LIST_KEYS = frozenset({
@@ -413,7 +515,7 @@ class GitHub:
     })
 
     def _handle_response(
-        self, response: GitHubResponse, success_message: str
+        self, response: GitHubResponse, success_message: str, action: str = "complete the request"
     ) -> Tuple[bool, str]:
         """Return a standardised (success, json_string) tuple."""
         if response.success:
@@ -451,8 +553,13 @@ class GitHub:
                     serialisable = raw
                 else:
                     serialisable = data
+            payload: dict[str, Any] = {"message": success_message, "data": serialisable}
+            if response.truncated:
+                # Say so, rather than let a cut list read as complete.
+                payload["truncated"] = True
+                payload["message"] += f" (only the first {len(serialisable)} are shown; GitHub has more)"
             try:
-                return True, json.dumps({"message": success_message, "data": serialisable})
+                return True, json.dumps(payload)
             except (TypeError, ValueError):
                 # Fallback if data or any item is not JSON-serializable
                 return True, json.dumps({
@@ -460,7 +567,8 @@ class GitHub:
                     "data": str(serialisable),
                     "_serialization_fallback": True,
                 })
-        return False, json.dumps({"error": response.error or "Unknown error"})
+        logger.error("GitHub failed to %s: %s", action, response.error)
+        return False, json.dumps({"error": _github_error_message(response, action)})
 
     # ------------------------------------------------------------------
     # Repository tools
@@ -497,16 +605,16 @@ class GitHub:
         """Create a new repository on GitHub."""
         try:
             logger.info("github.create_repository called with args: %s", {"name": name, "private": private, "description": description, "auto_init": auto_init})
-            response = self.client.create_repo(
+            response = await self._call(
+                self.client.create_repo,
                 name=name,
                 private=private,
                 description=description,
                 auto_init=auto_init,
             )
-            return self._handle_response(response, "Repository created successfully")
+            return self._handle_response(response, "Repository created successfully", "create the repository")
         except Exception as e:
-            logger.error(f"Error creating repository: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating repository", e)
 
     @tool(
         path="/tools/github/get_repository",
@@ -530,11 +638,10 @@ class GitHub:
         """Get details of a specific GitHub repository."""
         try:
             logger.info("github.get_repository called with args: %s", {"owner": owner, "repo": repo})
-            response = self.client.get_repo(owner=owner, repo=repo)
-            return self._handle_response(response, "Repository fetched successfully")
+            response = await self._call(self.client.get_repo, owner=owner, repo=repo)
+            return self._handle_response(response, "Repository fetched successfully", "get the repository")
         except Exception as e:
-            logger.error(f"Error getting repository: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting repository", e)
 
     @tool(
         path="/tools/github/get_owner",
@@ -566,11 +673,10 @@ class GitHub:
             if kind not in ("user", "organization"):
                 kind = "user"
             logger.info("github.get_owner called with args: %s", {"owner": owner, "owner_type": kind})
-            response = self.client.get_owner(login=owner, kind=kind)
-            return self._handle_response(response, "Owner details fetched successfully")
+            response = await self._call(self.client.get_owner, login=owner, kind=kind)
+            return self._handle_response(response, "Owner details fetched successfully", "get the owner's profile")
         except Exception as e:
-            logger.error(f"Error getting owner: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting owner", e)
 
     @tool(
         path="/tools/github/list_repositories",
@@ -607,13 +713,13 @@ class GitHub:
             page = page if page is not None else 1
             page = max(1, page)
             logger.info("github.list_repositories called with args: %s", {"user": user, "type": type, "per_page": per_page, "page": page})
-            response = self.client.list_user_repos(
+            response = await self._call(
+                self.client.list_user_repos,
                 user=user, type=type, per_page=per_page, page=page
             )
-            return self._handle_response(response, "Repositories fetched successfully")
+            return _with_paging(self._handle_response(response, "Repositories fetched successfully", "list the repositories"), page, per_page)
         except Exception as e:
-            logger.error(f"Error listing repositories: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing repositories", e)
 
     # ------------------------------------------------------------------
     # Issue tools
@@ -651,9 +757,15 @@ class GitHub:
         labels: Optional[List[str]] = None,
     ) -> Tuple[bool, str]:
         """Create a new issue in a GitHub repository."""
+        if missing := _missing_text(title=title):
+            return missing
+        # The agent runtime skips the input schemas, so normalise here: get_issue returns assignee and label objects.
+        assignees = _normalize_assignees(assignees) or None
+        labels = _normalize_labels(labels) or None
         try:
             logger.info("github.create_issue called with args: %s", {"owner": owner, "repo": repo, "title": title, "body": body, "assignees": assignees, "labels": labels})
-            response = self.client.create_issue(
+            response = await self._call(
+                self.client.create_issue,
                 owner=owner,
                 repo=repo,
                 title=title,
@@ -661,10 +773,9 @@ class GitHub:
                 assignees=assignees,
                 labels=labels,
             )
-            return self._handle_response(response, "Issue created successfully")
+            return self._handle_response(response, "Issue created successfully", "create the issue")
         except Exception as e:
-            logger.error(f"Error creating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating issue", e)
 
     @tool(
         path="/tools/github/get_issue",
@@ -688,11 +799,10 @@ class GitHub:
         """Get details of a specific issue from a GitHub repository."""
         try:
             logger.info("github.get_issue called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_issue(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Issue fetched successfully")
+            response = await self._call(self.client.get_issue, owner=owner, repo=repo, number=number)
+            return self._handle_response(response, "Issue fetched successfully", "get the issue")
         except Exception as e:
-            logger.error(f"Error getting issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting issue", e)
 
     @tool(
         path="/tools/github/list_issues",
@@ -735,7 +845,8 @@ class GitHub:
             _per_page = min(50, max(1, per_page))
             _page = max(1, page)
             logger.info("github.list_issues called with args: %s", {"owner": owner, "repo": repo, "state": state, "labels": _labels, "assignee": _assignee, "per_page": _per_page, "page": _page})
-            response = self.client.list_issues_only(
+            response = await self._call(
+                self.client.list_issues_only,
                 owner=owner,
                 repo=repo,
                 state=state,
@@ -744,10 +855,9 @@ class GitHub:
                 per_page=_per_page,
                 page=_page,
             )
-            return self._handle_response(response, "Issues fetched successfully")
+            return _with_paging(self._handle_response(response, "Issues fetched successfully", "list the issues"), _page, _per_page)
         except Exception as e:
-            logger.error(f"Error listing issues: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing issues", e)
 
     @tool(
         path="/tools/github/close_issue",
@@ -770,11 +880,10 @@ class GitHub:
         """Close an issue in a GitHub repository."""
         try:
             logger.info("github.close_issue called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.close_issue(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Issue closed successfully")
+            response = await self._call(self.client.close_issue, owner=owner, repo=repo, number=number)
+            return self._handle_response(response, "Issue closed successfully", "close the issue")
         except Exception as e:
-            logger.error(f"Error closing issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("closing issue", e)
 
     @tool(
         path="/tools/github/update_issue",
@@ -794,7 +903,7 @@ class GitHub:
             ToolParameter(name="body", type=ParameterType.STRING, description="New body/description (omit to leave unchanged)", required=False),
             ToolParameter(name="state", type=ParameterType.STRING, description="'open' or 'closed' (omit to leave unchanged)", required=False),
             ToolParameter(name="assignees", type=ParameterType.ARRAY, description="Replace assignees with these usernames (omit to leave unchanged)", required=False),
-            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Replace labels with these names (omit to leave unchanged)", required=False),
+            ToolParameter(name="labels", type=ParameterType.ARRAY, description="Replace labels with these names (omit to leave unchanged; pass [] to remove every label)", required=False),
         ],
         tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
         args_summary=args_template("Updating GitHub issue {owner}/{repo}#{number}", "owner", "repo", "number"),
@@ -812,9 +921,29 @@ class GitHub:
         labels: Optional[List[str]] = None,
     ) -> Tuple[bool, str]:
         """Update an existing issue. Only provided fields are changed."""
+        # The agent runtime skips UpdateIssueInput, so apply its rules here.
+        title = _blank_to_none(title)
+        body = _blank_to_none(body)
+        state = _blank_to_none(state)
+        if isinstance(state, str):
+            state = state.strip().lower()
+            if state not in ("open", "closed"):
+                return False, json.dumps({
+                    "error": f"state {state!r} is not valid. Use 'open' to reopen the issue or 'closed' to close it."
+                })
+        assignees = _normalize_assignees(assignees)
+        labels = _normalize_labels(labels)
+        if all(value is None for value in (title, body, state, assignees, labels)):
+            return False, json.dumps({
+                "error": (
+                    "No fields provided to update. Pass at least one of title, body, state, "
+                    "assignees or labels."
+                )
+            })
         try:
             logger.info("github.update_issue called with args: %s", {"owner": owner, "repo": repo, "number": number, "title": title, "body": body, "state": state, "assignees": assignees, "labels": labels})
-            response = self.client.update_issue(
+            response = await self._call(
+                self.client.update_issue,
                 owner=owner,
                 repo=repo,
                 number=number,
@@ -824,10 +953,9 @@ class GitHub:
                 assignees=assignees,
                 labels=labels,
             )
-            return self._handle_response(response, "Issue updated successfully")
+            return self._handle_response(response, "Issue updated successfully", "update the issue")
         except Exception as e:
-            logger.error(f"Error updating issue: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("updating issue", e)
 
     # ------------------------------------------------------------------
     # Issue comment tools
@@ -855,11 +983,10 @@ class GitHub:
         """List all comments on an issue."""
         try:
             logger.info("github.list_issue_comments called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.list_issue_comments(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Issue comments listed successfully")
+            response = await self._call(self.client.list_issue_comments, owner=owner, repo=repo, number=number)
+            return self._handle_response(response, "Issue comments listed successfully", "list the issue's comments")
         except Exception as e:
-            logger.error(f"Error listing issue comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing issue comments", e)
 
     @tool(
         path="/tools/github/get_issue_comment",
@@ -885,11 +1012,10 @@ class GitHub:
         """Get a single issue comment by ID."""
         try:
             logger.info("github.get_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "comment_id": comment_id})
-            response = self.client.get_issue_comment(owner=owner, repo=repo, number=number, comment_id=comment_id)
-            return self._handle_response(response, "Issue comment fetched successfully")
+            response = await self._call(self.client.get_issue_comment, owner=owner, repo=repo, number=number, comment_id=comment_id)
+            return self._handle_response(response, "Issue comment fetched successfully", "get the comment")
         except Exception as e:
-            logger.error(f"Error getting issue comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting issue comment", e)
 
     @tool(
         path="/tools/github/create_issue_comment",
@@ -912,13 +1038,14 @@ class GitHub:
     )
     async def create_issue_comment(self, owner: str, repo: str, number: int, body: str) -> Tuple[bool, str]:
         """Add a comment to an issue."""
+        if missing := _missing_text(body=body):
+            return missing
         try:
             logger.info("github.create_issue_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body})
-            response = self.client.create_issue_comment(owner=owner, repo=repo, number=number, body=body)
-            return self._handle_response(response, "Issue comment created successfully")
+            response = await self._call(self.client.create_issue_comment, owner=owner, repo=repo, number=number, body=body)
+            return self._handle_response(response, "Issue comment created successfully", "add the comment")
         except Exception as e:
-            logger.error(f"Error creating issue comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating issue comment", e)
 
     # ------------------------------------------------------------------
     # Pull request tools
@@ -957,9 +1084,12 @@ class GitHub:
         draft: bool = False,
     ) -> Tuple[bool, str]:
         """Create a new pull request in a GitHub repository."""
+        if missing := _missing_text(title=title, head=head, base=base):
+            return missing
         try:
             logger.info("github.create_pull_request called with args: %s", {"owner": owner, "repo": repo, "title": title, "head": head, "base": base, "body": body, "draft": draft})
-            response = self.client.create_pull(
+            response = await self._call(
+                self.client.create_pull,
                 owner=owner,
                 repo=repo,
                 title=title,
@@ -968,10 +1098,9 @@ class GitHub:
                 body=body,
                 draft=draft,
             )
-            return self._handle_response(response, "Pull request created successfully")
+            return self._handle_response(response, "Pull request created successfully", "create the pull request")
         except Exception as e:
-            logger.error(f"Error creating pull request: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating pull request", e)
 
     @tool(
         path="/tools/github/get_pull_request",
@@ -997,29 +1126,32 @@ class GitHub:
         """Get details of a specific pull request and its conversation comments (issue comments)."""
         try:
             logger.info("github.get_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            pr_response = self.client.get_pull(owner=owner, repo=repo, number=number)
-            success_pr, json_str_pr = self._handle_response(pr_response, "Pull request fetched successfully")
+            pr_response = await self._call(self.client.get_pull, owner=owner, repo=repo, number=number)
+            success_pr, json_str_pr = self._handle_response(pr_response, "Pull request fetched successfully", "get the pull request")
             if not success_pr:
                 return False, json_str_pr
-            comments_response = self.client.list_issue_comments(owner=owner, repo=repo, number=number)
+            comments_response = await self._call(self.client.list_issue_comments, owner=owner, repo=repo, number=number)
             success_comments, json_str_comments = self._handle_response(
-                comments_response, "Issue comments listed successfully"
+                comments_response, "Issue comments listed successfully", "list the issue's comments"
             )
             pr_payload = json.loads(json_str_pr)
-            pr_data = pr_payload["data"]
-            if success_comments:
-                comments_payload = json.loads(json_str_comments)
-                conversation_comments = comments_payload["data"]
-            else:
-                conversation_comments = []
             combined = {
                 "message": "Pull request and conversation fetched successfully",
-                "data": {"pr": pr_data, "conversation_comments": conversation_comments},
+                "data": {"pr": pr_payload["data"], "conversation_comments": []},
             }
+            comments_payload = json.loads(json_str_comments)
+            if success_comments:
+                combined["data"]["conversation_comments"] = comments_payload["data"]
+            else:
+                # Say so, rather than let an empty list read as "nobody has commented".
+                combined["message"] = (
+                    "Pull request fetched, but its conversation comments could not be loaded. "
+                    "Try list_issue_comments with the pull request number."
+                )
+                combined["data"]["conversation_comments_error"] = comments_payload.get("error")
             return True, json.dumps(combined)
         except Exception as e:
-            logger.error(f"Error getting pull request: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request", e)
 
     @tool(
         path="/tools/github/get_pull_request_commits",
@@ -1044,8 +1176,8 @@ class GitHub:
         """Get commits of a pull request. Use the last commit's sha as commit_id for create_pull_request_review_comment."""
         try:
             logger.info("github.get_pull_request_commits called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_pull_commits(owner=owner, repo=repo, number=number)
-            success, json_str = self._handle_response(response, "Pull request commits fetched successfully")
+            response = await self._call(self.client.get_pull_commits, owner=owner, repo=repo, number=number)
+            success, json_str = self._handle_response(response, "Pull request commits fetched successfully", "list the pull request's commits")
             if not success:
                 return success, json_str
             payload = json.loads(json_str)
@@ -1058,10 +1190,30 @@ class GitHub:
             else:
                 payload["length"] = 0
                 payload["last_commit_sha"] = None
+            if payload["length"] >= _PR_COMMIT_LIST_CAP:
+                await self._use_head_of_capped_commit_list(payload, owner, repo, number)
             return True, json.dumps(payload)
         except Exception as e:
-            logger.error(f"Error getting pull request commits: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request commits", e)
+
+    async def _use_head_of_capped_commit_list(self, payload: dict, owner: str, repo: str, number: int) -> None:
+        """GitHub lists only a pull request's first 250 commits, so the last one listed is not its head."""
+        payload["truncated"] = True
+        payload["message"] = (
+            f"GitHub lists at most {_PR_COMMIT_LIST_CAP} commits of a pull request, so this list may be "
+            "missing the newest ones."
+        )
+        pr_response = await self._call(self.client.get_pull, owner=owner, repo=repo, number=number)
+        raw = getattr(pr_response.data, "raw_data", None) if pr_response.success else None
+        head_sha = ((raw or {}).get("head") or {}).get("sha") if isinstance(raw, dict) else None
+        payload["last_commit_sha"] = head_sha
+        if head_sha:
+            payload["message"] += " last_commit_sha is the pull request's latest commit."
+        else:
+            payload["message"] += (
+                " The pull request's latest commit could not be read, so do not add a line comment yet; "
+                "call get_pull_request_commits again in a moment."
+            )
 
     @tool(
         path="/tools/github/get_pull_request_file_changes",
@@ -1099,24 +1251,25 @@ class GitHub:
     ) -> Tuple[bool, str]:
         """Get PR file changes with complete diffs and safety limits."""
         try:
-            response = self.client.get_pull_file_changes(
+            response = await self._call(
+                self.client.get_pull_file_changes,
                 owner=owner,
                 repo=repo,
                 number=number,
                 fetch_full_content=fetch_full_content,
-                max_changes_per_file=max_changes_per_file,
-                max_diff_lines=max_diff_lines,
+                # The model may ask for any size; the defaults are the ceiling.
+                max_changes_per_file=min(max_changes_per_file, 10000),
+                max_diff_lines=min(max_diff_lines, 10000),
                 context_lines=context_lines,
             )
             
             return self._handle_response(
                 response,
-                "Pull request file changes fetched successfully"
+                "Pull request file changes fetched successfully", "get the pull request's file changes"
             )
             
         except Exception as e:
-            logger.error(f"Error getting pull request file changes: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request file changes", e)
     @tool(
         path="/tools/github/list_pull_requests",
         short_description="List pull requests in a GitHub repository",
@@ -1158,7 +1311,8 @@ class GitHub:
             _per_page = min(50, max(1, per_page))
             _page = max(1, page)
             logger.info("github.list_pull_requests called with args: %s", {"owner": owner, "repo": repo, "state": state, "head": _head, "base": _base, "per_page": _per_page, "page": _page})
-            response = self.client.list_pulls(
+            response = await self._call(
+                self.client.list_pulls,
                 owner=owner,
                 repo=repo,
                 state=state,
@@ -1167,10 +1321,9 @@ class GitHub:
                 per_page=_per_page,
                 page=_page,
             )
-            return self._handle_response(response, "Pull requests fetched successfully")
+            return _with_paging(self._handle_response(response, "Pull requests fetched successfully", "list the pull requests"), _page, _per_page)
         except Exception as e:
-            logger.error(f"Error listing pull requests: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing pull requests", e)
 
     @tool(
         path="/tools/github/merge_pull_request",
@@ -1187,6 +1340,7 @@ class GitHub:
             ToolParameter(name="number", type=ParameterType.INTEGER, description="Pull request number to merge", required=True),
             ToolParameter(name="commit_message", type=ParameterType.STRING, description="Custom commit message for the merge", required=False),
             ToolParameter(name="merge_method", type=ParameterType.STRING, description="Merge method: 'merge', 'squash', or 'rebase'", required=False),
+            ToolParameter(name="sha", type=ParameterType.STRING, description="Head commit SHA the PR must still be at (from get_pull_request); GitHub refuses the merge if the PR changed since", required=False),
         ],
         tags=[Tag(key="category", value="development"), Tag(key="type", value="write")],
         args_summary=args_template("Merging pull request {owner}/{repo}#{number}", "owner", "repo", "number"),
@@ -1201,21 +1355,23 @@ class GitHub:
         number: int,
         commit_message: Optional[str] = None,
         merge_method: str = "merge",
+        sha: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Merge a pull request in a GitHub repository."""
         try:
-            logger.info("github.merge_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number, "commit_message": commit_message, "merge_method": merge_method})
-            response = self.client.merge_pull(
+            logger.info("github.merge_pull_request called with args: %s", {"owner": owner, "repo": repo, "number": number, "commit_message": commit_message, "merge_method": merge_method, "sha": sha})
+            response = await self._call(
+                self.client.merge_pull,
                 owner=owner,
                 repo=repo,
                 number=number,
                 commit_message=commit_message,
                 merge_method=merge_method,
+                sha=sha,
             )
-            return self._handle_response(response, "Pull request merged successfully")
+            return self._handle_response(response, "Pull request merged successfully", "merge the pull request")
         except Exception as e:
-            logger.error(f"Error merging pull request: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("merging pull request", e)
 
     # ------------------------------------------------------------------
     # Pull request review and review comment tools
@@ -1243,11 +1399,10 @@ class GitHub:
         """Get reviews (approve / request changes / comment) on a pull request."""
         try:
             logger.info("github.get_pull_request_reviews called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_pull_reviews(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Pull request reviews fetched successfully")
+            response = await self._call(self.client.get_pull_reviews, owner=owner, repo=repo, number=number)
+            return self._handle_response(response, "Pull request reviews fetched successfully", "get the pull request's reviews")
         except Exception as e:
-            logger.error(f"Error getting pull request reviews: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("getting pull request reviews", e)
 
     @tool(
         path="/tools/github/create_pull_request_review",
@@ -1281,13 +1436,13 @@ class GitHub:
         """Submit a PR review (approve, request changes, or comment). Default event is COMMENT."""
         try:
             logger.info("github.create_pull_request_review called with args: %s", {"owner": owner, "repo": repo, "number": number, "event": event, "body": body})
-            response = self.client.create_pull_request_review(
+            response = await self._call(
+                self.client.create_pull_request_review,
                 owner=owner, repo=repo, number=number, event=event, body=body
             )
-            return self._handle_response(response, "Pull request review submitted successfully")
+            return self._handle_response(response, "Pull request review submitted successfully", "submit the review")
         except Exception as e:
-            logger.error(f"Error creating pull request review: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating pull request review", e)
 
     @tool(
         path="/tools/github/list_pull_request_comments",
@@ -1311,11 +1466,10 @@ class GitHub:
         """List review comments on a pull request."""
         try:
             logger.info("github.list_pull_request_comments called with args: %s", {"owner": owner, "repo": repo, "number": number})
-            response = self.client.get_pull_review_comments(owner=owner, repo=repo, number=number)
-            return self._handle_response(response, "Pull request comments listed successfully")
+            response = await self._call(self.client.get_pull_review_comments, owner=owner, repo=repo, number=number)
+            return self._handle_response(response, "Pull request comments listed successfully", "list the pull request's review comments")
         except Exception as e:
-            logger.error(f"Error listing pull request comments: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("listing pull request comments", e)
 
     @tool(
         path="/tools/github/create_pull_request_review_comment",
@@ -1354,9 +1508,12 @@ class GitHub:
         side: Optional[str] = None,
     ) -> Tuple[bool, str]:
         """Create a new review comment on a PR (line or file)."""
+        if missing := _missing_text(body=body, commit_id=commit_id, path=path):
+            return missing
         try:
             logger.info("github.create_pull_request_review_comment called with args: %s", {"owner": owner, "repo": repo, "number": number, "body": body[:100] + "..." if len(body) > 100 else body, "commit_id": commit_id, "path": path, "line": line, "side": side})
-            response = self.client.create_pull_request_review_comment(
+            response = await self._call(
+                self.client.create_pull_request_review_comment,
                 owner=owner,
                 repo=repo,
                 number=number,
@@ -1366,10 +1523,9 @@ class GitHub:
                 line=line,
                 side=side,
             )
-            return self._handle_response(response, "Pull request review comment created successfully")
+            return self._handle_response(response, "Pull request review comment created successfully", "add the review comment")
         except Exception as e:
-            logger.error(f"Error creating pull request review comment: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("creating pull request review comment", e)
 
     # ------------------------------------------------------------------
     # Search tools
@@ -1408,10 +1564,10 @@ class GitHub:
             page = page if page is not None else 1
             page = max(1, page)
             logger.info("github.search_repositories called with args: %s", {"query": query, "per_page": per_page, "page": page})
-            response = self.client.search_repositories(
+            response = await self._call(
+                self.client.search_repositories,
                 query=query, per_page=per_page, page=page
             )
-            return self._handle_response(response, "Repository search completed successfully")
+            return _with_paging(self._handle_response(response, "Repository search completed successfully", "search repositories"), page, per_page)
         except Exception as e:
-            logger.error(f"Error searching repositories: {e}")
-            return False, json.dumps({"error": str(e)})
+            return _unexpected_failure("searching repositories", e)

@@ -10,6 +10,7 @@ import { useUserDirectoryEntry } from '@/lib/hooks/use-user-directory-entry';
 import { DotSeparator } from '../instance-card/primitives';
 import { getSyncStrategyLabel, getSyncIntervalLabel } from '../instance-card/utils';
 import type { ConnectorInstance, ConnectorConfig } from '../../types';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
 
 // ========================================
 // Props
@@ -38,10 +39,10 @@ export function SettingsTab({
   removeDisabledTooltip,
   removePermissionLocked = false,
 }: SettingsTabProps) {
-  const { t } = useTranslation();
-  const syncStrategy = getSyncStrategyLabel(config ?? undefined) ?? 'Manual';
-  const syncInterval = getSyncIntervalLabel(config ?? undefined);
-  const isScheduled = syncStrategy.toLowerCase() === 'scheduled';
+  const { t, i18n } = useTranslation();
+  const syncStrategy = getSyncStrategyLabel(t, config ?? undefined) ?? t('workspace.connectors.syncStrategies.MANUAL');
+  const syncInterval = getSyncIntervalLabel(t, config ?? undefined);
+  const isScheduled = config?.config?.sync?.selectedStrategy === 'SCHEDULED';
 
   const creatorEntry = useUserDirectoryEntry(instance.createdBy);
   const creatorNameFromDirectory =
@@ -73,7 +74,7 @@ export function SettingsTab({
         onRequestRemoveConnector();
       }}
     >
-      Remove connector instance
+      {t('workspace.connectors.settingsTab.removeInstance')}
       {removePermissionLocked && <PermissionLockIcon />}
     </Button>
   ) : null;
@@ -172,7 +173,7 @@ export function SettingsTab({
             value={
               <Text size="2" style={{ color: 'var(--gray-12)' }}>
                 {instance.createdAtTimestamp
-                  ? new Date(instance.createdAtTimestamp).toLocaleDateString('en-GB', {
+                  ? new Date(instance.createdAtTimestamp).toLocaleDateString(i18n.resolvedLanguage, {
                       day: 'numeric',
                       month: 'short',
                       year: 'numeric',
@@ -237,11 +238,10 @@ export function SettingsTab({
           }}
         >
           <Text size="2" weight="bold" color="red">
-            Danger zone
+            {t('workspace.actions.manage.dangerZone')}
           </Text>
           <Text size="2" color="gray" style={{ maxWidth: 420 }}>
-            Permanently remove this connector instance and stop syncing its data. This cannot be
-            undone.
+            {t('workspace.connectors.settingsTab.removeInstanceDescription')}
           </Text>
           {removeConnectorControl}
         </Flex>
@@ -264,7 +264,6 @@ function SectionCard({ title, children }: { title: string; children: React.React
         border: '1px solid var(--olive-3)',
         borderRadius: 'var(--radius-2)',
         padding: 16,
-        minWidth: 325,
       }}
     >
       <Flex direction="column" gap="4">
@@ -285,14 +284,15 @@ function SectionCard({ title, children }: { title: string; children: React.React
 }
 
 function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
+  const isMobile = useIsMobile();
   return (
-    <Flex align="center" gap="4">
+    <Flex direction={isMobile ? 'column' : 'row'} align={isMobile ? 'start' : 'center'} gap={isMobile ? '1' : '4'}>
       <Text
         size="1"
         weight="medium"
         style={{
           color: 'var(--gray-10)',
-          width: 164,
+          width: isMobile ? 'auto' : 164,
           flexShrink: 0,
         }}
       >

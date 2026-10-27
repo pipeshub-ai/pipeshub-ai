@@ -37,6 +37,7 @@ def _make_connector():
     dep.on_new_record_groups = AsyncMock()
     dep.on_new_records = AsyncMock()
     dep.get_record_by_external_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
     dep.on_record_deleted = AsyncMock()
     dep.on_record_metadata_update = AsyncMock()
     dep.on_record_content_update = AsyncMock()
@@ -47,6 +48,8 @@ def _make_connector():
         data_store_provider=dsp, config_service=cs, connector_id="web-c-1",
         scope="personal", created_by="test-user-id",
     )
+    # robots.txt handling has its own behaviour tests; these unit tests mock fetches one by one.
+    c.respect_robots_txt = False
     return c
 
 
@@ -193,20 +196,16 @@ class TestDetermineMimeTypeExtended:
 
     def test_svg_content_type(self):
         c = _make_connector()
-        # 'image/svg+xml' contains 'xml', which the code checks before 'svg',
-        # so the XML branch takes precedence
         mime, ext = c._determine_mime_type("https://x.com/f", "image/svg+xml")
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.SVG
 
     def test_docx_content_type(self):
         c = _make_connector()
-        # OOXML content types contain 'xml', which the code checks before
-        # 'wordprocessingml', so the XML branch takes precedence
         mime, ext = c._determine_mime_type(
             "https://x.com/f",
             "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.DOCX
 
     def test_doc_content_type(self):
         c = _make_connector()
@@ -215,13 +214,11 @@ class TestDetermineMimeTypeExtended:
 
     def test_xlsx_content_type(self):
         c = _make_connector()
-        # OOXML content types contain 'xml', which the code checks before
-        # 'spreadsheetml', so the XML branch takes precedence
         mime, ext = c._determine_mime_type(
             "https://x.com/f",
             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.XLSX
 
     def test_xls_content_type(self):
         c = _make_connector()
@@ -230,13 +227,11 @@ class TestDetermineMimeTypeExtended:
 
     def test_pptx_content_type(self):
         c = _make_connector()
-        # OOXML content types contain 'xml', which the code checks before
-        # 'presentationml', so the XML branch takes precedence
         mime, ext = c._determine_mime_type(
             "https://x.com/f",
             "application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )
-        assert mime == MimeTypes.XML
+        assert mime == MimeTypes.PPTX
 
     def test_ppt_content_type(self):
         c = _make_connector()
@@ -426,7 +421,7 @@ class TestNormalizeUrl:
     def test_lowercases_netloc(self):
         c = _make_connector()
         result = c._normalize_url("https://EXAMPLE.COM/path")
-        assert "example.com" in result
+        assert result == "https://example.com/path"
 
     def test_root_path_preserved(self):
         c = _make_connector()

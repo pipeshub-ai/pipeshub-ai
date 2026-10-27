@@ -20,6 +20,7 @@ def make_mock_connector() -> MagicMock:
     passing this mock as the constructor argument.
     """
     c = MagicMock()
+    c._register_authenticated_identity = AsyncMock()
     from app.config.constants.arangodb import Connectors
 
     c.connector_id = "github-conn-1"
@@ -46,13 +47,18 @@ def make_mock_connector() -> MagicMock:
     dep.on_records_moved = AsyncMock()
     dep.on_record_deleted = AsyncMock()
     dep.on_record_group_deleted = AsyncMock()
-    dep.on_records_deleted_cascade = AsyncMock()
+    dep.on_records_deleted_cascade = AsyncMock(return_value={"success": True, "failed_records": []})
     dep.get_record_by_external_id = AsyncMock(return_value=None)
     dep.get_records_by_parent = AsyncMock(return_value=[])
     dep.get_user_by_user_id = AsyncMock(return_value=None)
     dep.get_all_app_users = AsyncMock(return_value=[])
     dep.migrate_group_to_user_by_external_id = AsyncMock()
     dep.reindex_existing_records = AsyncMock()
+    dep.ensure_team_app_edge = AsyncMock()
+    dep.get_user_by_source_id = AsyncMock(return_value=None)
+    dep.get_records_in_record_group = AsyncMock(return_value=[])
+    dep.get_nodes_by_filters = AsyncMock(return_value=[])
+    dep.batch_update_nodes = AsyncMock(return_value=True)
     c.data_entities_processor = dep
 
     runtime = MagicMock()
@@ -60,6 +66,13 @@ def make_mock_connector() -> MagicMock:
     runtime.search_call = AsyncMock()
     runtime.refresh_token_if_needed = AsyncMock()
     runtime.force_refresh_oauth_token = AsyncMock(return_value=True)
+
+    # The real one caches; the mock goes straight through ds_call so a test
+    # that dispatches on ``c.data_source.get_repo_by_id`` keeps working.
+    async def _get_repo_by_id(repo_id: int) -> object:
+        return await runtime.ds_call(c.data_source.get_repo_by_id, repo_id)
+
+    runtime.get_repo_by_id = AsyncMock(side_effect=_get_repo_by_id)
     c.runtime = runtime
 
     rsp = MagicMock()
@@ -71,14 +84,10 @@ def make_mock_connector() -> MagicMock:
 
     # transaction() context manager -> tx_store mock
     tx_store = MagicMock()
-    tx_store.get_user_by_source_id = AsyncMock(return_value=None)
     tx_store.get_user_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_record_group_by_external_id = AsyncMock(return_value=None)
     tx_store.get_records_by_status = AsyncMock(return_value=[])
-    tx_store.get_nodes_by_filters = AsyncMock(return_value=[])
     tx_store.get_record_by_external_id = AsyncMock(return_value=None)
-    tx_store.batch_update_nodes = AsyncMock(return_value=True)
-    tx_store.ensure_team_app_edge = AsyncMock()
 
     class _TxCtx:
         async def __aenter__(self) -> MagicMock:
@@ -100,6 +109,17 @@ def make_mock_connector() -> MagicMock:
     c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests.process_pull_request = AsyncMock(return_value=None)
     c.pull_requests._prs_indexing_enabled = MagicMock(return_value=True)
+    c.comments.remove_unlinked_attachments = AsyncMock()
+    c.comments.settle_stored_attachments = AsyncMock()
+    c.projects.failures = []  # sync_all_repos fills it; any entry fails the sync
+
+    # Removal of what left GitHub or the sync's scope (wired by the connector).
+    c.repo_scope.remove_out_of_scope = AsyncMock(return_value=True)
+    c.repo_scope.remove_empty_orgs = AsyncMock()
+    c.record_remover.remove_records = AsyncMock()
+    c.record_remover.remove_group = AsyncMock(return_value=0)
+    c.issue_reconciler.source_total = AsyncMock(return_value=0)
+    c.issue_reconciler.reconcile = AsyncMock(return_value=0)
 
     return c
 
@@ -170,6 +190,7 @@ def ok_response(data: object) -> MagicMock:
     res.success = True
     res.data = data
     res.error = None
+    res.next_cursor = None
     return res
 
 
@@ -181,4 +202,5 @@ def failed_response(error: str = "error", status_code: int | None = None) -> Mag
     # Real GitHubResponse carries the HTTP status; callers distinguish a
     # structural 403/404 from a transient failure by it.
     res.status_code = status_code
+    res.retry_after_seconds = None
     return res

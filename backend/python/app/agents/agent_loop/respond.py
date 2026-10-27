@@ -69,10 +69,19 @@ from app.agent_loop_lib.transport.opik_tracing import (
     maybe_start_named_span,
     record_named_span_output,
 )
-from app.agents.agent_loop.error_classification import classify_error
+from app.agents.agent_loop.error_classification import (
+    classify_error,
+    redact_error_for_log,
+)
+from app.agents.agent_loop import parked_turn
 from app.agents.agent_loop.hooks.ask_user_question import _ASK_USER_QUESTION_TOOL_NAMES
+from app.agents.agent_loop.mcp_sign_in import sign_in_part
 from app.agents.agent_loop.reasoning_persistence import build_reasoning_payload, filter_reasoning_parts
+from app.agents.agent_loop.tool_approvals import PENDING_MESSAGE, RESUMING
 from app.modules.agents.qna.helpers import _tool_names_and_results_from_state
+from app.telemetry.event_buffer import record_event
+from app.telemetry.identity import domain_from_email
+from app.telemetry.modules.activity_metrics import record_service_activity
 from app.utils.citations import normalize_citations_and_chunks
 from app.utils.streaming import parse_confidence_from_answer
 
@@ -113,7 +122,7 @@ class AnswerFinalizer:
         self._context = context
         self._collector = collector
 
-    def _attach_parts(self, completion_data: dict[str, Any], *, final_text: str | None = None) -> None:
+    def _attach_parts(self, completion_data: dict[str, Any], *, final_text: str | None = None, append: bool = False) -> None:
         """Fills `completion_data["parts"]` from `context.transcript_
         collector` — a no-op for `protocol == "legacy"` (`transcript_
         collector` is `None` there), keeping this additive. `final_text`,
@@ -126,8 +135,14 @@ class AnswerFinalizer:
         if collector is None:
             return
         if final_text is not None:
-            collector.replace_final_text(final_text)
-        completion_data["parts"] = filter_reasoning_parts(collector.parts)
+            if append:
+                collector.append_final_text(final_text)
+            else:
+                collector.replace_final_text(final_text)
+        parts = filter_reasoning_parts(collector.parts)
+        if (sign_in := sign_in_part(self._context)) is not None:
+            parts = [*parts, sign_in]
+        completion_data["parts"] = parts
 
     async def run(
         self,
@@ -140,6 +155,7 @@ class AnswerFinalizer:
         reasoning_turns: list[dict[str, Any]] | None = None,
         agent_confidence: str | None = None,
         agent_cancelled: bool = False,
+        agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
         """Produce `completion_data` from the completed agent run.
 
@@ -181,9 +197,15 @@ class AnswerFinalizer:
             )
 
         if not agent_success:
-            return await self._emit_error_response(
-                agent_error or "An error occurred", event_sink=event_sink
+            error_msg = agent_error or "An error occurred"
+            log.error(
+                "AnswerFinalizer: agent run failed, answering with an error message "
+                "(error_code=%s org_id=%s conversation_id=%s run_id=%s): %s",
+                classify_error(error_msg)[0], self._context.org_id,
+                self._context.conversation_id, self._context.run_id,
+                redact_error_for_log(error_msg),
             )
+            return await self._emit_error_response(error_msg, event_sink=event_sink)
 
         with maybe_start_named_span(
             enabled=is_opik_configured(),
@@ -200,6 +222,7 @@ class AnswerFinalizer:
                     "" if agent_output is None else str(agent_output),
                     streamed_answer, reasoning_turns or [],
                     agent_confidence=agent_confidence,
+                    agent_needs_input=agent_needs_input,
                 )
             except Exception as exc:
                 log.error("AnswerFinalizer failed: %s", exc, exc_info=True)
@@ -276,7 +299,36 @@ class AnswerFinalizer:
         streamed_answer: str,
         reasoning_turns: list[dict[str, Any]],
         agent_confidence: str | None = None,
+        agent_needs_input: str | None = None,
     ) -> dict[str, Any]:
+        streamed = (streamed_answer or "").strip()
+        is_resume = bool(state.get("ask_user_question_resume") or state.get(RESUMING))
+        if (
+            not (agent_output or "").strip()
+            and streamed
+            and streamed != _EMPTY_ANSWER_FALLBACK
+            and (is_resume or not agent_needs_input)
+        ):
+            # Resume can stream a follow-up while result.output stays empty.
+            agent_output = streamed
+
+        if (not agent_output or not agent_output.strip()) and agent_needs_input:
+            waiting_response: dict[str, Any] = {
+                "answer": "",
+                "citations": [],
+                "status": "waiting_input",
+            }
+            waiting_response.update(_tool_names_from_state(state))
+            self._attach_parts(waiting_response, final_text="")
+            await self._emit_ask_user_question_fallback(state, event_sink)
+            for evt in self._context.formatter.answer_final(
+                self._context, completion_data=waiting_response,
+            ):
+                await event_sink.write(evt)
+            state["response"] = ""
+            state["completion_data"] = waiting_response
+            return waiting_response
+
         if not agent_output or not agent_output.strip():
             log.warning("AnswerFinalizer: empty response, using fallback")
             answer_text = _EMPTY_ANSWER_FALLBACK
@@ -298,6 +350,9 @@ class AnswerFinalizer:
                 await event_sink.write(evt)
             state["response"] = answer_text
             state["completion_data"] = fallback_response
+            # The user received an answer, sourceless. Leaving it out would
+            # make the "answers with sources" ratio look better than it is.
+            _record_answer_generated(self._context, state, [])
             return fallback_response
 
         final_results = self._collector.final_results
@@ -316,7 +371,15 @@ class AnswerFinalizer:
         # text so ALL text parts still have their raw `[source](refN)` refs
         # available for the unified normalization pass below.
         completion_data: dict[str, Any] = {}
-        self._attach_parts(completion_data, final_text=clean_output)
+        # A call is waiting for the person's approval: the answer says so, after what the model
+        # wrote first. Usually the run ended on it; a sub-agent run outside the parent's scope can
+        # ask while the parent answers, and then the answer is followed by the waiting message.
+        pending_message = state.get(PENDING_MESSAGE)
+        awaiting_approval = bool(pending_message)
+        ended_on_it = awaiting_approval and clean_output.strip() == str(pending_message).strip()
+        if awaiting_approval and not ended_on_it:
+            clean_output = f"{clean_output.rstrip()}\n\n{pending_message}"
+        self._attach_parts(completion_data, final_text=clean_output, append=ended_on_it)
 
         parts = completion_data.get("parts")
         if parts:
@@ -400,6 +463,8 @@ class AnswerFinalizer:
         completion_data["answer"] = normalized
         completion_data["citations"] = citations
         completion_data["confidence"] = confidence
+        if awaiting_approval:
+            completion_data["answerMatchType"] = "Approval Needed"
         reasoning_payload = build_reasoning_payload(reasoning_turns)
         if reasoning_payload is not None:
             completion_data["reasoning"] = reasoning_payload
@@ -413,6 +478,9 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
+        # A turn that only asked for approval hasn't answered anything yet.
+        if not awaiting_approval:
+            _record_answer_generated(self._context, state, citations)
         return completion_data
 
     async def _run_cancelled_path(
@@ -495,6 +563,9 @@ class AnswerFinalizer:
             "AnswerFinalizer: finalized STOPPED response (%d chars, %d citations)",
             len(normalized), len(citations),
         )
+        # A stop during "Thinking" left nothing on screen, so it is not an answer.
+        if normalized.strip():
+            _record_answer_generated(self._context, state, citations, stopped=True)
         return completion_data
 
     async def _emit_ask_user_question_fallback(self, state: dict[str, Any], event_sink: EventSink) -> None:
@@ -513,8 +584,12 @@ class AnswerFinalizer:
                 payload = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
             except (json.JSONDecodeError, TypeError):
                 payload = raw_result
+            # A refused call showed no card; an event for it would make the client drop the
+            # answer it is streaming in favour of a card with nothing to show.
+            if row.get("status") == "error":
+                continue
             for evt in self._context.formatter.ask_user_question(
-                self._context, status=row.get("status"), tool_data=payload,
+                self._context, status=row.get("status"), tool_data=parked_turn.with_expiry(payload),
             ):
                 await event_sink.write(evt)
             state["ask_user_question_emitted"] = True
@@ -549,3 +624,68 @@ class AnswerFinalizer:
 
 
 __all__ = ["AnswerFinalizer"]
+
+
+def _record_answer_generated(
+    context: "AgentContext", state: dict[str, Any], citations: list[dict[str, Any]],
+    *, stopped: bool = False,
+) -> None:
+    """Activation signal: an answer with (or without) sources reached the user.
+
+    Records counts and source *types* only — never the question, the answer,
+    or record names. ``demo_sources`` is true when any cited record comes from
+    the bundled Demo connector, which is how "demo query run" is measured.
+    """
+    try:
+        # The agent route describes its sources in `agent_knowledge`
+        # ({connectorId, type}); the chat route in `available_connectors`
+        # ({id, type}). Either may be present, so read both.
+        demo_ids: set[str] = set()
+        sources: list[object] = list(state.get("agent_knowledge") or []) + list(
+            state.get("available_connectors") or []
+        )
+        for entry in sources:
+            if not isinstance(entry, dict):
+                continue
+            typed: dict[str, object] = dict(entry)  # type: ignore[arg-type]
+            if str(typed.get("type") or "").lower() == "demo":
+                demo_ids.add(str(typed.get("connectorId") or typed.get("id") or ""))
+        demo_ids.discard("")
+        connectors: set[str] = set()
+        demo_sources = False
+        for citation in citations:
+            meta_obj: object = citation.get("metadata")
+            if not isinstance(meta_obj, dict):
+                continue
+            meta: dict[str, object] = dict(meta_obj)  # type: ignore[arg-type]
+            name = meta.get("connector") or meta.get("origin")
+            if name:
+                connectors.add(str(name))
+            if str(meta.get("connectorId") or "") in demo_ids:
+                demo_sources = True
+        # The address itself stays out: the domain says which organisation
+        # without naming a person, and the user id already identifies them.
+        record_event("answer_generated", {
+            "orgId": context.org_id,
+            "userId": context.user_id,
+            "domain": domain_from_email(str(context.user_email or "")),
+            "chat_mode": state.get("chat_mode"),
+            "citation_count": len(citations),
+            "connectors": sorted(connectors),
+            "demo_sources": demo_sources,
+            # Stopped by the person after text was on screen: kept apart so
+            # the cited ratio of finished answers stays comparable.
+            "stopped": stopped,
+        })
+        # The Grafana counter for the same step: org and domain only. The
+        # connector label marks demo answers so the demo funnel has its own line.
+        record_service_activity(
+            "query_service",
+            "answer_generated",
+            connector="demo" if demo_sources else "none",
+            status="stopped" if stopped else ("cited" if citations else "uncited"),
+            org=str(context.org_id or "unknown"),
+            domain=domain_from_email(str(context.user_email or "")),
+        )
+    except Exception as exc:  # telemetry must never break an answer
+        logging.getLogger(__name__).debug("telemetry: answer_generated not recorded: %s", exc)

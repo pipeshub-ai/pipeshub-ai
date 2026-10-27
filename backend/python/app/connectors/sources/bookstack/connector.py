@@ -4,6 +4,7 @@ import uuid
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from enum import Enum
 from logging import Logger
 from typing import (
     Any,
@@ -19,6 +20,7 @@ from typing import (
 from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
+from app.config.constants.http_status_code import HttpStatusCode
 from app.config.constants.arangodb import (
     CollectionNames,
     Connectors,
@@ -59,6 +61,7 @@ from app.connectors.core.registry.filters import (
     FilterCollection,
     FilterField,
     FilterOption,
+    FilterOperatorType,
     FilterOptionsResponse,
     FilterType,
     IndexingFilterKey,
@@ -66,6 +69,8 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
+from app.connectors.sources.bookstack.access import bookstack_grants
 from app.connectors.sources.bookstack.common.apps import BookStackApp
 from app.models.entities import (
     AppRole,
@@ -77,6 +82,7 @@ from app.models.entities import (
     RecordType,
 )
 from app.models.permission import EntityType, Permission, PermissionType
+from app.services.graph_db.common.record_visibility import RecordVisibility
 from app.sources.client.bookstack.bookstack import (
     BookStackClient,
     BookStackResponse,
@@ -84,6 +90,102 @@ from app.sources.client.bookstack.bookstack import (
 )
 from app.sources.external.bookstack.bookstack import BookStackDataSource
 from app.utils.streaming import create_stream_record_response
+
+
+_AUDIT_LOG_PAGE_SIZE = 500
+_RECORD_SCAN_PAGE_SIZE = 1000
+
+
+def _deleted_item_id(event: dict) -> int | None:
+    """The item id of a page, chapter, book or shelf delete audit event, when it still has one.
+
+    Only loggable_id is trusted. A purge (the recycle bin emptied, or set to
+    keep nothing) clears it and rewrites the detail to the bare item name, and
+    a name can itself look like "(1) Introduction".
+    """
+    loggable_id = event.get("loggable_id")
+    if isinstance(loggable_id, bool):
+        return None
+    if isinstance(loggable_id, int):
+        return loggable_id
+    if isinstance(loggable_id, str) and loggable_id.isdigit():
+        return int(loggable_id)
+    return None
+
+
+def _is_listing(body: object) -> bool:
+    """A BookStack list answer. Errors (429, 500) come back as a JSON body without these keys."""
+    return (
+        isinstance(body, dict)
+        and isinstance(body.get("data"), list)
+        and isinstance(body.get("total"), int)
+    )
+
+
+class ReadOutcome(Enum):
+    """How far a read of users or roles got, which decides what may be written from it."""
+
+    COMPLETE = "complete"
+    # Stopped for a reason that passes (no answer, a timeout, a rate limit, a server
+    # error): role members and grants written from it would leave out whoever wasn't
+    # read, and writing replaces what is stored, so what is stored stays until a
+    # sync reads it all.
+    INTERRUPTED = "interrupted"
+    # BookStack refused it (401, 403 and other 4xx), which repeats every sync until
+    # the token or its role is changed. Keeping stored access would keep access no one
+    # can check, so the write goes ahead without what couldn't be read: it fails closed.
+    REFUSED = "refused"
+
+
+# In the role sync point: a role was kept through a refusal, so the next sync reads
+# every role again instead of only the audit log.
+ROLE_REBUILD_OWED = "rebuildOwed"
+
+# Client errors that pass with time, unlike the rest of 4xx.
+RETRYABLE_CLIENT_ERRORS = frozenset({408, HttpStatusCode.TOO_MANY_REQUESTS.value})
+
+
+def read_failure(response: object) -> ReadOutcome:
+    """The outcome of a BookStack answer that wasn't the data asked for.
+
+    BookStack answers an error with a JSON body, which the data source can hand
+    back as a success; its status tells them apart. No status means no answer at
+    all: a network error, a body that wasn't JSON, or an exception.
+    """
+    status = getattr(response, "status_code", None)
+    if (
+        isinstance(status, int)
+        and HttpStatusCode.BAD_REQUEST.value <= status < HttpStatusCode.INTERNAL_SERVER_ERROR.value
+        and status not in RETRYABLE_CLIENT_ERRORS
+    ):
+        return ReadOutcome.REFUSED
+    return ReadOutcome.INTERRUPTED
+
+
+def _combined(first: ReadOutcome, second: ReadOutcome) -> ReadOutcome:
+    """A read made of parts: any part that may still be read keeps what is stored."""
+    for outcome in (ReadOutcome.INTERRUPTED, ReadOutcome.REFUSED):
+        if outcome in (first, second):
+            return outcome
+    return ReadOutcome.COMPLETE
+
+
+def _answered(response: object) -> bool:
+    """Whether a get_user or get_role call came back with the item, not an error body."""
+    if isinstance(response, BaseException) or not getattr(response, "success", False):
+        return False
+    status = getattr(response, "status_code", None)
+    data = getattr(response, "data", None)
+    return (
+        (not isinstance(status, int) or status < HttpStatusCode.BAD_REQUEST.value)
+        and isinstance(data, dict)
+        and "error" not in data
+    )
+
+
+def _gone(response: object) -> bool:
+    """BookStack says the item no longer exists: a definite answer, not a failed read."""
+    return getattr(response, "status_code", None) == HttpStatusCode.NOT_FOUND.value
 
 
 @dataclass
@@ -206,6 +308,26 @@ class BookStackConnector(BaseConnector):
 
         self.sync_filters: FilterCollection = FilterCollection()
         self.indexing_filters: FilterCollection = FilterCollection()
+
+        # How the last _fetch_all_users_with_details and list_roles_with_details reads
+        # ended; their callers read them straight after.
+        self._users_read = ReadOutcome.COMPLETE
+        self._roles_read = ReadOutcome.COMPLETE
+        # How the last get_all_users listing ended, and whether this run's user sync
+        # stored every user: a role write can only attach members whose user is stored.
+        self._user_list_read = ReadOutcome.COMPLETE
+        self._users_stored = True
+        # Roles the last role read was refused (401, 403), and whether a page of the
+        # role list was: those roles keep their stored members.
+        self._refused_role_ids: list[int] = []
+        self._role_list_refused = False
+        # Whether this run left stored roles or record groups unwritten without noting
+        # them as seen, so the unlink after a full sync must leave everything alone.
+        self._kept_unnoted_access = False
+        # Whether this role sync kept a refused role as stored, and whether it read
+        # every role (_sync_user_roles_full). A kept role is read again next sync.
+        self._refused_roles_kept = False
+        self._roles_rebuilt = False
 
     def _create_sync_points(self) -> None:
         """Initialize sync points for different data types."""
@@ -375,31 +497,8 @@ class BookStackConnector(BaseConnector):
         Fetches all users from BookStack, transforms them into AppUser objects,
         """
         self.logger.info("Starting BookStack user sync...")
-        all_bookstack_users = []
-        offset = 0
-
-        # Loop to handle API pagination and fetch all users
-        while True:
-            response = await self.data_source.list_users(
-                count=self.batch_size,
-                offset=offset
-            )
-
-            if not response.success or not response.data:
-                self.logger.error(f"Failed to fetch users from BookStack: {response.error}")
-                break
-
-            users_page = response.data.get("data", [])
-            if not users_page:
-                # No more users to fetch, exit the loop
-                break
-
-            all_bookstack_users.extend(users_page)
-            offset += len(users_page)
-
-            # Stop if we have fetched all available users
-            if offset >= response.data.get("total", 0):
-                break
+        # Whether every page was read is left in self._user_list_read.
+        all_bookstack_users, self._user_list_read = await self._read_listing(self.data_source.list_users, "users")
 
         if not all_bookstack_users:
             self.logger.warning("No users found in BookStack instance.")
@@ -422,16 +521,14 @@ class BookStackConnector(BaseConnector):
             dictionary containing the role's full details.
         """
         self.logger.info("Fetching all roles with details...")
+        self._roles_read = ReadOutcome.INTERRUPTED
 
         # First, get the basic list of all roles
-        list_response = await self.data_source.list_roles()
-        if not list_response.success:
-            self.logger.error(f"Failed to list roles: {list_response.error}")
-            return {}
-
-        basic_roles = list_response.data.get('data', [])
+        basic_roles, outcome = await self._read_listing(self.data_source.list_roles, "roles")
         if not basic_roles:
-            self.logger.info("No roles found in BookStack.")
+            self._roles_read = outcome
+            if outcome is ReadOutcome.COMPLETE:
+                self.logger.info("No roles found in BookStack.")
             return {}
 
         # Create a list of concurrent tasks to get the details for each role
@@ -442,17 +539,61 @@ class BookStackConnector(BaseConnector):
 
         # Process the results into the final dictionary
         roles_details_map = {}
-        for i, response in enumerate(detail_responses):
-            role_id = basic_roles[i]['id']
-            if isinstance(response, Exception):
-                self.logger.error(f"Exception fetching details for role ID {role_id}: {response}")
-            elif not response.success:
-                self.logger.error(f"Failed to get details for role ID {role_id}: {response.error}")
-            else:
+        for role, response in zip(basic_roles, detail_responses):
+            role_id = role['id']
+            if _answered(response):
                 roles_details_map[role_id] = response.data
+            elif _gone(response):
+                self.logger.info(f"Role ID {role_id} is no longer in BookStack")
+            else:
+                outcome = _combined(outcome, read_failure(response))
+                self.logger.error(f"Failed to get details for role ID {role_id}: {getattr(response, 'error', response)}")
 
+        self._roles_read = outcome
         self.logger.info(f"Successfully fetched details for {len(roles_details_map)} roles.")
         return roles_details_map
+
+    async def _read_listing(
+        self, list_method: Callable[..., Awaitable[BookStackResponse]], what: str
+    ) -> tuple[list[dict], ReadOutcome]:
+        """Every row of a paged BookStack listing, and whether it was read to the end."""
+        rows: list[dict] = []
+        offset = 0
+        while True:
+            response = await list_method(count=self.batch_size, offset=offset)
+            body = response.data if response.success else None
+            if not _is_listing(body):
+                self.logger.error(
+                    f"Failed to list {what} at offset {offset}: {response.error or str(body)[:300]}"
+                )
+                return rows, read_failure(response)
+            page = body["data"]
+            if not page:
+                if offset < body["total"]:
+                    self.logger.warning(f"BookStack stopped listing {what} before the total it reported")
+                    return rows, ReadOutcome.INTERRUPTED
+                return rows, ReadOutcome.COMPLETE
+            rows.extend(page)
+            offset += len(page)
+            if offset >= body["total"]:
+                return rows, ReadOutcome.COMPLETE
+
+    async def _user_details(self, user_ids: list[int]) -> tuple[list[dict], ReadOutcome]:
+        """Each user's details, read concurrently. A user BookStack says is gone (404) is left out."""
+        responses = await asyncio.gather(
+            *(self.data_source.get_user(user_id) for user_id in user_ids), return_exceptions=True
+        )
+        details: list[dict] = []
+        outcome = ReadOutcome.COMPLETE
+        for user_id, response in zip(user_ids, responses):
+            if _answered(response):
+                details.append(response.data)
+            elif _gone(response):
+                self.logger.info(f"User ID {user_id} is no longer in BookStack")
+            else:
+                outcome = _combined(outcome, read_failure(response))
+                self.logger.error(f"Failed to get details for user ID {user_id}: {getattr(response, 'error', response)}")
+        return details, outcome
 
     def _parse_id_and_name_from_event(self, event: Dict) -> Tuple[Optional[int], Optional[str]]:
         """
@@ -493,6 +634,8 @@ class BookStackConnector(BaseConnector):
         """
         try:
             self.logger.info("Starting BookStack full sync.")
+            self._bookstack_role_access = {}
+            self._kept_unnoted_access = False
 
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "bookstack", self.connector_id, self.logger
@@ -530,19 +673,30 @@ class BookStackConnector(BaseConnector):
         bookstack_user_sync_key = generate_record_sync_point_key("bookstack", "user_logs", "global")
         bookstack_user_sync_point = await self.user_sync_point.read_sync_point(bookstack_user_sync_key)
 
+        self._users_stored = False
         users = await self.get_all_users()
-
+        if self._user_list_read is ReadOutcome.INTERRUPTED:
+            # The users read are still stored, but the sync point stays, so the next
+            # sync reads the whole list again; roles wait for it (_sync_user_roles_full).
+            if users:
+                await self._sync_users_full(users)
+            self.logger.warning("⚠️ BookStack users were not all listed; the next sync reads them again")
+            return
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_user_sync_point.get('timestamp'):
+            await self._sync_users_full(users)
+            self._users_stored = True
             await self.user_sync_point.update_sync_point(
                 bookstack_user_sync_key,
                 {"timestamp": current_timestamp}
             )
-            await self._sync_users_full(users)
         else:
             last_sync_timestamp = bookstack_user_sync_point.get('timestamp')
-            await self._sync_users_incremental(users, last_sync_timestamp)
+            if not await self._sync_users_incremental(users, last_sync_timestamp):
+                self.logger.warning("User changes were not all applied; the next sync reads them again")
+                return
+            self._users_stored = True
             await self.user_sync_point.update_sync_point(
                 bookstack_user_sync_key,
                 {"timestamp": current_timestamp}
@@ -559,10 +713,13 @@ class BookStackConnector(BaseConnector):
         await self.data_entities_processor.on_new_app_users(app_users)
         self.logger.info("✅ Finished syncing BookStack users.")
 
-    async def _sync_users_incremental(self, app_users: List[AppUser], last_sync_timestamp: str) -> None:
+    async def _sync_users_incremental(self, app_users: List[AppUser], last_sync_timestamp: str) -> bool:
         """
         Syncs only the users that have been newly created since the last sync timestamp
         by checking the audit log.
+
+        Returns False when a user's roles could not be read in full, so the
+        next sync reads the same events again.
         """
         self.logger.info(f"Starting incremental user sync from timestamp: {last_sync_timestamp}")
 
@@ -577,13 +734,15 @@ class BookStackConnector(BaseConnector):
             filter={'type': 'user_delete', 'created_at:gte': last_sync_timestamp}
         )
 
+        done = True
         if user_create_response.success and user_create_response.data.get('data'):
-            await self._handle_user_upsert_event(user_create_response.data.get('data'), app_users)
+            done = await self._handle_user_upsert_event(user_create_response.data.get('data'), app_users) and done
         if user_update_response.success and user_update_response.data.get('data'):
-            await self._handle_user_upsert_event(user_update_response.data.get('data'), app_users)
+            done = await self._handle_user_upsert_event(user_update_response.data.get('data'), app_users) and done
         if user_delete_response.success and user_delete_response.data.get('data'):
             # await self._handle_user_delete_event(user_delete_response.data.get('data'), app_users)
             self.logger.info("User delete event handling not implemented yet !")
+        return done
 
     async def _handle_user_create_event(self, user_create_events: List[Dict], app_users: List[AppUser]) -> None:
         self.logger.info("Processing new or updated users from audit log !")
@@ -625,18 +784,17 @@ class BookStackConnector(BaseConnector):
         else:
             self.logger.warning("Found new user IDs in audit log, but no matching user objects were found in the full user list.")
 
-    async def _handle_user_upsert_event(self, user_upsert_events: List[Dict], app_users: List[AppUser]) -> None:
+    async def _handle_user_upsert_event(self, user_upsert_events: List[Dict], app_users: List[AppUser]) -> bool:
+        """Re-sync the roles of each user named in the events.
+
+        Returns False when a user's roles could not be read in full; that user's
+        role memberships are then left as stored.
+        """
         self.logger.info("Processing user upsert events... !")
+        done = True
 
         # First handle the user update itself (updates the user record in arango)
         await self._handle_user_create_event(user_upsert_events, app_users)
-
-        # Build user email map for role updates
-        user_email_map = {
-            int(user.source_user_id): user.email
-            for user in app_users
-            if user.source_user_id and user.email
-        }
 
         # Process each user upsert event
         for event in user_upsert_events:
@@ -652,8 +810,14 @@ class BookStackConnector(BaseConnector):
                 # Get the updated user details to find their roles
                 user_response = await self.data_source.get_user(user_id)
 
-                if not user_response.success or not user_response.data:
+                if not _answered(user_response):
                     self.logger.error(f"Failed to fetch details for user ID {user_id}: {user_response.error}")
+                    if not _gone(user_response) and read_failure(user_response) is ReadOutcome.INTERRUPTED:
+                        done = False
+                    else:
+                        # Gone, or refused for good: their roles can't be confirmed, so
+                        # access through them is withdrawn rather than kept unchecked.
+                        await self._withdraw_user_roles(user_id, name)
                     continue
 
                 user_details = user_response.data
@@ -664,13 +828,33 @@ class BookStackConnector(BaseConnector):
                     self.logger.warning(f"User {name} (ID: {user_id}) has no email, skipping role updates.")
                     continue
 
-                # Delete edges to groups for the user
-                user = await self.data_entities_processor.get_user_by_email(user_email)
+                # Read every role the user is in, with its members, before taking the
+                # user out of any: the roles are written back whole, and one that
+                # can't be read would otherwise lose this user until its next change.
+                role_reads = []
+                for role in roles:
+                    role_id = role.get('id')
+                    if role_id:
+                        self.logger.info(f"Resyncing role '{role.get('display_name')}' (ID: {role_id}) due to user update")
+                        role_reads.append(await self._read_role_with_members(role_id))
+                    else:
+                        self.logger.warning(f"Role '{role.get('display_name')}' has no ID, skipping resync")
+                if any(outcome is ReadOutcome.INTERRUPTED for outcome, _ in role_reads):
+                    self.logger.warning(
+                        f"Could not read every role of user {name} (ID: {user_id}); their roles stay as stored this sync"
+                    )
+                    done = False
+                    continue
+
+                # Delete edges to groups for the user. A failed lookup raises rather
+                # than answering None, which would count the change as applied.
+                user = await self.data_entities_processor.get_user_by_email(user_email, raise_on_error=True)
                 if not user:
                     self.logger.warning(f"User {name} (ID: {user_id}) not found in the database, skipping role updates.")
                     continue
                 await self.data_entities_processor.delete_edges_between_collections(
-                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value
+                    user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value,
+                    connector_id=self.connector_id,
                 )
 
                 if not roles:
@@ -679,21 +863,34 @@ class BookStackConnector(BaseConnector):
 
                 # Resync each role the user is part of
                 self.logger.info(f"User {name} is part of {len(roles)} role(s). Resyncing...")
-
-                for role in roles:
-                    role_id = role.get('id')
-                    role_name = role.get('display_name')
-
-                    if role_id:
-                        self.logger.info(f"Resyncing role '{role_name}' (ID: {role_id}) due to user update")
-                        await self._handle_role_create_event(role_id, user_email_map)
-                    else:
-                        self.logger.warning(f"Role '{role_name}' has no ID, skipping resync")
+                read_roles = [role for _, role in role_reads if role]
+                if read_roles:
+                    await self.data_entities_processor.on_new_app_roles(read_roles)
 
             except Exception as e:
                 self.logger.error(f"Error processing user upsert for user ID {user_id}: {e}", exc_info=True)
+                # Its role edges may already be deleted; the next sync applies the event again.
+                done = False
 
         self.logger.info("✅ Finished processing user upsert events and role resyncs")
+        return done
+
+    async def _withdraw_user_roles(self, user_id: int, name: Optional[str]) -> None:
+        """Take a BookStack user out of every role they are stored in.
+
+        Raises when the stored user can't be looked up or their role edges can't be
+        deleted, so the caller reads the event again; a user never stored has nothing to withdraw.
+        """
+        user = await self.data_entities_processor.get_user_by_source_id(
+            str(user_id), self.connector_id, raise_on_error=True
+        )
+        if not user:
+            return
+        self.logger.warning(f"Withdrawing the stored roles of user {name} (ID: {user_id})")
+        await self.data_entities_processor.delete_edges_between_collections(
+            user.id, CollectionNames.USERS.value, CollectionNames.PERMISSION.value, CollectionNames.ROLES.value,
+            connector_id=self.connector_id,
+        )
 
 
     async def _handle_user_delete_event(self, user_delete_events: List[Dict], app_users: List[AppUser]) -> None:
@@ -760,38 +957,84 @@ class BookStackConnector(BaseConnector):
         bookstack_user_role_sync_key = generate_record_sync_point_key("bookstack", "user_role_logs", "global")
         bookstack_user_role_sync_point = await self.app_role_sync_point.read_sync_point(bookstack_user_role_sync_key)
 
+        self._refused_roles_kept = False
+        self._roles_rebuilt = False
+
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_user_role_sync_point.get('timestamp'):
-            await self.app_role_sync_point.update_sync_point(
-                bookstack_user_role_sync_key,
-                {"timestamp": current_timestamp}
-            )
-            await self._sync_user_roles_full()
+            done = await self._sync_user_roles_full()
         else:
             last_sync_timestamp = bookstack_user_role_sync_point.get('timestamp')
-            await self._sync_user_roles_incremental(last_sync_timestamp)
-            await self.app_role_sync_point.update_sync_point(
-                bookstack_user_role_sync_key,
-                {"timestamp": current_timestamp}
-            )
+            done = await self._sync_user_roles_incremental(last_sync_timestamp)
+            if done and bookstack_user_role_sync_point.get(ROLE_REBUILD_OWED) and not self._roles_rebuilt:
+                # A role kept through a refusal is read again on every sync until it can
+                # be read, so the members it lost in BookStack meanwhile drop out then.
+                done = await self._sync_user_roles_full()
+        if not done:
+            # Moving the timestamp on would leave the unapplied changes behind it.
+            self.logger.warning("Role changes were not all applied; the next sync reads them again")
+            self._kept_unnoted_access = True
+            return
+        # A refusal repeats every sync, so the timestamp moves on (holding it would
+        # replay the audit log every sync and lose the role deletes made meanwhile),
+        # and the flag has the next sync read every role again. Always written: the
+        # stores merge a sync point, so a flag left out would stay set.
+        await self.app_role_sync_point.update_sync_point(
+            bookstack_user_role_sync_key,
+            {"timestamp": current_timestamp, ROLE_REBUILD_OWED: self._refused_roles_kept},
+        )
 
 
-    async def _sync_user_roles_full(self) -> None:
+    async def _sync_user_roles_full(self) -> bool:
         """
         Fetches all roles with their detailed user assignments to build and
         upsert user groups with their member users (AppUser objects).
+
+        Returns False when the roles or users could not be read in full, or this
+        run's user sync didn't store every user: roles that can't be written whole
+        are left as stored, since writing one replaces its members, and the next
+        sync does this again.
         """
         self.logger.info("Starting BookStack user group and permissions sync...")
+        self._roles_rebuilt = True
+        # This read decides what is owed: a role refused earlier in this sync and read now is not.
+        self._refused_roles_kept = False
+        if not self._users_stored:
+            # The processor attaches a member only through their stored user, so a role
+            # written now would leave out everyone the user sync didn't store.
+            self.logger.warning("⚠️ BookStack users were not all stored, so role members stay as stored this sync")
+            return False
 
         # 1. Fetch details for all roles, including the users assigned to each role.
+        # A role that wasn't read is not in the batch, so it keeps its stored members.
+        # Interrupted, the role checkpoint stays and the next sync reads it again.
+        # Refused (401, 403), it keeps its members and the checkpoint moves on: the
+        # refusal repeats every sync, and holding the checkpoint for it would replay
+        # the audit log on every sync and lose role deletes made meanwhile.
         all_roles_with_details = await self._fetch_all_roles_with_details()
+        roles_complete = self._roles_read is not ReadOutcome.INTERRUPTED
+        if self._roles_read is ReadOutcome.REFUSED:
+            self.logger.error(
+                "❌ BookStack refused part of the role list or a role's details; roles not read keep their "
+                "stored members until they can be read"
+            )
+            if not await self._keep_refused_roles():
+                return False
+        elif not roles_complete:
+            self.logger.warning("⚠️ BookStack roles were not all read; the next sync reads them again")
         if not all_roles_with_details:
-            self.logger.warning("No roles found in BookStack. Aborting user group sync.")
-            return
+            if self._roles_read is ReadOutcome.COMPLETE:
+                self.logger.warning("No roles found in BookStack. Aborting user group sync.")
+            return roles_complete
         self.logger.info(f"Found {len(all_roles_with_details)} total roles with details.")
 
         # 2. Fetch all user details to get complete user information
         all_users_with_details = await self._fetch_all_users_with_details()
+        if self._users_read is ReadOutcome.INTERRUPTED:
+            self.logger.warning(
+                "⚠️ BookStack users were not read in full, so role members stay as stored this sync"
+            )
+            return False
 
         # Create a map for quick user lookup by ID
         user_details_map = {
@@ -844,7 +1087,72 @@ class BookStackConnector(BaseConnector):
             self.logger.info("✅ Successfully processed app roles and permissions.")
         else:
             self.logger.info("No app roles were processed.")
+        if self._roles_read is ReadOutcome.COMPLETE:
+            return await self._remove_roles_bookstack_no_longer_has(all_roles_with_details)
+        return roles_complete
 
+    async def _remove_roles_bookstack_no_longer_has(self, roles: list[dict]) -> bool:
+        """Remove the stored roles a complete role read did not return.
+
+        Writing roles replaces the members of the roles written only, so a role deleted
+        in BookStack while its delete event was missed (the role list refused, or a full
+        sync's sync points cleared) would keep its members. False when the stored roles
+        can't be listed, so the next sync reads every role again.
+        """
+        present = {str(role.get("id")) for role in roles}
+        try:
+            stored = await self.data_entities_processor.get_nodes_by_filters(
+                CollectionNames.ROLES.value,
+                {"connectorId": self.connector_id},
+                return_fields=["externalRoleId"],
+                raise_on_error=True,
+            )
+        except Exception as e:
+            self.logger.error(f"Could not list the stored BookStack roles: {e}")
+            self._kept_unnoted_access = True
+            return False
+        gone = sorted({str(node.get("externalRoleId")) for node in stored if node.get("externalRoleId")} - present)
+        for role_id in gone:
+            self.logger.info(f"Role ID {role_id} is no longer in BookStack; removing it")
+            await self.data_entities_processor.on_app_role_deleted(
+                external_role_id=role_id, connector_id=self.connector_id
+            )
+        return True
+
+
+    async def _keep_refused_roles(self) -> bool:
+        """Keep the stored members of the roles BookStack refused to show.
+
+        They are not in the role write, so their members stay. Each one is noted as
+        seen by a full sync in progress, so the unlink after it leaves them alone. A
+        refused page of the role list names no roles, so that sync reports that it
+        did not read everything instead. False when the stored roles can't be read.
+        """
+        if self._role_list_refused:
+            self._kept_unnoted_access = True
+            self._refused_roles_kept = True
+        for role_id in self._refused_role_ids:
+            if not await self._keep_refused_role(role_id):
+                return False
+        return True
+
+    async def _keep_refused_role(self, role_id: int) -> bool:
+        """Keep one refused role as stored and note it as seen; False when that can't be read."""
+        self._refused_roles_kept = True
+        try:
+            await self.data_entities_processor.has_stored_permissions(
+                "role", self.connector_id, str(role_id), keep=True
+            )
+        except Exception as e:
+            self.logger.error(f"Could not read the stored members of refused role ID {role_id}: {e}")
+            self._kept_unnoted_access = True
+            return False
+        return True
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """A full sync that left roles or record groups as stored without noting them
+        as seen did not read everything, so nothing is unlinked after it."""
+        return FullSyncCoverage(complete=not self._kept_unnoted_access)
 
     def _parse_timestamp(self, timestamp_str: Optional[str]) -> Optional[int]:
         """Helper to parse timestamp string to epoch milliseconds."""
@@ -862,6 +1170,8 @@ class BookStackConnector(BaseConnector):
         """
         Helper to fetch all roles and then get their detailed profiles,
         including assigned users, concurrently.
+
+        Whether every role was read is left in ``self._roles_read``.
         """
         # First, get the basic list of all roles to find their IDs.
         self.logger.info("Fetching basic list of all roles...")
@@ -875,12 +1185,17 @@ class BookStackConnector(BaseConnector):
         responses = await asyncio.gather(*tasks, return_exceptions=True)
 
         detailed_roles = []
-        for i, res in enumerate(responses):
-            if isinstance(res, Exception) or not res.success:
-                role_id = basic_roles[i]['id']
-                self.logger.error(f"Failed to get details for role ID {role_id}: {res}")
-            else:
+        for role, res in zip(basic_roles, responses):
+            if _answered(res):
                 detailed_roles.append(res.data)
+            elif _gone(res):
+                self.logger.info(f"Role ID {role['id']} is no longer in BookStack")
+            else:
+                outcome = read_failure(res)
+                if outcome is ReadOutcome.REFUSED:
+                    self._refused_role_ids.append(role['id'])
+                self._roles_read = _combined(self._roles_read, outcome)
+                self.logger.error(f"Failed to get details for role ID {role['id']}: {getattr(res, 'error', res)}")
 
         self.logger.info(f"Successfully fetched details for {len(detailed_roles)} roles.")
         return detailed_roles
@@ -933,63 +1248,44 @@ class BookStackConnector(BaseConnector):
         return role_to_permissions_map
 
     async def _fetch_all_roles(self) -> List[Dict]:
-        """Helper to fetch all roles with pagination."""
+        """Helper to fetch all roles with pagination; whether it got to the end is left in ``self._roles_read``."""
         self.logger.info("Fetching all roles from BookStack...")
-        all_roles = []
-        offset = 0
-        while True:
-            response = await self.data_source.list_roles(count=self.batch_size, offset=offset)
-            if not response.success or not response.data:
-                self.logger.error(f"Failed to fetch roles: {response.error}")
-                break
-            roles_page = response.data.get("data", [])
-            if not roles_page:
-                break
-            all_roles.extend(roles_page)
-            offset += len(roles_page)
-            if offset >= response.data.get("total", 0):
-                break
+        all_roles, self._roles_read = await self._read_listing(self.data_source.list_roles, "roles")
+        self._refused_role_ids = []
+        self._role_list_refused = self._roles_read is ReadOutcome.REFUSED
         return all_roles
 
     async def _fetch_all_users_with_details(self) -> List[Dict]:
-        """Helper to fetch all users and then get detailed profiles concurrently."""
+        """Helper to fetch all users and then get detailed profiles concurrently.
+
+        Whether every user was read is left in ``self._users_read``.
+        """
         self.logger.info("Fetching all user IDs...")
-        all_users_summary = []
-        offset = 0
-        while True:
-            response = await self.data_source.list_users(count=self.batch_size, offset=offset)
-            if not response.success or not response.data:
-                self.logger.error(f"Failed to list users: {response.error}")
-                break
-            users_page = response.data.get("data", [])
-            if not users_page:
-                break
-            all_users_summary.extend(users_page)
-            offset += len(users_page)
-            if offset >= response.data.get("total", 0):
-                break
+        self._users_read = ReadOutcome.INTERRUPTED
+        all_users_summary, outcome = await self._read_listing(self.data_source.list_users, "users")
 
         if not all_users_summary:
+            self._users_read = outcome
             return []
 
         self.logger.info(f"Fetching details for {len(all_users_summary)} users concurrently...")
-        tasks = [self.data_source.get_user(user['id']) for user in all_users_summary]
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        detailed_users, details_outcome = await self._user_details([user['id'] for user in all_users_summary])
 
-        detailed_users = []
-        for i, res in enumerate(responses):
-            if isinstance(res, Exception) or not res.success:
-                user_id = all_users_summary[i]['id']
-                self.logger.error(f"Failed to get details for user ID {user_id}: {res}")
-            else:
-                detailed_users.append(res.data)
-
+        self._users_read = _combined(outcome, details_outcome)
+        if self._users_read is ReadOutcome.REFUSED:
+            self.logger.error(
+                f"❌ BookStack refused part of the user list; roles are written from the {len(detailed_users)} "
+                "users read, so access through them is withdrawn from the rest until they can be read"
+            )
         self.logger.info(f"Successfully fetched details for {len(detailed_users)} users.")
         return detailed_users
 
-    async def _sync_user_roles_incremental(self, last_sync_timestamp: str) -> None:
+    async def _sync_user_roles_incremental(self, last_sync_timestamp: str) -> bool:
         """
         Sync user groups and permissions incrementally based on the last sync timestamp.
+
+        Returns False when a role could not be read in full, so the next sync
+        reads the same events again.
         """
         self.logger.info("Starting BookStack user group sync incremental...")
 
@@ -1015,39 +1311,37 @@ class BookStackConnector(BaseConnector):
         all_users = await self._fetch_all_users_with_details()
         user_email_map = {user.get("id"): user.get("email") for user in all_users}
 
+        done = True
         if roles_create_events.success and roles_create_events.data and roles_create_events.data.get('data'):
             for event in roles_create_events.data['data']:
                 role_id, _ = self._parse_id_and_name_from_event(event)
-                await self._handle_role_create_event(role_id, user_email_map)
+                done = await self._handle_role_create_event(role_id, user_email_map) and done
 
         if role_update_events.success and role_update_events.data and role_update_events.data.get('data'):
             for event in role_update_events.data['data']:
                 role_id, _ = self._parse_id_and_name_from_event(event)
-                await self._handle_role_update_event(role_id, user_email_map)
+                done = await self._handle_role_update_event(role_id, user_email_map) and done
 
         if role_delete_events.success and role_delete_events.data and role_delete_events.data.get('data'):
             for event in role_delete_events.data['data']:
                 role_id, _ = self._parse_id_and_name_from_event(event)
                 await self._handle_role_delete_event(role_id)
-                await self._sync_user_roles_full()
+            # One rebuild covers every delete: each one reads every role and user.
+            done = await self._sync_user_roles_full() and done
+        return done
 
-    async def _handle_role_create_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
-        """
-        Handles a 'role_create' audit log event by fetching the new role's
-        details and its members, then sending it to the data processor.
-        """
-
-        if role_id is None:
-            # This can happen if the parser function fails
-            return
-
-        self.logger.info(f"Role created/updated (ID: {role_id}). Fetching details...")
-
-        # Fetch the full details of the newly created role
+    async def _read_role_with_members(
+        self, role_id: int
+    ) -> tuple[ReadOutcome, tuple[AppRole, list[AppUser]] | None]:
+        """A role and its members as BookStack has them now; (COMPLETE, None) when the role is gone."""
         role_details_response = await self.data_source.get_role(role_id)
-        if not role_details_response.success or not role_details_response.data:
-            self.logger.warning(f"Could not fetch details for role ID {role_id}, it may not be available yet. Skipping.")
-            return
+        if not _answered(role_details_response):
+            if _gone(role_details_response):
+                return ReadOutcome.COMPLETE, None
+            self.logger.warning(
+                f"Could not fetch details for role ID {role_id}: {getattr(role_details_response, 'error', None)}"
+            )
+            return read_failure(role_details_response), None
 
         role_details = role_details_response.data
 
@@ -1060,51 +1354,76 @@ class BookStackConnector(BaseConnector):
             org_id=self.data_entities_processor.org_id
         )
 
-        # Build the list of AppUser objects for members of this group
-        app_users = []
-        role_users = role_details.get("users", [])
+        # Fetch detailed user information for each user in the role, in parallel
+        user_ids = [user.get("id") for user in role_details.get("users", []) if user.get("id")]
+        users_details, outcome = await self._user_details(user_ids)
 
-        if role_users:
-            # Fetch detailed user information for each user in the role
-            user_ids = [user.get("id") for user in role_users if user.get("id")]
+        app_users = [
+            AppUser(
+                app_name=self.connector_name,
+                connector_id=self.connector_id,
+                source_user_id=str(user_details.get("id")),
+                email=user_details.get("email", ""),
+                full_name=user_details.get("name", ""),
+                org_id=self.data_entities_processor.org_id,
+                is_active=True,  # Users in roles are assumed to be active
+                title=user_details.get("title") if user_details.get("title") else None,
+                source_created_at=self._parse_timestamp(user_details.get("created_at")) if user_details.get("created_at") else None,
+                source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None
+            )
+            for user_details in users_details
+        ]
+        return outcome, (app_role, app_users)
 
-            # Fetch user details in parallel
-            tasks = [self.data_source.get_user(user_id) for user_id in user_ids]
-            user_responses = await asyncio.gather(*tasks, return_exceptions=True)
+    async def _handle_role_create_event(self, role_id: int, user_email_map: Dict[int, str]) -> bool:
+        """
+        Handles a 'role_create' audit log event by fetching the new role's
+        details and its members, then sending it to the data processor.
 
-            for i, res in enumerate(user_responses):
-                if isinstance(res, Exception) or not res.success or not res.data:
-                    self.logger.warning(f"Failed to get details for user ID {user_ids[i]}: {res}")
-                    continue
+        Returns False when the role or its members could not be read in full:
+        writing it would replace its stored members with part of them.
+        """
 
-                user_details = res.data
-                user_id = user_details.get("id")
+        if role_id is None:
+            # This can happen if the parser function fails
+            return True
 
-                # Create AppUser object from the fetched details
-                app_user = AppUser(
-                    app_name=self.connector_name,
-                    connector_id=self.connector_id,
-                    source_user_id=str(user_id),
-                    email=user_details.get("email", ""),
-                    full_name=user_details.get("name", ""),
-                    org_id=self.data_entities_processor.org_id,
-                    is_active=True,  # Users in roles are assumed to be active
-                    title=user_details.get("title") if user_details.get("title") else None,
-                    source_created_at=self._parse_timestamp(user_details.get("created_at")) if user_details.get("created_at") else None,
-                    source_updated_at=self._parse_timestamp(user_details.get("updated_at")) if user_details.get("updated_at") else None
-                )
-                app_users.append(app_user)
+        self.logger.info(f"Role created/updated (ID: {role_id}). Fetching details...")
+        outcome, role = await self._read_role_with_members(role_id)
+        if outcome is ReadOutcome.INTERRUPTED:
+            self.logger.warning(f"Could not read role ID {role_id} and its members in full; it stays as stored this sync")
+            return False
+        if role is None:
+            return True
 
         # Process the new group and its members
+        app_role, app_users = role
         self.logger.info(f"Processing newly created role '{app_role.name}' with {len(app_users)} members...")
-        await self.data_entities_processor.on_new_app_roles([(app_role, app_users)])
+        await self.data_entities_processor.on_new_app_roles([role])
+        return True
 
-    async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> None:
-        await self._handle_role_delete_event(role_id)
-        await self._handle_role_create_event(role_id, user_email_map)
-        await self._sync_record_groups(full_sync=True)
+    async def _handle_role_update_event(self, role_id: int, user_email_map: Dict[int, str]) -> bool:
+        if role_id is None:
+            return True
+        # Read before deleting: a role that can't be read now would otherwise be gone
+        # until it next changes, and everyone's access through it with it.
+        outcome, role = await self._read_role_with_members(role_id)
+        if outcome is ReadOutcome.INTERRUPTED:
+            self.logger.warning(f"Could not read role ID {role_id} and its members in full; it stays as stored this sync")
+            return False
+        if outcome is ReadOutcome.REFUSED and role is None:
+            # As in the full role sync: a role BookStack refuses to show keeps its
+            # stored members, and the next sync reads every role again.
+            self.logger.error(f"❌ BookStack refused role ID {role_id}; it keeps its stored members until it can be read")
+            if not await self._keep_refused_role(role_id):
+                return False
+        else:
+            await self._handle_role_delete_event(role_id)
+        if role is not None:
+            await self.data_entities_processor.on_new_app_roles([role])
+        done = await self._sync_record_groups(full_sync=True)
         await self._sync_records(full_sync=True)
-
+        return done
 
     async def _handle_role_delete_event(self, role_id: int) -> None:
         """
@@ -1120,13 +1439,24 @@ class BookStackConnector(BaseConnector):
         )
 
     #-------------------------------Record Groups Sync-----------------------------------#
-    async def _sync_record_groups(self, full_sync:bool = False) -> None:
+    async def _sync_record_groups(self, full_sync:bool = False) -> bool:
+        """Sync shelves, books and chapters; False when they were left as stored this sync."""
 
         current_timestamp = self._get_iso_time()
         bookstack_record_group_sync_key = generate_record_sync_point_key("bookstack", "record_groups", "global")
         bookstack_record_group_sync_point = await self.record_sync_point.read_sync_point(bookstack_record_group_sync_key)
 
         roles_details = await self.list_roles_with_details()
+        if self._roles_read is ReadOutcome.INTERRUPTED:
+            # A book that follows the default role permissions is granted to every role
+            # whose details were read, and writing it replaces its stored grants. The
+            # sync point stays, so the next sync does this step again.
+            self.logger.warning(
+                "⚠️ BookStack roles were not read in full, so shelves, books and chapters keep their "
+                "stored access this sync"
+            )
+            self._kept_unnoted_access = True
+            return False
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_record_group_sync_point.get('timestamp'):
@@ -1137,11 +1467,15 @@ class BookStackConnector(BaseConnector):
             )
         else:
             last_sync_timestamp = bookstack_record_group_sync_point.get('timestamp')
-            await self._sync_record_groups_incremental(last_sync_timestamp, roles_details)
+            if not await self._sync_record_groups_incremental(last_sync_timestamp, roles_details):
+                # Moving on would leave an unconfirmed or failed delete behind the cursor for good.
+                self.logger.warning("Book/chapter deletes were not all applied; the next sync starts from the same point")
+                return False
             await self.record_sync_point.update_sync_point(
                 bookstack_record_group_sync_key,
                 {"timestamp": current_timestamp}
             )
+        return True
 
     async def _sync_record_groups_full(self, roles_details: Dict[int, Dict]) -> None:
         self.logger.info("Starting sync for shelves, books, and chapters as record groups.")
@@ -1262,7 +1596,7 @@ class BookStackConnector(BaseConnector):
 
     async def _create_record_group_with_permissions(
         self, item: Dict, content_type_name: str, roles_details: Dict[int, Dict], parent_external_id: Optional[str] = None
-    ) -> Optional[Tuple[RecordGroup, List[Permission]]]:
+    ) -> Optional[tuple[RecordGroup, list[Permission] | None]]:
         """Creates a RecordGroup and fetches its permissions for a single BookStack item."""
         try:
             item_id = item.get("id")
@@ -1297,14 +1631,25 @@ class BookStackConnector(BaseConnector):
                 content_type=content_type_name, content_id=item_id
             )
 
-            permissions_list = []
+            # None when the fetch fails: the processor then keeps the stored grants
+            # instead of wiping them.
+            permissions_list = None
             if permissions_response.success and permissions_response.data:
-                permissions_list = await self._parse_bookstack_permissions(permissions_response.data, roles_details, content_type_name)
-
-                fallback_permissions = permissions_response.data.get("fallback_permissions")
-                if fallback_permissions and parent_external_id:
-                    # Set inherit_permissions based on the 'inheriting' flag
-                    record_group.inherit_permissions = fallback_permissions.get("inheriting", False)
+                parent_roles = None
+                if parent_external_id:
+                    book_id = item.get("book_id")
+                    parent_roles = await self._parent_role_access(
+                        parent_external_id, roles_details, book_id=book_id
+                    )
+                permissions_list = await self._parse_bookstack_permissions(
+                    permissions_response.data, roles_details, content_type_name, parent_roles
+                )
+                if parent_external_id and hasattr(permissions_list, "inherit"):
+                    record_group.inherit_permissions = permissions_list.inherit
+                if hasattr(permissions_list, "effective"):
+                    cache = getattr(self, "_bookstack_role_access", None) or {}
+                    self._bookstack_role_access = cache
+                    cache[f"{content_type_name}/{item_id}"] = permissions_list.effective
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for {content_type_name} '{item_name}' (ID: {item_id}): "
@@ -1322,94 +1667,60 @@ class BookStackConnector(BaseConnector):
             )
             return None
 
-    async def _parse_bookstack_permissions(self, permissions_data: Dict, roles_details: Dict[int, Dict], content_type_name: str) -> List[Permission]:
-        """
-        Parses the BookStack permission object into a list of Permission objects.
-        If explicit role permissions are not set on an item, it calculates permissions
-        based on the default role definitions.
-        """
-        permissions_list = []
-
-        # 1. Handle the owner (user permission), which is always explicit
+    async def _parse_bookstack_permissions(
+        self,
+        permissions_data: dict,
+        roles_details: dict[int, dict],
+        content_type_name: str,
+        parent_roles: dict[int, PermissionType] | None = None,
+    ) -> list[Permission]:
+        """Owner where ownership grants access, plus role grants not already supplied by the parent."""
+        owner_permission = None
+        owner_role_ids: list[int] = []
         owner = permissions_data.get("owner")
         if owner and owner.get("id"):
             try:
                 user_response = await self.data_source.get_user(owner.get("id"))
                 if user_response.success and user_response.data.get("email"):
-                    permissions_list.append(
-                        Permission(
-                            external_id=str(owner.get("id")),
-                            email=user_response.data.get("email"),
-                            type=PermissionType.OWNER,
-                            entity_type=EntityType.USER
-                        )
+                    owner_permission = Permission(
+                        external_id=str(owner.get("id")),
+                        email=user_response.data.get("email"),
+                        type=PermissionType.OWNER,
+                        entity_type=EntityType.USER,
                     )
+                    owner_role_ids = [
+                        int(role["id"]) for role in user_response.data.get("roles") or [] if role.get("id") is not None
+                    ]
             except Exception as e:
                 self.logger.error(f"Failed to fetch owner details for user ID {owner.get('id')}: {e}")
 
-        # 2. Handle role permissions (group permissions)
-        role_permissions = permissions_data.get("role_permissions", [])
+        return bookstack_grants(
+            owner_permission, permissions_data, roles_details, content_type_name, parent_roles, owner_role_ids
+        )
 
-        # CASE A: Explicit permissions are set on the content item
-        if role_permissions:
-            for role_perm in role_permissions:
-                role_id = role_perm.get("role_id")
-                if not role_id:
-                    continue
-
-                # Determine permission level from explicit settings
-                if role_perm.get("update") or role_perm.get("delete") or role_perm.get("create"):
-                    perm_type = PermissionType.WRITE
-                elif role_perm.get("view"):
-                    perm_type = PermissionType.READ
-                else:
-                    continue
-
-                permissions_list.append(
-                    Permission(
-                        external_id=str(role_id),
-                        type=perm_type,
-                        entity_type=EntityType.ROLE
-                    )
-                )
-        #IMPORTANT: If in fallback_permisions inheriting is true that means the permissions will follow from the parent record_group
-        #So either we can replicate the permissions of it's parent or not create the permission's edge at all (it will fetch the records from inherited permissions)
-        #Need to check if view/Create/Delete/Update permissions are set and how to handle it
-        #Maybe if inherit permissions are set true and its a book then we can create edges otherwise skip it
-        # CASE B: fall back to default role permissions
-        fallback_permissions = permissions_data.get("fallback_permissions", {})
-        inheriting_bool = fallback_permissions.get("inheriting", False)
-        if content_type_name == "book" and inheriting_bool:
-            for role_id, role_details in roles_details.items():
-                role_system_permissions = set(role_details.get("permissions", []))
-
-                # Define the required permissions for READ and WRITE access
-                write_perms = {
-                    f"{content_type_name}-create-all",
-                    f"{content_type_name}-update-all",
-                    f"{content_type_name}-delete-all"
-                }
-                read_perm = f"{content_type_name}-view-all"
-
-                perm_type = None
-                # Check for WRITE access first, as it's higher priority
-                if not role_system_permissions.isdisjoint(write_perms):
-                    perm_type = PermissionType.WRITE
-                # If no WRITE access, check for READ access
-                elif read_perm in role_system_permissions:
-                    perm_type = PermissionType.READ
-
-                # If the role has either read or write permissions, create the object
-                if perm_type:
-                    permissions_list.append(
-                        Permission(
-                            external_id=str(role_id),
-                            type=perm_type,
-                            entity_type=EntityType.ROLE
-                        )
-                    )
-
-        return permissions_list
+    async def _parent_role_access(
+        self, external_id: str, roles_details: dict[int, dict], *, book_id: str | int | None = None
+    ) -> dict[int, PermissionType] | None:
+        """Effective roles of a book or chapter, fetched once per sync when they are not already known."""
+        cache: dict[str, dict[int, PermissionType]] = getattr(self, "_bookstack_role_access", None) or {}
+        self._bookstack_role_access = cache
+        if external_id in cache:
+            return cache[external_id]
+        content_type, _, raw_id = external_id.partition("/")
+        if not raw_id:
+            return None
+        parent_roles = None
+        if content_type == "chapter" and book_id:
+            parent_roles = await self._parent_role_access(f"book/{book_id}", roles_details)
+        response = await self.data_source.get_content_permissions(content_type=content_type, content_id=raw_id)
+        if not response.success or not response.data:
+            return None
+        parsed = await self._parse_bookstack_permissions(response.data, roles_details, content_type, parent_roles)
+        effective = getattr(parsed, "effective", None)
+        if effective is None:
+            return None
+        cache[external_id] = effective
+        return effective
 
     def _parse_bookstack_permissions_all_users(self, all_users: List[AppUser]) -> List[Permission]:
         """
@@ -1435,22 +1746,24 @@ class BookStackConnector(BaseConnector):
 
         return permissions_list
 
-    async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: Dict[int, Dict]) -> None:
+    async def _sync_record_groups_incremental(self, last_sync_timestamp: str, roles_details: dict[int, dict]) -> bool:
         """
         Sync all record groups (books, shelves and chapter) from BookStack as RecordGroup objects, handling new/updated/deleted record groups.
+
+        Returns False when a delete could not be confirmed or applied.
         """
         self.logger.info("Starting incremental sync for record groups (books, shelves, and chapters).")
 
         # Get book ID filter
         book_ids, book_ids_operator = self._get_book_id_filter()
 
-        await self._sync_record_groups_events(
+        shelves_done = await self._sync_record_groups_events(
             content_type="bookshelf",
             roles_details=roles_details,
             last_sync_timestamp=last_sync_timestamp
         )
 
-        await self._sync_record_groups_events(
+        books_done = await self._sync_record_groups_events(
             content_type="book",
             roles_details=roles_details,
             last_sync_timestamp=last_sync_timestamp,
@@ -1458,13 +1771,14 @@ class BookStackConnector(BaseConnector):
             book_ids_operator=book_ids_operator
         )
 
-        await self._sync_record_groups_events(
+        chapters_done = await self._sync_record_groups_events(
             content_type="chapter",
             roles_details=roles_details,
             last_sync_timestamp=last_sync_timestamp,
             book_ids=book_ids,
             book_ids_operator=book_ids_operator
         )
+        return shelves_done and books_done and chapters_done
 
 
     async def _sync_record_groups_events(
@@ -1474,7 +1788,8 @@ class BookStackConnector(BaseConnector):
         last_sync_timestamp: str,
         book_ids: Optional[Set[int]] = None,
         book_ids_operator: Optional[str] = None
-    ) -> None:
+    ) -> bool:
+        """Apply one content type's audit events. Returns False when a delete was not confirmed or applied."""
 
         tasks = {
             "create": self.data_source.list_audit_log(filter={'type': f'{content_type}_create', 'created_at:gte': last_sync_timestamp}),
@@ -1500,11 +1815,15 @@ class BookStackConnector(BaseConnector):
                 await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
 
         # --- Handle Delete Events ---
+        deletes_done = True
         delete_response = event_responses.get("delete")
-        if delete_response and delete_response.success and delete_response.data.get('data'):
+        if isinstance(delete_response, BaseException) or not delete_response.success or not _is_listing(delete_response.data):
+            self.logger.warning(f"Could not read {content_type} deletes from the audit log; reading them again next sync")
+            deletes_done = False
+        elif delete_response.data['data']:
             self.logger.info(f"Found {len(delete_response.data['data'])} deleted {content_type}(s) to delete.")
             for event in delete_response.data['data']:
-                await self._handle_record_group_delete_event(event, content_type)
+                deletes_done = await self._handle_record_group_delete_event(event, content_type) and deletes_done
 
         permissions_update_response = event_responses.get("permissions_update")
         if permissions_update_response and permissions_update_response.success and permissions_update_response.data.get('data'):
@@ -1512,6 +1831,7 @@ class BookStackConnector(BaseConnector):
             for event in permissions_update_response.data['data']:
                 if event.get("loggable_type") == content_type:
                     await self._handle_record_group_create_event(event, content_type, roles_details, book_ids, book_ids_operator)
+        return deletes_done
 
 
     async def _handle_record_group_create_event(
@@ -1588,9 +1908,115 @@ class BookStackConnector(BaseConnector):
             # The processor expects a list of tuples
             await self.data_entities_processor.on_new_record_groups([record_group_tuple])
             self.logger.info(f"✅ Successfully processed new {content_type}: '{item_name}'.")
+            await self._refresh_child_access(content_type, item_details.get("id"), roles_details)
 
-    async def _handle_record_group_delete_event(self, event: Dict, content_type: str) -> None:
-        self.logger.warning("!! method not implemented yet !!")
+    async def _refresh_child_access(
+        self, content_type: str, item_id: int | str | None, roles_details: dict[int, dict]
+    ) -> None:
+        """Recompute children that stored a snapshot of this book or chapter.
+
+        A child with its own role rows does not inherit, so a parent change does
+        not reach it until the child itself is synced.
+        """
+        if content_type not in ("book", "chapter") or item_id is None or not self.data_source:
+            return
+        try:
+            if content_type == "book":
+                chapters = self._page_listing(await self.data_source.list_chapters(
+                    count=500, filter={"book_id": str(item_id)}
+                ))
+                for chapter in (chapters or {}).get("data") or []:
+                    parent_external_id = f"book/{item_id}"
+                    record_group_tuple = await self._create_record_group_with_permissions(
+                        item=chapter,
+                        content_type_name="chapter",
+                        roles_details=roles_details,
+                        parent_external_id=parent_external_id,
+                    )
+                    if record_group_tuple:
+                        await self.data_entities_processor.on_new_record_groups([record_group_tuple])
+                page_filter = {"book_id": str(item_id)}
+            else:
+                page_filter = {"chapter_id": str(item_id)}
+            pages = self._page_listing(await self.data_source.list_pages(count=500, filter=page_filter))
+            for page in (pages or {}).get("data") or []:
+                await self._reapply_page_permissions(page, roles_details)
+        except Exception as exc:
+            self.logger.warning("Could not refresh children of %s %s: %s", content_type, item_id, exc)
+
+    async def _reapply_page_permissions(self, page: dict, roles_details: dict[int, dict]) -> None:
+        page_id = page.get("id")
+        if page_id is None:
+            return
+        existing = await self.data_entities_processor.get_record_by_external_id(
+            self.connector_id, f"page/{page_id}"
+        )
+        if existing is None or not self.data_source:
+            return
+        permissions_response = await self.data_source.get_content_permissions(
+            content_type="page", content_id=page_id
+        )
+        if not (permissions_response.success and permissions_response.data):
+            return
+        parent_external_id = existing.external_record_group_id
+        parent_roles = None
+        if parent_external_id:
+            if page.get("book_id"):
+                await self._parent_role_access(f"book/{page.get('book_id')}", roles_details)
+            parent_roles = await self._parent_role_access(
+                parent_external_id, roles_details, book_id=page.get("book_id")
+            )
+        grants = await self._parse_bookstack_permissions(
+            permissions_response.data, roles_details, "page", parent_roles
+        )
+        if hasattr(grants, "inherit"):
+            existing.inherit_permissions = grants.inherit
+        existing.rewrite_permissions = True
+        await self.data_entities_processor.on_updated_record_permissions(existing, list(grants))
+
+    async def _handle_record_group_delete_event(self, event: dict, content_type: str) -> bool:
+        """Remove a deleted shelf, book or chapter with everything below it, once BookStack confirms it is gone.
+
+        BookStack sends no page_delete for the pages of a deleted chapter or book,
+        so the group delete takes its pages and child chapters with it. Deleted
+        items go to the recycle bin and can be restored under the same id, so the
+        event alone is not proof. Returns False when the lookup or the delete
+        failed, so the event is read again next sync.
+        """
+        item_id = _deleted_item_id(event)
+        if item_id is None:
+            # TODO(pr3880-fixes): a purge clears the id, and a full sync does not yet remove
+            # groups BookStack no longer lists, so such a group stays until it is reconciled.
+            self.logger.warning(f"A {content_type} delete event no longer names its {content_type}; it is not removed")
+            return True
+        exists = await self._content_exists(content_type, item_id)
+        if exists is None:
+            self.logger.warning(f"Could not confirm {content_type} {item_id} was deleted; keeping its record group.")
+            return False
+        if exists:
+            self.logger.info(f"{content_type.capitalize()} {item_id} was restored after its delete; keeping its record group.")
+            return True
+        external_id = f"{content_type}/{item_id}"
+        try:
+            group = await self.data_entities_processor.get_record_group_by_external_id(self.connector_id, external_id)
+        except Exception as e:
+            self.logger.warning(f"Could not look up the record group of deleted {external_id}: {e}")
+            return False
+        if group is None:
+            return True
+        return await self.data_entities_processor.on_record_group_deleted(external_id, self.connector_id)
+
+    async def _content_exists(self, content_type: str, item_id: int) -> bool | None:
+        """Whether BookStack still lists a shelf, book or chapter by id; None when it gives no usable answer."""
+        list_method = {
+            "bookshelf": self.data_source.list_shelves,
+            "book": self.data_source.list_books,
+            "chapter": self.data_source.list_chapters,
+        }[content_type]
+        response = await list_method(filter={"id": str(item_id)})
+        if not response.success or not _is_listing(response.data):
+            return None
+        return bool(response.data["data"])
 
     #---------------------------Records Sync-----------------------------------#
     async def _sync_records(self, full_sync:bool = False) -> None:
@@ -1604,22 +2030,26 @@ class BookStackConnector(BaseConnector):
 
         #if no sync point, initialize cursor and run _sync_users else run _sync_users_incremental
         if full_sync or not bookstack_record_sync_point.get('timestamp'):
-            await self._sync_records_full(roles_details, users)
-            await self.record_sync_point.update_sync_point(
-                bookstack_record_sync_key,
-                {"timestamp": current_timestamp}
-            )
+            done = await self._sync_records_full(roles_details, users)
         else:
             last_sync_timestamp = bookstack_record_sync_point.get('timestamp')
-            await self._sync_records_incremental(last_sync_timestamp, roles_details, users)
-            await self.record_sync_point.update_sync_point(
-                bookstack_record_sync_key,
-                {"timestamp": current_timestamp}
-            )
+            done = await self._sync_records_incremental(last_sync_timestamp, roles_details, users)
+        if not done:
+            # Moving the timestamp on would leave the unread or unapplied
+            # changes behind it for good; this way the next sync repeats them.
+            self.logger.warning("Page changes were not all read or applied; the next sync starts from the same point")
+            return
+        await self.record_sync_point.update_sync_point(
+            bookstack_record_sync_key,
+            {"timestamp": current_timestamp}
+        )
 
-    async def _sync_records_full(self, roles_details: Dict[int, Dict], users: List[AppUser]) -> None:
+    async def _sync_records_full(self, roles_details: Dict[int, Dict], users: List[AppUser]) -> bool:
         """
         Sync all pages from BookStack as Record objects, handling new/updated/deleted records.
+
+        Returns True only when the whole listing was read and every page it no
+        longer returns was dealt with.
         """
         self.logger.info("Starting sync for pages as records.")
 
@@ -1639,6 +2069,8 @@ class BookStackConnector(BaseConnector):
 
         batch_records: List[Tuple[FileRecord, List[Permission]]] = []
         offset = 0
+        listed: set[str] = set()
+        listing_complete = False
 
         while True:
             response = await self.data_source.list_pages(
@@ -1658,10 +2090,19 @@ class BookStackConnector(BaseConnector):
                 self.logger.error(f"Failed to fetch pages or malformed response: {response.error}")
                 break
 
-            pages_page = pages_data.get("data", [])
+            # BookStack answers an error (429, 500) with a JSON body and no page
+            # list, which must not read as the end of the listing.
+            if not _is_listing(pages_data):
+                self.logger.error(f"BookStack did not return a page listing: {str(pages_data)[:500]}")
+                break
+
+            pages_page = pages_data["data"]
 
             if not pages_page:
-                self.logger.info("No more pages to sync.")
+                # Complete only if the total says so: an empty page short of it is a cut-off listing.
+                listing_complete = offset >= pages_data.get("total", 0)
+                if not listing_complete:
+                    self.logger.warning("BookStack stopped listing pages before the total it reported")
                 break
 
             # Apply book ID filter
@@ -1675,6 +2116,8 @@ class BookStackConnector(BaseConnector):
 
             # Process each page from the current API response
             for page in pages_page:
+                if page.get("id"):
+                    listed.add(f"page/{page['id']}")
                 record_update = await self._process_bookstack_page(page, roles_details, users)
 
                 if not record_update:
@@ -1707,6 +2150,7 @@ class BookStackConnector(BaseConnector):
 
             offset += len(pages_data.get("data", []))  # Use original count for offset
             if offset >= pages_data.get("total", 0):
+                listing_complete = True
                 break
 
         # Process any remaining records in the final batch
@@ -1714,7 +2158,148 @@ class BookStackConnector(BaseConnector):
             self.logger.info(f"Processing final batch of {len(batch_records)} new page records.")
             await self.data_entities_processor.on_new_records(batch_records)
 
+        if not listing_complete:
+            self.logger.warning(
+                "The page listing stopped early, so no page records are removed this sync"
+            )
+            return False
+
+        removed_all = await self._remove_pages_not_listed(
+            listed, book_ids, book_ids_operator,
+            (modified_after, modified_before, created_after, created_before),
+        )
         self.logger.info("✅ Finished syncing all page records.")
+        return removed_all
+
+    async def _remove_pages_not_listed(
+        self,
+        listed: set[str],
+        book_ids: set[int] | None,
+        book_ids_operator: FilterOperatorType | None,
+        date_filters: tuple[datetime | None, datetime | None, datetime | None, datetime | None],
+    ) -> bool:
+        """Delete the records of pages a complete listing no longer returns.
+
+        A complete listing leaves out pages deleted at the source and pages the
+        sync filters now exclude, so both leave every store. The listing pages
+        by offset, so a delete while it runs can shift a live page past it:
+        each page is looked up by id first, and kept if BookStack still has it
+        within the filters, or if the lookup fails. Returns False when any page
+        was kept for want of an answer, or its delete failed.
+        """
+        stale: list[Record] = []
+        after_key: str | None = None
+        try:
+            while True:
+                # Trash included: a trashed page BookStack no longer has is removed too.
+                batch = await self.data_entities_processor.get_records_by_status(
+                    self.connector_id, None, limit=_RECORD_SCAN_PAGE_SIZE, after_key=after_key,
+                    visibility=RecordVisibility.ALL,
+                )
+                stale.extend(
+                    r for r in batch
+                    if (r.external_record_id or "").startswith("page/")
+                    and r.external_record_id not in listed
+                )
+                if len(batch) < _RECORD_SCAN_PAGE_SIZE:
+                    break
+                after_key = batch[-1].id
+        except Exception as e:
+            self.logger.error(f"Could not read the synced page records, so none are removed: {e}")
+            return False
+
+        if stale:
+            self.logger.info(f"Checking {len(stale)} page records the listing no longer returned")
+        all_done = True
+        for record in stale:
+            try:
+                page_id = int(record.external_record_id.split("/", 1)[1])
+            except ValueError:
+                self.logger.warning(f"Unreadable page id {record.external_record_id}; keeping its record")
+                continue
+            answered, page = await self._fetch_page(page_id)
+            if not answered:
+                all_done = False
+                continue
+            if page is not None and self._page_passes_filters(page, book_ids, book_ids_operator, date_filters):
+                self.logger.info(f"Page {page_id} was missed by the listing but is still in BookStack; keeping it")
+                continue
+            all_done = await self._delete_page_record(record, page_id) and all_done
+        return all_done
+
+    def _page_passes_filters(
+        self,
+        page: dict,
+        book_ids: set[int] | None,
+        book_ids_operator: FilterOperatorType | None,
+        date_filters: tuple[datetime | None, datetime | None, datetime | None, datetime | None],
+    ) -> bool:
+        if book_ids:
+            in_books = page.get("book_id") in book_ids
+            if book_ids_operator.value == "in" and not in_books:
+                return False
+            if book_ids_operator.value == "not_in" and in_books:
+                return False
+        return self._pass_date_filters(page, *date_filters)
+
+    @staticmethod
+    def _page_listing(response: BookStackResponse) -> dict | None:
+        """The decoded body of a list_pages answer, or None when it is not a page listing."""
+        content = response.data.get('content') if response.success and response.data else None
+        try:
+            listing = json.loads(content) if content else None
+        except (ValueError, TypeError):
+            return None
+        return listing if _is_listing(listing) else None
+
+    async def _fetch_page(self, page_id: int) -> tuple[bool, dict | None]:
+        """Look a page up by id: (answered, page). A page BookStack no longer has is (True, None)."""
+        listing = self._page_listing(await self.data_source.list_pages(filter={"id": str(page_id)}))
+        if listing is None:
+            self.logger.warning(f"Could not read BookStack's answer for page ID {page_id}")
+            return False, None
+        return True, (listing["data"][0] if listing["data"] else None)
+
+    async def _remove_pages_no_longer_in_bookstack(self) -> bool:
+        """List every page id within the sync filters, then remove the records of pages not listed.
+
+        For a delete whose event no longer names the page; reads ids only, so
+        it costs one request per 500 pages rather than a full sync.
+        """
+        book_ids, book_ids_operator = self._get_book_id_filter()
+        date_filters = self._get_date_filters()
+        api_filters = self._build_date_filter_params(*date_filters)
+        listed: set[str] = set()
+        offset = 0
+        while True:
+            listing = self._page_listing(await self.data_source.list_pages(
+                count=_AUDIT_LOG_PAGE_SIZE, offset=offset, filter=api_filters,
+            ))
+            if listing is None:
+                self.logger.warning("Could not list BookStack's pages, so purged pages are not removed this sync")
+                return False
+            pages = listing["data"]
+            listed.update(
+                f"page/{page['id']}" for page in pages
+                if page.get("id") and self._page_passes_filters(page, book_ids, book_ids_operator, date_filters)
+            )
+            offset += len(pages)
+            if offset >= listing["total"]:
+                break
+            if not pages:
+                self.logger.warning(
+                    "BookStack stopped listing pages before the total it reported, so purged pages are not removed this sync"
+                )
+                return False
+        return await self._remove_pages_not_listed(listed, book_ids, book_ids_operator, date_filters)
+
+    async def _delete_page_record(self, record: Record, page_id: int) -> bool:
+        try:
+            await self.data_entities_processor.on_record_deleted(record_id=record.id)
+        except Exception as e:
+            self.logger.warning(f"Failed to remove the record of page {page_id}: {e}")
+            return False
+        return True
 
     async def _process_bookstack_page(self, page: Dict, roles_details: Dict[int, Dict], users: List[AppUser]) -> Optional[RecordUpdate]:
         """
@@ -1793,17 +2378,21 @@ class BookStackConnector(BaseConnector):
                 content_type="page", content_id=page_id
             )
             if permissions_response.success and permissions_response.data:
+                parent_roles = None
+                if parent_external_id:
+                    if page.get("book_id"):
+                        await self._parent_role_access(f"book/{page.get('book_id')}", roles_details)
+                    parent_roles = await self._parent_role_access(
+                        parent_external_id, roles_details, book_id=page.get("book_id")
+                    )
                 new_permissions = await self._parse_bookstack_permissions(
-                    permissions_response.data, roles_details, "page"
+                    permissions_response.data, roles_details, "page", parent_roles
                 )
-
-                # new_permissions = self._parse_bookstack_permissions_all_users(all_users=users)
-
-                fallback_permissions = permissions_response.data.get("fallback_permissions")
-
-                if fallback_permissions:
-                    # Set inherit_permissions based on the 'inheriting' flag
-                    file_record.inherit_permissions = fallback_permissions.get("inheriting", True)
+                if hasattr(new_permissions, "inherit"):
+                    file_record.inherit_permissions = new_permissions.inherit
+                if existing_record:
+                    permissions_changed = True
+                    is_updated = True
             else:
                 self.logger.warning(
                     f"Failed to fetch permissions for page '{page.get('name')}' (ID: {page_id}): "
@@ -1872,10 +2461,12 @@ class BookStackConnector(BaseConnector):
         last_sync_timestamp: str,
         roles_details: Dict[int, Dict],
         users: List[AppUser]
-    ) -> None:
+    ) -> bool:
         """
         Syncs records (pages) incrementally by processing create, update, and
         delete events from the audit log since the last sync.
+
+        Returns False when a page delete could not be read or applied.
         """
         self.logger.info(f"Starting incremental record (page) sync from: {last_sync_timestamp}")
 
@@ -1891,7 +2482,7 @@ class BookStackConnector(BaseConnector):
             "create": self.data_source.list_audit_log(filter={'type': 'page_create', 'created_at:gte': last_sync_timestamp}),
             "update": self.data_source.list_audit_log(filter={'type': 'page_update', 'created_at:gte': last_sync_timestamp}),
             "permissions_update": self.data_source.list_audit_log(filter={'type': 'permissions_update', 'created_at:gte': last_sync_timestamp}),
-            "delete": self.data_source.list_audit_log(filter={'type': 'page_delete', 'created_at:gte': last_sync_timestamp}),
+            "delete": self._list_page_delete_events(last_sync_timestamp),
             "move": self.data_source.list_audit_log(filter={'type': 'page_move', 'created_at:gte': last_sync_timestamp})
         }
         results = await asyncio.gather(*tasks.values(), return_exceptions=True)
@@ -1943,11 +2534,23 @@ class BookStackConnector(BaseConnector):
                     )
 
         # 4. Process Delete Events (no date filter needed - if it was deleted, handle it)
-        delete_response = event_responses.get("delete")
-        if delete_response and delete_response.success and delete_response.data.get('data'):
-            self.logger.info(f"Found {len(delete_response.data['data'])} page(s) to delete.")
-            # for event in delete_response.data['data']:
-            #     await self._handle_page_delete_event(event)
+        deletes_done = False
+        delete_listing = event_responses.get("delete")
+        if isinstance(delete_listing, BaseException):
+            self.logger.error(f"Could not read page deletions from the audit log: {delete_listing}")
+        else:
+            delete_events, deletes_done = delete_listing
+            if delete_events:
+                self.logger.info(f"Found {len(delete_events)} page(s) to delete.")
+            unnamed = False
+            for event in delete_events:
+                page_id = _deleted_item_id(event)
+                if page_id is None:
+                    unnamed = True
+                    continue
+                deletes_done = await self._handle_page_delete_event(page_id) and deletes_done
+            if unnamed:
+                deletes_done = await self._remove_pages_no_longer_in_bookstack() and deletes_done
 
         # 5. Process Move Events
         move_response = event_responses.get("move")
@@ -1956,7 +2559,61 @@ class BookStackConnector(BaseConnector):
             self.logger.warning("!! method not implemented yet !!")
 
         self.logger.info("✅ Finished incremental record sync.")
+        return deletes_done
 
+
+    async def _list_page_delete_events(self, since: str) -> tuple[list[dict], bool]:
+        """Every page_delete audit event since ``since``, reading past the API's page size.
+
+        Returns the events read and whether the whole log was read: a page of
+        the log that cannot be read, including an error body, ends the listing.
+        """
+        events: list[dict] = []
+        offset = 0
+        while True:
+            response = await self.data_source.list_audit_log(
+                count=_AUDIT_LOG_PAGE_SIZE,
+                offset=offset,
+                filter={'type': 'page_delete', 'created_at:gte': since},
+            )
+            if not response.success or not _is_listing(response.data):
+                self.logger.warning(
+                    f"Could not read page deletions from the audit log: {response.error or str(response.data)[:500]}"
+                )
+                return events, False
+            batch = response.data['data']
+            events.extend(batch)
+            offset += len(batch)
+            if offset >= response.data['total']:
+                return events, True
+            if not batch:
+                self.logger.warning("The audit log stopped before the total it reported; page deletions are read again next sync")
+                return events, False
+
+    async def _handle_page_delete_event(self, page_id: int) -> bool:
+        """Remove a page's record once BookStack confirms the page is gone.
+
+        Deleted pages go to BookStack's recycle bin and can be restored under
+        the same id, so the audit event alone is not proof: a page restored
+        before this sync keeps its record. Returns False when the lookup or
+        the delete failed, so the event is read again next sync.
+        """
+        answered, page = await self._fetch_page(page_id)
+        if not answered:
+            self.logger.warning(f"Could not confirm page {page_id} was deleted; keeping its record.")
+            return False
+        if page is not None:
+            self.logger.info(f"Page {page_id} was restored after its delete; keeping its record.")
+            return True
+
+        try:
+            record = await self.data_entities_processor.get_record_by_external_id(
+                self.connector_id, f"page/{page_id}"
+            )
+        except Exception as e:
+            self.logger.warning(f"Could not look up the record of deleted page {page_id}: {e}")
+            return False
+        return record is None or await self._delete_page_record(record, page_id)
 
     async def _handle_page_upsert_event(
         self,

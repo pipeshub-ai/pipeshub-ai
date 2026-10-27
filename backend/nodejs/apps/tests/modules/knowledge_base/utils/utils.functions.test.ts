@@ -9,6 +9,8 @@ import {
 } from '../../../../src/modules/knowledge_base/utils/utils'
 
 import { STORAGE_WRITE_FAILED_MESSAGE } from '../../../../src/modules/storage/constants/constants'
+import { KeyValueStoreService } from '../../../../src/libs/services/keyValueStore.service'
+import axios from 'axios'
 
 const STORAGE_URL = 'http://localhost:19191'
 
@@ -249,7 +251,7 @@ describe('knowledge_base/utils - functional tests', () => {
       }
     })
 
-    it('should throw on non-redirect error from storage', async () => {
+    it('should report a plain failure when storage errors without a message of its own', async () => {
       nock(STORAGE_URL)
         .post('/api/v1/document/internal/upload')
         .reply(500, { error: 'Internal Server Error' })
@@ -266,9 +268,31 @@ describe('knowledge_base/utils - functional tests', () => {
         )
         expect.fail('Should have thrown')
       } catch (error: any) {
-        expect(error).to.exist
-        expect(error.response?.status).to.equal(500)
+        expect(error.message).to.equal(STORAGE_WRITE_FAILED_MESSAGE)
       }
+    })
+
+    it("should keep storage's own error so its words reach the uploader", async () => {
+      nock(STORAGE_URL)
+        .post('/api/v1/document/internal/upload')
+        .reply(400, { error: { code: 'BAD_REQUEST', message: 'This file is empty.' } })
+
+      const failure: unknown = await createPlaceholderDocument(
+        makeReq(),
+        makeFile(),
+        'test.pdf',
+        false,
+        makeKVS() as unknown as KeyValueStoreService,
+        defaultStorageConfig,
+        'service-token',
+      ).then(
+        () => expect.fail('Should have thrown'),
+        (error: unknown) => error,
+      )
+      expect(axios.isAxiosError(failure) && failure.response?.status).to.equal(400)
+      expect(axios.isAxiosError(failure) && failure.response?.data).to.deep.equal({
+        error: { code: 'BAD_REQUEST', message: 'This file is empty.' },
+      })
     })
 
     it('should throw on 404 error from storage', async () => {

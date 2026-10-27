@@ -3,7 +3,7 @@ import logging
 from typing import Any
 
 from docling_core.types.doc.document import DoclingDocument
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -15,7 +15,9 @@ from app.services.resource_governor import (
     gate_pool,
     parse_cost,
 )
+from app.services.resource_governor.memory_domain import parse_admission_cap
 from app.utils.logger import create_logger
+from app.utils.memory_release import release_freed_memory
 
 logger = logging.getLogger(__name__)
 
@@ -144,13 +146,15 @@ async def _acquire_docling_gate(pdf_binary: bytes, message_id: str) -> tuple[boo
     if _resource_governor is None:
         return True, 0
     cost = parse_cost(ParseTier.HEAVY, len(pdf_binary))
-    gate = _resource_governor.gate(gate_pool(ParseTier.HEAVY))
+    pool = gate_pool(ParseTier.HEAVY)
+    gate = _resource_governor.gate(pool)
     admitted = await acquire_gate_with_backpressure(
         gate, cost, ParseTier.HEAVY, message_id,
         logger=logger,
         log_prefix="docling",
         queue_wait_warn_seconds=DOCLING_QUEUE_WAIT_WARN_SECONDS,
         gate_timeout_seconds=DOCLING_GATE_TIMEOUT_SECONDS,
+        cap=parse_admission_cap(_resource_governor, pool),
     )
     return admitted, (cost if admitted else 0)
 
@@ -217,12 +221,15 @@ def serialize_docling_doc(doc: DoclingDocument) -> str:
 
 @app.post("/parse-pdf", response_model=ParseResponse)
 async def parse_pdf_endpoint(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     record_name: str = Form(...),
     start_page: int | None = Form(default=None),
     end_page: int | None = Form(default=None),
 ) -> ParseResponse | JSONResponse:
     """Parse PDF document (phase 1 - no block creation, no LLM calls)"""
+    # After the response is sent: until then the serialized document is still held.
+    background_tasks.add_task(release_freed_memory)
     cost = 0
     try:
         pdf_binary = await file.read()
@@ -252,16 +259,27 @@ async def parse_pdf_endpoint(
         )
 
     except asyncio.TimeoutError:
-        return ParseResponse(
-            success=False,
-            error=f"Parsing timed out after {PDF_PARSING_TIMEOUT_SECONDS} seconds"
+        return _parse_failure_response(
+            "PARSE_TIMEOUT",
+            f"Parsing timed out after {PDF_PARSING_TIMEOUT_SECONDS} seconds",
         )
     except HTTPException:
         raise
-    except Exception as e:
-        return ParseResponse(
-            success=False,
-            error=f"Parsing failed: {str(e)}"
-        )
+    except Exception:
+        logger.exception("PDF parsing failed for %s", record_name)
+        return _parse_failure_response("PARSE_FAILED", "Parsing failed")
     finally:
         _release_docling_gate(cost)
+
+
+def _parse_failure_response(error_code: str, error: str) -> JSONResponse:
+    """A failed parse as a 422 rather than a 200 with ``success: false``.
+
+    422, not 5xx: a timeout or parse error is a property of the document, so
+    BaseServiceClient must neither retry it (a retry re-runs the full
+    40-minute budget) nor count it against the circuit breaker.
+    """
+    return JSONResponse(
+        status_code=422,
+        content={"success": False, "error": error, "errorCode": error_code},
+    )

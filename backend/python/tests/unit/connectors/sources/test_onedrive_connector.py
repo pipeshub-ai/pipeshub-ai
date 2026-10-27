@@ -10,6 +10,8 @@ from fastapi import HTTPException
 from app.config.constants.arangodb import Connectors, MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.sources.microsoft.common.msgraph_client import RecordUpdate
 from app.connectors.sources.microsoft.onedrive.connector import (
+    GraphReadFailedError,
+    _FolderWalk,
     OneDriveConnector,
     OneDriveCredentials,
     OneDriveSubscriptionManager,
@@ -24,7 +26,6 @@ from app.models.entities import (
 )
 from app.models.permission import EntityType, Permission, PermissionType
 import asyncio
-from app.config.constants.arangodb import MimeTypes, OriginTypes, ProgressStatus
 from app.connectors.core.registry.filters import FilterCollection, FilterOperator
 from msgraph.generated.models.o_data_errors.main_error import MainError
 from msgraph.generated.models.o_data_errors.o_data_error import ODataError
@@ -348,9 +349,9 @@ class TestConvertToPermissions:
         link.type = "read"
         perm.link = link
 
+        # An anonymous link names no grantee, so it yields no permission.
         permissions = await connector._convert_to_permissions([perm])
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert permissions == []
 
     @pytest.mark.asyncio
     async def test_organization_link_permission(self):
@@ -365,8 +366,7 @@ class TestConvertToPermissions:
         perm.link = link
 
         permissions = await connector._convert_to_permissions([perm])
-        assert len(permissions) == 1
-        assert permissions[0].entity_type == EntityType.ORG
+        assert permissions == []  # an organization link alone is not a grant
 
 
 # ===========================================================================
@@ -830,7 +830,7 @@ class TestRunSyncWithYield:
         )
 
         # Mock _process_delta_items_generator
-        async def fake_gen(items):
+        async def fake_gen(items, **_kwargs):
             for _ in items:
                 yield (rec_update.record, [], rec_update)
 
@@ -864,7 +864,7 @@ class TestRunSyncWithYield:
             metadata_changed=False, content_changed=False, permissions_changed=False,
         )
 
-        async def fake_gen(items):
+        async def fake_gen(items, **_kwargs):
             yield (None, [], del_update)
 
         connector._process_delta_items_generator = fake_gen
@@ -897,7 +897,7 @@ class TestRunSyncWithYield:
             metadata_changed=True, content_changed=False, permissions_changed=False,
         )
 
-        async def fake_gen(items):
+        async def fake_gen(items, **_kwargs):
             yield (upd_update.record, [], upd_update)
 
         connector._process_delta_items_generator = fake_gen
@@ -932,7 +932,7 @@ class TestRunSyncWithYield:
             new_permissions=[],
         )
 
-        async def fake_gen(items):
+        async def fake_gen(items, **_kwargs):
             for _ in items:
                 yield (new_update.record, [], new_update)
 
@@ -974,7 +974,7 @@ class TestRunSyncWithYield:
             new_permissions=[],
         )
 
-        async def fake_gen(items):
+        async def fake_gen(items, **_kwargs):
             for _ in items:
                 yield (MagicMock(), [], new_update)
 
@@ -1386,7 +1386,8 @@ class TestPerformDeltaSync:
             'delta_link': 'https://graph.microsoft.com/v1.0/delta-final',
         })
 
-        connector.handle_group_create = AsyncMock(return_value=True)
+        # Members unreadable for good (None): the listed member changes are applied instead.
+        connector.handle_group_create = AsyncMock(return_value=None)
         connector._process_member_change = AsyncMock()
 
         await connector._perform_delta_sync(
@@ -1730,7 +1731,7 @@ class TestGetUsersFromNestedGroup:
         assert users[0].email == "nested@test.com"
 
     @pytest.mark.asyncio
-    async def test_error_returns_empty(self):
+    async def test_error_returns_none(self):
         connector = _make_connector()
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_group_members = AsyncMock(side_effect=Exception("API error"))
@@ -1739,8 +1740,9 @@ class TestGetUsersFromNestedGroup:
         nested_group.id = "ng1"
         nested_group.display_name = "Fail Group"
 
-        users = await connector._get_users_from_nested_group(nested_group)
-        assert users == []
+        with pytest.raises(GraphReadFailedError) as err:
+            await connector._get_users_from_nested_group(nested_group)
+        assert err.value.permanent is False
 
 
 # ===========================================================================
@@ -2054,7 +2056,7 @@ class TestProcessDeltaItemCoverage:
         connector = _make_connector_cov()
         connector.msgraph_client = MagicMock()
         connector.msgraph_client.get_file_permission = AsyncMock(return_value=[])
-        connector._update_folder_children_permissions = AsyncMock()
+        connector._update_folder_children_permissions = AsyncMock(return_value=_FolderWalk())
 
         now = datetime.now(timezone.utc)
         existing = _make_existing_record(external_revision_id="etag-1")
@@ -2116,7 +2118,7 @@ class TestProcessDeltaItemCoverage:
 # ===========================================================================
 
 
-class TestConvertToPermissionsCoverage:
+class TestConvertToPermissionsIdentitiesAndRoles:
 
     @pytest.mark.asyncio
     async def test_granted_to_identities_v2_group(self):
@@ -2183,9 +2185,9 @@ class TestConvertToPermissionsCoverage:
         good_perm.link.type = "read"
 
         result = await connector._convert_to_permissions([bad_perm, good_perm])
-        # bad_perm may or may not produce a permission depending on exact failure point,
-        # but good_perm should always produce one
-        assert any(p.entity_type == EntityType.ANYONE_WITH_LINK for p in result)
+        # Neither yields a permission: bad_perm fails, and an anonymous link
+        # names no grantee.
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_user_no_additional_data(self):
@@ -2231,7 +2233,7 @@ class TestConvertToPermissionsCoverage:
 # ===========================================================================
 
 
-class TestPermissionsEqualCoverage:
+class TestPermissionsEqualOrdering:
 
     def test_same_perms_different_order(self):
         connector = _make_connector_cov()
@@ -2916,7 +2918,8 @@ class TestPerformDeltaSyncCoverage:
             "next_link": None,
             "delta_link": "https://delta",
         })
-        connector.handle_group_create = AsyncMock(return_value=True)
+        # Members unreadable for good (None): the listed member changes are applied instead.
+        connector.handle_group_create = AsyncMock(return_value=None)
         connector._process_member_change = AsyncMock()
 
         await connector._perform_delta_sync("https://url", "key")
@@ -2969,6 +2972,7 @@ class TestPerformDeltaSyncCoverage:
         connector.msgraph_client = MagicMock()
         connector.user_group_sync_point = MagicMock()
         connector.user_group_sync_point.update_sync_point = AsyncMock()
+        connector.user_group_sync_point.read_sync_point = AsyncMock(return_value={})
 
         group = MagicMock()
         group.id = "grp-1"
@@ -2983,6 +2987,9 @@ class TestPerformDeltaSyncCoverage:
         connector.handle_group_create = AsyncMock(return_value=False)
 
         await connector._perform_delta_sync("https://url", "key")
+        connector.user_group_sync_point.update_sync_point.assert_awaited_once_with(
+            "key", {"heldPage": "https://url", "heldPageAttempts": 1}
+        )
 
     @pytest.mark.asyncio
     async def test_delete_group_failure_continues(self):
@@ -2990,6 +2997,7 @@ class TestPerformDeltaSyncCoverage:
         connector.msgraph_client = MagicMock()
         connector.user_group_sync_point = MagicMock()
         connector.user_group_sync_point.update_sync_point = AsyncMock()
+        connector.user_group_sync_point.read_sync_point = AsyncMock(return_value={})
 
         group = MagicMock()
         group.id = "grp-del-fail"
@@ -3003,6 +3011,9 @@ class TestPerformDeltaSyncCoverage:
         connector.handle_delete_group = AsyncMock(return_value=False)
 
         await connector._perform_delta_sync("https://url", "key")
+        connector.user_group_sync_point.update_sync_point.assert_awaited_once_with(
+            "key", {"heldPage": "https://url", "heldPageAttempts": 1}
+        )
 
 
 # ===========================================================================
@@ -3108,8 +3119,9 @@ class TestGetUsersFromNestedGroupCoverage:
         nested_group.id = "ng-err"
         nested_group.display_name = "NestedGroupErr"
 
-        result = await connector._get_users_from_nested_group(nested_group)
-        assert result == []
+        with pytest.raises(GraphReadFailedError) as err:
+            await connector._get_users_from_nested_group(nested_group)
+        assert err.value.permanent is False
 
     @pytest.mark.asyncio
     async def test_nested_group_no_display_name(self):
@@ -4392,9 +4404,9 @@ class TestConvertToPermissionsCoverage:
         perm.link.type = "view"
         perm.roles = []
 
+        # An anonymous link names no grantee, so it yields no permission.
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ANYONE_WITH_LINK
+        assert result == []
 
     @pytest.mark.asyncio
     async def test_organization_link_permission(self):
@@ -4408,8 +4420,7 @@ class TestConvertToPermissionsCoverage:
         perm.roles = []
 
         result = await connector._convert_to_permissions([perm])
-        assert len(result) == 1
-        assert result[0].entity_type == EntityType.ORG
+        assert result == []  # an organization link alone is not a grant
 
     @pytest.mark.asyncio
     async def test_permission_conversion_error_skipped(self):

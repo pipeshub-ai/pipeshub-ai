@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Any, Callable, Dict, List, Optional, TYPE_CHECKING
+from typing import Any, Callable, Collection, Dict, List, Optional, TYPE_CHECKING
 
 from langchain_core.tools import tool
 from pydantic import BaseModel, Field
 
-from app.utils.conversation_tasks import register_task, _rows_to_csv_bytes
+from app.utils.conversation_tasks import register_task
 from app.utils.logger import create_logger
 
 if TYPE_CHECKING:
@@ -77,6 +77,39 @@ def agent_knowledge_has_sql_connector(agent_knowledge: Optional[List[Dict[str, A
         isinstance(k, dict) and str(k.get("type", "")).upper() in _SQL_CONNECTOR_TYPES
         for k in agent_knowledge
     )
+
+
+def sql_connector_instance_ids(instances: list[dict] | None, org_id: str) -> frozenset[str]:
+    """IDs of the configured SQL connector instances in *instances* that belong to *org_id*."""
+    ids: set[str] = set()
+    for instance in instances or []:
+        if not isinstance(instance, dict):
+            continue
+        if str(instance.get("type", "")).upper() not in _SQL_CONNECTOR_TYPES:
+            continue
+        if not instance.get("isConfigured"):
+            continue
+        # `get_user_connector_instances` does not filter on org, so apply the tenant check here.
+        instance_org_id = instance.get("orgId")
+        if instance_org_id and instance_org_id != org_id:
+            continue
+        instance_id = instance.get("_key") or instance.get("id")
+        if instance_id:
+            ids.add(str(instance_id))
+    return frozenset(ids)
+
+
+def agent_knowledge_sql_connector_ids(agent_knowledge: list[dict[str, Any]] | None) -> frozenset[str]:
+
+    """Connector IDs of the SQL connectors attached to the agent as knowledge."""
+    ids: set[str] = set()
+    for k in agent_knowledge or []:
+        if not isinstance(k, dict) or str(k.get("type", "")).upper() not in _SQL_CONNECTOR_TYPES:
+            continue
+        connector_id = str(k.get("connectorId") or "").strip()
+        if connector_id:
+            ids.add(connector_id)
+    return frozenset(ids)
 
 
 class ExecuteQueryArgs(BaseModel):
@@ -147,6 +180,16 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
     Returns:
         (is_safe, error_message) tuple
     """
+    # Imported here to avoid an import cycle.
+    from app.agents.actions.util.read_only_sql import (
+        MAX_SQL_CHARS,
+        calls_side_effect_function,
+    )
+
+    # The side-effect scan reads the whole text, so text it won't read is refused, not half-checked.
+    if len(query) > MAX_SQL_CHARS:
+        return False, "Blocked: the statement is too long to check"
+
     query_upper = query.upper().strip()
 
     # Remove comments and extra whitespace
@@ -216,10 +259,8 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
         'DBCC',
         # Oracle specific
         'DUMP',
-        # BigQuery specific
-        'DECLARE', 'SET',
         # Multiple dialects
-        'USE', 'VALUES',
+        'VALUES',
     ]
 
     if not any(query_clean.startswith(start) for start in allowed_starts):
@@ -250,6 +291,9 @@ def _is_query_safe(query: str) -> tuple[bool, str]:
     for pattern in dynamic_sql_patterns:
         if pattern in query_clean:
             return False, "Blocked: Dynamic SQL execution is not allowed"
+
+    if calls_side_effect_function(query):
+        return False, "Blocked: this statement calls a function that is not a plain read"
 
     return True, ""
 
@@ -640,25 +684,57 @@ async def _execute_query_impl(
         return result
 
 
+async def _connector_is_accessible(
+    graph_provider: IGraphDBProvider | None,
+    connector_id: str,
+    user_id: str,
+    org_id: str,
+) -> bool:
+    """The query runs with the connector's own credentials, so the connector must
+    be one of the caller's org that the user can reach."""
+    if graph_provider is None or not org_id:
+        return False
+    from app.utils.chat_helpers import accessible_node_ids
+
+    app = await graph_provider.get_document(connector_id, CollectionNames.APPS.value)
+    if not app or app.get("orgId") != org_id:
+        return False
+    return connector_id in await accessible_node_ids(graph_provider, {connector_id}, user_id, org_id)
+
+
 def create_execute_query_tool(
     config_service: "ConfigurationService",
     graph_provider: Optional["IGraphDBProvider"] = None,
     org_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     blob_store: Optional["BlobStorage"] = None,
+    user_id: str | None = None,
+    *,
+    allowed_connector_ids: Collection[str],
+    artifact_owner_user_id: str | None = None,
 ) -> Callable:
     """Factory function to create the execute_query tool with runtime dependencies.
     
     Args:
         config_service: Configuration service for retrieving connection details
-        graph_provider: Optional GraphDB service (used for BlobStorage fallback)
-        org_id: Optional organization ID for background CSV export
+        graph_provider: GraphDB service: checks the user can reach the connector,
+            and backs the BlobStorage fallback
+        org_id: The caller's organization: scopes the connector check and the CSV export
         conversation_id: Optional conversation ID for background CSV export
         blob_store: Optional blob storage for saving full result CSVs
+        user_id: Whose connector access is checked, and the CSV export's owner
+            unless ``artifact_owner_user_id`` is given; without either the
+            export has no artifact record and so no download link on local storage
+        allowed_connector_ids: The only connector instance IDs the tool may
+            query. The query runs with the connector's stored credentials, so
+            any other ID (or none) is rejected before a client is built.
+        artifact_owner_user_id: Owner of the CSV export when it is not ``user_id``
+            (a service-account agent's run, owned by the person chatting).
         
     Returns:
         A langchain tool for executing SQL queries
     """
+    allowed = frozenset(allowed_connector_ids)
     
     @tool("execute_sql_query", args_schema=ExecuteQueryArgs)
     async def execute_sql_query_tool(
@@ -709,13 +785,35 @@ def create_execute_query_tool(
             connector_id,
         )
         logger.debug(f"🔍 [execute_sql_query_tool] Query: {query}")
-        
+
+        connector_id = (connector_id or "").strip()
+        if not connector_id:
+            return {
+                "ok": False,
+                "error": "connector_id is required: pass the Connector Id of the SQL_TABLE record in context.",
+            }
+        if connector_id not in allowed:
+            logger.warning(
+                "🔍 [execute_sql_query_tool] Rejected connector_id=%r: not attached to this agent",
+                connector_id,
+            )
+            return {
+                "ok": False,
+                "error": (
+                    f"connector_id {connector_id!r} is not one of the SQL connectors available "
+                    "to this agent. Use the 'Connector Id' shown on the table record you are querying."
+                ),
+            }
+
         try:
+            if not await _connector_is_accessible(graph_provider, connector_id, user_id or "", org_id or ""):
+                return {"ok": False, "error": f"Connector {connector_id!r} is not available to you."}
+
             result = await _execute_query_impl(
                 query=query,
                 source_name=source_name,
                 config_service=config_service,
-                connector_instance_id=(connector_id or "").strip() or None,
+                connector_instance_id=connector_id,
             )
             
             logger.info(f"🔍 [execute_sql_query_tool] Got result: ok={result.get('ok')}, row_count={result.get('row_count')}, column_count={result.get('column_count')}")
@@ -748,30 +846,19 @@ def create_execute_query_tool(
                 and resolved_blob_store
                 and org_id
             ):
-                async def _save_csv_to_blob() -> Optional[Dict[str, Any]]:
-                    try:
-                        csv_bytes = _rows_to_csv_bytes(raw_columns, raw_rows)
-                        file_name = f"query_result_{int(time.time())}.csv"
-                        upload_info = await resolved_blob_store.save_conversation_file_to_storage(
-                            org_id=org_id,
-                            conversation_id=conversation_id,
-                            file_name=file_name,
-                            file_bytes=csv_bytes,
-                        )
-                        logger.info(
-                            "CSV export complete for conversation %s (%d rows)",
-                            conversation_id,
-                            len(raw_rows),
-                        )
-                        return {"type": "csv_download", **upload_info}
-                    except Exception:
-                        logger.exception(
-                            "Background CSV export failed for conversation %s",
-                            conversation_id,
-                        )
-                        return None
+                from app.sandbox.artifact_upload import save_query_result_csv
 
-                task = asyncio.create_task(_save_csv_to_blob())
+                task = asyncio.create_task(save_query_result_csv(
+                    blob_store=resolved_blob_store,
+                    graph_provider=graph_provider,
+                    org_id=org_id,
+                    user_id=artifact_owner_user_id or user_id,
+                    conversation_id=conversation_id,
+                    columns=raw_columns,
+                    rows=raw_rows,
+                    file_name=f"query_result_{int(time.time())}.csv",
+                    source_tool="sql.execute_sql_query",
+                ))
                 register_task(conversation_id, task)
             
             return result

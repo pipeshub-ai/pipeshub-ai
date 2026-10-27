@@ -10,6 +10,7 @@ from app.agent_loop_lib.agent.loops import SingleShotLoop
 from app.agent_loop_lib.agent.spec import AgentSpec, ModelSpec
 from app.agent_loop_lib.context.manager import ContextManager
 from app.agent_loop_lib.core.types import Goal
+from app.agent_loop_lib.core.usage_source import llm_usage_source
 from app.agent_loop_lib.runtime.runtime import AgentRuntime
 from app.agent_loop_lib.tools.registry import ToolRegistry
 
@@ -81,7 +82,8 @@ async def run_single_shot(
         for message in seed_messages:
             await ctx.add(message)
         agent.seed_context(ctx)
-    return await agent.run(goal, _skip_start=skip_start)
+    with llm_usage_source(f"single_shot:{spec.name}"):
+        return await agent.run(goal, _skip_start=skip_start)
 
 
 def parse_json_task_output(result: Any) -> dict[str, Any]:

@@ -1,8 +1,10 @@
+import { editionBoot } from '../src/config';
 import 'reflect-metadata';
 import { expect } from 'chai';
 import sinon from 'sinon';
 import express from 'express';
 import http from 'http';
+import net, { AddressInfo } from 'net';
 import { Container } from 'inversify';
 import { Application } from '../src/app';
 import { createMockLogger, MockLogger } from './helpers/mock-logger';
@@ -17,6 +19,7 @@ import * as cmConfigModule from '../src/modules/configuration_manager/config/con
 import * as messageBrokerModule from '../src/libs/services/message-broker.factory';
 import * as kvMigrationModule from '../src/libs/keyValueStore/migration/kvStoreMigration.service';
 import * as oauthProviderModule from '../src/libs/services/oauth-token-service.provider';
+import * as rateLimitModule from '../src/libs/middlewares/rate-limit.middleware';
 import { RedisConnectionProviderFactory } from '../src/libs/services/redis/connectionProviderFactory';
 import * as redisConnectionProviderFactoryModule from '../src/libs/services/redis/connectionProviderFactory';
 import { TokenManagerContainer } from '../src/modules/tokens_manager/container/token-manager.container';
@@ -39,26 +42,38 @@ import * as healthRoutes from '../src/modules/tokens_manager/routes/health.route
 import * as userRoutes from '../src/modules/user_management/routes/users.routes';
 import * as userGroupRoutes from '../src/modules/user_management/routes/userGroups.routes';
 import * as orgRoutes from '../src/modules/user_management/routes/org.routes';
-import * as samlRoutes from '../src/modules/auth/routes/saml.routes';
 import * as userAccountRoutes from '../src/modules/auth/routes/userAccount.routes';
 import * as orgAuthConfigRoutes from '../src/modules/auth/routes/orgAuthConfig.routes';
 import * as storageRoutes from '../src/modules/storage/routes/storage.routes';
 import * as esRoutes from '../src/modules/enterprise_search/routes/es.routes';
+import * as codeGraphRoutes from '../src/modules/enterprise_search/routes/code-graph.routes';
 import * as connectorRoutes from '../src/modules/tokens_manager/routes/connectors.routes';
 import * as oauthRoutes from '../src/modules/tokens_manager/routes/oauth.routes';
 import * as kbRoutes from '../src/modules/knowledge_base/routes/kb.routes';
+import * as artifactsRoutes from '../src/modules/artifacts/routes/artifacts.routes';
 import * as notificationRoutes from '../src/modules/notification/routes/notification.routes';
 import * as cmRoutes from '../src/modules/configuration_manager/routes/cm_routes';
+import * as openaiModelsRoutes from '../src/modules/configuration_manager/routes/openai_models.routes';
 import * as mailRoutes from '../src/modules/mail/routes/mail.routes';
 import * as crawlingRoutes from '../src/modules/crawling_manager/routes/cm_routes';
 import * as oauthProviderRoutes from '../src/modules/oauth_provider/routes/oauth.provider.routes';
 import * as oauthClientsRoutes from '../src/modules/oauth_provider/routes/oauth.clients.routes';
 import * as patRoutes from '../src/modules/oauth_provider/routes/pat.routes';
 import * as mcpRoutes from '../src/modules/mcp/routes/mcp.routes';
+import {
+  MCP_BODY_TOO_LARGE_MESSAGE,
+  MCP_JSON_BODY_LIMIT_BYTES,
+} from '../src/modules/mcp/middlewares/mcp-body.middleware';
 import * as oidcRoutes from '../src/modules/oauth_provider/routes/oid.provider.routes';
 import * as apiDocsRoutes from '../src/modules/api-docs/docs.routes';
 import * as toolsetsRoutes from '../src/modules/toolsets/routes/toolsets_routes';
 import * as teamsRoutes from '../src/modules/user_management/routes/teams.routes';
+import * as serviceAccountsRoutes from '../src/modules/user_management/routes/service-accounts.routes';
+import * as serviceTokenRoutes from '../src/modules/oauth_provider/routes/service-token.routes';
+import * as delegationRoutes from '../src/modules/oauth_provider/routes/delegation.routes';
+import { MailConsumer } from '../src/modules/mail/services/mail.consumer';
+import { MailSenderService } from '../src/modules/mail/services/mail.sender.service';
+import { BrokerTopic } from '../src/libs/types/messaging.types';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -105,6 +120,8 @@ function createMockAppConfig(): appConfigModule.AppConfig {
     mcpScopes: ['read', 'write'],
     skipDomainCheck: false,
     maxRequestsPerMinute: 1000,
+    maxAuthRequestsPerMinute: 10,
+    trustProxy: { value: false },
     maxOAuthClientRequestsPerMinute: 1000,
     deployment: {
       dataStoreType: 'arangodb',
@@ -152,19 +169,22 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(userRoutes, 'createUserRouter').returns(dummyRouter);
   sandbox.stub(userGroupRoutes, 'createUserGroupRouter').returns(dummyRouter);
   sandbox.stub(orgRoutes, 'createOrgRouter').returns(dummyRouter);
-  sandbox.stub(samlRoutes, 'createSamlRouter').returns(dummyRouter);
   sandbox.stub(userAccountRoutes, 'createUserAccountRouter').returns(dummyRouter);
   sandbox.stub(orgAuthConfigRoutes, 'createOrgAuthConfigRouter').returns(dummyRouter);
   sandbox.stub(storageRoutes, 'createStorageRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createSemanticSearchRouter').returns(dummyRouter);
+  sandbox.stub(esRoutes, 'createRetrieveRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createAgentConversationalRouter').returns(dummyRouter);
   sandbox.stub(esRoutes, 'createChatSpeechRouter').returns(dummyRouter);
+  sandbox.stub(codeGraphRoutes, 'createCodeGraphRouter').returns(dummyRouter);
   sandbox.stub(connectorRoutes, 'createConnectorRouter').returns(dummyRouter);
   sandbox.stub(oauthRoutes, 'createOAuthRouter').returns(dummyRouter);
   sandbox.stub(kbRoutes, 'createKnowledgeBaseRouter').returns(dummyRouter);
+  sandbox.stub(artifactsRoutes, 'createArtifactsRouter').returns(dummyRouter);
   sandbox.stub(notificationRoutes, 'createNotificationRouter').returns(dummyRouter);
   sandbox.stub(cmRoutes, 'createConfigurationManagerRouter').returns(dummyRouter);
+  sandbox.stub(openaiModelsRoutes, 'createOpenAIModelsRouter').returns(dummyRouter);
   sandbox.stub(mailRoutes, 'createMailServiceRouter').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'default').returns(dummyRouter);
   sandbox.stub(crawlingRoutes, 'createCrawlingManagerRouter').returns(dummyRouter);
@@ -176,6 +196,9 @@ function stubAllRouteFactories(sandbox: sinon.SinonSandbox) {
   sandbox.stub(apiDocsRoutes, 'createApiDocsRouter').returns(dummyRouter);
   sandbox.stub(toolsetsRoutes, 'createToolsetsRouter').returns(dummyRouter);
   sandbox.stub(teamsRoutes, 'createTeamsRouter').returns(dummyRouter);
+  sandbox.stub(serviceAccountsRoutes, 'createServiceAccountsRouter').returns(dummyRouter);
+  sandbox.stub(serviceTokenRoutes, 'createServiceTokenRouter').returns(dummyRouter);
+  sandbox.stub(delegationRoutes, 'createDelegationRouter').returns(dummyRouter);
 }
 
 /**
@@ -214,6 +237,32 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     sandbox.stub(cls, 'initialize').resolves(c);
   }
 
+  // initialize() builds the outbox dispatcher, which takes the message
+  // producer from the user-manager container. Unlike the routers, that is not
+  // behind a factory the harness can stub, so the binding has to resolve here
+  // as it does in production.
+  containers.userManager!.bind('MessageProducer').toConstantValue({
+    isConnected: () => true,
+    connect: sandbox.stub().resolves(),
+    disconnect: sandbox.stub().resolves(),
+    publish: sandbox.stub().resolves(),
+    publishBatch: sandbox.stub().resolves(),
+    healthCheck: sandbox.stub().resolves(true),
+  } as any);
+
+  // configureRoutes joins the service-account and service-token services, which
+  // live in different containers, so both have to resolve here as they do in
+  // production. Unlike the routers, this wiring is not behind a factory the
+  // harness can stub.
+  containers.userManager!.bind('ServiceAccountsService').toConstantValue({
+    setTokenRevoker: sandbox.stub(),
+  } as any);
+  containers.oauth!.bind('ServiceTokenService').toConstantValue({
+    revokeAllForServiceAccount: sandbox.stub().resolves(),
+    revokeDelegatedTokensForServiceAccount: sandbox.stub().resolves(),
+  } as any);
+
+
   // NotificationService mock — needed for initialize() to call .initialize(server)
   const mockNotificationService = {
     initialize: sandbox.stub(),
@@ -243,15 +292,7 @@ function stubAllContainers(sandbox: sinon.SinonSandbox) {
     .bind<any>(CrawlingSchedulerService)
     .toConstantValue(mockCrawlingScheduler);
 
-  // SamlController mock — needed for updateSamlStrategies
-  const mockSamlController = {
-    updateSamlStrategiesWithCallback: sandbox.stub(),
-  };
-  containers['auth']
-    .bind<any>('SamlController')
-    .toConstantValue(mockSamlController);
-
-  return { containers, mockNotificationService, mockOAuthTokenService, mockSamlController };
+  return { containers, mockNotificationService, mockOAuthTokenService };
 }
 
 // ---------------------------------------------------------------------------
@@ -329,6 +370,24 @@ describe('Application', () => {
       sandbox.stub(appConfigModule, 'loadAppConfig').resolves(mockAppConfig);
       sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(mockCmConfig);
       sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+    });
+
+    it('runs the edition boot hooks while initializing', async () => {
+      const app = new Application();
+      stubAllContainers(sandbox);
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      const initialize = sandbox.stub(editionBoot, 'initialize').resolves();
+      const mountRawRoutes = sandbox.stub(editionBoot, 'mountRawRoutes');
+      const mountRoutes = sandbox.stub(editionBoot, 'mountRoutes');
+      const startWorkers = sandbox.stub(editionBoot, 'startWorkers');
+
+      await app.initialize();
+
+      expect(initialize.calledOnce).to.be.true;
+      expect(mountRawRoutes.calledOnce).to.be.true;
+      expect(mountRawRoutes.calledBefore(mountRoutes)).to.be.true;
+      expect(mountRoutes.calledOnce).to.be.true;
+      expect(startWorkers.calledOnce).to.be.true;
     });
 
     it('should initialize all containers and configure the app', async () => {
@@ -436,26 +495,6 @@ describe('Application', () => {
       expect(registerStub.firstCall.args[0]).to.equal(mockOAuthTokenService);
     });
 
-    it('should update SAML strategies after server starts listening', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      await app.start();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
     it('should start telemetry and the org metrics refresh loop', async () => {
       const app = new Application();
       stubAllContainers(sandbox);
@@ -471,6 +510,27 @@ describe('Application', () => {
         (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).calledOnce,
         'startOrgMetricsRefresh should be called once during initialize',
       ).to.be.true;
+    });
+
+    it('should not start telemetry when TELEMETRY_COLLECTION_FLAG is off', async () => {
+      const previous = process.env.TELEMETRY_COLLECTION_FLAG;
+      process.env.TELEMETRY_COLLECTION_FLAG = 'false';
+      try {
+        const app = new Application();
+        stubAllContainers(sandbox);
+        sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+
+        await app.initialize();
+
+        expect((telemetryModule.startTelemetry as sinon.SinonStub).called).to.be
+          .false;
+        expect(
+          (metricsRefreshModule.startOrgMetricsRefresh as sinon.SinonStub).called,
+        ).to.be.false;
+      } finally {
+        if (previous === undefined) delete process.env.TELEMETRY_COLLECTION_FLAG;
+        else process.env.TELEMETRY_COLLECTION_FLAG = previous;
+      }
     });
 
     it('should bind MigrationService to configuration manager container', async () => {
@@ -525,29 +585,6 @@ describe('Application', () => {
       // The app overrides this with a try/catch in addOAuthServicesToAuthMiddleware
       // so it should NOT throw
       await app.initialize();
-    });
-
-    it('should handle SAML strategy update failure gracefully', async () => {
-      const app = new Application();
-      const { mockSamlController } = stubAllContainers(sandbox);
-      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
-
-      mockSamlController.updateSamlStrategiesWithCallback.throws(
-        new Error('SAML config unavailable'),
-      );
-
-      await app.initialize();
-
-      const server = (app as any).server as http.Server;
-      sandbox.stub(server, 'listen').callsFake(
-        (_port: number, callback: () => void) => {
-          callback();
-          return server;
-        },
-      );
-
-      // Should NOT throw — updateSamlStrategies has a try/catch
-      await app.start();
     });
   });
 
@@ -631,6 +668,234 @@ describe('Application', () => {
         restoreEnv('STRICT_MODE', original);
       }
     });
+
+    // Forms rendered from model output must not post off-origin.
+    it("should send a CSP with form-action 'self' when STRICT_MODE=true", async () => {
+      const original = process.env.STRICT_MODE;
+      process.env.STRICT_MODE = 'true';
+      try {
+        const strictApp = new Application();
+        await strictApp.initialize();
+
+        interface MiddlewareLayer {
+          name: string;
+          handle: (req: { headers: Record<string, string> }, res: HeaderSink, next: (err?: unknown) => void) => void;
+        }
+        interface HeaderSink {
+          setHeader: (name: string, value: string) => void;
+          removeHeader: (name: string) => void;
+          getHeader: (name: string) => string | undefined;
+        }
+        const expressApp = (strictApp as unknown as { app: { _router: { stack: MiddlewareLayer[] } } }).app;
+        const helmetLayer = expressApp._router.stack.find((layer) => layer.name === 'helmetMiddleware');
+        expect(helmetLayer, 'helmet middleware layer').to.exist;
+
+        const headers: Record<string, string> = {};
+        const res: HeaderSink = {
+          setHeader: (name, value) => { headers[name.toLowerCase()] = value; },
+          removeHeader: () => {},
+          getHeader: (name) => headers[name.toLowerCase()],
+        };
+        await new Promise<void>((resolve, reject) =>
+          helmetLayer!.handle({ headers: {} }, res, (err?: unknown) => (err ? reject(err) : resolve())),
+        );
+
+        const csp = headers['content-security-policy'];
+        expect(csp).to.be.a('string');
+        expect(csp).to.include("form-action 'self'");
+      } finally {
+        restoreEnv('STRICT_MODE', original);
+      }
+    });
+
+    it('runs the operator-key guard after the global rate limiter, so rejected requests still count', async () => {
+      const globalRateLimiter: express.RequestHandler = (_req, _res, next) => next();
+      sandbox.stub(rateLimitModule, 'createGlobalRateLimiter').returns(globalRateLimiter);
+      const orderedApp = new Application();
+      await orderedApp.initialize();
+
+      const expressApp = (orderedApp as any).app as express.Express;
+      const layerNames: string[] = (expressApp as any)._router.stack.map((layer: any) => layer.name);
+      const limiterAt = layerNames.indexOf('globalRateLimiter');
+      const guardAt = layerNames.indexOf('operatorKeyGuardMiddleware');
+      expect(limiterAt).to.be.greaterThan(-1);
+      expect(guardAt).to.be.greaterThan(limiterAt);
+    });
+
+    it('writes an access-log line for API requests in any letter case, and none for pages', async () => {
+      const expressApp = (app as any).app as express.Express;
+      const server = http.createServer(expressApp);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      const get = (path: string) =>
+        new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path }, (res) => {
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      try {
+        for (const path of ['/api/v1/access-log-probe', '/API/v1/access-log-probe-upper', '/access-log-probe-page']) {
+          await get(path);
+        }
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('access-log-probe'));
+      expect(accessLines.some((line) => line.includes('GET /api/v1/access-log-probe '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('GET /API/v1/access-log-probe-upper '))).to.equal(true);
+      expect(accessLines.some((line) => line.includes('/access-log-probe-page'))).to.equal(false);
+    });
+
+    it('writes an access-log line for an API request a mounted router answers', async () => {
+      // A mounted router sees req.path relative to its mount point ("/"), and the
+      // log line is written after it answers: the API check must use the full URL.
+      const healthRouter = express.Router();
+      healthRouter.get('/', (_req, res) => {
+        res.json({ status: 'healthy' });
+      });
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+      const mountedApp = new Application();
+      await mountedApp.initialize();
+      const server = http.createServer((mountedApp as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      const { port } = server.address() as AddressInfo;
+      let status = 0;
+      try {
+        await new Promise<void>((resolve, reject) => {
+          http
+            .get({ host: '127.0.0.1', port, path: '/api/v1/health?probe=mounted-router' }, (res) => {
+              status = res.statusCode ?? 0;
+              res.resume();
+              res.on('end', resolve);
+            })
+            .on('error', reject);
+        });
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+
+      expect(status).to.equal(200);
+      const accessLines = (Logger.prototype.info as sinon.SinonStub).getCalls()
+        .map((call) => String(call.args[0]))
+        .filter((line) => line.includes('probe=mounted-router'));
+      expect(accessLines).to.have.length(1);
+      expect(accessLines[0]).to.include('"GET /api/v1/health?probe=mounted-router HTTP/1.1" 200');
+    });
+  });
+
+  // =========================================================================
+  // /mcp body limit — sent through the real middleware stack
+  // =========================================================================
+  describe('/mcp body limit', () => {
+    let server: http.Server;
+    let origin: string;
+
+    /**
+     * A tools/call body of exactly `bytes` bytes, made of 1,000-character ids:
+     * the XSS check refuses any single string over 100,000 characters.
+     */
+    const toolCallOfSize = (bytes: number): string => {
+      const shape = (apps: string[]) =>
+        JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: { name: 'pipeshub_search', arguments: { query: 'q', apps } },
+        });
+      const id = 'a'.repeat(1000);
+      // Each id after the first adds its quotes and a comma.
+      const apps = new Array<string>(
+        Math.floor((bytes - shape([]).length) / (id.length + 3)),
+      ).fill(id);
+      const rest = bytes - shape(apps).length;
+      if (rest >= 3) apps.push('a'.repeat(rest - 3));
+      else apps[apps.length - 1] += 'a'.repeat(rest);
+      const body = shape(apps);
+      expect(body.length).to.equal(bytes);
+      return body;
+    };
+
+    const post = (path: string, body: string) =>
+      fetch(`${origin}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body,
+      });
+
+    beforeEach(async () => {
+      sandbox.stub(appConfigModule, 'loadAppConfig').resolves(createMockAppConfig());
+      sandbox.stub(cmConfigModule, 'loadConfigurationManagerConfig').returns(createMockCmConfig());
+      sandbox.stub(messageBrokerModule, 'ensureMessageTopicsExist').resolves();
+      sandbox.stub(oauthProviderModule, 'registerOAuthTokenService');
+      stubAllContainers(sandbox);
+
+      const bodySize = (req: express.Request, res: express.Response) => {
+        res.json({ receivedBytes: JSON.stringify(req.body).length });
+      };
+      const mcpRouter = express.Router();
+      mcpRouter.post('/', bodySize);
+      const healthRouter = express.Router();
+      healthRouter.post('/', bodySize);
+      (mcpRoutes.createMCPRouter as sinon.SinonStub).returns(mcpRouter);
+      (healthRoutes.createHealthRouter as sinon.SinonStub).returns(healthRouter);
+
+      const app = new Application();
+      await app.initialize();
+      server = http.createServer((app as any).app as express.Express);
+      await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+      origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    });
+
+    afterEach(async () => {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    });
+
+    it('answers a body one byte over 5 MB with a 413 JSON-RPC error that says what to do', async () => {
+      const res = await post('/mcp', toolCallOfSize(MCP_JSON_BODY_LIMIT_BYTES + 1));
+
+      expect(res.status).to.equal(413);
+      const body = await res.json();
+      expect(body).to.deep.include({ jsonrpc: '2.0', id: null });
+      expect(body.error.code).to.equal(-32000);
+      expect(body.error.message).to.equal(MCP_BODY_TOO_LARGE_MESSAGE);
+      expect(body.error.message).to.include('5 MB');
+      expect(body.error.message).to.include('try again');
+    });
+
+    it('passes a normal MCP request', async () => {
+      const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' });
+      const res = await post('/mcp', body);
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(body.length);
+    });
+
+    it('passes a request of about 1 MB', async () => {
+      const res = await post('/mcp', toolCallOfSize(1024 * 1024));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(1024 * 1024);
+    });
+
+    it('passes a request of exactly 5 MB', async () => {
+      const res = await post('/mcp', toolCallOfSize(MCP_JSON_BODY_LIMIT_BYTES));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(MCP_JSON_BODY_LIMIT_BYTES);
+    });
+
+    it('leaves the shared 10 MB limit on other routes', async () => {
+      const res = await post('/api/v1/health', toolCallOfSize(6 * 1024 * 1024));
+
+      expect(res.status).to.equal(200);
+      expect((await res.json()).receivedBytes).to.equal(6 * 1024 * 1024);
+    });
   });
 
   // =========================================================================
@@ -657,7 +922,6 @@ describe('Application', () => {
       '/api/v1/teams',
       '/api/v1/userGroups',
       '/api/v1/org',
-      '/api/v1/saml',
       '/api/v1/userAccount',
       '/api/v1/orgAuthConfig',
       '/api/v1/document',
@@ -667,7 +931,9 @@ describe('Application', () => {
       '/api/v1/connectors',
       '/api/v1/oauth',
       '/api/v1/knowledgeBase',
+      '/api/v1/artifacts',
       '/api/v1/configurationManager',
+      '/v1',
       '/api/v1/toolsets',
       '/api/v1/mail',
       '/api/v1/crawlingManager',
@@ -711,6 +977,44 @@ describe('Application', () => {
         (l: any) => l.route && l.route.path === '*',
       );
       expect(lastRouteLayers.length).to.be.greaterThan(0);
+    });
+
+    describe('SPA fallback for unknown URLs', () => {
+      const callFallback = (reqPath: string) => {
+        const stack = (expressApp as any)._router?.stack || [];
+        const layer = stack.filter((l: any) => l.route && l.route.path === '*').pop();
+        const res: any = {
+          statusCode: 200,
+          status: sinon.stub().callsFake((code: number) => {
+            res.statusCode = code;
+            return res;
+          }),
+          sendFile: sinon.stub(),
+          setHeader: sinon.stub(),
+          type: sinon.stub().returnsThis(),
+          send: sinon.stub(),
+        };
+        layer.route.stack[0].handle({ path: reqPath }, res, () => {});
+        return res;
+      };
+
+      for (const reqPath of [
+        '/workspace/does-not-exist',
+        '/workspace/does-not-exist/',
+        '/workspace/developer-settings/does-not-exist',
+      ]) {
+        it(`serves the not-found page with 404 for ${reqPath}`, () => {
+          const res = callFallback(reqPath);
+          expect(res.statusCode).to.equal(404);
+          expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]404\.html$/);
+        });
+      }
+
+      it('still serves the root shell for other unknown URLs', () => {
+        const res = callFallback('/sign-in');
+        expect(res.statusCode).to.equal(200);
+        expect(res.sendFile.firstCall.args[0]).to.match(/[\\/]public[\\/]index\.html$/);
+      });
     });
   });
 
@@ -825,6 +1129,16 @@ describe('Application', () => {
       expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
     });
 
+    it('still disposes every container when the edition fails to stop', async () => {
+      (app as any).notificationContainer = new Container();
+      sandbox.stub(editionBoot, 'stop').rejects(new Error('worker did not stop'));
+
+      await app.stop();
+
+      expect((TokenManagerContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+      expect((OAuthProviderContainer.dispose as sinon.SinonStub).calledOnce).to.be.true;
+    });
+
     it('should call NotificationService.shutdown()', async () => {
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
@@ -845,6 +1159,72 @@ describe('Application', () => {
       await app.stop();
     });
 
+    it('should finish in-flight requests before disposing containers', async () => {
+      (app as any).notificationContainer = new Container();
+      const order: string[] = [];
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailSenderService).toConstantValue({ close: () => { order.push('mail sender closed'); } });
+      (app as any).mailServiceContainer = mailContainer;
+      (TokenManagerContainer.dispose as sinon.SinonStub).callsFake(async () => { order.push('dispose'); });
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        res.on('finish', () => { order.push('response'); });
+        setTimeout(() => { res.end('ok'); }, 50);
+      });
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      const inFlight = new Promise<string>((resolve, reject) => {
+        http.get(`http://127.0.0.1:${port}/`, (res) => {
+          let body = '';
+          res.on('data', (c) => { body += c; });
+          res.on('end', () => resolve(body));
+        }).on('error', reject);
+      });
+      await requestReceived;
+
+      await app.stop();
+
+      expect(await inFlight).to.equal('ok');
+      expect(order).to.deep.equal(['response', 'mail sender closed', 'dispose']);
+      expect(server.listening).to.be.false;
+    });
+
+    it('should not let an idle keep-alive socket hold the drain open', async () => {
+      (app as any).notificationContainer = new Container();
+      let respondedAt = 0;
+      let handlerStarted!: () => void;
+      const requestReceived = new Promise<void>((resolve) => { handlerStarted = resolve; });
+      const server = http.createServer((_req, res) => {
+        handlerStarted();
+        setTimeout(() => { respondedAt = Date.now(); res.end('ok'); }, 50);
+      });
+      server.keepAliveTimeout = 65_000;
+      (app as any).server = server;
+      await new Promise<void>((resolve) => server.listen(0, resolve));
+      const { port } = server.address() as AddressInfo;
+      // A raw socket, because nock (loaded by other specs) rewrites http.get
+      // requests to Connection: close and would hide the keep-alive case.
+      const socket = net.connect(port, '127.0.0.1');
+      let received = '';
+      socket.on('data', (c) => { received += c; });
+      const socketClosed = new Promise<void>((resolve) => socket.on('close', () => resolve()));
+      socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: keep-alive\r\n\r\n');
+      await requestReceived;
+
+      try {
+        await Promise.all([app.stop(), socketClosed]);
+      } finally {
+        socket.destroy();
+      }
+
+      expect(received).to.match(/^HTTP\/1\.1 200[\s\S]*Connection: keep-alive[\s\S]*\r\n\r\nok$/);
+      expect(Date.now() - respondedAt).to.be.below(1000);
+      expect(server.listening).to.be.false;
+    });
+
     it('should throw if a container dispose fails', async () => {
       const mockNotifService = { shutdown: sandbox.stub() };
       const notifContainer = new Container();
@@ -859,6 +1239,27 @@ describe('Application', () => {
       } catch (err: any) {
         expect(err.message).to.equal('Redis disconnect error');
       }
+    });
+  });
+
+  describe('bootstrapMailBrokerConsumer()', () => {
+    it('subscribes from the start so mail queued before a new group exists is delivered', async () => {
+      const app = new Application();
+      (app as any).logger = mockLogger;
+      const consumer = {
+        start: sandbox.stub().resolves(),
+        subscribe: sandbox.stub().resolves(),
+        consume: sandbox.stub().resolves(),
+      };
+      const mailContainer = new Container();
+      mailContainer.bind<any>(MailConsumer).toConstantValue(consumer);
+      (app as any).mailServiceContainer = mailContainer;
+
+      (app as any).bootstrapMailBrokerConsumer();
+      await new Promise((resolve) => setImmediate(resolve));
+
+      expect(consumer.subscribe.calledOnceWithExactly([BrokerTopic.MAIL_EVENTS], true)).to.be.true;
+      expect(consumer.consume.calledOnce).to.be.true;
     });
   });
 
@@ -1133,56 +1534,6 @@ describe('Application', () => {
     });
   });
 
-  // =========================================================================
-  // updateSamlStrategies()
-  // =========================================================================
-  describe('updateSamlStrategies()', () => {
-    it('should call SamlController.updateSamlStrategiesWithCallback', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub(),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      await app.updateSamlStrategies();
-
-      expect(mockSamlController.updateSamlStrategiesWithCallback.calledOnce).to.be.true;
-    });
-
-    it('should warn but not throw if SamlController is not available', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const emptyContainer = new Container();
-      (app as any).authServiceContainer = emptyContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-
-    it('should warn but not throw if updateSamlStrategiesWithCallback throws', async () => {
-      const app = new Application();
-      (app as any).logger = mockLogger;
-
-      const mockSamlController = {
-        updateSamlStrategiesWithCallback: sandbox.stub().throws(new Error('SAML error')),
-      };
-      const authContainer = new Container();
-      authContainer.bind<any>('SamlController').toConstantValue(mockSamlController);
-      (app as any).authServiceContainer = authContainer;
-
-      // Should NOT throw
-      await app.updateSamlStrategies();
-
-      expect(mockLogger.warn.called).to.be.true;
-    });
-  });
 
   // =========================================================================
   // setupApiDocs()

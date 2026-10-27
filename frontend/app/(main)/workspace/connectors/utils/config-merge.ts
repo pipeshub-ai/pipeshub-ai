@@ -13,7 +13,7 @@ import type {
   PanelFormData,
   SyncStrategy,
 } from '../types';
-import { CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME } from '../constants';
+import { CONNECTOR_SECRET_MASK, CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME } from '../constants';
 
 /** The merged structure used to initialize form state. */
 export interface MergedConfig {
@@ -112,7 +112,11 @@ function extractAuthValues(
       for (const k of SERVICE_ACCOUNT_JSON_KEYS) {
         if (k in flat) saObj[k] = flat[k];
       }
-      if (Object.keys(saObj).length > 0) {
+      // A rebuilt key holding the masked private_key would be saved as a new, broken key.
+      // The mask itself shows the field as configured and keeps the stored keys on save.
+      if (saObj.private_key === CONNECTOR_SECRET_MASK) {
+        result[CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME] = CONNECTOR_SECRET_MASK;
+      } else if (Object.keys(saObj).length > 0) {
         result[CONNECTOR_SERVICE_ACCOUNT_JSON_FIELD_NAME] = JSON.stringify(saObj, null, 2);
       }
     }

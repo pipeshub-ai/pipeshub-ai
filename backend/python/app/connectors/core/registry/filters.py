@@ -9,7 +9,9 @@ This module provides:
 5. Filter/FilterCollection - Runtime filter parsing from config
 """
 
+import contextlib
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
@@ -225,6 +227,7 @@ class SyncFilterKey(str, Enum):
 
     # Container/scope filters
     SPACE_KEYS = "space_keys"
+    SPACE_IDS = "space_ids"
     FOLDER_IDS = "folder_ids"
     FOLDERS = "folders"
     CUSTOM_FOLDERS = "custom_folders"
@@ -240,6 +243,10 @@ class SyncFilterKey(str, Enum):
     GROUP_IDS = "group_ids"
     ORG_IDS = "org_ids"
     REPO_IDS = "repo_ids"
+    # Code repositories: gitignore-style paths whose files get no record
+    EXCLUDE_PATHS = "exclude_paths"
+    # Code repositories: the branch whose files are synced; unset = default branch
+    BRANCH = "branch"
 
     # Content filters
     CONTENT_STATUS = "content_status"
@@ -314,6 +321,7 @@ class IndexingFilterKey(str, Enum):
     # GitLab
     MERGE_REQUESTS = "merge_requests"
     CODE_FILES = "code_files"
+    TEST_FILES = "test_files"
 
     # Knowledge base
     KNOWLEDGE_BASE = "knowledge_base"
@@ -379,6 +387,10 @@ class FilterField:
             filter_type's normal operators (e.g. only "in" for a LIST filter that doesn't
             make sense with "not_in" yet). Must be a non-empty subset of the type's
             operators. Defaults to all operators for filter_type.
+        fallback_operator: The window the connector applies when this filter is
+            not set at all (for example a sync filter that falls back to the last
+            30 days). The UI shows it while the filter is cleared, so the
+            fallback never becomes invisible. Must be one of the field's operators.
 
     Value types by filter_type:
         STRING      → str
@@ -406,6 +418,7 @@ class FilterField:
     options: list[str] = dataclass_field(default_factory=list)
     option_source_type: OptionSourceType = OptionSourceType.MANUAL
     allowed_operators: list[str] | None = None
+    fallback_operator: str | None = None
     def __post_init__(self) -> None:
         """Validate configuration"""
 
@@ -443,6 +456,12 @@ class FilterField:
                     f"default_operator '{self.default_operator}' must be one of allowed_operators "
                     f"{self.allowed_operators}"
                 )
+
+        if self.fallback_operator is not None and self.fallback_operator not in self.operators:
+            raise ValueError(
+                f"fallback_operator '{self.fallback_operator}' must be one of the field's "
+                f"operators {self.operators}"
+            )
 
     def _get_default_for_type(self) -> str | bool | list[str] | tuple | None:
         """Get default value based on type"""
@@ -497,6 +516,9 @@ class FilterField:
 
         if self.no_implicit_operator_default:
             schema["noImplicitOperatorDefault"] = True
+
+        if self.fallback_operator is not None:
+            schema["fallbackOperator"] = self.fallback_operator
 
         return schema
 
@@ -611,6 +633,20 @@ class Filter(BaseModel):
                                 # Fallback: convert to string
                                 extracted_ids.append(str(item))
                         data['value'] = extracted_ids
+                elif filter_type in (FilterType.NUMBER, FilterType.BOOLEAN) and isinstance(data['value'], str):
+                    # UI inputs are cleared to "" (not omitted) when a field is left
+                    # unset - treat that the same as "no value" instead of failing
+                    # type validation below. Also accept numeric/boolean strings
+                    # since form values commonly arrive as strings.
+                    stripped = data['value'].strip()
+                    if not stripped:
+                        data['value'] = None
+                    elif filter_type == FilterType.NUMBER:
+                        # Left as-is when it is not a number; validation below raises a clear error.
+                        with contextlib.suppress(ValueError):
+                            data['value'] = float(stripped) if '.' in stripped else int(stripped)
+                    elif stripped.lower() in ('true', 'false'):
+                        data['value'] = stripped.lower() == 'true'
 
         return data
 
@@ -988,6 +1024,48 @@ class FilterCollection(BaseModel):
                 continue
 
         return cls(filters=filters)
+
+
+def _passes_list_filter(list_filter: Filter | None, value: str | None, normalise: Callable[[str], str]) -> bool:
+    """Whether ``value`` passes a list-valued sync filter, honouring In and Not in; None is kept only by Not in."""
+    if list_filter is None or list_filter.is_empty():
+        return True
+    raw = list_filter.value if isinstance(list_filter.value, list) else [list_filter.value]
+    listed = {normalise(str(item)) for item in raw if item}
+    operator = list_filter.operator_value
+    if operator == FilterOperator.NOT_IN:
+        return value is None or normalise(value) not in listed
+    if operator == FilterOperator.IN:
+        return value is not None and normalise(value) in listed
+    return True
+
+
+def extension_passes_filter(sync_filters: FilterCollection | None, extension: str | None) -> bool:
+    """Whether a file passes the file-extensions sync filter, honouring In and Not in.
+
+    ``extension`` is the file's extension without the dot, or None when it has
+    none; a file without one is kept only by Not in.
+    """
+    return _passes_list_filter(
+        sync_filters.get(SyncFilterKey.FILE_EXTENSIONS) if sync_filters else None,
+        extension, lambda ext: ext.lower().lstrip("."),
+    )
+
+
+def name_passes_filter(sync_filters: FilterCollection | None, key: str, name: str | None) -> bool:
+    """Whether a bucket, container or other named scope passes the sync filter ``key``, honouring In and Not in."""
+    return _passes_list_filter(sync_filters.get(key) if sync_filters else None, name, lambda n: n)
+
+
+def included_names(sync_filters: FilterCollection | None, key: str) -> list[str]:
+    """The names an In filter ``key`` picks, to sync just those.
+
+    Empty when the filter is unset or Not in: every name the source lists is
+    then synced unless ``name_passes_filter`` leaves it out.
+    """
+    names_filter = sync_filters.get(key) if sync_filters else None
+    raw = names_filter.value if names_filter and isinstance(names_filter.value, list) else []
+    return [n for n in raw if isinstance(n, str) and n and name_passes_filter(sync_filters, key, n)]
 
 
 def _selected_ids(raw: Any) -> list[str]:

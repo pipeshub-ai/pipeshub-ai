@@ -54,8 +54,9 @@ APP_LEVEL_CONNECTORS = [
 RECORD_GROUP_LEVEL_SITES = [
     ("app/connectors/sources/github_teams/projects.py", 3),
     ("app/connectors/sources/gitlab/projects.py", 3),
-    ("app/connectors/sources/google/gmail/team/connector.py", 1),
-    ("app/connectors/sources/microsoft/outlook/connector.py", 2),
+    # The mailbox group is written twice: once per user, and again when a departed user loses the grant.
+    ("app/connectors/sources/google/gmail/team/connector.py", 2),
+    ("app/connectors/sources/microsoft/outlook/connector.py", 3),
     ("app/connectors/sources/notion/connector.py", 2),
     ("app/connectors/sources/slack/team/connector.py", 2),
     ("app/connectors/sources/slack/individual/connector.py", 2),
@@ -172,7 +173,8 @@ class TestRecordGroupLevelSites:
     def test_declared_on_every_expected_group(self, path, expected) -> None:
         import pathlib
 
-        src = pathlib.Path(path).read_text(encoding="utf-8")
+        backend_python = pathlib.Path(__file__).resolve().parents[5]
+        src = (backend_python / path).read_text(encoding="utf-8")
         found = src.count("permission_model=PermissionModel.RECORD_GROUP_LEVEL")
         assert found == expected, f"{path}: {found} sites, expected {expected}"
 

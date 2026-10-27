@@ -1,5 +1,5 @@
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import List, Optional
 
 import etcd3
@@ -19,6 +19,12 @@ class ConnectionConfig:
     ca_cert: Optional[str] = None
     cert_key: Optional[str] = None
     cert_cert: Optional[str] = None
+    username: str | None = None
+    password: str | None = field(default=None, repr=False)
+
+    @property
+    def auth_enabled(self) -> bool:
+        return bool(self.username and self.password)
 
 
 class ConnectionState:
@@ -54,6 +60,13 @@ class Etcd3ConnectionManager:
         logger.debug("   - Port: %s", config.port)
         logger.debug("   - Timeout: %s", config.timeout)
         logger.debug("   - SSL enabled: %s", bool(config.ca_cert or config.cert_key))
+        logger.debug("   - Auth enabled: %s", config.auth_enabled)
+        if bool(config.username) != bool(config.password):
+            logger.warning(
+                "Only one of ETCD_USERNAME and ETCD_PASSWORD is set, so etcd will be "
+                "reached without logging in. Set both to use etcd authentication, "
+                "or neither to connect without it."
+            )
 
         self.config = config
         self.client: Optional[etcd3.client] = None
@@ -61,6 +74,9 @@ class Etcd3ConnectionManager:
         logger.debug("📋 Initial state: %s", self.state)
 
         self._health_check_task: Optional[asyncio.Task] = None
+        # connect() skips a second caller while one is connecting, which would
+        # hand that caller no client, or the closed one during a reconnect.
+        self._connect_lock = asyncio.Lock()
         logger.debug("✅ Connection manager initialized")
 
     async def connect(self) -> None:
@@ -120,6 +136,10 @@ class Etcd3ConnectionManager:
                     }
                 )
 
+            if self.config.auth_enabled:
+                client_kwargs["user"] = self.config.username
+                client_kwargs["password"] = self.config.password
+
             # Create client synchronously since etcd3 doesn't support async
             client = etcd3.client(**client_kwargs)
 
@@ -142,7 +162,10 @@ class Etcd3ConnectionManager:
         """Attempt to reconnect to ETCD cluster."""
         logger.debug("🔄 Initiating reconnection to ETCD")
         logger.debug("📋 Current state: %s", self.state)
+        async with self._connect_lock:
+            await self._reconnect()
 
+    async def _reconnect(self) -> None:
         self.state = ConnectionState.DISCONNECTED
         if self.client:
             try:
@@ -172,9 +195,10 @@ class Etcd3ConnectionManager:
         logger.debug("🔍 Getting ETCD client")
         logger.debug("📋 Current state: %s", self.state)
 
-        if self.state != ConnectionState.CONNECTED:
-            logger.debug("🔄 Client not connected, initiating connection")
-            await self.connect()
+        async with self._connect_lock:
+            if self.state != ConnectionState.CONNECTED:
+                logger.debug("🔄 Client not connected, initiating connection")
+                await self.connect()
 
         if not self.client:
             logger.error("❌ No ETCD client available after connection attempt")

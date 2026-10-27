@@ -1,4 +1,6 @@
 import { apiClient } from '@/lib/api';
+import { REVEAL_PARAMS } from '@/lib/hooks/use-secret-reveal-available';
+import { desktopAuthorizeParams } from '@/lib/electron';
 import type { ConnectorOAuthCallbackRaw } from '@/app/(main)/connectors/oauth/connector-oauth-callback-response';
 import type {
   Connector,
@@ -9,12 +11,16 @@ import type {
   ConnectorConfig,
   FilterOptionsResponse,
   ConnectorStatsResponse,
+  ConnectionCheckResponse,
+  ReindexStage,
+  CodeGraphRepo,
 } from './types';
 import { CONNECTOR_INSTANCE_STATUS } from './constants';
 import { trimConnectorConfig } from './utils/trim-config';
 import { expandRelativeDatetimeFiltersForSave } from './utils/expand-relative-datetime-filters-for-save';
 import { pruneInactiveFilterValues } from './utils/prune-inactive-filter-values';
 import { isDesktopOfflineError } from './utils/local-fs-helpers';
+import { browserOAuthBaseUrl } from '@/lib/api/frontend-public-url';
 const BASE_URL = '/api/v1/connectors';
 
 /** Normalized DELETE /connectors/:id body for optimistic UI merge. */
@@ -89,10 +95,12 @@ export const ConnectorsApi = {
   async getActiveConnectors(
     scope: ConnectorScope,
     page = 1,
-    limit = 100
+    limit = 100,
+    options?: { suppressErrorToast?: boolean }
   ): Promise<ConnectorListResponse> {
     const { data } = await apiClient.get<ConnectorListResponse>(BASE_URL, {
       params: { scope, page, limit },
+      ...options,
     });
     return data;
   },
@@ -122,6 +130,26 @@ export const ConnectorsApi = {
       `${BASE_URL}/registry/${connectorType}/schema`
     );
     return data;
+  },
+
+  /** Try auth settings before saving them; `connectorId` when editing an instance. */
+  async testConnection(
+    connectorType: string,
+    payload: { auth: Record<string, unknown>; connectorId?: string }
+  ): Promise<ConnectionCheckResponse> {
+    const { data } = await apiClient.post<ConnectionCheckResponse>(
+      `${BASE_URL}/registry/${encodeURIComponent(connectorType)}/test-connection`,
+      payload
+    );
+    return data;
+  },
+
+  /** Public IPs connectors connect from, for the user's firewall allowlist. */
+  async getEgressIps(): Promise<string[]> {
+    const { data } = await apiClient.get<{ egressIps?: string[] }>(
+      `${BASE_URL}/network/egress-ips`
+    );
+    return data.egressIps ?? [];
   },
 
   // ── Instance Management ──
@@ -265,9 +293,14 @@ export const ConnectorsApi = {
   },
 
   /** Fetch one OAuth config by id (admin fallback when list entry has no embedded config). */
-  async getOAuthConfig(connectorType: string, oauthConfigId: string): Promise<Record<string, unknown>> {
+  async getOAuthConfig(
+    connectorType: string,
+    oauthConfigId: string,
+    options?: { reveal?: boolean }
+  ): Promise<Record<string, unknown>> {
     const { data } = await apiClient.get<{ oauthConfig?: Record<string, unknown> }>(
-      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`
+      `/api/v1/oauth/${encodeURIComponent(connectorType)}/${encodeURIComponent(oauthConfigId)}`,
+      { params: options?.reveal ? REVEAL_PARAMS : undefined }
     );
     return (data.oauthConfig ?? {}) as Record<string, unknown>;
   },
@@ -276,13 +309,13 @@ export const ConnectorsApi = {
   async getOAuthAuthorizationUrl(
     connectorId: string
   ): Promise<{ authorizationUrl: string; state: string }> {
-    const baseUrl = window.location.origin;
+    const baseUrl = browserOAuthBaseUrl();
     const { data } = await apiClient.get<{
       authorizationUrl: string;
       state: string;
     }>(
       `${BASE_URL}/${connectorId}/oauth/authorize`,
-      { params: { baseUrl } }
+      { params: { baseUrl, ...desktopAuthorizeParams() } }
     );
     return data;
   },
@@ -375,15 +408,36 @@ export const ConnectorsApi = {
   },
 
   /**
+   * Ask the backend to stop the in-flight sync for a connector.
+   *
+   * Best-effort by nature: the request returns as soon as the stop is signalled,
+   * but the running sync unwinds asynchronously, so the instance can still
+   * report SYNCING for a while afterwards. Callers should refresh rather than
+   * assume the connector is idle on return.
+   */
+  async stopConnectorSync(connectorId: string) {
+    const { data } = await apiClient.post(`${BASE_URL}/${connectorId}/sync/stop`, {});
+    return data;
+  },
+
+  /**
    * Reindex all records for a connector instance, optionally filtered by
    * indexing status. Omitting statusFilters reindexes everything for a KB
    * connector; other connector types default server-side to FAILED-only.
+   * With `stages`, only those pipeline stages re-run and statusFilters match
+   * the stage's own status (classify -> extractionStatus,
+   * entities -> entitiesStatus).
    */
-  async reindexConnector(connectorId: string, statusFilters?: string[]) {
+  async reindexConnector(
+    connectorId: string,
+    statusFilters?: string[],
+    stages?: ReindexStage[]
+  ) {
     const { data } = await apiClient.post(
       `${BASE_URL}/${connectorId}/reindex`,
       {
         ...(statusFilters?.length ? { statusFilters } : {}),
+        ...(stages?.length ? { stages } : {}),
       }
     );
     return data;
@@ -452,5 +506,14 @@ export const ConnectorsApi = {
       `${BASE_URL}/${connectorId}/stats`
     );
     return data;
+  },
+
+  /** Code repositories the caller can read, with each one's code-graph status. */
+  async getCodeGraphRepos(): Promise<CodeGraphRepo[]> {
+    const { data } = await apiClient.get<{ repos?: CodeGraphRepo[] }>(
+      '/api/v1/code-graph/repos',
+      { suppressErrorToast: true }
+    );
+    return data.repos ?? [];
   },
 };

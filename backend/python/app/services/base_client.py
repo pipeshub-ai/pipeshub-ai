@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from datetime import datetime, timezone
 from enum import Enum
@@ -15,10 +16,14 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
+from app.services.model_identity.propagation import PCP_CLAIM, encode_pcp
 from app.services.resource_governor.feedback import get_default_downstream_feedback
+from app.utils.jwt import generate_jwt
 from app.utils.request_context import inject_request_headers
 
 if TYPE_CHECKING:
+    from app.config.configuration_service import ConfigurationService
+    from app.config.constants.service import TokenScopes
     from app.services.messaging.backpressure import BackpressureCoordinator
 
 logger = logging.getLogger(__name__)
@@ -32,6 +37,7 @@ DEFAULT_MAX_RETRIES = 3
 DEFAULT_RETRY_DELAY = 1.0           # seconds; doubled on each retry (exponential)
 TRANSIENT_STATUS_CODES = (set(range(500, 600)) - {501}) | {429}
 HTTP_TOO_MANY_REQUESTS = 429
+AUTH_REFUSED_STATUS_CODES = {401, 403}
 
 # Backpressure (429 + Retry-After) gets its own, longer attempt budget so a
 # saturated-but-healthy downstream service is waited out instead of being
@@ -92,6 +98,14 @@ class ServiceUnavailableError(ServiceCallError):
     """Raised when the remote service is unreachable or persistently 5xx."""
 
 
+class ServiceAuthRefusedError(ServiceCallError):
+    """Raised when the service answers 401/403 to this client's own call.
+
+    A deployment fault (secret mismatch, services upgraded out of order), never
+    a fault of the document being sent, so it must not fail the document for good.
+    """
+
+
 class ServiceBackpressureError(ServiceCallError):
     """Raised when a service signals sustained backpressure (429 + Retry-After).
 
@@ -130,9 +144,10 @@ def _extract_service_error_message(response: httpx.Response) -> str | None:
     if isinstance(error, str) and error.strip():
         return error.strip()
 
-    msg = body.get("message")
-    if isinstance(msg, str) and msg.strip():
-        return msg.strip()
+    for field in ("message", "detail"):
+        msg = body.get(field)
+        if isinstance(msg, str) and msg.strip():
+            return msg.strip()
     return None
 
 
@@ -145,9 +160,9 @@ class CircuitState(Enum):
 class CircuitBreaker:
     """Per-client circuit breaker guarding a single downstream service.
 
-    Not thread-safe by design: each ``BaseServiceClient`` instance owns one
-    breaker, and all indexing HTTP calls run on the single indexing
-    worker-thread event loop, so no locking is required here.
+    Each ``BaseServiceClient`` owns one breaker. It is called from more than one
+    thread (the server loop and the indexing worker loop), so every state
+    transition takes a lock; none of them awaits.
 
     CLOSED -> OPEN after ``failure_threshold`` consecutive failures.
     OPEN rejects all calls until ``cooldown_seconds`` elapse, then lets a
@@ -181,6 +196,7 @@ class CircuitBreaker:
         self._opened_at: float | None = None
         self._half_open_probe_in_flight = False
         self._half_open_probe_started_at: float | None = None
+        self._lock = threading.Lock()
 
     def _probe_timed_out(self, now: float) -> bool:
         return (
@@ -195,23 +211,24 @@ class CircuitBreaker:
         Used for cheap pre-checks (e.g. before marking a record IN_PROGRESS)
         so callers can fail fast without even attempting the request.
         """
-        now = time.monotonic()
-        if self._state == CircuitState.HALF_OPEN:
-            if self._probe_timed_out(now):
-                self._reset_stuck_probe(now)
+        with self._lock:
+            now = time.monotonic()
+            if self._state == CircuitState.HALF_OPEN:
+                if self._probe_timed_out(now):
+                    self._reset_stuck_probe(now)
+                    return False
+                return True
+            if self._state != CircuitState.OPEN:
+                return False
+            if (
+                self._opened_at is not None
+                and now - self._opened_at >= self.cooldown_seconds
+            ):
+                # Cooldown elapsed — a probe may proceed; the actual state
+                # transition happens in should_attempt_probe() to avoid
+                # double-probing.
                 return False
             return True
-        if self._state != CircuitState.OPEN:
-            return False
-        if (
-            self._opened_at is not None
-            and now - self._opened_at >= self.cooldown_seconds
-        ):
-            # Cooldown elapsed — a probe may proceed; the actual state
-            # transition happens in should_attempt_probe() to avoid
-            # double-probing.
-            return False
-        return True
 
     def _reset_stuck_probe(self, now: float) -> None:
         self._state = CircuitState.OPEN
@@ -228,56 +245,71 @@ class CircuitBreaker:
         cooldown hasn't elapsed yet, or another caller already owns the
         probe.
         """
-        now = time.monotonic()
-        if self._state != CircuitState.OPEN:
-            return False
-        if self._opened_at is None or now - self._opened_at < self.cooldown_seconds:
-            return False
-        if self._half_open_probe_in_flight:
-            return False
-        self._state = CircuitState.HALF_OPEN
-        self._half_open_probe_in_flight = True
-        self._half_open_probe_started_at = now
-        self.logger.info(
-            "[%s] Circuit breaker cooldown elapsed, running health-check probe",
-            self.service_name,
-        )
-        return True
+        with self._lock:
+            now = time.monotonic()
+            if self._state != CircuitState.OPEN:
+                return False
+            if self._opened_at is None or now - self._opened_at < self.cooldown_seconds:
+                return False
+            if self._half_open_probe_in_flight:
+                return False
+            self._state = CircuitState.HALF_OPEN
+            self._half_open_probe_in_flight = True
+            self._half_open_probe_started_at = now
+            self.logger.info(
+                "[%s] Circuit breaker cooldown elapsed, running health-check probe",
+                self.service_name,
+            )
+            return True
 
     def record_success(self) -> None:
-        if self._state != CircuitState.CLOSED:
-            self.logger.info(
-                "[%s] Circuit breaker closing after successful probe", self.service_name
-            )
-        self._state = CircuitState.CLOSED
-        self._consecutive_failures = 0
-        self._opened_at = None
-        self._half_open_probe_in_flight = False
-        self._half_open_probe_started_at = None
+        with self._lock:
+            if self._state != CircuitState.CLOSED:
+                self.logger.info(
+                    "[%s] Circuit breaker closing after successful probe", self.service_name
+                )
+            self._state = CircuitState.CLOSED
+            self._consecutive_failures = 0
+            self._opened_at = None
+            self._half_open_probe_in_flight = False
+            self._half_open_probe_started_at = None
 
     def record_failure(self) -> None:
-        self._half_open_probe_in_flight = False
-        self._half_open_probe_started_at = None
+        with self._lock:
+            self._half_open_probe_in_flight = False
+            self._half_open_probe_started_at = None
 
-        if self._state == CircuitState.HALF_OPEN:
-            self._state = CircuitState.OPEN
-            self._opened_at = time.monotonic()
-            self.logger.warning(
-                "[%s] Circuit breaker probe failed, re-opening for %.0fs",
-                self.service_name, self.cooldown_seconds,
-            )
-            return
+            if self._state == CircuitState.HALF_OPEN:
+                self._state = CircuitState.OPEN
+                self._opened_at = time.monotonic()
+                self.logger.warning(
+                    "[%s] Circuit breaker probe failed, re-opening for %.0fs",
+                    self.service_name, self.cooldown_seconds,
+                )
+                return
 
-        self._consecutive_failures += 1
-        if self._consecutive_failures >= self.failure_threshold and self._state == CircuitState.CLOSED:
-            self._state = CircuitState.OPEN
-            self._opened_at = time.monotonic()
-            self.logger.warning(
-                "[%s] Circuit breaker opened after %d consecutive failures; "
-                "rejecting calls for %.0fs",
-                self.service_name, self._consecutive_failures, self.cooldown_seconds,
-            )
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= self.failure_threshold and self._state == CircuitState.CLOSED:
+                self._state = CircuitState.OPEN
+                self._opened_at = time.monotonic()
+                self.logger.warning(
+                    "[%s] Circuit breaker opened after %d consecutive failures; "
+                    "rejecting calls for %.0fs",
+                    self.service_name, self._consecutive_failures, self.cooldown_seconds,
+                )
 
+
+    @property
+    def state(self) -> str:
+        with self._lock:
+            return self._state.value
+
+    def retry_after(self) -> float | None:
+        """Seconds until an open circuit lets a probe through; None when it is not open."""
+        with self._lock:
+            if self._state is not CircuitState.OPEN or self._opened_at is None:
+                return None
+            return max(0.0, self.cooldown_seconds - (time.monotonic() - self._opened_at))
 
 class BaseServiceClient:
     """Async HTTP client with retry, timeout, and health-check.
@@ -301,9 +333,13 @@ class BaseServiceClient:
         circuit_breaker_cooldown: float = DEFAULT_CIRCUIT_BREAKER_COOLDOWN,
         max_backpressure_attempts: int = DEFAULT_MAX_BACKPRESSURE_ATTEMPTS,
         backpressure_coordinator: "BackpressureCoordinator | None" = None,
+        config_service: "ConfigurationService | None" = None,
+        service_scope: "TokenScopes | None" = None,
     ) -> None:
         self.service_url = service_url.rstrip("/")
         self.service_name = service_name
+        self._config_service = config_service
+        self._service_scope = service_scope
         self._timeout = httpx.Timeout(
             connect=connect_timeout,
             read=read_timeout,
@@ -363,8 +399,14 @@ class BaseServiceClient:
         data: dict | None = None,
         operation: str = "request",
         budget_seconds: float | None = None,
+        read_timeout: float | None = None,
     ) -> httpx.Response:
         """Execute *method* request with exponential-backoff retry.
+
+        ``read_timeout`` overrides the client-wide socket read timeout for
+        this call alone, for an operation whose deadline belongs to the
+        record rather than the client (a PDF parse). The retry checks
+        reserve the same value, so the two cannot disagree.
 
         ``budget_seconds`` is the caller's own deadline for the whole
         operation (for the indexing pipeline, the record's processing
@@ -390,6 +432,13 @@ class BaseServiceClient:
         transient outcome (5xx, bare 429, transport errors) still counts
         against ``max_retries`` and the breaker as before.
         """
+        def _effective_read() -> float:
+            """What one attempt may take, so the retry checks and the request
+            itself cannot disagree about it."""
+            if read_timeout is not None:
+                return read_timeout
+            return self._timeout.read or 0.0
+
         if self.circuit_breaker.should_attempt_probe():
             probe_ok = await self.health_check()
             if probe_ok:
@@ -428,6 +477,14 @@ class BaseServiceClient:
                         backpressure_attempts, self.max_backpressure_attempts,
                     )
                     kwargs: dict[str, Any] = {"headers": headers}
+                    if read_timeout is not None:
+                        # Built explicitly: httpx.Timeout has no copy_with.
+                        kwargs["timeout"] = httpx.Timeout(
+                            connect=self._timeout.connect,
+                            read=read_timeout,
+                            write=self._timeout.write,
+                            pool=self._timeout.pool,
+                        )
                     if json is not None:
                         kwargs["json"] = json
                     elif content is not None:
@@ -443,6 +500,18 @@ class BaseServiceClient:
                     if response.status_code not in TRANSIENT_STATUS_CODES:
                         # Service responded — even a 4xx means it's reachable.
                         self.circuit_breaker.record_success()
+                        if response.status_code in AUTH_REFUSED_STATUS_CODES:
+                            detail = _extract_service_error_message(response)
+                            message = (
+                                f"{self.service_name} {operation} was refused "
+                                f"with status {response.status_code}"
+                            )
+                            raise ServiceAuthRefusedError(
+                                f"{message}: {detail}" if detail else message,
+                                status_code=response.status_code,
+                                service_name=self.service_name,
+                                details={"error_message": detail} if detail else None,
+                            )
                         return response
 
                     retry_after = (
@@ -476,7 +545,7 @@ class BaseServiceClient:
                             )
                         if budget_seconds is not None:
                             spent = time.monotonic() - started_at
-                            if spent + wait + (self._timeout.read or 0.0) > budget_seconds:
+                            if spent + wait + _effective_read() > budget_seconds:
                                 # The record above would cancel this attempt
                                 # anyway; a backpressure error re-queues it
                                 # with a proper backoff instead.
@@ -540,13 +609,13 @@ class BaseServiceClient:
                 delay = self.retry_delay * (2 ** (transient_attempts - 1))
                 if budget_seconds is not None:
                     spent = time.monotonic() - started_at
-                    read_timeout = self._timeout.read or 0.0
-                    if spent + delay + read_timeout > budget_seconds:
+                    reserve = _effective_read()
+                    if spent + delay + reserve > budget_seconds:
                         self.logger.warning(
                             "[%s] %s not retried: %.0fs of a %.0fs budget spent and another "
                             "attempt could take %.0fs",
                             self.service_name, operation, spent, budget_seconds,
-                            delay + read_timeout,
+                            delay + reserve,
                         )
                         break
                 self.logger.debug("[%s] Retrying in %.1fs …", self.service_name, delay)
@@ -587,10 +656,39 @@ class BaseServiceClient:
     # Public helpers for sub-classes
     # ------------------------------------------------------------------
 
-    async def _post_json(self, path: str, payload: dict, operation: str = "POST") -> httpx.Response:
+    async def _auth_headers(self, org_id: str | None) -> dict[str, str]:
+        """Bearer header for a client that declares a service scope; empty otherwise."""
+        if self._service_scope is None:
+            return {}
+        if self._config_service is None:
+            raise ServiceCallError(
+                f"{self.service_name} requires a {self._service_scope.value} service token, "
+                "but this client has no config service to mint one",
+                service_name=self.service_name,
+            )
+        claims: dict[str, Any] = {"scopes": [self._service_scope.value]}
+        if org_id:
+            claims["orgId"] = org_id
+        # Lets the callee make its own model calls as the same person or service.
+        propagated = encode_pcp()
+        if propagated is not None and (not org_id or propagated["org"] in ("", org_id)):
+            claims[PCP_CLAIM] = propagated
+        token = await generate_jwt(self._config_service, claims)
+        return {"Authorization": f"Bearer {token}"}
+
+    async def _post_json(
+        self,
+        path: str,
+        payload: dict,
+        operation: str = "POST",
+        org_id: str | None = None,
+    ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         body = json.dumps(payload).encode("utf-8")
-        headers: dict[str, str] = {"Content-Type": "application/json"}
+        headers: dict[str, str] = {
+            "Content-Type": "application/json",
+            **await self._auth_headers(org_id),
+        }
         # Starlette does not auto-decompress Content-Encoding: gzip request bodies,
         # so we never compress JSON request payloads here.
         return await self._request_with_retry(
@@ -604,16 +702,24 @@ class BaseServiceClient:
         data: dict,
         operation: str = "POST multipart",
         budget_seconds: float | None = None,
+        org_id: str | None = None,
+        read_timeout: float | None = None,
     ) -> httpx.Response:
         url = f"{self.service_url}{path}"
         return await self._request_with_retry(
             "POST", url, files=files, data=data, operation=operation,
+            headers=await self._auth_headers(org_id),
             budget_seconds=budget_seconds,
+            read_timeout=read_timeout,
         )
 
-    async def _get_json(self, path: str, operation: str = "GET") -> httpx.Response:
+    async def _get_json(
+        self, path: str, operation: str = "GET", org_id: str | None = None
+    ) -> httpx.Response:
         url = f"{self.service_url}{path}"
-        return await self._request_with_retry("GET", url, operation=operation)
+        return await self._request_with_retry(
+            "GET", url, operation=operation, headers=await self._auth_headers(org_id)
+        )
 
     # ------------------------------------------------------------------
     # Health check

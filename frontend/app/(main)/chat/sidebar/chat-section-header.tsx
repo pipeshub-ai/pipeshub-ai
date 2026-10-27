@@ -61,6 +61,7 @@ export function ChatSectionHeader({
             color="gray"
             onClick={(e) => { e.stopPropagation(); onAdd(); }}
             aria-label={addAriaLabel ?? 'Add'}
+            style={{ margin: 0 }}
           >
             <MaterialIcon name="add" size={ICON_SIZE_DEFAULT} color="var(--slate-11)" />
           </IconButton>
@@ -73,6 +74,7 @@ export function ChatSectionHeader({
             onClick={onToggleCollapse}
             aria-label={isCollapsed ? 'Expand section' : 'Collapse section'}
             style={{
+              margin: 0,
               transition: 'transform 0.2s ease',
             }}
           >

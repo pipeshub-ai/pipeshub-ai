@@ -2,7 +2,10 @@ import hashlib
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional, Union
+from urllib.parse import quote
 from xml.sax.saxutils import escape
+
+import httpx
 
 from app.sources.client.http.http_request import HTTPRequest
 from app.sources.client.http.http_response import HTTPResponse
@@ -48,6 +51,15 @@ class NextcloudDataSource:
         # Note: OCS URLs require the ID in the path
         rel_path = f'/ocs/v1.php/cloud/users/{user_id}'
         return await self._ocs_request('GET', rel_path, headers=headers)
+
+    async def get_current_user(self, headers: dict[str, Any] | None = None) -> HTTPResponse:
+        """
+        Get the authenticated user, whose ``id`` names their WebDAV and OCS paths.
+        The login name can differ from it (an email or an LDAP name).
+        Ref:
+        API: GET /ocs/v1.php/cloud/user
+        """
+        return await self._ocs_request('GET', '/ocs/v1.php/cloud/user', headers=headers)
 
     async def get_users(
         self,
@@ -1198,6 +1210,15 @@ class NextcloudDataSource:
         )
         return await self._client.execute(req)
 
+    async def open_download(self, user_id: str, path: str) -> httpx.Response:
+        """Start a GET of a file and return the response with its body not yet read.
+
+        The caller reads it with ``aiter_bytes()`` and must ``aclose()`` it.
+        """
+        client = await self._client._ensure_client()
+        request = client.build_request('GET', self._build_webdav_url(user_id, path))
+        return await client.send(request, stream=True)
+
     async def upload_file(
         self,
         user_id: str,
@@ -1598,11 +1619,11 @@ class NextcloudDataSource:
         Ref: 'Restoring from the trashbin'
         """
         # Source: .../trashbin/USER/trash/ITEM
-        source_url = f"{self.base_url}/remote.php/dav/trashbin/{user_id}/trash/{item_name}"
+        source_url = self._build_dav_url("trashbin", user_id, f"trash/{item_name}")
 
         # Destination: .../trashbin/USER/restore/ITEM
         # (Moving it here triggers the auto-restore)
-        dest_url = f"{self.base_url}/remote.php/dav/trashbin/{user_id}/restore/{item_name}"
+        dest_url = self._build_dav_url("trashbin", user_id, f"restore/{item_name}")
 
         _headers = headers or {}
         _headers['Destination'] = dest_url
@@ -1628,7 +1649,7 @@ class NextcloudDataSource:
         Permanently delete a specific item from the trashbin.
         Ref: 'Deleting from the trashbin'
         """
-        url = f"{self.base_url}/remote.php/dav/trashbin/{user_id}/trash/{item_name}"
+        url = self._build_dav_url("trashbin", user_id, f"trash/{item_name}")
 
         req = HTTPRequest(
             method='DELETE',
@@ -2200,11 +2221,17 @@ class NextcloudDataSource:
         )
 
     # Internal WebDAV helpers
+    def _build_dav_url(self, area: str, user_id: str, path: str = "") -> str:
+        """Constructs a full DAV URL such as ``.../dav/files/USER/PATH``."""
+        # Percent-encode: a raw '#' or '?' in a file name would otherwise end the
+        # URL path, so the request would go to a different item.
+        clean_path = quote(path.lstrip('/'), safe='/')
+        # Assumes base_url has no trailing slash
+        return f"{self.base_url}/remote.php/dav/{area}/{quote(user_id, safe='')}/{clean_path}"
+
     def _build_webdav_url(self, user_id: str, path: str) -> str:
         """Constructs the full WebDAV URL."""
-        clean_path = path.lstrip('/')
-        # Assumes base_url has no trailing slash
-        return f"{self.base_url}/remote.php/dav/files/{user_id}/{clean_path}"
+        return self._build_dav_url("files", user_id, path)
 
     async def _webdav_request(
         self,

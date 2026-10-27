@@ -24,10 +24,19 @@ import { TableFullscreenWrapper } from './table-fullscreen-wrapper';
 import { MermaidDiagram } from './mermaid-diagram';
 import { parseCsvContent, parseCsvCellContent } from './csv-utils';
 import { MaterialIcon } from '@/app/components/ui/MaterialIcon';
+import { touchTarget } from '@/app/components/ui/responsive';
+import { useIsMobile } from '@/lib/hooks/use-is-mobile';
+import { SafeMarkdownImage } from '@/app/components/ui/safe-markdown-image';
+import { markdownUrlTransform, rehypeStripStyleUrls } from '@/lib/utils/image-url-policy';
 import { useThemeAppearance } from '@/app/components/theme-provider';
 import { useTranslation } from 'react-i18next';
+import { useCanHover } from '@/lib/hooks/use-can-hover';
+import { useCopyText } from '@/lib/hooks/use-copy-text';
 import type { Root, Blockquote } from 'mdast';
 import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
+import { downloadCode } from '../../utils/code-download';
+import { downloadTableCsv, tableNodeToRows, type TableNode } from '../../utils/table-csv';
+import { CHAT_LINK_STYLE, isRawUrlText, shortLinkLabel } from '../../utils/link-label';
 
 /**
  * rehype-sanitize schema.
@@ -41,10 +50,16 @@ import { splitMarkdownBlocks } from '../../utils/split-streaming-markdown';
  *
  * The schema only needs to cover raw HTML that the LLM may embed (callouts,
  * details/summary, styled spans, etc.). Dangerous constructs — <script>,
- * on* event handlers, javascript:/data: URLs — remain blocked by defaultSchema.
+ * on* event handlers, javascript: URLs — remain blocked by defaultSchema.
+ * `data:`/`blob:` are allowed for `src` only; `SafeMarkdownImage` decides
+ * which image URLs load.
  */
 const SANITIZE_SCHEMA: Schema = {
   ...defaultSchema,
+  protocols: {
+    ...defaultSchema.protocols,
+    src: [...(defaultSchema.protocols?.src ?? []), 'data', 'blob'],
+  },
   tagNames: [
     ...(defaultSchema.tagNames ?? []),
     // Collapsible sections the LLM may emit
@@ -297,6 +312,7 @@ const REMARK_PLUGINS: PluggableList = [
 const REHYPE_PLUGINS: PluggableList = [
   rehypeRaw,
   [rehypeSanitize, SANITIZE_SCHEMA],
+  rehypeStripStyleUrls,
   rehypeKatex,
 ];
 
@@ -422,6 +438,7 @@ const HEADING_STYLES: Record<number, React.CSSProperties> = {
 
 function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; children?: React.ReactNode }) {
   const [showAnchor, setShowAnchor] = useState(false);
+  const canHover = useCanHover();
   const id = slugify(extractNodeText(children));
   const tag = `h${level}` as 'h1' | 'h2' | 'h3' | 'h4' | 'h5' | 'h6';
   return (
@@ -440,7 +457,7 @@ function AnchorHeading({ level, children }: { level: 1 | 2 | 3 | 4 | 5 | 6; chil
           aria-label={`Link to section`}
           style={{
             marginLeft: '8px',
-            opacity: showAnchor ? 0.55 : 0,
+            opacity: showAnchor || !canHover ? 0.55 : 0,
             transition: 'opacity 0.15s ease',
             color: 'var(--slate-9)',
             textDecoration: 'none',
@@ -472,30 +489,107 @@ function TableRow({ children }: { children?: React.ReactNode }) {
   );
 }
 
+function MarkdownImage({ src, alt }: { src?: string | Blob; alt?: string }) {
+  return (
+    <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
+      <SafeMarkdownImage
+        src={src}
+        alt={alt}
+        style={{
+          maxWidth: '100%',
+          height: 'auto',
+          borderRadius: 'var(--radius-2)',
+          border: '1px solid var(--slate-5)',
+          display: 'inline-block',
+        }}
+      />
+      {alt && (
+        <Text
+          size="1"
+          as="span"
+          style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
+        >
+          {alt}
+        </Text>
+      )}
+    </Box>
+  );
+}
+
+/** An icon-and-text button in a code block's header bar. `active` shows the confirmed state. */
+function CodeHeaderButton({
+  icon,
+  label,
+  active = false,
+  onClick,
+}: {
+  icon: string;
+  label: string;
+  active?: boolean;
+  onClick: () => void;
+}) {
+  const [isHovered, setIsHovered] = useState(false);
+  const isMobile = useIsMobile();
+  const color = active ? 'var(--accent-11)' : 'var(--slate-11)';
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      onMouseEnter={() => setIsHovered(true)}
+      onMouseLeave={() => setIsHovered(false)}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: '4px',
+        background: isHovered ? 'var(--slate-4)' : 'transparent',
+        border: 'none',
+        cursor: 'pointer',
+        padding: '3px 8px',
+        borderRadius: 'var(--radius-1)',
+        fontFamily: 'inherit',
+        color,
+        transition: 'background 0.15s ease, color 0.15s ease',
+        ...touchTarget(isMobile),
+      }}
+    >
+      <MaterialIcon name={icon} size={13} color={color} />
+      <Text size="1" style={{ color: 'inherit' }}>
+        {label}
+      </Text>
+    </button>
+  );
+}
+
 /**
- * Fenced code block with a header bar (language label + copy button)
+ * Fenced code block with a header bar (language label + download and copy buttons)
  * and syntax-highlighted body that adapts to light / dark theme.
  */
-function CodeBlock({ language, codeText }: { language: string; codeText: string }) {
-  const [copied, setCopied] = useState(false);
-  const [isHovered, setIsHovered] = useState(false);
+export function CodeBlock({
+  language,
+  codeText,
+  maxHeight = '480px',
+  style,
+  actions = true,
+}: {
+  language: string;
+  codeText: string;
+  maxHeight?: string;
+  style?: React.CSSProperties;
+  /** Show the download and copy buttons. */
+  actions?: boolean;
+}) {
+  const { copied, copy } = useCopyText();
   const { appearance } = useThemeAppearance();
   const isDark = appearance === 'dark';
   const { t } = useTranslation();
-
-  const handleCopy = () => {
-    navigator.clipboard.writeText(codeText).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }).catch(() => {});
-  };
 
   // CSS variables resolve light/dark automatically — no manual isDark checks needed.
   const headerBg = 'var(--slate-2)';
   const headerBorder = 'var(--slate-6)';
   const bodyBg = 'var(--slate-1)';
   const labelColor = 'var(--slate-11)';
-  const btnHoverBg = 'var(--slate-4)';
 
   return (
     <Box
@@ -504,6 +598,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         borderRadius: 'var(--radius-2)',
         overflow: 'hidden',
         border: `1px solid ${headerBorder}`,
+        ...style,
       }}
     >
       {/* Header bar */}
@@ -528,34 +623,21 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
         >
           {language || 'text'}
         </Text>
-        <button
-          type="button"
-          onClick={handleCopy}
-          onMouseEnter={() => setIsHovered(true)}
-          onMouseLeave={() => setIsHovered(false)}
-          style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            gap: '4px',
-            background: isHovered ? btnHoverBg : 'transparent',
-            border: 'none',
-            cursor: 'pointer',
-            padding: '3px 8px',
-            borderRadius: 'var(--radius-1)',
-            fontFamily: 'inherit',
-            color: copied ? 'var(--accent-11)' : labelColor,
-            transition: 'background 0.15s ease, color 0.15s ease',
-          }}
-        >
-          <MaterialIcon
-            name={copied ? 'check' : 'content_copy'}
-            size={13}
-            color={copied ? 'var(--accent-11)' : labelColor}
-          />
-          <Text size="1" style={{ color: 'inherit' }}>
-            {copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
-          </Text>
-        </button>
+        {actions && (
+          <Flex align="center" gap="1">
+            <CodeHeaderButton
+              icon="download"
+              label={t('action.download')}
+              onClick={() => downloadCode(codeText, language)}
+            />
+            <CodeHeaderButton
+              icon={copied ? 'check' : 'content_copy'}
+              label={copied ? t('chatStream.copiedCode') : t('chatStream.copyCode')}
+              active={copied}
+              onClick={() => void copy(codeText)}
+            />
+          </Flex>
+        )}
       </Flex>
 
       {/* Syntax-highlighted code body */}
@@ -565,7 +647,7 @@ function CodeBlock({ language, codeText }: { language: string; codeText: string 
           backgroundColor: bodyBg,
           overflowX: 'auto',
           overflowY: 'auto',
-          maxHeight: '480px',
+          maxHeight,
         }}
       >
         <SyntaxHighlighter
@@ -887,8 +969,9 @@ export function createMarkdownComponents(
             if (rows.length >= 1) {
               const [header, ...dataRows] = rows;
               return (
-                <TableFullscreenWrapper>
+                <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(rows)}>
                   <Box
+                    data-table-scroll-area
                     style={{
                       overflowX: 'auto',
                       overflowY: 'auto',
@@ -1044,49 +1127,31 @@ export function createMarkdownComponents(
         }}
       />
     ),
-    img: ({ src, alt }: { src?: string; alt?: string }) => (
-      <Box as="span" style={{ margin: 'var(--space-3) 0', textAlign: 'center', display: 'block' }}>
-        <img
-          src={src}
-          alt={alt ?? ''}
-          loading="lazy"
-          style={{
-            maxWidth: '100%',
-            height: 'auto',
-            borderRadius: 'var(--radius-2)',
-            border: '1px solid var(--slate-5)',
-            display: 'inline-block',
-          }}
-        />
-        {alt && (
-          <Text
-            size="1"
-            as="span"
-            style={{ color: 'var(--slate-10)', marginTop: 'var(--space-1)', fontStyle: 'italic', display: 'block' }}
-          >
-            {alt}
-          </Text>
-        )}
-      </Box>
+    img: ({ src, alt }: { src?: string | Blob; alt?: string }) => (
+      <MarkdownImage src={src} alt={alt} />
     ),
-    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => (
-      <a
-        href={href ? withCurrentOrgId(href) : href}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          color: 'var(--accent-11)',
-          textDecoration: 'underline',
+    a: ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+      // A pasted or autolinked URL reads as its short name (#123 for a pull request); written link text is kept.
+      const raw = href && typeof children === 'string' && isRawUrlText(children, href);
+      return (
+        <a
+          href={href ? withCurrentOrgId(href) : href}
+          target="_blank"
+          rel="noopener noreferrer"
+          title={raw ? href : undefined}
           // Inherit so links in headings keep heading size (not body font-size-2).
-          fontSize: 'inherit',
-        }}
-      >
-        {processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
-      </a>
-    ),
-    table: ({ children }: { children?: React.ReactNode }) => (
-      <TableFullscreenWrapper>
+          style={{ ...CHAT_LINK_STYLE, fontSize: 'inherit' }}
+        >
+          {raw
+            ? shortLinkLabel(href)
+            : processChildren(children, citationMapsRef.current, citationCallbacksRef.current)}
+        </a>
+      );
+    },
+    table: ({ children, node }: { children?: React.ReactNode; node?: TableNode }) => (
+      <TableFullscreenWrapper onDownloadCsv={() => downloadTableCsv(tableNodeToRows(node))}>
         <Box
+          data-table-scroll-area
           style={{
             overflowX: 'auto',
             overflowY: 'auto',
@@ -1190,6 +1255,7 @@ function MarkdownBlockImpl({ source, components }: MarkdownBlockProps) {
     <ReactMarkdown
       remarkPlugins={REMARK_PLUGINS}
       rehypePlugins={REHYPE_PLUGINS}
+      urlTransform={markdownUrlTransform}
       components={components}
     >
       {source}

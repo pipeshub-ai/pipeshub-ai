@@ -1,6 +1,14 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import {
+  buildDesktopRedirectUri,
+  desktopOAuthErrorMessage,
+  exchangeOAuthTokenViaMain,
+  isElectron,
+  runDesktopOAuth,
+} from '@/lib/electron';
+import { makeDesktopState } from '@/lib/auth/desktop-oauth';
 import ProviderButton from './provider-button';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
@@ -63,18 +71,31 @@ async function exchangeCodeForTokens(params: {
 }): Promise<{ accessToken: string; idToken: string }> {
   const tokenEndpoint = `${params.authority.replace(/\/$/, '')}/oauth2/v2.0/token`;
 
-  const response = await fetch(tokenEndpoint, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: params.clientId,
-      code: params.code,
-      code_verifier: params.codeVerifier,
-      redirect_uri: params.redirectUri,
-      grant_type: 'authorization_code',
-      scope: 'openid profile email',
-    }),
-  });
+  const body = new URLSearchParams({
+    client_id: params.clientId,
+    code: params.code,
+    code_verifier: params.codeVerifier,
+    redirect_uri: params.redirectUri,
+    grant_type: 'authorization_code',
+    scope: 'openid profile email',
+  }).toString();
+
+  // Microsoft redeems a single-page-application code only cross-origin
+  // (AADSTS9002327), so the request has to carry the Origin its app
+  // registration lists — which is the origin of the redirect URI we just used.
+  // The renderer cannot send that: its origin is app://, and fetch will not let
+  // a caller override Origin. So under Electron this goes through main.
+  const response = isElectron()
+    ? await exchangeOAuthTokenViaMain({
+        url: tokenEndpoint,
+        body,
+        origin: new URL(params.redirectUri).origin,
+      })
+    : await fetch(tokenEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body,
+      });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({}));
@@ -117,6 +138,9 @@ export default function MicrosoftSignInButton({
   const popupRef = useRef<Window | null>(null);
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const codeVerifierRef = useRef('');
+  /** Azure rejects the code unless redemption repeats the authorize-time URI. */
+  const redirectUriRef = useRef('');
+  const desktopCancelRef = useRef<(() => void) | null>(null);
 
   /** Stop polling and drop popup ref only (used after success while redirect is pending). */
   const disposePopupOnly = useCallback(() => {
@@ -152,7 +176,7 @@ export default function MicrosoftSignInButton({
             clientId,
             code: event.data.code,
             codeVerifier: verifier,
-            redirectUri: `${window.location.origin}/auth/microsoft/callback`,
+            redirectUri: redirectUriRef.current,
           });
 
           if (!tokens.idToken) {
@@ -178,6 +202,9 @@ export default function MicrosoftSignInButton({
     return () => window.removeEventListener('message', handleMessage);
   }, [authority, clientId, disposePopupOnly, resetFlow, onSuccess, onError]);
 
+  // Abandon an in-flight desktop sign-in if the button goes away.
+  useEffect(() => () => desktopCancelRef.current?.(), []);
+
   const handleClick = async () => {
     if (isLoading || authLoading) return;
     setIsLoading(true);
@@ -192,12 +219,21 @@ export default function MicrosoftSignInButton({
         // ignore
       }
 
-      const state = generateRandomString();
+      const random = generateRandomString();
+      // The desktop callback page runs in the user's browser, so the state has
+      // to carry a marker it can recognise there.
+      const desktop = isElectron();
+      const state = desktop ? makeDesktopState(random) : random;
       const { verifier, challenge } = await generatePKCE();
       codeVerifierRef.current = verifier;
-      localStorage.setItem('microsoft_oauth_state', state);
+      // Only the web callback page can read this back; the desktop one runs in
+      // a different browser with its own storage.
+      if (!desktop) localStorage.setItem('microsoft_oauth_state', state);
 
-      const redirectUri = `${window.location.origin}/auth/microsoft/callback`;
+      const redirectUri = desktop
+        ? buildDesktopRedirectUri('microsoft')
+        : `${window.location.origin}/auth/microsoft/callback`;
+      redirectUriRef.current = redirectUri;
       const authorizeEndpoint = `${authority.replace(/\/$/, '')}/oauth2/v2.0/authorize`;
 
       const params = new URLSearchParams({
@@ -211,6 +247,40 @@ export default function MicrosoftSignInButton({
         code_challenge: challenge,
         code_challenge_method: 'S256',
       });
+
+      if (desktop) {
+        const flow = runDesktopOAuth({
+          provider: 'microsoft',
+          authUrl: `${authorizeEndpoint}?${params.toString()}`,
+          expectedState: state,
+        });
+        desktopCancelRef.current = flow.cancel;
+        try {
+          const result = await flow.promise;
+          if (!result.code) throw new Error('No authorization code received from Microsoft.');
+          // The verifier never left this renderer, which is what makes a code
+          // captured from the deep link useless to anyone else.
+          const verifierSnapshot = codeVerifierRef.current;
+          codeVerifierRef.current = '';
+          const tokens = await exchangeCodeForTokens({
+            authority,
+            clientId,
+            code: result.code,
+            codeVerifier: verifierSnapshot,
+            redirectUri,
+          });
+          if (!tokens.idToken) throw new Error('No id token received from Microsoft.');
+          desktopCancelRef.current = null;
+          setIsLoading(false);
+          onSuccess(tokens);
+        } catch (err) {
+          desktopCancelRef.current = null;
+          resetFlow();
+          const message = desktopOAuthErrorMessage(err, 'Microsoft');
+          if (message) onError(message);
+        }
+        return;
+      }
 
       const width = 500;
       const height = 700;

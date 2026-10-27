@@ -9,18 +9,31 @@ from urllib.parse import unquote, urlparse
 
 from app.exceptions.indexing_exceptions import DocumentProcessingError
 from app.utils.image_utils import get_extension_from_mimetype
+from app.utils.public_http import (
+    PublicFetchError,
+    PublicFetchLimits,
+    PublicUrlFetcher,
+    UnsafeUrlError,
+)
+from app.utils.url_redaction import redact_url
 from app.services.parsing.interface import ParseResult
 
 try:
     from cairosvg import svg2png
 except Exception:
     svg2png = None
-import aiohttp
 
 from app.models.blocks import Block, BlocksContainer, BlockType, DataFormat
 
 VALID_IMAGE_EXTENSIONS = ['.png', '.jpg', '.jpeg', '.webp','.svg']
 VIEWBOX_NUM_COMPONENTS = 4
+# Image URLs come from document bodies (uploads, synced mail, crawled pages), so a
+# document's author chooses them: they must never reach internal addresses.
+# A larger image is dropped rather than buffered whole: a document's image URL can
+# serve any amount. downscale_to_limits fits accepted images to each model.
+_MAX_IMAGE_BYTES = 20 * 1024 * 1024
+_IMAGE_FETCH_LIMITS = PublicFetchLimits(max_bytes=_MAX_IMAGE_BYTES, timeout_s=10.0)
+_CSS_VAR_OPEN = re.compile(r'var\(\s*--[\w-]+\s*(,)?')
 _logger = logging.getLogger(__name__)
 
 
@@ -119,8 +132,24 @@ class ImageParser:
         return True
 
     @staticmethod
+    def _log_http_error(log: logging.Logger, url: str, status: int) -> None:
+        if status == HTTPStatus.FORBIDDEN:
+            if 'X-Amz-Expires' in url:
+                log.warning(
+                    f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {redact_url(url)}"
+                )
+            else:
+                log.warning(f"⚠️ Access denied (403) for URL - insufficient permissions: {redact_url(url)}")
+        elif status == HTTPStatus.NOT_FOUND:
+            log.warning(f"⚠️ Image not found (404) at URL: {redact_url(url)}")
+        elif status >= HTTPStatus.INTERNAL_SERVER_ERROR:
+            log.warning(f"⚠️ Server error ({status}) when fetching URL: {redact_url(url)}")
+        else:
+            log.warning(f"⚠️ HTTP error ({status}) when fetching URL: {redact_url(url)}")
+
+    @staticmethod
     async def _fetch_single_url(
-        session: aiohttp.ClientSession,
+        fetcher: PublicUrlFetcher,
         url: str,
         logger: logging.Logger | None = None,
     ) -> str | None:
@@ -139,78 +168,55 @@ class ImageParser:
 
             # Validate URL format before attempting to fetch
             if not ImageParser._is_valid_image_url(url):
-                log.warning(f"⚠️ URL does not appear to be an image URL: {url[:100]}...")
+                log.warning(f"⚠️ URL does not appear to be an image URL: {redact_url(url)}")
                 return None
 
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10), allow_redirects=True) as response:
-                response.raise_for_status()
+            try:
+                response = await fetcher.get(url, _IMAGE_FETCH_LIMITS)
+            except UnsafeUrlError as e:
+                log.warning(f"⚠️ Skipping image on a non-public address: {redact_url(url)} ({e})")
+                return None
+            except PublicFetchError as e:
+                log.warning(f"⚠️ Network error when fetching URL: {redact_url(url)} (Error: {e})")
+                return None
 
-                get_content_type_header = response.headers.get('content-type', '').lower()
-                get_content_type = get_content_type_header.split(';')[0].strip()
-                is_valid = ImageParser._is_valid_image_content_type(get_content_type)
-                log.debug(f"GET content-type for URL {url[:200]}... => {get_content_type}")
+            if not HTTPStatus.OK <= response.status_code < HTTPStatus.MULTIPLE_CHOICES:
+                ImageParser._log_http_error(log, url, response.status_code)
+                return None
 
-                if not is_valid:
-                    log.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {url[:100]}...")
-                    return None
+            get_content_type_header = response.headers.get('content-type', '').lower()
+            get_content_type = get_content_type_header.split(';')[0].strip()
+            is_valid = ImageParser._is_valid_image_content_type(get_content_type)
+            log.debug(f"GET content-type for URL {redact_url(url)} => {get_content_type}")
 
-                extension = get_extension_from_mimetype(get_content_type)
-                if not extension:
-                    log.info(f"⚠️ Extension couldn't be determined for URL: {url[:100]}... Skipping image")
-                    return None
+            if not is_valid:
+                log.info(f"⚠️ Content-type invalid during GET: {get_content_type} from URL: {redact_url(url)}")
+                return None
 
-                if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
-                    log.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {url[:100]}... Skipping image")
-                    return None
+            extension = get_extension_from_mimetype(get_content_type)
+            if not extension:
+                log.info(f"⚠️ Extension couldn't be determined for URL: {redact_url(url)}; skipping image")
+                return None
 
-                # Read content and encode to base64
-                content = await response.read()
+            if f".{extension}" not in VALID_IMAGE_EXTENSIONS:
+                log.info(f"⚠️ Extension {extension} not in valid image extensions, from URL: {redact_url(url)}; skipping image")
+                return None
 
-                # Basic validation - ensure we got some content
-                if not content:
-                    log.info(f"⚠️ Empty content received from URL: {url}")
-                    return None
+            content = response.content
+            if not content:
+                log.info(f"⚠️ Empty content received from URL: {redact_url(url)}")
+                return None
 
-                base64_encoded = base64.b64encode(content).decode('utf-8')
-                if 'svg' in extension:
-                    log.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
-                    base64_image = f"data:image/png;base64,{ImageParser.svg_base64_to_png_base64(base64_encoded)}"
-                    return base64_image
+            base64_encoded = base64.b64encode(content).decode('utf-8')
+            if 'svg' in extension:
+                log.debug("Detected SVG extension from GET; converting SVG base64 to PNG base64")
+                return f"data:image/png;base64,{ImageParser.svg_base64_to_png_base64(base64_encoded)}"
 
-                base64_image = f"data:image/{extension};base64,{base64_encoded}"
-                log.debug(f"Converted URL to base64 for {extension}: {url[:100]}")
-                return base64_image
+            log.debug(f"Converted URL to base64 for {extension}: {redact_url(url)}")
+            return f"data:image/{extension};base64,{base64_encoded}"
 
-        except aiohttp.ClientResponseError as e:
-            # Handle HTTP errors specifically
-            if e.status == HTTPStatus.FORBIDDEN:
-                # Check if this is a signed URL that might have expired
-                if 'X-Amz-Expires' in str(e):
-                    log.warning(
-                        f"⚠️ Access denied (403) for signed URL - likely expired or invalid signature: {url[:150]}... "
-                        f"(Original error: {e.status}, {e.message})"
-                    )
-                else:
-                    log.warning(
-                        f"⚠️ Access denied (403) for URL - insufficient permissions: {url[:150]}... "
-                        f"(Original error: {e.status}, {e.message})"
-                    )
-            elif e.status == HTTPStatus.NOT_FOUND:
-                log.warning(f"⚠️ Image not found (404) at URL: {url[:150]}...")
-            elif e.status >= HTTPStatus.INTERNAL_SERVER_ERROR:
-                log.warning(f"⚠️ Server error ({e.status}) when fetching URL: {url[:150]}...")
-            else:
-                log.warning(
-                    f"⚠️ HTTP error ({e.status}) when fetching URL: {url[:150]}... "
-                    f"(Error: {e.message})"
-                )
-            return None
-        except aiohttp.ClientError as e:
-            # Handle other aiohttp client errors (timeouts, connection errors, etc.)
-            log.warning(f"⚠️ Network error when fetching URL: {url[:150]}... (Error: {str(e)})")
-            return None
         except Exception as e:
-            log.error(f"⚠️ Failed to convert URL to base64: {url[:150]}..., error: {str(e)}")
+            log.error(f"⚠️ Failed to convert URL to base64: {redact_url(url)}, error: {str(e)}")
             return None
 
     @staticmethod
@@ -230,13 +236,13 @@ class ImageParser:
         Returns:
             List of base64 encoded image strings (None for SVG images or failed conversions)
         """
-        async with aiohttp.ClientSession() as session:
-            tasks = [
-                ImageParser._fetch_single_url(session, url, logger=logger)
-                for url in urls
-            ]
-            base64_images = await asyncio.gather(*tasks)
-            return list(base64_images)
+        fetcher = PublicUrlFetcher()
+        tasks = [
+            ImageParser._fetch_single_url(fetcher, url, logger=logger)
+            for url in urls
+        ]
+        base64_images = await asyncio.gather(*tasks)
+        return list(base64_images)
 
     @staticmethod
     def _extract_svg_dimensions(svg_str: str) -> tuple[int | None, int | None]:
@@ -315,10 +321,66 @@ class ImageParser:
             return None, None
 
     @staticmethod
+    def _resolve_css_var_fallbacks(svg_str: str) -> str:
+        """
+        Replace each CSS ``var(--name, fallback)`` with its fallback, as a browser
+        does when the custom property is not defined.
+
+        cairosvg has no custom-property support, and its color parser finds a hex
+        color anywhere in the value but slices it from index 1, so
+        ``var(--fill-0, #B4B4B4)`` fails with "invalid literal for int() with
+        base 16: 'ar'". A ``var()`` without a fallback, or one whose parentheses
+        never close, is left as is.
+
+        One pass with an explicit stack: the SVG comes from a document, so deep
+        ``var()`` nesting must not recurse or rescan.
+        """
+        if 'var(' not in svg_str:
+            return svg_str
+        out: list[str] = []
+        # One frame per open var(): [has_fallback, open parens inside it,
+        # input index of "var(", output length at "var("].
+        frames: list[list] = []
+        i = 0
+        n = len(svg_str)
+        while i < n:
+            char = svg_str[i]
+            match = _CSS_VAR_OPEN.match(svg_str, i) if char == 'v' else None
+            if match:
+                has_fallback = match.group(1) is not None
+                frames.append([has_fallback, 0, i, len(out)])
+                i = match.end()
+                if has_fallback:
+                    while i < n and svg_str[i].isspace():
+                        i += 1
+                else:
+                    out.extend(match.group(0))
+                continue
+            if frames and char == '(':
+                frames[-1][1] += 1
+            elif frames and char == ')':
+                if frames[-1][1]:
+                    frames[-1][1] -= 1
+                else:
+                    has_fallback, _, _, out_start = frames.pop()
+                    if has_fallback:
+                        while len(out) > out_start and out[-1].isspace():
+                            out.pop()
+                        i += 1
+                        continue
+            out.append(char)
+            i += 1
+        if frames:
+            _, _, in_start, out_start = frames[0]
+            return ''.join(out[:out_start]) + svg_str[in_start:]
+        return ''.join(out)
+
+    @staticmethod
     def _sanitize_svg_content(svg_str: str) -> bytes:
         """
         Sanitize SVG content to fix common XML parsing issues, including unbound namespace prefixes.
-        This function ensures that common SVG namespace declarations are present in the root <svg> element.
+        This function ensures that common SVG namespace declarations are present in the root <svg> element,
+        and replaces CSS var() values that cairosvg cannot read with their fallbacks.
 
         Args:
             svg_str: SVG content as a string
@@ -327,6 +389,8 @@ class ImageParser:
             Sanitized SVG content as bytes
         """
         try:
+            svg_str = ImageParser._resolve_css_var_fallbacks(svg_str)
+
             # Find the <svg> tag (case-insensitive)
             svg_tag_pattern = r'(<svg[^>]*?)>'
             match = re.search(svg_tag_pattern, svg_str, re.IGNORECASE)

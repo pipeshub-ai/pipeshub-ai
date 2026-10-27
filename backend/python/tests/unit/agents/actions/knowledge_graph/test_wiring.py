@@ -24,6 +24,7 @@ from app.agents.agent_loop.domain_agents import (
     compose_domain_agents,
 )
 from app.agents.agent_loop.tool_loader import _KNOWLEDGE_TOOLSETS
+from app.modules.agents.context.source_catalog import SourceCatalog
 
 
 # ---------------------------------------------------------------------------
@@ -51,6 +52,7 @@ class TestKnowledgeToolsetsAreEssential:
     surfaces the Record IDs that make `dynamic_fetch_full_record` available."""
 
     def _toolset_class(self, toolset_name: str) -> type:
+        from app.agents.actions.code_graph.code_graph import CodeGraph
         from app.agents.actions.knowledge_graph.knowledge_graph import KnowledgeGraph
         from app.agents.actions.knowledge_hub.knowledge_hub import KnowledgeHub
         from app.agents.actions.retrieval.retrieval import Retrieval
@@ -59,6 +61,7 @@ class TestKnowledgeToolsetsAreEssential:
             "knowledgegraph": KnowledgeGraph,
             "knowledgehub": KnowledgeHub,
             "retrieval": Retrieval,
+            "codegraph": CodeGraph,
         }
         assert toolset_name in classes, (
             f"{toolset_name} is gated by _KNOWLEDGE_TOOLSETS but this test does "
@@ -167,6 +170,7 @@ class TestNavigationToolsInTopLevelResidual:
         context = MagicMock()
         context.agent_knowledge = []
         context.connector_configs = {}
+        context.get_source_catalog.return_value = SourceCatalog.from_state({})
 
         top_names = compose_domain_agents(
             registry, runtime, context,
@@ -185,6 +189,7 @@ class TestNavigationToolsSharedWithChildren:
         context = MagicMock()
         context.agent_knowledge = []
         context.connector_configs = {}
+        context.get_source_catalog.return_value = SourceCatalog.from_state({})
 
         nav_tool_names = frozenset({
             "knowledgegraph__navigate",

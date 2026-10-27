@@ -36,6 +36,8 @@ type ContentAckFn = (response: ContentStreamAck) => void;
 export class DesktopSocketClient {
   private socket: Socket | null = null;
   private authFailures = 0;
+  private refusedHandshakes = 0;
+  private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private stopped = false;
   private readonly log: (message: string, ...args: unknown[]) => void;
 
@@ -66,6 +68,7 @@ export class DesktopSocketClient {
     }
 
     this.authFailures = 0;
+    this.refusedHandshakes = 0;
     this.socket = io(`${baseUrl}${NAMESPACE}`, {
       path: SOCKET_PATH,
       transports: ['websocket', 'polling'],
@@ -95,6 +98,10 @@ export class DesktopSocketClient {
 
   disconnect(): void {
     this.stopped = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
     if (!this.socket) return;
     this.socket.removeAllListeners();
     this.socket.disconnect();
@@ -171,6 +178,7 @@ export class DesktopSocketClient {
   private attachListeners(socket: Socket): void {
     socket.on('connect', () => {
       this.authFailures = 0;
+      this.refusedHandshakes = 0;
       this.log(`connected as device ${this.deps.credentials.deviceId}`);
       void this.register();
     });
@@ -180,6 +188,9 @@ export class DesktopSocketClient {
       const looksLikeAuth = /token|auth|unauthor|expired/i.test(message);
       if (!looksLikeAuth) {
         this.log(`connect error: ${message}`);
+        // socket.io reconnects on its own after a transport error, but not
+        // after the gateway refused the handshake, which leaves it inactive.
+        if (!socket.active) this.retryRefusedHandshake(socket);
         return;
       }
       this.authFailures += 1;
@@ -215,6 +226,20 @@ export class DesktopSocketClient {
         void this.handleContentFetch(socket, request, ack);
       },
     );
+  }
+
+  private retryRefusedHandshake(socket: Socket): void {
+    if (this.retryTimer) return;
+    const delay = Math.min(
+      RECONNECT_DELAY_MS * 2 ** this.refusedHandshakes,
+      RECONNECT_DELAY_MAX_MS,
+    );
+    this.refusedHandshakes += 1;
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      if (this.stopped || this.socket !== socket || socket.connected) return;
+      socket.connect();
+    }, delay);
   }
 
   private async handlePull(request: ServePullRequest, ack?: PullAckFn): Promise<void> {

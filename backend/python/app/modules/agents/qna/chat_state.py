@@ -1,19 +1,23 @@
-from collections.abc import Iterable
+from collections.abc import Iterable, Mapping
 from logging import Logger
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import BaseMessage
-from app.modules.transformers.blob_storage import BlobStorage
 from typing_extensions import TypedDict
 
-from app.utils.execute_query import agent_knowledge_has_sql_connector
-from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
 from app.config.configuration_service import ConfigurationService
+from app.modules.code_graph.connectors import agent_knowledge_has_code_connector
 from app.modules.reranker.reranker import RerankerService
 from app.modules.retrieval.retrieval_service import RetrievalService
-from app.services.graph_db.interface.graph_db_provider import IGraphDBProvider
+from app.modules.transformers.blob_storage import BlobStorage
+from app.services.graph_db.interface.graph_db_provider import (
+    SELECTION_FILTER_KEYS,
+    IGraphDBProvider,
+)
 from app.utils.chat_helpers import CitationRefMapper
+from app.utils.execute_query import agent_knowledge_has_sql_connector
+from app.utils.fetch_slack_thread import agent_knowledge_has_slack_connector
 
 # Default persona when the UI does not supply systemPrompt (keep in sync with API defaults).
 DEFAULT_AGENT_SYSTEM_PROMPT = "You are an enterprise questions answering expert"
@@ -49,6 +53,7 @@ class ChatState(TypedDict):
     graph_provider: IGraphDBProvider
     reranker_service: RerankerService
     config_service: ConfigurationService
+    entity_vector_store: Any | None  # EntityVectorStore, optional for graceful degradation
 
     model_name: str | None
     model_key: str | None
@@ -83,6 +88,9 @@ class ChatState(TypedDict):
     error: dict[str, Any] | None
     org_id: str
     user_id: str
+    # Who owns the artifacts this run makes. The caller, when a service-account
+    # agent (running as user_id, its creator) is chatted with by a signed-in user.
+    artifact_owner_user_id: str
     user_email: str
     send_user_info: bool
     conversation_id: str | None
@@ -103,6 +111,7 @@ class ChatState(TypedDict):
     # connector_instances: Deprecated - use toolsets instead
     tools: list[str] | None  # List of tool names to enable for this agent
     web_search_config: dict[str, Any] | None  # Runtime web_search tool config (provider + configuration payload)
+    deep_research: bool  # Deep research on: research method in the prompt, more turns, a larger web budget
     output_file_path: str | None  # Optional file path for saving responses
     tool_to_connector_map: dict[str, str] | None  # Mapping from app_name (tool) to connector instance ID
 
@@ -122,6 +131,7 @@ class ChatState(TypedDict):
     # assistant/placeholder agent (`get_authenticated_mcp_servers`). Consumed by the
     # agent-loop runtime's `MCPToolProvider`/`MCPAccessResolver` (`app/agents/agent_loop/`).
     mcp_servers: list[dict] | None  # Attached MCP server metadata (instanceId, name, tools) - NO secrets stored
+    api_toolset_tools: list[str] | None  # Attached API toolset operations, "<instanceId>:<toolName>"
     mcp_server_configs: dict[str, dict] | None  # SENSITIVE: {instanceId: {"instance": ..., "auth": ..., "ownerId": ...}}
     mcp_tool_load_failures: list[dict] | None  # Runtime discovery failures (soft-skip), populated by MCPToolProvider
 
@@ -178,6 +188,9 @@ class ChatState(TypedDict):
     # Knowledge retrieval processing fields
     virtual_record_id_to_result: dict[str, dict[str, Any]] | None  # Mapping for citations
     known_record_ids: set[str] | None  # Record IDs the model has been shown — see remember_record_ids()
+    known_record_names: dict[str, str] | None  # The same ids with their names, in the order shown (latest last)
+    retrieved_by: dict[str, Any] | None  # Which layer found each record — see modules/retrieval/provenance.py
+    usage_ledger: Any | None  # Opt-in per-request LLM usage — see agents/agent_loop/protocol/run_usage.py
     record_label_to_uuid_map: dict[str, str] | None  # Mapping from R-labels (e.g. "R1") to virtual_record_ids
     qna_message_content: Any | None  # get_message_content() output (list of content items, same as chatbot)
     blob_store: Any | None  # BlobStorage instance for processing results
@@ -187,6 +200,13 @@ class ChatState(TypedDict):
     # TEMPORARY token-savings experiment — see `RecordIdShortener` in
     # `utils/chat_helpers.py`. Opt-in, disabled by default.
     enable_record_id_shortening: bool | None
+    # Opt-in measurement surface: when True the stream carries CUSTOM
+    # `retrieval_context` and `run_usage` frames. Never on by default.
+    include_retrieval_context: bool | None
+    # `ChatQuery.keywordSearchBudget`: "short" caps how long a search waits for
+    # the keyword (grep) pattern match after its semantic results; None or
+    # "full" waits for all of it. See `pattern_match_wait_budget`.
+    keyword_search_budget: str | None
     record_id_shortener: Any | None  # Lazily created by the first knowledge tool call, only when enabled above
     attachments: list[dict[str, Any]] | None  # User-uploaded attachment metadata from the client (recordId, virtualRecordId, mimeType, etc.)
     resolved_attachment_blocks: list | None  # Pre-resolved image_url blocks for multimodal LLM injection; populated on first LLM call
@@ -207,7 +227,15 @@ class ChatState(TypedDict):
     has_sql_knowledge: bool  # True when agent_knowledge contains a SQL connector (POSTGRESQL/SNOWFLAKE/MARIADB)
     has_slack_connector: bool  # True when org has at least one configured Slack connector
     has_slack_knowledge: bool  # True when agent_knowledge contains a Slack connector
-    has_ui_client: bool  # True when client-name header was present; gates UI-only tools like ask_user_question
+    has_code_connector: bool  # True when org has at least one configured repo connector (GitLab/GitHub)
+    has_code_knowledge: bool  # True when agent_knowledge contains a repo connector
+    has_ui_client: bool  # True when the client can show and answer a question card; gates UI-only tools like ask_user_question
+    # Per-tool approvals (`app/agents/agent_loop/tool_approvals.py`).
+    client_name: str | None
+    agent_key: str | None
+    is_assistant_chat: bool
+    chat_streaming: bool
+    tool_approval: dict[str, Any] | None
 
 def _build_tool_to_toolset_map(toolsets: list[dict[str, Any]]) -> dict[str, str]:
     """
@@ -363,16 +391,23 @@ def _build_web_search_tool_config(chat_query: dict[str, Any]) -> dict[str, Any] 
         provider = str(resolved_config.get("provider", "")).strip().lower()
         configuration = resolved_config.get("configuration", {})
         if provider:
+            others = resolved_config.get("providers")
             return {
                 "provider": provider,
                 "configuration": configuration if isinstance(configuration, dict) else {},
+                # The other stored providers: search fallbacks and page readers (`app.web.config`).
+                "providers": [p for p in others if isinstance(p, dict)] if isinstance(others, list) else [],
             }
 
 
     return None
 
 
-def remember_record_ids(state: ChatState | dict[str, Any] | None, record_ids: Iterable[str]) -> None:
+def remember_record_ids(
+    state: ChatState | dict[str, Any] | None,
+    record_ids: Iterable[str],
+    names: Mapping[str, str] | None = None,
+) -> None:
     """Note that the model has now been shown these Record IDs.
 
     `dynamic_fetch_full_record` is registered mid-run only once the model
@@ -387,17 +422,54 @@ def remember_record_ids(state: ChatState | dict[str, Any] | None, record_ids: It
 
     Mutates the existing set in place when present — `state` IS the live
     `AgentContext.tool_state` dict the hook reads.
+
+    `known_record_names` keeps the same ids in the order they were shown,
+    with their names when the caller has them, so a fetch of an id that does
+    not resolve can point the model back at what it was actually given
+    (`knowledge_graph/ops/id_recovery.py`). Only tools that applied the
+    user's permissions may write here: that list is shown to the model.
+    Within one call the first id counts as the most recent: tools put what
+    matters first, so a cap on the list must keep the top of a long listing.
     """
     if state is None:
         return
-    ids = {rid for rid in record_ids if rid}
-    if not ids:
+    ordered = list(dict.fromkeys(rid for rid in record_ids if rid))
+    if not ordered:
         return
     existing = state.get("known_record_ids")
     if isinstance(existing, set):
-        existing.update(ids)
+        existing.update(ordered)
     else:
-        state["known_record_ids"] = ids
+        state["known_record_ids"] = set(ordered)
+
+    shown = state.get("known_record_names")
+    if not isinstance(shown, dict):
+        shown = {}
+        state["known_record_names"] = shown
+    for rid in reversed(ordered):
+        previous = shown.pop(rid, "")
+        shown[rid] = (names or {}).get(rid) or previous
+
+
+def remember_shown_results(
+    state: ChatState | dict[str, Any] | None,
+    results: Iterable[dict[str, Any]],
+    virtual_record_id_to_result: Mapping[str, Any],
+) -> None:
+    """`remember_record_ids` for the records a search actually rendered.
+
+    Takes the rendered blocks rather than the map: the map is filled before
+    the results are trimmed, so it can hold records the model never saw.
+    """
+    names: dict[str, str] = {}
+    for entry in results:
+        record = virtual_record_id_to_result.get(entry.get("virtual_record_id") or "")
+        if not isinstance(record, dict):
+            continue
+        rid = record.get("id") or record.get("_key")
+        if rid and rid not in names:
+            names[rid] = record.get("record_name") or record.get("recordName") or ""
+    remember_record_ids(state, names, names=names)
 
 
 def cleanup_state_after_retrieval(state: ChatState) -> None:
@@ -441,9 +513,14 @@ def cleanup_old_tool_results(state: ChatState, keep_last_n: int = 10) -> None:
         state["tool_repetition_warnings"] = []
 
 
+# Clients that show question cards and send the answer back: the web app (the desktop app too) and
+# Slack. Node names API-token callers `api`; they, like headless runs, have no one to answer.
+_CARD_CLIENTS = frozenset({"pipeshub-ai", "slack"})
+
+
 def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], llm: BaseChatModel,
                         logger: Logger, retrieval_service: RetrievalService, graph_provider: IGraphDBProvider,
-                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, client_name: str | None = None) -> ChatState:
+                        reranker_service: RerankerService, config_service: ConfigurationService, model_name: str, model_key: str, org_info: dict[str, Any] = None, graph_type: str = "legacy", *, has_sql_connector: bool, is_multimodal_llm: bool = False, has_slack_connector: bool = False, has_code_connector: bool = False, client_name: str | None = None, entity_vector_store: Any = None) -> ChatState:
     """
     Build the initial state from the chat query and user info.
 
@@ -499,10 +576,13 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
 
     # Compute has_knowledge once — filters out the NO_KB_SELECTED sentinel
     real_kb = [k for k in (kb or []) if k and k != "NO_KB_SELECTED"]
-    has_knowledge = bool(real_kb or apps or agent_knowledge)
+    # A selection below app level is knowledge too, with or without a whole app.
+    has_selection = any(filters.get(key) for key in SELECTION_FILTER_KEYS)
+    has_knowledge = bool(real_kb or apps or agent_knowledge or has_selection)
     
     has_sql_knowledge = agent_knowledge_has_sql_connector(agent_knowledge)
     has_slack_knowledge = agent_knowledge_has_slack_connector(agent_knowledge)
+    has_code_knowledge = agent_knowledge_has_code_connector(agent_knowledge)
 
     logger.debug(f"toolsets: {len(toolsets)} loaded")
     logger.debug(f"knowledge: {len(knowledge)} sources")
@@ -542,6 +622,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "error": None,
         "org_id": user_info.get("orgId", ""),
         "user_id": user_info.get("userId", ""),
+        "artifact_owner_user_id": chat_query.get("artifact_owner_user_id") or user_info.get("userId", ""),
         "user_email": user_info.get("userEmail", ""),
         "send_user_info": user_info.get("sendUserInfo", True),
         "conversation_id": chat_query.get("conversationId"),
@@ -551,6 +632,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "graph_provider": graph_provider,
         "reranker_service": reranker_service,
         "config_service": config_service,
+        "entity_vector_store": entity_vector_store,
         "model_name": model_name,
         "model_key": model_key,
 
@@ -570,6 +652,8 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # connector_instances: Deprecated - use toolsets instead
         "tools": tools,  # Extracted from toolsets
         "web_search_config": _build_web_search_tool_config(chat_query),
+        # Applies only with web search on; AgentContext.from_chat_state checks that.
+        "deep_research": bool(chat_query.get("deepResearch")),
         "output_file_path": output_file_path,
         "tool_to_connector_map": None,  # Deprecated - use tool_to_toolset_map
 
@@ -611,6 +695,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # MCP servers (resolved by agent.py's chat handler; see ChatState field comments)
         "mcp_servers": chat_query.get("mcpServers", []),
         "mcp_server_configs": chat_query.get("mcpServerConfigs", {}),
+        "api_toolset_tools": chat_query.get("apiToolsetTools", []),
         # Deliberately NOT pre-seeded here (unlike most other fields above) — same reason
         # `toolset_load_failures` isn't: `AgentContext.model_post_init()`'s `setdefault()`
         # only makes this dict and `context.mcp_tool_load_failures` the SAME list object
@@ -626,6 +711,7 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         # Knowledge retrieval processing fields
         "virtual_record_id_to_result": {},
         "known_record_ids": set(),
+        "known_record_names": {},
         "record_label_to_uuid_map": {},
         "qna_message_content": None,
         "blob_store": BlobStorage(logger=logger, config_service=config_service, graph_provider=graph_provider),
@@ -638,6 +724,14 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "enable_record_id_shortening": bool(
             chat_query.get("enable_record_id_shortening")
             or chat_query.get("enableRecordIdShortening")
+        ),
+        "include_retrieval_context": bool(
+            chat_query.get("include_retrieval_context")
+            or chat_query.get("includeRetrievalContext")
+        ),
+        "keyword_search_budget": (
+            chat_query.get("keyword_search_budget")
+            or chat_query.get("keywordSearchBudget")
         ),
 
         # Attachments (uploaded images/PDFs from client)
@@ -661,5 +755,12 @@ def build_initial_state(chat_query: dict[str, Any], user_info: dict[str, Any], l
         "has_sql_knowledge": has_sql_knowledge,
         "has_slack_connector": has_slack_connector,
         "has_slack_knowledge": has_slack_knowledge,
-        "has_ui_client": bool(client_name),
+        "has_code_connector": has_code_connector,
+        "has_code_knowledge": has_code_knowledge,
+        "has_ui_client": client_name in _CARD_CLIENTS,
+        "client_name": client_name,
+        "agent_key": chat_query.get("agentKey"),
+        "is_assistant_chat": bool(chat_query.get("isAssistantChat", False)),
+        "chat_streaming": chat_query.get("chatStreaming", True) is not False,
+        "tool_approval": chat_query.get("toolApproval"),
     }

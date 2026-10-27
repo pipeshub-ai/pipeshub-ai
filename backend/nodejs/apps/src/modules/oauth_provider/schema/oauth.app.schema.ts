@@ -1,5 +1,7 @@
 import mongoose, { Document, Schema, Model, Types } from 'mongoose'
 import { generateUniqueSlug } from '../../../libs/utils/counter'
+import { KnowledgeLimit } from '../types/oauth.types';
+import { knowledgeLimitField } from './knowledge_limit.schema';
 
 export enum OAuthAppStatus {
   ACTIVE = 'active',
@@ -12,6 +14,14 @@ export enum OAuthGrantType {
   CLIENT_CREDENTIALS = 'client_credentials',
   REFRESH_TOKEN = 'refresh_token',
   DEVICE_CODE = 'urn:ietf:params:oauth:grant-type:device_code',
+  /**
+   * RFC 8693 token exchange, used only by service-account delegation.
+   *
+   * Never added to an app's `allowedGrantTypes`: the exchange authenticates
+   * with the service token itself rather than with client credentials, so
+   * there is no registered client whose grant list could permit it.
+   */
+  TOKEN_EXCHANGE = 'urn:ietf:params:oauth:grant-type:token-exchange',
 }
 
 export interface IOAuthApp extends Document {
@@ -22,6 +32,20 @@ export interface IOAuthApp extends Document {
   description?: string
   orgId: Types.ObjectId
   createdBy: Types.ObjectId
+  /**
+   * The identity this app's `client_credentials` tokens act as.
+   *
+   * Absent means the app's creator, which is how every app behaved before
+   * this field existed and how every app behaves until an administrator
+   * points it at a service account.
+   *
+   * Kept separate from `createdBy` on purpose. `createdBy` is who manages the
+   * app, and it is what the Developer Settings queries filter on — moving it
+   * to a service account would leave the app visible to nobody, since no
+   * person can sign in as one. Who an app acts as and who looks after it are
+   * genuinely different questions, so they are genuinely different fields.
+   */
+  tokenIdentityUserId?: Types.ObjectId
   redirectUris: string[]
   allowedGrantTypes: OAuthGrantType[]
   allowedScopes: string[]
@@ -33,6 +57,9 @@ export interface IOAuthApp extends Document {
   isConfidential: boolean
   /** RFC 7591 Dynamic Client Registration. Hidden from the developer-apps UI. */
   isDynamic?: boolean
+  /** What every token of this app may reach, picked by its creator. Absent
+   * means everything the connecting user can see. */
+  knowledgeLimit?: KnowledgeLimit;
   accessTokenLifetime: number
   refreshTokenLifetime: number
   isDeleted: boolean
@@ -74,6 +101,11 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
       ref: 'users',
       required: true,
     },
+    tokenIdentityUserId: {
+      type: Schema.Types.ObjectId,
+      ref: 'users',
+      required: false,
+    },
     redirectUris: {
       type: [String],
       default: [],
@@ -110,6 +142,7 @@ const OAuthAppSchema = new Schema<IOAuthApp>(
     termsOfServiceUrl: { type: String },
     isConfidential: { type: Boolean, default: true },
     isDynamic: { type: Boolean, default: false, index: true },
+    knowledgeLimit: knowledgeLimitField,
     accessTokenLifetime: { type: Number, default: 3600 },
     refreshTokenLifetime: { type: Number, default: 2592000 },
     isDeleted: { type: Boolean, default: false },
@@ -123,14 +156,10 @@ OAuthAppSchema.index({ orgId: 1, isDeleted: 1 })
 OAuthAppSchema.index({ orgId: 1, createdBy: 1, isDeleted: 1, createdAt: -1 })
 OAuthAppSchema.index({ clientId: 1, status: 1 })
 
-OAuthAppSchema.pre<IOAuthApp>('save', async function (next) {
-  try {
-    if (!this.slug) {
-      this.slug = await generateUniqueSlug('OAuthApp')
-    }
-    next()
-  } catch (error) {
-    next(error as Error)
+OAuthAppSchema.pre<IOAuthApp>('save', async function () {
+  // Mongoose 9: async hooks signal failure by throwing, with no next callback.
+  if (!this.slug) {
+    this.slug = await generateUniqueSlug('OAuthApp')
   }
 })
 

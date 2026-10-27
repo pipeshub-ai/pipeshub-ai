@@ -6,7 +6,8 @@ import { AuthorizationCode } from '../schema/authorization_code.schema'
 import { OAuthAccessToken } from '../schema/oauth.access_token.schema'
 import { OAuthRefreshToken } from '../schema/oauth.refresh_token.schema'
 import { InvalidGrantError } from '../../../libs/errors/oauth.errors'
-import { AuthCodeExchangeResult } from '../types/oauth.types'
+import { AuthCodeExchangeResult, KnowledgeLimit } from '../types/oauth.types';
+import { toKnowledgeLimit } from '../schema/knowledge_limit.schema';
 
 const CODE_LENGTH = 32
 const CODE_EXPIRY_SECONDS = 600 // 10 minutes
@@ -25,7 +26,9 @@ export class AuthorizationCodeService {
     redirectUri: string,
     scopes: string[],
     codeChallenge?: string,
-    codeChallengeMethod?: 'S256' | 'plain',
+    codeChallengeMethod?: 'S256',
+    // What the user was shown at consent, so an exchange after an edit is refused.
+    knowledgeLimit?: KnowledgeLimit,
   ): Promise<string> {
     const code = crypto.randomBytes(CODE_LENGTH).toString('hex')
     const expiresAt = new Date(Date.now() + CODE_EXPIRY_SECONDS * 1000)
@@ -37,6 +40,7 @@ export class AuthorizationCodeService {
       orgId: new Types.ObjectId(orgId),
       redirectUri,
       scopes,
+      knowledgeLimit,
       expiresAt,
       codeChallenge,
       codeChallengeMethod,
@@ -61,6 +65,9 @@ export class AuthorizationCodeService {
     clientId: string,
     redirectUri: string,
     codeVerifier?: string,
+    // Defaults to the strict (public client) path so a caller that forgets to
+    // pass it fails closed rather than skipping PKCE.
+    isConfidentialClient: boolean = false,
   ): Promise<AuthCodeExchangeResult> {
     // First, look for the code regardless of isUsed status
     const authCode = await AuthorizationCode.findOne({
@@ -75,17 +82,7 @@ export class AuthorizationCodeService {
     // RFC 6749 Section 4.1.2: If code was already used, this is code reuse attack
     // MUST revoke all tokens previously issued based on that code
     if (authCode.isUsed) {
-      this.logger.warn('Authorization code reuse detected! Revoking all associated tokens', {
-        clientId,
-        userId: authCode.userId.toString(),
-        codeId: (authCode._id as Types.ObjectId).toString(),
-      })
-
-      // Revoke all tokens issued for this user/client combination
-      // This is a security measure per RFC 6749
-      await this.revokeTokensForCodeReuse(clientId, authCode.userId.toString())
-
-      throw new InvalidGrantError('Authorization code has already been used')
+      await this.rejectReplay(code, clientId, authCode);
     }
 
     if (authCode.expiresAt < new Date()) {
@@ -96,6 +93,12 @@ export class AuthorizationCodeService {
 
     if (authCode.redirectUri !== redirectUri) {
       throw new InvalidGrantError('Redirect URI mismatch')
+    }
+
+    // RFC 9700: public clients have no other proof of possession, so a code
+    // stored without a challenge must never be redeemable by one.
+    if (!authCode.codeChallenge && !isConfidentialClient) {
+      throw new InvalidGrantError('PKCE is required for public clients')
     }
 
     // PKCE verification
@@ -120,10 +123,28 @@ export class AuthorizationCodeService {
       }
     }
 
-    // Mark code as used (one-time use)
-    authCode.isUsed = true
-    authCode.usedAt = new Date()
-    await authCode.save()
+    // One-time use, decided by a single conditional write: of two exchanges
+    // racing on the same code exactly one gets here. The other is a replay.
+    const consumed = await AuthorizationCode.findOneAndUpdate(
+      { _id: authCode._id, isUsed: false, expiresAt: { $gte: new Date() } },
+      { $set: { isUsed: true, usedAt: new Date() } },
+    );
+    if (!consumed) {
+      // Lost the write: a replay only if the code really was used. It may also
+      // have expired or been swept since it was validated, which revokes nothing.
+      const now = await AuthorizationCode.findOne({
+        code: { $eq: code },
+        clientId: { $eq: clientId },
+      });
+      if (now?.isUsed) {
+        await this.rejectReplay(code, clientId, authCode);
+      }
+      throw new InvalidGrantError(
+        now
+          ? 'Authorization code has expired'
+          : 'Invalid or expired authorization code',
+      );
+    }
 
     this.logger.info('Authorization code exchanged', {
       clientId,
@@ -134,7 +155,42 @@ export class AuthorizationCodeService {
       userId: authCode.userId.toString(),
       orgId: authCode.orgId.toString(),
       scopes: authCode.scopes,
+      knowledgeLimit: toKnowledgeLimit(authCode.knowledgeLimit),
     }
+  }
+
+  /** A used code presented again: revoke what it issued (RFC 6749 4.1.2) and refuse. */
+  private async rejectReplay(
+    code: string,
+    clientId: string,
+    authCode: { _id: unknown; userId: Types.ObjectId },
+  ): Promise<never> {
+    this.logger.warn(
+      'Authorization code reuse detected! Revoking all associated tokens',
+      {
+        clientId,
+        userId: authCode.userId.toString(),
+        codeId: String(authCode._id),
+      },
+    );
+    // Flag first, revoke second; the winner mints, then reads the flag. Either it
+    // sees the flag and revokes its own pair, or it minted before the flag, and so
+    // before the revocation below, which then covers it.
+    await AuthorizationCode.updateOne(
+      { code: { $eq: code }, clientId: { $eq: clientId } },
+      { $set: { replayedAt: new Date() } },
+    );
+    await this.revokeTokensForCodeReuse(clientId, authCode.userId.toString());
+    throw new InvalidGrantError('Authorization code has already been used');
+  }
+
+  /** True when the code was replayed while this redeemer was minting its tokens. */
+  async wasReplayed(code: string, clientId: string): Promise<boolean> {
+    const row = await AuthorizationCode.findOne({
+      code: { $eq: code },
+      clientId: { $eq: clientId },
+    });
+    return row?.replayedAt != null;
   }
 
   /**

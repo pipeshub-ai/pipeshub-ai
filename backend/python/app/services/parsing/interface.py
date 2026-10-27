@@ -99,6 +99,9 @@ class ParseErrorCode(str, Enum):
     # here, this is retryable and must never be treated as a content
     # failure or count against a circuit breaker.
     PARSE_BACKPRESSURE = "PARSE_BACKPRESSURE"
+    # The file is encrypted and needs a password to open. A fact about the
+    # file: answered with a 422 and never retried.
+    PASSWORD_REQUIRED = "PASSWORD_REQUIRED"
 
 
 class ParseError(Exception):
@@ -121,3 +124,16 @@ class ParseError(Exception):
             "message": self.message,
             "details": self.details,
         }
+
+
+class UnsupportedFormatError(ParseError):
+    """A file type PipesHub recognises but cannot index: it fails the same way
+    on every attempt, so it is reported once and never retried."""
+
+    # Raised in-process too (the legacy indexing path), where the message error
+    # classifier retries exceptions it does not recognise; a 4xx status_code is
+    # what it reads as "do not retry", matching the 422 the parsing route sends.
+    status_code = 422
+
+    def __init__(self, extension: str, message: str) -> None:
+        super().__init__(ParseErrorCode.UNSUPPORTED_FORMAT, message, details={"extension": extension})

@@ -4,6 +4,12 @@ import {
   BadRequestError,
   InternalServerError,
 } from '../../../libs/errors/http.errors';
+import { HttpError } from '../../../libs/errors/http.errors';
+import {
+  keepDeliberateWording,
+  markClientSafe,
+  serverFailureMessage,
+} from '../../../libs/errors/reader-friendly';
 import { AppConfig } from '../../tokens_manager/config/config';
 import { Logger } from '../../../libs/services/logger.service';
 @injectable()
@@ -48,7 +54,7 @@ export class ConfigService {
 
       config = {
         method: 'post' as const,
-        url: `${this.appConfig.authBackend}/api/v1/saml/updateAppConfig`,
+        url: `${this.appConfig.authBackend}/api/v1/userAccount/updateAppConfig`,
         headers: {
           Authorization: `Bearer ${scopedToken}`,
           'Content-Type': 'application/json',
@@ -121,8 +127,10 @@ export class ConfigService {
           error.response,
         );
       }
-      throw new InternalServerError(
-        error instanceof Error ? error.message : 'Unexpected error occurred',
+      if (error instanceof HttpError) throw keepDeliberateWording(error);
+      this.logger.error('Updating the configuration failed', { error });
+      throw markClientSafe(
+        new InternalServerError(serverFailureMessage('save that setting')),
       );
     }
   }

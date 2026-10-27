@@ -28,7 +28,10 @@ from fastapi.responses import StreamingResponse
 
 from app.config.configuration_service import ConfigurationService
 from app.config.constants.arangodb import Connectors
-from app.connectors.core.base.connector.connector_service import BaseConnector
+from app.connectors.core.base.connector.connector_service import (
+    BaseConnector,
+    ConnectorInitError,
+)
 from app.connectors.core.base.data_processor.data_source_entities_processor import (
     DataSourceEntitiesProcessor,
 )
@@ -42,6 +45,10 @@ from app.connectors.core.registry.auth_builder import (
     AuthBuilder,
     AuthType,
     OAuthScopeConfig,
+)
+from app.connectors.core.registry.code_indexing_flags import (
+    branch_filter_field,
+    exclude_paths_filter_field,
 )
 from app.connectors.core.registry.connector_builder import (
     AuthField,
@@ -61,16 +68,25 @@ from app.connectors.core.registry.filters import (
     SyncFilterKey,
     load_connector_filters,
 )
+from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
 from app.connectors.sources.github_teams.common.apps import GitHubTeamsApp
+from app.connectors.sources.github_teams.common.utils import (
+    sync_window_start,
+    updated_since_filter_field,
+)
 from app.models.entities import Record
 from app.sources.client.github.github import GitHubClient
 from app.sources.external.github.github_async import GitHubAsyncDataSource
 
 from .comments import CommentsHelper
+from .constants import HTTP_UNAUTHORIZED
 from .filters import FiltersHelper
+from .issue_reconciler import IssueReconciler
 from .issues import IssuesSync
 from .projects import ProjectsSync
 from .pull_requests import PullRequestsSync
+from .record_removal import RecordRemover
+from .repo_scope import RepoScopeReconciler
 from .repos import ReposSync
 from .runtime import RuntimeHelper
 from .streaming import StreamingHelper
@@ -155,6 +171,8 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
             option_source_type=OptionSourceType.DYNAMIC,
             required=True,
         ))
+        .add_filter_field(branch_filter_field())
+        .add_filter_field(updated_since_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.ISSUES.value,
             display_name="Index Issues",
@@ -165,10 +183,16 @@ TOKEN_URL = "https://github.com/login/oauth/access_token"
             display_name="Index Pull Requests",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
         ))
+        .add_filter_field(exclude_paths_filter_field())
         .add_filter_field(FilterField(
             name=IndexingFilterKey.CODE_FILES.value,
             display_name="Index Code Files",
             filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=True,
+        ))
+        .add_filter_field(FilterField(
+            name=IndexingFilterKey.TEST_FILES.value,
+            display_name="Index Test Files",
+            filter_type=FilterType.BOOLEAN, category=FilterCategory.INDEXING, default_value=False,
         ))
         .add_filter_field(CommonFields.enable_manual_sync_filter())
         .with_admin_access_required(True, personal_connector_type="Github")
@@ -221,8 +245,18 @@ class GitHubTeamsConnector(BaseConnector):
             data_store_provider=data_store_provider,
         )
 
+        # Removal of records that left GitHub or the sync's scope
+        self.record_remover = RecordRemover(data_entities_processor, connector_id, logger)
+        self.repo_scope = RepoScopeReconciler(
+            data_entities_processor, self.record_remover, self.record_sync_point, connector_id, logger,
+        )
+
         # Helper modules — instantiated once, hold a reference back to self
         self.runtime = RuntimeHelper(self)
+        self.issue_reconciler = IssueReconciler(
+            self.runtime, lambda: self.data_source, data_entities_processor,
+            self.record_remover, connector_id, logger,
+        )
         self.users = UsersSync(self)
         self.projects = ProjectsSync(self)
         self.repos = ReposSync(self)
@@ -299,7 +333,15 @@ class GitHubTeamsConnector(BaseConnector):
                 self.logger.info("GitHub Teams connection test successful.")
                 return True
             self.logger.error("GitHub Teams connection test failed: %s", response.error)
+            if response.status_code == HTTP_UNAUTHORIZED:
+                # Say why, rather than the generic "verify your credentials".
+                raise ConnectorInitError(
+                    f"GitHub rejected the credentials ({response.api_message or 'Bad credentials'}). "
+                    "Reconnect this connector with a valid token."
+                )
             return False
+        except ConnectorInitError:
+            raise
         except Exception as e:
             self.logger.error("GitHub Teams connection test failed: %s", e, exc_info=True)
             return False
@@ -307,6 +349,31 @@ class GitHubTeamsConnector(BaseConnector):
     # ------------------------------------------------------------------
     # Sync
     # ------------------------------------------------------------------
+
+    async def _register_authenticated_identity(self) -> None:
+        """Record which source account this connector is authenticated as, so a creator whose
+        PipesHub email differs still resolves that account's permissions for this connector.
+
+        Runs after user sync: the email that sync bound the account to is the one its grants
+        carry. ``GET /user`` gives only the public profile email, which is empty for most
+        accounts and may be a personal address that holds no grant."""
+        if not self.data_source:
+            return
+        email, source_user_id = None, None
+        try:
+            me_res = await self.runtime.ds_call(self.data_source.get_authenticated)
+            if me_res.success and me_res.data is not None:
+                email = getattr(me_res.data, "email", None)
+                source_user_id = getattr(me_res.data, "id", None)
+        except Exception as e:
+            self.logger.debug("Could not read the authenticated GitHub account: %s", e)
+            return
+        if isinstance(source_user_id, int):
+            email = self.users.resolved_email(source_user_id) or email
+        await self.register_authenticated_source_user(
+            email.strip() if isinstance(email, str) else None,
+            str(source_user_id) if source_user_id is not None else None,
+        )
 
     async def run_sync(self) -> None:
         """Run a full GitHub sync (users -> repos -> issues/PRs/code)."""
@@ -318,27 +385,46 @@ class GitHubTeamsConnector(BaseConnector):
             self.sync_filters, self.indexing_filters = await load_connector_filters(
                 self.config_service, "githubteams", self.connector_id, self.logger
             )
-            # PipesHub users reach this connector through the org's "All" team,
-            # not a per-user edge. The record-access query pre-filters on
-            # `connectorId IN user_apps_ids`, which is satisfied via
-            # (User)-[:PERMISSION]->(Teams)-[:USER_APP_RELATION]->(App) — so
-            # without this edge a public repo's ORG grant is unreachable for
-            # anyone whose GitHub account never resolved to an AppUser. The edge
-            # grants nothing by itself; every access path still requires a real
-            # PERMISSION edge.
-            async with self.data_store_provider.transaction() as tx_store:
-                await tx_store.ensure_team_app_edge(
-                    self.connector_id, self.data_entities_processor.org_id,
-                )
-
+            self._require_scope_filter()
             self.logger.info("Starting sync of GitHub org members")
             await self.users.sync_users()
+            await self._register_authenticated_identity()
             self.logger.info("Starting sync of GitHub repositories")
             await self.projects.sync_all_repos()
             self.repos.timestamps.schedule()
+            if self.projects.failures:
+                raise RuntimeError(
+                    "GitHub Teams sync did not complete: " + "; ".join(self.projects.failures[:10])
+                )
         except Exception as e:
             self.logger.error("Error in GitHub Teams sync: %s", e, exc_info=True)
             raise
+
+    def full_sync_coverage(self) -> FullSyncCoverage:
+        """An issue or pull request last updated before the "updated since" window is not
+        listed, not gone: one created before the window keeps its links after a full
+        sync. A sync that skipped part of GitHub raises (``run_sync``), so a full sync
+        that returns read everything it was asked to."""
+        start = sync_window_start(self.sync_filters)
+        return FullSyncCoverage(window_start_ms=int(start.timestamp() * 1000) if start else None)
+
+    def _require_scope_filter(self) -> None:
+        """Refuse to sync without a repository or organization filter.
+
+        The repository field is required, so a sync without one means the filters
+        could not be read (``load_connector_filters`` answers a config-store failure
+        with empty filters). Falling back to every repository the token can see would
+        index, and grant access to, repositories the admin never selected.
+        """
+        sf = self.sync_filters
+        for key in (SyncFilterKey.REPO_IDS, SyncFilterKey.ORG_IDS):
+            f = sf.get(key) if sf else None
+            if f is not None and not f.is_empty():
+                return
+        raise RuntimeError(
+            "GitHub sync filters name no repository (or could not be read); "
+            "not syncing every repository the token can see."
+        )
 
     async def run_incremental_sync(self) -> None:
         """Incremental sync delegates to the same full sync (deltas are handled via checkpoints)."""

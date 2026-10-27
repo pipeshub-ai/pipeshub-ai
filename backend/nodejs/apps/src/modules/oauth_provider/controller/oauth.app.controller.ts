@@ -106,6 +106,48 @@ export class OAuthAppController {
   /**
    * Update OAuth app
    */
+  /**
+   * Point an app's client_credentials tokens at a service account, or put
+   * them back to acting as its creator by passing null.
+   */
+  async setTokenIdentity(
+    req: AuthenticatedUserRequest,
+    res: Response,
+    next: NextFunction,
+  ): Promise<void> {
+    try {
+      const orgId = req.user!.orgId
+      const userId = req.user!.userId
+      const appId = req.params.appId!
+      const { serviceAccountId } = req.body as {
+        serviceAccountId: string | null
+      }
+
+      const app = await this.oauthAppService.setTokenIdentity(
+        appId,
+        orgId,
+        userId,
+        serviceAccountId,
+      )
+
+      this.logger.info('OAuth app token identity changed via API', {
+        appId,
+        orgId,
+        serviceAccountId,
+      })
+
+      res.json({
+        message:
+          serviceAccountId === null
+            ? 'Application tokens now act as its creator'
+            : 'Application tokens now act as the service account',
+        app,
+      })
+    } catch (error) {
+      next(error)
+    }
+  }
+
   async updateApp(
     req: AuthenticatedUserRequest,
     res: Response,

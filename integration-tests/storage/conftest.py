@@ -70,9 +70,11 @@ def _load_env() -> None:
 
 _load_env()
 
+from helper.source_credentials import secrets_required
 from local_auth import obtain_local_oauth_credentials
 from pipeshub_client import PipeshubClient
-from storage_client import StorageClient
+from storage_backends import available_backends, parked_notice
+from storage_client import StorageClient, mint_storage_token, scoped_jwt_secret
 
 # ---------------------------------------------------------------------------
 # Storage backend configuration helpers
@@ -108,12 +110,9 @@ def _set_storage_backend(client: PipeshubClient, backend: str) -> None:
     logger.info("Switched storage backend to '%s'", backend)
 
 
-def _available_backends() -> list[str]:
-    """Return the list of storage backends to test based on available credentials."""
-    backends = ["local"]
-    if os.getenv("S3_ACCESS_KEY") and os.getenv("S3_SECRET_KEY") and os.getenv("S3_REGION") and os.getenv("S3_BUCKET"):
-        backends.append("s3")
-    return backends
+def pytest_report_header() -> str | None:
+    """Say so when a backend is parked, on every run."""
+    return parked_notice()
 
 
 def _extract_s3_key_from_url(url: str, bucket: str) -> str | None:
@@ -222,9 +221,10 @@ def s3_cleanup_tracker(
     object_keys: set[str] = set()
     for doc_id in document_ids:
         try:
+            token = mint_storage_token(pipeshub_client.org_id, pipeshub_client.acting_user_id)
             resp = requests.get(
-                pipeshub_client._url(f"/api/v1/document/{doc_id}"),
-                headers=pipeshub_client._headers(),
+                pipeshub_client._url(f"/api/v1/document/internal/{doc_id}"),
+                headers={"Authorization": f"Bearer {token}"},
                 timeout=pipeshub_client.timeout_seconds,
             )
             if resp.status_code != 200:
@@ -266,7 +266,7 @@ def s3_cleanup_tracker(
     logger.info("Centralized S3 cleanup deleted %d object(s)", len(keys_to_delete))
 
 
-@pytest.fixture(scope="session", params=_available_backends())
+@pytest.fixture(scope="session", params=available_backends())
 def storage_backend(
     request: pytest.FixtureRequest,
     pipeshub_client: PipeshubClient,
@@ -302,6 +302,20 @@ def sc(
     storage_backend: str,
     s3_cleanup_tracker: _S3CleanupTracker,
 ) -> StorageClient:
+    if not scoped_jwt_secret():
+        reason = (
+            "Storage routes are service-to-service only, so the storage suite "
+            "needs SCOPED_JWT_SECRET set to the deployment's scoped JWT secret "
+            "to mint its tokens."
+        )
+        # Skipped on the nightly, the whole suite would read as a pass.
+        if secrets_required():
+            pytest.fail(
+                f"{reason} This run is meant to cover storage: set "
+                "SCOPED_JWT_SECRET in the workflow's job environment (the "
+                "integration compose files default it to a test-only value)."
+            )
+        pytest.skip(reason)
     return StorageClient(
         pipeshub_client,
         register_document_id=s3_cleanup_tracker.add_document_id,
