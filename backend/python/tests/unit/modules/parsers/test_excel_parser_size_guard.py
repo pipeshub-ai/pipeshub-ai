@@ -139,7 +139,7 @@ def test_cells_are_counted_across_read_chunks(monkeypatch: pytest.MonkeyPatch) -
 
 def test_cells_written_with_a_namespace_prefix_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
-    sheet = _sheet(60, tag="x:c").replace("<sheetData>", "<x:sheetData>")
+    sheet = _sheet(60, tag="x:c").replace("<worksheet ", "<worksheet xmlns:x='http://schemas.openxmlformats.org/spreadsheetml/2006/main' ")
     with pytest.raises(ParseError):
         module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))
 
@@ -150,18 +150,51 @@ def test_a_sparse_sheet_with_an_inflated_dimension_is_not_refused(monkeypatch: p
     module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))
 
 
-def test_style_entries_are_capped_by_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(module, "EXCEL_MAX_STYLE_ELEMENTS", 100)
-    styles = "<styleSheet><cellXfs>" + '<xf numFmtId="0"/>' * 150 + "</cellXfs></styleSheet>"
-    with pytest.raises(ParseError):
-        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/styles.xml": styles}))
+def test_style_entries_cost_more_than_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 400)
+    xfs = lambda n: "<styleSheet><cellXfs>" + '<xf numFmtId="0"/>' * n + "</cellXfs></styleSheet>"  # noqa: E731
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/styles.xml": xfs(90)}))
+    with pytest.raises(ParseError):  # 150 entries x 4 cell-equivalents each
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/styles.xml": xfs(150)}))
 
 
-def test_chart_points_are_capped_by_count(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(module, "EXCEL_MAX_OTHER_ELEMENTS", 100)
-    chart = "<c:chartSpace>" + "<c:pt><c:v>1</c:v></c:pt>" * 80 + "</c:chartSpace>"
+def test_chart_points_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    chart = "<c:chartSpace xmlns:c='x'>" + "<c:pt><c:v>1</c:v></c:pt>" * 80 + "</c:chartSpace>"
     with pytest.raises(ParseError):
         module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/charts/chart1.xml": chart}))
+
+
+def test_shared_strings_are_counted_and_cost_less_than_cells(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    sst = lambda n: "<sst xmlns='x'>" + "<si><t>a</t></si>" * n + "</sst>"  # noqa: E731
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/sharedStrings.xml": sst(200)}))
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/sharedStrings.xml": sst(300)}))
+
+
+def test_the_combined_budget_is_shared_between_cells_strings_and_styles(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    sst = "<sst>" + "<si><t>a</t></si>" * 100 + "</sst>"  # 40
+    styles = "<styleSheet>" + "<xf/>" * 10 + "</styleSheet>"  # 40
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(15), "xl/sharedStrings.xml": sst, "xl/styles.xml": styles}))
+    with pytest.raises(ParseError):
+        module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(30), "xl/sharedStrings.xml": sst, "xl/styles.xml": styles}))
+
+
+def test_a_doctype_or_entity_is_not_expanded(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    bomb = '<!DOCTYPE lolz [<!ENTITY a "' + "x" * 100 + '"><!ENTITY b "&a;&a;&a;&a;">]><worksheet><sheetData>&b;</sheetData></worksheet>'
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": bomb}))  # left to the loader, which refuses entities
+
+
+def test_binary_parts_are_dropped_at_the_first_chunk(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 100)
+    out = io.BytesIO()
+    with zipfile.ZipFile(out, "w", zipfile.ZIP_STORED) as z:
+        z.writestr("xl/worksheets/sheet1.xml", _sheet(2))
+        z.writestr("xl/media/image1.png", b"\x89PNG\r\n\x1a\n" + b"\x00<c <c <c " * 100_000)
+    module.check_workbook_size(out.getvalue())
 
 
 def test_bytes_are_counted_as_decompressed_not_as_declared(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -174,8 +207,7 @@ def test_bytes_are_counted_as_decompressed_not_as_declared(monkeypatch: pytest.M
 
 def test_calc_chain_is_not_counted(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
-    monkeypatch.setattr(module, "EXCEL_MAX_OTHER_ELEMENTS", 50)
-    chain = _sheet(500)  # a calcChain lists a cell per formula, and openpyxl does not load it
+    chain = "<calcChain>" + '<c r="A1"/>' * 500 + "</calcChain>"  # a cell per formula; openpyxl does not load it
     module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/calcChain.xml": chain}))
 
 
@@ -187,3 +219,17 @@ def test_a_bad_limit_falls_back_to_the_default(value: str, monkeypatch: pytest.M
     assert env_positive_int("SOME_EXCEL_LIMIT", 42) == 42
     monkeypatch.setenv("SOME_EXCEL_LIMIT", " 7 ")
     assert env_positive_int("SOME_EXCEL_LIMIT", 42) == 7
+
+
+def test_legacy_vml_drawings_are_not_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 50)
+    vml = "<xml>" + "<v:shape><v:textbox/></v:shape>" * 200 + "</xml>"
+    module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": _sheet(2), "xl/drawings/vmlDrawing1.vml": vml.replace("<v:", "<").replace("</v:", "</")}))
+
+
+def test_cells_with_attributes_after_any_xml_whitespace_are_counted(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(module, "EXCEL_MAX_CELLS", 5)
+    for sep in ("\t", "\r\n", "\n", "  "):
+        sheet = f"{_SHEET_HEAD}<sheetData><row>" + f'<c{sep}r="A1"/>' * 10 + "</row></sheetData></worksheet>"
+        with pytest.raises(ParseError):
+            module.check_workbook_size(_zip({"xl/worksheets/sheet1.xml": sheet}))

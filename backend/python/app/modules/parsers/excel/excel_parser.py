@@ -7,6 +7,7 @@ import zipfile
 import zlib
 from datetime import datetime, time
 from typing import Any
+from xml.parsers import expat
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage, HumanMessage
@@ -106,103 +107,134 @@ MAX_HEADER_COUNT_RETRIES = 2  # Maximum retries when LLM returns wrong header co
 EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT = max(50, env_int("EXCEL_HEADER_GENERATION_SAMPLE_SCAN_LIMIT", 500))
 EXCEL_MAX_TABLE_ROWS_TO_INDEX = env_positive_int("EXCEL_MAX_TABLE_ROWS_TO_INDEX", 20000)
 
-# openpyxl builds one object per cell, about 550-770 bytes each at peak (a 24.5 MB
-# workbook of 2.0 M cells peaked at 1.1 GB; a 16 MB one of 2.0 M cells at 1.6 GB), so a
-# workbook's size in memory is set by its cell count, not its file size. It also
-# loads styles, shared strings and chart data whole (about 1.7 KB per style entry,
-# 1 KB per chart point). Workbooks over any limit are refused before they are loaded;
-# the defaults keep the peak near 2 GB. All are counted from the XML itself.
+# openpyxl builds Python objects for what it reads, and the memory follows the
+# counts, not the file size. Measured peaks above the ~0.74 GB the service
+# modules take on import (generated workbooks, openpyxl 3.1.5):
+#   a cell             about 430 bytes   (3.0 M empty cells 1.90 GB, 2.9 M numbers 1.99 GB)
+#   a shared string    about 160 bytes   (12 M strings 2.60 GB)
+#   a style entry      about 1.7 KB      (1 M cellXfs 2.43 GB)
+#   a chart/drawing/comment/pivot element  about 420 bytes (3 M chart points 3.28 GB)
+# EXCEL_MAX_CELLS is a budget in cell-equivalents spent by all of them
+# (weights below), so the combined peak stays near 2.3 GB whatever the mix.
 EXCEL_MAX_CELLS = env_positive_int("EXCEL_MAX_CELLS", 3_000_000)
-# All the workbook's XML parts together, as actually decompressed (not as declared).
-EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 300) * 1024 * 1024
-# Elements in xl/styles.xml (Excel itself stops at 64 k cell formats).
-EXCEL_MAX_STYLE_ELEMENTS = env_positive_int("EXCEL_MAX_STYLE_ELEMENTS", 300_000)
-# Elements in every other part that is not a sheet, styles or shared strings
-# (charts, drawings, comments).
-EXCEL_MAX_OTHER_ELEMENTS = env_positive_int("EXCEL_MAX_OTHER_ELEMENTS", 300_000)
+_CELL_WEIGHT = 1.0
+_SHARED_STRING_WEIGHT = 0.4
+_STYLE_ELEMENT_WEIGHT = 4.0
+_OTHER_ELEMENT_WEIGHT = 1.0
+# Backstop on the XML actually decompressed, all parts together, for what the
+# counts do not see (a few very long strings). Honest workbooks at the cell
+# limit stay under it (see the handoff).
+EXCEL_MAX_SHEET_XML_BYTES = env_positive_int("EXCEL_MAX_SHEET_XML_MB", 400) * 1024 * 1024
 
 _CHUNK_BYTES = 1024 * 1024
-_SHEET_DATA_RE = re.compile(rb"<(?:([A-Za-z_][\w.\-]*):)?sheetData[\s/>]")
+_SHEET_ROOT, _STRINGS_ROOT, _STYLES_ROOT = "worksheet", "sst", "styleSheet"
+# Parts openpyxl does not build objects from: the calculation chain (a cell per
+# formula) and legacy VML drawings (a dozen elements per comment); both can
+# be as big as the sheets.
+_UNREAD_ROOTS = frozenset({"calcChain", "xml"})
 
 
-def _count_elements(text: bytes) -> int:
-    """Start tags in *text* (C-speed ``count`` calls; a regex over 100 MB is 20x slower)."""
-    return text.count(b"<") - text.count(b"</") - text.count(b"<?") - text.count(b"<!")
+class _StopPart(Exception):
+    """This part needs no more reading (not XML, not read by openpyxl, or not safe to parse)."""
 
 
-def _count_cells(text: bytes, prefix: bytes) -> int:
-    """``<c>`` elements, written with the sheet's own namespace *prefix* (``b""`` for none)."""
-    tag = b"<" + prefix + b"c"
-    return text.count(tag + b" ") + text.count(tag + b">") + text.count(tag + b"/") + text.count(tag + b"\n")
-# Parts openpyxl does not read, though they can be as big as the sheets.
-_UNREAD_PARTS = frozenset({"xl/calcChain.xml"})
+class _PartCounter:
+    """Counts, with a namespace-aware expat parser, what one XML part makes openpyxl build.
+
+    The part is classified by its root element, not by its name or extension:
+    a worksheet counts its ``c`` cells, shared strings their ``si`` entries,
+    styles every element, anything else every element. The parser handles
+    prefixes, whitespace, comments and CDATA; no tree is built and no text is kept.
+    """
+
+    def __init__(self) -> None:
+        self.n = 0
+        self.weight = _OTHER_ELEMENT_WEIGHT
+        self.parser = expat.ParserCreate(namespace_separator=" ")
+        self.parser.buffer_text = False
+        self.parser.StartElementHandler = self._root
+        # A DOCTYPE or entity is how an XML bomb is built; a workbook has neither
+        # (openpyxl refuses them too), so stop here rather than expand anything.
+        self.parser.StartDoctypeDeclHandler = self._refuse
+        self.parser.EntityDeclHandler = self._refuse
+
+    def _refuse(self, *_args: object) -> None:
+        raise _StopPart
+
+    def _root(self, name: str, _attrs: object) -> None:
+        local = name.rpartition(" ")[2]
+        if local in _UNREAD_ROOTS:
+            raise _StopPart
+        if local == _SHEET_ROOT:
+            self.weight, self.parser.StartElementHandler = _CELL_WEIGHT, self._cell
+            return
+        if local == _STRINGS_ROOT:
+            self.weight, self.parser.StartElementHandler = _SHARED_STRING_WEIGHT, self._string
+            return
+        if local == _STYLES_ROOT:
+            self.weight = _STYLE_ELEMENT_WEIGHT
+        self.parser.StartElementHandler = self._element
+        self.n = 1
+
+    def _cell(self, name: str, _attrs: object) -> None:
+        if name == "c" or name.endswith(" c"):
+            self.n += 1
+
+    def _string(self, name: str, _attrs: object) -> None:
+        if name == "si" or name.endswith(" si"):
+            self.n += 1
+
+    def _element(self, _name: str, _attrs: object) -> None:
+        self.n += 1
 
 
-def _too_large(**details: int) -> ParseError:
+def _too_large(**details: float) -> ParseError:
     return ParseError(
         ParseErrorCode.INVALID_INPUT,
         EXCEL_TOO_LARGE,
-        details={**details, "max_cells": EXCEL_MAX_CELLS, "max_xml_bytes": EXCEL_MAX_SHEET_XML_BYTES},
+        details={**details, "max_cell_equivalents": EXCEL_MAX_CELLS, "max_xml_bytes": EXCEL_MAX_SHEET_XML_BYTES},
     )
 
 
 def check_workbook_size(file_binary: bytes) -> None:
     """Refuse a workbook that is too large to load, without loading it.
 
-    Streams every XML part of the zip in bounded chunks (no tree, constant
-    memory) and counts what openpyxl would build objects for: ``<c>`` cells in
-    anything holding ``<sheetData>`` (wherever it sits in the zip), elements in
-    styles and in other non-sheet parts, and the decompressed bytes. Counts
-    come from the data actually read, never from the zip's declared sizes or a
-    sheet's ``<dimension>``, and reading stops at the first limit passed.
-    Not a workbook zip, or a part that cannot be read: left for the loader to report.
+    Streams every part of the zip, whatever its name, in bounded chunks
+    through a real XML parser (constant memory, nothing kept) and totals what
+    openpyxl would build objects for, weighted into cell-equivalents (see
+    ``EXCEL_MAX_CELLS``), plus the decompressed bytes. Counts come from the
+    data actually read, never from the zip's declared sizes or a sheet's
+    ``<dimension>``; reading stops at the first limit passed. A part that is
+    not XML (an image) is dropped at its first chunk. Not a workbook zip, or a
+    part that cannot be read: left for the loader to report.
     """
     try:
         archive = zipfile.ZipFile(io.BytesIO(file_binary))
-        parts = [
-            info for info in archive.infolist()
-            if info.filename.lower().endswith((".xml", ".rels", ".vml")) and info.filename not in _UNREAD_PARTS
-        ]
+        parts = [info for info in archive.infolist() if not info.is_dir()]
     except (zipfile.BadZipFile, OSError, ValueError):
         return
-    cells = style_elements = other_elements = total_bytes = 0
+    units = 0.0
+    total_bytes = 0
     try:
         with archive:
             for info in parts:
-                is_sheet = False
-                prefix = b""
-                is_styles = info.filename == "xl/styles.xml"
-                is_strings = info.filename == "xl/sharedStrings.xml"
-                carry = b""
+                counter = _PartCounter()
                 with archive.open(info) as stream:
                     while True:
                         chunk = stream.read(_CHUNK_BYTES)
                         total_bytes += len(chunk)
                         if total_bytes > EXCEL_MAX_SHEET_XML_BYTES:
                             raise _too_large(xml_bytes=total_bytes)
-                        buffer = carry + chunk
-                        # Keep a trailing partial tag for the next chunk.
-                        cut = buffer.rfind(b"<") if chunk else len(buffer)
-                        if cut < 0 or (cut == 0 and len(buffer) > 2 * _CHUNK_BYTES):
-                            cut = len(buffer)  # long text or one huge tag: nothing to match across the cut
-                        text, carry = buffer[:cut], buffer[cut:]
-                        if not is_sheet and (found := _SHEET_DATA_RE.search(text)):
-                            is_sheet = True
-                            prefix = found.group(1) + b":" if found.group(1) else b""
-                        if is_sheet:
-                            cells += _count_cells(text, prefix)
-                            if cells > EXCEL_MAX_CELLS:
-                                raise _too_large(cells=cells)
-                        elif is_styles:
-                            style_elements += _count_elements(text)
-                            if style_elements > EXCEL_MAX_STYLE_ELEMENTS:
-                                raise _too_large(style_elements=style_elements)
-                        elif not is_strings:
-                            other_elements += _count_elements(text)
-                            if other_elements > EXCEL_MAX_OTHER_ELEMENTS:
-                                raise _too_large(other_elements=other_elements)
+                        try:
+                            counter.parser.Parse(chunk, not chunk)
+                        except (_StopPart, expat.ExpatError):
+                            break
+                        finally:
+                            if units + counter.n * counter.weight > EXCEL_MAX_CELLS:
+                                raise _too_large(cell_equivalents=units + counter.n * counter.weight)
                         if not chunk:
                             break
+                units += counter.n * counter.weight
     except ParseError:
         raise
     except (zipfile.BadZipFile, zlib.error, EOFError, OSError, NotImplementedError, RuntimeError, ValueError):
