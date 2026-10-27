@@ -28,7 +28,7 @@ const ORG_ARGS = {
   findIdsByContent: 0,
   listArtifactMarkerContents: 1,
   updateUserQueryContent: 1,
-  listVisibleTitles: 0,
+  listVisibleSummaries: 0,
   appendMessages: 1,
   replaceMessage: 1,
   deleteMessages: 1,
