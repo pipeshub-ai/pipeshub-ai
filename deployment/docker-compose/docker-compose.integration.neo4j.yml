@@ -77,6 +77,9 @@ services:
       # Signs service tokens. Fixed so the storage suite can mint tokens this
       # stack accepts; the app only reads it on the first boot of a fresh volume.
       - SCOPED_JWT_SECRET=${SCOPED_JWT_SECRET:-pipeshub-integration-scoped-jwt-secret-test-only}
+      # Signs user sessions. Fixed for the same reason, so the security suite
+      # can sign an already-expired session token and check it is refused.
+      - JWT_SECRET=${JWT_SECRET:-pipeshub-integration-jwt-secret-test-only}
       # Empty unless the Gmail suites run (gmail-sim profile): then the Gmail connectors, and only they,
       # call the Gmail simulator instead of Google (integration-tests/connectors/gmail/DESIGN.md).
       - GMAIL_GOOGLE_API_BASE_URL=${GMAIL_GOOGLE_API_BASE_URL:-}
