@@ -174,7 +174,12 @@ export const handleBackendError = (
     return transientError(504, undefined, undefined);
   }
 
-  if (isConnectionRefused(source)) {
+  // An answer with a status reached us; words like "fetch failed" in its body
+  // describe the service's own work, not our connection to it.
+  const answered =
+    typeof asRecord(source.response)?.status === 'number' ||
+    typeof source.statusCode === 'number';
+  if (!answered && isConnectionRefused(source)) {
     logger.error(`Could not reach the service during ${operation}`, {
       cause: asText(asRecord(source.cause)?.code) ?? asText(source.message),
     });
@@ -231,7 +236,9 @@ export const handleBackendError = (
     bodyDetail ?? fallbackDetail ?? 'Unknown error',
   );
 
-  logger.error(`Backend error during ${operation}`, {
+  // A 402 is the service refusing what the account does not cover, as it should: not a fault.
+  const refusal = statusCode === 402;
+  logger[refusal ? 'warn' : 'error'](`Backend error during ${operation}`, {
     statusCode,
     errorDetail,
     fullResponse: data,
@@ -245,6 +252,7 @@ export const handleBackendError = (
     case 402:
       return new PaymentRequiredError(
         asText(asRecord(bodyDetail)?.message) ?? errorDetail,
+        { logLevel: 'warn' },
       );
     case 403:
       return new ForbiddenError(errorDetail);

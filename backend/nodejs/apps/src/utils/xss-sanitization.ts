@@ -36,7 +36,8 @@ const SVG_TAG_PATTERN = /<[\s]*svg[^>]{0,10000}>/gi;
 // Pattern matches: % followed by optional positional (digits$), flags, width, precision, and type
 // Optimized to prevent ReDoS: limited quantifiers and more specific patterns
 // Max width: 10 digits, max precision: 10 digits to prevent exponential backtracking
-const FORMAT_SPECIFIER_PATTERN = /(?<!\w)%(?:\d{1,10}\$)?[#0\-+ ]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]/;
+// A space flag counts only before another flag ("% 08x"): "Growth % sales" is prose, not "% s".
+const FORMAT_SPECIFIER_PATTERN = /(?<!\w)%(?:\d{1,10}\$)?(?: (?=[#0\-+]))?[#0\-+]{0,10}(?:\d{1,10})?(?:\.\d{1,10})?(?:h{1,2}|l{1,2}|L|z|j|t)?[nsxXp]/;
 
 /** Inputs longer than this are rejected unread by containsXSSPattern. */
 export const XSS_CHECK_MAX_LENGTH = 100000;

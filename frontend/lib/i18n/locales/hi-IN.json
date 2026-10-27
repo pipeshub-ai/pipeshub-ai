@@ -3691,7 +3691,12 @@
         "title": "Password & security",
         "accountPassword": "Account password",
         "followEmailDescription": "Please follow the instructions in the email to finish setting your password",
-        "changePassword": "Change password"
+        "changePassword": "Change password",
+        "setPassword": "पासवर्ड सेट करें",
+        "setPasswordDescription": "आपने अभी तक पासवर्ड सेट नहीं किया है। हम आपको पासवर्ड सेट करने का लिंक ईमेल करेंगे; अगर आपका वर्कस्पेस अनुमति देता है, तो आप ईमेल और पासवर्ड से भी साइन इन कर सकेंगे।",
+        "setPasswordDialogTitle": "पासवर्ड सेट करें",
+        "setPasswordDialogMessage": "हम आपके पंजीकृत ईमेल पते पर पासवर्ड सेट करने का लिंक भेजेंगे और इस सेशन से आपको लॉग आउट कर देंगे।",
+        "setPasswordDialogConfirm": "पासवर्ड सेट करने का लिंक भेजें"
       },
       "rolesPermissions": {
         "title": "Roles & permissions",
@@ -3738,6 +3743,10 @@
         "saveErrorDescription": "Could not update your profile",
         "passwordUpdated": "Password has been updated",
         "passwordUpdatedDescription": "We'll log you out. Please login again...",
+        "passwordSetupEmailSent": "पासवर्ड सेट करने का लिंक भेजा गया",
+        "passwordSetupEmailSentDescription": "पासवर्ड सेट करने के लिए अपना ईमेल देखें। इस सेशन से लॉग आउट किया जा रहा है…",
+        "passwordSetupEmailError": "ईमेल नहीं भेजा जा सका",
+        "passwordSetupEmailErrorDescription": "कृपया दोबारा कोशिश करें।",
         "emailVerificationSent": "Email verification link sent",
         "emailVerificationSentDescription": "You will be logged out when you verify the email",
         "discardSuccess": "Discarded edits",
