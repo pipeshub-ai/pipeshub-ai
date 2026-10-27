@@ -413,6 +413,37 @@ export function registerCodeGraphToolDefinitions(
   );
 
   server.registerTool(
+    'pipeshub_code_semantic_search',
+    {
+      description:
+        EXPERIMENTAL +
+        'Find the code behind a feature, a behaviour or something on screen when you do not ' +
+        "know its names: 'the popup that shows docs when hovering a word', 'where unsaved " +
+        "files are restored after a restart'. Ranks symbols by meaning, so near-synonyms " +
+        'match. Results are addresses for pipeshub_code_read, pipeshub_code_neighbours and ' +
+        'pipeshub_code_impact. For a name you already know, pipeshub_code_search is exact.',
+      inputSchema: {
+        repo: repoRequired,
+        query: z
+          .string()
+          .min(1)
+          .max(500)
+          .describe('What the code does, in plain words.'),
+        limit: z
+          .number()
+          .int()
+          .min(1)
+          .max(50)
+          .optional()
+          .describe('Maximum symbols, default 15.'),
+        include_tests: includeTests,
+      },
+      annotations: READ_ONLY,
+    },
+    async (args) => call(deps, HttpMethod.POST, '/semantic-search', args),
+  );
+
+  server.registerTool(
     'pipeshub_code_outline',
     {
       description:
@@ -446,7 +477,7 @@ export function registerCodeGraphToolDefinitions(
           .number()
           .int()
           .min(1)
-          .max(3)
+          .max(5)
           .optional()
           .describe('Hops back, default 2.'),
         include_tests: includeTests,

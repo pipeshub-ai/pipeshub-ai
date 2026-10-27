@@ -104,6 +104,7 @@ describe('MCP code-graph tools', () => {
       'pipeshub_code_symbols',
       'pipeshub_code_path',
       'pipeshub_code_search',
+      'pipeshub_code_semantic_search',
       'pipeshub_code_entry_points',
     ]) {
       const schema = z.object(tools.get(name)!.config.inputSchema)
@@ -118,6 +119,7 @@ describe('MCP code-graph tools', () => {
     const tools = register()
     const routes: Record<string, string> = {
       pipeshub_code_search: '/search',
+      pipeshub_code_semantic_search: '/semantic-search',
       pipeshub_code_outline: '/outline',
       pipeshub_code_impact: '/impact',
       pipeshub_code_entry_points: '/entry-points',
