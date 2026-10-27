@@ -29,7 +29,7 @@ for (const bin of PG_BINS.length ? PG_BINS : ['none']) {
     describe('ConversationRepository contract', () => {
       describeConversationContract({
         repo: scoped(new PgConversationRepository(), ledger, {
-          findIdsByContent: 0, listArtifactMarkerContents: 1, updateUserQueryContent: 1, listVisibleTitles: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1,
+          findIdsByContent: 0, listArtifactMarkerContents: 1, updateUserQueryContent: 1, listVisibleSummaries: 0, appendMessages: 1, replaceMessage: 1, deleteMessages: 1,
           appendFeedback: 1, findMessage: 1, countMessages: 1, getCitations: 1,
         }),
         uow: scopedUow(),
