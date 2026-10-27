@@ -8,6 +8,9 @@ fields:
       - OPEN
       - STRICT
       - RESTRICTED
+  auto_retry_count:
+    required: false
+    type: integer
   block_containers:
     type: object
     required: false

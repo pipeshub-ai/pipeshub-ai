@@ -103,7 +103,6 @@ from app.connectors.core.registry.filters import (
     load_connector_filters,
 )
 from app.connectors.core.sync.full_sync_coverage import FullSyncCoverage
-from app.connectors.core.sync.sync_progress import report_throttled
 from app.connectors.sources.slack.common.apps import SlackWorkspaceApp
 from app.connectors.sources.slack.common.stream_errors import (
     sanitize_retry_after,
@@ -329,7 +328,6 @@ class RateLimiter:
                         self._logger.debug(
                             f"⏱️  Tier {key} rate limit — waiting {wait:.2f}s"
                         )
-                    report_throttled(wait)
                     await asyncio.sleep(wait)
                     now = datetime.now()
                     window[:] = [

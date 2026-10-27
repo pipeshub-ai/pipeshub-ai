@@ -3291,6 +3291,7 @@
         "withFailures": "{{base}} · 인덱싱 실패 {{n, number}}개",
         "lastFailed": "마지막 동기화 실패: {{reason}}",
         "skipped": "마지막 동기화를 건너뜀: 데스크톱 앱이 연결되어 있지 않았습니다",
+        "stopped": "마지막 동기화가 완료되기 전에 중지되었습니다",
         "approximate": "이번 동기화는 규모가 매우 커서 일부 항목이 두 번 이상 집계될 수 있습니다.",
         "viewRecords": "레코드 보기",
         "run": {

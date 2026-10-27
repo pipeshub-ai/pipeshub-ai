@@ -3181,6 +3181,7 @@
         "withFailures": "{{base}} · no se han podido indexar: {{n, number}}",
         "lastFailed": "La última sincronización falló: {{reason}}",
         "skipped": "Se omitió la última sincronización: la aplicación de escritorio no estaba conectada",
+        "stopped": "La última sincronización se detuvo antes de terminar",
         "approximate": "Esta sincronización es muy grande, así que algunos elementos podrían contarse más de una vez.",
         "viewRecords": "Ver registros",
         "run": {

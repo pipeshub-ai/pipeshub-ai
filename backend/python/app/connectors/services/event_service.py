@@ -1496,10 +1496,10 @@ class EventService:
                 )
 
             # Someone asked for these, so syncs may retry them again if they fail again.
-            spent = [r.id for r in records if r.id and r.auto_retry_count]
-            if spent:
+            # Every id, not just those with a count in memory: most typed loaders don't read it.
+            if record_ids_to_update:
                 await self.graph_provider.batch_update_nodes(
-                    [{"id": rid, "autoRetryCount": 0} for rid in spent],
+                    [{"id": rid, "autoRetryCount": 0} for rid in record_ids_to_update],
                     CollectionNames.RECORDS.value,
                 )
 
@@ -1507,7 +1507,7 @@ class EventService:
             # reindex is an explicit user action, so clear that in memory too.
             for record in records:
                 record.indexing_status = ProgressStatus.NOT_STARTED.value
-                record.auto_retry_count = 0 if record.auto_retry_count else None
+                record.auto_retry_count = 0
 
             await connector.reindex_records(records)
 

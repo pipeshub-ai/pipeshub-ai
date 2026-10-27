@@ -3392,6 +3392,7 @@
         "withFailures": "{{base}} · nelze indexovat: {{n, number}}",
         "lastFailed": "Poslední synchronizace selhala: {{reason}}",
         "skipped": "Poslední synchronizace byla přeskočena: desktopová aplikace nebyla připojena",
+        "stopped": "Poslední synchronizace byla zastavena před dokončením",
         "approximate": "Tato synchronizace je velmi rozsáhlá, takže některé položky mohou být započítány víc než jednou.",
         "viewRecords": "Zobrazit záznamy",
         "run": {

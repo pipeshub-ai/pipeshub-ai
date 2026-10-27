@@ -69,6 +69,17 @@ describe('describeConnectorProgress', () => {
     expect(line.text).toContain('error.auth.title');
   });
 
+  it('never calls a stopped sync up to date, and keeps a failure from before the stop', () => {
+    const stopped = describeIt(view({ lastRun: run({ outcome: 'stopped', finishedAt: NOW }) }));
+    expect(stopped.tone).toBe('warn');
+    expect(stopped.text).toBe('stopped');
+    const afterFailure = describeIt(
+      view({ lastRun: run({ outcome: 'stopped', finishedAt: NOW }), lastError: { code: 'auth' } }),
+    );
+    expect(afterFailure.tone).toBe('error');
+    expect(afterFailure.text).toContain('error.auth.title');
+  });
+
   it('shows indexing still draining after the sync ended, with an estimate when known', () => {
     const line = describeIt(
       view({

@@ -3291,6 +3291,7 @@
         "withFailures": "{{base}} · {{n, number}} 项无法索引",
         "lastFailed": "上次同步失败：{{reason}}",
         "skipped": "上次同步已跳过：桌面应用未连接",
+        "stopped": "上次同步在完成前已停止",
         "approximate": "此次同步规模很大，部分项目可能会被重复计数。",
         "viewRecords": "查看记录",
         "run": {

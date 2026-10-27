@@ -1270,6 +1270,26 @@ class TestHandleReindex:
         assert service.graph_provider.get_records_by_status.await_count == 1
 
     @pytest.mark.asyncio
+    async def test_run_reindex_gives_every_record_its_sync_retries_back(self, service) -> None:
+        """Typed loaders such as FileRecord.from_arango_record don't read
+        autoRetryCount, so the reset can't depend on the count in memory."""
+        mock_conn = AsyncMock()
+        mock_conn.reindex_records = AsyncMock()
+        loaded = [MagicMock(id="file-1", is_placeholder=False, auto_retry_count=None)]
+        service.graph_provider.get_records_by_status = AsyncMock(side_effect=[loaded, []])
+        service.graph_provider.update_indexing_status_for_record_ids = AsyncMock()
+        service.graph_provider.batch_update_nodes = AsyncMock()
+
+        await service._run_reindex(
+            connector=mock_conn, connector_name="drive", connector_id="c1", org_id="org1",
+            record_id=None, record_group_id=None, depth=0, user_key=None, status_filters=["FAILED"],
+        )
+
+        updates = service.graph_provider.batch_update_nodes.await_args.args[0]
+        assert updates == [{"id": "file-1", "autoRetryCount": 0}]
+        assert mock_conn.reindex_records.await_args.args[0][0].auto_retry_count == 0
+
+    @pytest.mark.asyncio
     async def test_run_reindex_stops_as_a_failure_when_a_page_cannot_be_read(self, service):
         """A failed page must not look like "reached the end".
 

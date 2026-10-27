@@ -3154,6 +3154,7 @@
         "withFailures": "{{base}} · nicht indiziert: {{n, number}}",
         "lastFailed": "Letzte Synchronisierung fehlgeschlagen: {{reason}}",
         "skipped": "Letzte Synchronisierung übersprungen: Die Desktop-App war nicht verbunden",
+        "stopped": "Letzte Synchronisierung wurde vor dem Ende angehalten",
         "approximate": "Diese Synchronisierung ist sehr groß, daher werden manche Elemente eventuell mehrfach gezählt.",
         "viewRecords": "Datensätze anzeigen",
         "run": {

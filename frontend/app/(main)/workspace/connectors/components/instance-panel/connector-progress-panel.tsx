@@ -131,8 +131,11 @@ export function ConnectorProgressPanel({
 }) {
   const { t } = useTranslation();
   const { run, indexing, lastRun, recentRuns = [] } = view;
-  const failedRun = !run && lastRun?.outcome === 'failed' ? lastRun : null;
-  const failure = failedRun ? (failedRun.error ?? view.lastError) : null;
+  // A stopped run leaves the failure before it standing, as the status line does.
+  const failure = run ? null
+    : lastRun?.outcome === 'failed' ? (lastRun.error ?? view.lastError ?? { code: 'unknown' })
+      : lastRun?.outcome === 'stopped' ? view.lastError
+        : null;
   const attention = (byReason ?? []).filter((g) => NEEDS_ATTENTION.has(g.indexingStatus));
   const byChoice = (byReason ?? []).filter((g) => !NEEDS_ATTENTION.has(g.indexingStatus));
   const backlog = indexing.waiting + indexing.inProgress;
@@ -141,12 +144,12 @@ export function ConnectorProgressPanel({
     <Flex direction="column" gap="5">
       <ConnectorProgressLine view={view} source={source} />
 
-      {failedRun ? (
+      {failure ? (
         <Box style={{ padding: 'var(--space-3)', borderRadius: 'var(--radius-3)', backgroundColor: 'var(--red-a2)', border: '1px solid var(--red-a5)' }}>
           <Flex direction="column" gap="1">
-            <Text size="2" weight="medium" style={{ color: 'var(--red-11)' }}>{errorTitle(t, failure?.code, source)}</Text>
-            <Text size="2" style={{ color: 'var(--gray-12)' }}>{errorAction(t, failure?.code, source)}</Text>
-            {failure?.detail ? (
+            <Text size="2" weight="medium" style={{ color: 'var(--red-11)' }}>{errorTitle(t, failure.code, source)}</Text>
+            <Text size="2" style={{ color: 'var(--gray-12)' }}>{errorAction(t, failure.code, source)}</Text>
+            {failure.detail ? (
               <Text size="1" style={{ color: 'var(--gray-10)', wordBreak: 'break-word' }}>
                 {t(`${K}.error.detail`, { detail: failure.detail })}
               </Text>
